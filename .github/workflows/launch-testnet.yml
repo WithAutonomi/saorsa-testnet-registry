@@ -1,0 +1,42 @@
+name: Launch Testnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "Deployment name (e.g. DEV-01)"
+        required: true
+        type: string
+      node_count:
+        description: "Number of nodes to launch"
+        required: false
+        default: "10"
+        type: string
+      node_version:
+        description: "Node binary version tag"
+        required: false
+        default: "latest"
+        type: string
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Launch testnet
+        run: |
+          echo "Launching testnet '${{ inputs.name }}' with ${{ inputs.node_count }} nodes (version: ${{ inputs.node_version }})"
+          echo "TODO: Implement testnet launch logic"
+          # Steps will include:
+          # 1. Provision infrastructure
+          # 2. Deploy node binaries
+          # 3. Configure and start nodes
+          # 4. Update deployment status in registry
+
+      - name: Update registry
+        run: |
+          echo "TODO: POST to registry API to update deployment status"
+          # curl -X PUT "$REGISTRY_URL/api/deployments/$DEPLOYMENT_ID" \
+          #   -H "Content-Type: application/json" \
+          #   -d '{"status": "running"}'

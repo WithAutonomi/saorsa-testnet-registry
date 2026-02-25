@@ -1,0 +1,51 @@
+name: saorsa-testnet-registry
+region: lon1
+
+services:
+  - name: web
+    github:
+      repo: jacderida/saorsa-testnet-registry
+      branch: main
+      deploy_on_push: true
+    source_dir: web
+    build_command: pip install .
+    run_command: gunicorn wsgi:app --bind 0.0.0.0:8080 --workers 2
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+      - key: FLASK_SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: CHANGE_ME
+      - key: WORKFLOW_RUNNER_PAT
+        scope: RUN_TIME
+        type: SECRET
+        value: CHANGE_ME
+
+workers:
+  - name: monitor
+    github:
+      repo: jacderida/saorsa-testnet-registry
+      branch: main
+      deploy_on_push: true
+    source_dir: web
+    build_command: pip install .
+    run_command: registry-monitor monitor --interval 60
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+
+databases:
+  - name: db
+    engine: PG
+    production: false
+    cluster_name: saorsa-testnet-registry-db
+    db_name: saorsa_testnet_registry
+    db_user: saorsa
