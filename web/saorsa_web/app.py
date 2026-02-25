@@ -1,3 +1,4 @@
+import logging
 import os
 
 from flask import Flask, redirect
@@ -16,6 +17,12 @@ def create_app(config=None):
     app.config.from_object(Config)
     if config:
         app.config.from_mapping(config)
+
+    if app.debug or app.testing:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        )
 
     init_db(app)
 

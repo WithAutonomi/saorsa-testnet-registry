@@ -62,6 +62,14 @@ uv run pytest
 uv run ruff check .
 ```
 
+## Deploying Testnets
+
+When asked to deploy, launch, or create a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
+
+- `create_deployment` — triggers a deployment workflow (accepts name, vm_count, node_count, genesis_port, etc.)
+- `track_deployment` — checks deployment progress by ID
+- `testnet://docs/deployment-config` — resource with full parameter documentation
+
 ## Key Commands
 
 - `uv run flask --app saorsa_web.app run` - Dev server

@@ -1,3 +1,3 @@
-from saorsa_web.models.deployment import Deployment
+from saorsa_web.models.deployment import Deployment, DeploymentEvent
 
-__all__ = ["Deployment"]
+__all__ = ["Deployment", "DeploymentEvent"]

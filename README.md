@@ -59,11 +59,40 @@ The web UI is at `http://localhost:5000/deployments` and the API at `http://loca
 
 ### MCP Server
 
-The MCP server is a separate workspace package that communicates with the registry over HTTP. To run it:
+The MCP server is a separate workspace package that communicates with the registry over HTTP. To run it standalone:
 
 ```bash
 uv run python -m saorsa_deploy_mcp.server
 ```
+
+#### Claude Code Configuration
+
+Add the following to `~/.claude.json` to make the MCP tools available in Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "saorsa-testnet-registry": {
+      "command": "/home/chris/.local/bin/uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "saorsa_deploy_mcp.server"
+      ],
+      "cwd": "/home/chris/dev/github.com/jacderida/saorsa-testnet-registry",
+      "env": {
+        "REGISTRY_URL": "http://localhost:5000",
+        "VIRTUAL_ENV": "/home/chris/dev/github.com/jacderida/saorsa-testnet-registry/.venv"
+      }
+    },
+  }
+}
+```
+
+Replace the various paths above with pointers to your own binaries and virtualenv locations.
+
+Set `REGISTRY_URL` to wherever the web app is running (defaults to `http://localhost:5000`).
 
 ### Linting
 
