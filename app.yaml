@@ -8,8 +8,8 @@ services:
       branch: main
       deploy_on_push: false
     source_dir: web
-    build_command: pip install . && alembic upgrade head
-    run_command: gunicorn wsgi:app --bind 0.0.0.0:8080 --workers 2
+    dockerfile_path: Dockerfile
+    run_command: sh -c "alembic upgrade head && gunicorn wsgi:app --bind 0.0.0.0:8080 --workers 2"
     http_port: 8080
     instance_count: 1
     instance_size_slug: apps-s-1vcpu-0.5gb
@@ -17,7 +17,7 @@ services:
       http_path: /api/health
     envs:
       - key: DATABASE_URL
-        scope: RUN_AND_BUILD_TIME
+        scope: RUN_TIME
         value: ${db.DATABASE_URL}
       - key: FLASK_SECRET_KEY
         scope: RUN_TIME
@@ -39,7 +39,7 @@ workers:
       branch: main
       deploy_on_push: false
     source_dir: web
-    build_command: pip install .
+    dockerfile_path: Dockerfile
     run_command: registry-monitor monitor --interval 60
     instance_count: 1
     instance_size_slug: apps-s-1vcpu-0.5gb
