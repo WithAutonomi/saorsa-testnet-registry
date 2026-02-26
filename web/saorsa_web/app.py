@@ -1,5 +1,6 @@
 import logging
 import os
+from importlib.metadata import version
 
 from flask import Flask, redirect
 
@@ -35,8 +36,11 @@ def create_app(config=None):
     app.register_blueprint(auth_bp)
 
     @app.context_processor
-    def inject_user():
-        return {"current_user": get_current_user()}
+    def inject_globals():
+        return {
+            "current_user": get_current_user(),
+            "app_version": version("saorsa-web"),
+        }
 
     @app.route("/")
     def index():
