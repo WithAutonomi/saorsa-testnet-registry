@@ -59,11 +59,17 @@ The web UI is at `http://localhost:5000/deployments` and the API at `http://loca
 
 ### MCP Server
 
-The MCP server is a separate workspace package that communicates with the registry over HTTP. To run it standalone:
+The MCP server is a separate workspace package that communicates with the registry over HTTP. It requires an API token for authentication. To run it standalone:
 
 ```bash
-uv run python -m saorsa_deploy_mcp.server
+REGISTRY_API_TOKEN=your-token-here uv run python -m saorsa_deploy_mcp.server
 ```
+
+To obtain a token:
+
+1. Log in to the web UI via GitHub OAuth
+2. Navigate to `/auth/tokens`
+3. Create a new token and copy the value (it is only shown once)
 
 #### Claude Code Configuration
 
@@ -83,16 +89,20 @@ Add the following to `~/.claude.json` to make the MCP tools available in Claude 
       "cwd": "/home/chris/dev/github.com/jacderida/saorsa-testnet-registry",
       "env": {
         "REGISTRY_URL": "http://localhost:5000",
+        "REGISTRY_API_TOKEN": "your-token-here",
         "VIRTUAL_ENV": "/home/chris/dev/github.com/jacderida/saorsa-testnet-registry/.venv"
       }
-    },
+    }
   }
 }
 ```
 
 Replace the various paths above with pointers to your own binaries and virtualenv locations.
 
-Set `REGISTRY_URL` to wherever the web app is running (defaults to `http://localhost:5000`).
+| Variable | Description |
+|----------|-------------|
+| `REGISTRY_URL` | URL of the web app (defaults to `http://localhost:5000`) |
+| `REGISTRY_API_TOKEN` | API token generated from the web UI at `/auth/tokens` |
 
 ### Linting
 

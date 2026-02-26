@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}API Tokens - Saorsa Testnet Registry{% endblock %}
+{% block content %}
+<h2>API Tokens</h2>
+<p>API tokens are used to authenticate with the registry API (e.g., from the MCP server).</p>
+
+<h3>Create New Token</h3>
+<form method="POST" action="{{ url_for('auth.create_token') }}" class="token-form">
+    <label for="name">Token name (optional):</label>
+    <input type="text" id="name" name="name" placeholder="e.g., MCP Server">
+    <button type="submit">Create Token</button>
+</form>
+
+<h3>Active Tokens</h3>
+{% if tokens %}
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Created</th>
+            <th>Last Used</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for token in tokens %}
+        <tr>
+            <td>{{ token.name or "(unnamed)" }}</td>
+            <td>{{ token.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td>{{ token.last_used_at.strftime('%Y-%m-%d %H:%M') if token.last_used_at else "Never" }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('auth.revoke_token', token_id=token.id) }}" style="display:inline;">
+                    <button type="submit" onclick="return confirm('Revoke this token?')">Revoke</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No active tokens.</p>
+{% endif %}
+{% endblock %}

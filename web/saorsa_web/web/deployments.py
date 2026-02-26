@@ -2,11 +2,13 @@ from flask import Blueprint, render_template
 
 from saorsa_web.db import db_session
 from saorsa_web.models.deployment import Deployment
+from saorsa_web.web.auth import require_auth
 
 bp = Blueprint("web_deployments", __name__, url_prefix="/deployments")
 
 
 @bp.route("")
+@require_auth
 def list_deployments():
     deployments = (
         db_session.query(Deployment).order_by(Deployment.created_at.desc()).all()

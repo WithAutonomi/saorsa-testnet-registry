@@ -7,6 +7,7 @@ from saorsa_web.api import api_bp
 from saorsa_web.config import Config
 from saorsa_web.db import init_db
 from saorsa_web.web import web_bp
+from saorsa_web.web.auth import auth_bp, configure_oauth, get_current_user
 
 
 def create_app(config=None):
@@ -27,9 +28,15 @@ def create_app(config=None):
         )
 
     init_db(app)
+    configure_oauth(app)
 
     app.register_blueprint(api_bp)
     app.register_blueprint(web_bp)
+    app.register_blueprint(auth_bp)
+
+    @app.context_processor
+    def inject_user():
+        return {"current_user": get_current_user()}
 
     @app.route("/")
     def index():

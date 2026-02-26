@@ -8,6 +8,15 @@ from mcp.server.fastmcp import FastMCP
 load_dotenv()
 
 REGISTRY_URL = os.environ.get("REGISTRY_URL", "http://localhost:5000")
+REGISTRY_API_TOKEN = os.environ.get("REGISTRY_API_TOKEN", "")
+
+
+def _auth_headers() -> dict[str, str]:
+    """Return authorization headers for registry API calls."""
+    if REGISTRY_API_TOKEN:
+        return {"Authorization": f"Bearer {REGISTRY_API_TOKEN}"}
+    return {}
+
 
 mcp = FastMCP(
     "saorsa-testnet-registry",
@@ -149,7 +158,7 @@ async def create_deployment(
     if port is not None:
         deploy_args["port"] = port
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, headers=_auth_headers()) as client:
         try:
             resp = await client.post(
                 f"{REGISTRY_URL}/api/deployments",
@@ -182,7 +191,7 @@ async def create_deployment(
 @mcp.tool()
 async def list_deployments() -> str:
     """List all testnet deployments."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_auth_headers()) as client:
         try:
             resp = await client.get(f"{REGISTRY_URL}/api/deployments")
             resp.raise_for_status()
@@ -206,7 +215,7 @@ async def get_deployment(deployment_id: int) -> str:
     Args:
         deployment_id: The deployment ID
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_auth_headers()) as client:
         try:
             resp = await client.get(f"{REGISTRY_URL}/api/deployments/{deployment_id}")
             if resp.status_code == 404:
@@ -241,7 +250,7 @@ async def track_deployment(deployment_id: int) -> str:
     Args:
         deployment_id: The deployment ID to track
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_auth_headers()) as client:
         try:
             resp = await client.get(f"{REGISTRY_URL}/api/deployments/{deployment_id}")
             if resp.status_code == 404:
