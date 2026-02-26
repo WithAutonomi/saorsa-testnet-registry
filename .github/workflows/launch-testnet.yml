@@ -61,7 +61,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install saorsa-deploy
-        run: pip install git+https://github.com/jacderida/saorsa-deploy.git
+        run: pip install git+https://github.com/maidsafe/saorsa-deploy.git
 
       - name: Setup SSH key
         run: |
