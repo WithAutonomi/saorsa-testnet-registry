@@ -4,7 +4,7 @@ region: lon1
 services:
   - name: web
     github:
-      repo: jacderida/saorsa-testnet-registry
+      repo: maidsafe/saorsa-testnet-registry
       branch: main
       deploy_on_push: false
     source_dir: web
@@ -35,7 +35,7 @@ services:
 workers:
   - name: monitor
     github:
-      repo: jacderida/saorsa-testnet-registry
+      repo: maidsafe/saorsa-testnet-registry
       branch: main
       deploy_on_push: false
     source_dir: web

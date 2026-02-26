@@ -10,7 +10,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GITHUB_REPO = "jacderida/saorsa-testnet-registry"
+DEFAULT_GITHUB_REPO = "maidsafe/saorsa-testnet-registry"
 DEFAULT_WORKFLOW_FILE = "launch-testnet.yml"
 POLL_INTERVAL = 2
 POLL_TIMEOUT = 30
