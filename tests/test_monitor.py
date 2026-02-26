@@ -80,9 +80,7 @@ def _gh_run(
 
 class TestPollOnce:
     @patch("saorsa_web.monitor.get_workflow_run")
-    def test_poll_once_updates_deployment_status_on_change(
-        self, mock_get_run, db
-    ):
+    def test_poll_once_updates_deployment_status_on_change(self, mock_get_run, db):
         deployment = _make_deployment(status=DeploymentStatus.PENDING)
         db.add(deployment)
         db.commit()
@@ -166,9 +164,7 @@ class TestPollOnce:
         db.add(deployment)
         db.commit()
 
-        mock_get_run.return_value = _gh_run(
-            run_id=77777, status="in_progress"
-        )
+        mock_get_run.return_value = _gh_run(run_id=77777, status="in_progress")
 
         _poll_once()
 

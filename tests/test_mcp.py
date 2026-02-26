@@ -15,6 +15,7 @@ from saorsa_deploy_mcp.server import create_deployment, track_deployment  # noqa
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_response(*, status_code=200, json_data=None):
     """Build a MagicMock that behaves like an httpx.Response."""
     resp = MagicMock()
@@ -37,6 +38,7 @@ def _make_mock_client(*, post_response=None, get_response=None):
 # ---------------------------------------------------------------------------
 # create_deployment tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_create_deployment_calls_correct_endpoint():
@@ -159,7 +161,9 @@ async def test_create_deployment_omits_none_optional_args():
         "port",
     ]
     for key in optional_keys:
-        assert key not in deploy_args, f"Optional key '{key}' should not be present when unset"
+        assert key not in deploy_args, (
+            f"Optional key '{key}' should not be present when unset"
+        )
 
     # Required keys should still be present
     assert deploy_args["name"] == "DEV-03"
@@ -172,6 +176,7 @@ async def test_create_deployment_omits_none_optional_args():
 # ---------------------------------------------------------------------------
 # track_deployment tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_track_deployment_calls_correct_endpoint():

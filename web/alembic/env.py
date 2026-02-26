@@ -16,7 +16,8 @@ config = context.config
 
 # Override sqlalchemy.url from environment variable
 database_url = os.environ.get(
-    "DATABASE_URL", "postgresql://saorsa_testnet:saorsa_testnet@localhost:5432/saorsa_testnet_registry"
+    "DATABASE_URL",
+    "postgresql://saorsa_testnet:saorsa_testnet@localhost:5432/saorsa_testnet_registry",
 )
 config.set_main_option("sqlalchemy.url", database_url)
 
@@ -48,9 +49,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()
