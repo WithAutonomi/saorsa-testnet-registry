@@ -47,7 +47,9 @@ def _resolve_params(
     """
     resolved_pat = pat or os.environ.get("WORKFLOW_RUNNER_PAT", "")
     resolved_repo = repo or os.environ.get("GITHUB_REPO", DEFAULT_GITHUB_REPO)
-    resolved_workflow = workflow_file or os.environ.get("WORKFLOW_FILE", DEFAULT_WORKFLOW_FILE)
+    resolved_workflow = workflow_file or os.environ.get(
+        "WORKFLOW_FILE", DEFAULT_WORKFLOW_FILE
+    )
 
     if not resolved_pat:
         raise GitHubAPIError("WORKFLOW_RUNNER_PAT is not configured")
@@ -80,7 +82,9 @@ def dispatch_workflow(
     Raises:
         GitHubAPIError: If the dispatch fails or the run cannot be found within the timeout.
     """
-    resolved_pat, resolved_repo, resolved_workflow = _resolve_params(pat, repo, workflow_file)
+    resolved_pat, resolved_repo, resolved_workflow = _resolve_params(
+        pat, repo, workflow_file
+    )
 
     dispatch_url = (
         f"https://api.github.com/repos/{resolved_repo}"
@@ -119,7 +123,9 @@ def dispatch_workflow(
             workflow_file=resolved_workflow,
         )
         for run in runs:
-            created_at = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
+            created_at = datetime.fromisoformat(
+                run["created_at"].replace("Z", "+00:00")
+            )
             if created_at >= before_dispatch:
                 logger.info("Found new workflow run: id=%d", run["id"])
                 return run["id"]
@@ -147,7 +153,9 @@ def get_workflow_runs(
     Raises:
         GitHubAPIError: If the API request fails.
     """
-    resolved_pat, resolved_repo, resolved_workflow = _resolve_params(pat, repo, workflow_file)
+    resolved_pat, resolved_repo, resolved_workflow = _resolve_params(
+        pat, repo, workflow_file
+    )
 
     runs_url = (
         f"https://api.github.com/repos/{resolved_repo}"

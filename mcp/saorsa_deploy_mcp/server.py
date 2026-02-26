@@ -153,7 +153,11 @@ async def create_deployment(
         try:
             resp = await client.post(
                 f"{REGISTRY_URL}/api/deployments",
-                json={"name": name, "deploy_args": deploy_args, "branch": workflow_branch},
+                json={
+                    "name": name,
+                    "deploy_args": deploy_args,
+                    "branch": workflow_branch,
+                },
             )
             resp.raise_for_status()
             data = resp.json()
@@ -163,7 +167,13 @@ async def create_deployment(
                 f"  Workflow Run ID: {data['workflow_run_id']}"
             )
         except httpx.HTTPStatusError as e:
-            error_body = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {"error": e.response.text}
+            error_body = (
+                e.response.json()
+                if e.response.headers.get("content-type", "").startswith(
+                    "application/json"
+                )
+                else {"error": e.response.text}
+            )
             return f"Failed to create deployment: {error_body.get('error', str(e))}"
         except httpx.ConnectError:
             return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
@@ -181,7 +191,9 @@ async def list_deployments() -> str:
                 return "No deployments found."
             lines = []
             for d in deployments:
-                lines.append(f"  {d['id']}: {d['name']} ({d['status']}) - created {d['created_at']}")
+                lines.append(
+                    f"  {d['id']}: {d['name']} ({d['status']}) - created {d['created_at']}"
+                )
             return f"Deployments ({len(deployments)}):\n" + "\n".join(lines)
         except httpx.ConnectError:
             return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
@@ -247,7 +259,9 @@ async def track_deployment(deployment_id: int) -> str:
             events = d.get("events", [])
             if events:
                 latest = events[-1]
-                lines.append(f"  Latest Event: {latest['event_type']} at {latest['created_at']}")
+                lines.append(
+                    f"  Latest Event: {latest['event_type']} at {latest['created_at']}"
+                )
                 if latest.get("details"):
                     if "html_url" in latest["details"]:
                         lines.append(f"  Workflow URL: {latest['details']['html_url']}")
@@ -255,7 +269,9 @@ async def track_deployment(deployment_id: int) -> str:
             if status in ("stopped", "failed"):
                 lines.append(f"\nDeployment has finished with status: {status}")
             else:
-                lines.append(f"\nDeployment is still {status}. Poll again to check for updates.")
+                lines.append(
+                    f"\nDeployment is still {status}. Poll again to check for updates."
+                )
 
             return "\n".join(lines)
         except httpx.ConnectError:

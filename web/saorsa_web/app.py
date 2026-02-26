@@ -12,7 +12,9 @@ from saorsa_web.web import web_bp
 def create_app(config=None):
     app = Flask(
         __name__,
-        template_folder=os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates"),
+        template_folder=os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "templates"
+        ),
     )
     app.config.from_object(Config)
     if config:

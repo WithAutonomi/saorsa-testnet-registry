@@ -13,7 +13,9 @@ bp = Blueprint("api_deployments", __name__, url_prefix="/deployments")
 
 @bp.route("", methods=["GET"])
 def list_deployments():
-    deployments = db_session.query(Deployment).order_by(Deployment.created_at.desc()).all()
+    deployments = (
+        db_session.query(Deployment).order_by(Deployment.created_at.desc()).all()
+    )
     return jsonify([d.to_dict() for d in deployments])
 
 
@@ -33,7 +35,9 @@ def create_deployment():
 
     name = data.get("name")
     if not name or not isinstance(name, str) or not name.strip():
-        return jsonify({"error": "name is required and must be a non-empty string"}), 400
+        return jsonify(
+            {"error": "name is required and must be a non-empty string"}
+        ), 400
 
     deploy_args = data.get("deploy_args")
     if deploy_args is None or not isinstance(deploy_args, dict):
