@@ -3,6 +3,7 @@ import os
 from importlib.metadata import version
 
 from flask import Flask, redirect
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from saorsa_web.api import api_bp
 from saorsa_web.config import Config
@@ -21,6 +22,8 @@ def create_app(config=None):
     app.config.from_object(Config)
     if config:
         app.config.from_mapping(config)
+
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
     if app.debug or app.testing:
         logging.basicConfig(
