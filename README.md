@@ -109,3 +109,24 @@ Replace the various paths above with pointers to your own binaries and virtualen
 ```bash
 uv run ruff check .
 ```
+
+## Releasing
+
+Both workspace packages share a single version number (SemVer). To cut a new release:
+
+```bash
+uv run scripts/bump_version.py 0.2.0
+```
+
+This script:
+
+1. Updates the version in both `web/pyproject.toml` and `mcp/pyproject.toml`
+2. Creates a git commit (`chore: bump version to 0.2.0`)
+3. Creates a git tag (`v0.2.0`)
+4. Pushes the commit and tag to the remote
+
+Pushing the tag triggers the `deploy.yml` GitHub Action, which deploys the app to Digital Ocean App Platform.
+
+### Prerequisites
+
+A `SAORSA_DEPLOY_DO_APP_TOKEN` secret must be configured in the GitHub repository settings. Generate a Personal Access Token from the [DigitalOcean API settings](https://cloud.digitalocean.com/account/api/tokens) with the `app:update` scope (under Apps).

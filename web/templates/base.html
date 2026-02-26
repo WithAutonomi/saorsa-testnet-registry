@@ -25,6 +25,7 @@
         .token-warning { color: #dc143c; font-weight: bold; }
         .error-message { color: #dc143c; font-size: 1.1rem; }
         header { overflow: hidden; }
+        footer { margin-top: 3rem; text-align: center; font-size: 0.8rem; color: #999; }
     </style>
 </head>
 <body>
@@ -43,5 +44,8 @@
     <main>
         {% block content %}{% endblock %}
     </main>
+    <footer>
+        <p>v{{ app_version }}</p>
+    </footer>
 </body>
 </html>

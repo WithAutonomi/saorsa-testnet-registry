@@ -1,0 +1,16 @@
+name: Deploy to DigitalOcean
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: digitalocean/app_action/deploy@v2
+        with:
+          token: ${{ secrets.SAORSA_DEPLOY_DO_APP_TOKEN }}
+          app_name: saorsa-testnet-registry

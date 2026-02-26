@@ -94,3 +94,4 @@ When asked to deploy, launch, or create a testnet, **use the `saorsa-testnet-reg
 - `cd web && uv run alembic revision --autogenerate -m "description"` - New migration
 - `cd web && uv run alembic upgrade head` - Apply migrations
 - `uv run ruff check . --fix` - Lint and fix
+- `uv run scripts/bump_version.py <version>` - Bump version, commit, tag, and push (triggers DO deployment)

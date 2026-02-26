@@ -11,7 +11,16 @@ db_session = scoped_session(session_factory)
 
 
 def init_db(app):
-    engine = create_engine(app.config["SQLALCHEMY_DATABASE_URI"])
+    uri = app.config["SQLALCHEMY_DATABASE_URI"]
+    kwargs = {}
+    if uri.startswith("postgresql"):
+        kwargs.update(
+            pool_pre_ping=True,
+            pool_size=2,
+            max_overflow=1,
+            pool_recycle=300,
+        )
+    engine = create_engine(uri, **kwargs)
     session_factory.configure(bind=engine)
 
     @app.teardown_appcontext
