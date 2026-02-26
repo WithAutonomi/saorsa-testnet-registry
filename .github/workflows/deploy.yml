@@ -13,4 +13,4 @@ jobs:
       - uses: digitalocean/app_action/deploy@v2
         with:
           token: ${{ secrets.SAORSA_DEPLOY_DO_APP_TOKEN }}
-          app_name: saorsa-testnet-registry
+          app_spec_location: app.yaml
