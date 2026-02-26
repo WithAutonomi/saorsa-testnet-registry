@@ -25,6 +25,14 @@ services:
         scope: RUN_TIME
         type: SECRET
         value: CHANGE_ME
+      - key: GITHUB_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: CHANGE_ME
+      - key: GITHUB_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: CHANGE_ME
 
 workers:
   - name: monitor

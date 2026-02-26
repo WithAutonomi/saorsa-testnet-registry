@@ -5,6 +5,7 @@ from flask import Blueprint, current_app, jsonify, request
 from saorsa_web.db import db_session
 from saorsa_web.github import GitHubAPIError, dispatch_workflow
 from saorsa_web.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
+from saorsa_web.web.auth import require_auth_flexible
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ bp = Blueprint("api_deployments", __name__, url_prefix="/deployments")
 
 
 @bp.route("", methods=["GET"])
+@require_auth_flexible
 def list_deployments():
     deployments = (
         db_session.query(Deployment).order_by(Deployment.created_at.desc()).all()
@@ -20,6 +22,7 @@ def list_deployments():
 
 
 @bp.route("/<int:deployment_id>", methods=["GET"])
+@require_auth_flexible
 def get_deployment(deployment_id):
     deployment = db_session.get(Deployment, deployment_id)
     if deployment is None:
@@ -28,6 +31,7 @@ def get_deployment(deployment_id):
 
 
 @bp.route("", methods=["POST"])
+@require_auth_flexible
 def create_deployment():
     data = request.get_json()
     if not data:
@@ -80,6 +84,7 @@ def create_deployment():
 
 
 @bp.route("/<int:deployment_id>", methods=["PUT"])
+@require_auth_flexible
 def update_deployment(deployment_id):
     deployment = db_session.get(Deployment, deployment_id)
     if deployment is None:
@@ -100,6 +105,7 @@ def update_deployment(deployment_id):
 
 
 @bp.route("/<int:deployment_id>", methods=["DELETE"])
+@require_auth_flexible
 def delete_deployment(deployment_id):
     deployment = db_session.get(Deployment, deployment_id)
     if deployment is None:
@@ -111,6 +117,7 @@ def delete_deployment(deployment_id):
 
 
 @bp.route("/<int:deployment_id>/events", methods=["GET"])
+@require_auth_flexible
 def list_deployment_events(deployment_id):
     deployment = db_session.get(Deployment, deployment_id)
     if deployment is None:

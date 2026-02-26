@@ -1,8 +1,12 @@
+import hashlib
+import secrets
+
 import pytest
 from sqlalchemy import create_engine, event
 
 from saorsa_web.app import create_app
 from saorsa_web.db import Base, db_session, session_factory
+from saorsa_web.models.api_token import ApiToken
 
 
 @pytest.fixture()
@@ -31,6 +35,8 @@ def app():
             "WORKFLOW_RUNNER_PAT": "fake-pat-for-testing",
             "GITHUB_REPO": "test-owner/test-repo",
             "WORKFLOW_FILE": "test-workflow.yml",
+            "GITHUB_CLIENT_ID": "test-client-id",
+            "GITHUB_CLIENT_SECRET": "test-client-secret",
         },
     )
 
@@ -56,3 +62,33 @@ def db(app):
     """Provide the scoped db_session, bound to the in-memory SQLite engine."""
     yield db_session
     db_session.remove()
+
+
+@pytest.fixture()
+def auth_session(client):
+    """Return a test client with an authenticated session."""
+    with client.session_transaction() as sess:
+        sess["user"] = "testuser"
+    return client
+
+
+@pytest.fixture()
+def api_token(db):
+    """Create an API token and return (raw_token, ApiToken record)."""
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    token_record = ApiToken(
+        user="testuser",
+        token_hash=token_hash,
+        name="test-token",
+    )
+    db.add(token_record)
+    db.commit()
+    return raw_token, token_record
+
+
+@pytest.fixture()
+def auth_header(api_token):
+    """Return an Authorization header dict with a valid Bearer token."""
+    raw_token, _ = api_token
+    return {"Authorization": f"Bearer {raw_token}"}

@@ -11,7 +11,7 @@ class TestCreateDeployment:
 
     @patch("saorsa_web.api.deployments.dispatch_workflow", return_value=12345)
     def test_create_deployment_dispatches_workflow_and_records_in_db(
-        self, mock_dispatch, client, db
+        self, mock_dispatch, auth_session, db
     ):
         """
         GIVEN a valid request with name and deploy_args
@@ -26,7 +26,7 @@ class TestCreateDeployment:
             "deploy_args": {"node_count": 10, "region": "lon1"},
         }
 
-        response = client.post("/api/deployments", json=payload)
+        response = auth_session.post("/api/deployments", json=payload)
 
         assert response.status_code == 201
         data = response.get_json()
@@ -60,7 +60,7 @@ class TestCreateDeployment:
 
     @patch("saorsa_web.api.deployments.dispatch_workflow")
     def test_create_deployment_returns_error_when_dispatch_fails(
-        self, mock_dispatch, client, db
+        self, mock_dispatch, auth_session, db
     ):
         """
         GIVEN a valid request
@@ -75,7 +75,7 @@ class TestCreateDeployment:
             "deploy_args": {"node_count": 5},
         }
 
-        response = client.post("/api/deployments", json=payload)
+        response = auth_session.post("/api/deployments", json=payload)
 
         assert response.status_code == 502
         data = response.get_json()
@@ -86,7 +86,7 @@ class TestCreateDeployment:
         count = db.query(Deployment).filter_by(name="test-network-fail").count()
         assert count == 0
 
-    def test_create_deployment_validates_name_required(self, client):
+    def test_create_deployment_validates_name_required(self, auth_session):
         """
         GIVEN a request with missing name
         WHEN POST /api/deployments
@@ -94,13 +94,13 @@ class TestCreateDeployment:
         """
         payload = {"deploy_args": {"node_count": 5}}
 
-        response = client.post("/api/deployments", json=payload)
+        response = auth_session.post("/api/deployments", json=payload)
 
         assert response.status_code == 400
         data = response.get_json()
         assert "name" in data["error"].lower()
 
-    def test_create_deployment_validates_deploy_args_required(self, client):
+    def test_create_deployment_validates_deploy_args_required(self, auth_session):
         """
         GIVEN a request with missing deploy_args
         WHEN POST /api/deployments
@@ -108,25 +108,44 @@ class TestCreateDeployment:
         """
         payload = {"name": "test-network-no-args"}
 
-        response = client.post("/api/deployments", json=payload)
+        response = auth_session.post("/api/deployments", json=payload)
 
         assert response.status_code == 400
         data = response.get_json()
         assert "deploy_args" in data["error"]
+
+    def test_create_deployment_returns_401_without_auth(self, client):
+        """
+        GIVEN no authentication
+        WHEN POST /api/deployments with JSON Accept header
+        THEN the response is 401
+        """
+        payload = {
+            "name": "test-network-no-auth",
+            "deploy_args": {"node_count": 5},
+        }
+
+        response = client.post(
+            "/api/deployments",
+            json=payload,
+            headers={"Accept": "application/json"},
+        )
+
+        assert response.status_code == 401
 
 
 class TestGetDeployment:
     """Tests for GET /api/deployments/<id>."""
 
     @patch("saorsa_web.api.deployments.dispatch_workflow", return_value=99999)
-    def test_get_deployment_returns_events(self, mock_dispatch, client, db):
+    def test_get_deployment_returns_events(self, mock_dispatch, auth_session, db):
         """
         GIVEN a deployment exists with events
         WHEN GET /api/deployments/{id}
         THEN the response includes events list
         """
         # Create a deployment via the API (which also creates a "created" event)
-        create_response = client.post(
+        create_response = auth_session.post(
             "/api/deployments",
             json={"name": "net-with-events", "deploy_args": {"size": "small"}},
         )
@@ -134,7 +153,7 @@ class TestGetDeployment:
         deployment_id = create_response.get_json()["id"]
 
         # Fetch the deployment
-        response = client.get(f"/api/deployments/{deployment_id}")
+        response = auth_session.get(f"/api/deployments/{deployment_id}")
 
         assert response.status_code == 200
         data = response.get_json()
@@ -149,14 +168,14 @@ class TestListDeploymentEvents:
     """Tests for GET /api/deployments/<id>/events."""
 
     @patch("saorsa_web.api.deployments.dispatch_workflow", return_value=77777)
-    def test_list_deployment_events(self, mock_dispatch, client, db):
+    def test_list_deployment_events(self, mock_dispatch, auth_session, db):
         """
         GIVEN a deployment exists with events
         WHEN GET /api/deployments/{id}/events
         THEN the response is a list of events
         """
         # Create a deployment via the API
-        create_response = client.post(
+        create_response = auth_session.post(
             "/api/deployments",
             json={"name": "net-events-list", "deploy_args": {"nodes": 3}},
         )
@@ -173,7 +192,7 @@ class TestListDeploymentEvents:
         db.commit()
 
         # Fetch the events list
-        response = client.get(f"/api/deployments/{deployment_id}/events")
+        response = auth_session.get(f"/api/deployments/{deployment_id}/events")
 
         assert response.status_code == 200
         events = response.get_json()

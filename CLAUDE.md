@@ -26,8 +26,10 @@ web/
     config.py                   # env var configuration
     db.py                       # SQLAlchemy engine/session
     models/deployment.py        # Deployment model
+    models/api_token.py         # ApiToken model (auth)
     api/deployments.py          # REST API endpoints
     web/deployments.py          # Web UI views
+    web/auth.py                 # GitHub OAuth + token management
     monitor.py                  # Background status monitor (stubbed)
     cli.py                      # CLI for monitor worker
 mcp/
@@ -35,6 +37,22 @@ mcp/
   saorsa_deploy_mcp/
     server.py                   # MCP server with deployment tools
 ```
+
+## Authentication
+
+The web UI and API are protected by GitHub OAuth, restricted to members of the `maidsafe` GitHub organisation.
+
+- **Web UI**: Session-based auth via GitHub OAuth. Users are redirected to `/auth/login` if unauthenticated.
+- **API**: Bearer token auth. Users generate tokens from the web UI at `/auth/tokens`. Tokens are SHA-256 hashed in the database; the raw value is shown only once on creation.
+- **MCP server**: Uses a `REGISTRY_API_TOKEN` env var to send `Authorization: Bearer <token>` on all API calls.
+- **Auth module**: `web/saorsa_web/web/auth.py` — OAuth config, decorators (`require_auth`, `require_api_token`, `require_auth_flexible`), login/callback/logout, token CRUD.
+- **Config**: `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` env vars (from a GitHub OAuth App).
+
+### Auth decorators
+
+- `@require_auth` — web routes, redirects to login if no session
+- `@require_api_token` — API routes, expects `Authorization: Bearer <token>`, returns 401 otherwise
+- `@require_auth_flexible` — accepts either session or Bearer token (used on all `/api/` endpoints)
 
 ## Development
 
@@ -44,7 +62,7 @@ uv sync --all-packages
 
 # Set up environment
 cp .env.example .env
-# Edit .env with your local Postgres connection
+# Edit .env with your local Postgres connection and GitHub OAuth credentials
 
 # Run migrations (from web/ directory)
 cd web && uv run alembic upgrade head
