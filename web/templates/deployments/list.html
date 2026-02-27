@@ -12,13 +12,14 @@
             <th>Status</th>
             <th>Created</th>
             <th>Updated</th>
+            <th>Actions</th>
         </tr>
     </thead>
     <tbody id="deployment-list" hx-get="/api/deployments" hx-trigger="every 30s" hx-swap="none">
         {% for deployment in deployments %}
         {% include "deployments/_row.html" %}
         {% else %}
-        <tr><td colspan="5">No deployments found.</td></tr>
+        <tr><td colspan="6">No deployments found.</td></tr>
         {% endfor %}
     </tbody>
 </table>

@@ -83,6 +83,67 @@ def create_deployment():
     return jsonify(result), 201
 
 
+_DESTROYABLE_STATUSES = {DeploymentStatus.RUNNING, DeploymentStatus.STOPPED}
+
+
+@bp.route("/destroy", methods=["POST"])
+@require_auth_flexible
+def destroy_deployment():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
+    name = data.get("name")
+    if not name or not isinstance(name, str) or not name.strip():
+        return jsonify(
+            {"error": "name is required and must be a non-empty string"}
+        ), 400
+
+    deployment = (
+        db_session.query(Deployment).filter(Deployment.name == name.strip()).first()
+    )
+    if deployment is None:
+        return jsonify({"error": f"Deployment '{name}' not found"}), 404
+
+    if deployment.status not in _DESTROYABLE_STATUSES:
+        return jsonify(
+            {
+                "error": (
+                    f"Deployment '{name}' cannot be destroyed in its current"
+                    f" state ({deployment.status.value}). Must be running or stopped."
+                )
+            }
+        ), 409
+
+    try:
+        workflow_run_id = dispatch_workflow(
+            pat=current_app.config["WORKFLOW_RUNNER_PAT"],
+            repo=current_app.config["GITHUB_REPO"],
+            workflow_file="destroy-testnet.yml",
+            inputs={"name": deployment.name},
+        )
+    except GitHubAPIError as exc:
+        logger.error("GitHub destroy workflow dispatch failed: %s", exc)
+        return jsonify({"error": str(exc)}), 502
+
+    old_status = deployment.status.value
+    deployment.status = DeploymentStatus.DESTROYING
+    deployment.workflow_run_id = workflow_run_id
+
+    event = DeploymentEvent(
+        deployment_id=deployment.id,
+        event_type="destroy_triggered",
+        details={
+            "workflow_run_id": workflow_run_id,
+            "previous_status": old_status,
+        },
+    )
+    db_session.add(event)
+    db_session.commit()
+
+    return jsonify(deployment.to_dict())
+
+
 @bp.route("/<int:deployment_id>", methods=["PUT"])
 @require_auth_flexible
 def update_deployment(deployment_id):

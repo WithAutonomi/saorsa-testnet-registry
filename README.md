@@ -104,6 +104,23 @@ Replace the various paths above with pointers to your own binaries and virtualen
 | `REGISTRY_URL` | URL of the web app (defaults to `http://localhost:5000`) |
 | `REGISTRY_API_TOKEN` | API token generated from the web UI at `/auth/tokens` |
 
+#### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_deployment` | Create a new testnet and trigger the launch workflow |
+| `destroy_deployment` | Destroy a testnet and tear down its infrastructure |
+| `list_deployments` | List all testnet deployments |
+| `get_deployment` | Get details of a specific deployment including events |
+| `track_deployment` | Track deployment progress (poll for status updates) |
+
+Example usage in Claude Code:
+
+- "Deploy a testnet called DEV-01 with 3 VMs, 25 nodes, genesis port 12000"
+- "Destroy the DEV-01 testnet"
+- "Check the status of deployment 5"
+- "List all deployments"
+
 ### Linting
 
 ```bash

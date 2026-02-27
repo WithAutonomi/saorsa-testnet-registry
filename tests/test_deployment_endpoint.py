@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from saorsa_web.github import GitHubAPIError
-from saorsa_web.models.deployment import Deployment, DeploymentEvent
+from saorsa_web.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 
 
 class TestCreateDeployment:
@@ -202,3 +202,188 @@ class TestListDeploymentEvents:
         event_types = [e["event_type"] for e in events]
         assert "created" in event_types
         assert "status_changed" in event_types
+
+
+class TestDestroyDeployment:
+    """Tests for POST /api/deployments/destroy."""
+
+    def _create_deployment(self, db, name, status=DeploymentStatus.RUNNING):
+        """Helper to insert a deployment directly in the DB."""
+        deployment = Deployment(
+            name=name,
+            deploy_args={"node_count": 10},
+            workflow_run_id=11111,
+            status=status,
+        )
+        db.add(deployment)
+        db.commit()
+        return deployment
+
+    @patch("saorsa_web.api.deployments.dispatch_workflow", return_value=99999)
+    def test_destroy_deployment_dispatches_workflow_and_updates_status(
+        self, mock_dispatch, auth_session, db
+    ):
+        """
+        GIVEN a deployment exists in RUNNING state
+        WHEN POST /api/deployments/destroy with {"name": "..."}
+        THEN dispatch_workflow is called with the destroy workflow
+        AND the deployment status becomes "destroying"
+        AND a "destroy_triggered" event is recorded
+        AND the workflow_run_id is updated
+        """
+        self._create_deployment(db, "destroy-test-1")
+
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"name": "destroy-test-1"}
+        )
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["name"] == "destroy-test-1"
+        assert data["status"] == "destroying"
+        assert data["workflow_run_id"] == 99999
+
+        mock_dispatch.assert_called_once_with(
+            pat="fake-pat-for-testing",
+            repo="test-owner/test-repo",
+            workflow_file="destroy-testnet.yml",
+            inputs={"name": "destroy-test-1"},
+        )
+
+        deployment = db.query(Deployment).filter_by(name="destroy-test-1").one()
+        assert deployment.status == DeploymentStatus.DESTROYING
+        assert deployment.workflow_run_id == 99999
+
+        event = (
+            db.query(DeploymentEvent)
+            .filter_by(deployment_id=deployment.id, event_type="destroy_triggered")
+            .one()
+        )
+        assert event.details["workflow_run_id"] == 99999
+        assert event.details["previous_status"] == "running"
+
+    @patch("saorsa_web.api.deployments.dispatch_workflow", return_value=88888)
+    def test_destroy_deployment_works_for_stopped_status(
+        self, mock_dispatch, auth_session, db
+    ):
+        """
+        GIVEN a deployment exists in STOPPED state
+        WHEN POST /api/deployments/destroy
+        THEN the destroy succeeds
+        """
+        self._create_deployment(db, "destroy-stopped", status=DeploymentStatus.STOPPED)
+
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"name": "destroy-stopped"}
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["status"] == "destroying"
+
+    def test_destroy_deployment_returns_404_when_not_found(self, auth_session):
+        """
+        GIVEN no deployment exists with the given name
+        WHEN POST /api/deployments/destroy
+        THEN the response is 404
+        """
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"name": "nonexistent"}
+        )
+
+        assert response.status_code == 404
+        assert "not found" in response.get_json()["error"].lower()
+
+    def test_destroy_deployment_returns_409_for_pending(self, auth_session, db):
+        """
+        GIVEN a deployment exists in PENDING state
+        WHEN POST /api/deployments/destroy
+        THEN the response is 409 (not destroyable)
+        """
+        self._create_deployment(db, "destroy-pending", status=DeploymentStatus.PENDING)
+
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"name": "destroy-pending"}
+        )
+
+        assert response.status_code == 409
+        assert "cannot be destroyed" in response.get_json()["error"].lower()
+
+    def test_destroy_deployment_returns_409_for_destroying(self, auth_session, db):
+        """
+        GIVEN a deployment is already DESTROYING
+        WHEN POST /api/deployments/destroy
+        THEN the response is 409
+        """
+        self._create_deployment(
+            db, "destroy-in-progress", status=DeploymentStatus.DESTROYING
+        )
+
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"name": "destroy-in-progress"}
+        )
+
+        assert response.status_code == 409
+
+    def test_destroy_deployment_returns_409_for_destroyed(self, auth_session, db):
+        """
+        GIVEN a deployment is already DESTROYED
+        WHEN POST /api/deployments/destroy
+        THEN the response is 409
+        """
+        self._create_deployment(
+            db, "already-destroyed", status=DeploymentStatus.DESTROYED
+        )
+
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"name": "already-destroyed"}
+        )
+
+        assert response.status_code == 409
+
+    def test_destroy_deployment_validates_name_required(self, auth_session):
+        """
+        GIVEN a request with missing name
+        WHEN POST /api/deployments/destroy
+        THEN the response is 400
+        """
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"other": "field"}
+        )
+
+        assert response.status_code == 400
+        assert "name" in response.get_json()["error"].lower()
+
+    def test_destroy_deployment_returns_401_without_auth(self, client):
+        """
+        GIVEN no authentication
+        WHEN POST /api/deployments/destroy
+        THEN the response is 401
+        """
+        response = client.post(
+            "/api/deployments/destroy",
+            json={"name": "no-auth-destroy"},
+            headers={"Accept": "application/json"},
+        )
+
+        assert response.status_code == 401
+
+    @patch("saorsa_web.api.deployments.dispatch_workflow")
+    def test_destroy_deployment_returns_502_when_dispatch_fails(
+        self, mock_dispatch, auth_session, db
+    ):
+        """
+        GIVEN a valid deployment
+        WHEN POST /api/deployments/destroy and dispatch_workflow raises
+        THEN the response is 502 and the deployment status is unchanged
+        """
+        mock_dispatch.side_effect = GitHubAPIError("dispatch failed")
+        self._create_deployment(db, "destroy-dispatch-fail")
+
+        response = auth_session.post(
+            "/api/deployments/destroy", json={"name": "destroy-dispatch-fail"}
+        )
+
+        assert response.status_code == 502
+
+        deployment = db.query(Deployment).filter_by(name="destroy-dispatch-fail").one()
+        assert deployment.status == DeploymentStatus.RUNNING

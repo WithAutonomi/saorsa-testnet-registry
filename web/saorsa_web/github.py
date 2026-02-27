@@ -58,23 +58,28 @@ def _resolve_params(
 
 
 def dispatch_workflow(
-    deploy_args: dict,
+    deploy_args: dict | None = None,
     pat: str | None = None,
     repo: str | None = None,
     workflow_file: str | None = None,
     branch: str = "main",
+    inputs: dict | None = None,
 ) -> int:
-    """Dispatch the 'Launch Network' workflow and return the new run ID.
+    """Dispatch a workflow and return the new run ID.
 
     Sends a workflow_dispatch event to the GitHub Actions API, then polls
     for the newly created run until it appears or the timeout is reached.
 
     Args:
-        deploy_args: Dictionary of deployment arguments passed as workflow inputs.
+        deploy_args: Dictionary of deployment arguments, serialised as JSON and
+            passed as the ``deploy_args`` workflow input.  Mutually exclusive
+            with *inputs*.
         pat: GitHub personal access token. Falls back to WORKFLOW_RUNNER_PAT env var.
         repo: GitHub repository in "owner/repo" format. Falls back to GITHUB_REPO env var.
         workflow_file: Workflow filename. Falls back to WORKFLOW_FILE env var.
         branch: Git ref to dispatch the workflow on. Defaults to "main".
+        inputs: Raw workflow inputs dict.  When provided, *deploy_args* is
+            ignored and this dict is sent directly as the ``inputs`` field.
 
     Returns:
         The workflow_run_id of the newly created run.
@@ -90,9 +95,17 @@ def dispatch_workflow(
         f"https://api.github.com/repos/{resolved_repo}"
         f"/actions/workflows/{resolved_workflow}/dispatches"
     )
+
+    if inputs is not None:
+        workflow_inputs = inputs
+    elif deploy_args is not None:
+        workflow_inputs = {"deploy_args": json.dumps(deploy_args)}
+    else:
+        raise GitHubAPIError("Either deploy_args or inputs must be provided")
+
     payload = {
         "ref": branch,
-        "inputs": {"deploy_args": json.dumps(deploy_args)},
+        "inputs": workflow_inputs,
     }
 
     # Record timestamp before dispatching so we can find the new run

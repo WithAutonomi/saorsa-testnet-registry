@@ -22,9 +22,23 @@ _CONCLUSION_MAP = {
     "cancelled": (DeploymentStatus.FAILED, "failed"),
 }
 
+# When a deployment is DESTROYING, workflow success means it's DESTROYED.
+_DESTROY_CONCLUSION_MAP = {
+    "success": (DeploymentStatus.DESTROYED, "destroyed"),
+    "failure": (DeploymentStatus.FAILED, "failed"),
+    "cancelled": (DeploymentStatus.FAILED, "failed"),
+}
 
-def _map_github_status(gh_run: dict) -> tuple[DeploymentStatus, str] | None:
+
+def _map_github_status(
+    gh_run: dict,
+    deployment_status: DeploymentStatus = DeploymentStatus.PENDING,
+) -> tuple[DeploymentStatus, str] | None:
     """Map a GitHub workflow run to (DeploymentStatus, event_type).
+
+    Uses *deployment_status* to pick the right conclusion map: deployments
+    in DESTROYING state use _DESTROY_CONCLUSION_MAP so that a successful
+    workflow completion becomes DESTROYED rather than STOPPED.
 
     Returns None if the status/conclusion combination is not recognised.
     """
@@ -34,8 +48,14 @@ def _map_github_status(gh_run: dict) -> tuple[DeploymentStatus, str] | None:
     if status in _STATUS_MAP:
         return _STATUS_MAP[status]
 
-    if status == "completed" and conclusion in _CONCLUSION_MAP:
-        return _CONCLUSION_MAP[conclusion]
+    if status == "completed":
+        conclusion_map = (
+            _DESTROY_CONCLUSION_MAP
+            if deployment_status == DeploymentStatus.DESTROYING
+            else _CONCLUSION_MAP
+        )
+        if conclusion in conclusion_map:
+            return conclusion_map[conclusion]
 
     return None
 
@@ -45,7 +65,13 @@ def _poll_once() -> None:
     deployments = (
         db_session.query(Deployment)
         .filter(
-            Deployment.status.in_([DeploymentStatus.PENDING, DeploymentStatus.RUNNING]),
+            Deployment.status.in_(
+                [
+                    DeploymentStatus.PENDING,
+                    DeploymentStatus.RUNNING,
+                    DeploymentStatus.DESTROYING,
+                ]
+            ),
             Deployment.workflow_run_id.isnot(None),
         )
         .all()
@@ -69,7 +95,7 @@ def _poll_once() -> None:
             )
             continue
 
-        mapped = _map_github_status(gh_run)
+        mapped = _map_github_status(gh_run, deployment.status)
         if mapped is None:
             logger.warning(
                 "Unrecognised GitHub run state for deployment %s: "
