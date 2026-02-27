@@ -1,6 +1,6 @@
 [project]
 name = "saorsa-web"
-version = "0.1.0"
+version = "0.1.2"
 description = "Testnet deployment registry - web service and REST API"
 requires-python = ">=3.13"
 dependencies = [
