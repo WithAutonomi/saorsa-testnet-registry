@@ -26,7 +26,8 @@ mcp = FastMCP(
         "The track_deployment tool checks deployment progress. "
         "Read the testnet://docs/deployment-config resource for parameter reference. "
         "Common requests: 'deploy a testnet', 'launch DEV-01', 'create a network', "
-        "'check deployment status', 'wait for deployment to complete'."
+        "'check deployment status', 'wait for deployment to complete'. "
+        "The destroy_deployment tool triggers a destroy workflow to tear down infrastructure."
     ),
 )
 
@@ -94,6 +95,18 @@ deployment ID to monitor progress. The background monitor polls GitHub
 Actions every 60 seconds and updates the deployment status automatically.
 
 Deployment statuses: pending -> running -> stopped (success) or failed.
+
+## Destroying Deployments
+
+Use the destroy_deployment tool with the deployment name to tear down
+infrastructure. The deployment must be in 'running' or 'stopped' state.
+
+The destroy process:
+1. Dispatches the destroy-testnet.yml workflow
+2. Sets status to 'destroying'
+3. Monitor tracks the workflow and sets status to 'destroyed' on success
+
+Destroy statuses: running/stopped -> destroying -> destroyed (success) or failed.
 """
 
 
@@ -189,6 +202,42 @@ async def create_deployment(
 
 
 @mcp.tool()
+async def destroy_deployment(name: str) -> str:
+    """Destroy a testnet deployment and tear down its infrastructure.
+
+    Dispatches the destroy workflow for the named deployment. The deployment
+    must be in 'running' or 'stopped' state.
+
+    Args:
+        name: Name of the deployment to destroy (e.g. "DEV-01")
+    """
+    async with httpx.AsyncClient(timeout=60.0, headers=_auth_headers()) as client:
+        try:
+            resp = await client.post(
+                f"{REGISTRY_URL}/api/deployments/destroy",
+                json={"name": name},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return (
+                f"Destroy triggered for deployment '{data['name']}' (id={data['id']})\n"
+                f"  Status: {data['status']}\n"
+                f"  Workflow Run ID: {data['workflow_run_id']}"
+            )
+        except httpx.HTTPStatusError as e:
+            error_body = (
+                e.response.json()
+                if e.response.headers.get("content-type", "").startswith(
+                    "application/json"
+                )
+                else {"error": e.response.text}
+            )
+            return f"Failed to destroy deployment: {error_body.get('error', str(e))}"
+        except httpx.ConnectError:
+            return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
+
+
+@mcp.tool()
 async def list_deployments() -> str:
     """List all testnet deployments."""
     async with httpx.AsyncClient(headers=_auth_headers()) as client:
@@ -275,7 +324,7 @@ async def track_deployment(deployment_id: int) -> str:
                     if "html_url" in latest["details"]:
                         lines.append(f"  Workflow URL: {latest['details']['html_url']}")
 
-            if status in ("stopped", "failed"):
+            if status in ("stopped", "failed", "destroyed"):
                 lines.append(f"\nDeployment has finished with status: {status}")
             else:
                 lines.append(

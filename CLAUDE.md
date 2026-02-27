@@ -6,7 +6,7 @@ A system for managing testnet deployments, structured as a uv workspace with two
 
 - **`web/`** (`saorsa-web`) - Flask app serving a REST API (`/api/...`) and web UI (`/deployments`) with Jinja2 + HTMX, plus a background monitor worker
 - **`mcp/`** (`saorsa-deploy-mcp`) - MCP server providing tools for Claude to interact with the registry via HTTP
-- **GitHub Actions** - Workflow dispatch for launching testnets (`.github/workflows/launch-testnet.yml`)
+- **GitHub Actions** - Workflow dispatch for launching (`.github/workflows/launch-testnet.yml`) and destroying (`.github/workflows/destroy-testnet.yml`) testnets
 - **Database** - PostgreSQL, managed via Alembic migrations (inside `web/`)
 - **Deployment** - Digital Ocean App Platform (`app.yaml`)
 
@@ -80,13 +80,34 @@ uv run pytest
 uv run ruff check .
 ```
 
-## Deploying Testnets
+## Deploying & Destroying Testnets
 
-When asked to deploy, launch, or create a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
+When asked to deploy, launch, create, or destroy a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
 
 - `create_deployment` — triggers a deployment workflow (accepts name, vm_count, node_count, genesis_port, etc.)
+- `destroy_deployment` — triggers a destroy workflow to tear down infrastructure (accepts name)
+- `list_deployments` — lists all deployments
+- `get_deployment` — gets deployment details including events (accepts deployment_id)
 - `track_deployment` — checks deployment progress by ID
 - `testnet://docs/deployment-config` — resource with full parameter documentation
+
+### Deployment Statuses
+
+`pending` → `running` → `stopped` (success) or `failed`
+
+When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) or `failed`
+
+### API Endpoints
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/deployments` | List all deployments |
+| GET | `/api/deployments/<id>` | Get deployment with events |
+| POST | `/api/deployments` | Create deployment (dispatch launch workflow) |
+| POST | `/api/deployments/destroy` | Destroy deployment by name (dispatch destroy workflow) |
+| PUT | `/api/deployments/<id>` | Update deployment status |
+| DELETE | `/api/deployments/<id>` | Delete deployment record |
+| GET | `/api/deployments/<id>/events` | List deployment events |
 
 ## Key Commands
 

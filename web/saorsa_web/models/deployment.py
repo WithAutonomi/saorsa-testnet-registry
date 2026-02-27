@@ -13,6 +13,8 @@ class DeploymentStatus(enum.Enum):
     RUNNING = "running"
     STOPPED = "stopped"
     FAILED = "failed"
+    DESTROYING = "destroying"
+    DESTROYED = "destroyed"
 
 
 class Deployment(Base):

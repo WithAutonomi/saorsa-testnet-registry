@@ -8,7 +8,11 @@ import pytest
 # Set REGISTRY_URL before importing the module so it picks up our value.
 os.environ["REGISTRY_URL"] = "http://test-registry:5000"
 
-from saorsa_deploy_mcp.server import create_deployment, track_deployment  # noqa: E402
+from saorsa_deploy_mcp.server import (  # noqa: E402
+    create_deployment,
+    destroy_deployment,
+    track_deployment,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -243,3 +247,106 @@ async def test_track_deployment_reports_in_progress():
         result = await track_deployment(deployment_id=7)
 
     assert "still pending" in result
+
+
+# ---------------------------------------------------------------------------
+# destroy_deployment tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_destroy_deployment_calls_correct_endpoint():
+    """destroy_deployment POSTs to {REGISTRY_URL}/api/deployments/destroy
+    with the correct JSON body containing name."""
+    response_data = {
+        "id": 10,
+        "name": "DEV-01",
+        "status": "destroying",
+        "workflow_run_id": 55555,
+    }
+    mock_response = _make_mock_response(status_code=200, json_data=response_data)
+    mock_client = _make_mock_client(post_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        result = await destroy_deployment(name="DEV-01")
+
+    mock_client.post.assert_called_once()
+    call_args = mock_client.post.call_args
+    assert call_args[0][0] == "http://test-registry:5000/api/deployments/destroy"
+
+    body = call_args[1]["json"]
+    assert body["name"] == "DEV-01"
+
+    assert "DEV-01" in result
+    assert "destroying" in result
+
+
+@pytest.mark.asyncio
+async def test_destroy_deployment_reports_error():
+    """When the API returns an error, the result contains the error message."""
+    error_data = {"error": "Deployment 'NOPE' not found"}
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_response.json.return_value = error_data
+    mock_response.headers = {"content-type": "application/json"}
+
+    import httpx
+
+    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Not Found", request=MagicMock(), response=mock_response
+    )
+    mock_client = _make_mock_client(post_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        result = await destroy_deployment(name="NOPE")
+
+    assert "Failed to destroy" in result
+    assert "not found" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_track_deployment_reports_destroyed_status():
+    """When a deployment has been destroyed, the result includes 'has finished
+    with status: destroyed'."""
+    response_data = {
+        "id": 11,
+        "name": "DEV-11",
+        "status": "destroyed",
+        "workflow_run_id": 66666,
+        "events": [],
+    }
+    mock_response = _make_mock_response(status_code=200, json_data=response_data)
+    mock_client = _make_mock_client(get_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        result = await track_deployment(deployment_id=11)
+
+    assert "has finished with status: destroyed" in result
+
+
+@pytest.mark.asyncio
+async def test_track_deployment_reports_destroying_in_progress():
+    """When a deployment is destroying, the result indicates it is still
+    in progress."""
+    response_data = {
+        "id": 12,
+        "name": "DEV-12",
+        "status": "destroying",
+        "workflow_run_id": 77777,
+        "events": [],
+    }
+    mock_response = _make_mock_response(status_code=200, json_data=response_data)
+    mock_client = _make_mock_client(get_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        result = await track_deployment(deployment_id=12)
+
+    assert "still destroying" in result
