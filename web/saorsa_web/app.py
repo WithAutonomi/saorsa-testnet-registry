@@ -23,6 +23,9 @@ def create_app(config=None):
     if config:
         app.config.from_mapping(config)
 
+    if not app.config.get("SECRET_KEY") and not app.testing:
+        raise RuntimeError("FLASK_SECRET_KEY environment variable must be set")
+
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
     if app.debug or app.testing:
