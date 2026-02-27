@@ -56,8 +56,11 @@ def main() -> None:
     for path in PYPROJECT_FILES:
         update_pyproject(path, version)
 
+    print("\nRegenerating lockfile...")
+    run(["uv", "lock"])
+
     print(f"\nCommitting and tagging {tag}...")
-    run(["git", "add", "web/pyproject.toml", "mcp/pyproject.toml"])
+    run(["git", "add", "web/pyproject.toml", "mcp/pyproject.toml", "uv.lock"])
     run(["git", "commit", "-m", f"chore: bump version to {version}"])
     run(["git", "tag", tag])
 
