@@ -21,6 +21,7 @@ jobs:
           yq -i '(.services[0].envs[] | select(.key == "WORKFLOW_RUNNER_PAT")).value = strenv(WORKFLOW_RUNNER_PAT)' app.yaml
           yq -i '(.services[0].envs[] | select(.key == "GITHUB_CLIENT_ID")).value = strenv(GITHUB_CLIENT_ID)' app.yaml
           yq -i '(.services[0].envs[] | select(.key == "GITHUB_CLIENT_SECRET")).value = strenv(GITHUB_CLIENT_SECRET)' app.yaml
+          yq -i '(.workers[0].envs[] | select(.key == "WORKFLOW_RUNNER_PAT")).value = strenv(WORKFLOW_RUNNER_PAT)' app.yaml
       - uses: digitalocean/app_action/deploy@v2
         with:
           token: ${{ secrets.SAORSA_DEPLOY_DO_APP_TOKEN }}

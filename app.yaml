@@ -51,6 +51,9 @@ workers:
       - key: DATABASE_URL
         scope: RUN_TIME
         value: ${dev-db-722203.DATABASE_URL}
+      - key: WORKFLOW_RUNNER_PAT
+        scope: RUN_TIME
+        type: SECRET
 
 databases:
   - name: dev-db-722203
