@@ -31,6 +31,7 @@ def app():
     application = create_app(
         config={
             "TESTING": True,
+            "SECRET_KEY": "test-secret-key",
             "SQLALCHEMY_DATABASE_URI": "sqlite://",
             "WORKFLOW_RUNNER_PAT": "fake-pat-for-testing",
             "GITHUB_REPO": "test-owner/test-repo",
