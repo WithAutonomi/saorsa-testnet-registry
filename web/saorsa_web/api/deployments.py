@@ -47,6 +47,16 @@ def create_deployment():
     if deploy_args is None or not isinstance(deploy_args, dict):
         return jsonify({"error": "deploy_args is required and must be a dict"}), 400
 
+    if deploy_args.get("node_version") and deploy_args.get("branch_name"):
+        return jsonify(
+            {
+                "error": (
+                    "node_version and branch_name are mutually exclusive. "
+                    "Specify a released version OR a branch to build from, not both."
+                )
+            }
+        ), 400
+
     branch = data.get("branch", "main")
 
     try:

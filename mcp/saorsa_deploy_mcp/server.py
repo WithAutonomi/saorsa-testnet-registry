@@ -72,8 +72,25 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - If omitted, random ports are assigned
   - When set, nodes use ports from PORT to PORT+N
 
-- **workflow_branch**: Git branch to dispatch the workflow from (default: "main")
-  - Use a feature branch name when testing workflow changes
+## Node Binary Options
+
+These options control which saorsa-node binary is deployed. They are
+**mutually exclusive** — you may specify `node_version` OR
+`branch_name`/`repo_owner`, but not both. If neither is set, the latest
+released binary is used.
+
+- **node_version**: Deploy a specific released version of saorsa-node
+  - Example: "0.3.3"
+  - The binary is fetched from the GitHub release for this version
+
+- **branch_name**: Git branch of the saorsa-node repo to build from source
+  - Example: "feat/my-change"
+  - Triggers a build step that compiles the binary on an ephemeral VM
+  - Must NOT be combined with node_version
+
+- **repo_owner**: Repository owner for custom branch builds (default: "maidsafe")
+  - Only used when branch_name is set
+  - Example: "maidsafe" or a fork owner
 
 ## Examples
 
@@ -84,9 +101,13 @@ Deploy a testnet called DEV-01 with 1 VM, 10 nodes, genesis port 12000.
 Deploy a DEV-02 testnet with 3 VMs, 25 nodes per VM, genesis port 12000,
 40GB volumes, log level debug, in testnet mode.
 
-### Testing from a feature branch
-Deploy a DEV-03 testnet with 2 VMs, 10 nodes, genesis port 12000,
-using the feat-my-branch workflow branch.
+### Deploying with a specific node version
+Deploy a DEV-04 testnet with 2 VMs, 10 nodes, genesis port 12000,
+using saorsa-node version 0.3.3.
+
+### Deploying with a custom node binary from a branch
+Deploy a DEV-05 testnet with 2 VMs, 10 nodes, genesis port 12000,
+building saorsa-node from the feat/my-change branch (maidsafe repo).
 
 ## Tracking Deployments
 
@@ -133,7 +154,9 @@ async def create_deployment(
     ip_version: str | None = None,
     log_level: str | None = None,
     port: int | None = None,
-    workflow_branch: str = "main",
+    node_version: str | None = None,
+    branch_name: str | None = None,
+    repo_owner: str | None = None,
 ) -> str:
     """Create a new testnet deployment and trigger the launch workflow.
 
@@ -151,8 +174,16 @@ async def create_deployment(
         ip_version: IP version the nodes will run with (v4 or v6)
         log_level: Logging level the nodes will run with
         port: Beginning of a port range for non-genesis nodes
-        workflow_branch: Git branch to dispatch the workflow on (default: "main")
+        node_version: Specific released version of saorsa-node to deploy (e.g. "0.3.3")
+        branch_name: Git branch of the saorsa-node repo to build from source
+        repo_owner: Repository owner for custom branch builds (default: "maidsafe")
     """
+    if node_version is not None and branch_name is not None:
+        return (
+            "Error: node_version and branch_name are mutually exclusive. "
+            "Specify a released version OR a branch to build from, not both."
+        )
+
     deploy_args = {
         "name": name,
         "vm_count": vm_count,
@@ -170,6 +201,11 @@ async def create_deployment(
         deploy_args["log_level"] = log_level
     if port is not None:
         deploy_args["port"] = port
+    if node_version is not None:
+        deploy_args["node_version"] = node_version
+    if branch_name is not None:
+        deploy_args["branch_name"] = branch_name
+        deploy_args["repo_owner"] = repo_owner or "maidsafe"
 
     async with httpx.AsyncClient(timeout=60.0, headers=_auth_headers()) as client:
         try:
@@ -178,7 +214,7 @@ async def create_deployment(
                 json={
                     "name": name,
                     "deploy_args": deploy_args,
-                    "branch": workflow_branch,
+                    "branch": "main",
                 },
             )
             resp.raise_for_status()
