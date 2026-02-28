@@ -177,6 +177,150 @@ async def test_create_deployment_omits_none_optional_args():
     assert deploy_args["testnet"] is True
 
 
+@pytest.mark.asyncio
+async def test_create_deployment_includes_node_version():
+    """When node_version is provided, it appears in deploy_args."""
+    response_data = {
+        "id": 4,
+        "name": "DEV-04",
+        "status": "pending",
+        "workflow_run_id": 88,
+        "deploy_args": {},
+    }
+    mock_response = _make_mock_response(status_code=201, json_data=response_data)
+    mock_client = _make_mock_client(post_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        await create_deployment(
+            name="DEV-04",
+            vm_count=2,
+            node_count=10,
+            genesis_port=12000,
+            node_version="0.3.3",
+        )
+
+    body = mock_client.post.call_args[1]["json"]
+    deploy_args = body["deploy_args"]
+
+    assert deploy_args["node_version"] == "0.3.3"
+    assert "branch_name" not in deploy_args
+    assert "repo_owner" not in deploy_args
+
+
+@pytest.mark.asyncio
+async def test_create_deployment_includes_branch_name_and_repo_owner():
+    """When branch_name is provided, it and repo_owner appear in deploy_args."""
+    response_data = {
+        "id": 5,
+        "name": "DEV-05",
+        "status": "pending",
+        "workflow_run_id": 99,
+        "deploy_args": {},
+    }
+    mock_response = _make_mock_response(status_code=201, json_data=response_data)
+    mock_client = _make_mock_client(post_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        await create_deployment(
+            name="DEV-05",
+            vm_count=2,
+            node_count=10,
+            genesis_port=12000,
+            branch_name="feat/my-change",
+            repo_owner="someone",
+        )
+
+    body = mock_client.post.call_args[1]["json"]
+    deploy_args = body["deploy_args"]
+
+    assert deploy_args["branch_name"] == "feat/my-change"
+    assert deploy_args["repo_owner"] == "someone"
+    assert "node_version" not in deploy_args
+
+
+@pytest.mark.asyncio
+async def test_create_deployment_defaults_repo_owner_to_maidsafe():
+    """When branch_name is set but repo_owner is omitted, repo_owner defaults
+    to 'maidsafe'."""
+    response_data = {
+        "id": 6,
+        "name": "DEV-06",
+        "status": "pending",
+        "workflow_run_id": 100,
+        "deploy_args": {},
+    }
+    mock_response = _make_mock_response(status_code=201, json_data=response_data)
+    mock_client = _make_mock_client(post_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        await create_deployment(
+            name="DEV-06",
+            vm_count=1,
+            node_count=5,
+            genesis_port=12000,
+            branch_name="feat/other",
+        )
+
+    body = mock_client.post.call_args[1]["json"]
+    deploy_args = body["deploy_args"]
+
+    assert deploy_args["branch_name"] == "feat/other"
+    assert deploy_args["repo_owner"] == "maidsafe"
+
+
+@pytest.mark.asyncio
+async def test_create_deployment_rejects_node_version_and_branch_name():
+    """When both node_version and branch_name are provided, an error is
+    returned without making an API call."""
+    result = await create_deployment(
+        name="DEV-BAD",
+        vm_count=1,
+        node_count=5,
+        genesis_port=12000,
+        node_version="0.3.3",
+        branch_name="feat/conflict",
+    )
+
+    assert "mutually exclusive" in result
+
+
+@pytest.mark.asyncio
+async def test_create_deployment_omits_node_binary_args_when_unset():
+    """When neither node_version nor branch_name is set, none of the node
+    binary keys appear in deploy_args."""
+    response_data = {
+        "id": 7,
+        "name": "DEV-07",
+        "status": "pending",
+        "workflow_run_id": 101,
+        "deploy_args": {},
+    }
+    mock_response = _make_mock_response(status_code=201, json_data=response_data)
+    mock_client = _make_mock_client(post_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        await create_deployment(
+            name="DEV-07",
+            vm_count=1,
+            node_count=5,
+            genesis_port=12000,
+        )
+
+    body = mock_client.post.call_args[1]["json"]
+    deploy_args = body["deploy_args"]
+
+    for key in ("node_version", "branch_name", "repo_owner"):
+        assert key not in deploy_args, f"Key '{key}' should not be present when unset"
+
+
 # ---------------------------------------------------------------------------
 # track_deployment tests
 # ---------------------------------------------------------------------------

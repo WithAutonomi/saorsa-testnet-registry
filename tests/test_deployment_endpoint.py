@@ -114,6 +114,73 @@ class TestCreateDeployment:
         data = response.get_json()
         assert "deploy_args" in data["error"]
 
+    @patch("saorsa_web.api.deployments.dispatch_workflow", return_value=11111)
+    def test_create_deployment_with_node_version(self, mock_dispatch, auth_session, db):
+        """
+        GIVEN deploy_args containing node_version
+        WHEN POST /api/deployments
+        THEN the deployment is created and deploy_args include node_version
+        """
+        payload = {
+            "name": "test-versioned",
+            "deploy_args": {
+                "node_count": 10,
+                "node_version": "0.3.3",
+            },
+        }
+
+        response = auth_session.post("/api/deployments", json=payload)
+
+        assert response.status_code == 201
+
+        deployment = db.query(Deployment).filter_by(name="test-versioned").one()
+        assert deployment.deploy_args["node_version"] == "0.3.3"
+
+    @patch("saorsa_web.api.deployments.dispatch_workflow", return_value=22222)
+    def test_create_deployment_with_branch_name(self, mock_dispatch, auth_session, db):
+        """
+        GIVEN deploy_args containing branch_name and repo_owner
+        WHEN POST /api/deployments
+        THEN the deployment is created and deploy_args include both fields
+        """
+        payload = {
+            "name": "test-branched",
+            "deploy_args": {
+                "node_count": 10,
+                "branch_name": "feat/my-change",
+                "repo_owner": "maidsafe",
+            },
+        }
+
+        response = auth_session.post("/api/deployments", json=payload)
+
+        assert response.status_code == 201
+
+        deployment = db.query(Deployment).filter_by(name="test-branched").one()
+        assert deployment.deploy_args["branch_name"] == "feat/my-change"
+        assert deployment.deploy_args["repo_owner"] == "maidsafe"
+
+    def test_create_deployment_rejects_node_version_and_branch_name(self, auth_session):
+        """
+        GIVEN deploy_args containing both node_version and branch_name
+        WHEN POST /api/deployments
+        THEN the response is 400 with a mutual exclusivity error
+        """
+        payload = {
+            "name": "test-conflict",
+            "deploy_args": {
+                "node_count": 10,
+                "node_version": "0.3.3",
+                "branch_name": "feat/conflict",
+            },
+        }
+
+        response = auth_session.post("/api/deployments", json=payload)
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert "mutually exclusive" in data["error"]
+
     def test_create_deployment_returns_401_without_auth(self, client):
         """
         GIVEN no authentication
