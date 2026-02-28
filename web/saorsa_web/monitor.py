@@ -141,23 +141,13 @@ def _poll_once() -> None:
         )
 
 
-def run_monitor(interval=60):
-    """Background status monitor loop.
+def run_monitor_loop(interval=60):
+    """Monitor poll loop.
 
-    Polls GitHub Actions for workflow run status and updates deployment
-    records in the database.  Runs as a standalone worker outside Flask,
-    so it initialises its own database connection.
+    Assumes the database connection is already configured (e.g. by the
+    Flask app or by ``run_monitor``).
     """
-    logger.info("Starting monitor with interval=%ds", interval)
-
-    # Initialise the database connection for the standalone worker.
-    database_url = os.environ.get(
-        "DATABASE_URL",
-        "postgresql://saorsa_testnet:saorsa_testnet@localhost:5432/saorsa_testnet_registry",
-    )
-    engine = create_engine(database_url)
-    session_factory.configure(bind=engine)
-    logger.info("Database connection configured")
+    logger.info("Starting monitor loop with interval=%ds", interval)
 
     while True:
         try:
@@ -169,3 +159,23 @@ def run_monitor(interval=60):
             db_session.remove()
 
         time.sleep(interval)
+
+
+def run_monitor(interval=60):
+    """Background status monitor — standalone entry point.
+
+    Initialises its own database connection then enters the poll loop.
+    Use ``run_monitor_loop`` when running inside a Flask app context
+    where the database is already configured.
+    """
+    logger.info("Starting monitor with interval=%ds", interval)
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://saorsa_testnet:saorsa_testnet@localhost:5432/saorsa_testnet_registry",
+    )
+    engine = create_engine(database_url)
+    session_factory.configure(bind=engine)
+    logger.info("Database connection configured")
+
+    run_monitor_loop(interval)

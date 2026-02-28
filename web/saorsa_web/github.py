@@ -111,7 +111,13 @@ def dispatch_workflow(
     # Record timestamp before dispatching so we can find the new run
     before_dispatch = datetime.now(timezone.utc)
 
-    logger.info("Dispatching workflow %s on %s", resolved_workflow, resolved_repo)
+    logger.info(
+        "Dispatching workflow %s on %s (ref=%s, inputs=%s)",
+        resolved_workflow,
+        resolved_repo,
+        branch,
+        workflow_inputs,
+    )
     resp = requests.post(
         dispatch_url,
         headers=_headers(resolved_pat),
