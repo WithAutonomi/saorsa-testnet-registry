@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT_FILES = [
     REPO_ROOT / "web" / "pyproject.toml",
     REPO_ROOT / "mcp" / "pyproject.toml",
+    REPO_ROOT / "deploy" / "pyproject.toml",
 ]
 VERSION_RE = re.compile(r'^version\s*=\s*"[^"]+"', re.MULTILINE)
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -60,7 +61,16 @@ def main() -> None:
     run(["uv", "lock"])
 
     print(f"\nCommitting and tagging {tag}...")
-    run(["git", "add", "web/pyproject.toml", "mcp/pyproject.toml", "uv.lock"])
+    run(
+        [
+            "git",
+            "add",
+            "web/pyproject.toml",
+            "mcp/pyproject.toml",
+            "deploy/pyproject.toml",
+            "uv.lock",
+        ]
+    )
     run(["git", "commit", "-m", f"chore: bump version to {version}"])
     run(["git", "tag", tag])
 
