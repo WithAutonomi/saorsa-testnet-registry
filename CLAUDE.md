@@ -2,10 +2,11 @@
 
 ## Architecture
 
-A system for managing testnet deployments, structured as a uv workspace with two packages:
+A system for managing testnet deployments, structured as a uv workspace with three packages:
 
 - **`web/`** (`saorsa-web`) - Flask app serving a REST API (`/api/...`) and web UI (`/deployments`) with Jinja2 + HTMX, plus a background monitor worker
 - **`mcp/`** (`saorsa-deploy-mcp`) - MCP server providing tools for Claude to interact with the registry via HTTP
+- **`deploy/`** (`saorsa-deploy`) - CLI tool that provisions testnets via Terraform and Pyinfra
 - **GitHub Actions** - Workflow dispatch for launching (`.github/workflows/launch-testnet.yml`) and destroying (`.github/workflows/destroy-testnet.yml`) testnets
 - **Database** - PostgreSQL, managed via Alembic migrations (inside `web/`)
 - **Deployment** - Digital Ocean App Platform (`app.yaml`)
@@ -36,6 +37,24 @@ mcp/
   pyproject.toml
   saorsa_deploy_mcp/
     server.py                   # MCP server with deployment tools
+deploy/
+  pyproject.toml
+  README.md                     # Command reference, argument tables, architecture
+  saorsa_deploy/
+    main.py                     # CLI entry point
+    binary_source.py            # GitHub release / custom branch binary resolution
+    bootstrap.py                # Bootstrap VM (genesis node) setup
+    build_droplet.py            # Build VM provisioning
+    executor.py                 # Command execution wrapper
+    providers.py                # Provider configuration (Digital Ocean)
+    resources.py                # Resource management
+    ssh.py                      # SSH operations
+    state.py                    # Deployment state management (S3)
+    terraform.py                # Terraform orchestration
+    cmd/                        # CLI subcommands (infra, provision, destroy, etc.)
+    provisioning/               # Pyinfra provisioning logic (genesis, node, build)
+    resources/                  # Terraform manifests (digitalocean/, aws-build-infra/)
+  tests/                        # pytest test suite
 ```
 
 ## Authentication
