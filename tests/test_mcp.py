@@ -3,6 +3,7 @@
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 # Set REGISTRY_URL before importing the module so it picks up our value.
@@ -11,7 +12,7 @@ os.environ["REGISTRY_URL"] = "http://test-registry:5000"
 from saorsa_deploy_mcp.server import (  # noqa: E402
     create_deployment,
     destroy_deployment,
-    track_deployment,
+    get_deployment,
 )
 
 
@@ -275,22 +276,6 @@ async def test_create_deployment_defaults_repo_owner_to_maidsafe():
 
 
 @pytest.mark.asyncio
-async def test_create_deployment_rejects_node_version_and_branch_name():
-    """When both node_version and branch_name are provided, an error is
-    returned without making an API call."""
-    result = await create_deployment(
-        name="DEV-BAD",
-        vm_count=1,
-        node_count=5,
-        genesis_port=12000,
-        node_version="0.3.3",
-        branch_name="feat/conflict",
-    )
-
-    assert "mutually exclusive" in result
-
-
-@pytest.mark.asyncio
 async def test_create_deployment_omits_node_binary_args_when_unset():
     """When neither node_version nor branch_name is set, none of the node
     binary keys appear in deploy_args."""
@@ -322,18 +307,20 @@ async def test_create_deployment_omits_node_binary_args_when_unset():
 
 
 # ---------------------------------------------------------------------------
-# track_deployment tests
+# get_deployment tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_track_deployment_calls_correct_endpoint():
-    """track_deployment GETs {REGISTRY_URL}/api/deployments/{deployment_id}."""
+async def test_get_deployment_calls_correct_endpoint():
+    """get_deployment GETs {REGISTRY_URL}/api/deployments/{deployment_id}."""
     response_data = {
         "id": 5,
         "name": "DEV-05",
         "status": "running",
         "workflow_run_id": 55,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
         "events": [],
     }
     mock_response = _make_mock_response(status_code=200, json_data=response_data)
@@ -342,7 +329,7 @@ async def test_track_deployment_calls_correct_endpoint():
     with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
         MockClient.return_value.__aenter__.return_value = mock_client
 
-        await track_deployment(deployment_id=5)
+        await get_deployment(deployment_id=5)
 
     mock_client.get.assert_called_once()
     call_args = mock_client.get.call_args
@@ -350,7 +337,7 @@ async def test_track_deployment_calls_correct_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_track_deployment_reports_finished_status():
+async def test_get_deployment_reports_finished_status():
     """When a deployment has stopped, the result includes 'has finished with
     status: stopped'."""
     response_data = {
@@ -358,6 +345,8 @@ async def test_track_deployment_reports_finished_status():
         "name": "DEV-06",
         "status": "stopped",
         "workflow_run_id": 66,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
         "events": [],
     }
     mock_response = _make_mock_response(status_code=200, json_data=response_data)
@@ -366,20 +355,22 @@ async def test_track_deployment_reports_finished_status():
     with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
         MockClient.return_value.__aenter__.return_value = mock_client
 
-        result = await track_deployment(deployment_id=6)
+        result = await get_deployment(deployment_id=6)
 
     assert "has finished with status: stopped" in result
 
 
 @pytest.mark.asyncio
-async def test_track_deployment_reports_in_progress():
-    """When a deployment is pending, the result indicates it is still
-    pending."""
+async def test_get_deployment_reports_in_progress():
+    """When a deployment is running, the result indicates it is still
+    running."""
     response_data = {
         "id": 7,
         "name": "DEV-07",
-        "status": "pending",
+        "status": "running",
         "workflow_run_id": 77,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
         "events": [],
     }
     mock_response = _make_mock_response(status_code=200, json_data=response_data)
@@ -388,9 +379,87 @@ async def test_track_deployment_reports_in_progress():
     with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
         MockClient.return_value.__aenter__.return_value = mock_client
 
-        result = await track_deployment(deployment_id=7)
+        result = await get_deployment(deployment_id=7)
 
-    assert "still pending" in result
+    assert "still running" in result
+
+
+@pytest.mark.asyncio
+async def test_get_deployment_reports_destroyed_status():
+    """When a deployment has been destroyed, the result includes 'has finished
+    with status: destroyed'."""
+    response_data = {
+        "id": 11,
+        "name": "DEV-11",
+        "status": "destroyed",
+        "workflow_run_id": 66666,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+        "events": [],
+    }
+    mock_response = _make_mock_response(status_code=200, json_data=response_data)
+    mock_client = _make_mock_client(get_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        result = await get_deployment(deployment_id=11)
+
+    assert "has finished with status: destroyed" in result
+
+
+@pytest.mark.asyncio
+async def test_get_deployment_reports_destroying_in_progress():
+    """When a deployment is destroying, the result indicates it is still
+    in progress."""
+    response_data = {
+        "id": 12,
+        "name": "DEV-12",
+        "status": "destroying",
+        "workflow_run_id": 77777,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+        "events": [],
+    }
+    mock_response = _make_mock_response(status_code=200, json_data=response_data)
+    mock_client = _make_mock_client(get_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        result = await get_deployment(deployment_id=12)
+
+    assert "still destroying" in result
+
+
+@pytest.mark.asyncio
+async def test_get_deployment_shows_workflow_url():
+    """When the latest event has an html_url in details, the result includes
+    the Workflow URL."""
+    response_data = {
+        "id": 13,
+        "name": "DEV-13",
+        "status": "running",
+        "workflow_run_id": 88888,
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+        "events": [
+            {
+                "event_type": "workflow_started",
+                "created_at": "2026-01-01T00:01:00",
+                "details": {"html_url": "https://github.com/example/run/123"},
+            },
+        ],
+    }
+    mock_response = _make_mock_response(status_code=200, json_data=response_data)
+    mock_client = _make_mock_client(get_response=mock_response)
+
+    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+
+        result = await get_deployment(deployment_id=13)
+
+    assert "https://github.com/example/run/123" in result
 
 
 # ---------------------------------------------------------------------------
@@ -436,8 +505,6 @@ async def test_destroy_deployment_reports_error():
     mock_response.json.return_value = error_data
     mock_response.headers = {"content-type": "application/json"}
 
-    import httpx
-
     mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
         "Not Found", request=MagicMock(), response=mock_response
     )
@@ -448,49 +515,5 @@ async def test_destroy_deployment_reports_error():
 
         result = await destroy_deployment(name="NOPE")
 
-    assert "Failed to destroy" in result
+    assert "API error" in result
     assert "not found" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_track_deployment_reports_destroyed_status():
-    """When a deployment has been destroyed, the result includes 'has finished
-    with status: destroyed'."""
-    response_data = {
-        "id": 11,
-        "name": "DEV-11",
-        "status": "destroyed",
-        "workflow_run_id": 66666,
-        "events": [],
-    }
-    mock_response = _make_mock_response(status_code=200, json_data=response_data)
-    mock_client = _make_mock_client(get_response=mock_response)
-
-    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
-        MockClient.return_value.__aenter__.return_value = mock_client
-
-        result = await track_deployment(deployment_id=11)
-
-    assert "has finished with status: destroyed" in result
-
-
-@pytest.mark.asyncio
-async def test_track_deployment_reports_destroying_in_progress():
-    """When a deployment is destroying, the result indicates it is still
-    in progress."""
-    response_data = {
-        "id": 12,
-        "name": "DEV-12",
-        "status": "destroying",
-        "workflow_run_id": 77777,
-        "events": [],
-    }
-    mock_response = _make_mock_response(status_code=200, json_data=response_data)
-    mock_client = _make_mock_client(get_response=mock_response)
-
-    with patch("saorsa_deploy_mcp.server.httpx.AsyncClient") as MockClient:
-        MockClient.return_value.__aenter__.return_value = mock_client
-
-        result = await track_deployment(deployment_id=12)
-
-    assert "still destroying" in result

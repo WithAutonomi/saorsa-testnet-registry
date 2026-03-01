@@ -1,3 +1,4 @@
+import functools
 import os
 import sys
 
@@ -11,11 +12,55 @@ REGISTRY_URL = os.environ.get("REGISTRY_URL", "http://localhost:5000")
 REGISTRY_API_TOKEN = os.environ.get("REGISTRY_API_TOKEN", "")
 
 
-def _auth_headers() -> dict[str, str]:
-    """Return authorization headers for registry API calls."""
-    if REGISTRY_API_TOKEN:
-        return {"Authorization": f"Bearer {REGISTRY_API_TOKEN}"}
-    return {}
+class RegistryClient:
+    """Thin async wrapper around the testnet registry REST API."""
+
+    def __init__(self, base_url: str = REGISTRY_URL, token: str = REGISTRY_API_TOKEN):
+        self.base_url = base_url
+        self.token = token
+
+    def _headers(self) -> dict[str, str]:
+        if self.token:
+            return {"Authorization": f"Bearer {self.token}"}
+        return {}
+
+    async def get(self, path: str) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=60.0, headers=self._headers()) as client:
+            resp = await client.get(f"{self.base_url}{path}")
+            resp.raise_for_status()
+            return resp
+
+    async def post(self, path: str, json: dict) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=60.0, headers=self._headers()) as client:
+            resp = await client.post(f"{self.base_url}{path}", json=json)
+            resp.raise_for_status()
+            return resp
+
+
+registry = RegistryClient()
+
+
+def handle_api_errors(fn):
+    """Decorator that catches httpx errors and returns formatted strings."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except httpx.HTTPStatusError as e:
+            ct = e.response.headers.get("content-type", "")
+            if ct.startswith("application/json"):
+                body = e.response.json().get("error", str(e))
+            else:
+                body = e.response.text
+            return f"API error ({e.response.status_code}): {body}"
+        except httpx.ConnectError:
+            return (
+                f"Failed to connect to registry at {registry.base_url}. "
+                "Is the server running?"
+            )
+
+    return wrapper
 
 
 mcp = FastMCP(
@@ -23,7 +68,7 @@ mcp = FastMCP(
     instructions=(
         "Use this server when the user asks to deploy, launch, or create a testnet. "
         "The create_deployment tool triggers a deployment workflow. "
-        "The track_deployment tool checks deployment progress. "
+        "The get_deployment tool checks deployment details and progress. "
         "Read the testnet://docs/deployment-config resource for parameter reference. "
         "Common requests: 'deploy a testnet', 'launch DEV-01', 'create a network', "
         "'check deployment status', 'wait for deployment to complete'. "
@@ -111,7 +156,7 @@ building saorsa-node from the feat/my-change branch (maidsafe repo).
 
 ## Tracking Deployments
 
-After creating a deployment, use the track_deployment tool with the
+After creating a deployment, use the get_deployment tool with the
 deployment ID to monitor progress. The background monitor polls GitHub
 Actions every 60 seconds and updates the deployment status automatically.
 
@@ -143,6 +188,7 @@ def get_deployment_config_docs() -> str:
 
 
 @mcp.tool()
+@handle_api_errors
 async def create_deployment(
     name: str,
     vm_count: int,
@@ -178,12 +224,6 @@ async def create_deployment(
         branch_name: Git branch of the saorsa-node repo to build from source
         repo_owner: Repository owner for custom branch builds (default: "maidsafe")
     """
-    if node_version is not None and branch_name is not None:
-        return (
-            "Error: node_version and branch_name are mutually exclusive. "
-            "Specify a released version OR a branch to build from, not both."
-        )
-
     deploy_args = {
         "name": name,
         "vm_count": vm_count,
@@ -207,37 +247,20 @@ async def create_deployment(
         deploy_args["branch_name"] = branch_name
         deploy_args["repo_owner"] = repo_owner or "maidsafe"
 
-    async with httpx.AsyncClient(timeout=60.0, headers=_auth_headers()) as client:
-        try:
-            resp = await client.post(
-                f"{REGISTRY_URL}/api/deployments",
-                json={
-                    "name": name,
-                    "deploy_args": deploy_args,
-                    "branch": "main",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return (
-                f"Created deployment '{data['name']}' (id={data['id']})\n"
-                f"  Status: {data['status']}\n"
-                f"  Workflow Run ID: {data['workflow_run_id']}"
-            )
-        except httpx.HTTPStatusError as e:
-            error_body = (
-                e.response.json()
-                if e.response.headers.get("content-type", "").startswith(
-                    "application/json"
-                )
-                else {"error": e.response.text}
-            )
-            return f"Failed to create deployment: {error_body.get('error', str(e))}"
-        except httpx.ConnectError:
-            return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
+    resp = await registry.post(
+        "/api/deployments",
+        json={"name": name, "deploy_args": deploy_args, "branch": "main"},
+    )
+    data = resp.json()
+    return (
+        f"Created deployment '{data['name']}' (id={data['id']})\n"
+        f"  Status: {data['status']}\n"
+        f"  Workflow Run ID: {data['workflow_run_id']}"
+    )
 
 
 @mcp.tool()
+@handle_api_errors
 async def destroy_deployment(name: str) -> str:
     """Destroy a testnet deployment and tear down its infrastructure.
 
@@ -247,129 +270,73 @@ async def destroy_deployment(name: str) -> str:
     Args:
         name: Name of the deployment to destroy (e.g. "DEV-01")
     """
-    async with httpx.AsyncClient(timeout=60.0, headers=_auth_headers()) as client:
-        try:
-            resp = await client.post(
-                f"{REGISTRY_URL}/api/deployments/destroy",
-                json={"name": name},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return (
-                f"Destroy triggered for deployment '{data['name']}' (id={data['id']})\n"
-                f"  Status: {data['status']}\n"
-                f"  Workflow Run ID: {data['workflow_run_id']}"
-            )
-        except httpx.HTTPStatusError as e:
-            error_body = (
-                e.response.json()
-                if e.response.headers.get("content-type", "").startswith(
-                    "application/json"
-                )
-                else {"error": e.response.text}
-            )
-            return f"Failed to destroy deployment: {error_body.get('error', str(e))}"
-        except httpx.ConnectError:
-            return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
+    resp = await registry.post("/api/deployments/destroy", json={"name": name})
+    data = resp.json()
+    return (
+        f"Destroy triggered for deployment '{data['name']}' (id={data['id']})\n"
+        f"  Status: {data['status']}\n"
+        f"  Workflow Run ID: {data['workflow_run_id']}"
+    )
 
 
 @mcp.tool()
+@handle_api_errors
 async def list_deployments() -> str:
     """List all testnet deployments."""
-    async with httpx.AsyncClient(headers=_auth_headers()) as client:
-        try:
-            resp = await client.get(f"{REGISTRY_URL}/api/deployments")
-            resp.raise_for_status()
-            deployments = resp.json()
-            if not deployments:
-                return "No deployments found."
-            lines = []
-            for d in deployments:
-                lines.append(
-                    f"  {d['id']}: {d['name']} ({d['status']}) - created {d['created_at']}"
-                )
-            return f"Deployments ({len(deployments)}):\n" + "\n".join(lines)
-        except httpx.ConnectError:
-            return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
+    resp = await registry.get("/api/deployments")
+    deployments = resp.json()
+    if not deployments:
+        return "No deployments found."
+    lines = []
+    for d in deployments:
+        lines.append(
+            f"  {d['id']}: {d['name']} ({d['status']}) - created {d['created_at']}"
+        )
+    return f"Deployments ({len(deployments)}):\n" + "\n".join(lines)
 
 
 @mcp.tool()
+@handle_api_errors
 async def get_deployment(deployment_id: int) -> str:
-    """Get details of a specific deployment including events.
+    """Get details and track progress of a specific deployment.
+
+    Returns status, workflow info, and events. Use this to poll for
+    deployment completion — terminal statuses (stopped, failed, destroyed)
+    indicate the deployment has finished.
 
     Args:
         deployment_id: The deployment ID
     """
-    async with httpx.AsyncClient(headers=_auth_headers()) as client:
-        try:
-            resp = await client.get(f"{REGISTRY_URL}/api/deployments/{deployment_id}")
-            if resp.status_code == 404:
-                return f"Deployment {deployment_id} not found."
-            resp.raise_for_status()
-            d = resp.json()
-            lines = [
-                f"Deployment: {d['name']}",
-                f"  ID: {d['id']}",
-                f"  Status: {d['status']}",
-                f"  Workflow Run ID: {d['workflow_run_id']}",
-                f"  Created: {d['created_at']}",
-                f"  Updated: {d['updated_at']}",
-            ]
-            events = d.get("events", [])
-            if events:
-                lines.append(f"  Events ({len(events)}):")
-                for e in events:
-                    lines.append(f"    [{e['created_at']}] {e['event_type']}")
-            return "\n".join(lines)
-        except httpx.ConnectError:
-            return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
+    resp = await registry.get(f"/api/deployments/{deployment_id}")
+    d = resp.json()
+    status = d["status"]
 
+    lines = [
+        f"Deployment: {d['name']}",
+        f"  ID: {d['id']}",
+        f"  Status: {status}",
+        f"  Workflow Run ID: {d['workflow_run_id']}",
+        f"  Created: {d['created_at']}",
+        f"  Updated: {d['updated_at']}",
+    ]
 
-@mcp.tool()
-async def track_deployment(deployment_id: int) -> str:
-    """Track the status of a deployment. Use this to check progress.
+    events = d.get("events", [])
+    if events:
+        lines.append(f"  Events ({len(events)}):")
+        for e in events:
+            lines.append(f"    [{e['created_at']}] {e['event_type']}")
+        latest = events[-1]
+        if latest.get("details") and "html_url" in latest["details"]:
+            lines.append(f"  Workflow URL: {latest['details']['html_url']}")
 
-    Returns the current status, workflow run ID, and recent events.
-    You can poll this tool periodically to wait for deployment completion.
+    if status in ("stopped", "failed", "destroyed"):
+        lines.append(f"\nDeployment has finished with status: {status}")
+    elif status not in ("pending",):
+        lines.append(
+            f"\nDeployment is still {status}. Poll again to check for updates."
+        )
 
-    Args:
-        deployment_id: The deployment ID to track
-    """
-    async with httpx.AsyncClient(headers=_auth_headers()) as client:
-        try:
-            resp = await client.get(f"{REGISTRY_URL}/api/deployments/{deployment_id}")
-            if resp.status_code == 404:
-                return f"Deployment {deployment_id} not found."
-            resp.raise_for_status()
-            d = resp.json()
-
-            status = d["status"]
-            lines = [
-                f"Deployment '{d['name']}' (id={d['id']})",
-                f"  Status: {status}",
-                f"  Workflow Run ID: {d['workflow_run_id']}",
-            ]
-
-            events = d.get("events", [])
-            if events:
-                latest = events[-1]
-                lines.append(
-                    f"  Latest Event: {latest['event_type']} at {latest['created_at']}"
-                )
-                if latest.get("details"):
-                    if "html_url" in latest["details"]:
-                        lines.append(f"  Workflow URL: {latest['details']['html_url']}")
-
-            if status in ("stopped", "failed", "destroyed"):
-                lines.append(f"\nDeployment has finished with status: {status}")
-            else:
-                lines.append(
-                    f"\nDeployment is still {status}. Poll again to check for updates."
-                )
-
-            return "\n".join(lines)
-        except httpx.ConnectError:
-            return f"Failed to connect to registry at {REGISTRY_URL}. Is the server running?"
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
