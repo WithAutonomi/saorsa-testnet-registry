@@ -95,19 +95,28 @@ uv run python -m saorsa_deploy_mcp.server
 # Run tests
 uv run pytest
 
+# Run deploy package tests
+uv run pytest deploy/tests/
+
+# Show saorsa-deploy CLI help (requires cloud credentials — normally only runs in CI)
+uv run saorsa-deploy --help
+
 # Lint
 uv run ruff check .
 ```
 
 ## Deploying & Destroying Testnets
 
+The data flow is: **Claude → MCP → Web API → GitHub Actions → `saorsa-deploy` → infrastructure**
+
+`saorsa-deploy` runs inside GitHub Actions (not locally) because it needs cloud credentials stored as Actions secrets. The MCP server talks to the web API, which dispatches GitHub Actions workflows.
+
 When asked to deploy, launch, create, or destroy a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
 
 - `create_deployment` — triggers a deployment workflow (accepts name, vm_count, node_count, genesis_port, etc.)
 - `destroy_deployment` — triggers a destroy workflow to tear down infrastructure (accepts name)
 - `list_deployments` — lists all deployments
-- `get_deployment` — gets deployment details including events (accepts deployment_id)
-- `track_deployment` — checks deployment progress by ID
+- `get_deployment` — gets deployment details, events, and tracks progress (accepts deployment_id)
 - `testnet://docs/deployment-config` — resource with full parameter documentation
 
 ### Deployment Statuses
@@ -134,4 +143,5 @@ When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) 
 - `cd web && uv run alembic revision --autogenerate -m "description"` - New migration
 - `cd web && uv run alembic upgrade head` - Apply migrations
 - `uv run ruff check . --fix` - Lint and fix
-- `uv run scripts/bump_version.py <version>` - Bump version, commit, tag, and push (triggers DO deployment)
+- `uv run pytest deploy/tests/` - Run deploy package tests
+- `uv run scripts/bump_version.py <version>` - Bump version across all three packages, commit, tag, and push
