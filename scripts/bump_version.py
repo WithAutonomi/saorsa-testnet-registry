@@ -61,7 +61,16 @@ def main() -> None:
     run(["uv", "lock"])
 
     print(f"\nCommitting and tagging {tag}...")
-    run(["git", "add", "web/pyproject.toml", "mcp/pyproject.toml", "deploy/pyproject.toml", "uv.lock"])
+    run(
+        [
+            "git",
+            "add",
+            "web/pyproject.toml",
+            "mcp/pyproject.toml",
+            "deploy/pyproject.toml",
+            "uv.lock",
+        ]
+    )
     run(["git", "commit", "-m", f"chore: bump version to {version}"])
     run(["git", "tag", tag])
 
