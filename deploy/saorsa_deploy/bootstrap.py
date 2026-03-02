@@ -7,7 +7,7 @@ DO_API_URL = "https://api.digitalocean.com/v2"
 BOOTSTRAP_REGION = "lon1"
 BOOTSTRAP_SIZE = "s-2vcpu-4gb"
 BOOTSTRAP_IMAGE = "ubuntu-24-04-x64"
-BOOTSTRAP_VOLUME_SIZE_GB = 35
+DEFAULT_VOLUME_SIZE_GB = 20
 SSH_KEY_IDS = [
     36971688,
     30643816,
@@ -78,7 +78,7 @@ def _wait_for_droplet_active(droplet_id, headers, timeout=300):
     raise TimeoutError(f"Droplet {droplet_id} did not become active within {timeout}s")
 
 
-def create_bootstrap_vm(name):
+def create_bootstrap_vm(name, volume_size=DEFAULT_VOLUME_SIZE_GB):
     """Create the bootstrap VM with an attached volume via the DO API.
 
     Idempotent: skips creation of droplet/volume if they already exist.
@@ -136,7 +136,7 @@ def create_bootstrap_vm(name):
             f"{DO_API_URL}/volumes",
             headers=headers,
             json={
-                "size_gigabytes": BOOTSTRAP_VOLUME_SIZE_GB,
+                "size_gigabytes": volume_size,
                 "name": volume_name,
                 "region": BOOTSTRAP_REGION,
                 "filesystem_type": "ext4",

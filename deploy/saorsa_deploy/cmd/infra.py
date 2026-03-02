@@ -18,7 +18,7 @@ def cmd_infra(args):
     # Create the bootstrap VM first (idempotent)
     console.print(f"[bold]Bootstrap VM ({args.name}-saorsa-bootstrap)...[/bold]")
     try:
-        bootstrap = create_bootstrap_vm(args.name)
+        bootstrap = create_bootstrap_vm(args.name, volume_size=args.attached_volume_size)
         if bootstrap["created"]:
             console.print(
                 f"[green]Bootstrap VM created: {bootstrap['droplet_name']} "
