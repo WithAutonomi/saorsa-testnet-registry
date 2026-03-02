@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}{{ deployment.name }} - Saorsa Testnet Registry{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <a href="/deployments" class="text-sm text-gray-500 hover:text-gray-700 transition-colors">&larr; All Deployments</a>
+</div>
+
+<div class="flex items-start justify-between mb-6">
+    <div>
+        <h2 class="text-2xl font-semibold text-gray-900">{{ deployment.name }}</h2>
+        <p class="text-sm text-gray-500 mt-1">Deployment #{{ deployment.id }}</p>
+    </div>
+    <div>
+        {% set status = deployment.status.value %}
+        {% if status == 'running' %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium bg-green-50 text-green-700 ring-1 ring-inset ring-green-600/20">
+            <span class="h-2 w-2 rounded-full bg-green-500"></span>Running
+        </span>
+        {% elif status == 'pending' %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20">
+            <span class="h-2 w-2 rounded-full bg-amber-500 animate-pulse"></span>Pending
+        </span>
+        {% elif status == 'failed' %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
+            <span class="h-2 w-2 rounded-full bg-red-500"></span>Failed
+        </span>
+        {% elif status == 'destroying' %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-600/20">
+            <span class="h-2 w-2 rounded-full bg-orange-500 animate-pulse"></span>Destroying
+        </span>
+        {% elif status == 'destroyed' %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-500 ring-1 ring-inset ring-gray-500/20">
+            <span class="h-2 w-2 rounded-full bg-gray-400"></span>Destroyed
+        </span>
+        {% else %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-600 ring-1 ring-inset ring-gray-500/20">
+            {{ status }}
+        </span>
+        {% endif %}
+    </div>
+</div>
+
+{# --- Details Card --- #}
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-6">
+    <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">Details</h3>
+    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+        <div>
+            <dt class="text-gray-500">Created</dt>
+            <dd class="mt-0.5 font-medium text-gray-900">{{ deployment.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</dd>
+        </div>
+        <div>
+            <dt class="text-gray-500">Updated</dt>
+            <dd class="mt-0.5 font-medium text-gray-900">{{ deployment.updated_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</dd>
+        </div>
+        {% if deployment.workflow_run_id %}
+        <div>
+            <dt class="text-gray-500">Workflow Run ID</dt>
+            <dd class="mt-0.5 font-medium text-gray-900">{{ deployment.workflow_run_id }}</dd>
+        </div>
+        {% endif %}
+    </dl>
+</div>
+
+{# --- Deploy Args Card --- #}
+{% if deployment.deploy_args %}
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-6">
+    <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">Configuration</h3>
+    <dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4 text-sm">
+        {% for key, value in deployment.deploy_args.items() %}
+        <div>
+            <dt class="text-gray-500">{{ key }}</dt>
+            <dd class="mt-0.5 font-medium text-gray-900">{{ value }}</dd>
+        </div>
+        {% endfor %}
+    </dl>
+</div>
+{% endif %}
+
+{# --- Events Timeline --- #}
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6 mb-6">
+    <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">Events</h3>
+    {% if deployment.events %}
+    <div class="flow-root">
+        <ul class="-mb-4">
+            {% for event in deployment.events | reverse %}
+            <li class="relative pb-4 {% if not loop.last %}border-l-2 border-gray-200 ml-3{% else %}ml-3{% endif %}">
+                <div class="relative flex items-start space-x-3 pl-6 -ml-3">
+                    {# Timeline dot #}
+                    {% if event.event_type == 'completed' %}
+                    <span class="flex h-6 w-6 items-center justify-center rounded-full bg-green-50 ring-4 ring-white">
+                        <span class="h-2 w-2 rounded-full bg-green-500"></span>
+                    </span>
+                    {% elif event.event_type == 'failed' %}
+                    <span class="flex h-6 w-6 items-center justify-center rounded-full bg-red-50 ring-4 ring-white">
+                        <span class="h-2 w-2 rounded-full bg-red-500"></span>
+                    </span>
+                    {% elif event.event_type == 'running' %}
+                    <span class="flex h-6 w-6 items-center justify-center rounded-full bg-blue-50 ring-4 ring-white">
+                        <span class="h-2 w-2 rounded-full bg-blue-500"></span>
+                    </span>
+                    {% elif event.event_type in ('destroyed', 'destroy_triggered') %}
+                    <span class="flex h-6 w-6 items-center justify-center rounded-full bg-gray-100 ring-4 ring-white">
+                        <span class="h-2 w-2 rounded-full bg-gray-400"></span>
+                    </span>
+                    {% else %}
+                    <span class="flex h-6 w-6 items-center justify-center rounded-full bg-amber-50 ring-4 ring-white">
+                        <span class="h-2 w-2 rounded-full bg-amber-400"></span>
+                    </span>
+                    {% endif %}
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm font-medium text-gray-900">{{ event.event_type }}</span>
+                            <span class="text-xs text-gray-400">{{ event.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+                        </div>
+                        {% if event.details %}
+                        <div class="mt-1 text-xs text-gray-500 space-y-0.5">
+                            {% if event.details.get('html_url') %}
+                            <p><a href="{{ event.details.html_url }}" target="_blank" rel="noopener" class="text-brand-600 hover:text-brand-700">View workflow run &rarr;</a></p>
+                            {% endif %}
+                            {% if event.details.get('previous_status') %}
+                            <p>{{ event.details.previous_status }} &rarr; {{ event.details.new_status }}</p>
+                            {% endif %}
+                            {% if event.details.get('conclusion') %}
+                            <p>Conclusion: {{ event.details.conclusion }}</p>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400">No events recorded.</p>
+    {% endif %}
+</div>
+
+{# --- Actions --- #}
+{% if deployment.status.value in ('running', 'stopped', 'failed') %}
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm p-6">
+    <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">Actions</h3>
+    <div class="flex items-center gap-3">
+        {% if deployment.status.value in ('running', 'stopped') %}
+        <button hx-post="/api/deployments/destroy"
+                hx-vals='{"name": "{{ deployment.name }}"}'
+                hx-confirm="Are you sure you want to destroy '{{ deployment.name }}'?"
+                hx-target="body"
+                hx-headers='{"Content-Type": "application/json"}'
+                class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 ring-1 ring-inset ring-red-600/20 transition-colors">
+            Destroy Deployment
+        </button>
+        {% endif %}
+        <form method="POST" action="/deployments/{{ deployment.id }}/mark-destroyed" class="inline">
+            <button type="submit"
+                    onclick="return confirm('Mark this deployment as destroyed? This only updates the status — it does not tear down infrastructure.')"
+                    class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-gray-600 bg-gray-50 hover:bg-gray-100 ring-1 ring-inset ring-gray-500/20 transition-colors">
+                Mark Destroyed
+            </button>
+        </form>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

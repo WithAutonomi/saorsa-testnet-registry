@@ -109,8 +109,15 @@ def destroy_deployment():
             {"error": "name is required and must be a non-empty string"}
         ), 400
 
+    # Prefer a deployment in a destroyable state; fall back to most recent.
     deployment = (
-        db_session.query(Deployment).filter(Deployment.name == name.strip()).first()
+        db_session.query(Deployment)
+        .filter(Deployment.name == name.strip())
+        .order_by(
+            Deployment.status.in_(_DESTROYABLE_STATUSES).desc(),
+            Deployment.created_at.desc(),
+        )
+        .first()
     )
     if deployment is None:
         return jsonify({"error": f"Deployment '{name}' not found"}), 404

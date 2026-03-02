@@ -5,47 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Saorsa Testnet Registry{% endblock %}</title>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <style>
-        body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; }
-        th { background: #f5f5f5; }
-        .status-pending { color: #b8860b; }
-        .status-running { color: #228b22; }
-        .status-stopped { color: #666; }
-        .status-failed { color: #dc143c; }
-        .user-nav { float: right; font-size: 0.9rem; }
-        .user-nav a { margin-left: 1rem; }
-        .token-form { margin-bottom: 1.5rem; }
-        .token-form label { margin-right: 0.5rem; }
-        .token-form input { padding: 0.3rem 0.5rem; }
-        .token-form button { padding: 0.3rem 0.8rem; }
-        .token-display { background: #f9f9f9; padding: 1rem; border: 1px solid #ddd; border-radius: 4px; margin: 1rem 0; }
-        .token-value { display: block; padding: 0.5rem; background: #fff; border: 1px solid #ccc; word-break: break-all; font-size: 0.9rem; }
-        .token-warning { color: #dc143c; font-weight: bold; }
-        .error-message { color: #dc143c; font-size: 1.1rem; }
-        header { overflow: hidden; }
-        footer { margin-top: 3rem; text-align: center; font-size: 0.8rem; color: #999; }
-    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50: '#eef2ff', 100: '#e0e7ff', 200: '#c7d2fe', 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca', 800: '#3730a3' }
+                    }
+                }
+            }
+        }
+    </script>
 </head>
-<body>
-    <header>
-        <div class="user-nav">
-            {% if current_user %}
-                {{ current_user.username }}
-                <a href="{{ url_for('auth.tokens_page') }}">API Tokens</a>
-                <a href="{{ url_for('auth.logout') }}">Logout</a>
-            {% else %}
-                <a href="{{ url_for('auth.login') }}">Login</a>
-            {% endif %}
+<body class="bg-slate-100 text-gray-900 min-h-screen flex flex-col">
+    <header class="bg-slate-900 shadow-lg">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+            <a href="/deployments" class="text-xl font-semibold text-white hover:text-brand-400 transition-colors">
+                Saorsa Testnet Registry
+            </a>
+            <nav class="flex items-center gap-4 text-sm">
+                {% if current_user %}
+                    <span class="text-slate-400">{{ current_user.username }}</span>
+                    <a href="{{ url_for('auth.tokens_page') }}" class="text-slate-300 hover:text-white transition-colors">API Tokens</a>
+                    <a href="{{ url_for('auth.logout') }}" class="text-slate-300 hover:text-white transition-colors">Logout</a>
+                {% else %}
+                    <a href="{{ url_for('auth.login') }}" class="text-slate-300 hover:text-white transition-colors">Login</a>
+                {% endif %}
+            </nav>
         </div>
-        <h1><a href="/deployments" style="text-decoration:none;color:inherit;">Saorsa Testnet Registry</a></h1>
     </header>
-    <main>
+    <main class="flex-1 max-w-6xl mx-auto px-4 sm:px-6 py-8 w-full">
         {% block content %}{% endblock %}
     </main>
-    <footer>
-        <p>v{{ app_version }}</p>
+    <footer class="border-t border-slate-200 bg-white">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-4 text-center text-xs text-slate-400">
+            v{{ app_version }}
+        </div>
     </footer>
 </body>
 </html>

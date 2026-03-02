@@ -23,15 +23,27 @@ class TestMapGithubStatus:
         result = _map_github_status(gh_run)
         assert result == (DeploymentStatus.RUNNING, "running")
 
-    def test_map_github_status_completed_success_returns_stopped(self):
+    def test_map_github_status_completed_success_returns_running(self):
         gh_run = {"status": "completed", "conclusion": "success"}
         result = _map_github_status(gh_run)
-        assert result == (DeploymentStatus.STOPPED, "completed")
+        assert result == (DeploymentStatus.RUNNING, "completed")
 
     def test_map_github_status_completed_failure_returns_failed(self):
         gh_run = {"status": "completed", "conclusion": "failure"}
         result = _map_github_status(gh_run)
         assert result == (DeploymentStatus.FAILED, "failed")
+
+    def test_map_github_status_in_progress_while_destroying_returns_none(self):
+        gh_run = {"status": "in_progress", "conclusion": None}
+        result = _map_github_status(gh_run, DeploymentStatus.DESTROYING)
+        assert result is None
+
+    def test_map_github_status_completed_success_while_destroying_returns_destroyed(
+        self,
+    ):
+        gh_run = {"status": "completed", "conclusion": "success"}
+        result = _map_github_status(gh_run, DeploymentStatus.DESTROYING)
+        assert result == (DeploymentStatus.DESTROYED, "destroyed")
 
 
 # ---------------------------------------------------------------------------
@@ -115,13 +127,13 @@ class TestPollOnce:
 
         db.expire_all()
         updated = db.query(Deployment).filter_by(name="TEST-01").one()
-        assert updated.status == DeploymentStatus.STOPPED
+        assert updated.status == DeploymentStatus.RUNNING
 
         events = db.query(DeploymentEvent).filter_by(deployment_id=updated.id).all()
         assert len(events) == 1
         assert events[0].event_type == "completed"
         assert events[0].details["previous_status"] == "running"
-        assert events[0].details["new_status"] == "stopped"
+        assert events[0].details["new_status"] == "running"
 
     @patch("saorsa_web.monitor.get_workflow_run")
     def test_poll_once_continues_on_github_api_error(self, mock_get_run, db):

@@ -1,0 +1,5 @@
+{% for deployment in deployments %}
+{% include "deployments/_row.html" %}
+{% else %}
+<tr><td colspan="5" class="px-4 py-8 text-center text-sm text-gray-400">No deployments found.</td></tr>
+{% endfor %}

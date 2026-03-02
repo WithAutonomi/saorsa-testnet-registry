@@ -3,24 +3,27 @@
 {% block title %}Deployments - Saorsa Testnet Registry{% endblock %}
 
 {% block content %}
-<h2>Deployments</h2>
-<table>
-    <thead>
-        <tr>
-            <th>ID</th>
-            <th>Name</th>
-            <th>Status</th>
-            <th>Created</th>
-            <th>Updated</th>
-            <th>Actions</th>
-        </tr>
-    </thead>
-    <tbody id="deployment-list" hx-get="/api/deployments" hx-trigger="every 30s" hx-swap="none">
-        {% for deployment in deployments %}
-        {% include "deployments/_row.html" %}
-        {% else %}
-        <tr><td colspan="6">No deployments found.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="flex items-center justify-between mb-6">
+    <h2 class="text-2xl font-semibold text-gray-900">Deployments</h2>
+</div>
+<div class="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Updated</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+        </thead>
+        <tbody id="deployment-list" class="divide-y divide-gray-100" hx-get="/deployments" hx-trigger="every 10s" hx-swap="innerHTML">
+            {% for deployment in deployments %}
+            {% include "deployments/_row.html" %}
+            {% else %}
+            <tr><td colspan="5" class="px-4 py-8 text-center text-sm text-gray-400">No deployments found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 {% endblock %}

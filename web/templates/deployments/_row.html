@@ -1,10 +1,41 @@
-<tr id="deployment-{{ deployment.id }}">
-    <td>{{ deployment.id }}</td>
-    <td>{{ deployment.name }}</td>
-    <td class="status-{{ deployment.status.value }}">{{ deployment.status.value }}</td>
-    <td>{{ deployment.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-    <td>{{ deployment.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
-    <td>
+<tr id="deployment-{{ deployment.id }}" class="hover:bg-gray-50 transition-colors">
+    <td class="px-4 py-3 text-sm font-medium text-gray-900">
+        <a href="/deployments/{{ deployment.id }}" class="hover:text-brand-600 transition-colors">
+            {{ deployment.name }}
+        </a>
+    </td>
+    <td class="px-4 py-3 text-sm">
+        {% set status = deployment.status.value %}
+        {% if status == 'running' %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 ring-1 ring-inset ring-green-600/20">
+            <span class="h-1.5 w-1.5 rounded-full bg-green-500"></span>Running
+        </span>
+        {% elif status == 'pending' %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20">
+            <span class="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"></span>Pending
+        </span>
+        {% elif status == 'failed' %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20">
+            <span class="h-1.5 w-1.5 rounded-full bg-red-500"></span>Failed
+        </span>
+        {% elif status == 'destroying' %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-600/20">
+            <span class="h-1.5 w-1.5 rounded-full bg-orange-500 animate-pulse"></span>Destroying
+        </span>
+        {% elif status == 'destroyed' %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500 ring-1 ring-inset ring-gray-500/20">
+            <span class="h-1.5 w-1.5 rounded-full bg-gray-400"></span>Destroyed
+        </span>
+        {% else %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 ring-1 ring-inset ring-gray-500/20">
+            {{ status }}
+        </span>
+        {% endif %}
+    </td>
+    <td class="px-4 py-3 text-sm text-gray-500">{{ deployment.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    <td class="px-4 py-3 text-sm text-gray-500">{{ deployment.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    <td class="px-4 py-3 text-sm">
+        <div class="flex items-center gap-2">
         {% if deployment.status.value in ('running', 'stopped') %}
         <button hx-post="/api/deployments/destroy"
                 hx-vals='{"name": "{{ deployment.name }}"}'
@@ -12,9 +43,10 @@
                 hx-target="#deployment-{{ deployment.id }}"
                 hx-swap="outerHTML"
                 hx-headers='{"Content-Type": "application/json"}'
-                class="btn-destroy">
+                class="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 ring-1 ring-inset ring-red-600/20 transition-colors">
             Destroy
         </button>
         {% endif %}
+        </div>
     </td>
 </tr>

@@ -17,7 +17,7 @@ _STATUS_MAP = {
 }
 
 _CONCLUSION_MAP = {
-    "success": (DeploymentStatus.STOPPED, "completed"),
+    "success": (DeploymentStatus.RUNNING, "completed"),
     "failure": (DeploymentStatus.FAILED, "failed"),
     "cancelled": (DeploymentStatus.FAILED, "failed"),
 }
@@ -38,14 +38,15 @@ def _map_github_status(
 
     Uses *deployment_status* to pick the right conclusion map: deployments
     in DESTROYING state use _DESTROY_CONCLUSION_MAP so that a successful
-    workflow completion becomes DESTROYED rather than STOPPED.
+    workflow completion becomes DESTROYED.  Normal deployments stay RUNNING
+    after a successful workflow (the testnet is live).
 
     Returns None if the status/conclusion combination is not recognised.
     """
     status = gh_run.get("status")
     conclusion = gh_run.get("conclusion")
 
-    if status in _STATUS_MAP:
+    if status in _STATUS_MAP and deployment_status != DeploymentStatus.DESTROYING:
         return _STATUS_MAP[status]
 
     if status == "completed":
@@ -108,14 +109,32 @@ def _poll_once() -> None:
 
         new_status, event_type = mapped
 
+        # Terminal events worth recording even when status doesn't change
+        # (e.g. workflow "completed" while deployment stays RUNNING).
+        _TERMINAL_EVENTS = {"completed", "destroyed", "failed"}
+
         if new_status == deployment.status:
-            logger.debug(
-                "Deployment %s status unchanged (%s)", deployment.name, new_status.value
+            if event_type not in _TERMINAL_EVENTS:
+                logger.debug(
+                    "Deployment %s status unchanged (%s)",
+                    deployment.name,
+                    new_status.value,
+                )
+                continue
+            already_recorded = any(
+                e.event_type == event_type for e in deployment.events
             )
-            continue
+            if already_recorded:
+                logger.debug(
+                    "Deployment %s event %s already recorded",
+                    deployment.name,
+                    event_type,
+                )
+                continue
 
         old_status = deployment.status
-        deployment.status = new_status
+        if new_status != deployment.status:
+            deployment.status = new_status
 
         event = DeploymentEvent(
             deployment_id=deployment.id,

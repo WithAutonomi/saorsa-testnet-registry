@@ -337,17 +337,23 @@ async def test_get_deployment_calls_correct_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_get_deployment_reports_finished_status():
-    """When a deployment has stopped, the result includes 'has finished with
-    status: stopped'."""
+async def test_get_deployment_reports_running_completed():
+    """When a deployment is running with a completed event, the result
+    indicates the workflow completed successfully."""
     response_data = {
         "id": 6,
         "name": "DEV-06",
-        "status": "stopped",
+        "status": "running",
         "workflow_run_id": 66,
         "created_at": "2026-01-01T00:00:00",
         "updated_at": "2026-01-01T00:00:00",
-        "events": [],
+        "events": [
+            {
+                "event_type": "completed",
+                "created_at": "2026-01-01T00:05:00",
+                "details": {},
+            }
+        ],
     }
     mock_response = _make_mock_response(status_code=200, json_data=response_data)
     mock_client = _make_mock_client(get_response=mock_response)
@@ -357,7 +363,7 @@ async def test_get_deployment_reports_finished_status():
 
         result = await get_deployment(deployment_id=6)
 
-    assert "has finished with status: stopped" in result
+    assert "running (workflow completed successfully)" in result
 
 
 @pytest.mark.asyncio

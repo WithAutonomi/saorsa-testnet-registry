@@ -160,19 +160,19 @@ After creating a deployment, use the get_deployment tool with the
 deployment ID to monitor progress. The background monitor polls GitHub
 Actions every 60 seconds and updates the deployment status automatically.
 
-Deployment statuses: pending -> running -> stopped (success) or failed.
+Deployment statuses: pending -> running (success) or failed.
 
 ## Destroying Deployments
 
 Use the destroy_deployment tool with the deployment name to tear down
-infrastructure. The deployment must be in 'running' or 'stopped' state.
+infrastructure. The deployment must be in 'running' state.
 
 The destroy process:
 1. Dispatches the destroy-testnet.yml workflow
 2. Sets status to 'destroying'
 3. Monitor tracks the workflow and sets status to 'destroyed' on success
 
-Destroy statuses: running/stopped -> destroying -> destroyed (success) or failed.
+Destroy statuses: running -> destroying -> destroyed (success) or failed.
 """
 
 
@@ -265,7 +265,7 @@ async def destroy_deployment(name: str) -> str:
     """Destroy a testnet deployment and tear down its infrastructure.
 
     Dispatches the destroy workflow for the named deployment. The deployment
-    must be in 'running' or 'stopped' state.
+    must be in 'running' state.
 
     Args:
         name: Name of the deployment to destroy (e.g. "DEV-01")
@@ -301,8 +301,8 @@ async def get_deployment(deployment_id: int) -> str:
     """Get details and track progress of a specific deployment.
 
     Returns status, workflow info, and events. Use this to poll for
-    deployment completion — terminal statuses (stopped, failed, destroyed)
-    indicate the deployment has finished.
+    deployment completion — terminal statuses (failed, destroyed) indicate
+    the deployment workflow has finished with an error or was torn down.
 
     Args:
         deployment_id: The deployment ID
@@ -329,8 +329,10 @@ async def get_deployment(deployment_id: int) -> str:
         if latest.get("details") and "html_url" in latest["details"]:
             lines.append(f"  Workflow URL: {latest['details']['html_url']}")
 
-    if status in ("stopped", "failed", "destroyed"):
+    if status in ("failed", "destroyed"):
         lines.append(f"\nDeployment has finished with status: {status}")
+    elif status == "running" and any(e["event_type"] == "completed" for e in events):
+        lines.append("\nDeployment is running (workflow completed successfully).")
     elif status not in ("pending",):
         lines.append(
             f"\nDeployment is still {status}. Poll again to check for updates."
