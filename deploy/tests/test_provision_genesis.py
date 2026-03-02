@@ -8,6 +8,7 @@ from saorsa_deploy.binary_source import get_release_url
 from saorsa_deploy.cmd.provision_genesis import cmd_provision_genesis
 from saorsa_deploy.provisioning.genesis import (
     BINARY_INSTALL_PATH,
+    ROOT_DIR,
     SERVICE_NAME,
     SaorsaGenesisNodeProvisioner,
     _build_exec_start,
@@ -18,7 +19,14 @@ from saorsa_deploy.provisioning.genesis import (
 class TestBuildExecStart:
     def test_minimal_flags(self):
         result = _build_exec_start()
-        assert result == f"{BINARY_INSTALL_PATH} --ip-version ipv4 --disable-payment-verification"
+        assert result == (
+            f"{BINARY_INSTALL_PATH} --root-dir {ROOT_DIR}"
+            " --ip-version ipv4 --disable-payment-verification"
+        )
+
+    def test_root_dir_always_present(self):
+        result = _build_exec_start()
+        assert f"--root-dir {ROOT_DIR}" in result
 
     def test_all_flags(self):
         result = _build_exec_start(port=10000, ip_version="ipv4", log_level="debug", testnet=True)

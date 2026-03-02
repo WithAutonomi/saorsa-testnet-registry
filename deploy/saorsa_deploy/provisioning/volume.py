@@ -2,7 +2,7 @@ from pyinfra.api import State
 from pyinfra.api.operation import add_op
 from pyinfra.operations import server
 
-MOUNT_POINT = "/mnt/soarsa-node-storage"
+MOUNT_POINT = "/mnt/saorsa-node-storage"
 VOLUME_DEVICE_GLOB = "/dev/disk/by-id/scsi-0DO_Volume_*"
 
 

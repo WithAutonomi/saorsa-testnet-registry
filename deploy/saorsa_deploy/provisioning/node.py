@@ -11,12 +11,13 @@ from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
 )
-from saorsa_deploy.provisioning.volume import build_mount_volume_command
+from saorsa_deploy.provisioning.volume import MOUNT_POINT, build_mount_volume_command
 
 
 def _build_node_exec_start(
     bootstrap_ip,
     bootstrap_port,
+    root_dir,
     port=None,
     ip_version="ipv4",
     log_level=None,
@@ -24,6 +25,7 @@ def _build_node_exec_start(
 ):
     """Build the ExecStart command line for a node service."""
     parts = [BINARY_INSTALL_PATH]
+    parts.append(f"--root-dir {root_dir}")
     parts.append(f"--bootstrap {bootstrap_ip}:{bootstrap_port}")
     if port is not None:
         parts.append(f"--port {port}")
@@ -153,9 +155,11 @@ class SaorsaNodeProvisioner:
                 service_name = f"saorsa-node-{i + 1}"
                 service_names.append(service_name)
                 node_port = (self.initial_port + i) if self.initial_port is not None else None
+                root_dir = f"{MOUNT_POINT}/data/{service_name}"
                 exec_start = _build_node_exec_start(
                     bootstrap_ip=self.bootstrap_ip,
                     bootstrap_port=self.bootstrap_port,
+                    root_dir=root_dir,
                     port=node_port,
                     ip_version=self.ip_version,
                     log_level=self.log_level,
