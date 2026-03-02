@@ -8,16 +8,18 @@ from pyinfra.operations import files, server, systemd
 from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
-from saorsa_deploy.provisioning.volume import build_mount_volume_command
+from saorsa_deploy.provisioning.volume import MOUNT_POINT, build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/saorsa-node"
 SERVICE_NAME = "saorsa-genesis-node"
 UNIT_FILE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
+ROOT_DIR = f"{MOUNT_POINT}/data/{SERVICE_NAME}"
 
 
 def _build_exec_start(port=None, ip_version="ipv4", log_level=None, testnet=False) -> str:
     """Build the ExecStart command line for the systemd service."""
     parts = [BINARY_INSTALL_PATH]
+    parts.append(f"--root-dir {ROOT_DIR}")
     if port:
         parts.append(f"--port {port}")
     if ip_version:

@@ -10,50 +10,58 @@ from saorsa_deploy.provisioning.node import (
     _build_node_exec_start,
     _build_node_unit_file,
 )
+from saorsa_deploy.provisioning.volume import MOUNT_POINT
 
 
 class TestBuildNodeExecStart:
+    ROOT = f"{MOUNT_POINT}/data/saorsa-node-1"
+
     def test_includes_bootstrap_address(self):
-        result = _build_node_exec_start("10.0.0.1", 5000)
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--bootstrap 10.0.0.1:5000" in result
 
+    def test_includes_root_dir(self):
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        assert f"--root-dir {self.ROOT}" in result
+
     def test_includes_port_when_specified(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, port=6000)
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, port=6000)
         assert "--port 6000" in result
 
     def test_no_port_when_not_specified(self):
-        result = _build_node_exec_start("10.0.0.1", 5000)
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--port" not in result
 
     def test_default_ip_version_is_ipv4(self):
-        result = _build_node_exec_start("10.0.0.1", 5000)
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--ip-version ipv4" in result
 
     def test_ip_version_can_be_overridden(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, ip_version="ipv6")
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, ip_version="ipv6")
         assert "--ip-version ipv6" in result
         assert "--ip-version ipv4" not in result
 
     def test_includes_log_level(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, log_level="debug")
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, log_level="debug")
         assert "--log-level debug" in result
 
     def test_includes_testnet_flag(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, testnet=True)
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, testnet=True)
         assert "--network-mode testnet" in result
 
     def test_no_network_mode_when_not_testnet(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, testnet=False)
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, testnet=False)
         assert "--network-mode" not in result
 
     def test_always_includes_disable_payment_verification(self):
-        result = _build_node_exec_start("10.0.0.1", 5000)
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--disable-payment-verification" in result
 
     def test_all_flags(self):
         result = _build_node_exec_start(
-            "10.0.0.1", 5000, port=6000, ip_version="v4", log_level="info", testnet=True
+            "10.0.0.1", 5000, self.ROOT, port=6000, ip_version="v4", log_level="info", testnet=True
         )
+        assert f"--root-dir {self.ROOT}" in result
         assert "--bootstrap 10.0.0.1:5000" in result
         assert "--port 6000" in result
         assert "--ip-version v4" in result
