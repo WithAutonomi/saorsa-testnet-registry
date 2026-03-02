@@ -187,7 +187,7 @@ class TestSaorsaGenesisNodeProvisioner:
         node.execute()
 
         mock_connect.assert_called_once()
-        assert mock_add_op.call_count == 4
+        assert mock_add_op.call_count == 5
         mock_run_ops.assert_called_once()
         mock_disconnect.assert_called_once()
 
@@ -268,8 +268,8 @@ class TestSaorsaGenesisNodeProvisioner:
         node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
         node.execute()
 
-        # The 4th add_op call should be for enabling/starting the service
-        service_call = mock_add_op.call_args_list[3]
+        # The 5th add_op call should be for enabling/starting the service
+        service_call = mock_add_op.call_args_list[4]
         assert service_call.kwargs.get("service") == SERVICE_NAME
         assert service_call.kwargs.get("running") is True
         assert service_call.kwargs.get("enabled") is True
@@ -297,11 +297,12 @@ class TestSaorsaGenesisNodeProvisioner:
         node.execute()
 
         op_types = [call[0][1] for call in mock_add_op.call_args_list]
-        # server.shell (guarded), files.put, systemd.daemon_reload, systemd.service
+        # volume mount, binary install, files.put, daemon_reload, service
         assert op_types[0] is server.shell
-        assert op_types[1] is files.put
-        assert op_types[2] is systemd.daemon_reload
-        assert op_types[3] is systemd.service
+        assert op_types[1] is server.shell
+        assert op_types[2] is files.put
+        assert op_types[3] is systemd.daemon_reload
+        assert op_types[4] is systemd.service
 
     @patch("saorsa_deploy.provisioning.genesis.disconnect_all")
     @patch("saorsa_deploy.provisioning.genesis.run_ops")
@@ -325,7 +326,7 @@ class TestSaorsaGenesisNodeProvisioner:
         node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
         node.execute()
 
-        download_call = mock_add_op.call_args_list[0]
+        download_call = mock_add_op.call_args_list[1]
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
         assert commands[0].startswith("test -f /usr/local/bin/saorsa-node")

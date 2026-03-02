@@ -8,6 +8,7 @@ from pyinfra.operations import files, server, systemd
 from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
+from saorsa_deploy.provisioning.volume import build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/saorsa-node"
 SERVICE_NAME = "saorsa-genesis-node"
@@ -107,6 +108,13 @@ class SaorsaGenesisNodeProvisioner:
         connect_all(state)
 
         try:
+            add_op(
+                state,
+                server.shell,
+                name="Mount attached storage volume",
+                commands=[build_mount_volume_command()],
+            )
+
             if self.binary_is_archive:
                 install_cmd = (
                     f"test -f {BINARY_INSTALL_PATH} "

@@ -11,6 +11,7 @@ from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
 )
+from saorsa_deploy.provisioning.volume import build_mount_volume_command
 
 
 def _build_node_exec_start(
@@ -112,6 +113,13 @@ class SaorsaNodeProvisioner:
         try:
             self.console.print(f"Connecting to {len(self.host_ips)} host(s) as root...")
             connect_all(state)
+
+            add_op(
+                state,
+                server.shell,
+                name="Mount attached storage volume",
+                commands=[build_mount_volume_command()],
+            )
 
             if self.binary_is_archive:
                 install_cmd = (
