@@ -21,7 +21,8 @@ on:
               "region": null,             (optional) Region name
               "node_version": "0.3.3",    (optional) Specific node release version
               "branch_name": null,        (optional) Node repo branch to build from
-              "repo_owner": "maidsafe"    (optional) Repo owner for branch builds
+              "repo_owner": "maidsafe",   (optional) Repo owner for branch builds
+              "disable_log_forwarding": false (optional) Disable Telegraf log forwarding
             }
           Required fields: name, vm_count, node_count, genesis_port
           Note: node_version and branch_name are mutually exclusive
@@ -60,6 +61,7 @@ jobs:
           echo "node_version=$(echo "$DEPLOY_ARGS" | jq -r '.node_version // empty')" >> "$GITHUB_OUTPUT"
           echo "branch_name=$(echo "$DEPLOY_ARGS" | jq -r '.branch_name // empty')" >> "$GITHUB_OUTPUT"
           echo "repo_owner=$(echo "$DEPLOY_ARGS" | jq -r '.repo_owner // empty')" >> "$GITHUB_OUTPUT"
+          echo "disable_log_forwarding=$(echo "$DEPLOY_ARGS" | jq -r '.disable_log_forwarding // empty')" >> "$GITHUB_OUTPUT"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -167,6 +169,27 @@ jobs:
           fi
           if [ -n "${{ steps.args.outputs.repo_owner }}" ]; then
             CMD="$CMD --repo-owner ${{ steps.args.outputs.repo_owner }}"
+          fi
+
+          echo "Running: $CMD"
+          eval "$CMD"
+
+      - name: Provision Telegraf
+        if: steps.args.outputs.disable_log_forwarding != 'true'
+        run: |
+          CMD="saorsa-deploy provision-telegraf"
+          CMD="$CMD --name ${{ steps.args.outputs.name }}"
+          CMD="$CMD --elasticsearch-url https://logs.autonomi.com/es/api"
+          CMD="$CMD --elasticsearch-username ${{ secrets.SAORSA_TELEGRAF_ELASTICSEARCH_USERNAME }}"
+          CMD="$CMD --elasticsearch-password ${{ secrets.SAORSA_TELEGRAF_ELASTICSEARCH_PASSWORD }}"
+
+          if [ -n "${{ steps.args.outputs.node_version }}" ]; then
+            CMD="$CMD --node-version ${{ steps.args.outputs.node_version }}"
+          fi
+          if [ -n "${{ steps.args.outputs.branch_name }}" ]; then
+            CMD="$CMD --branch-commit ${{ steps.args.outputs.branch_name }}"
+            REPO_OWNER="${{ steps.args.outputs.repo_owner }}"
+            CMD="$CMD --repo-owner ${REPO_OWNER:-maidsafe}"
           fi
 
           echo "Running: $CMD"

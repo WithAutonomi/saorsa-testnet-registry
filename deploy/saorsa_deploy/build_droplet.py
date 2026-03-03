@@ -86,7 +86,8 @@ def create_build_vm(repo_owner: str, branch_name: str) -> dict:
     Returns a dict with keys: droplet_id, droplet_name, ip_address.
     """
     headers = _get_headers()
-    droplet_name = f"saorsa-build-{repo_owner}-{branch_name}"
+    safe_branch = branch_name.replace("_", "-").replace("/", "-")
+    droplet_name = f"saorsa-build-{repo_owner}-{safe_branch}"
 
     existing = _find_droplet_by_name(droplet_name, headers)
     if existing:

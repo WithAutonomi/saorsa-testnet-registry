@@ -14,6 +14,7 @@ from saorsa_deploy.provisioning.genesis import (
     _build_exec_start,
     _build_unit_file,
 )
+from saorsa_deploy.provisioning.volume import LOG_DIR
 
 
 class TestBuildExecStart:
@@ -21,7 +22,10 @@ class TestBuildExecStart:
         result = _build_exec_start()
         assert result == (
             f"{BINARY_INSTALL_PATH} --root-dir {ROOT_DIR}"
-            " --ip-version ipv4 --disable-payment-verification"
+            " --ip-version ipv4"
+            " --log-format json"
+            f" --log-dir {LOG_DIR}/{SERVICE_NAME}"
+            " --disable-payment-verification"
         )
 
     def test_root_dir_always_present(self):
@@ -195,7 +199,8 @@ class TestSaorsaGenesisNodeProvisioner:
         node.execute()
 
         mock_connect.assert_called_once()
-        assert mock_add_op.call_count == 5
+        # 1 volume-mount + 1 log-dir + 1 download + 1 files.put + 1 daemon_reload + 1 service = 6
+        assert mock_add_op.call_count == 6
         mock_run_ops.assert_called_once()
         mock_disconnect.assert_called_once()
 
@@ -276,8 +281,8 @@ class TestSaorsaGenesisNodeProvisioner:
         node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
         node.execute()
 
-        # The 5th add_op call should be for enabling/starting the service
-        service_call = mock_add_op.call_args_list[4]
+        # The 6th add_op call should be for enabling/starting the service
+        service_call = mock_add_op.call_args_list[5]
         assert service_call.kwargs.get("service") == SERVICE_NAME
         assert service_call.kwargs.get("running") is True
         assert service_call.kwargs.get("enabled") is True
@@ -305,12 +310,13 @@ class TestSaorsaGenesisNodeProvisioner:
         node.execute()
 
         op_types = [call[0][1] for call in mock_add_op.call_args_list]
-        # volume mount, binary install, files.put, daemon_reload, service
+        # volume mount, log-dir, binary install, files.put, daemon_reload, service
         assert op_types[0] is server.shell
         assert op_types[1] is server.shell
-        assert op_types[2] is files.put
-        assert op_types[3] is systemd.daemon_reload
-        assert op_types[4] is systemd.service
+        assert op_types[2] is server.shell
+        assert op_types[3] is files.put
+        assert op_types[4] is systemd.daemon_reload
+        assert op_types[5] is systemd.service
 
     @patch("saorsa_deploy.provisioning.genesis.disconnect_all")
     @patch("saorsa_deploy.provisioning.genesis.run_ops")
@@ -334,7 +340,7 @@ class TestSaorsaGenesisNodeProvisioner:
         node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
         node.execute()
 
-        download_call = mock_add_op.call_args_list[1]
+        download_call = mock_add_op.call_args_list[2]
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
         assert commands[0].startswith("test -f /usr/local/bin/saorsa-node")

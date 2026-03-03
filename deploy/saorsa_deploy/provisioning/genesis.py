@@ -8,7 +8,7 @@ from pyinfra.operations import files, server, systemd
 from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
-from saorsa_deploy.provisioning.volume import MOUNT_POINT, build_mount_volume_command
+from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/saorsa-node"
 SERVICE_NAME = "saorsa-genesis-node"
@@ -26,6 +26,8 @@ def _build_exec_start(port=None, ip_version="ipv4", log_level=None, testnet=Fals
         parts.append(f"--ip-version {ip_version}")
     if log_level:
         parts.append(f"--log-level {log_level}")
+    parts.append("--log-format json")
+    parts.append(f"--log-dir {LOG_DIR}/{SERVICE_NAME}")
     parts.append("--disable-payment-verification")
     if testnet:
         parts.append("--network-mode testnet")
@@ -115,6 +117,13 @@ class SaorsaGenesisNodeProvisioner:
                 server.shell,
                 name="Mount attached storage volume",
                 commands=[build_mount_volume_command()],
+            )
+
+            add_op(
+                state,
+                server.shell,
+                name="Create log directory",
+                commands=[f"mkdir -p {LOG_DIR}/{SERVICE_NAME}"],
             )
 
             if self.binary_is_archive:

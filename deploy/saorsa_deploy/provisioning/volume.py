@@ -3,6 +3,7 @@ from pyinfra.api.operation import add_op
 from pyinfra.operations import server
 
 MOUNT_POINT = "/mnt/saorsa-node-storage"
+LOG_DIR = f"{MOUNT_POINT}/log"
 VOLUME_DEVICE_GLOB = "/dev/disk/by-id/scsi-0DO_Volume_*"
 
 
