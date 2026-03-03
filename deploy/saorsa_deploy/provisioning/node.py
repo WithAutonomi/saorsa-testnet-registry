@@ -11,13 +11,14 @@ from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
 )
-from saorsa_deploy.provisioning.volume import MOUNT_POINT, build_mount_volume_command
+from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 
 def _build_node_exec_start(
     bootstrap_ip,
     bootstrap_port,
     root_dir,
+    log_dir=None,
     port=None,
     ip_version="ipv4",
     log_level=None,
@@ -33,6 +34,9 @@ def _build_node_exec_start(
         parts.append(f"--ip-version {ip_version}")
     if log_level:
         parts.append(f"--log-level {log_level}")
+    parts.append("--log-format json")
+    if log_dir:
+        parts.append(f"--log-dir {log_dir}")
     parts.append("--disable-payment-verification")
     if testnet:
         parts.append("--network-mode testnet")
@@ -123,6 +127,17 @@ class SaorsaNodeProvisioner:
                 commands=[build_mount_volume_command()],
             )
 
+            mkdir_commands = [f"mkdir -p {LOG_DIR}"]
+            for i in range(self.node_count):
+                mkdir_commands.append(f"mkdir -p {LOG_DIR}/saorsa-node-{i + 1}")
+
+            add_op(
+                state,
+                server.shell,
+                name="Create log directories",
+                commands=mkdir_commands,
+            )
+
             if self.binary_is_archive:
                 install_cmd = (
                     f"test -f {BINARY_INSTALL_PATH} "
@@ -156,10 +171,12 @@ class SaorsaNodeProvisioner:
                 service_names.append(service_name)
                 node_port = (self.initial_port + i) if self.initial_port is not None else None
                 root_dir = f"{MOUNT_POINT}/data/{service_name}"
+                log_dir = f"{LOG_DIR}/{service_name}"
                 exec_start = _build_node_exec_start(
                     bootstrap_ip=self.bootstrap_ip,
                     bootstrap_port=self.bootstrap_port,
                     root_dir=root_dir,
+                    log_dir=log_dir,
                     port=node_port,
                     ip_version=self.ip_version,
                     log_level=self.log_level,

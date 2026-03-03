@@ -57,7 +57,7 @@ class SaorsaNodeBuilder:
                 state,
                 server.shell,
                 name="Wait for cloud-init to finish",
-                commands=["cloud-init status --wait"],
+                commands=["cloud-init status --wait || true"],
             )
 
             add_op(

@@ -156,8 +156,8 @@ class TestSaorsaNodeProvisioner:
         provisioner.execute()
 
         mock_connect.assert_called_once()
-        # 1 volume-mount + 1 download + 1 write-units + 1 enable-and-start = 4
-        assert mock_add_op.call_count == 4
+        # 1 volume-mount + 1 log-dirs + 1 download + 1 write-units + 1 enable-and-start = 5
+        assert mock_add_op.call_count == 5
         mock_run_ops.assert_called_once()
         mock_disconnect.assert_called_once()
 
@@ -260,8 +260,8 @@ class TestSaorsaNodeProvisioner:
         )
         provisioner.execute()
 
-        # 1 volume-mount + 1 download + 1 write-units + 1 enable-and-start = 4
-        assert mock_add_op.call_count == 4
+        # 1 volume-mount + 1 log-dirs + 1 download + 1 write-units + 1 enable-and-start = 5
+        assert mock_add_op.call_count == 5
 
     @patch("saorsa_deploy.provisioning.node.disconnect_all")
     @patch("saorsa_deploy.provisioning.node.run_ops")
@@ -357,7 +357,7 @@ class TestSaorsaNodeProvisioner:
         )
         provisioner.execute()
 
-        download_call = mock_add_op.call_args_list[1]
+        download_call = mock_add_op.call_args_list[2]
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
         assert commands[0].startswith("test -f /usr/local/bin/saorsa-node")
@@ -392,8 +392,8 @@ class TestSaorsaNodeProvisioner:
         )
         provisioner.execute()
 
-        # Fourth add_op call is enable-and-start (after volume mount, download, write units)
-        enable_call = mock_add_op.call_args_list[3]
+        # Fifth add_op call is enable-and-start
+        enable_call = mock_add_op.call_args_list[4]
         commands = enable_call.kwargs.get("commands", [])
         # First command is daemon-reload, rest are guarded service starts
         assert commands[0] == "systemctl daemon-reload"

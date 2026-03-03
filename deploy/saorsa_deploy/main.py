@@ -200,6 +200,60 @@ def main():
         help="Run the node with the --testnet flag",
     )
 
+    # === provision-telegraf ===
+    telegraf_parser = subparsers.add_parser(
+        "provision-telegraf",
+        help="Install and configure Telegraf for Elasticsearch log forwarding",
+    )
+    telegraf_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra command)",
+    )
+    telegraf_parser.add_argument(
+        "--elasticsearch-url",
+        type=str,
+        required=True,
+        help="Elasticsearch endpoint URL",
+    )
+    telegraf_parser.add_argument(
+        "--elasticsearch-username",
+        type=str,
+        required=True,
+        help="Elasticsearch username",
+    )
+    telegraf_parser.add_argument(
+        "--elasticsearch-password",
+        type=str,
+        required=True,
+        help="Elasticsearch password",
+    )
+    telegraf_parser.add_argument(
+        "--node-version",
+        type=str,
+        default=None,
+        help="Version of the deployed saorsa-node binary",
+    )
+    telegraf_parser.add_argument(
+        "--branch-commit",
+        type=str,
+        default=None,
+        help="Git branch or commit of the deployed binary",
+    )
+    telegraf_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        default="maidsafe",
+        help="Repository owner for branch builds (default: maidsafe)",
+    )
+    telegraf_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -226,6 +280,10 @@ def main():
         from saorsa_deploy.cmd.provision_genesis import cmd_provision_genesis
 
         cmd_provision_genesis(args)
+    elif args.command == "provision-telegraf":
+        from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
+
+        cmd_provision_telegraf(args)
 
 
 if __name__ == "__main__":
