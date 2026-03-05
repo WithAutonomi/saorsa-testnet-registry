@@ -72,11 +72,10 @@ def main() -> None:
         ]
     )
     run(["git", "commit", "-m", f"chore: bump version to {version}"])
-    run(["git", "tag", tag])
+    run(["git", "tag", "-a", tag, "-m", tag])
 
     print("\nPushing commit and tag...")
-    run(["git", "push"])
-    run(["git", "push", "--tags"])
+    run(["git", "push", "--follow-tags"])
 
     print(f"\nDone! Version {version} tagged as {tag} and pushed.")
 
