@@ -1,6 +1,6 @@
 """BDD-style tests for the POST /api/deployments endpoint and related routes."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from saorsa_web.github import GitHubAPIError
 from saorsa_web.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
@@ -152,7 +152,13 @@ class TestCreateDeployment:
             },
         }
 
-        response = auth_session.post("/api/deployments", json=payload)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch(
+            "saorsa_web.api.deployments.http_requests.get",
+            return_value=mock_resp,
+        ):
+            response = auth_session.post("/api/deployments", json=payload)
 
         assert response.status_code == 201
 

@@ -505,12 +505,8 @@ class TestCmdProvisionTelegraf:
             "vm_ips": {"lon1": ["10.0.0.1"]},
         }
         call_order = []
-        mock_clear_known_hosts.side_effect = lambda *a, **kw: call_order.append(
-            "clear_known_hosts"
-        )
-        mock_provisioner_cls.return_value.execute.side_effect = lambda: call_order.append(
-            "execute"
-        )
+        mock_clear_known_hosts.side_effect = lambda *a, **kw: call_order.append("clear_known_hosts")
+        mock_provisioner_cls.return_value.execute.side_effect = lambda: call_order.append("execute")
 
         args = SimpleNamespace(
             name="DEV-01",

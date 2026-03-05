@@ -17,7 +17,11 @@ ROOT_DIR = f"{MOUNT_POINT}/data/{SERVICE_NAME}"
 
 
 def _build_exec_start(
-    port=None, ip_version="ipv4", log_level=None, testnet=False, upgrade_channel=None,
+    port=None,
+    ip_version="ipv4",
+    log_level=None,
+    testnet=False,
+    upgrade_channel=None,
 ) -> str:
     """Build the ExecStart command line for the systemd service."""
     parts = [BINARY_INSTALL_PATH]

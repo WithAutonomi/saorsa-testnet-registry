@@ -88,9 +88,7 @@ def create_deployment():
 
     upgrade_channel = deploy_args.get("upgrade_channel")
     if upgrade_channel is not None and upgrade_channel not in ("beta", "stable"):
-        return jsonify(
-            {"error": "upgrade_channel must be 'beta' or 'stable'"}
-        ), 400
+        return jsonify({"error": "upgrade_channel must be 'beta' or 'stable'"}), 400
 
     branch = data.get("branch", "main")
 
