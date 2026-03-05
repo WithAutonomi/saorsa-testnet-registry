@@ -32,13 +32,14 @@ class TestCmdBuild:
             from saorsa_deploy.cmd.build import cmd_build
 
             args = SimpleNamespace(
+                name="DEV-01",
                 branch_name="feature-x",
                 repo_owner="myorg",
                 ssh_key_path="~/.ssh/id_rsa",
             )
             cmd_build(args)
 
-            mock_create.assert_called_once_with("myorg", "feature-x")
+            mock_create.assert_called_once_with("DEV-01", "myorg", "feature-x")
             mock_wait_ssh.assert_called_once_with("1.2.3.4")
             mock_clear_hosts.assert_called_once()
             mock_builder_cls.assert_called_once()
@@ -56,6 +57,7 @@ class TestCmdBuild:
         from saorsa_deploy.cmd.build import cmd_build
 
         args = SimpleNamespace(
+            name="DEV-01",
             branch_name="feature-x",
             repo_owner="myorg",
             ssh_key_path="~/.ssh/id_rsa",
@@ -91,6 +93,7 @@ class TestCmdBuild:
             from saorsa_deploy.cmd.build import cmd_build
 
             args = SimpleNamespace(
+                name="DEV-01",
                 branch_name="feature-x",
                 repo_owner="myorg",
                 ssh_key_path="~/.ssh/id_rsa",

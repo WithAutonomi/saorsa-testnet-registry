@@ -33,9 +33,9 @@ def get_release_url(version: str | None = None) -> str:
     )
 
 
-def get_custom_build_url(repo_owner: str, branch_name: str) -> str:
+def get_custom_build_url(name: str, repo_owner: str, branch_name: str) -> str:
     """Return the S3 URL for a custom-built binary."""
-    key = f"{BUILDS_KEY_PREFIX}/{repo_owner}/{branch_name}/saorsa-node"
+    key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/saorsa-node"
     return f"https://{BUILDS_BUCKET}.s3.{BUILDS_REGION}.amazonaws.com/{key}"
 
 
@@ -46,9 +46,9 @@ def check_release_exists(version: str) -> bool:
     return resp.status_code == 200
 
 
-def check_custom_build_exists(repo_owner: str, branch_name: str) -> bool:
+def check_custom_build_exists(name: str, repo_owner: str, branch_name: str) -> bool:
     """Check if a custom-built binary exists in S3."""
-    key = f"{BUILDS_KEY_PREFIX}/{repo_owner}/{branch_name}/saorsa-node"
+    key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/saorsa-node"
     s3 = boto3.client("s3", region_name=BUILDS_REGION)
     try:
         s3.head_object(Bucket=BUILDS_BUCKET, Key=key)

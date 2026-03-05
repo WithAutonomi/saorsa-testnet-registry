@@ -6,7 +6,9 @@ import pytest
 from saorsa_deploy.state import (
     S3_BUCKET,
     S3_KEY_PREFIX,
+    check_terraform_state_exists,
     delete_deployment_state,
+    delete_terraform_state,
     load_deployment_state,
     save_deployment_state,
     update_deployment_state,
@@ -155,3 +157,29 @@ class TestDeleteDeploymentState:
             Bucket=S3_BUCKET,
             Key=f"{S3_KEY_PREFIX}/DEV-01.json",
         )
+
+
+class TestDeleteTerraformState:
+    def test_deletes_state_key_from_s3(self, mock_s3):
+        delete_terraform_state("saorsa-deploy/do-DEV-01-lon1.tfstate")
+
+        mock_s3.delete_object.assert_called_once_with(
+            Bucket=S3_BUCKET,
+            Key="saorsa-deploy/do-DEV-01-lon1.tfstate",
+        )
+
+
+class TestCheckTerraformStateExists:
+    def test_returns_true_when_exists(self, mock_s3):
+        assert check_terraform_state_exists("saorsa-deploy/do-DEV-01-lon1.tfstate") is True
+        mock_s3.head_object.assert_called_once_with(
+            Bucket=S3_BUCKET,
+            Key="saorsa-deploy/do-DEV-01-lon1.tfstate",
+        )
+
+    def test_returns_false_when_not_found(self, mock_s3):
+        error_class = type("ClientError", (Exception,), {})
+        mock_s3.exceptions.ClientError = error_class
+        mock_s3.head_object.side_effect = error_class("not found")
+
+        assert check_terraform_state_exists("saorsa-deploy/do-DEV-01-lon1.tfstate") is False

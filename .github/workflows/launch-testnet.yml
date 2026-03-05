@@ -86,6 +86,7 @@ jobs:
         if: steps.args.outputs.branch_name != ''
         run: |
           CMD="saorsa-deploy build-saorsa-node-binary"
+          CMD="$CMD --name ${{ steps.args.outputs.name }}"
           CMD="$CMD --branch-name ${{ steps.args.outputs.branch_name }}"
 
           if [ -n "${{ steps.args.outputs.repo_owner }}" ]; then

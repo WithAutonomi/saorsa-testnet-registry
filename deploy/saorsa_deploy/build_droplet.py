@@ -77,7 +77,7 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> None:
     raise TimeoutError(f"SSH on {ip} not available within {timeout}s")
 
 
-def create_build_vm(repo_owner: str, branch_name: str) -> dict:
+def create_build_vm(name: str, repo_owner: str, branch_name: str) -> dict:
     """Create an ephemeral DO droplet for building saorsa-node.
 
     If a droplet with the same name already exists (from a failed previous run),
@@ -87,7 +87,7 @@ def create_build_vm(repo_owner: str, branch_name: str) -> dict:
     """
     headers = _get_headers()
     safe_branch = branch_name.replace("_", "-").replace("/", "-")
-    droplet_name = f"saorsa-build-{repo_owner}-{safe_branch}"
+    droplet_name = f"saorsa-build-{name}-{repo_owner}-{safe_branch}"
 
     existing = _find_droplet_by_name(droplet_name, headers)
     if existing:

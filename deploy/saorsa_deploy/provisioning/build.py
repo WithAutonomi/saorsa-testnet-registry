@@ -15,18 +15,20 @@ class SaorsaNodeBuilder:
 
     def __init__(
         self,
+        name: str,
         ip: str,
         ssh_key_path: str,
         repo_owner: str,
         branch_name: str,
         console: Console | None = None,
     ):
+        self.name = name
         self.ip = ip
         self.ssh_key_path = ssh_key_path
         self.repo_owner = repo_owner
         self.branch_name = branch_name
         self.console = console or Console()
-        self.s3_key = f"{BUILDS_KEY_PREFIX}/{repo_owner}/{branch_name}/saorsa-node"
+        self.s3_key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/saorsa-node"
 
     def execute(self) -> str:
         """Build saorsa-node and upload to S3. Returns the S3 URL of the uploaded binary."""
@@ -131,4 +133,4 @@ class SaorsaNodeBuilder:
 
         from saorsa_deploy.binary_source import get_custom_build_url
 
-        return get_custom_build_url(self.repo_owner, self.branch_name)
+        return get_custom_build_url(self.name, self.repo_owner, self.branch_name)

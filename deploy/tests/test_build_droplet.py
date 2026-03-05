@@ -45,16 +45,16 @@ class TestCreateBuildVm:
             mock_requests.get.side_effect = [mock_list_resp, mock_active_resp]
             mock_requests.post.return_value = mock_create_resp
 
-            result = create_build_vm("myorg", "feature-branch")
+            result = create_build_vm("DEV-01", "myorg", "feature-branch")
 
             assert result["droplet_id"] == 12345
-            assert result["droplet_name"] == "saorsa-build-myorg-feature-branch"
+            assert result["droplet_name"] == "saorsa-build-DEV-01-myorg-feature-branch"
             assert result["ip_address"] == "1.2.3.4"
 
             # Verify create was called with correct params
             create_call = mock_requests.post.call_args
             body = create_call.kwargs["json"]
-            assert body["name"] == "saorsa-build-myorg-feature-branch"
+            assert body["name"] == "saorsa-build-DEV-01-myorg-feature-branch"
             assert body["region"] == BUILD_REGION
             assert body["size"] == BUILD_SIZE
             assert body["image"] == BUILD_IMAGE
@@ -72,7 +72,7 @@ class TestCreateBuildVm:
             mock_list_resp.json.return_value = {
                 "droplets": [
                     {
-                        "name": "saorsa-build-myorg-branch",
+                        "name": "saorsa-build-TEST-myorg-branch",
                         "id": 99999,
                         "networks": {"v4": [{"type": "public", "ip_address": "5.6.7.8"}]},
                     }
@@ -81,7 +81,7 @@ class TestCreateBuildVm:
             mock_list_resp.raise_for_status = MagicMock()
             mock_requests.get.return_value = mock_list_resp
 
-            result = create_build_vm("myorg", "branch")
+            result = create_build_vm("TEST", "myorg", "branch")
 
             assert result["droplet_id"] == 99999
             assert result["ip_address"] == "5.6.7.8"
@@ -93,7 +93,7 @@ class TestCreateBuildVm:
     def test_raises_without_do_token(self):
         os.environ.pop("DO_TOKEN", None)
         with pytest.raises(RuntimeError, match="DO_TOKEN"):
-            create_build_vm("myorg", "branch")
+            create_build_vm("TEST", "myorg", "branch")
 
 
 class TestDestroyBuildVm:
