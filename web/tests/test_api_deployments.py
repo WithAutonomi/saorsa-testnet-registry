@@ -1,6 +1,8 @@
 """Tests for the deployments API validation logic."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import requests as http_requests
 
 import pytest
 
@@ -105,3 +107,87 @@ class TestUpgradeChannelValidation:
         )
         assert resp.status_code == 400
         assert "upgrade_channel" in resp.get_json()["error"]
+
+
+class TestBranchNameValidation:
+    def test_rejects_branch_name_without_repo_owner(self, client):
+        resp = client.post(
+            "/api/deployments",
+            json={
+                "name": "TEST-01",
+                "deploy_args": {"branch_name": "main"},
+            },
+        )
+        assert resp.status_code == 400
+        assert "repo_owner" in resp.get_json()["error"]
+
+    def test_rejects_nonexistent_branch(self, client):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        with patch(
+            "saorsa_web.api.deployments.http_requests.get",
+            return_value=mock_resp,
+        ):
+            resp = client.post(
+                "/api/deployments",
+                json={
+                    "name": "TEST-02",
+                    "deploy_args": {
+                        "branch_name": "nonexistent",
+                        "repo_owner": "saorsa-labs",
+                    },
+                },
+            )
+        assert resp.status_code == 400
+        error = resp.get_json()["error"]
+        assert "nonexistent" in error
+        assert "saorsa-labs" in error
+
+    def test_accepts_valid_branch(self, client):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with (
+            patch(
+                "saorsa_web.api.deployments.http_requests.get",
+                return_value=mock_resp,
+            ),
+            patch(
+                "saorsa_web.api.deployments.dispatch_workflow",
+                return_value=123,
+            ),
+        ):
+            resp = client.post(
+                "/api/deployments",
+                json={
+                    "name": "TEST-03",
+                    "deploy_args": {
+                        "branch_name": "main",
+                        "repo_owner": "saorsa-labs",
+                    },
+                },
+            )
+        assert resp.status_code == 201
+
+    def test_proceeds_if_github_check_fails(self, client):
+        """If the GitHub API is unreachable, don't block the deployment."""
+        with (
+            patch(
+                "saorsa_web.api.deployments.http_requests.get",
+                side_effect=http_requests.ConnectionError("connection error"),
+            ),
+            patch(
+                "saorsa_web.api.deployments.dispatch_workflow",
+                return_value=456,
+            ),
+        ):
+            resp = client.post(
+                "/api/deployments",
+                json={
+                    "name": "TEST-04",
+                    "deploy_args": {
+                        "branch_name": "main",
+                        "repo_owner": "saorsa-labs",
+                    },
+                },
+            )
+        assert resp.status_code == 201
