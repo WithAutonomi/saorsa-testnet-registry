@@ -7,3 +7,7 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.11",
 ]
+
+[tool.pytest.ini_options]
+# Use importlib to avoid namespace collisions between deploy/tests and web/tests
+addopts = "--import-mode=importlib"

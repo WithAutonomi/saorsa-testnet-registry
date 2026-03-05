@@ -1,5 +1,6 @@
 import logging
 
+import requests as http_requests
 from flask import Blueprint, current_app, jsonify, request
 
 from saorsa_web.db import db_session
@@ -56,6 +57,38 @@ def create_deployment():
                 )
             }
         ), 400
+
+    branch_name = deploy_args.get("branch_name")
+    repo_owner = deploy_args.get("repo_owner")
+    if branch_name and not repo_owner:
+        return jsonify(
+            {"error": "repo_owner is required when branch_name is specified"}
+        ), 400
+
+    if branch_name and repo_owner:
+        repo_url = (
+            f"https://api.github.com/repos/{repo_owner}/saorsa-node"
+            f"/branches/{branch_name}"
+        )
+        try:
+            resp = http_requests.get(repo_url, timeout=10)
+        except http_requests.RequestException as exc:
+            logger.warning("GitHub branch check failed: %s", exc)
+        else:
+            if resp.status_code == 404:
+                return jsonify(
+                    {
+                        "error": (
+                            f"Branch '{branch_name}' not found on"
+                            f" {repo_owner}/saorsa-node. Check the"
+                            " repo_owner and branch_name values."
+                        )
+                    }
+                ), 400
+
+    upgrade_channel = deploy_args.get("upgrade_channel")
+    if upgrade_channel is not None and upgrade_channel not in ("beta", "stable"):
+        return jsonify({"error": "upgrade_channel must be 'beta' or 'stable'"}), 400
 
     branch = data.get("branch", "main")
 

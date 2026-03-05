@@ -23,6 +23,7 @@ on:
               "branch_name": null,        (optional) Node repo branch to build from
               "repo_owner": "maidsafe",   (optional) Repo owner for branch builds
               "disable_log_forwarding": false (optional) Disable Telegraf log forwarding
+              "upgrade_channel": "beta",    (optional) Upgrade channel (beta/stable)
             }
           Required fields: name, vm_count, node_count, genesis_port
           Note: node_version and branch_name are mutually exclusive
@@ -62,6 +63,7 @@ jobs:
           echo "branch_name=$(echo "$DEPLOY_ARGS" | jq -r '.branch_name // empty')" >> "$GITHUB_OUTPUT"
           echo "repo_owner=$(echo "$DEPLOY_ARGS" | jq -r '.repo_owner // empty')" >> "$GITHUB_OUTPUT"
           echo "disable_log_forwarding=$(echo "$DEPLOY_ARGS" | jq -r '.disable_log_forwarding // empty')" >> "$GITHUB_OUTPUT"
+          echo "upgrade_channel=$(echo "$DEPLOY_ARGS" | jq -r '.upgrade_channel // empty')" >> "$GITHUB_OUTPUT"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -136,6 +138,9 @@ jobs:
           if [ -n "${{ steps.args.outputs.repo_owner }}" ]; then
             CMD="$CMD --repo-owner ${{ steps.args.outputs.repo_owner }}"
           fi
+          if [ -n "${{ steps.args.outputs.upgrade_channel }}" ]; then
+            CMD="$CMD --upgrade-channel ${{ steps.args.outputs.upgrade_channel }}"
+          fi
 
           echo "Running: $CMD"
           eval "$CMD"
@@ -169,6 +174,9 @@ jobs:
           fi
           if [ -n "${{ steps.args.outputs.repo_owner }}" ]; then
             CMD="$CMD --repo-owner ${{ steps.args.outputs.repo_owner }}"
+          fi
+          if [ -n "${{ steps.args.outputs.upgrade_channel }}" ]; then
+            CMD="$CMD --upgrade-channel ${{ steps.args.outputs.upgrade_channel }}"
           fi
 
           echo "Running: $CMD"
