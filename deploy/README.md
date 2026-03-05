@@ -83,6 +83,7 @@ uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000
 | `--repo-owner` | string | No | - | GitHub repo owner (requires `--branch-name`) |
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
 | `--testnet` | flag | No | - | Run with `--testnet` flag |
+| `--upgrade-channel` | string | No | - | Upgrade channel: `beta` or `stable` |
 
 ### `provision` command
 
@@ -107,6 +108,7 @@ uv run saorsa-deploy provision --name DEV-01 --node-count 10
 | `--repo-owner` | string | No | - | GitHub repo owner (requires `--branch-name`) |
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
 | `--testnet` | flag | No | - | Run with `--testnet` flag |
+| `--upgrade-channel` | string | No | - | Upgrade channel: `beta` or `stable` |
 
 #### Binary version selection
 

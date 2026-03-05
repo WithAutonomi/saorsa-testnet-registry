@@ -122,6 +122,11 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - Set to true to skip Telegraf installation and configuration
   - Logs are still written as JSON to disk regardless of this setting
 
+- **upgrade_channel**: Upgrade channel for saorsa-node
+  - Allowed values: "beta", "stable"
+  - If omitted, no upgrade channel is specified and the node uses its default behaviour
+  - When set, all nodes are started with `--upgrade-channel <value>`
+
 ## Node Binary Options
 
 These options control which saorsa-node binary is deployed. They are
@@ -209,6 +214,7 @@ async def create_deployment(
     branch_name: str | None = None,
     repo_owner: str | None = None,
     disable_log_forwarding: bool = False,
+    upgrade_channel: str | None = None,
 ) -> str:
     """Create a new testnet deployment and trigger the launch workflow.
 
@@ -230,6 +236,7 @@ async def create_deployment(
         branch_name: Git branch of the saorsa-node repo to build from source
         repo_owner: Repository owner for custom branch builds (default: "maidsafe")
         disable_log_forwarding: Disable Telegraf log forwarding to Elasticsearch (default: false)
+        upgrade_channel: Upgrade channel for saorsa-node ("beta" or "stable")
     """
     deploy_args = {
         "name": name,
@@ -255,6 +262,8 @@ async def create_deployment(
         deploy_args["repo_owner"] = repo_owner or "maidsafe"
     if disable_log_forwarding:
         deploy_args["disable_log_forwarding"] = True
+    if upgrade_channel is not None:
+        deploy_args["upgrade_channel"] = upgrade_channel
 
     resp = await registry.post(
         "/api/deployments",

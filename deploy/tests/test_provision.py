@@ -53,6 +53,18 @@ class TestBuildNodeExecStart:
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, testnet=False)
         assert "--network-mode" not in result
 
+    def test_upgrade_channel_beta(self):
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, upgrade_channel="beta")
+        assert "--upgrade-channel beta" in result
+
+    def test_upgrade_channel_stable(self):
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, upgrade_channel="stable")
+        assert "--upgrade-channel stable" in result
+
+    def test_no_upgrade_channel_by_default(self):
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        assert "--upgrade-channel" not in result
+
     def test_always_includes_disable_payment_verification(self):
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--disable-payment-verification" in result
@@ -105,6 +117,7 @@ class TestSaorsaNodeProvisioner:
         assert provisioner.ip_version == "ipv4"
         assert provisioner.log_level is None
         assert provisioner.testnet is False
+        assert provisioner.upgrade_channel is None
 
     def test_init_all_params(self):
         provisioner = SaorsaNodeProvisioner(
@@ -117,6 +130,7 @@ class TestSaorsaNodeProvisioner:
             ip_version="v4",
             log_level="debug",
             testnet=True,
+            upgrade_channel="stable",
         )
         assert provisioner.ssh_key_path == "/tmp/key"
         assert provisioner.node_count == 3
@@ -124,6 +138,7 @@ class TestSaorsaNodeProvisioner:
         assert provisioner.ip_version == "v4"
         assert provisioner.log_level == "debug"
         assert provisioner.testnet is True
+        assert provisioner.upgrade_channel == "stable"
 
     @patch("saorsa_deploy.provisioning.node.disconnect_all")
     @patch("saorsa_deploy.provisioning.node.run_ops")
@@ -432,6 +447,7 @@ class TestCmdProvisionClearsKnownHosts:
             log_level=None,
             testnet=False,
             region=None,
+            upgrade_channel=None,
         )
         cmd_provision(args)
 
@@ -469,6 +485,7 @@ class TestCmdProvisionClearsKnownHosts:
             log_level=None,
             testnet=False,
             region="lon1",
+            upgrade_channel=None,
         )
         cmd_provision(args)
 
@@ -505,6 +522,7 @@ class TestCmdProvisionClearsKnownHosts:
             log_level=None,
             testnet=False,
             region=None,
+            upgrade_channel=None,
         )
         cmd_provision(args)
 

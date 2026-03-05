@@ -71,6 +71,8 @@ def cmd_provision(args):
         console.print(f"  Log level: {args.log_level}")
     if args.testnet:
         console.print("  Testnet mode: enabled")
+    if args.upgrade_channel:
+        console.print(f"  Upgrade channel: {args.upgrade_channel}")
     console.print()
 
     clear_known_hosts(all_ips, console)
@@ -88,6 +90,8 @@ def cmd_provision(args):
     }
     if args.ip_version:
         kwargs["ip_version"] = args.ip_version
+    if args.upgrade_channel:
+        kwargs["upgrade_channel"] = args.upgrade_channel
     if binary_url:
         kwargs["binary_url"] = binary_url
         kwargs["binary_is_archive"] = binary_is_archive

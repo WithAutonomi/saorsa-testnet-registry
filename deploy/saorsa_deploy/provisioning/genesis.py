@@ -16,7 +16,9 @@ UNIT_FILE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ROOT_DIR = f"{MOUNT_POINT}/data/{SERVICE_NAME}"
 
 
-def _build_exec_start(port=None, ip_version="ipv4", log_level=None, testnet=False) -> str:
+def _build_exec_start(
+    port=None, ip_version="ipv4", log_level=None, testnet=False, upgrade_channel=None,
+) -> str:
     """Build the ExecStart command line for the systemd service."""
     parts = [BINARY_INSTALL_PATH]
     parts.append(f"--root-dir {ROOT_DIR}")
@@ -31,6 +33,8 @@ def _build_exec_start(port=None, ip_version="ipv4", log_level=None, testnet=Fals
     parts.append("--disable-payment-verification")
     if testnet:
         parts.append("--network-mode testnet")
+    if upgrade_channel:
+        parts.append(f"--upgrade-channel {upgrade_channel}")
     return " ".join(parts)
 
 
@@ -67,6 +71,7 @@ class SaorsaGenesisNodeProvisioner:
         console: Console | None = None,
         binary_url: str | None = None,
         binary_is_archive: bool = True,
+        upgrade_channel: str | None = None,
     ):
         self.ip = ip
         self.ssh_key_path = ssh_key_path
@@ -77,6 +82,7 @@ class SaorsaGenesisNodeProvisioner:
         self.console = console or Console()
         self.binary_url = binary_url
         self.binary_is_archive = binary_is_archive
+        self.upgrade_channel = upgrade_channel
 
     def execute(self) -> None:
         """Download the saorsa-node binary, install it, and start the genesis service."""
@@ -93,6 +99,7 @@ class SaorsaGenesisNodeProvisioner:
             ip_version=self.ip_version,
             log_level=self.log_level,
             testnet=self.testnet,
+            upgrade_channel=self.upgrade_channel,
         )
         unit_content = _build_unit_file(exec_start)
 

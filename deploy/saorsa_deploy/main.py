@@ -145,6 +145,12 @@ def main():
         action="store_true",
         help="Run the nodes with the --testnet flag",
     )
+    provision_parser.add_argument(
+        "--upgrade-channel",
+        type=str,
+        choices=["beta", "stable"],
+        help="Upgrade channel for saorsa-node (beta or stable)",
+    )
 
     # === provision-genesis ===
     provision_genesis_parser = subparsers.add_parser(
@@ -198,6 +204,12 @@ def main():
         "--testnet",
         action="store_true",
         help="Run the node with the --testnet flag",
+    )
+    provision_genesis_parser.add_argument(
+        "--upgrade-channel",
+        type=str,
+        choices=["beta", "stable"],
+        help="Upgrade channel for saorsa-node (beta or stable)",
     )
 
     # === provision-telegraf ===

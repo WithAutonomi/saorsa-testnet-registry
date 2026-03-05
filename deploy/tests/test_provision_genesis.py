@@ -64,6 +64,18 @@ class TestBuildExecStart:
         result = _build_exec_start(testnet=False)
         assert "--network-mode" not in result
 
+    def test_upgrade_channel_beta(self):
+        result = _build_exec_start(upgrade_channel="beta")
+        assert "--upgrade-channel beta" in result
+
+    def test_upgrade_channel_stable(self):
+        result = _build_exec_start(upgrade_channel="stable")
+        assert "--upgrade-channel stable" in result
+
+    def test_no_upgrade_channel_by_default(self):
+        result = _build_exec_start()
+        assert "--upgrade-channel" not in result
+
     def test_disable_payment_verification_always_present(self):
         result = _build_exec_start()
         assert "--disable-payment-verification" in result
@@ -159,6 +171,7 @@ class TestSaorsaGenesisNodeProvisioner:
         assert node.ip_version == "ipv4"
         assert node.log_level is None
         assert node.testnet is False
+        assert node.upgrade_channel is None
 
     def test_init_all_params(self):
         node = SaorsaGenesisNodeProvisioner(
@@ -168,6 +181,7 @@ class TestSaorsaGenesisNodeProvisioner:
             ip_version="ipv4",
             log_level="debug",
             testnet=True,
+            upgrade_channel="beta",
         )
         assert node.ip == "10.0.0.1"
         assert node.ssh_key_path == "/tmp/key"
@@ -175,6 +189,7 @@ class TestSaorsaGenesisNodeProvisioner:
         assert node.ip_version == "ipv4"
         assert node.log_level == "debug"
         assert node.testnet is True
+        assert node.upgrade_channel == "beta"
 
     @patch("saorsa_deploy.provisioning.genesis.disconnect_all")
     @patch("saorsa_deploy.provisioning.genesis.run_ops")
@@ -368,6 +383,7 @@ class TestCmdProvisionGenesisClearsKnownHosts:
             ip_version=None,
             log_level=None,
             testnet=False,
+            upgrade_channel=None,
         )
         cmd_provision_genesis(args)
 
@@ -398,6 +414,7 @@ class TestCmdProvisionGenesisClearsKnownHosts:
             ip_version=None,
             log_level=None,
             testnet=False,
+            upgrade_channel=None,
         )
         cmd_provision_genesis(args)
 

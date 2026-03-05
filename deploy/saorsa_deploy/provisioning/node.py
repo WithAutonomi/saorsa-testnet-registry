@@ -23,6 +23,7 @@ def _build_node_exec_start(
     ip_version="ipv4",
     log_level=None,
     testnet=False,
+    upgrade_channel=None,
 ):
     """Build the ExecStart command line for a node service."""
     parts = [BINARY_INSTALL_PATH]
@@ -40,6 +41,8 @@ def _build_node_exec_start(
     parts.append("--disable-payment-verification")
     if testnet:
         parts.append("--network-mode testnet")
+    if upgrade_channel:
+        parts.append(f"--upgrade-channel {upgrade_channel}")
     return " ".join(parts)
 
 
@@ -79,6 +82,7 @@ class SaorsaNodeProvisioner:
         console: Console | None = None,
         binary_url: str | None = None,
         binary_is_archive: bool = True,
+        upgrade_channel: str | None = None,
     ):
         self.host_ips = host_ips
         self.bootstrap_ip = bootstrap_ip
@@ -92,6 +96,7 @@ class SaorsaNodeProvisioner:
         self.console = console or Console()
         self.binary_url = binary_url
         self.binary_is_archive = binary_is_archive
+        self.upgrade_channel = upgrade_channel
 
     def execute(self) -> None:
         """Provision all hosts with saorsa-node services."""
@@ -181,6 +186,7 @@ class SaorsaNodeProvisioner:
                     ip_version=self.ip_version,
                     log_level=self.log_level,
                     testnet=self.testnet,
+                    upgrade_channel=self.upgrade_channel,
                 )
                 unit_content = _build_node_unit_file(service_name, exec_start)
                 unit_path = f"/etc/systemd/system/{service_name}.service"
