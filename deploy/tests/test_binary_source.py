@@ -92,16 +92,16 @@ class TestGetReleaseUrl:
 
 class TestGetCustomBuildUrl:
     def test_returns_correct_s3_url(self):
-        url = get_custom_build_url("myorg", "feature-branch")
+        url = get_custom_build_url("DEV-01", "myorg", "feature-branch")
         expected = (
             f"https://{BUILDS_BUCKET}.s3.{BUILDS_REGION}.amazonaws.com/"
-            f"{BUILDS_KEY_PREFIX}/myorg/feature-branch/saorsa-node"
+            f"{BUILDS_KEY_PREFIX}/DEV-01/myorg/feature-branch/saorsa-node"
         )
         assert url == expected
 
     def test_different_owner_and_branch(self):
-        url = get_custom_build_url("saorsa-labs", "main")
-        assert "/saorsa-labs/main/saorsa-node" in url
+        url = get_custom_build_url("DEV-01", "saorsa-labs", "main")
+        assert "/DEV-01/saorsa-labs/main/saorsa-node" in url
 
 
 class TestCheckReleaseExists:
@@ -132,10 +132,10 @@ class TestCheckCustomBuildExists:
         mock_s3 = MagicMock()
         mock_boto_client.return_value = mock_s3
 
-        assert check_custom_build_exists("myorg", "my-branch") is True
+        assert check_custom_build_exists("DEV-01", "myorg", "my-branch") is True
         mock_s3.head_object.assert_called_once_with(
             Bucket=BUILDS_BUCKET,
-            Key=f"{BUILDS_KEY_PREFIX}/myorg/my-branch/saorsa-node",
+            Key=f"{BUILDS_KEY_PREFIX}/DEV-01/myorg/my-branch/saorsa-node",
         )
 
     @patch("saorsa_deploy.binary_source.boto3.client")
@@ -147,4 +147,4 @@ class TestCheckCustomBuildExists:
         mock_s3.head_object.side_effect = error
         mock_boto_client.return_value = mock_s3
 
-        assert check_custom_build_exists("myorg", "nonexistent") is False
+        assert check_custom_build_exists("DEV-01", "myorg", "nonexistent") is False

@@ -7,7 +7,11 @@ from saorsa_deploy.bootstrap import create_bootstrap_vm
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS, resolve_regions
 from saorsa_deploy.resources import get_resources_dir
-from saorsa_deploy.state import save_deployment_state
+from saorsa_deploy.state import (
+    check_terraform_state_exists,
+    delete_terraform_state,
+    save_deployment_state,
+)
 from saorsa_deploy.terraform import TerraformRunConfig
 
 
@@ -57,8 +61,8 @@ def cmd_infra(args):
     for provider_name, region in region_pairs:
         provider = PROVIDERS[provider_name]
         tf_source = resources_dir / provider.tf_dir
-        workspace_dir = workspace_base / f"{provider_name}-{region}"
-        state_key = f"{provider.state_key_prefix}-{region}.tfstate"
+        workspace_dir = workspace_base / f"{provider_name}-{args.name}-{region}"
+        state_key = f"{provider.state_key_prefix}-{args.name}-{region}.tfstate"
 
         config = TerraformRunConfig(
             provider=provider_name,
@@ -74,6 +78,19 @@ def cmd_infra(args):
             },
         )
         configs.append(config)
+
+    # Check for stale Terraform state files
+    stale_keys = [c.state_key for c in configs if check_terraform_state_exists(c.state_key)]
+    if stale_keys:
+        if not getattr(args, "force", False):
+            console.print("[bold red]Error:[/bold red] Stale Terraform state found:")
+            for key in stale_keys:
+                console.print(f"  {key}")
+            console.print("Use --force to delete and proceed.")
+            sys.exit(1)
+        for key in stale_keys:
+            console.print(f"[yellow]Warning: Deleting stale Terraform state: {key}[/yellow]")
+            delete_terraform_state(key)
 
     console.print(f"[bold]Provisioning infrastructure across {len(configs)} region(s)...[/bold]")
     console.print()

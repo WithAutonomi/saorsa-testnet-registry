@@ -42,7 +42,7 @@ def config(tf_source, workspace):
         region="lon1",
         tf_source_dir=tf_source,
         workspace_dir=workspace,
-        state_key="saorsa-deploy/do-lon1.tfstate",
+        state_key="saorsa-deploy/do-TEST-lon1.tfstate",
         variables={
             "name": "TEST",
             "region": "lon1",
@@ -83,7 +83,7 @@ class TestBuildInitArgs:
             "terraform",
             "init",
             "-input=false",
-            "-backend-config=key=saorsa-deploy/do-lon1.tfstate",
+            "-backend-config=key=saorsa-deploy/do-TEST-lon1.tfstate",
         ]
 
 
@@ -129,7 +129,7 @@ class TestRunTerraform:
             "terraform",
             "init",
             "-input=false",
-            "-backend-config=key=saorsa-deploy/do-lon1.tfstate",
+            "-backend-config=key=saorsa-deploy/do-TEST-lon1.tfstate",
         ]
         assert init_call.kwargs["cwd"] == str(config.workspace_dir)
         assert init_call.kwargs["capture_output"] is True

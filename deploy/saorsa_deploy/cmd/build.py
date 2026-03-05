@@ -26,7 +26,7 @@ def cmd_build(args):
     droplet_id = None
     try:
         console.print("[bold]Creating build droplet...[/bold]")
-        vm = create_build_vm(args.repo_owner, args.branch_name)
+        vm = create_build_vm(args.name, args.repo_owner, args.branch_name)
         droplet_id = vm["droplet_id"]
         if vm.get("reused"):
             console.print(
@@ -46,6 +46,7 @@ def cmd_build(args):
         clear_known_hosts([vm["ip_address"]], console)
 
         builder = SaorsaNodeBuilder(
+            name=args.name,
             ip=vm["ip_address"],
             ssh_key_path=args.ssh_key_path,
             repo_owner=args.repo_owner,

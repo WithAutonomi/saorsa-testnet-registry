@@ -51,14 +51,14 @@ def _resolve_binary_source(args, console):
             f"Checking custom build for {args.repo_owner}/saorsa-node "
             f"({args.branch_name}) exists..."
         )
-        if not check_custom_build_exists(args.repo_owner, args.branch_name):
+        if not check_custom_build_exists(args.name, args.repo_owner, args.branch_name):
             console.print(
                 f"[bold red]Error:[/bold red] No custom build found for "
                 f"{args.repo_owner}/{args.branch_name}. "
                 f"Run 'build-saorsa-node-binary' first."
             )
             sys.exit(1)
-        url = get_custom_build_url(args.repo_owner, args.branch_name)
+        url = get_custom_build_url(args.name, args.repo_owner, args.branch_name)
         console.print(f"  Using custom build: {url}")
         return url, False
 

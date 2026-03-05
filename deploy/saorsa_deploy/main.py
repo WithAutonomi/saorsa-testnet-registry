@@ -20,6 +20,12 @@ def main():
         "build-saorsa-node-binary", help="Build saorsa-node from source and upload to S3"
     )
     build_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (used to isolate build artifacts)",
+    )
+    build_parser.add_argument(
         "--branch-name",
         type=str,
         required=True,
@@ -54,6 +60,11 @@ def main():
 
     # === infra ===
     infra_parser = subparsers.add_parser("infra", help="Manage testnet infrastructure")
+    infra_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete stale Terraform state files and proceed",
+    )
     infra_parser.add_argument(
         "--attached-volume-size",
         type=int,

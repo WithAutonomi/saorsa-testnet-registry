@@ -75,3 +75,19 @@ def delete_deployment_state(name: str) -> None:
         Bucket=S3_BUCKET,
         Key=f"{S3_KEY_PREFIX}/{name}.json",
     )
+
+
+def delete_terraform_state(state_key: str) -> None:
+    """Delete a Terraform state file from S3 after successful destroy."""
+    client = _get_s3_client()
+    client.delete_object(Bucket=S3_BUCKET, Key=state_key)
+
+
+def check_terraform_state_exists(state_key: str) -> bool:
+    """Check if a Terraform state file already exists in S3."""
+    client = _get_s3_client()
+    try:
+        client.head_object(Bucket=S3_BUCKET, Key=state_key)
+        return True
+    except client.exceptions.ClientError:
+        return False

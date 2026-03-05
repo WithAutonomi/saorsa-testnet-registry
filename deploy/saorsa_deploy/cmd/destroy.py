@@ -8,7 +8,11 @@ from saorsa_deploy.bootstrap import find_and_destroy_bootstrap_vm
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.resources import get_resources_dir
-from saorsa_deploy.state import delete_deployment_state, load_deployment_state
+from saorsa_deploy.state import (
+    delete_deployment_state,
+    delete_terraform_state,
+    load_deployment_state,
+)
 from saorsa_deploy.terraform import TerraformRunConfig
 
 
@@ -50,8 +54,9 @@ def cmd_destroy(args):
     for provider_name, region in region_pairs:
         provider = PROVIDERS[provider_name]
         tf_source = resources_dir / provider.tf_dir
-        workspace_dir = workspace_base / f"{provider_name}-{region}"
-        state_key = f"{provider.state_key_prefix}-{region}.tfstate"
+        name = terraform_variables["name"]
+        workspace_dir = workspace_base / f"{provider_name}-{name}-{region}"
+        state_key = f"{provider.state_key_prefix}-{name}-{region}.tfstate"
 
         variables = dict(terraform_variables)
         variables["region"] = region
@@ -80,6 +85,17 @@ def cmd_destroy(args):
 
     console.print(f"[bold green]All {len(results)} region(s) destroyed successfully.[/bold green]")
     console.print()
+
+    # Delete Terraform state files from S3
+    for config in configs:
+        try:
+            delete_terraform_state(config.state_key)
+            console.print(f"[dim]Deleted Terraform state: {config.state_key}[/dim]")
+        except Exception as e:
+            console.print(
+                f"[yellow]Warning: Failed to delete Terraform state "
+                f"{config.state_key}: {e}[/yellow]"
+            )
 
     # Destroy bootstrap VM
     console.print(f"[bold]Destroying bootstrap VM ({args.name}-saorsa-bootstrap)...[/bold]")
