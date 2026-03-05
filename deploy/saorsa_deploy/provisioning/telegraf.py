@@ -117,6 +117,21 @@ class TelegrafProvisioner:
                 ],
             )
 
+            add_op(
+                state,
+                server.shell,
+                name="Verify Telegraf service is active",
+                commands=[
+                    f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
+                    f"|| (echo 'TELEGRAF_VERIFY:FAILED - {TELEGRAF_SERVICE_NAME} is not running'; "
+                    f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
+                    f"test -f {TELEGRAF_CONFIG_PATH} "
+                    "|| (echo 'TELEGRAF_VERIFY:FAILED - config file missing'; exit 1)",
+                    f"test -f {TELEGRAF_ENV_PATH} "
+                    "|| (echo 'TELEGRAF_VERIFY:FAILED - env file missing'; exit 1)",
+                ],
+            )
+
             self.console.print("Running Telegraf provisioning operations...")
             run_ops(state)
         finally:
