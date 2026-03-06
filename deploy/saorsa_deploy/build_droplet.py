@@ -5,7 +5,7 @@ import time
 import requests
 
 DO_API_URL = "https://api.digitalocean.com/v2"
-BUILD_REGION = "lon1"
+BUILD_REGIONS = ["lon1", "ams3", "nyc1", "syd1"]
 BUILD_SIZE = "c-16"
 BUILD_IMAGE = "ubuntu-24-04-x64"
 SSH_KEY_IDS = [
@@ -99,19 +99,32 @@ def create_build_vm(name: str, repo_owner: str, branch_name: str) -> dict:
             "reused": True,
         }
 
-    resp = requests.post(
-        f"{DO_API_URL}/droplets",
-        headers=headers,
-        json={
-            "name": droplet_name,
-            "region": BUILD_REGION,
-            "size": BUILD_SIZE,
-            "image": BUILD_IMAGE,
-            "ssh_keys": SSH_KEY_IDS,
-        },
-    )
-    resp.raise_for_status()
-    droplet_id = resp.json()["droplet"]["id"]
+    droplet_id = None
+    for region in BUILD_REGIONS:
+        resp = requests.post(
+            f"{DO_API_URL}/droplets",
+            headers=headers,
+            json={
+                "name": droplet_name,
+                "region": region,
+                "size": BUILD_SIZE,
+                "image": BUILD_IMAGE,
+                "ssh_keys": SSH_KEY_IDS,
+            },
+        )
+        if resp.status_code == 422:
+            error_msg = resp.json().get("message", resp.text)
+            print(f"Region {region} unavailable: {error_msg}. Trying next region...")
+            continue
+        resp.raise_for_status()
+        droplet_id = resp.json()["droplet"]["id"]
+        break
+
+    if droplet_id is None:
+        raise RuntimeError(
+            f"Failed to create build droplet: {BUILD_SIZE} not available in any region "
+            f"({', '.join(BUILD_REGIONS)})"
+        )
     droplet = _wait_for_droplet_active(droplet_id, headers)
     ip_address = _get_public_ip(droplet)
 
