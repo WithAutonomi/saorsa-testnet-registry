@@ -43,6 +43,7 @@ def _build_node_exec_start(
         parts.append("--network-mode testnet")
     if upgrade_channel:
         parts.append(f"--upgrade-channel {upgrade_channel}")
+    parts.append("--stop-on-upgrade")
     return " ".join(parts)
 
 
@@ -57,7 +58,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={exec_start}
-Restart=always
+Restart=on-success
 RestartSec=5
 
 [Install]

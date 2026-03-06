@@ -69,6 +69,10 @@ class TestBuildNodeExecStart:
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--disable-payment-verification" in result
 
+    def test_stop_on_upgrade_always_present(self):
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        assert "--stop-on-upgrade" in result
+
     def test_all_flags(self):
         result = _build_node_exec_start(
             "10.0.0.1", 5000, self.ROOT, port=6000, ip_version="v4", log_level="info", testnet=True
@@ -97,7 +101,7 @@ class TestBuildNodeUnitFile:
         assert "[Service]" in unit
         assert "[Unit]" in unit
         assert "[Install]" in unit
-        assert "Restart=always" in unit
+        assert "Restart=on-success" in unit
         assert "WantedBy=multi-user.target" in unit
 
 
