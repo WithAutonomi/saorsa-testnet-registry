@@ -99,7 +99,7 @@ def create_build_vm(name: str, repo_owner: str, branch_name: str) -> dict:
             "reused": True,
         }
 
-    droplet_id = None
+    errors = []
     for region in BUILD_REGIONS:
         resp = requests.post(
             f"{DO_API_URL}/droplets",
@@ -115,25 +115,32 @@ def create_build_vm(name: str, repo_owner: str, branch_name: str) -> dict:
         if resp.status_code == 422:
             error_msg = resp.json().get("message", resp.text)
             print(f"Region {region} unavailable: {error_msg}. Trying next region...")
+            errors.append(f"{region}: {error_msg}")
             continue
         resp.raise_for_status()
         droplet_id = resp.json()["droplet"]["id"]
-        break
 
-    if droplet_id is None:
-        raise RuntimeError(
-            f"Failed to create build droplet: {BUILD_SIZE} not available in any region "
-            f"({', '.join(BUILD_REGIONS)})"
-        )
-    droplet = _wait_for_droplet_active(droplet_id, headers)
-    ip_address = _get_public_ip(droplet)
+        try:
+            droplet = _wait_for_droplet_active(droplet_id, headers)
+        except Exception as e:
+            print(f"Region {region}: droplet {droplet_id} created but failed to become active: {e}")
+            print(f"Destroying failed droplet {droplet_id} and trying next region...")
+            errors.append(f"{region}: {e}")
+            try:
+                requests.delete(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
+            except Exception:
+                pass
+            continue
 
-    return {
-        "droplet_id": droplet_id,
-        "droplet_name": droplet_name,
-        "ip_address": ip_address,
-        "reused": False,
-    }
+        ip_address = _get_public_ip(droplet)
+        return {
+            "droplet_id": droplet_id,
+            "droplet_name": droplet_name,
+            "ip_address": ip_address,
+            "reused": False,
+        }
+
+    raise RuntimeError("Failed to create build droplet in any region: " + "; ".join(errors))
 
 
 def destroy_build_vm(droplet_id: int) -> None:

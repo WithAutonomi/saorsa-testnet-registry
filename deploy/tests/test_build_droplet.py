@@ -2,6 +2,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from saorsa_deploy.build_droplet import (
     BUILD_IMAGE,
@@ -153,10 +154,63 @@ class TestCreateBuildVm:
             mock_422_resp.json.return_value = {"message": "Size is not available in this region."}
             mock_requests.post.return_value = mock_422_resp
 
-            with pytest.raises(RuntimeError, match="not available in any region"):
+            with pytest.raises(RuntimeError, match="Failed to create build droplet"):
                 create_build_vm("DEV-01", "myorg", "feature-branch")
 
             assert mock_requests.post.call_count == len(BUILD_REGIONS)
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.time.sleep")
+    @patch("saorsa_deploy.build_droplet.requests")
+    def test_falls_back_when_droplet_fails_to_activate(self, mock_requests, _mock_sleep):
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            # No existing droplet
+            mock_list_resp = MagicMock()
+            mock_list_resp.json.return_value = {"droplets": []}
+            mock_list_resp.raise_for_status = MagicMock()
+
+            # First region creates droplet but polling returns 404
+            mock_create_resp_1 = MagicMock()
+            mock_create_resp_1.status_code = 202
+            mock_create_resp_1.json.return_value = {"droplet": {"id": 11111}}
+            mock_create_resp_1.raise_for_status = MagicMock()
+
+            mock_404_resp = MagicMock()
+            mock_404_resp.status_code = 404
+            mock_404_resp.raise_for_status.side_effect = requests.HTTPError("404 Not Found")
+
+            # Second region succeeds
+            mock_create_resp_2 = MagicMock()
+            mock_create_resp_2.status_code = 202
+            mock_create_resp_2.json.return_value = {"droplet": {"id": 22222}}
+            mock_create_resp_2.raise_for_status = MagicMock()
+
+            mock_active_resp = MagicMock()
+            mock_active_resp.json.return_value = {
+                "droplet": {
+                    "status": "active",
+                    "networks": {
+                        "v4": [{"type": "public", "ip_address": "1.2.3.4"}],
+                    },
+                }
+            }
+            mock_active_resp.raise_for_status = MagicMock()
+
+            # GET calls: list droplets, then 404 for first droplet poll, then active for second
+            mock_requests.get.side_effect = [mock_list_resp, mock_404_resp, mock_active_resp]
+            mock_requests.post.side_effect = [mock_create_resp_1, mock_create_resp_2]
+
+            result = create_build_vm("DEV-01", "myorg", "feature-branch")
+
+            assert result["droplet_id"] == 22222
+            assert result["ip_address"] == "1.2.3.4"
+            assert mock_requests.post.call_count == 2
+            # First failed droplet should have been cleaned up
+            mock_requests.delete.assert_called_once()
+            delete_url = mock_requests.delete.call_args[0][0]
+            assert "11111" in delete_url
         finally:
             os.environ.pop("DO_TOKEN", None)
 
