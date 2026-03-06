@@ -1,6 +1,6 @@
 [project]
 name = "saorsa-deploy"
-version = "0.2.1"
+version = "0.2.2"
 description = "Deploy testnets for saorsa-node using Terraform and Pyinfra"
 requires-python = ">=3.13"
 dependencies = [
