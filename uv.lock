@@ -1140,7 +1140,7 @@ wheels = [
 
 [[package]]
 name = "saorsa-deploy"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "deploy" }
 dependencies = [
     { name = "boto3" },
@@ -1159,7 +1159,7 @@ requires-dist = [
 
 [[package]]
 name = "saorsa-deploy-mcp"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "mcp" }
 dependencies = [
     { name = "httpx" },
@@ -1176,7 +1176,7 @@ requires-dist = [
 
 [[package]]
 name = "saorsa-web"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "web" }
 dependencies = [
     { name = "alembic" },
