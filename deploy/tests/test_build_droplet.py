@@ -5,7 +5,7 @@ import pytest
 
 from saorsa_deploy.build_droplet import (
     BUILD_IMAGE,
-    BUILD_REGION,
+    BUILD_REGIONS,
     BUILD_SIZE,
     SSH_KEY_IDS,
     create_build_vm,
@@ -27,6 +27,7 @@ class TestCreateBuildVm:
 
             # Create droplet
             mock_create_resp = MagicMock()
+            mock_create_resp.status_code = 202
             mock_create_resp.json.return_value = {"droplet": {"id": 12345}}
             mock_create_resp.raise_for_status = MagicMock()
 
@@ -55,7 +56,7 @@ class TestCreateBuildVm:
             create_call = mock_requests.post.call_args
             body = create_call.kwargs["json"]
             assert body["name"] == "saorsa-build-DEV-01-myorg-feature-branch"
-            assert body["region"] == BUILD_REGION
+            assert body["region"] == BUILD_REGIONS[0]
             assert body["size"] == BUILD_SIZE
             assert body["image"] == BUILD_IMAGE
             assert body["ssh_keys"] == SSH_KEY_IDS
@@ -87,6 +88,75 @@ class TestCreateBuildVm:
             assert result["ip_address"] == "5.6.7.8"
             assert result["reused"] is True
             mock_requests.post.assert_not_called()
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.time.sleep")
+    @patch("saorsa_deploy.build_droplet.requests")
+    def test_falls_back_to_next_region_on_422(self, mock_requests, _mock_sleep):
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            # No existing droplet
+            mock_list_resp = MagicMock()
+            mock_list_resp.json.return_value = {"droplets": []}
+            mock_list_resp.raise_for_status = MagicMock()
+
+            # First region returns 422
+            mock_422_resp = MagicMock()
+            mock_422_resp.status_code = 422
+            mock_422_resp.json.return_value = {"message": "Size is not available in this region."}
+
+            # Second region succeeds
+            mock_create_resp = MagicMock()
+            mock_create_resp.status_code = 202
+            mock_create_resp.json.return_value = {"droplet": {"id": 12345}}
+            mock_create_resp.raise_for_status = MagicMock()
+
+            # Wait for active
+            mock_active_resp = MagicMock()
+            mock_active_resp.json.return_value = {
+                "droplet": {
+                    "status": "active",
+                    "networks": {
+                        "v4": [{"type": "public", "ip_address": "1.2.3.4"}],
+                    },
+                }
+            }
+            mock_active_resp.raise_for_status = MagicMock()
+
+            mock_requests.get.side_effect = [mock_list_resp, mock_active_resp]
+            mock_requests.post.side_effect = [mock_422_resp, mock_create_resp]
+
+            result = create_build_vm("DEV-01", "myorg", "feature-branch")
+
+            assert result["droplet_id"] == 12345
+            assert mock_requests.post.call_count == 2
+            # First call used first region, second call used second region
+            first_body = mock_requests.post.call_args_list[0].kwargs["json"]
+            second_body = mock_requests.post.call_args_list[1].kwargs["json"]
+            assert first_body["region"] == BUILD_REGIONS[0]
+            assert second_body["region"] == BUILD_REGIONS[1]
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.requests")
+    def test_raises_when_all_regions_unavailable(self, mock_requests):
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            mock_list_resp = MagicMock()
+            mock_list_resp.json.return_value = {"droplets": []}
+            mock_list_resp.raise_for_status = MagicMock()
+            mock_requests.get.return_value = mock_list_resp
+
+            mock_422_resp = MagicMock()
+            mock_422_resp.status_code = 422
+            mock_422_resp.json.return_value = {"message": "Size is not available in this region."}
+            mock_requests.post.return_value = mock_422_resp
+
+            with pytest.raises(RuntimeError, match="not available in any region"):
+                create_build_vm("DEV-01", "myorg", "feature-branch")
+
+            assert mock_requests.post.call_count == len(BUILD_REGIONS)
         finally:
             os.environ.pop("DO_TOKEN", None)
 

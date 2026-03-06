@@ -28,9 +28,7 @@ class TestResolveBinarySource:
         assert is_archive is True
 
     def test_exits_when_version_and_branch_both_set(self):
-        args = self._make_args(
-            branch_name="feature-x", repo_owner="myorg", node_version="0.2.0"
-        )
+        args = self._make_args(branch_name="feature-x", repo_owner="myorg", node_version="0.2.0")
         with pytest.raises(SystemExit):
             _resolve_binary_source(args, self.console)
 
@@ -69,9 +67,7 @@ class TestResolveBinarySource:
     @patch("saorsa_deploy.cmd.provision_genesis.check_custom_build_exists")
     def test_branch_args_return_custom_build_url(self, mock_check, mock_get_url):
         mock_check.return_value = True
-        mock_get_url.return_value = (
-            "https://s3.amazonaws.com/builds/myorg/feature-x/saorsa-node"
-        )
+        mock_get_url.return_value = "https://s3.amazonaws.com/builds/myorg/feature-x/saorsa-node"
 
         args = self._make_args(branch_name="feature-x", repo_owner="myorg")
         url, is_archive = _resolve_binary_source(args, self.console)
