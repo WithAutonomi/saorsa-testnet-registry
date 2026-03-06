@@ -26,6 +26,7 @@ class TestBuildExecStart:
             " --log-format json"
             f" --log-dir {LOG_DIR}/{SERVICE_NAME}"
             " --disable-payment-verification"
+            " --stop-on-upgrade"
         )
 
     def test_root_dir_always_present(self):
@@ -58,7 +59,7 @@ class TestBuildExecStart:
 
     def test_testnet_flag(self):
         result = _build_exec_start(testnet=True)
-        assert result.endswith("--network-mode testnet")
+        assert "--network-mode testnet" in result
 
     def test_no_network_mode_when_not_testnet(self):
         result = _build_exec_start(testnet=False)
@@ -80,6 +81,10 @@ class TestBuildExecStart:
         result = _build_exec_start()
         assert "--disable-payment-verification" in result
 
+    def test_stop_on_upgrade_always_present(self):
+        result = _build_exec_start()
+        assert "--stop-on-upgrade" in result
+
 
 class TestBuildUnitFile:
     def test_contains_exec_start(self):
@@ -92,7 +97,7 @@ class TestBuildUnitFile:
         assert "[Service]" in unit
         assert "[Unit]" in unit
         assert "[Install]" in unit
-        assert "Restart=always" in unit
+        assert "Restart=on-success" in unit
         assert "WantedBy=multi-user.target" in unit
 
 
