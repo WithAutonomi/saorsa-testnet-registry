@@ -101,6 +101,7 @@ jobs:
           CMD="saorsa-deploy infra"
           CMD="$CMD --name ${{ steps.args.outputs.name }}"
           CMD="$CMD --vm-count ${{ steps.args.outputs.vm_count }}"
+          CMD="$CMD --force"
 
           if [ -n "${{ steps.args.outputs.attached_volume_size }}" ]; then
             CMD="$CMD --attached-volume-size ${{ steps.args.outputs.attached_volume_size }}"
