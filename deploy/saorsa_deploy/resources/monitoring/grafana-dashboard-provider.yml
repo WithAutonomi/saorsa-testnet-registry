@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: saorsa
+    orgId: 1
+    folder: Saorsa
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: {{GRAFANA_DASHBOARD_DIR}}
+      foldersFromFilesStructure: false

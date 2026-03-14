@@ -83,6 +83,80 @@ def delete_terraform_state(state_key: str) -> None:
     client.delete_object(Bucket=S3_BUCKET, Key=state_key)
 
 
+S3_MONITORING_KEY_PREFIX = "saorsa-deploy/monitoring"
+
+
+def save_monitoring_state(
+    name: str,
+    region: str,
+    vm_ip: str,
+    influxdb_url: str = "",
+    influxdb_token: str = "",
+    influxdb_org: str = "",
+    influxdb_bucket: str = "",
+    grafana_url: str = "",
+) -> None:
+    """Save monitoring stack metadata to S3."""
+    state = {
+        "name": name,
+        "region": region,
+        "vm_ip": vm_ip,
+        "influxdb_url": influxdb_url,
+        "influxdb_token": influxdb_token,
+        "influxdb_org": influxdb_org,
+        "influxdb_bucket": influxdb_bucket,
+        "grafana_url": grafana_url,
+    }
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_MONITORING_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(state, indent=2),
+        ContentType="application/json",
+    )
+
+
+def update_monitoring_state(name: str, updates: dict) -> None:
+    """Merge updates into existing monitoring state in S3."""
+    state = load_monitoring_state(name)
+    state.update(updates)
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_MONITORING_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(state, indent=2),
+        ContentType="application/json",
+    )
+
+
+def load_monitoring_state(name: str) -> dict:
+    """Load monitoring stack metadata from S3.
+
+    Raises RuntimeError if the monitoring state is not found.
+    """
+    client = _get_s3_client()
+    try:
+        resp = client.get_object(
+            Bucket=S3_BUCKET,
+            Key=f"{S3_MONITORING_KEY_PREFIX}/{name}.json",
+        )
+        return json.loads(resp["Body"].read())
+    except client.exceptions.NoSuchKey:
+        raise RuntimeError(
+            f"No monitoring state found for '{name}'. "
+            "Was this monitoring stack created with the monitoring-infra command?"
+        )
+
+
+def delete_monitoring_state(name: str) -> None:
+    """Delete monitoring stack metadata from S3."""
+    client = _get_s3_client()
+    client.delete_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_MONITORING_KEY_PREFIX}/{name}.json",
+    )
+
+
 def check_terraform_state_exists(state_key: str) -> bool:
     """Check if a Terraform state file already exists in S3."""
     client = _get_s3_client()

@@ -187,6 +187,161 @@ Destroy without confirmation (for CI/CD pipelines):
 uv run saorsa-deploy destroy --name DEV-01 --force
 ```
 
+### `provision-telegraf-logs` command
+
+Install and configure Telegraf for Elasticsearch log forwarding on all testnet VMs. Formerly named `provision-telegraf`.
+
+```bash
+uv run saorsa-deploy provision-telegraf-logs --name DEV-01 \
+  --elasticsearch-url https://es.example.com \
+  --elasticsearch-username user \
+  --elasticsearch-password pass
+```
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--name` | string | Yes | - | Deployment name |
+| `--elasticsearch-url` | string | Yes | - | Elasticsearch endpoint URL |
+| `--elasticsearch-username` | string | Yes | - | Elasticsearch username |
+| `--elasticsearch-password` | string | Yes | - | Elasticsearch password |
+| `--node-version` | string | No | - | Version of the deployed binary |
+| `--branch-commit` | string | No | - | Git branch or commit |
+| `--repo-owner` | string | No | `maidsafe` | Repository owner |
+| `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
+
+## Monitoring
+
+Optional per-testnet monitoring stack: InfluxDB 2.x + Grafana on a single VM, with Telegraf forwarding host-level metrics (CPU, memory, disk, network) from testnet nodes.
+
+The monitoring stack is standalone — it can be used by deployments from this repository or external setups.
+
+### `monitoring-infra` command
+
+Create a monitoring VM with attached storage using Terraform.
+
+```bash
+uv run saorsa-deploy monitoring-infra --name DEV-01
+```
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--force` | flag | No | - | Delete stale Terraform state and proceed |
+| `--name` | string | Yes | - | Monitoring stack name |
+| `--region` | string | No | `lon1` | Region for the monitoring VM |
+| `--volume-size` | int | No | 50 | Attached volume size in GB (for InfluxDB data) |
+
+### `provision-monitoring` command
+
+Install and configure InfluxDB 2.x and Grafana on the monitoring VM.
+
+```bash
+uv run saorsa-deploy provision-monitoring --name DEV-01
+```
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--name` | string | Yes | - | Monitoring stack name (must match `monitoring-infra`) |
+| `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
+
+On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `provision-telegraf-metrics` command.
+
+### `provision-telegraf-metrics` command
+
+Install Telegraf for InfluxDB metrics forwarding on testnet VMs. Collects host-level metrics: CPU, memory, disk space (all mount points), and network bandwidth.
+
+```bash
+# Using deployment state (loads IPs from S3)
+uv run saorsa-deploy provision-telegraf-metrics --name DEV-01 \
+  --influxdb-url http://1.2.3.4:8086 \
+  --influxdb-token TOKEN
+
+# Using explicit host IPs (for external setups)
+uv run saorsa-deploy provision-telegraf-metrics \
+  --host-ips 5.6.7.8,9.10.11.12 \
+  --influxdb-url http://1.2.3.4:8086 \
+  --influxdb-token TOKEN
+```
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--name` | string | No | - | Deployment name (loads VM IPs from deployment state) |
+| `--host-ips` | string | No | - | Comma-separated host IPs (alternative to `--name`) |
+| `--influxdb-url` | string | Yes | - | InfluxDB URL |
+| `--influxdb-token` | string | Yes | - | InfluxDB API token |
+| `--influxdb-org` | string | No | `saorsa` | InfluxDB organization |
+| `--influxdb-bucket` | string | No | `testnet-metrics` | InfluxDB bucket |
+| `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
+
+Either `--name` or `--host-ips` must be provided. The `--host-ips` flag allows provisioning machines from external testnet setups without any deployment state in this repository.
+
+### `monitoring-info` command
+
+Print monitoring stack connection details from S3 state. Useful for retrieving credentials after provisioning, or for getting a ready-to-use Telegraf config for external setups.
+
+```bash
+# Print connection summary
+uv run saorsa-deploy monitoring-info --name DEV-01
+
+# Emit a complete Telegraf TOML config to stdout
+uv run saorsa-deploy monitoring-info --name DEV-01 --telegraf-config > telegraf.conf
+```
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--name` | string | Yes | - | Monitoring stack name |
+| `--telegraf-config` | flag | No | - | Emit complete Telegraf TOML config to stdout |
+
+### `destroy-monitoring` command
+
+Tear down monitoring infrastructure.
+
+```bash
+uv run saorsa-deploy destroy-monitoring --name DEV-01
+```
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--force` | flag | No | - | Skip confirmation prompt |
+| `--name` | string | Yes | - | Monitoring stack name to destroy |
+
+### Monitoring workflow example
+
+```bash
+# 1. Create monitoring VM
+uv run saorsa-deploy monitoring-infra --name DEV-01
+
+# 2. Install InfluxDB + Grafana (prints connection details)
+uv run saorsa-deploy provision-monitoring --name DEV-01
+
+# 3. Install Telegraf on testnet nodes
+uv run saorsa-deploy provision-telegraf-metrics --name DEV-01 \
+  --influxdb-url http://1.2.3.4:8086 \
+  --influxdb-token TOKEN
+
+# 4. View Grafana dashboards at http://1.2.3.4:3000
+
+# 5. Get connection details later
+uv run saorsa-deploy monitoring-info --name DEV-01
+
+# 6. Get a portable Telegraf config for external use
+uv run saorsa-deploy monitoring-info --name DEV-01 --telegraf-config
+
+# 7. Tear down when done
+uv run saorsa-deploy destroy-monitoring --name DEV-01
+```
+
 ### How it works
 
 The `--name` argument is used as a prefix for all VM names (e.g., `DEV-01-ant-node-lon1-1`).

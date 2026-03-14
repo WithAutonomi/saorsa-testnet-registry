@@ -51,9 +51,9 @@ deploy/
     ssh.py                      # SSH operations
     state.py                    # Deployment state management (S3)
     terraform.py                # Terraform orchestration
-    cmd/                        # CLI subcommands (infra, provision, destroy, etc.)
-    provisioning/               # Pyinfra provisioning logic (genesis, node, build)
-    resources/                  # Terraform manifests (digitalocean/, aws-build-infra/)
+    cmd/                        # CLI subcommands (infra, provision, destroy, monitoring, etc.)
+    provisioning/               # Pyinfra provisioning logic (genesis, node, build, monitoring)
+    resources/                  # Terraform manifests (digitalocean/, digitalocean-monitoring/, aws-build-infra/)
   tests/                        # pytest test suite
 ```
 
@@ -136,6 +136,31 @@ When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) 
 | PUT | `/api/deployments/<id>` | Update deployment status |
 | DELETE | `/api/deployments/<id>` | Delete deployment record |
 | GET | `/api/deployments/<id>/events` | List deployment events |
+
+## Monitoring
+
+Optional per-testnet monitoring stack (InfluxDB 2.x + Grafana) on a single VM. Standalone — usable by this repo or external setups.
+
+### Commands
+
+- `monitoring-infra` — create monitoring VM via Terraform
+- `provision-monitoring` — install InfluxDB + Grafana, prints connection details
+- `provision-telegraf-metrics` — install Telegraf on nodes for host metrics (CPU, mem, disk, net) → InfluxDB
+- `monitoring-info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
+- `destroy-monitoring` — tear down monitoring infrastructure
+
+### Architecture
+
+- Terraform manifests: `deploy/saorsa_deploy/resources/digitalocean-monitoring/`
+- Provisioners: `deploy/saorsa_deploy/provisioning/monitoring.py` (InfluxDB+Grafana), `telegraf_metrics.py` (Telegraf)
+- CLI commands: `deploy/saorsa_deploy/cmd/monitoring_infra.py`, `provision_monitoring.py`, `provision_telegraf_metrics.py`, `monitoring_info.py`, `destroy_monitoring.py`
+- State: separate S3 key prefix `saorsa-deploy/monitoring/{name}.json` (independent of deployment state)
+- Telegraf metrics runs as a separate systemd service (`telegraf-saorsa-metrics`) alongside the existing log forwarding (`telegraf-saorsa-elasticsearch`)
+
+### Telegraf naming
+
+- `provision-telegraf-logs` — Elasticsearch log forwarding (formerly `provision-telegraf`)
+- `provision-telegraf-metrics` — InfluxDB host metrics
 
 ## Key Commands
 
