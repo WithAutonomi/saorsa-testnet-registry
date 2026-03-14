@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegraf - Saorsa Host Metrics (InfluxDB)
+Documentation=https://github.com/influxdata/telegraf
+After=network.target
+
+[Service]
+Type=notify
+EnvironmentFile=-{{TELEGRAF_ENV_PATH}}
+User=telegraf
+ExecStart=/usr/bin/telegraf -config {{TELEGRAF_CONFIG_PATH}}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartForceExitStatus=SIGPIPE
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

@@ -223,9 +223,9 @@ def main():
         help="Upgrade channel for saorsa-node (beta or stable)",
     )
 
-    # === provision-telegraf ===
+    # === provision-telegraf-logs (formerly provision-telegraf) ===
     telegraf_parser = subparsers.add_parser(
-        "provision-telegraf",
+        "provision-telegraf-logs",
         help="Install and configure Telegraf for Elasticsearch log forwarding",
     )
     telegraf_parser.add_argument(
@@ -277,6 +277,131 @@ def main():
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
     )
 
+    # === destroy-monitoring ===
+    destroy_monitoring_parser = subparsers.add_parser(
+        "destroy-monitoring", help="Destroy monitoring infrastructure"
+    )
+    destroy_monitoring_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    destroy_monitoring_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Monitoring stack name to destroy",
+    )
+
+    # === monitoring-infra ===
+    monitoring_infra_parser = subparsers.add_parser(
+        "monitoring-infra", help="Create monitoring VM infrastructure"
+    )
+    monitoring_infra_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete stale Terraform state files and proceed",
+    )
+    monitoring_infra_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Monitoring stack name (used as prefix in VM names)",
+    )
+    monitoring_infra_parser.add_argument(
+        "--region",
+        type=str,
+        default="lon1",
+        help="Region for the monitoring VM (default: lon1)",
+    )
+    monitoring_infra_parser.add_argument(
+        "--volume-size",
+        type=int,
+        default=50,
+        help="Size of attached volume in GB for InfluxDB data (default: 50)",
+    )
+
+    # === monitoring-info ===
+    monitoring_info_parser = subparsers.add_parser(
+        "monitoring-info", help="Print monitoring stack connection details"
+    )
+    monitoring_info_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Monitoring stack name",
+    )
+    monitoring_info_parser.add_argument(
+        "--telegraf-config",
+        action="store_true",
+        help="Emit a complete Telegraf TOML config to stdout",
+    )
+
+    # === provision-monitoring ===
+    provision_monitoring_parser = subparsers.add_parser(
+        "provision-monitoring", help="Provision InfluxDB + Grafana on monitoring VM"
+    )
+    provision_monitoring_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Monitoring stack name (must match the name used with monitoring-infra)",
+    )
+    provision_monitoring_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+
+    # === provision-telegraf-metrics ===
+    telegraf_metrics_parser = subparsers.add_parser(
+        "provision-telegraf-metrics",
+        help="Install and configure Telegraf for InfluxDB metrics forwarding",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Deployment name (loads VM IPs from deployment state)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--host-ips",
+        type=str,
+        default=None,
+        help="Comma-separated list of host IPs to provision (alternative to --name)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--influxdb-url",
+        type=str,
+        default=None,
+        help="InfluxDB URL (auto-loaded from monitoring state if --name is provided)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--influxdb-token",
+        type=str,
+        default=None,
+        help="InfluxDB API token (auto-loaded from monitoring state if --name is provided)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--influxdb-org",
+        type=str,
+        default="saorsa",
+        help="InfluxDB organization (default: saorsa)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--influxdb-bucket",
+        type=str,
+        default="testnet-metrics",
+        help="InfluxDB bucket (default: testnet-metrics)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -303,10 +428,32 @@ def main():
         from saorsa_deploy.cmd.provision_genesis import cmd_provision_genesis
 
         cmd_provision_genesis(args)
-    elif args.command == "provision-telegraf":
+    elif args.command == "provision-telegraf-logs":
         from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
 
         cmd_provision_telegraf(args)
+    elif args.command == "destroy-monitoring":
+        from saorsa_deploy.cmd.destroy_monitoring import cmd_destroy_monitoring
+
+        cmd_destroy_monitoring(args)
+    elif args.command == "monitoring-infra":
+        from saorsa_deploy.cmd.monitoring_infra import cmd_monitoring_infra
+
+        cmd_monitoring_infra(args)
+    elif args.command == "monitoring-info":
+        from saorsa_deploy.cmd.monitoring_info import cmd_monitoring_info
+
+        cmd_monitoring_info(args)
+    elif args.command == "provision-monitoring":
+        from saorsa_deploy.cmd.provision_monitoring import cmd_provision_monitoring
+
+        cmd_provision_monitoring(args)
+    elif args.command == "provision-telegraf-metrics":
+        from saorsa_deploy.cmd.provision_telegraf_metrics import (
+            cmd_provision_telegraf_metrics,
+        )
+
+        cmd_provision_telegraf_metrics(args)
 
 
 if __name__ == "__main__":
