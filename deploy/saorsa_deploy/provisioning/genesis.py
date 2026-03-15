@@ -16,12 +16,16 @@ UNIT_FILE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ROOT_DIR = f"{MOUNT_POINT}/data/{SERVICE_NAME}"
 
 
+METRICS_PORT = 9100
+
+
 def _build_exec_start(
     port=None,
     ip_version="ipv4",
     log_level=None,
     testnet=False,
     upgrade_channel=None,
+    metrics_port=METRICS_PORT,
 ) -> str:
     """Build the ExecStart command line for the systemd service."""
     parts = [BINARY_INSTALL_PATH]
@@ -40,6 +44,7 @@ def _build_exec_start(
     if upgrade_channel:
         parts.append(f"--upgrade-channel {upgrade_channel}")
     parts.append("--stop-on-upgrade")
+    parts.append(f"--metrics-port {metrics_port}")
     return " ".join(parts)
 
 

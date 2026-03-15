@@ -7,10 +7,12 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.provisioning.node import METRICS_PORT_BASE
 from saorsa_deploy.resources import get_resources_dir
 
 TELEGRAF_CONFIG_DIR = "/etc/telegraf-metrics"
 TELEGRAF_CONFIG_PATH = f"{TELEGRAF_CONFIG_DIR}/telegraf_saorsa_metrics.conf"
+TELEGRAF_PROMETHEUS_CONFIG_PATH = f"{TELEGRAF_CONFIG_DIR}/telegraf_prometheus.conf"
 TELEGRAF_ENV_PATH = "/etc/default/telegraf-saorsa-metrics"
 TELEGRAF_SERVICE_NAME = "telegraf-saorsa-metrics"
 TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
@@ -28,6 +30,8 @@ class TelegrafMetricsProvisioner:
         influxdb_org: str,
         influxdb_bucket: str,
         testnet_name: str = "",
+        node_count: int = 0,
+        is_genesis: bool = False,
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -37,6 +41,8 @@ class TelegrafMetricsProvisioner:
         self.influxdb_org = influxdb_org
         self.influxdb_bucket = influxdb_bucket
         self.testnet_name = testnet_name
+        self.node_count = node_count
+        self.is_genesis = is_genesis
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -83,9 +89,22 @@ class TelegrafMetricsProvisioner:
                 name="Write Telegraf metrics configuration",
                 commands=[
                     f"mkdir -p {TELEGRAF_CONFIG_DIR}",
-                    f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
+                    f"cat > {TELEGRAF_CONFIG_PATH}"
+                    f" << 'CONF_EOF'\n{config_content}CONF_EOF",
                 ],
             )
+
+            if self.node_count > 0:
+                prometheus_config = self._build_prometheus_config()
+                add_op(
+                    state,
+                    server.shell,
+                    name="Write Telegraf prometheus scrape configuration",
+                    commands=[
+                        f"cat > {TELEGRAF_PROMETHEUS_CONFIG_PATH}"
+                        f" << 'PROM_EOF'\n{prometheus_config}PROM_EOF",
+                    ],
+                )
 
             unit_content = self._build_unit_file()
             add_op(
@@ -153,12 +172,45 @@ class TelegrafMetricsProvisioner:
     def _build_telegraf_config(self) -> str:
         return build_telegraf_metrics_config()
 
+    def _build_prometheus_config(self) -> str:
+        """Build the prometheus scraping config with per-node tagged blocks.
+
+        Each node gets its own [[inputs.prometheus]] block with a node_service
+        tag so metrics can be distinguished per-node in dashboards.
+        """
+        header = _read_resource("telegraf_prometheus.conf")
+        blocks = []
+
+        if self.is_genesis:
+            blocks.append(
+                f'[[inputs.prometheus]]\n'
+                f'  urls = ["http://127.0.0.1:{METRICS_PORT_BASE}/metrics"]\n'
+                f'  metric_version = 2\n'
+                f'  [inputs.prometheus.tags]\n'
+                f'    node_service = "saorsa-genesis-node"\n'
+                f'    host_role = "GENESIS"\n'
+            )
+        else:
+            for i in range(self.node_count):
+                port = METRICS_PORT_BASE + i
+                service_name = f"saorsa-node-{i + 1}"
+                blocks.append(
+                    f'[[inputs.prometheus]]\n'
+                    f'  urls = ["http://127.0.0.1:{port}/metrics"]\n'
+                    f'  metric_version = 2\n'
+                    f'  [inputs.prometheus.tags]\n'
+                    f'    node_service = "{service_name}"\n'
+                    f'    host_role = "WAN_NODE"\n'
+                )
+
+        return header + "\n".join(blocks)
+
     def _build_unit_file(self) -> str:
         template = _read_resource("telegraf-saorsa-metrics.service")
         return template.replace(
             "{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH
         ).replace(
-            "{{TELEGRAF_CONFIG_PATH}}", TELEGRAF_CONFIG_PATH
+            "{{TELEGRAF_CONFIG_DIR}}", TELEGRAF_CONFIG_DIR
         )
 
 

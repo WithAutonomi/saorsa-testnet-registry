@@ -11,41 +11,7 @@ def cmd_provision_telegraf_metrics(args):
     """Provision Telegraf for InfluxDB metrics forwarding on testnet VMs."""
     console = Console()
 
-    # Resolve host IPs: either from --host-ips or from deployment state
-    if args.host_ips:
-        all_ips = [ip.strip() for ip in args.host_ips.split(",") if ip.strip()]
-        console.print(f"[bold]Using {len(all_ips)} provided host IP(s)...[/bold]")
-    elif args.name:
-        console.print(
-            f"[bold]Loading deployment state for '{args.name}'...[/bold]"
-        )
-        try:
-            state = load_deployment_state(args.name)
-        except RuntimeError as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
-            sys.exit(1)
-
-        all_ips = []
-        bootstrap_ip = state.get("bootstrap_ip")
-        if bootstrap_ip:
-            all_ips.append(bootstrap_ip)
-
-        vm_ips = state.get("vm_ips", {})
-        for region_key in sorted(vm_ips.keys()):
-            all_ips.extend(vm_ips[region_key])
-    else:
-        console.print(
-            "[bold red]Error:[/bold red] "
-            "Either --name or --host-ips must be provided."
-        )
-        sys.exit(1)
-
-    if not all_ips:
-        console.print("[bold red]Error:[/bold red] No host IPs to provision.")
-        sys.exit(1)
-
-    # Resolve InfluxDB connection details: explicit args take precedence,
-    # otherwise load from monitoring state if --name is provided
+    # Resolve InfluxDB connection details first
     influxdb_url = args.influxdb_url
     influxdb_token = args.influxdb_token
     influxdb_org = args.influxdb_org
@@ -77,26 +43,107 @@ def cmd_provision_telegraf_metrics(args):
         )
         sys.exit(1)
 
-    console.print(f"  InfluxDB URL: {influxdb_url}")
-    console.print(f"  Target hosts: {len(all_ips)}")
-    console.print()
+    common_kwargs = {
+        "ssh_key_path": args.ssh_key_path,
+        "influxdb_url": influxdb_url,
+        "influxdb_token": influxdb_token,
+        "influxdb_org": influxdb_org,
+        "influxdb_bucket": influxdb_bucket,
+        "testnet_name": args.name or "",
+        "console": console,
+    }
 
-    clear_known_hosts(all_ips, console)
+    # Resolve host IPs and node counts
+    if args.host_ips:
+        all_ips = [ip.strip() for ip in args.host_ips.split(",") if ip.strip()]
+        console.print(f"[bold]Using {len(all_ips)} provided host IP(s)...[/bold]")
+        console.print(f"  InfluxDB URL: {influxdb_url}")
+        console.print(f"  Target hosts: {len(all_ips)}")
+        console.print()
 
-    try:
-        TelegrafMetricsProvisioner(
-            host_ips=all_ips,
-            ssh_key_path=args.ssh_key_path,
-            influxdb_url=influxdb_url,
-            influxdb_token=influxdb_token,
-            influxdb_org=influxdb_org,
-            influxdb_bucket=influxdb_bucket,
-            testnet_name=args.name or "",
-            console=console,
-        ).execute()
-    except Exception as e:
+        clear_known_hosts(all_ips, console)
+        try:
+            TelegrafMetricsProvisioner(
+                host_ips=all_ips,
+                node_count=0,
+                **common_kwargs,
+            ).execute()
+        except Exception as e:
+            console.print(
+                f"[bold red]Telegraf metrics provisioning failed:[/bold red] {e}"
+            )
+            sys.exit(1)
+    elif args.name:
         console.print(
-            f"[bold red]Telegraf metrics provisioning failed:[/bold red] {e}"
+            f"[bold]Loading deployment state for '{args.name}'...[/bold]"
+        )
+        try:
+            state = load_deployment_state(args.name)
+        except RuntimeError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
+
+        node_count = state.get("node_count", 0)
+        bootstrap_ip = state.get("bootstrap_ip")
+        vm_ips = state.get("vm_ips", {})
+
+        regular_ips = []
+        for region_key in sorted(vm_ips.keys()):
+            regular_ips.extend(vm_ips[region_key])
+
+        all_ips = []
+        if bootstrap_ip:
+            all_ips.append(bootstrap_ip)
+        all_ips.extend(regular_ips)
+
+        console.print(f"  InfluxDB URL: {influxdb_url}")
+        console.print(f"  Target hosts: {len(all_ips)}")
+        if node_count:
+            console.print(f"  Node count per VM: {node_count}")
+        console.print()
+
+        clear_known_hosts(all_ips, console)
+
+        # Provision genesis VM (1 node)
+        if bootstrap_ip:
+            console.print(
+                f"[bold]Provisioning Telegraf on genesis node ({bootstrap_ip})...[/bold]"
+            )
+            try:
+                TelegrafMetricsProvisioner(
+                    host_ips=[bootstrap_ip],
+                    node_count=1,
+                    is_genesis=True,
+                    **common_kwargs,
+                ).execute()
+            except Exception as e:
+                console.print(
+                    f"[bold red]Telegraf metrics provisioning failed on genesis:"
+                    f"[/bold red] {e}"
+                )
+                sys.exit(1)
+
+        # Provision regular VMs (N nodes each)
+        if regular_ips:
+            console.print(
+                f"\n[bold]Provisioning Telegraf on {len(regular_ips)}"
+                f" regular VM(s)...[/bold]"
+            )
+            try:
+                TelegrafMetricsProvisioner(
+                    host_ips=regular_ips,
+                    node_count=node_count,
+                    **common_kwargs,
+                ).execute()
+            except Exception as e:
+                console.print(
+                    f"[bold red]Telegraf metrics provisioning failed:[/bold red] {e}"
+                )
+                sys.exit(1)
+    else:
+        console.print(
+            "[bold red]Error:[/bold red] "
+            "Either --name or --host-ips must be provided."
         )
         sys.exit(1)
 
