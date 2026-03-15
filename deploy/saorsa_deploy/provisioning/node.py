@@ -13,6 +13,8 @@ from saorsa_deploy.provisioning.progress import (
 )
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
+METRICS_PORT_BASE = 9100
+
 
 def _build_node_exec_start(
     bootstrap_ip,
@@ -24,6 +26,7 @@ def _build_node_exec_start(
     log_level=None,
     testnet=False,
     upgrade_channel=None,
+    metrics_port=None,
 ):
     """Build the ExecStart command line for a node service."""
     parts = [BINARY_INSTALL_PATH]
@@ -44,6 +47,8 @@ def _build_node_exec_start(
     if upgrade_channel:
         parts.append(f"--upgrade-channel {upgrade_channel}")
     parts.append("--stop-on-upgrade")
+    if metrics_port is not None:
+        parts.append(f"--metrics-port {metrics_port}")
     return " ".join(parts)
 
 
@@ -178,6 +183,7 @@ class SaorsaNodeProvisioner:
                 node_port = (self.initial_port + i) if self.initial_port is not None else None
                 root_dir = f"{MOUNT_POINT}/data/{service_name}"
                 log_dir = f"{LOG_DIR}/{service_name}"
+                metrics_port = METRICS_PORT_BASE + i
                 exec_start = _build_node_exec_start(
                     bootstrap_ip=self.bootstrap_ip,
                     bootstrap_port=self.bootstrap_port,
@@ -188,6 +194,7 @@ class SaorsaNodeProvisioner:
                     log_level=self.log_level,
                     testnet=self.testnet,
                     upgrade_channel=self.upgrade_channel,
+                    metrics_port=metrics_port,
                 )
                 unit_content = _build_node_unit_file(service_name, exec_start)
                 unit_path = f"/etc/systemd/system/{service_name}.service"

@@ -23,6 +23,7 @@ GRAFANA_DATASOURCE_PATH = "/etc/grafana/provisioning/datasources/influxdb.yml"
 GRAFANA_DASHBOARD_PROVIDER_PATH = "/etc/grafana/provisioning/dashboards/saorsa.yml"
 GRAFANA_DASHBOARD_DIR = "/var/lib/grafana/dashboards"
 GRAFANA_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/host-metrics.json"
+GRAFANA_NODE_TABLE_PATH = f"{GRAFANA_DASHBOARD_DIR}/node-overview.json"
 
 
 class MonitoringProvisioner:
@@ -227,6 +228,17 @@ class MonitoringProvisioner:
             ],
         )
 
+        node_table_json = self._build_node_overview_dashboard()
+        add_op(
+            state,
+            server.shell,
+            name="Write node overview dashboard",
+            commands=[
+                f"cat > {GRAFANA_NODE_TABLE_PATH}"
+                f" << 'TABLE_EOF'\n{node_table_json}\nTABLE_EOF",
+            ],
+        )
+
     def _add_start_services_ops(self, state: State):
         add_op(
             state,
@@ -326,39 +338,173 @@ class MonitoringProvisioner:
         return template.replace("{{GRAFANA_DASHBOARD_DIR}}", GRAFANA_DASHBOARD_DIR)
 
     def _build_host_metrics_dashboard(self) -> str:
+        panels = []
+        y = 0
+
+        def row(title):
+            nonlocal y, x
+            if x > 0:
+                y += 8
+                x = 0
+            panels.append({
+                "title": title, "type": "row", "collapsed": False,
+                "gridPos": {"h": 1, "w": 24, "x": 0, "y": y}, "panels": [],
+            })
+            y += 1
+
+        def add(panel_fn, w=24, h=8, **kwargs):
+            nonlocal y, x
+            if x + w > 24:
+                x = 0
+                y += h
+            panels.append(panel_fn(
+                grid_pos={"h": h, "w": w, "x": x, "y": y}, **kwargs,
+            ))
+            x += w
+            if x >= 24:
+                x = 0
+                y += h
+
+        x = 0
+
+        # Host Statistics
+        row("Host Statistics")
+        add(self._panel_cpu_usage)
+        add(self._panel_memory_usage)
+        add(self._panel_disk_usage, title="System Disk Usage", mount_path="/")
+        add(self._panel_disk_usage, title="Attached Volume Usage",
+            mount_path="/mnt/saorsa-node-storage")
+        add(self._panel_network_inbound)
+        add(self._panel_network_outbound)
+
+        # Testnet Averages (grid layout)
+        row("Testnet Averages")
+        # Stats row: 4 across
+        add(self._p2p_testnet_stat, w=6, h=4,
+            title="Avg Connected Peers",
+            fields=["p2p_connected_peers"], unit="short")
+        add(self._p2p_testnet_stat, w=6, h=4,
+            title="Avg Transport Connections",
+            fields=["p2p_transport_active_connections"], unit="short")
+        add(self._p2p_testnet_stat, w=6, h=4,
+            title="Avg Routing Table Size",
+            fields=["p2p_routing_table_size"], unit="short")
+        add(self._p2p_testnet_stat, w=6, h=4,
+            title="Avg Routing Buckets Filled",
+            fields=["p2p_routing_buckets_filled"], unit="short")
+        # Stats row: 3 across
+        add(self._p2p_testnet_stat, w=8, h=4,
+            title="Under-Replicated Keys",
+            fields=["p2p_under_replicated_keys"], unit="short")
+        add(self._p2p_testnet_stat, w=8, h=4,
+            title="Total Stored Data",
+            fields=["p2p_placement_total_stored_bytes"], unit="bytes",
+            agg="sum")
+        add(self._p2p_testnet_stat, w=8, h=4,
+            title="Total Records",
+            fields=["p2p_placement_total_records"], unit="short",
+            agg="sum")
+        # Gauges row: 4 across
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="DHT Success Rate",
+            fields=["p2p_dht_success_rate"], unit="percentunit",
+            min_val=0, max_val=1)
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Avg Replication Factor",
+            fields=["p2p_replication_factor"], unit="short",
+            min_val=0, max_val=10)
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Avg Replication Health",
+            fields=["p2p_replication_health"], unit="percentunit",
+            min_val=0, max_val=1)
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Avg Capacity Usage",
+            fields=["p2p_placement_used_capacity_ratio"],
+            unit="percentunit", min_val=0, max_val=1)
+        # Gauges row: 4 across
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Avg Load Balance Score",
+            fields=["p2p_placement_load_balance_score"], unit="short",
+            min_val=0, max_val=1)
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Eclipse Score",
+            fields=["p2p_security_eclipse_score"], unit="short",
+            min_val=0, max_val=1)
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Sybil Score",
+            fields=["p2p_security_sybil_score"], unit="short",
+            min_val=0, max_val=1)
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Collusion Score",
+            fields=["p2p_security_collusion_score"], unit="short",
+            min_val=0, max_val=1)
+
+        # Lookups (per host)
+        row("Lookups")
+        add(self._p2p_panel, title="Lookup Latency (ms)",
+            fields=["p2p_lookup_latency_p50_ms", "p2p_lookup_latency_p95_ms",
+                     "p2p_lookup_latency_p99_ms"], unit="ms")
+        add(self._p2p_panel, title="Lookup Hop Count",
+            fields=["p2p_lookup_hop_count_p50", "p2p_lookup_hop_count_p95"],
+            unit="short")
+        add(self._p2p_rate, title="Lookup Rate",
+            fields=["p2p_lookup_total"], unit="ops")
+        add(self._p2p_rate, title="Lookup Timeouts",
+            fields=["p2p_lookup_timeout_total"], unit="ops")
+
+        # DHT Operations (per host)
+        row("DHT Operations")
+        add(self._p2p_rate, title="DHT Puts & Gets (rate)",
+            fields=["p2p_dht_puts_total", "p2p_dht_puts_success_total",
+                     "p2p_dht_gets_total", "p2p_dht_gets_success_total"],
+            unit="ops")
+        add(self._p2p_rate, title="DHT Liveness Checks (rate)",
+            fields=["p2p_dht_liveness_checks_total",
+                     "p2p_dht_liveness_failures_total"], unit="ops")
+
+        # Storage (per host)
+        row("Storage")
+        add(self._p2p_rate, title="Storage Operations (rate)",
+            fields=["p2p_storage_read_total", "p2p_storage_write_total",
+                     "p2p_storage_delete_total"], unit="ops")
+        add(self._p2p_rate, title="Storage Errors (rate)",
+            fields=["p2p_storage_read_errors_total",
+                     "p2p_storage_write_errors_total",
+                     "p2p_storage_delete_errors_total"], unit="ops")
+        add(self._p2p_panel, title="Storage Duration (avg ms)",
+            fields=["p2p_storage_read_avg_duration_ms",
+                     "p2p_storage_write_avg_duration_ms",
+                     "p2p_storage_delete_avg_duration_ms"], unit="ms")
+
+        # Runtime (per host)
+        row("Runtime")
+        add(self._p2p_panel, title="Runtime Memory (per host avg)",
+            fields=["p2p_runtime_memory_usage_bytes"], unit="bytes")
+
+        # Security Events (per host)
+        row("Security Events")
+        add(self._p2p_rate, title="Security Events (rate)",
+            fields=["p2p_security_eclipse_attempts_total",
+                     "p2p_security_sybil_nodes_detected_total",
+                     "p2p_security_nodes_evicted_total"], unit="ops")
+
+        # Trust (per host)
+        row("Trust")
+        add(self._p2p_panel, title="EigenTrust Scores",
+            fields=["p2p_trust_eigentrust_avg", "p2p_trust_eigentrust_min",
+                     "p2p_trust_eigentrust_max"], unit="short")
+        add(self._p2p_rate, title="Trust Interactions (rate)",
+            fields=["p2p_trust_interactions_total",
+                     "p2p_trust_positive_interactions_total",
+                     "p2p_trust_negative_interactions_total"], unit="ops")
+
         dashboard = {
             "annotations": {"list": []},
             "editable": True,
             "fiscalYearStartMonth": 0,
             "graphTooltip": 1,
             "links": [],
-            "panels": [
-                {
-                    "title": "Host Statistics",
-                    "type": "row",
-                    "collapsed": False,
-                    "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
-                    "panels": [],
-                },
-                self._panel_cpu_usage(grid_pos={"h": 8, "w": 24, "x": 0, "y": 1}),
-                self._panel_memory_usage(grid_pos={"h": 8, "w": 24, "x": 0, "y": 9}),
-                self._panel_disk_usage(
-                    "System Disk Usage",
-                    "/",
-                    grid_pos={"h": 8, "w": 24, "x": 0, "y": 17},
-                ),
-                self._panel_disk_usage(
-                    "Attached Volume Usage",
-                    "/mnt/saorsa-node-storage",
-                    grid_pos={"h": 8, "w": 24, "x": 0, "y": 25},
-                ),
-                self._panel_network_inbound(
-                    grid_pos={"h": 8, "w": 24, "x": 0, "y": 33}
-                ),
-                self._panel_network_outbound(
-                    grid_pos={"h": 8, "w": 24, "x": 0, "y": 41}
-                ),
-            ],
+            "panels": panels,
             "schemaVersion": 39,
             "tags": ["saorsa", "testnet", "host-metrics"],
             "templating": {
@@ -381,6 +527,7 @@ class MonitoringProvisioner:
                         "includeAll": True,
                         "multi": True,
                         "name": "host",
+                        "label": "Host",
                         "query": (
                             'import "influxdata/influxdb/schema"\n'
                             'schema.tagValues(\n'
@@ -391,7 +538,67 @@ class MonitoringProvisioner:
                         "refresh": 2,
                         "regex": "",
                         "type": "query",
-                    }
+                    },
+                    {
+                        "current": {
+                            "selected": True,
+                            "text": "All",
+                            "value": "$__all",
+                        },
+                        "datasource": {"type": "influxdb", "uid": "influxdb"},
+                        "definition": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "host_role"\n'
+                            ")"
+                        ),
+                        "allValue": ".*",
+                        "includeAll": True,
+                        "multi": True,
+                        "name": "host_role",
+                        "label": "Role",
+                        "query": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "host_role"\n'
+                            ")"
+                        ),
+                        "refresh": 2,
+                        "regex": "",
+                        "type": "query",
+                    },
+                    {
+                        "current": {
+                            "selected": True,
+                            "text": "All",
+                            "value": "$__all",
+                        },
+                        "datasource": {"type": "influxdb", "uid": "influxdb"},
+                        "definition": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "node_service"\n'
+                            ")"
+                        ),
+                        "allValue": ".*",
+                        "includeAll": True,
+                        "multi": True,
+                        "name": "node_service",
+                        "label": "Service",
+                        "query": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "node_service"\n'
+                            ")"
+                        ),
+                        "refresh": 2,
+                        "regex": "",
+                        "type": "query",
+                    },
                 ]
             },
             "time": {"from": "now-1h", "to": "now"},
@@ -399,6 +606,239 @@ class MonitoringProvisioner:
             "timezone": "utc",
             "title": "Host Metrics",
             "uid": "saorsa-host-metrics",
+        }
+        return json.dumps(dashboard, indent=2)
+
+    def _build_node_overview_dashboard(self) -> str:
+        """Build a table dashboard showing per-node detail."""
+        # Common filters for template variables
+        filters = (
+            '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
+            '  |> filter(fn: (r) => r["host_role"]'
+            ' =~ /^${host_role}$/)\n'
+            '  |> filter(fn: (r) => r["node_service"]'
+            ' =~ /^${node_service}$/)\n'
+        )
+
+        table_query = (
+            'import "join"\n\n'
+            # Numeric metrics
+            'metrics = from(bucket: "testnet-metrics")\n'
+            "  |> range(start: v.timeRangeStart,"
+            " stop: v.timeRangeStop)\n"
+            '  |> filter(fn: (r) => r["_measurement"]'
+            ' == "prometheus")\n'
+            '  |> filter(fn: (r) =>\n'
+            '       r["_field"] == "p2p_connected_peers" or\n'
+            '       r["_field"] == "p2p_transport_active_connections"'
+            " or\n"
+            '       r["_field"] == "p2p_routing_table_size" or\n'
+            '       r["_field"] == "p2p_routing_buckets_filled" or\n'
+            '       r["_field"] == "p2p_uptime_seconds" or\n'
+            '       r["_field"] == "p2p_runtime_threads")\n'
+            + filters
+            + "  |> last()\n"
+            "  |> group()\n"
+            '  |> pivot(rowKey: ["host", "node_service"],'
+            ' columnKey: ["_field"], valueColumn: "_value")\n\n'
+            # Version from p2p_node_info tag
+            'versions = from(bucket: "testnet-metrics")\n'
+            "  |> range(start: v.timeRangeStart,"
+            " stop: v.timeRangeStop)\n"
+            '  |> filter(fn: (r) => r["_measurement"]'
+            ' == "prometheus"'
+            ' and r["_field"] == "p2p_node_info")\n'
+            + filters
+            + "  |> last()\n"
+            "  |> group()\n"
+            '  |> keep(columns: ["host", "node_service",'
+            ' "version"])\n\n'
+            # Join version into metrics
+            "join.left(\n"
+            "  left: metrics,\n"
+            "  right: versions,\n"
+            "  on: (l, r) => l.host == r.host"
+            " and l.node_service == r.node_service,\n"
+            '  as: (l, r) => ({l with version: r.version}),\n'
+            ")\n"
+            '  |> keep(columns: ["host", "node_service",'
+            ' "version",'
+            ' "p2p_connected_peers",'
+            ' "p2p_transport_active_connections",'
+            ' "p2p_routing_table_size",'
+            ' "p2p_routing_buckets_filled",'
+            ' "p2p_uptime_seconds",'
+            ' "p2p_runtime_threads"])\n'
+            '  |> rename(columns: {\n'
+            '       host: "Host",\n'
+            '       node_service: "Service",\n'
+            '       version: "Version",\n'
+            '       p2p_connected_peers: "Connected Peers",\n'
+            '       p2p_transport_active_connections:'
+            ' "Active Connections",\n'
+            '       p2p_routing_table_size: "Routing Table Size",\n'
+            '       p2p_routing_buckets_filled: "Routing Buckets",\n'
+            '       p2p_uptime_seconds: "Uptime (s)",\n'
+            '       p2p_runtime_threads: "Threads"\n'
+            "  })\n"
+            '  |> sort(columns: ["Host", "Service"])\n'
+            '  |> yield(name: "table")'
+        )
+
+        dashboard = {
+            "annotations": {"list": []},
+            "editable": True,
+            "graphTooltip": 0,
+            "links": [],
+            "panels": [
+                {
+                    "title": "Node Overview",
+                    "type": "table",
+                    "datasource": {
+                        "type": "influxdb",
+                        "uid": "influxdb",
+                    },
+                    "fieldConfig": {
+                        "defaults": {},
+                        "overrides": [
+                            {
+                                "matcher": {
+                                    "id": "byName",
+                                    "options": "Uptime (s)",
+                                },
+                                "properties": [
+                                    {
+                                        "id": "unit",
+                                        "value": "s",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    "gridPos": {
+                        "h": 24, "w": 24, "x": 0, "y": 0,
+                    },
+                    "options": {
+                        "showHeader": True,
+                        "sortBy": [
+                            {"displayName": "Host", "desc": False},
+                        ],
+                    },
+                    "targets": [
+                        {"query": table_query, "refId": "A"},
+                    ],
+                },
+            ],
+            "schemaVersion": 39,
+            "tags": ["saorsa", "testnet", "node-overview"],
+            "templating": {
+                "list": [
+                    {
+                        "current": {
+                            "selected": True,
+                            "text": "All",
+                            "value": "$__all",
+                        },
+                        "datasource": {
+                            "type": "influxdb",
+                            "uid": "influxdb",
+                        },
+                        "definition": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "host"\n'
+                            ")"
+                        ),
+                        "allValue": ".*",
+                        "includeAll": True,
+                        "multi": True,
+                        "name": "host",
+                        "label": "Host",
+                        "query": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "host"\n'
+                            ")"
+                        ),
+                        "refresh": 2,
+                        "regex": "",
+                        "type": "query",
+                    },
+                    {
+                        "current": {
+                            "selected": True,
+                            "text": "All",
+                            "value": "$__all",
+                        },
+                        "datasource": {
+                            "type": "influxdb",
+                            "uid": "influxdb",
+                        },
+                        "definition": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "host_role"\n'
+                            ")"
+                        ),
+                        "allValue": ".*",
+                        "includeAll": True,
+                        "multi": True,
+                        "name": "host_role",
+                        "label": "Role",
+                        "query": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "host_role"\n'
+                            ")"
+                        ),
+                        "refresh": 2,
+                        "regex": "",
+                        "type": "query",
+                    },
+                    {
+                        "current": {
+                            "selected": True,
+                            "text": "All",
+                            "value": "$__all",
+                        },
+                        "datasource": {
+                            "type": "influxdb",
+                            "uid": "influxdb",
+                        },
+                        "definition": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "node_service"\n'
+                            ")"
+                        ),
+                        "allValue": ".*",
+                        "includeAll": True,
+                        "multi": True,
+                        "name": "node_service",
+                        "label": "Service",
+                        "query": (
+                            'import "influxdata/influxdb/schema"\n'
+                            'schema.tagValues(\n'
+                            '  bucket: "testnet-metrics",\n'
+                            '  tag: "node_service"\n'
+                            ")"
+                        ),
+                        "refresh": 2,
+                        "regex": "",
+                        "type": "query",
+                    },
+                ],
+            },
+            "time": {"from": "now-5m", "to": "now"},
+            "timepicker": {},
+            "timezone": "utc",
+            "title": "Node Overview",
+            "uid": "saorsa-node-overview",
         }
         return json.dumps(dashboard, indent=2)
 
@@ -515,6 +955,262 @@ class MonitoringProvisioner:
 
     def _panel_network_outbound(self, grid_pos: dict) -> dict:
         return self._panel_network("Network Outbound", "bytes_sent", grid_pos)
+
+    def _p2p_query(self, fields: list[str]) -> str:
+        """Base Flux query for p2p metrics from the prometheus measurement.
+
+        Filters by host, host_role, and node_service template variables,
+        then regroups by host + _field so values are averaged across nodes.
+        """
+        field_filter = " or ".join(f'r["_field"] == "{f}"' for f in fields)
+        return (
+            'from(bucket: "testnet-metrics")\n'
+            "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
+            '  |> filter(fn: (r) => r["_measurement"] == "prometheus")\n'
+            f"  |> filter(fn: (r) => {field_filter})\n"
+            '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
+            '  |> filter(fn: (r) => r["host_role"] =~ /^${host_role}$/)\n'
+            '  |> filter(fn: (r) => r["node_service"] =~ /^${node_service}$/)\n'
+            '  |> group(columns: ["host", "_field"])\n'
+        )
+
+    def _p2p_panel(
+        self, title: str, fields: list[str], unit: str, grid_pos: dict,
+    ) -> dict:
+        """Timeseries panel — for metrics where trends over time matter
+        (latency, duration, scores that evolve)."""
+        query = (
+            self._p2p_query(fields)
+            + "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
+            "createEmpty: false)\n"
+            '  |> keep(columns: ["_time", "_value", "host"])\n'
+            '  |> yield(name: "mean")'
+        )
+        return {
+            "title": title,
+            "type": "timeseries",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {"unit": unit},
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "legend": {"displayMode": "list", "placement": "right"},
+            },
+            "targets": [{"query": query, "refId": "A"}],
+        }
+
+    def _p2p_stat(
+        self, title: str, fields: list[str], unit: str, grid_pos: dict,
+    ) -> dict:
+        """Stat panel — shows current value per host as big numbers.
+        For point-in-time gauges (peers, table size, threads, uptime)."""
+        query = (
+            self._p2p_query(fields)
+            + "  |> mean()\n"
+            '  |> keep(columns: ["_value", "host"])\n'
+            '  |> yield(name: "mean")'
+        )
+        return {
+            "title": title,
+            "type": "stat",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": unit,
+                    "color": {"mode": "palette-classic"},
+                },
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "reduceOptions": {
+                    "values": False,
+                    "calcs": ["lastNotNull"],
+                    "fields": "",
+                },
+                "textMode": "auto",
+                "colorMode": "value",
+                "graphMode": "area",
+                "justifyMode": "auto",
+            },
+            "targets": [{"query": query, "refId": "A"}],
+        }
+
+    def _p2p_gauge(
+        self, title: str, fields: list[str], unit: str, grid_pos: dict,
+        min_val: float = 0, max_val: float = 1,
+    ) -> dict:
+        """Gauge panel — semicircle showing current value against a range.
+        For scores and ratios (success rate, health, security scores)."""
+        query = (
+            self._p2p_query(fields)
+            + "  |> mean()\n"
+            '  |> keep(columns: ["_value", "host"])\n'
+            '  |> yield(name: "mean")'
+        )
+        return {
+            "title": title,
+            "type": "gauge",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": unit,
+                    "min": min_val,
+                    "max": max_val,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "green", "value": None},
+                            {"color": "yellow", "value": max_val * 0.7},
+                            {"color": "red", "value": max_val * 0.9},
+                        ],
+                    },
+                },
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "reduceOptions": {
+                    "values": False,
+                    "calcs": ["lastNotNull"],
+                    "fields": "",
+                },
+            },
+            "targets": [{"query": query, "refId": "A"}],
+        }
+
+    def _p2p_rate(
+        self, title: str, fields: list[str], unit: str, grid_pos: dict,
+    ) -> dict:
+        """Timeseries panel showing rate of change — for counters
+        (operations, events, errors). Uses derivative to show ops/sec."""
+        query = (
+            self._p2p_query(fields)
+            + "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
+            "createEmpty: false)\n"
+            "  |> derivative(unit: 1s, nonNegative: true)\n"
+            '  |> keep(columns: ["_time", "_value", "host"])\n'
+            '  |> yield(name: "rate")'
+        )
+        return {
+            "title": title,
+            "type": "timeseries",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {"unit": unit},
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "legend": {"displayMode": "list", "placement": "right"},
+            },
+            "targets": [{"query": query, "refId": "A"}],
+        }
+
+    def _p2p_testnet_query(self, fields: list[str]) -> str:
+        """Base Flux query that aggregates across the entire testnet.
+
+        Drops host grouping so all nodes are averaged together.
+        Filters still apply (host_role, node_service).
+        """
+        field_filter = " or ".join(
+            f'r["_field"] == "{f}"' for f in fields
+        )
+        return (
+            'from(bucket: "testnet-metrics")\n'
+            "  |> range(start: v.timeRangeStart,"
+            " stop: v.timeRangeStop)\n"
+            '  |> filter(fn: (r) => r["_measurement"]'
+            ' == "prometheus")\n'
+            f"  |> filter(fn: (r) => {field_filter})\n"
+            '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
+            '  |> filter(fn: (r) => r["host_role"]'
+            ' =~ /^${host_role}$/)\n'
+            '  |> filter(fn: (r) => r["node_service"]'
+            ' =~ /^${node_service}$/)\n'
+            '  |> group(columns: ["_field"])\n'
+        )
+
+    def _p2p_testnet_stat(
+        self, title: str, fields: list[str], unit: str,
+        grid_pos: dict, agg: str = "mean",
+    ) -> dict:
+        """Stat panel showing a single testnet-wide value."""
+        query = (
+            self._p2p_testnet_query(fields)
+            + f"  |> {agg}()\n"
+            '  |> keep(columns: ["_value", "_field"])\n'
+            f'  |> yield(name: "{agg}")'
+        )
+        return {
+            "title": title,
+            "type": "stat",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": unit,
+                    "color": {"mode": "palette-classic"},
+                },
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "reduceOptions": {
+                    "values": False,
+                    "calcs": ["lastNotNull"],
+                    "fields": "",
+                },
+                "textMode": "auto",
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+            },
+            "targets": [{"query": query, "refId": "A"}],
+        }
+
+    def _p2p_testnet_gauge(
+        self, title: str, fields: list[str], unit: str,
+        grid_pos: dict, min_val: float = 0, max_val: float = 1,
+    ) -> dict:
+        """Gauge panel showing a testnet-wide average."""
+        query = (
+            self._p2p_testnet_query(fields)
+            + "  |> mean()\n"
+            '  |> keep(columns: ["_value", "_field"])\n'
+            '  |> yield(name: "mean")'
+        )
+        return {
+            "title": title,
+            "type": "gauge",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {
+                    "unit": unit,
+                    "min": min_val,
+                    "max": max_val,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "green", "value": None},
+                            {"color": "yellow", "value": max_val * 0.7},
+                            {"color": "red", "value": max_val * 0.9},
+                        ],
+                    },
+                },
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "reduceOptions": {
+                    "values": False,
+                    "calcs": ["lastNotNull"],
+                    "fields": "",
+                },
+            },
+            "targets": [{"query": query, "refId": "A"}],
+        }
 
     def _panel_network(self, title: str, field: str, grid_pos: dict) -> dict:
         return {

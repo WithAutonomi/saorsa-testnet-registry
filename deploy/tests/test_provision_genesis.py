@@ -27,6 +27,7 @@ class TestBuildExecStart:
             f" --log-dir {LOG_DIR}/{SERVICE_NAME}"
             " --disable-payment-verification"
             " --stop-on-upgrade"
+            " --metrics-port 9100"
         )
 
     def test_root_dir_always_present(self):
