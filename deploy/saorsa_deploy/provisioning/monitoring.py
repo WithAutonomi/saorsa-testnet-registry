@@ -392,15 +392,18 @@ class MonitoringProvisioner:
         add(self._p2p_testnet_stat, w=6, h=4,
             title="Avg Routing Buckets Filled",
             fields=["p2p_routing_buckets_filled"], unit="short")
-        # Stats row: 3 across
-        add(self._p2p_testnet_stat, w=8, h=4,
+        # Stats row: 4 across
+        add(self._p2p_testnet_stat, w=6, h=4,
             title="Under-Replicated Keys",
             fields=["p2p_under_replicated_keys"], unit="short")
-        add(self._p2p_testnet_stat, w=8, h=4,
+        add(self._p2p_testnet_stat, w=6, h=4,
+            title="Avg Ops/sec",
+            fields=["p2p_operations_per_second"], unit="ops")
+        add(self._p2p_testnet_stat, w=6, h=4,
             title="Total Stored Data",
             fields=["p2p_placement_total_stored_bytes"], unit="bytes",
             agg="sum")
-        add(self._p2p_testnet_stat, w=8, h=4,
+        add(self._p2p_testnet_stat, w=6, h=4,
             title="Total Records",
             fields=["p2p_placement_total_records"], unit="short",
             agg="sum")
@@ -418,10 +421,18 @@ class MonitoringProvisioner:
             fields=["p2p_replication_health"], unit="percentunit",
             min_val=0, max_val=1)
         add(self._p2p_testnet_gauge, w=6, h=6,
+            title="Connection Success Rate",
+            fields=["p2p_transport_connection_success_rate"],
+            unit="percentunit", min_val=0, max_val=1)
+        # Gauges row: 4 across
+        add(self._p2p_testnet_gauge, w=6, h=6,
+            title="NAT Traversal Success Rate",
+            fields=["p2p_transport_nat_traversal_success_rate"],
+            unit="percentunit", min_val=0, max_val=1)
+        add(self._p2p_testnet_gauge, w=6, h=6,
             title="Avg Capacity Usage",
             fields=["p2p_placement_used_capacity_ratio"],
             unit="percentunit", min_val=0, max_val=1)
-        # Gauges row: 4 across
         add(self._p2p_testnet_gauge, w=6, h=6,
             title="Avg Load Balance Score",
             fields=["p2p_placement_load_balance_score"], unit="short",
@@ -430,11 +441,12 @@ class MonitoringProvisioner:
             title="Eclipse Score",
             fields=["p2p_security_eclipse_score"], unit="short",
             min_val=0, max_val=1)
-        add(self._p2p_testnet_gauge, w=6, h=6,
+        # Gauges row: 3 across
+        add(self._p2p_testnet_gauge, w=8, h=6,
             title="Sybil Score",
             fields=["p2p_security_sybil_score"], unit="short",
             min_val=0, max_val=1)
-        add(self._p2p_testnet_gauge, w=6, h=6,
+        add(self._p2p_testnet_gauge, w=8, h=6,
             title="Collusion Score",
             fields=["p2p_security_collusion_score"], unit="short",
             min_val=0, max_val=1)
@@ -452,12 +464,27 @@ class MonitoringProvisioner:
         add(self._p2p_rate, title="Lookup Timeouts",
             fields=["p2p_lookup_timeout_total"], unit="ops")
 
+        # Handshake (per host)
+        row("Handshake")
+        add(self._p2p_panel, title="Handshake Latency (ms)",
+            fields=["p2p_handshake_latency_p50_ms",
+                     "p2p_handshake_latency_p95_ms",
+                     "p2p_handshake_latency_p99_ms"], unit="ms")
+
         # DHT Operations (per host)
         row("DHT Operations")
         add(self._p2p_rate, title="DHT Puts & Gets (rate)",
             fields=["p2p_dht_puts_total", "p2p_dht_puts_success_total",
                      "p2p_dht_gets_total", "p2p_dht_gets_success_total"],
             unit="ops")
+        add(self._p2p_panel, title="DHT Put Latency (ms)",
+            fields=["p2p_dht_put_latency_p50_ms",
+                     "p2p_dht_put_latency_p95_ms",
+                     "p2p_dht_put_latency_p99_ms"], unit="ms")
+        add(self._p2p_panel, title="DHT Get Latency (ms)",
+            fields=["p2p_dht_get_latency_p50_ms",
+                     "p2p_dht_get_latency_p95_ms",
+                     "p2p_dht_get_latency_p99_ms"], unit="ms")
         add(self._p2p_rate, title="DHT Liveness Checks (rate)",
             fields=["p2p_dht_liveness_checks_total",
                      "p2p_dht_liveness_failures_total"], unit="ops")
@@ -476,10 +503,43 @@ class MonitoringProvisioner:
                      "p2p_storage_write_avg_duration_ms",
                      "p2p_storage_delete_avg_duration_ms"], unit="ms")
 
+        # Transport (per host)
+        row("Transport")
+        add(self._p2p_rate, title="Transport Bytes (rate)",
+            fields=["p2p_transport_bytes_sent_total",
+                     "p2p_transport_bytes_received_total"], unit="Bps")
+        add(self._p2p_rate, title="Connection Establishment (rate)",
+            fields=["p2p_transport_total_connections_established",
+                     "p2p_transport_connection_failures"], unit="ops")
+        add(self._p2p_rate, title="NAT Traversal (rate)",
+            fields=["p2p_transport_nat_traversal_attempts_total",
+                     "p2p_transport_nat_traversal_successes_total"],
+            unit="ops")
+        add(self._p2p_panel, title="Connection Pool Size",
+            fields=["p2p_transport_connection_pool_size"], unit="short")
+
+        # Replication Timing (per host)
+        row("Replication Timing")
+        add(self._p2p_panel, title="Replication Duration (ms)",
+            fields=["p2p_replication_duration_p50_ms",
+                     "p2p_replication_duration_p95_ms"], unit="ms")
+        add(self._p2p_rate, title="Replication Activity (rate)",
+            fields=["p2p_replication_cycles_total",
+                     "p2p_replication_keys_repaired_total"], unit="ops")
+        add(self._p2p_rate, title="Replication Data Transfer (rate)",
+            fields=["p2p_replication_bytes_transferred_total"],
+            unit="Bps")
+        add(self._p2p_rate, title="Grace Period Expirations (rate)",
+            fields=["p2p_replication_grace_periods_expired_total",
+                     "p2p_replication_grace_period_keys_affected_total"],
+            unit="ops")
+
         # Runtime (per host)
         row("Runtime")
         add(self._p2p_panel, title="Runtime Memory (per host avg)",
             fields=["p2p_runtime_memory_usage_bytes"], unit="bytes")
+        add(self._p2p_panel, title="Throughput",
+            fields=["p2p_operations_per_second"], unit="ops")
 
         # Security Events (per host)
         row("Security Events")
@@ -613,35 +673,52 @@ class MonitoringProvisioner:
         """Build a table dashboard showing per-node detail."""
         # Common filters for template variables
         filters = (
-            '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
+            '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
             '  |> filter(fn: (r) => r["host_role"]'
-            ' =~ /^${host_role}$/)\n'
+            ' =~ /^$host_role$/)\n'
             '  |> filter(fn: (r) => r["node_service"]'
-            ' =~ /^${node_service}$/)\n'
+            ' =~ /^$node_service$/)\n'
+        )
+
+        # Table fields: always-present ones first, then optional ones.
+        # pivot() silently drops columns for fields with no data, so
+        # the table gracefully degrades when event-driven metrics
+        # haven't fired yet.
+        table_fields = [
+            "p2p_uptime_seconds",
+            "p2p_runtime_threads",
+            "p2p_connected_peers",
+            "p2p_transport_active_connections",
+            "p2p_routing_table_size",
+            "p2p_routing_buckets_filled",
+        ]
+        field_filter = " or\n       ".join(
+            f'r["_field"] == "{f}"' for f in table_fields
+        )
+        # Only rename columns guaranteed to exist. Optional columns
+        # (connected_peers, routing, etc.) keep their p2p_ names and
+        # get human-readable names via Grafana field overrides.
+        rename_map = {
+            "p2p_uptime_seconds": "Uptime (s)",
+            "p2p_runtime_threads": "Threads",
+        }
+        rename_lines = ",\n       ".join(
+            f'{k}: "{v}"' for k, v in rename_map.items()
         )
 
         table_query = (
             'import "join"\n\n'
-            # Numeric metrics
             'metrics = from(bucket: "testnet-metrics")\n'
             "  |> range(start: v.timeRangeStart,"
             " stop: v.timeRangeStop)\n"
             '  |> filter(fn: (r) => r["_measurement"]'
             ' == "prometheus")\n'
-            '  |> filter(fn: (r) =>\n'
-            '       r["_field"] == "p2p_connected_peers" or\n'
-            '       r["_field"] == "p2p_transport_active_connections"'
-            " or\n"
-            '       r["_field"] == "p2p_routing_table_size" or\n'
-            '       r["_field"] == "p2p_routing_buckets_filled" or\n'
-            '       r["_field"] == "p2p_uptime_seconds" or\n'
-            '       r["_field"] == "p2p_runtime_threads")\n'
+            f"  |> filter(fn: (r) =>\n       {field_filter})\n"
             + filters
             + "  |> last()\n"
             "  |> group()\n"
             '  |> pivot(rowKey: ["host", "node_service"],'
             ' columnKey: ["_field"], valueColumn: "_value")\n\n'
-            # Version from p2p_node_info tag
             'versions = from(bucket: "testnet-metrics")\n'
             "  |> range(start: v.timeRangeStart,"
             " stop: v.timeRangeStop)\n"
@@ -653,7 +730,6 @@ class MonitoringProvisioner:
             "  |> group()\n"
             '  |> keep(columns: ["host", "node_service",'
             ' "version"])\n\n'
-            # Join version into metrics
             "join.left(\n"
             "  left: metrics,\n"
             "  right: versions,\n"
@@ -661,25 +737,11 @@ class MonitoringProvisioner:
             " and l.node_service == r.node_service,\n"
             '  as: (l, r) => ({l with version: r.version}),\n'
             ")\n"
-            '  |> keep(columns: ["host", "node_service",'
-            ' "version",'
-            ' "p2p_connected_peers",'
-            ' "p2p_transport_active_connections",'
-            ' "p2p_routing_table_size",'
-            ' "p2p_routing_buckets_filled",'
-            ' "p2p_uptime_seconds",'
-            ' "p2p_runtime_threads"])\n'
-            '  |> rename(columns: {\n'
+            "  |> rename(columns: {\n"
             '       host: "Host",\n'
             '       node_service: "Service",\n'
             '       version: "Version",\n'
-            '       p2p_connected_peers: "Connected Peers",\n'
-            '       p2p_transport_active_connections:'
-            ' "Active Connections",\n'
-            '       p2p_routing_table_size: "Routing Table Size",\n'
-            '       p2p_routing_buckets_filled: "Routing Buckets",\n'
-            '       p2p_uptime_seconds: "Uptime (s)",\n'
-            '       p2p_runtime_threads: "Threads"\n'
+            f"       {rename_lines}\n"
             "  })\n"
             '  |> sort(columns: ["Host", "Service"])\n'
             '  |> yield(name: "table")'
@@ -701,18 +763,20 @@ class MonitoringProvisioner:
                     "fieldConfig": {
                         "defaults": {},
                         "overrides": [
-                            {
-                                "matcher": {
-                                    "id": "byName",
-                                    "options": "Uptime (s)",
-                                },
-                                "properties": [
-                                    {
-                                        "id": "unit",
-                                        "value": "s",
-                                    },
-                                ],
-                            },
+                            self._table_override(
+                                "Uptime (s)", unit="s"),
+                            self._table_override(
+                                "p2p_connected_peers",
+                                display="Connected Peers"),
+                            self._table_override(
+                                "p2p_transport_active_connections",
+                                display="Active Connections"),
+                            self._table_override(
+                                "p2p_routing_table_size",
+                                display="Routing Table Size"),
+                            self._table_override(
+                                "p2p_routing_buckets_filled",
+                                display="Routing Buckets"),
                         ],
                     },
                     "gridPos": {
@@ -873,7 +937,7 @@ class MonitoringProvisioner:
             '  |> filter(fn: (r) => r["_measurement"] == "cpu")\n'
             '  |> filter(fn: (r) => r["_field"] == "usage_idle")\n'
             '  |> filter(fn: (r) => r["cpu"] == "cpu-total")\n'
-            '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
+            '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
             "  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n"
             "  |> map(fn: (r) => ({r with _value: 100.0 - r._value, "
             '_field: "usage"}))\n'
@@ -968,9 +1032,9 @@ class MonitoringProvisioner:
             "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
             '  |> filter(fn: (r) => r["_measurement"] == "prometheus")\n'
             f"  |> filter(fn: (r) => {field_filter})\n"
-            '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
-            '  |> filter(fn: (r) => r["host_role"] =~ /^${host_role}$/)\n'
-            '  |> filter(fn: (r) => r["node_service"] =~ /^${node_service}$/)\n'
+            '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
+            '  |> filter(fn: (r) => r["host_role"] =~ /^$host_role$/)\n'
+            '  |> filter(fn: (r) => r["node_service"] =~ /^$node_service$/)\n'
             '  |> group(columns: ["host", "_field"])\n'
         )
 
@@ -1125,11 +1189,11 @@ class MonitoringProvisioner:
             '  |> filter(fn: (r) => r["_measurement"]'
             ' == "prometheus")\n'
             f"  |> filter(fn: (r) => {field_filter})\n"
-            '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
+            '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
             '  |> filter(fn: (r) => r["host_role"]'
-            ' =~ /^${host_role}$/)\n'
+            ' =~ /^$host_role$/)\n'
             '  |> filter(fn: (r) => r["node_service"]'
-            ' =~ /^${node_service}$/)\n'
+            ' =~ /^$node_service$/)\n'
             '  |> group(columns: ["_field"])\n'
         )
 
@@ -1212,6 +1276,21 @@ class MonitoringProvisioner:
             "targets": [{"query": query, "refId": "A"}],
         }
 
+    @staticmethod
+    def _table_override(
+        column: str, display: str | None = None, unit: str | None = None,
+    ) -> dict:
+        """Build a Grafana field override for the table panel."""
+        props = []
+        if display:
+            props.append({"id": "displayName", "value": display})
+        if unit:
+            props.append({"id": "unit", "value": unit})
+        return {
+            "matcher": {"id": "byName", "options": column},
+            "properties": props,
+        }
+
     def _panel_network(self, title: str, field: str, grid_pos: dict) -> dict:
         return {
             "title": title,
@@ -1232,7 +1311,7 @@ class MonitoringProvisioner:
                         "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
                         '  |> filter(fn: (r) => r["_measurement"] == "net")\n'
                         f'  |> filter(fn: (r) => r["_field"] == "{field}")\n'
-                        '  |> filter(fn: (r) => r["host"] =~ /^${host}$/)\n'
+                        '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
                         "  |> derivative(unit: 1s, nonNegative: true)\n"
                         '  |> keep(columns: ["_time", "_value", "host"])\n'
                         '  |> yield(name: "rate")'
