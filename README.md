@@ -146,4 +146,4 @@ Pushing the tag triggers the `deploy.yml` GitHub Action, which deploys the app t
 
 ### Prerequisites
 
-A `SAORSA_DEPLOY_DO_APP_TOKEN` secret must be configured in the GitHub repository settings. Generate a Personal Access Token from the [DigitalOcean API settings](https://cloud.digitalocean.com/account/api/tokens) with the `app:update` scope (under Apps).
+A `ANT_DEPLOY_DO_APP_TOKEN` secret must be configured in the GitHub repository settings. Generate a Personal Access Token from the [DigitalOcean API settings](https://cloud.digitalocean.com/account/api/tokens) with the `app:update` scope (under Apps).

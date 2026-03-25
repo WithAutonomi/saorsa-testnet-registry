@@ -7,5 +7,5 @@ variable "aws_region" {
 variable "bucket_name" {
   description = "Name of the S3 bucket for storing built binaries"
   type        = string
-  default     = "saorsa-node-builds"
+  default     = "ant-node-builds"
 }

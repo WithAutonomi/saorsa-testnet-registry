@@ -10,7 +10,7 @@ from saorsa_deploy.provisioning.genesis import (
     BINARY_INSTALL_PATH,
     ROOT_DIR,
     SERVICE_NAME,
-    SaorsaGenesisNodeProvisioner,
+    AntGenesisNodeProvisioner,
     _build_exec_start,
     _build_unit_file,
 )
@@ -88,12 +88,12 @@ class TestBuildExecStart:
 
 class TestBuildUnitFile:
     def test_contains_exec_start(self):
-        exec_start = "/usr/local/bin/saorsa-node --port 10000"
+        exec_start = "/usr/local/bin/ant-node --port 10000"
         unit = _build_unit_file(exec_start)
         assert f"ExecStart={exec_start}" in unit
 
     def test_contains_service_section(self):
-        unit = _build_unit_file("/usr/local/bin/saorsa-node")
+        unit = _build_unit_file("/usr/local/bin/ant-node")
         assert "[Service]" in unit
         assert "[Unit]" in unit
         assert "[Install]" in unit
@@ -108,7 +108,7 @@ class TestGetReleaseUrl:
         mock_resp.json.return_value = {
             "assets": [
                 {
-                    "name": "saorsa-node-cli-linux-x64.tar.gz",
+                    "name": "ant-node-cli-linux-x64.tar.gz",
                     "browser_download_url": "https://github.com/download/v1.0.0/asset.tar.gz",
                 },
             ],
@@ -119,7 +119,7 @@ class TestGetReleaseUrl:
         url = get_release_url()
         assert url == "https://github.com/download/v1.0.0/asset.tar.gz"
         mock_get.assert_called_once_with(
-            "https://api.github.com/repos/saorsa-labs/saorsa-node/releases/latest",
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/latest",
             timeout=30,
         )
 
@@ -129,7 +129,7 @@ class TestGetReleaseUrl:
         mock_resp.json.return_value = {
             "assets": [
                 {
-                    "name": "saorsa-node-cli-linux-x64.tar.gz",
+                    "name": "ant-node-cli-linux-x64.tar.gz",
                     "browser_download_url": "https://github.com/download/v0.2.0/asset.tar.gz",
                 },
             ],
@@ -140,7 +140,7 @@ class TestGetReleaseUrl:
         url = get_release_url("0.2.0")
         assert url == "https://github.com/download/v0.2.0/asset.tar.gz"
         mock_get.assert_called_once_with(
-            "https://api.github.com/repos/saorsa-labs/saorsa-node/releases/tags/v0.2.0",
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.2.0",
             timeout=30,
         )
 
@@ -167,9 +167,9 @@ class TestGetReleaseUrl:
             get_release_url()
 
 
-class TestSaorsaGenesisNodeProvisioner:
+class TestAntGenesisNodeProvisioner:
     def test_init_defaults(self):
-        node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
+        node = AntGenesisNodeProvisioner(ip="10.0.0.1")
         assert node.ip == "10.0.0.1"
         assert node.ssh_key_path == "~/.ssh/id_rsa"
         assert node.port is None
@@ -179,7 +179,7 @@ class TestSaorsaGenesisNodeProvisioner:
         assert node.upgrade_channel is None
 
     def test_init_all_params(self):
-        node = SaorsaGenesisNodeProvisioner(
+        node = AntGenesisNodeProvisioner(
             ip="10.0.0.1",
             ssh_key_path="/tmp/key",
             port=10000,
@@ -215,7 +215,7 @@ class TestSaorsaGenesisNodeProvisioner:
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1", port=10000, ip_version="ipv4")
+        node = AntGenesisNodeProvisioner(ip="10.0.0.1", port=10000, ip_version="ipv4")
         node.execute()
 
         mock_connect.assert_called_once()
@@ -244,7 +244,7 @@ class TestSaorsaGenesisNodeProvisioner:
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
         mock_run_ops.side_effect = RuntimeError("connection failed")
 
-        node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
+        node = AntGenesisNodeProvisioner(ip="10.0.0.1")
         with pytest.raises(RuntimeError, match="connection failed"):
             node.execute()
 
@@ -269,7 +269,7 @@ class TestSaorsaGenesisNodeProvisioner:
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = SaorsaGenesisNodeProvisioner(ip="192.168.1.100", ssh_key_path="/tmp/mykey")
+        node = AntGenesisNodeProvisioner(ip="192.168.1.100", ssh_key_path="/tmp/mykey")
         node.execute()
 
         inventory_call = mock_inventory.call_args
@@ -298,7 +298,7 @@ class TestSaorsaGenesisNodeProvisioner:
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
+        node = AntGenesisNodeProvisioner(ip="10.0.0.1")
         node.execute()
 
         # The 6th add_op call should be for enabling/starting the service
@@ -326,7 +326,7 @@ class TestSaorsaGenesisNodeProvisioner:
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1", port=10000)
+        node = AntGenesisNodeProvisioner(ip="10.0.0.1", port=10000)
         node.execute()
 
         op_types = [call[0][1] for call in mock_add_op.call_args_list]
@@ -357,18 +357,18 @@ class TestSaorsaGenesisNodeProvisioner:
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = SaorsaGenesisNodeProvisioner(ip="10.0.0.1")
+        node = AntGenesisNodeProvisioner(ip="10.0.0.1")
         node.execute()
 
         download_call = mock_add_op.call_args_list[2]
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
-        assert commands[0].startswith("test -f /usr/local/bin/saorsa-node")
+        assert commands[0].startswith("test -f /usr/local/bin/ant-node")
 
 
 class TestCmdProvisionGenesisClearsKnownHosts:
     @patch("saorsa_deploy.cmd.provision_genesis.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision_genesis.SaorsaGenesisNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision_genesis.AntGenesisNodeProvisioner")
     @patch("saorsa_deploy.cmd.provision_genesis.clear_known_hosts")
     @patch("saorsa_deploy.cmd.provision_genesis.load_deployment_state")
     def test_clears_known_hosts_for_bootstrap_ip(
@@ -397,7 +397,7 @@ class TestCmdProvisionGenesisClearsKnownHosts:
         assert called_ips == ["10.0.0.1"]
 
     @patch("saorsa_deploy.cmd.provision_genesis.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision_genesis.SaorsaGenesisNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision_genesis.AntGenesisNodeProvisioner")
     @patch("saorsa_deploy.cmd.provision_genesis.clear_known_hosts")
     @patch("saorsa_deploy.cmd.provision_genesis.load_deployment_state")
     def test_clears_known_hosts_before_provisioner_executes(

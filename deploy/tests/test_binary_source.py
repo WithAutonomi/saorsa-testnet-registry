@@ -21,7 +21,7 @@ class TestGetReleaseUrl:
         mock_resp.json.return_value = {
             "assets": [
                 {
-                    "name": "saorsa-node-cli-linux-x64.tar.gz",
+                    "name": "ant-node-cli-linux-x64.tar.gz",
                     "browser_download_url": "https://github.com/download/latest/asset.tar.gz",
                 },
             ],
@@ -32,7 +32,7 @@ class TestGetReleaseUrl:
         url = get_release_url()
         assert url == "https://github.com/download/latest/asset.tar.gz"
         mock_get.assert_called_once_with(
-            "https://api.github.com/repos/saorsa-labs/saorsa-node/releases/latest",
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/latest",
             timeout=30,
         )
 
@@ -42,7 +42,7 @@ class TestGetReleaseUrl:
         mock_resp.json.return_value = {
             "assets": [
                 {
-                    "name": "saorsa-node-cli-linux-x64.tar.gz",
+                    "name": "ant-node-cli-linux-x64.tar.gz",
                     "browser_download_url": "https://github.com/download/v0.3.0/asset.tar.gz",
                 },
             ],
@@ -53,7 +53,7 @@ class TestGetReleaseUrl:
         url = get_release_url("0.3.0")
         assert url == "https://github.com/download/v0.3.0/asset.tar.gz"
         mock_get.assert_called_once_with(
-            "https://api.github.com/repos/saorsa-labs/saorsa-node/releases/tags/v0.3.0",
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.3.0",
             timeout=30,
         )
 
@@ -95,13 +95,13 @@ class TestGetCustomBuildUrl:
         url = get_custom_build_url("DEV-01", "myorg", "feature-branch")
         expected = (
             f"https://{BUILDS_BUCKET}.s3.{BUILDS_REGION}.amazonaws.com/"
-            f"{BUILDS_KEY_PREFIX}/DEV-01/myorg/feature-branch/saorsa-node"
+            f"{BUILDS_KEY_PREFIX}/DEV-01/myorg/feature-branch/ant-node"
         )
         assert url == expected
 
     def test_different_owner_and_branch(self):
         url = get_custom_build_url("DEV-01", "saorsa-labs", "main")
-        assert "/DEV-01/saorsa-labs/main/saorsa-node" in url
+        assert "/DEV-01/saorsa-labs/main/ant-node" in url
 
 
 class TestCheckReleaseExists:
@@ -113,7 +113,7 @@ class TestCheckReleaseExists:
 
         assert check_release_exists("0.2.0") is True
         mock_get.assert_called_once_with(
-            "https://api.github.com/repos/saorsa-labs/saorsa-node/releases/tags/v0.2.0",
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.2.0",
             timeout=30,
         )
 
@@ -135,7 +135,7 @@ class TestCheckCustomBuildExists:
         assert check_custom_build_exists("DEV-01", "myorg", "my-branch") is True
         mock_s3.head_object.assert_called_once_with(
             Bucket=BUILDS_BUCKET,
-            Key=f"{BUILDS_KEY_PREFIX}/DEV-01/myorg/my-branch/saorsa-node",
+            Key=f"{BUILDS_KEY_PREFIX}/DEV-01/myorg/my-branch/ant-node",
         )
 
     @patch("saorsa_deploy.binary_source.boto3.client")

@@ -10,8 +10,8 @@ from rich.console import Console
 from saorsa_deploy.binary_source import BUILDS_BUCKET, BUILDS_KEY_PREFIX
 
 
-class SaorsaNodeBuilder:
-    """Builds saorsa-node from source on a remote host and uploads to S3."""
+class AntNodeBuilder:
+    """Builds ant-node from source on a remote host and uploads to S3."""
 
     def __init__(
         self,
@@ -28,15 +28,15 @@ class SaorsaNodeBuilder:
         self.repo_owner = repo_owner
         self.branch_name = branch_name
         self.console = console or Console()
-        self.s3_key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/saorsa-node"
+        self.s3_key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/ant-node"
 
     def execute(self) -> str:
-        """Build saorsa-node and upload to S3. Returns the S3 URL of the uploaded binary."""
-        aws_access_key = os.environ.get("SAORSA_BUILD_AWS_ACCESS_KEY_ID")
-        aws_secret_key = os.environ.get("SAORSA_BUILD_AWS_SECRET_ACCESS_KEY")
+        """Build ant-node and upload to S3. Returns the S3 URL of the uploaded binary."""
+        aws_access_key = os.environ.get("ANT_BUILD_AWS_ACCESS_KEY_ID")
+        aws_secret_key = os.environ.get("ANT_BUILD_AWS_SECRET_ACCESS_KEY")
         if not aws_access_key or not aws_secret_key:
             raise RuntimeError(
-                "SAORSA_BUILD_AWS_ACCESS_KEY_ID and SAORSA_BUILD_AWS_SECRET_ACCESS_KEY must be set"
+                "ANT_BUILD_AWS_ACCESS_KEY_ID and ANT_BUILD_AWS_SECRET_ACCESS_KEY must be set"
             )
 
         self.console.print(f"Connecting to {self.ip} as root...")
@@ -97,20 +97,20 @@ class SaorsaNodeBuilder:
             add_op(
                 state,
                 server.shell,
-                name=f"Clone {self.repo_owner}/saorsa-node ({self.branch_name})",
+                name=f"Clone {self.repo_owner}/ant-node ({self.branch_name})",
                 commands=[
                     f"git clone --branch {self.branch_name} --depth 1 "
-                    f"https://github.com/{self.repo_owner}/saorsa-node.git /root/saorsa-node"
+                    f"https://github.com/{self.repo_owner}/ant-node.git /root/ant-node"
                 ],
             )
 
             add_op(
                 state,
                 server.shell,
-                name="Build saorsa-node (release)",
+                name="Build ant-node (release)",
                 commands=[
-                    "cd /root/saorsa-node && "
-                    "/root/.cargo/bin/cargo build --release --bin saorsa-node"
+                    "cd /root/ant-node && "
+                    "/root/.cargo/bin/cargo build --release --bin ant-node"
                 ],
             )
 
@@ -121,7 +121,7 @@ class SaorsaNodeBuilder:
                 commands=[
                     f"AWS_ACCESS_KEY_ID={aws_access_key} "
                     f"AWS_SECRET_ACCESS_KEY={aws_secret_key} "
-                    f"aws s3 cp /root/saorsa-node/target/release/saorsa-node "
+                    f"aws s3 cp /root/ant-node/target/release/ant-node "
                     f"s3://{BUILDS_BUCKET}/{self.s3_key}"
                 ],
             )

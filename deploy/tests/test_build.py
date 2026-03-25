@@ -7,7 +7,7 @@ import pytest
 
 class TestCmdBuild:
     @patch("saorsa_deploy.cmd.build.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.build.SaorsaNodeBuilder")
+    @patch("saorsa_deploy.cmd.build.AntNodeBuilder")
     @patch("saorsa_deploy.cmd.build.wait_for_ssh")
     @patch("saorsa_deploy.cmd.build.destroy_build_vm")
     @patch("saorsa_deploy.cmd.build.create_build_vm")
@@ -19,8 +19,8 @@ class TestCmdBuild:
         mock_builder_cls,
         mock_clear_hosts,
     ):
-        os.environ["SAORSA_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
-        os.environ["SAORSA_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
+        os.environ["ANT_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
+        os.environ["ANT_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
         try:
             mock_create.return_value = {
                 "droplet_id": 12345,
@@ -46,13 +46,13 @@ class TestCmdBuild:
             mock_builder_cls.return_value.execute.assert_called_once()
             mock_destroy.assert_called_once_with(12345)
         finally:
-            os.environ.pop("SAORSA_BUILD_AWS_ACCESS_KEY_ID", None)
-            os.environ.pop("SAORSA_BUILD_AWS_SECRET_ACCESS_KEY", None)
+            os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)
+            os.environ.pop("ANT_BUILD_AWS_SECRET_ACCESS_KEY", None)
 
     @patch("saorsa_deploy.cmd.build.create_build_vm")
     def test_exits_without_aws_credentials(self, mock_create):
-        os.environ.pop("SAORSA_BUILD_AWS_ACCESS_KEY_ID", None)
-        os.environ.pop("SAORSA_BUILD_AWS_SECRET_ACCESS_KEY", None)
+        os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)
+        os.environ.pop("ANT_BUILD_AWS_SECRET_ACCESS_KEY", None)
 
         from saorsa_deploy.cmd.build import cmd_build
 
@@ -68,7 +68,7 @@ class TestCmdBuild:
         mock_create.assert_not_called()
 
     @patch("saorsa_deploy.cmd.build.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.build.SaorsaNodeBuilder")
+    @patch("saorsa_deploy.cmd.build.AntNodeBuilder")
     @patch("saorsa_deploy.cmd.build.wait_for_ssh")
     @patch("saorsa_deploy.cmd.build.destroy_build_vm")
     @patch("saorsa_deploy.cmd.build.create_build_vm")
@@ -80,8 +80,8 @@ class TestCmdBuild:
         mock_builder_cls,
         mock_clear_hosts,
     ):
-        os.environ["SAORSA_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
-        os.environ["SAORSA_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
+        os.environ["ANT_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
+        os.environ["ANT_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
         try:
             mock_create.return_value = {
                 "droplet_id": 12345,
@@ -103,5 +103,5 @@ class TestCmdBuild:
 
             mock_destroy.assert_called_once_with(12345)
         finally:
-            os.environ.pop("SAORSA_BUILD_AWS_ACCESS_KEY_ID", None)
-            os.environ.pop("SAORSA_BUILD_AWS_SECRET_ACCESS_KEY", None)
+            os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)
+            os.environ.pop("ANT_BUILD_AWS_SECRET_ACCESS_KEY", None)

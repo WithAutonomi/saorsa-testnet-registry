@@ -3,7 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
-from saorsa_deploy.provisioning.node import SaorsaNodeProvisioner
+from saorsa_deploy.provisioning.node import AntNodeProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
 
@@ -95,7 +95,7 @@ def cmd_provision(args):
     if binary_url:
         kwargs["binary_url"] = binary_url
         kwargs["binary_is_archive"] = binary_is_archive
-    provisioner = SaorsaNodeProvisioner(**kwargs)
+    provisioner = AntNodeProvisioner(**kwargs)
 
     try:
         provisioner.execute()

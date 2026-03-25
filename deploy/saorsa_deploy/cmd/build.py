@@ -4,21 +4,21 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.build_droplet import create_build_vm, destroy_build_vm, wait_for_ssh
-from saorsa_deploy.provisioning.build import SaorsaNodeBuilder
+from saorsa_deploy.provisioning.build import AntNodeBuilder
 from saorsa_deploy.ssh import clear_known_hosts
 
 
 def cmd_build(args):
-    """Execute the build-saorsa-node-binary command: build from source and upload to S3."""
+    """Execute the build-ant-node-binary command: build from source and upload to S3."""
     console = Console()
 
-    for var in ("SAORSA_BUILD_AWS_ACCESS_KEY_ID", "SAORSA_BUILD_AWS_SECRET_ACCESS_KEY"):
+    for var in ("ANT_BUILD_AWS_ACCESS_KEY_ID", "ANT_BUILD_AWS_SECRET_ACCESS_KEY"):
         if not os.environ.get(var):
             console.print(f"[bold red]Error:[/bold red] {var} environment variable is not set")
             sys.exit(1)
 
     console.print(
-        f"[bold]Building saorsa-node from {args.repo_owner}/saorsa-node "
+        f"[bold]Building ant-node from {args.repo_owner}/ant-node "
         f"(branch: {args.branch_name})...[/bold]"
     )
     console.print()
@@ -45,7 +45,7 @@ def cmd_build(args):
 
         clear_known_hosts([vm["ip_address"]], console)
 
-        builder = SaorsaNodeBuilder(
+        builder = AntNodeBuilder(
             name=args.name,
             ip=vm["ip_address"],
             ssh_key_path=args.ssh_key_path,

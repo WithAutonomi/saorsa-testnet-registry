@@ -31,11 +31,11 @@ resource "aws_s3_bucket_policy" "builds_public_read" {
 }
 
 resource "aws_iam_user" "build_uploader" {
-  name = "saorsa-build-uploader"
+  name = "ant-build-uploader"
 }
 
 resource "aws_iam_user_policy" "build_uploader" {
-  name = "saorsa-build-upload-policy"
+  name = "ant-build-upload-policy"
   user = aws_iam_user.build_uploader.name
 
   policy = jsonencode({

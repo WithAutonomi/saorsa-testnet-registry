@@ -1,6 +1,6 @@
 # saorsa-deploy
 
-CLI tool for deploying testnets for [saorsa-node](https://github.com/jacderida/saorsa-node) using Terraform and Pyinfra.
+CLI tool for deploying testnets for [ant-node](https://github.com/jacderida/ant-node) using Terraform and Pyinfra.
 
 ## Prerequisites
 
@@ -22,12 +22,12 @@ uv sync
 | `DO_TOKEN` | Digital Ocean API token (required) |
 | `AWS_ACCESS_KEY_ID` | AWS credentials for Terraform state backend and deployment state |
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials for Terraform state backend and deployment state |
-| `SAORSA_BUILD_AWS_ACCESS_KEY_ID` | AWS credentials for uploading custom-built binaries (only for `build-saorsa-node-binary`) |
-| `SAORSA_BUILD_AWS_SECRET_ACCESS_KEY` | AWS credentials for uploading custom-built binaries (only for `build-saorsa-node-binary`) |
+| `ANT_BUILD_AWS_ACCESS_KEY_ID` | AWS credentials for uploading custom-built binaries (only for `build-ant-node-binary`) |
+| `ANT_BUILD_AWS_SECRET_ACCESS_KEY` | AWS credentials for uploading custom-built binaries (only for `build-ant-node-binary`) |
 
 Terraform state and deployment metadata are stored in the `maidsafe-org-infra-tfstate` S3 bucket (region `eu-west-2`). AWS credentials are resolved via the standard boto3 credential chain (environment variables, `~/.aws/credentials`, or IAM roles).
 
-The `SAORSA_BUILD_AWS_*` credentials are for the `saorsa-build-uploader` IAM user, which has `s3:PutObject` on the `saorsa-node-builds` bucket. Create the access key manually after applying the Terraform in `saorsa_deploy/resources/aws-build-infra/`.
+The `ANT_BUILD_AWS_*` credentials are for the `ant-build-uploader` IAM user, which has `s3:PutObject` on the `ant-node-builds` bucket. Create the access key manually after applying the Terraform in `saorsa_deploy/resources/aws-build-infra/`.
 
 ## Usage
 
@@ -118,18 +118,18 @@ By default, provisioning uses the latest GitHub release. You can override this:
 # Use a specific release version
 uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000 --node-version 0.2.0
 
-# Use a custom-built binary (must run build-saorsa-node-binary first)
+# Use a custom-built binary (must run build-ant-node-binary first)
 uv run saorsa-deploy provision --name DEV-01 --node-count 10 --branch-name feature-x --repo-owner myorg
 ```
 
 `--node-version` and `--branch-name`/`--repo-owner` are mutually exclusive. `--branch-name` and `--repo-owner` must be used together.
 
-### `build-saorsa-node-binary` command
+### `build-ant-node-binary` command
 
-Build saorsa-node from a Git branch on an ephemeral DO droplet and upload the binary to S3.
+Build ant-node from a Git branch on an ephemeral DO droplet and upload the binary to S3.
 
 ```bash
-uv run saorsa-deploy build-saorsa-node-binary --branch-name feature-x --repo-owner myorg
+uv run saorsa-deploy build-ant-node-binary --branch-name feature-x --repo-owner myorg
 ```
 
 #### Arguments
@@ -143,10 +143,10 @@ uv run saorsa-deploy build-saorsa-node-binary --branch-name feature-x --repo-own
 This command:
 1. Creates a `c-16` (16 vCPU, 32GB RAM) DO droplet in lon1
 2. Installs Rust, clones the repo, builds in release mode
-3. Uploads the binary to `s3://saorsa-node-builds/builds/{owner}/{branch}/saorsa-node`
+3. Uploads the binary to `s3://ant-node-builds/builds/{owner}/{branch}/ant-node`
 4. Destroys the droplet (even on failure)
 
-Requires `SAORSA_BUILD_AWS_ACCESS_KEY_ID` and `SAORSA_BUILD_AWS_SECRET_ACCESS_KEY`.
+Requires `ANT_BUILD_AWS_ACCESS_KEY_ID` and `ANT_BUILD_AWS_SECRET_ACCESS_KEY`.
 
 #### AWS Build Infrastructure Setup
 
@@ -157,7 +157,7 @@ cd saorsa_deploy/resources/aws-build-infra/
 terraform init
 terraform apply
 # Then create the access key manually:
-aws iam create-access-key --user-name saorsa-build-uploader
+aws iam create-access-key --user-name ant-build-uploader
 ```
 
 ### `destroy` command
@@ -189,7 +189,7 @@ uv run saorsa-deploy destroy --name DEV-01 --force
 
 ### How it works
 
-The `--name` argument is used as a prefix for all VM names (e.g., `DEV-01-saorsa-node-lon1-1`).
+The `--name` argument is used as a prefix for all VM names (e.g., `DEV-01-ant-node-lon1-1`).
 
 Before provisioning the main infrastructure, the tool creates a **bootstrap VM** (`{name}-saorsa-bootstrap`) via the Digital Ocean API. This single VM (s-2vcpu-4gb, Ubuntu 24.04, lon1) with a 35GB attached volume serves as the bootstrap node for the network.
 

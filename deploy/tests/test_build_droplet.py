@@ -50,13 +50,13 @@ class TestCreateBuildVm:
             result = create_build_vm("DEV-01", "myorg", "feature-branch")
 
             assert result["droplet_id"] == 12345
-            assert result["droplet_name"] == "saorsa-build-DEV-01-myorg-feature-branch"
+            assert result["droplet_name"] == "ant-build-DEV-01-myorg-feature-branch"
             assert result["ip_address"] == "1.2.3.4"
 
             # Verify create was called with correct params
             create_call = mock_requests.post.call_args
             body = create_call.kwargs["json"]
-            assert body["name"] == "saorsa-build-DEV-01-myorg-feature-branch"
+            assert body["name"] == "ant-build-DEV-01-myorg-feature-branch"
             assert body["region"] == BUILD_REGIONS[0]
             assert body["size"] == BUILD_SIZE
             assert body["image"] == BUILD_IMAGE
@@ -74,7 +74,7 @@ class TestCreateBuildVm:
             mock_list_resp.json.return_value = {
                 "droplets": [
                     {
-                        "name": "saorsa-build-TEST-myorg-branch",
+                        "name": "ant-build-TEST-myorg-branch",
                         "id": 99999,
                         "networks": {"v4": [{"type": "public", "ip_address": "5.6.7.8"}]},
                     }

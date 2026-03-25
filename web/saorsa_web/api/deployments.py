@@ -67,7 +67,7 @@ def create_deployment():
 
     if branch_name and repo_owner:
         repo_url = (
-            f"https://api.github.com/repos/{repo_owner}/saorsa-node"
+            f"https://api.github.com/repos/{repo_owner}/ant-node"
             f"/branches/{branch_name}"
         )
         try:
@@ -80,7 +80,7 @@ def create_deployment():
                     {
                         "error": (
                             f"Branch '{branch_name}' not found on"
-                            f" {repo_owner}/saorsa-node. Check the"
+                            f" {repo_owner}/ant-node. Check the"
                             " repo_owner and branch_name values."
                         )
                     }

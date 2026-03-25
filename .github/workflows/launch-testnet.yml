@@ -34,11 +34,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      DO_TOKEN: ${{ secrets.SAORSA_DEPLOY_DO_TOKEN }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.SAORSA_DEPLOY_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SAORSA_DEPLOY_AWS_SECRET_ACCESS_KEY }}
-      SAORSA_BUILD_AWS_ACCESS_KEY_ID: ${{ secrets.SAORSA_BUILD_AWS_ACCESS_KEY_ID }}
-      SAORSA_BUILD_AWS_SECRET_ACCESS_KEY: ${{ secrets.SAORSA_BUILD_AWS_SECRET_ACCESS_KEY }}
+      DO_TOKEN: ${{ secrets.ANT_DEPLOY_DO_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.ANT_DEPLOY_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.ANT_DEPLOY_AWS_SECRET_ACCESS_KEY }}
+      ANT_BUILD_AWS_ACCESS_KEY_ID: ${{ secrets.ANT_BUILD_AWS_ACCESS_KEY_ID }}
+      ANT_BUILD_AWS_SECRET_ACCESS_KEY: ${{ secrets.ANT_BUILD_AWS_SECRET_ACCESS_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -79,13 +79,13 @@ jobs:
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SAORSA_DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          echo "${{ secrets.ANT_DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-      - name: Build custom saorsa-node binary
+      - name: Build custom ant-node binary
         if: steps.args.outputs.branch_name != ''
         run: |
-          CMD="saorsa-deploy build-saorsa-node-binary"
+          CMD="saorsa-deploy build-ant-node-binary"
           CMD="$CMD --name ${{ steps.args.outputs.name }}"
           CMD="$CMD --branch-name ${{ steps.args.outputs.branch_name }}"
 
@@ -195,8 +195,8 @@ jobs:
       #     CMD="saorsa-deploy provision-telegraf"
       #     CMD="$CMD --name ${{ steps.args.outputs.name }}"
       #     CMD="$CMD --elasticsearch-url https://logs.autonomi.com/es/api"
-      #     CMD="$CMD --elasticsearch-username ${{ secrets.SAORSA_TELEGRAF_ELASTICSEARCH_USERNAME }}"
-      #     CMD="$CMD --elasticsearch-password ${{ secrets.SAORSA_TELEGRAF_ELASTICSEARCH_PASSWORD }}"
+      #     CMD="$CMD --elasticsearch-username ${{ secrets.ANT_TELEGRAF_ELASTICSEARCH_USERNAME }}"
+      #     CMD="$CMD --elasticsearch-password ${{ secrets.ANT_TELEGRAF_ELASTICSEARCH_PASSWORD }}"
       #
       #     if [ -n "${{ steps.args.outputs.node_version }}" ]; then
       #       CMD="$CMD --node-version ${{ steps.args.outputs.node_version }}"

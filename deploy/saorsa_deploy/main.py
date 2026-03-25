@@ -6,7 +6,7 @@ from importlib.metadata import version
 def main():
     parser = argparse.ArgumentParser(
         prog="saorsa-deploy",
-        description="Deploy testnets for saorsa-node using Terraform and Pyinfra",
+        description="Deploy testnets for ant-node using Terraform and Pyinfra",
     )
     parser.add_argument(
         "--version",
@@ -15,9 +15,9 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # === build-saorsa-node-binary ===
+    # === build-ant-node-binary ===
     build_parser = subparsers.add_parser(
-        "build-saorsa-node-binary", help="Build saorsa-node from source and upload to S3"
+        "build-ant-node-binary", help="Build ant-node from source and upload to S3"
     )
     build_parser.add_argument(
         "--name",
@@ -35,7 +35,7 @@ def main():
         "--repo-owner",
         type=str,
         required=True,
-        help="GitHub repository owner (e.g., saorsa-labs)",
+        help="GitHub repository owner (e.g., WithAutonomi)",
     )
     build_parser.add_argument(
         "--ssh-key-path",
@@ -160,7 +160,7 @@ def main():
         "--upgrade-channel",
         type=str,
         choices=["beta", "stable"],
-        help="Upgrade channel for saorsa-node (beta or stable)",
+        help="Upgrade channel for ant-node (beta or stable)",
     )
 
     # === provision-genesis ===
@@ -220,7 +220,7 @@ def main():
         "--upgrade-channel",
         type=str,
         choices=["beta", "stable"],
-        help="Upgrade channel for saorsa-node (beta or stable)",
+        help="Upgrade channel for ant-node (beta or stable)",
     )
 
     # === provision-telegraf ===
@@ -256,7 +256,7 @@ def main():
         "--node-version",
         type=str,
         default=None,
-        help="Version of the deployed saorsa-node binary",
+        help="Version of the deployed ant-node binary",
     )
     telegraf_parser.add_argument(
         "--branch-commit",
@@ -283,7 +283,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    if args.command == "build-saorsa-node-binary":
+    if args.command == "build-ant-node-binary":
         from saorsa_deploy.cmd.build import cmd_build
 
         cmd_build(args)

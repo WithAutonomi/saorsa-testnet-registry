@@ -8,7 +8,7 @@ from saorsa_deploy.binary_source import (
     get_custom_build_url,
     get_release_url,
 )
-from saorsa_deploy.provisioning.genesis import SaorsaGenesisNodeProvisioner
+from saorsa_deploy.provisioning.genesis import AntGenesisNodeProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
 
@@ -48,14 +48,14 @@ def _resolve_binary_source(args, console):
 
     if has_branch and has_owner:
         console.print(
-            f"Checking custom build for {args.repo_owner}/saorsa-node "
+            f"Checking custom build for {args.repo_owner}/ant-node "
             f"({args.branch_name}) exists..."
         )
         if not check_custom_build_exists(args.name, args.repo_owner, args.branch_name):
             console.print(
                 f"[bold red]Error:[/bold red] No custom build found for "
                 f"{args.repo_owner}/{args.branch_name}. "
-                f"Run 'build-saorsa-node-binary' first."
+                f"Run 'build-ant-node-binary' first."
             )
             sys.exit(1)
         url = get_custom_build_url(args.name, args.repo_owner, args.branch_name)
@@ -116,7 +116,7 @@ def cmd_provision_genesis(args):
     if binary_url:
         kwargs["binary_url"] = binary_url
         kwargs["binary_is_archive"] = binary_is_archive
-    node = SaorsaGenesisNodeProvisioner(**kwargs)
+    node = AntGenesisNodeProvisioner(**kwargs)
 
     try:
         node.execute()

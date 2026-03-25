@@ -24,5 +24,5 @@ jobs:
           yq -i '(.workers[0].envs[] | select(.key == "WORKFLOW_RUNNER_PAT")).value = strenv(WORKFLOW_RUNNER_PAT)' app.yaml
       - uses: digitalocean/app_action/deploy@v2
         with:
-          token: ${{ secrets.SAORSA_DEPLOY_DO_APP_TOKEN }}
+          token: ${{ secrets.ANT_DEPLOY_DO_APP_TOKEN }}
           app_spec_location: app.yaml

@@ -67,12 +67,12 @@ class TestResolveBinarySource:
     @patch("saorsa_deploy.cmd.provision_genesis.check_custom_build_exists")
     def test_branch_args_return_custom_build_url(self, mock_check, mock_get_url):
         mock_check.return_value = True
-        mock_get_url.return_value = "https://s3.amazonaws.com/builds/myorg/feature-x/saorsa-node"
+        mock_get_url.return_value = "https://s3.amazonaws.com/builds/myorg/feature-x/ant-node"
 
         args = self._make_args(branch_name="feature-x", repo_owner="myorg")
         url, is_archive = _resolve_binary_source(args, self.console)
 
-        assert url == "https://s3.amazonaws.com/builds/myorg/feature-x/saorsa-node"
+        assert url == "https://s3.amazonaws.com/builds/myorg/feature-x/ant-node"
         assert is_archive is False
         mock_check.assert_called_once_with("DEV-01", "myorg", "feature-x")
 

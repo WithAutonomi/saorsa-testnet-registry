@@ -6,7 +6,7 @@ from pyinfra.operations import server
 
 from saorsa_deploy.cmd.provision import cmd_provision
 from saorsa_deploy.provisioning.node import (
-    SaorsaNodeProvisioner,
+    AntNodeProvisioner,
     _build_node_exec_start,
     _build_node_unit_file,
 )
@@ -14,7 +14,7 @@ from saorsa_deploy.provisioning.volume import MOUNT_POINT
 
 
 class TestBuildNodeExecStart:
-    ROOT = f"{MOUNT_POINT}/data/saorsa-node-1"
+    ROOT = f"{MOUNT_POINT}/data/ant-node-1"
 
     def test_includes_bootstrap_address(self):
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
@@ -88,16 +88,16 @@ class TestBuildNodeExecStart:
 
 class TestBuildNodeUnitFile:
     def test_contains_service_name_in_description(self):
-        unit = _build_node_unit_file("saorsa-node-1", "/usr/local/bin/saorsa-node --port 5000")
-        assert "Description=Saorsa Node (saorsa-node-1)" in unit
+        unit = _build_node_unit_file("ant-node-1", "/usr/local/bin/ant-node --port 5000")
+        assert "Description=Ant Node (ant-node-1)" in unit
 
     def test_contains_exec_start(self):
-        exec_start = "/usr/local/bin/saorsa-node --bootstrap 10.0.0.1:5000 --port 6000"
-        unit = _build_node_unit_file("saorsa-node-1", exec_start)
+        exec_start = "/usr/local/bin/ant-node --bootstrap 10.0.0.1:5000 --port 6000"
+        unit = _build_node_unit_file("ant-node-1", exec_start)
         assert f"ExecStart={exec_start}" in unit
 
     def test_contains_service_sections(self):
-        unit = _build_node_unit_file("saorsa-node-1", "/usr/local/bin/saorsa-node")
+        unit = _build_node_unit_file("ant-node-1", "/usr/local/bin/ant-node")
         assert "[Service]" in unit
         assert "[Unit]" in unit
         assert "[Install]" in unit
@@ -105,9 +105,9 @@ class TestBuildNodeUnitFile:
         assert "WantedBy=multi-user.target" in unit
 
 
-class TestSaorsaNodeProvisioner:
+class TestAntNodeProvisioner:
     def test_init_defaults(self):
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1", "10.0.0.2"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -124,7 +124,7 @@ class TestSaorsaNodeProvisioner:
         assert provisioner.upgrade_channel is None
 
     def test_init_all_params(self):
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -166,7 +166,7 @@ class TestSaorsaNodeProvisioner:
         mock_state_instance.failed_hosts = set()
         mock_state.return_value = mock_state_instance
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -200,7 +200,7 @@ class TestSaorsaNodeProvisioner:
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
         mock_run_ops.side_effect = RuntimeError("connection failed")
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -232,7 +232,7 @@ class TestSaorsaNodeProvisioner:
         mock_state_instance.failed_hosts = set()
         mock_state.return_value = mock_state_instance
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1", "10.0.0.2", "10.0.0.3"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -271,7 +271,7 @@ class TestSaorsaNodeProvisioner:
         mock_state_instance.failed_hosts = set()
         mock_state.return_value = mock_state_instance
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -306,7 +306,7 @@ class TestSaorsaNodeProvisioner:
         mock_state_instance.failed_hosts = {failed_host}
         mock_state.return_value = mock_state_instance
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -336,7 +336,7 @@ class TestSaorsaNodeProvisioner:
         mock_state_instance.failed_hosts = set()
         mock_state.return_value = mock_state_instance
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -369,7 +369,7 @@ class TestSaorsaNodeProvisioner:
         mock_state_instance.failed_hosts = set()
         mock_state.return_value = mock_state_instance
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -379,7 +379,7 @@ class TestSaorsaNodeProvisioner:
         download_call = mock_add_op.call_args_list[2]
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
-        assert commands[0].startswith("test -f /usr/local/bin/saorsa-node")
+        assert commands[0].startswith("test -f /usr/local/bin/ant-node")
 
     @patch("saorsa_deploy.provisioning.node.disconnect_all")
     @patch("saorsa_deploy.provisioning.node.run_ops")
@@ -403,7 +403,7 @@ class TestSaorsaNodeProvisioner:
         mock_state_instance.failed_hosts = set()
         mock_state.return_value = mock_state_instance
 
-        provisioner = SaorsaNodeProvisioner(
+        provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
             bootstrap_ip="10.0.0.100",
             bootstrap_port=5000,
@@ -416,13 +416,13 @@ class TestSaorsaNodeProvisioner:
         commands = enable_call.kwargs.get("commands", [])
         # First command is daemon-reload, rest are guarded service starts
         assert commands[0] == "systemctl daemon-reload"
-        assert "systemctl is-active --quiet saorsa-node-1" in commands[1]
-        assert "systemctl is-active --quiet saorsa-node-2" in commands[2]
+        assert "systemctl is-active --quiet ant-node-1" in commands[1]
+        assert "systemctl is-active --quiet ant-node-2" in commands[2]
 
 
 class TestCmdProvisionClearsKnownHosts:
     @patch("saorsa_deploy.cmd.provision.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision.SaorsaNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision.AntNodeProvisioner")
     @patch("saorsa_deploy.cmd.provision.clear_known_hosts")
     @patch("saorsa_deploy.cmd.provision.load_deployment_state")
     def test_clears_known_hosts_for_all_vm_ips(
@@ -460,7 +460,7 @@ class TestCmdProvisionClearsKnownHosts:
         assert sorted(called_ips) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
 
     @patch("saorsa_deploy.cmd.provision.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision.SaorsaNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision.AntNodeProvisioner")
     @patch("saorsa_deploy.cmd.provision.clear_known_hosts")
     @patch("saorsa_deploy.cmd.provision.load_deployment_state")
     def test_clears_known_hosts_for_single_region(
@@ -498,7 +498,7 @@ class TestCmdProvisionClearsKnownHosts:
         assert called_ips == ["10.0.0.1", "10.0.0.2"]
 
     @patch("saorsa_deploy.cmd.provision.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision.SaorsaNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision.AntNodeProvisioner")
     @patch("saorsa_deploy.cmd.provision.clear_known_hosts")
     @patch("saorsa_deploy.cmd.provision.load_deployment_state")
     def test_clears_known_hosts_before_provisioner_executes(

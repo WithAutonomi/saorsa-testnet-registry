@@ -21,15 +21,15 @@ class TestBuildMountVolumeCommand:
 
     def test_reports_already_mounted(self):
         cmd = build_mount_volume_command()
-        assert "SAORSA_VOLUME:ALREADY_MOUNTED" in cmd
+        assert "ANT_VOLUME:ALREADY_MOUNTED" in cmd
 
     def test_reports_mounted(self):
         cmd = build_mount_volume_command()
-        assert "SAORSA_VOLUME:MOUNTED" in cmd
+        assert "ANT_VOLUME:MOUNTED" in cmd
 
     def test_reports_no_device(self):
         cmd = build_mount_volume_command()
-        assert "SAORSA_VOLUME:NO_DEVICE" in cmd
+        assert "ANT_VOLUME:NO_DEVICE" in cmd
 
     def test_uses_do_volume_glob(self):
         cmd = build_mount_volume_command()

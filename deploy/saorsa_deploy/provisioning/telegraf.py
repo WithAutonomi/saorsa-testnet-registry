@@ -10,9 +10,9 @@ from rich.console import Console
 from saorsa_deploy.provisioning.volume import LOG_DIR
 
 TELEGRAF_CONFIG_DIR = "/etc/telegraf-elasticsearch"
-TELEGRAF_CONFIG_PATH = f"{TELEGRAF_CONFIG_DIR}/telegraf_saorsa_node_elasticsearch.conf"
-TELEGRAF_ENV_PATH = "/etc/default/telegraf-saorsa"
-TELEGRAF_SERVICE_NAME = "telegraf-saorsa-elasticsearch"
+TELEGRAF_CONFIG_PATH = f"{TELEGRAF_CONFIG_DIR}/telegraf_ant_node_elasticsearch.conf"
+TELEGRAF_ENV_PATH = "/etc/default/telegraf-ant"
+TELEGRAF_SERVICE_NAME = "telegraf-ant-elasticsearch"
 TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 
 
@@ -83,7 +83,7 @@ class TelegrafProvisioner:
                 name="Write Telegraf environment file",
                 commands=[
                     f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
-                    f'echo "SAORSA_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
+                    f'echo "ANT_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
                 ],
             )
 
@@ -153,12 +153,12 @@ class TelegrafProvisioner:
             f"TELEGRAF_ELASTICSEARCH_URL={self.elasticsearch_url}\n"
             f"TELEGRAF_ELASTICSEARCH_USERNAME={self.elasticsearch_username}\n"
             f"TELEGRAF_ELASTICSEARCH_PASSWORD={self.elasticsearch_password}\n"
-            f"SAORSA_LOG_DIR={LOG_DIR}\n"
-            f"SAORSA_TESTNET_NAME={self.testnet_name}\n"
-            f"SAORSA_TESTNET_NAME_LOWER={testnet_name_lower}\n"
-            f"SAORSA_HOST_ROLE={self.host_role}\n"
-            f"SAORSA_BRANCH_COMMIT={self.branch_commit}\n"
-            f"SAORSA_NODE_VERSION={self.node_version}\n"
+            f"ANT_LOG_DIR={LOG_DIR}\n"
+            f"ANT_TESTNET_NAME={self.testnet_name}\n"
+            f"ANT_TESTNET_NAME_LOWER={testnet_name_lower}\n"
+            f"ANT_HOST_ROLE={self.host_role}\n"
+            f"ANT_BRANCH_COMMIT={self.branch_commit}\n"
+            f"ANT_NODE_VERSION={self.node_version}\n"
         )
 
     def _build_telegraf_config(self) -> str:
@@ -169,11 +169,11 @@ class TelegrafProvisioner:
 ###############################################################################
 
 [global_tags]
-  testnet_name = "${SAORSA_TESTNET_NAME}"
-  host_role = "${SAORSA_HOST_ROLE}"
-  host_cpu_architecture = "${SAORSA_HOST_CPU_ARCH}"
-  branch_commit = "${SAORSA_BRANCH_COMMIT}"
-  node_version = "${SAORSA_NODE_VERSION}"
+  testnet_name = "${ANT_TESTNET_NAME}"
+  host_role = "${ANT_HOST_ROLE}"
+  host_cpu_architecture = "${ANT_HOST_CPU_ARCH}"
+  branch_commit = "${ANT_BRANCH_COMMIT}"
+  node_version = "${ANT_NODE_VERSION}"
 
 ###############################################################################
 #                            AGENT                                            #
@@ -196,7 +196,7 @@ class TelegrafProvisioner:
 ###############################################################################
 
 [[inputs.tail]]
-  files = ["${SAORSA_LOG_DIR}/saorsa-*/saorsa-node*.log*"]
+  files = ["${ANT_LOG_DIR}/ant-*/ant-node*.log*"]
 
   from_beginning = true
   watch_method = "inotify"
@@ -232,20 +232,20 @@ class TelegrafProvisioner:
 # --- Order 2: Extract numeric service number from log directory path ---
 #
 # Parses paths like:
-#   /mnt/saorsa-node-storage/log/saorsa-node-17/saorsa-node.log -> "17"
-#   /mnt/saorsa-node-storage/log/saorsa-genesis-node/saorsa-node.log -> "genesis"
+#   /mnt/ant-node-storage/log/ant-node-17/ant-node.log -> "17"
+#   /mnt/ant-node-storage/log/ant-genesis-node/ant-node.log -> "genesis"
 [[processors.starlark]]
   order = 2
   source = '''
 def apply(metric):
     svc = metric.tags.get("service_number", "")
     for part in svc.split("/"):
-        if part.startswith("saorsa-node-"):
-            num = part[len("saorsa-node-"):]
+        if part.startswith("ant-node-"):
+            num = part[len("ant-node-"):]
             if num.isdigit():
                 metric.tags["service_number"] = num
                 return metric
-        if part.startswith("saorsa-genesis-"):
+        if part.startswith("ant-genesis-"):
             metric.tags["service_number"] = "genesis"
             return metric
     return metric
@@ -267,7 +267,7 @@ def apply(metric):
   username = "${TELEGRAF_ELASTICSEARCH_USERNAME}"
   password = "${TELEGRAF_ELASTICSEARCH_PASSWORD}"
 
-  index_name = "telegraf-saorsa-nodes-${SAORSA_TESTNET_NAME_LOWER}-%Y.%m.%d"
+  index_name = "telegraf-ant-nodes-${ANT_TESTNET_NAME_LOWER}-%Y.%m.%d"
 
   force_document_id = true
 
@@ -283,7 +283,7 @@ def apply(metric):
         """Generate the systemd unit file content for Telegraf."""
         return f"""\
 [Unit]
-Description=Telegraf - Saorsa Node Elasticsearch Log Forwarder
+Description=Telegraf - Ant Node Elasticsearch Log Forwarder
 Documentation=https://github.com/influxdata/telegraf
 After=network.target
 

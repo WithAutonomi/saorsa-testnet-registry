@@ -122,23 +122,23 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - Set to true to skip Telegraf installation and configuration
   - Logs are still written as JSON to disk regardless of this setting
 
-- **upgrade_channel**: Upgrade channel for saorsa-node
+- **upgrade_channel**: Upgrade channel for ant-node
   - Allowed values: "beta", "stable"
   - If omitted, no upgrade channel is specified and the node uses its default behaviour
   - When set, all nodes are started with `--upgrade-channel <value>`
 
 ## Node Binary Options
 
-These options control which saorsa-node binary is deployed. They are
+These options control which ant-node binary is deployed. They are
 **mutually exclusive** — you may specify `node_version` OR
 `branch_name`/`repo_owner`, but not both. If neither is set, the latest
 released binary is used.
 
-- **node_version**: Deploy a specific released version of saorsa-node
+- **node_version**: Deploy a specific released version of ant-node
   - Example: "0.3.3"
   - The binary is fetched from the GitHub release for this version
 
-- **branch_name**: Git branch of the saorsa-node repo to build from source
+- **branch_name**: Git branch of the ant-node repo to build from source
   - Example: "feat/my-change"
   - Triggers a build step that compiles the binary on an ephemeral VM
   - Must NOT be combined with node_version
@@ -158,11 +158,11 @@ Deploy a DEV-02 testnet with 3 VMs, 25 nodes per VM, genesis port 12000,
 
 ### Deploying with a specific node version
 Deploy a DEV-04 testnet with 2 VMs, 10 nodes, genesis port 12000,
-using saorsa-node version 0.3.3.
+using ant-node version 0.3.3.
 
 ### Deploying with a custom node binary from a branch
 Deploy a DEV-05 testnet with 2 VMs, 10 nodes, genesis port 12000,
-building saorsa-node from the feat/my-change branch (maidsafe repo).
+building ant-node from the feat/my-change branch (maidsafe repo).
 
 ## Tracking Deployments
 
@@ -232,11 +232,11 @@ async def create_deployment(
         ip_version: IP version the nodes will run with (v4 or v6)
         log_level: Logging level the nodes will run with
         port: Beginning of a port range for non-genesis nodes
-        node_version: Specific released version of saorsa-node to deploy (e.g. "0.3.3")
-        branch_name: Git branch of the saorsa-node repo to build from source
+        node_version: Specific released version of ant-node to deploy (e.g. "0.3.3")
+        branch_name: Git branch of the ant-node repo to build from source
         repo_owner: Repository owner for custom branch builds (default: "maidsafe")
         disable_log_forwarding: Disable Telegraf log forwarding to Elasticsearch (default: false)
-        upgrade_channel: Upgrade channel for saorsa-node ("beta" or "stable")
+        upgrade_channel: Upgrade channel for ant-node ("beta" or "stable")
     """
     deploy_args = {
         "name": name,

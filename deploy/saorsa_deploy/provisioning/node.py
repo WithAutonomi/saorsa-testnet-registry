@@ -51,7 +51,7 @@ def _build_node_unit_file(service_name, exec_start):
     """Build the systemd unit file content for a node service."""
     return f"""\
 [Unit]
-Description=Saorsa Node ({service_name})
+Description=Ant Node ({service_name})
 After=network-online.target
 Wants=network-online.target
 
@@ -66,8 +66,8 @@ WantedBy=multi-user.target
 """
 
 
-class SaorsaNodeProvisioner:
-    """Provisions saorsa-node services on multiple hosts using Pyinfra."""
+class AntNodeProvisioner:
+    """Provisions ant-node services on multiple hosts using Pyinfra."""
 
     def __init__(
         self,
@@ -100,7 +100,7 @@ class SaorsaNodeProvisioner:
         self.upgrade_channel = upgrade_channel
 
     def execute(self) -> None:
-        """Provision all hosts with saorsa-node services."""
+        """Provision all hosts with ant-node services."""
         if self.binary_url:
             download_url = self.binary_url
             self.console.print(f"Using binary URL: {download_url}")
@@ -135,7 +135,7 @@ class SaorsaNodeProvisioner:
 
             mkdir_commands = [f"mkdir -p {LOG_DIR}"]
             for i in range(self.node_count):
-                mkdir_commands.append(f"mkdir -p {LOG_DIR}/saorsa-node-{i + 1}")
+                mkdir_commands.append(f"mkdir -p {LOG_DIR}/ant-node-{i + 1}")
 
             add_op(
                 state,
@@ -147,33 +147,33 @@ class SaorsaNodeProvisioner:
             if self.binary_is_archive:
                 install_cmd = (
                     f"test -f {BINARY_INSTALL_PATH} "
-                    f"&& echo 'SAORSA_BINARY:SKIP' || "
+                    f"&& echo 'ANT_BINARY:SKIP' || "
                     f"(wget -q {download_url} -O /tmp/{RELEASE_ASSET_NAME} && "
                     f"tar -xzf /tmp/{RELEASE_ASSET_NAME} -C /tmp/ && "
-                    f"mv /tmp/saorsa-node {BINARY_INSTALL_PATH} && "
+                    f"mv /tmp/ant-node {BINARY_INSTALL_PATH} && "
                     f"chmod +x {BINARY_INSTALL_PATH} && "
                     f"rm -f /tmp/{RELEASE_ASSET_NAME} && "
-                    f"echo 'SAORSA_BINARY:INSTALLED')"
+                    f"echo 'ANT_BINARY:INSTALLED')"
                 )
             else:
                 install_cmd = (
                     f"test -f {BINARY_INSTALL_PATH} "
-                    f"&& echo 'SAORSA_BINARY:SKIP' || "
+                    f"&& echo 'ANT_BINARY:SKIP' || "
                     f"(wget -q {download_url} -O {BINARY_INSTALL_PATH} && "
                     f"chmod +x {BINARY_INSTALL_PATH} && "
-                    f"echo 'SAORSA_BINARY:INSTALLED')"
+                    f"echo 'ANT_BINARY:INSTALLED')"
                 )
             install_results = add_op(
                 state,
                 server.shell,
-                name="Download and install saorsa-node binary",
+                name="Download and install ant-node binary",
                 commands=[install_cmd],
             )
 
             unit_commands = []
             service_names = []
             for i in range(self.node_count):
-                service_name = f"saorsa-node-{i + 1}"
+                service_name = f"ant-node-{i + 1}"
                 service_names.append(service_name)
                 node_port = (self.initial_port + i) if self.initial_port is not None else None
                 root_dir = f"{MOUNT_POINT}/data/{service_name}"
@@ -204,9 +204,9 @@ class SaorsaNodeProvisioner:
             for service_name in service_names:
                 enable_commands.append(
                     f"systemctl is-active --quiet {service_name} "
-                    f"&& echo 'SAORSA_SVC:RUNNING:{service_name}' "
+                    f"&& echo 'ANT_SVC:RUNNING:{service_name}' "
                     f"|| (systemctl enable --now {service_name} "
-                    f"&& echo 'SAORSA_SVC:STARTED:{service_name}')"
+                    f"&& echo 'ANT_SVC:STARTED:{service_name}')"
                 )
 
             svc_results = add_op(
@@ -255,16 +255,16 @@ class SaorsaNodeProvisioner:
         for host in hosts:
             install_meta = install_results[host]
             for line in install_meta.stdout_lines:
-                if "SAORSA_BINARY:SKIP" in line:
+                if "ANT_BINARY:SKIP" in line:
                     binary_skipped += 1
-                elif "SAORSA_BINARY:INSTALLED" in line:
+                elif "ANT_BINARY:INSTALLED" in line:
                     binary_installed += 1
 
             svc_meta = svc_results[host]
             for line in svc_meta.stdout_lines:
-                if "SAORSA_SVC:RUNNING:" in line:
+                if "ANT_SVC:RUNNING:" in line:
                     svcs_running += 1
-                elif "SAORSA_SVC:STARTED:" in line:
+                elif "ANT_SVC:STARTED:" in line:
                     svcs_started += 1
 
         total_hosts = len(hosts)

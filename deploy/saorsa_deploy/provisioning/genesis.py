@@ -10,8 +10,8 @@ from rich.console import Console
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
-BINARY_INSTALL_PATH = "/usr/local/bin/saorsa-node"
-SERVICE_NAME = "saorsa-genesis-node"
+BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
+SERVICE_NAME = "ant-genesis-node"
 UNIT_FILE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ROOT_DIR = f"{MOUNT_POINT}/data/{SERVICE_NAME}"
 
@@ -47,7 +47,7 @@ def _build_unit_file(exec_start: str) -> str:
     """Build the systemd unit file content."""
     return f"""\
 [Unit]
-Description=Saorsa Genesis Node
+Description=Ant Genesis Node
 After=network-online.target
 Wants=network-online.target
 
@@ -62,7 +62,7 @@ WantedBy=multi-user.target
 """
 
 
-class SaorsaGenesisNodeProvisioner:
+class AntGenesisNodeProvisioner:
     """Provisions the genesis node on a remote host using Pyinfra."""
 
     def __init__(
@@ -90,7 +90,7 @@ class SaorsaGenesisNodeProvisioner:
         self.upgrade_channel = upgrade_channel
 
     def execute(self) -> None:
-        """Download the saorsa-node binary, install it, and start the genesis service."""
+        """Download the ant-node binary, install it, and start the genesis service."""
         if self.binary_url:
             download_url = self.binary_url
             self.console.print(f"Using binary URL: {download_url}")
@@ -141,26 +141,26 @@ class SaorsaGenesisNodeProvisioner:
             if self.binary_is_archive:
                 install_cmd = (
                     f"test -f {BINARY_INSTALL_PATH} "
-                    f"&& echo 'SAORSA_BINARY:SKIP' || "
+                    f"&& echo 'ANT_BINARY:SKIP' || "
                     f"(wget -q {download_url} -O /tmp/{RELEASE_ASSET_NAME} && "
                     f"tar -xzf /tmp/{RELEASE_ASSET_NAME} -C /tmp/ && "
-                    f"mv /tmp/saorsa-node {BINARY_INSTALL_PATH} && "
+                    f"mv /tmp/ant-node {BINARY_INSTALL_PATH} && "
                     f"chmod +x {BINARY_INSTALL_PATH} && "
                     f"rm -f /tmp/{RELEASE_ASSET_NAME} && "
-                    f"echo 'SAORSA_BINARY:INSTALLED')"
+                    f"echo 'ANT_BINARY:INSTALLED')"
                 )
             else:
                 install_cmd = (
                     f"test -f {BINARY_INSTALL_PATH} "
-                    f"&& echo 'SAORSA_BINARY:SKIP' || "
+                    f"&& echo 'ANT_BINARY:SKIP' || "
                     f"(wget -q {download_url} -O {BINARY_INSTALL_PATH} && "
                     f"chmod +x {BINARY_INSTALL_PATH} && "
-                    f"echo 'SAORSA_BINARY:INSTALLED')"
+                    f"echo 'ANT_BINARY:INSTALLED')"
                 )
             install_results = add_op(
                 state,
                 server.shell,
-                name="Download and install saorsa-node binary",
+                name="Download and install ant-node binary",
                 commands=[install_cmd],
             )
 
@@ -203,7 +203,7 @@ class SaorsaGenesisNodeProvisioner:
             return
 
         install_meta = install_results[host]
-        if any("SAORSA_BINARY:SKIP" in line for line in install_meta.stdout_lines):
+        if any("ANT_BINARY:SKIP" in line for line in install_meta.stdout_lines):
             self.console.print("  Binary: already installed")
         else:
             self.console.print("  Binary: installed")

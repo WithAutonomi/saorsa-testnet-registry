@@ -41,20 +41,20 @@ class TestBuildEnvFile:
     def test_contains_testnet_metadata(self):
         p = _make_provisioner(testnet_name="DEV-01", host_role="GENESIS")
         env = p._build_env_file()
-        assert "SAORSA_TESTNET_NAME=DEV-01" in env
-        assert "SAORSA_TESTNET_NAME_LOWER=dev-01" in env
-        assert "SAORSA_HOST_ROLE=GENESIS" in env
+        assert "ANT_TESTNET_NAME=DEV-01" in env
+        assert "ANT_TESTNET_NAME_LOWER=dev-01" in env
+        assert "ANT_HOST_ROLE=GENESIS" in env
 
     def test_contains_version_info(self):
         p = _make_provisioner(branch_commit="abc123", node_version="0.1.0")
         env = p._build_env_file()
-        assert "SAORSA_BRANCH_COMMIT=abc123" in env
-        assert "SAORSA_NODE_VERSION=0.1.0" in env
+        assert "ANT_BRANCH_COMMIT=abc123" in env
+        assert "ANT_NODE_VERSION=0.1.0" in env
 
     def test_contains_log_dir(self):
         p = _make_provisioner()
         env = p._build_env_file()
-        assert "SAORSA_LOG_DIR=" in env
+        assert "ANT_LOG_DIR=" in env
 
     def test_each_line_is_key_value(self):
         p = _make_provisioner()
@@ -124,14 +124,14 @@ class TestBuildTelegrafConfig:
     def test_uses_env_var_references(self):
         p = _make_provisioner()
         config = p._build_telegraf_config()
-        assert "${SAORSA_TESTNET_NAME}" in config
-        assert "${SAORSA_LOG_DIR}" in config
+        assert "${ANT_TESTNET_NAME}" in config
+        assert "${ANT_LOG_DIR}" in config
         assert "${TELEGRAF_ELASTICSEARCH_URL}" in config
 
     def test_tail_input_glob_matches_log_files(self):
         p = _make_provisioner()
         config = p._build_telegraf_config()
-        assert "saorsa-*/saorsa-node*.log*" in config
+        assert "ant-*/ant-node*.log*" in config
 
     def test_starlark_source_present(self):
         p = _make_provisioner()
