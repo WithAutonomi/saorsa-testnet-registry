@@ -1,5 +1,5 @@
 resource "digitalocean_droplet" "monitoring" {
-  name     = "${var.name}-saorsa-monitoring-${var.region}"
+  name     = "${var.name}-ant-monitoring-${var.region}"
   region   = var.region
   size     = "s-2vcpu-4gb"
   image    = "ubuntu-24-04-x64"
@@ -8,7 +8,7 @@ resource "digitalocean_droplet" "monitoring" {
 
 resource "digitalocean_volume" "monitoring_storage" {
   region                  = var.region
-  name                    = "${lower(var.name)}-saorsa-monitoring-storage-${var.region}"
+  name                    = "${lower(var.name)}-ant-monitoring-storage-${var.region}"
   size                    = var.volume_size
   initial_filesystem_type = "ext4"
 }
@@ -19,7 +19,7 @@ resource "digitalocean_volume_attachment" "monitoring_storage_attach" {
 }
 
 resource "digitalocean_firewall" "monitoring" {
-  name = "${lower(var.name)}-saorsa-monitoring-fw-${var.region}"
+  name = "${lower(var.name)}-ant-monitoring-fw-${var.region}"
 
   droplet_ids = [digitalocean_droplet.monitoring.id]
 

@@ -15,12 +15,12 @@ from saorsa_deploy.resources import get_resources_dir
 
 MONITORING_MOUNT_POINT = "/mnt/monitoring-storage"
 INFLUXDB_DATA_DIR = f"{MONITORING_MOUNT_POINT}/influxdb"
-INFLUXDB_ORG = "saorsa"
+INFLUXDB_ORG = "ant"
 INFLUXDB_BUCKET = "testnet-metrics"
 INFLUXDB_ADMIN_USER = "admin"
 
 GRAFANA_DATASOURCE_PATH = "/etc/grafana/provisioning/datasources/influxdb.yml"
-GRAFANA_DASHBOARD_PROVIDER_PATH = "/etc/grafana/provisioning/dashboards/saorsa.yml"
+GRAFANA_DASHBOARD_PROVIDER_PATH = "/etc/grafana/provisioning/dashboards/ant.yml"
 GRAFANA_DASHBOARD_DIR = "/var/lib/grafana/dashboards"
 GRAFANA_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/host-metrics.json"
 GRAFANA_NODE_TABLE_PATH = f"{GRAFANA_DASHBOARD_DIR}/node-overview.json"
@@ -373,7 +373,7 @@ class MonitoringProvisioner:
         add(self._panel_memory_usage)
         add(self._panel_disk_usage, title="System Disk Usage", mount_path="/")
         add(self._panel_disk_usage, title="Attached Volume Usage",
-            mount_path="/mnt/saorsa-node-storage")
+            mount_path="/mnt/ant-node-storage")
         add(self._panel_network_inbound)
         add(self._panel_network_outbound)
 
@@ -566,7 +566,7 @@ class MonitoringProvisioner:
             "links": [],
             "panels": panels,
             "schemaVersion": 39,
-            "tags": ["saorsa", "testnet", "host-metrics"],
+            "tags": ["ant", "testnet", "host-metrics"],
             "templating": {
                 "list": [
                     {
@@ -665,7 +665,7 @@ class MonitoringProvisioner:
             "timepicker": {},
             "timezone": "utc",
             "title": "Host Metrics",
-            "uid": "saorsa-host-metrics",
+            "uid": "ant-host-metrics",
         }
         return json.dumps(dashboard, indent=2)
 
@@ -794,7 +794,7 @@ class MonitoringProvisioner:
                 },
             ],
             "schemaVersion": 39,
-            "tags": ["saorsa", "testnet", "node-overview"],
+            "tags": ["ant", "testnet", "node-overview"],
             "templating": {
                 "list": [
                     {
@@ -902,7 +902,7 @@ class MonitoringProvisioner:
             "timepicker": {},
             "timezone": "utc",
             "title": "Node Overview",
-            "uid": "saorsa-node-overview",
+            "uid": "ant-node-overview",
         }
         return json.dumps(dashboard, indent=2)
 

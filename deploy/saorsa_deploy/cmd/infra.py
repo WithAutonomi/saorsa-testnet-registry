@@ -20,7 +20,7 @@ def cmd_infra(args):
     console = Console()
 
     # Create the bootstrap VM first (idempotent)
-    console.print(f"[bold]Bootstrap VM ({args.name}-saorsa-bootstrap)...[/bold]")
+    console.print(f"[bold]Bootstrap VM ({args.name}-ant-bootstrap)...[/bold]")
     try:
         bootstrap = create_bootstrap_vm(args.name, volume_size=args.attached_volume_size)
         if bootstrap["created"]:

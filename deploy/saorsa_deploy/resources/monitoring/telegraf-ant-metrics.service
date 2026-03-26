@@ -1,5 +1,5 @@
 [Unit]
-Description=Telegraf - Saorsa Host Metrics (InfluxDB)
+Description=Telegraf - Ant Host Metrics (InfluxDB)
 Documentation=https://github.com/influxdata/telegraf
 After=network.target
 

@@ -155,7 +155,7 @@ Optional per-testnet monitoring stack (InfluxDB 2.x + Grafana) on a single VM. S
 - Provisioners: `deploy/saorsa_deploy/provisioning/monitoring.py` (InfluxDB+Grafana), `telegraf_metrics.py` (Telegraf)
 - CLI commands: `deploy/saorsa_deploy/cmd/monitoring_infra.py`, `provision_monitoring.py`, `provision_telegraf_metrics.py`, `monitoring_info.py`, `destroy_monitoring.py`
 - State: separate S3 key prefix `saorsa-deploy/monitoring/{name}.json` (independent of deployment state)
-- Telegraf metrics runs as a separate systemd service (`telegraf-saorsa-metrics`) alongside the existing log forwarding (`telegraf-saorsa-elasticsearch`)
+- Telegraf metrics runs as a separate systemd service (`telegraf-ant-metrics`) alongside the existing log forwarding (`telegraf-ant-elasticsearch`)
 
 ### Telegraf naming
 

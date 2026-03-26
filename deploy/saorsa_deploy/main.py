@@ -386,8 +386,8 @@ def main():
     telegraf_metrics_parser.add_argument(
         "--influxdb-org",
         type=str,
-        default="saorsa",
-        help="InfluxDB organization (default: saorsa)",
+        default="ant",
+        help="InfluxDB organization (default: ant)",
     )
     telegraf_metrics_parser.add_argument(
         "--influxdb-bucket",

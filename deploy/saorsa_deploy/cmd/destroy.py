@@ -98,7 +98,7 @@ def cmd_destroy(args):
             )
 
     # Destroy bootstrap VM
-    console.print(f"[bold]Destroying bootstrap VM ({args.name}-saorsa-bootstrap)...[/bold]")
+    console.print(f"[bold]Destroying bootstrap VM ({args.name}-ant-bootstrap)...[/bold]")
     try:
         bootstrap_result = find_and_destroy_bootstrap_vm(args.name)
         if bootstrap_result["found"]:

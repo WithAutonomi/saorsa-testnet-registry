@@ -87,8 +87,8 @@ def create_bootstrap_vm(name, volume_size=DEFAULT_VOLUME_SIZE_GB):
     The 'created' key is True if resources were newly created, False if they already existed.
     """
     headers = _get_headers()
-    droplet_name = f"{name}-saorsa-bootstrap"
-    volume_name = f"{name}-saorsa-bootstrap-storage".lower()
+    droplet_name = f"{name}-ant-bootstrap"
+    volume_name = f"{name}-ant-bootstrap-storage".lower()
 
     created = False
 
@@ -200,8 +200,8 @@ def find_and_destroy_bootstrap_vm(name):
     If neither the droplet nor volume is found, returns found=False and does nothing.
     """
     headers = _get_headers()
-    droplet_name = f"{name}-saorsa-bootstrap"
-    volume_name = f"{name}-saorsa-bootstrap-storage".lower()
+    droplet_name = f"{name}-ant-bootstrap"
+    volume_name = f"{name}-ant-bootstrap-storage".lower()
 
     droplet = _find_droplet_by_name(droplet_name, headers)
     volume = _find_volume_by_name(volume_name, headers)

@@ -276,7 +276,7 @@ uv run saorsa-deploy provision-telegraf-metrics \
 | `--host-ips` | string | No | - | Comma-separated host IPs (alternative to `--name`) |
 | `--influxdb-url` | string | Yes | - | InfluxDB URL |
 | `--influxdb-token` | string | Yes | - | InfluxDB API token |
-| `--influxdb-org` | string | No | `saorsa` | InfluxDB organization |
+| `--influxdb-org` | string | No | `ant` | InfluxDB organization |
 | `--influxdb-bucket` | string | No | `testnet-metrics` | InfluxDB bucket |
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
 
@@ -346,7 +346,7 @@ uv run saorsa-deploy destroy-monitoring --name DEV-01
 
 The `--name` argument is used as a prefix for all VM names (e.g., `DEV-01-ant-node-lon1-1`).
 
-Before provisioning the main infrastructure, the tool creates a **bootstrap VM** (`{name}-saorsa-bootstrap`) via the Digital Ocean API. This single VM (s-2vcpu-4gb, Ubuntu 24.04, lon1) with a 35GB attached volume serves as the bootstrap node for the network.
+Before provisioning the main infrastructure, the tool creates a **bootstrap VM** (`{name}-ant-bootstrap`) via the Digital Ocean API. This single VM (s-2vcpu-4gb, Ubuntu 24.04, lon1) with a 35GB attached volume serves as the bootstrap node for the network.
 
 The tool then uses Terraform to create Digital Ocean droplets (Ubuntu 24.04, s-2vcpu-4gb) with attached block storage volumes. Each VM gets one volume of the specified size, formatted as ext4.
 

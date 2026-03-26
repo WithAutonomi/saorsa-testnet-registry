@@ -8,7 +8,7 @@ datasources:
     url: http://localhost:8086
     jsonData:
       version: Flux
-      organization: saorsa
+      organization: ant
       defaultBucket: testnet-metrics
     secureJsonData:
       token: ${INFLUX_TOKEN}

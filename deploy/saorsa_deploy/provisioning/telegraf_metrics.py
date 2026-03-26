@@ -11,10 +11,10 @@ from saorsa_deploy.provisioning.node import METRICS_PORT_BASE
 from saorsa_deploy.resources import get_resources_dir
 
 TELEGRAF_CONFIG_DIR = "/etc/telegraf-metrics"
-TELEGRAF_CONFIG_PATH = f"{TELEGRAF_CONFIG_DIR}/telegraf_saorsa_metrics.conf"
+TELEGRAF_CONFIG_PATH = f"{TELEGRAF_CONFIG_DIR}/telegraf_ant_metrics.conf"
 TELEGRAF_PROMETHEUS_CONFIG_PATH = f"{TELEGRAF_CONFIG_DIR}/telegraf_prometheus.conf"
-TELEGRAF_ENV_PATH = "/etc/default/telegraf-saorsa-metrics"
-TELEGRAF_SERVICE_NAME = "telegraf-saorsa-metrics"
+TELEGRAF_ENV_PATH = "/etc/default/telegraf-ant-metrics"
+TELEGRAF_SERVICE_NAME = "telegraf-ant-metrics"
 TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 
 
@@ -166,7 +166,7 @@ class TelegrafMetricsProvisioner:
             f"INFLUXDB_TOKEN={self.influxdb_token}\n"
             f"INFLUXDB_ORG={self.influxdb_org}\n"
             f"INFLUXDB_BUCKET={self.influxdb_bucket}\n"
-            f"SAORSA_TESTNET_NAME={self.testnet_name}\n"
+            f"ANT_TESTNET_NAME={self.testnet_name}\n"
         )
 
     def _build_telegraf_config(self) -> str:
@@ -187,13 +187,13 @@ class TelegrafMetricsProvisioner:
                 f'  urls = ["http://127.0.0.1:{METRICS_PORT_BASE}/metrics"]\n'
                 f'  metric_version = 2\n'
                 f'  [inputs.prometheus.tags]\n'
-                f'    node_service = "saorsa-genesis-node"\n'
+                f'    node_service = "ant-genesis-node"\n'
                 f'    host_role = "GENESIS"\n'
             )
         else:
             for i in range(self.node_count):
                 port = METRICS_PORT_BASE + i
-                service_name = f"saorsa-node-{i + 1}"
+                service_name = f"ant-node-{i + 1}"
                 blocks.append(
                     f'[[inputs.prometheus]]\n'
                     f'  urls = ["http://127.0.0.1:{port}/metrics"]\n'
@@ -206,7 +206,7 @@ class TelegrafMetricsProvisioner:
         return header + "\n".join(blocks)
 
     def _build_unit_file(self) -> str:
-        template = _read_resource("telegraf-saorsa-metrics.service")
+        template = _read_resource("telegraf-ant-metrics.service")
         return template.replace(
             "{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH
         ).replace(
