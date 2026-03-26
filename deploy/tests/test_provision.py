@@ -33,15 +33,6 @@ class TestBuildNodeExecStart:
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--port" not in result
 
-    def test_default_ip_version_is_ipv4(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
-        assert "--ip-version ipv4" in result
-
-    def test_ip_version_can_be_overridden(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, ip_version="ipv6")
-        assert "--ip-version ipv6" in result
-        assert "--ip-version ipv4" not in result
-
     def test_includes_log_level(self):
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, log_level="debug")
         assert "--log-level debug" in result
@@ -72,12 +63,11 @@ class TestBuildNodeExecStart:
 
     def test_all_flags(self):
         result = _build_node_exec_start(
-            "10.0.0.1", 5000, self.ROOT, port=6000, ip_version="v4", log_level="info", testnet=True
+            "10.0.0.1", 5000, self.ROOT, port=6000, log_level="info", testnet=True
         )
         assert f"--root-dir {self.ROOT}" in result
         assert "--bootstrap 10.0.0.1:5000" in result
         assert "--port 6000" in result
-        assert "--ip-version v4" in result
         assert "--log-level info" in result
         assert "--network-mode testnet" in result
 
@@ -124,7 +114,6 @@ class TestAntNodeProvisioner:
         assert provisioner.ssh_key_path == "~/.ssh/id_rsa"
         assert provisioner.node_count == 1
         assert provisioner.initial_port is None
-        assert provisioner.ip_version == "ipv4"
         assert provisioner.log_level is None
         assert provisioner.testnet is False
         assert provisioner.upgrade_channel is None
@@ -138,7 +127,6 @@ class TestAntNodeProvisioner:
             ssh_key_path="/tmp/key",
             node_count=3,
             initial_port=6000,
-            ip_version="v4",
             log_level="debug",
             testnet=True,
             upgrade_channel="stable",
@@ -147,7 +135,6 @@ class TestAntNodeProvisioner:
         assert provisioner.ssh_key_path == "/tmp/key"
         assert provisioner.node_count == 3
         assert provisioner.initial_port == 6000
-        assert provisioner.ip_version == "v4"
         assert provisioner.log_level == "debug"
         assert provisioner.testnet is True
         assert provisioner.upgrade_channel == "stable"
@@ -456,7 +443,7 @@ class TestCmdProvisionClearsKnownHosts:
             ssh_key_path="~/.ssh/id_rsa",
             node_count=1,
             port=None,
-            ip_version=None,
+
             log_level=None,
             testnet=False,
             region=None,
@@ -495,7 +482,7 @@ class TestCmdProvisionClearsKnownHosts:
             ssh_key_path="~/.ssh/id_rsa",
             node_count=1,
             port=None,
-            ip_version=None,
+
             log_level=None,
             testnet=False,
             region="lon1",
@@ -533,7 +520,7 @@ class TestCmdProvisionClearsKnownHosts:
             ssh_key_path="~/.ssh/id_rsa",
             node_count=1,
             port=None,
-            ip_version=None,
+
             log_level=None,
             testnet=False,
             region=None,
