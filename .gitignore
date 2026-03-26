@@ -18,6 +18,8 @@ venv/
 
 .DS_Store
 
+.terraform/
+
 .claude/plans/
 .claude/skills/
 .saorsa/
