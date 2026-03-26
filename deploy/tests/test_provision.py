@@ -65,10 +65,6 @@ class TestBuildNodeExecStart:
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--upgrade-channel" not in result
 
-    def test_always_includes_disable_payment_verification(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
-        assert "--disable-payment-verification" in result
-
     def test_stop_on_upgrade_always_present(self):
         result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
         assert "--stop-on-upgrade" in result
@@ -82,7 +78,6 @@ class TestBuildNodeExecStart:
         assert "--port 6000" in result
         assert "--ip-version v4" in result
         assert "--log-level info" in result
-        assert "--disable-payment-verification" in result
         assert "--network-mode testnet" in result
 
 

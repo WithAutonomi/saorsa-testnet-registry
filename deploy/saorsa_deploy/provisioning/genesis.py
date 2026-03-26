@@ -38,7 +38,6 @@ def _build_exec_start(
         parts.append(f"--log-level {log_level}")
     parts.append("--log-format json")
     parts.append(f"--log-dir {LOG_DIR}/{SERVICE_NAME}")
-    parts.append("--disable-payment-verification")
     if testnet:
         parts.append("--network-mode testnet")
     if upgrade_channel:

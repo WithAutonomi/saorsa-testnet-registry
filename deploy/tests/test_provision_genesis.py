@@ -25,7 +25,7 @@ class TestBuildExecStart:
             " --ip-version ipv4"
             " --log-format json"
             f" --log-dir {LOG_DIR}/{SERVICE_NAME}"
-            " --disable-payment-verification"
+
             " --stop-on-upgrade"
             " --metrics-port 9100"
         )
@@ -39,7 +39,6 @@ class TestBuildExecStart:
         assert "--port 10000" in result
         assert "--ip-version ipv4" in result
         assert "--log-level debug" in result
-        assert "--disable-payment-verification" in result
         assert "--network-mode testnet" in result
 
     def test_port_only(self):
@@ -77,10 +76,6 @@ class TestBuildExecStart:
     def test_no_upgrade_channel_by_default(self):
         result = _build_exec_start()
         assert "--upgrade-channel" not in result
-
-    def test_disable_payment_verification_always_present(self):
-        result = _build_exec_start()
-        assert "--disable-payment-verification" in result
 
     def test_stop_on_upgrade_always_present(self):
         result = _build_exec_start()
