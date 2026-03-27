@@ -168,9 +168,10 @@ class ElasticProvisioner:
                 "systemctl daemon-reload",
                 "systemctl enable elasticsearch",
                 "systemctl start elasticsearch",
-                # Wait for ES to become ready
+                # Wait for ES to become ready (use root endpoint which
+                # allows anonymous access via the monitoring role)
                 "for i in $(seq 1 60); do "
-                "curl -sf http://localhost:9200/_cluster/health >/dev/null 2>&1 && break; "
+                "curl -sf http://localhost:9200 >/dev/null 2>&1 && break; "
                 "sleep 2; done",
             ],
         )
@@ -208,6 +209,13 @@ class ElasticProvisioner:
             f"xpack.security.enabled: true\n"
             f"xpack.security.http.ssl.enabled: false\n"
             f"xpack.security.transport.ssl.enabled: false\n"
+            f"\n"
+            f"# Allow anonymous access with monitor role so Telegraf can\n"
+            f"# detect the ES version via the unauthenticated root endpoint.\n"
+            f"xpack.security.authc:\n"
+            f"  anonymous:\n"
+            f"    roles: remote_monitoring_collector\n"
+            f"    authz_exception: false\n"
         )
 
     def _build_jvm_options(self) -> str:

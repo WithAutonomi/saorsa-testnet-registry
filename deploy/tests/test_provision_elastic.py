@@ -52,6 +52,13 @@ class TestElasticsearchYml:
         yml = p._build_elasticsearch_yml()
         assert "network.host: 0.0.0.0" in yml
 
+    def test_anonymous_access_for_version_detection(self):
+        p = _make_provisioner()
+        yml = p._build_elasticsearch_yml()
+        assert "anonymous:" in yml
+        assert "roles: remote_monitoring_collector" in yml
+        assert "authz_exception: false" in yml
+
 
 class TestJvmOptions:
     def test_sets_heap_size(self):
