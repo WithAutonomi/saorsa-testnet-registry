@@ -4,7 +4,7 @@ from rich.console import Console
 
 from saorsa_deploy.provisioning.telegraf import TelegrafProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
-from saorsa_deploy.state import load_deployment_state
+from saorsa_deploy.state import load_deployment_state, load_elastic_state
 
 
 def cmd_provision_telegraf(args):
@@ -28,6 +28,35 @@ def cmd_provision_telegraf(args):
         console.print("[bold red]Error:[/bold red] No VM IPs found in deployment state.")
         sys.exit(1)
 
+    # Resolve Elasticsearch credentials: explicit args take priority, then elastic state
+    es_url = args.elasticsearch_url
+    es_username = args.elasticsearch_username
+    es_password = args.elasticsearch_password
+
+    if not es_url:
+        console.print("[dim]Loading Elasticsearch credentials from elastic state...[/dim]")
+        try:
+            elastic_state = load_elastic_state(args.name)
+            es_url = elastic_state.get("elasticsearch_url", "")
+            es_username = elastic_state.get("elasticsearch_username", "")
+            es_password = elastic_state.get("elasticsearch_password", "")
+        except RuntimeError:
+            console.print(
+                "[bold red]Error:[/bold red] No Elasticsearch credentials provided "
+                "and no elastic state found for this deployment.\n"
+                "Either run elastic-infra + provision-elastic first, "
+                "or provide --elasticsearch-url, --elasticsearch-username, "
+                "and --elasticsearch-password."
+            )
+            sys.exit(1)
+
+    if not es_url or not es_username or not es_password:
+        console.print(
+            "[bold red]Error:[/bold red] Elasticsearch URL, username, and password "
+            "are all required. Provide them via CLI args or elastic state."
+        )
+        sys.exit(1)
+
     if args.node_version:
         node_version = args.node_version
     elif args.branch_commit:
@@ -37,7 +66,7 @@ def cmd_provision_telegraf(args):
 
     branch_commit = args.branch_commit or "unknown"
 
-    console.print(f"  Elasticsearch URL: {args.elasticsearch_url}")
+    console.print(f"  Elasticsearch URL: {es_url}")
     console.print(f"  Node version: {node_version}")
     console.print(f"  Branch/commit: {branch_commit}")
     console.print()
@@ -45,9 +74,9 @@ def cmd_provision_telegraf(args):
     common_kwargs = {
         "ssh_key_path": args.ssh_key_path,
         "testnet_name": args.name,
-        "elasticsearch_url": args.elasticsearch_url,
-        "elasticsearch_username": args.elasticsearch_username,
-        "elasticsearch_password": args.elasticsearch_password,
+        "elasticsearch_url": es_url,
+        "elasticsearch_username": es_username,
+        "elasticsearch_password": es_password,
         "branch_commit": branch_commit,
         "node_version": node_version,
         "console": console,

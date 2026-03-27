@@ -157,6 +157,80 @@ def delete_monitoring_state(name: str) -> None:
     )
 
 
+S3_ELASTIC_KEY_PREFIX = "saorsa-deploy/elastic"
+
+
+def save_elastic_state(
+    name: str,
+    region: str,
+    vm_ip: str,
+    elasticsearch_url: str = "",
+    elasticsearch_username: str = "",
+    elasticsearch_password: str = "",
+    elasticsearch_api_key: str = "",
+    elasticsearch_index_pattern: str = "",
+) -> None:
+    """Save Elasticsearch stack metadata to S3."""
+    state = {
+        "name": name,
+        "region": region,
+        "vm_ip": vm_ip,
+        "elasticsearch_url": elasticsearch_url,
+        "elasticsearch_username": elasticsearch_username,
+        "elasticsearch_password": elasticsearch_password,
+        "elasticsearch_api_key": elasticsearch_api_key,
+        "elasticsearch_index_pattern": elasticsearch_index_pattern,
+    }
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_ELASTIC_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(state, indent=2),
+        ContentType="application/json",
+    )
+
+
+def update_elastic_state(name: str, updates: dict) -> None:
+    """Merge updates into existing Elasticsearch state in S3."""
+    state = load_elastic_state(name)
+    state.update(updates)
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_ELASTIC_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(state, indent=2),
+        ContentType="application/json",
+    )
+
+
+def load_elastic_state(name: str) -> dict:
+    """Load Elasticsearch stack metadata from S3.
+
+    Raises RuntimeError if the Elasticsearch state is not found.
+    """
+    client = _get_s3_client()
+    try:
+        resp = client.get_object(
+            Bucket=S3_BUCKET,
+            Key=f"{S3_ELASTIC_KEY_PREFIX}/{name}.json",
+        )
+        return json.loads(resp["Body"].read())
+    except client.exceptions.NoSuchKey:
+        raise RuntimeError(
+            f"No Elasticsearch state found for '{name}'. "
+            "Was this Elasticsearch stack created with the elastic-infra command?"
+        )
+
+
+def delete_elastic_state(name: str) -> None:
+    """Delete Elasticsearch stack metadata from S3."""
+    client = _get_s3_client()
+    client.delete_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_ELASTIC_KEY_PREFIX}/{name}.json",
+    )
+
+
 def check_terraform_state_exists(state_key: str) -> bool:
     """Check if a Terraform state file already exists in S3."""
     client = _get_s3_client()

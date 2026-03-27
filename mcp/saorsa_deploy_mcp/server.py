@@ -117,10 +117,9 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - If omitted, random ports are assigned
   - When set, nodes use ports from PORT to PORT+N
 
-- **disable_log_forwarding**: Disable Telegraf log forwarding to Elasticsearch (default: false)
-  - Log forwarding is enabled by default on all deployments
-  - Set to true to skip Telegraf installation and configuration
-  - Logs are still written as JSON to disk regardless of this setting
+- **enable_log_forwarding**: Enable Telegraf log forwarding to Elasticsearch (default: false)
+  - When true, an ephemeral Elasticsearch instance is provisioned and Telegraf is configured to forward logs
+  - Logs are always written as JSON to disk regardless of this setting
 
 - **upgrade_channel**: Upgrade channel for ant-node
   - Allowed values: "beta", "stable"
@@ -213,7 +212,7 @@ async def create_deployment(
     node_version: str | None = None,
     branch_name: str | None = None,
     repo_owner: str | None = None,
-    disable_log_forwarding: bool = False,
+    enable_log_forwarding: bool = False,
     upgrade_channel: str | None = None,
 ) -> str:
     """Create a new testnet deployment and trigger the launch workflow.
@@ -235,7 +234,7 @@ async def create_deployment(
         node_version: Specific released version of ant-node to deploy (e.g. "0.3.3")
         branch_name: Git branch of the ant-node repo to build from source
         repo_owner: Repository owner for custom branch builds (default: "maidsafe")
-        disable_log_forwarding: Disable Telegraf log forwarding to Elasticsearch (default: false)
+        enable_log_forwarding: Enable Telegraf log forwarding to Elasticsearch (default: false)
         upgrade_channel: Upgrade channel for ant-node ("beta" or "stable")
     """
     deploy_args = {
@@ -260,14 +259,14 @@ async def create_deployment(
     if branch_name is not None:
         deploy_args["branch_name"] = branch_name
         deploy_args["repo_owner"] = repo_owner or "maidsafe"
-    if disable_log_forwarding:
-        deploy_args["disable_log_forwarding"] = True
+    if enable_log_forwarding:
+        deploy_args["enable_log_forwarding"] = True
     if upgrade_channel is not None:
         deploy_args["upgrade_channel"] = upgrade_channel
 
     resp = await registry.post(
         "/api/deployments",
-        json={"name": name, "deploy_args": deploy_args, "branch": "main"},
+        json={"name": name, "deploy_args": deploy_args, "branch": "feat-provide_elastic"},
     )
     data = resp.json()
     return (

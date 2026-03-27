@@ -22,7 +22,7 @@ on:
               "node_version": "0.3.3",    (optional) Specific node release version
               "branch_name": null,        (optional) Node repo branch to build from
               "repo_owner": "maidsafe",   (optional) Repo owner for branch builds
-              "disable_log_forwarding": false (optional) Disable Telegraf log forwarding
+              "enable_log_forwarding": false  (optional) Enable Telegraf log forwarding to Elasticsearch
               "upgrade_channel": "beta",    (optional) Upgrade channel (beta/stable)
             }
           Required fields: name, vm_count, node_count, genesis_port
@@ -62,7 +62,7 @@ jobs:
           echo "node_version=$(echo "$DEPLOY_ARGS" | jq -r '.node_version // empty')" >> "$GITHUB_OUTPUT"
           echo "branch_name=$(echo "$DEPLOY_ARGS" | jq -r '.branch_name // empty')" >> "$GITHUB_OUTPUT"
           echo "repo_owner=$(echo "$DEPLOY_ARGS" | jq -r '.repo_owner // empty')" >> "$GITHUB_OUTPUT"
-          echo "disable_log_forwarding=$(echo "$DEPLOY_ARGS" | jq -r '.disable_log_forwarding // empty')" >> "$GITHUB_OUTPUT"
+          echo "enable_log_forwarding=$(echo "$DEPLOY_ARGS" | jq -r '.enable_log_forwarding // empty')" >> "$GITHUB_OUTPUT"
           echo "upgrade_channel=$(echo "$DEPLOY_ARGS" | jq -r '.upgrade_channel // empty')" >> "$GITHUB_OUTPUT"
 
       - name: Setup Terraform
@@ -184,28 +184,37 @@ jobs:
           echo "Running: $CMD"
           eval "$CMD"
 
-      # NOTE: Telegraf log forwarding to Elasticsearch is temporarily disabled.
-      # The ES cluster has been decommissioned and will return later.
-      # The provisioning code and tests are retained in deploy/ for when it's re-enabled.
-      # To re-enable, uncomment the step below and ensure the ES secrets are configured.
-      #
-      # - name: Provision Telegraf
-      #   if: steps.args.outputs.disable_log_forwarding != 'true'
-      #   run: |
-      #     CMD="saorsa-deploy provision-telegraf"
-      #     CMD="$CMD --name ${{ steps.args.outputs.name }}"
-      #     CMD="$CMD --elasticsearch-url https://logs.autonomi.com/es/api"
-      #     CMD="$CMD --elasticsearch-username ${{ secrets.ANT_TELEGRAF_ELASTICSEARCH_USERNAME }}"
-      #     CMD="$CMD --elasticsearch-password ${{ secrets.ANT_TELEGRAF_ELASTICSEARCH_PASSWORD }}"
-      #
-      #     if [ -n "${{ steps.args.outputs.node_version }}" ]; then
-      #       CMD="$CMD --node-version ${{ steps.args.outputs.node_version }}"
-      #     fi
-      #     if [ -n "${{ steps.args.outputs.branch_name }}" ]; then
-      #       CMD="$CMD --branch-commit ${{ steps.args.outputs.branch_name }}"
-      #       REPO_OWNER="${{ steps.args.outputs.repo_owner }}"
-      #       CMD="$CMD --repo-owner ${REPO_OWNER:-maidsafe}"
-      #     fi
-      #
-      #     echo "Running: $CMD"
-      #     eval "$CMD"
+      - name: Create Elasticsearch infrastructure
+        if: steps.args.outputs.enable_log_forwarding == 'true'
+        run: |
+          CMD="saorsa-deploy elastic-infra"
+          CMD="$CMD --name ${{ steps.args.outputs.name }}"
+          CMD="$CMD --force"
+          echo "Running: $CMD"
+          eval "$CMD"
+
+      - name: Provision Elasticsearch
+        if: steps.args.outputs.enable_log_forwarding == 'true'
+        run: |
+          CMD="saorsa-deploy provision-elastic"
+          CMD="$CMD --name ${{ steps.args.outputs.name }}"
+          echo "Running: $CMD"
+          eval "$CMD"
+
+      - name: Provision Telegraf log forwarding
+        if: steps.args.outputs.enable_log_forwarding == 'true'
+        run: |
+          CMD="saorsa-deploy provision-telegraf-logs"
+          CMD="$CMD --name ${{ steps.args.outputs.name }}"
+
+          if [ -n "${{ steps.args.outputs.node_version }}" ]; then
+            CMD="$CMD --node-version ${{ steps.args.outputs.node_version }}"
+          fi
+          if [ -n "${{ steps.args.outputs.branch_name }}" ]; then
+            CMD="$CMD --branch-commit ${{ steps.args.outputs.branch_name }}"
+            REPO_OWNER="${{ steps.args.outputs.repo_owner }}"
+            CMD="$CMD --repo-owner ${REPO_OWNER:-maidsafe}"
+          fi
+
+          echo "Running: $CMD"
+          eval "$CMD"
