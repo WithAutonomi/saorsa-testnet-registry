@@ -266,7 +266,7 @@ async def create_deployment(
 
     resp = await registry.post(
         "/api/deployments",
-        json={"name": name, "deploy_args": deploy_args, "branch": "feat-provide_elastic"},
+        json={"name": name, "deploy_args": deploy_args, "branch": "main"},
     )
     data = resp.json()
     return (
