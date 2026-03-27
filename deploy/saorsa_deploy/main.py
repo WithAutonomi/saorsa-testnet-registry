@@ -237,20 +237,20 @@ def main():
     telegraf_parser.add_argument(
         "--elasticsearch-url",
         type=str,
-        required=True,
-        help="Elasticsearch endpoint URL",
+        default=None,
+        help="Elasticsearch endpoint URL (auto-loaded from elastic state if --name is provided)",
     )
     telegraf_parser.add_argument(
         "--elasticsearch-username",
         type=str,
-        required=True,
-        help="Elasticsearch username",
+        default=None,
+        help="Elasticsearch username (auto-loaded from elastic state if --name is provided)",
     )
     telegraf_parser.add_argument(
         "--elasticsearch-password",
         type=str,
-        required=True,
-        help="Elasticsearch password",
+        default=None,
+        help="Elasticsearch password (auto-loaded from elastic state if --name is provided)",
     )
     telegraf_parser.add_argument(
         "--node-version",
@@ -277,6 +277,22 @@ def main():
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
     )
 
+    # === destroy-elastic ===
+    destroy_elastic_parser = subparsers.add_parser(
+        "destroy-elastic", help="Destroy Elasticsearch infrastructure"
+    )
+    destroy_elastic_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    destroy_elastic_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Elasticsearch stack name to destroy",
+    )
+
     # === destroy-monitoring ===
     destroy_monitoring_parser = subparsers.add_parser(
         "destroy-monitoring", help="Destroy monitoring infrastructure"
@@ -291,6 +307,52 @@ def main():
         type=str,
         required=True,
         help="Monitoring stack name to destroy",
+    )
+
+    # === elastic-infra ===
+    elastic_infra_parser = subparsers.add_parser(
+        "elastic-infra", help="Create Elasticsearch VM infrastructure"
+    )
+    elastic_infra_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete stale Terraform state files and proceed",
+    )
+    elastic_infra_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Elasticsearch stack name (used as prefix in VM names)",
+    )
+    elastic_infra_parser.add_argument(
+        "--region",
+        type=str,
+        default="lon1",
+        help="Region for the Elasticsearch VM (default: lon1)",
+    )
+    elastic_infra_parser.add_argument(
+        "--volume-size",
+        type=int,
+        default=100,
+        help="Size of attached volume in GB for Elasticsearch data (default: 100)",
+    )
+    elastic_infra_parser.add_argument(
+        "--droplet-size",
+        type=str,
+        default="s-4vcpu-8gb",
+        help="Droplet size slug (default: s-4vcpu-8gb). "
+        "Use s-8vcpu-16gb or larger for 5000+ node testnets.",
+    )
+
+    # === elastic-info ===
+    elastic_info_parser = subparsers.add_parser(
+        "elastic-info", help="Print Elasticsearch stack connection details"
+    )
+    elastic_info_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Elasticsearch stack name",
     )
 
     # === monitoring-infra ===
@@ -335,6 +397,23 @@ def main():
         "--telegraf-config",
         action="store_true",
         help="Emit a complete Telegraf TOML config to stdout",
+    )
+
+    # === provision-elastic ===
+    provision_elastic_parser = subparsers.add_parser(
+        "provision-elastic", help="Provision Elasticsearch on Elasticsearch VM"
+    )
+    provision_elastic_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Elasticsearch stack name (must match the name used with elastic-infra)",
+    )
+    provision_elastic_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
     )
 
     # === provision-monitoring ===
@@ -432,6 +511,22 @@ def main():
         from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
 
         cmd_provision_telegraf(args)
+    elif args.command == "destroy-elastic":
+        from saorsa_deploy.cmd.destroy_elastic import cmd_destroy_elastic
+
+        cmd_destroy_elastic(args)
+    elif args.command == "elastic-infra":
+        from saorsa_deploy.cmd.elastic_infra import cmd_elastic_infra
+
+        cmd_elastic_infra(args)
+    elif args.command == "elastic-info":
+        from saorsa_deploy.cmd.elastic_info import cmd_elastic_info
+
+        cmd_elastic_info(args)
+    elif args.command == "provision-elastic":
+        from saorsa_deploy.cmd.provision_elastic import cmd_provision_elastic
+
+        cmd_provision_elastic(args)
     elif args.command == "destroy-monitoring":
         from saorsa_deploy.cmd.destroy_monitoring import cmd_destroy_monitoring
 

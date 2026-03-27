@@ -38,3 +38,7 @@ jobs:
 
       - name: Run saorsa-deploy destroy
         run: saorsa-deploy destroy --name ${{ inputs.name }} --force
+
+      - name: Destroy Elasticsearch infrastructure (if exists)
+        continue-on-error: true
+        run: saorsa-deploy destroy-elastic --name ${{ inputs.name }} --force

@@ -162,6 +162,27 @@ Optional per-testnet monitoring stack (InfluxDB 2.x + Grafana) on a single VM. S
 - `provision-telegraf-logs` — Elasticsearch log forwarding (formerly `provision-telegraf`)
 - `provision-telegraf-metrics` — InfluxDB host metrics
 
+## Elasticsearch (Log Forwarding)
+
+Optional per-testnet Elasticsearch instance on a dedicated VM. Enabled via `enable_log_forwarding` in deployment config. Telegraf forwards node JSON logs to the instance.
+
+### Commands
+
+- `elastic-infra` — create Elasticsearch VM via Terraform; `--droplet-size` for large testnets
+- `provision-elastic` — install Elasticsearch 8.x, create index template, user + API key
+- `elastic-info` — print connection details (URL, user, password, API key)
+- `destroy-elastic` — tear down Elasticsearch infrastructure
+- `provision-telegraf-logs` — install Telegraf on nodes for log forwarding → Elasticsearch (auto-loads ES credentials from state)
+
+### Architecture
+
+- Terraform manifests: `deploy/saorsa_deploy/resources/digitalocean-elastic/`
+- Provisioner: `deploy/saorsa_deploy/provisioning/elastic.py`
+- CLI commands: `deploy/saorsa_deploy/cmd/elastic_infra.py`, `provision_elastic.py`, `elastic_info.py`, `destroy_elastic.py`
+- State: separate S3 key prefix `saorsa-deploy/elastic/{name}.json`
+- Security: user `ant-log-writer` (read/write) + read-only API key for queries
+- Index pattern: `telegraf-ant-nodes-{testnet_lower}-%Y.%m.%d`
+
 ## Key Commands
 
 - `uv run flask --app saorsa_web.app run` - Dev server
