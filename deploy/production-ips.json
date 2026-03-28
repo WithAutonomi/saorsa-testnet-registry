@@ -1,0 +1,54 @@
+{
+  "ssh_keys": {
+    "hetzner": "109855983",
+    "vultr": "39c28fa0-fa9c-4cc3-9406-d0339b8128b6",
+    "aws": "ant-production"
+  },
+  "nodes": [
+    {
+      "provider": "vultr",
+      "region": "nrt",
+      "ip": "207.148.94.42",
+      "role": "genesis",
+      "resource_id": "c8091c4c-f801-41ce-9795-aed8c47fe7e9"
+    },
+    {
+      "provider": "vultr",
+      "region": "syd",
+      "ip": "45.77.50.10",
+      "resource_id": "9a7420a5-09de-4311-a1c1-707022a1e99a"
+    },
+    {
+      "provider": "vultr",
+      "region": "ewr",
+      "ip": "66.135.23.83",
+      "resource_id": "296cb156-6f2e-4ae7-9dc1-42a00dadb6c2"
+    },
+    {
+      "provider": "vultr",
+      "region": "lax",
+      "ip": "149.248.9.2",
+      "resource_id": "8a1afcb8-7cc0-4869-b492-2f446667e728"
+    },
+    {
+      "provider": "hetzner",
+      "region": "fsn1",
+      "ip": "167.235.201.229",
+      "resource_id": "123956850",
+      "server_type": "cpx22"
+    },
+    {
+      "provider": "hetzner",
+      "region": "ash",
+      "ip": "178.156.129.121",
+      "resource_id": "123956851",
+      "server_type": "cpx21"
+    },
+    {
+      "provider": "aws",
+      "region": "sa-east-1",
+      "ip": "18.228.202.183",
+      "resource_id": "eipalloc-06cf89e5e1d755084"
+    }
+  ]
+}
