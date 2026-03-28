@@ -26,6 +26,20 @@ class TerraformRunConfig:
     variables: dict[str, str] = field(default_factory=dict)
 
 
+def _build_terraform_env() -> dict[str, str]:
+    """Build an environment dict with provider tokens mapped to TF_VAR_ equivalents."""
+    env = os.environ.copy()
+    token_mappings = {
+        "DO_TOKEN": "TF_VAR_do_token",
+        "HCLOUD_TOKEN": "TF_VAR_hcloud_token",
+        "VULTR_API_KEY": "TF_VAR_vultr_api_key",
+    }
+    for env_var, tf_var in token_mappings.items():
+        if env_var in env:
+            env[tf_var] = env[env_var]
+    return env
+
+
 def prepare_workspace(config: TerraformRunConfig) -> None:
     """Copy Terraform files from source directory to workspace directory."""
     config.workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -65,9 +79,7 @@ def run_terraform(config: TerraformRunConfig) -> TerraformResult:
     """Run terraform init + apply + output for a single provider/region."""
     prepare_workspace(config)
 
-    env = os.environ.copy()
-    if "DO_TOKEN" in env:
-        env["TF_VAR_do_token"] = env["DO_TOKEN"]
+    env = _build_terraform_env()
 
     init_args = build_init_args(config)
     init_result = subprocess.run(
@@ -143,9 +155,7 @@ def run_terraform_destroy(config: TerraformRunConfig) -> TerraformResult:
     """Run terraform init + destroy for a single provider/region."""
     prepare_workspace(config)
 
-    env = os.environ.copy()
-    if "DO_TOKEN" in env:
-        env["TF_VAR_do_token"] = env["DO_TOKEN"]
+    env = _build_terraform_env()
 
     init_args = build_init_args(config)
     init_result = subprocess.run(

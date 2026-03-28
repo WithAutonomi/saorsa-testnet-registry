@@ -7,7 +7,7 @@ CLI tool for deploying testnets for [ant-node](https://github.com/jacderida/ant-
 - Python >= 3.10
 - [uv](https://docs.astral.sh/uv/) for package management
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.0
-- A Digital Ocean account with API token
+- Cloud provider accounts (Vultr, Hetzner, AWS)
 
 ## Installation
 
@@ -19,7 +19,6 @@ uv sync
 
 | Variable | Description |
 |----------|-------------|
-| `DO_TOKEN` | Digital Ocean API token (required) |
 | `AWS_ACCESS_KEY_ID` | AWS credentials for Terraform state backend and deployment state |
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials for Terraform state backend and deployment state |
 | `ANT_BUILD_AWS_ACCESS_KEY_ID` | AWS credentials for uploading custom-built binaries (only for `build-ant-node-binary`) |
@@ -386,6 +385,168 @@ uv run saorsa-deploy --version
 ```
 
 ## Development
+
+## Production Network Deployment
+
+The `bootstrap-production` command deploys 7 hardened bootstrap nodes across 3 cloud providers for the production Autonomi network.
+
+### Architecture
+
+| # | Provider | Region    | Location              | Role    |
+|---|----------|-----------|-----------------------|---------|
+| 1 | Vultr    | nrt       | Tokyo, JP             | Genesis |
+| 2 | Vultr    | syd       | Sydney, AU            | Node    |
+| 3 | Vultr    | ewr       | New Jersey, US        | Node    |
+| 4 | Vultr    | lax       | Los Angeles, US       | Node    |
+| 5 | Hetzner  | fsn1      | Falkenstein, DE       | Node    |
+| 6 | Hetzner  | ash       | Ashburn, VA, US       | Node    |
+| 7 | AWS      | sa-east-1 | Sao Paulo, BR         | Node    |
+
+Each node runs on a dedicated VM (4 vCPU / 8 GB) with:
+- Static IP (pre-allocated, survives VM recreation)
+- Striped LVM volume (2x50 GB = 100 GB usable)
+- Dedicated SSH key (`~/.ssh/ant-production`)
+- Full security hardening (firewall, fail2ban, rate limiting, sysctl tuning)
+- Systemd service running as `ant-node` user with resource limits
+
+### Prerequisites
+
+1. **Provider CLI tools**: `hcloud`, `vultr-cli`, `aws`
+2. **Environment variables**:
+   - `HCLOUD_TOKEN` — Hetzner token (**must be for the `ant-production` project**)
+   - `VULTR_API_KEY` — Vultr API key
+   - AWS credentials (via env vars or `~/.aws/credentials`)
+3. **SSH key**: Generate a dedicated production key:
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/ant-production -C "ant-production"
+   ```
+4. **Static IPs**: Pre-allocated and stored in `deploy/production-ips.json` (already done)
+
+### Commands
+
+#### `bootstrap-production`
+
+Deploy the full production bootstrap network.
+
+```bash
+uv run saorsa-deploy bootstrap-production
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | `ant-production` | Deployment name |
+| `--node-version` | string | latest | Specific ant-node release version |
+| `--ssh-key-path` | string | `~/.ssh/ant-production` | Path to SSH private key |
+| `--force` | flag | - | Skip confirmation prompts and overwrite stale state |
+
+The command:
+1. Validates all provider credentials
+2. Prompts to confirm correct Hetzner token (unless `--force`)
+3. Creates 7 VMs via Terraform (parallel across all providers)
+4. Applies security hardening to all nodes
+5. Provisions the genesis node (Vultr nrt, port 10000)
+6. Provisions remaining 6 nodes with bootstrap peer address
+7. Saves deployment state to S3
+
+#### `destroy-bootstrap-production`
+
+Tear down all production infrastructure. Static IPs are preserved.
+
+```bash
+uv run saorsa-deploy destroy-bootstrap-production
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | `ant-production` | Deployment name |
+| `--ssh-key-path` | string | `~/.ssh/ant-production` | Path to SSH private key |
+| `--force` | flag | - | Skip confirmation prompt |
+
+### Static IP Management
+
+Static IPs are allocated outside Terraform and stored in `deploy/production-ips.json`. This ensures IPs survive VM teardown and recreation. The IPs were allocated using provider CLIs:
+
+- **Hetzner**: `hcloud primary-ip create --type ipv4 --name <name> --location <location>`
+- **Vultr**: `vultr-cli reserved-ip create --region <region> --type v4`
+- **AWS**: `aws ec2 allocate-address --region <region> --domain vpc`
+
+To release IPs (only do this if decommissioning permanently), use the corresponding `delete`/`release` commands for each provider.
+
+### Security Hardening
+
+Each production node receives:
+
+- **Firewall** (provider-level): Only ports 22 (SSH) and 10000 (node) open
+- **SSH hardening**: Key-only auth, no password, max 3 auth attempts
+- **fail2ban**: Bans IPs after 3 failed SSH attempts for 1 hour
+- **Automatic updates**: `unattended-upgrades` for security patches
+- **sysctl tuning**: SYN flood protection, ICMP hardening, connection limits
+- **Rate limiting**: `iptables hashlimit` on port 10000 (50 conn/sec per source IP)
+- **Service isolation**: Runs as `ant-node` user with `LimitNOFILE=65536`, `MemoryMax=6G`, `CPUQuota=350%`
+
+### Extending the Striped Volume
+
+The data storage uses LVM striping across two block devices. This makes it straightforward to expand storage when needed.
+
+#### Adding capacity to existing stripe members
+
+If your provider supports volume resizing (DigitalOcean, Hetzner, AWS):
+
+1. **Resize the volumes** in the provider's console or CLI (e.g., increase both 50 GB volumes to 100 GB)
+2. **SSH into the node**:
+   ```bash
+   ssh -i ~/.ssh/ant-production root@<node-ip>
+   ```
+3. **Resize the physical volumes** (LVM will detect the new size):
+   ```bash
+   pvresize /dev/<device1>
+   pvresize /dev/<device2>
+   ```
+4. **Extend the logical volume** to use all available space:
+   ```bash
+   lvextend -l +100%FREE /dev/ant_storage_vg/ant_storage_lv
+   ```
+5. **Resize the filesystem**:
+   ```bash
+   resize2fs /dev/ant_storage_vg/ant_storage_lv
+   ```
+
+#### Adding new stripe members
+
+To add a third (or more) volume to the stripe:
+
+1. **Create and attach** a new volume via the provider's console/CLI
+2. **SSH into the node** and create a new physical volume:
+   ```bash
+   pvcreate /dev/<new-device>
+   ```
+3. **Extend the volume group**:
+   ```bash
+   vgextend ant_storage_vg /dev/<new-device>
+   ```
+4. **Extend the logical volume** (note: new stripes won't rebalance existing data):
+   ```bash
+   lvextend -l +100%FREE /dev/ant_storage_vg/ant_storage_lv
+   resize2fs /dev/ant_storage_vg/ant_storage_lv
+   ```
+
+> **Note**: Adding a new stripe member extends capacity but new data written after the extension will use the new stripe configuration. Existing data remains on the original stripe layout. This is fine for append-heavy workloads.
+
+#### Checking volume status
+
+```bash
+# Show volume group free space
+vgs
+
+# Show logical volume details
+lvs -o +stripes,stripesize
+
+# Show physical volumes
+pvs
+
+# Show filesystem usage
+df -h /mnt/ant-node-storage
+```
 
 ### Running tests
 

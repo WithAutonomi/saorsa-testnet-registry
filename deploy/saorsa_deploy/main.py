@@ -481,6 +481,72 @@ def main():
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
     )
 
+    # === bootstrap-production ===
+    bootstrap_prod_parser = subparsers.add_parser(
+        "bootstrap-production",
+        help="Deploy production bootstrap nodes across multiple providers",
+    )
+    bootstrap_prod_parser.add_argument(
+        "--name",
+        type=str,
+        default="ant-production",
+        help="Deployment name (default: ant-production)",
+    )
+    bootstrap_prod_parser.add_argument(
+        "--node-version",
+        type=str,
+        default=None,
+        help="Specific ant-node release version (e.g., 0.3.0). Uses latest if not specified.",
+    )
+    bootstrap_prod_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/ant-production",
+        help="Path to SSH private key for provisioning (default: ~/.ssh/ant-production)",
+    )
+    bootstrap_prod_parser.add_argument(
+        "--rewards-address",
+        type=str,
+        required=True,
+        help="Arbitrum wallet address for node rewards",
+    )
+    bootstrap_prod_parser.add_argument(
+        "--evm-network",
+        type=str,
+        default="arbitrum-one",
+        choices=["arbitrum-one", "arbitrum-sepolia"],
+        help="EVM network for payments (default: arbitrum-one)",
+    )
+    bootstrap_prod_parser.add_argument(
+        "--ip-version",
+        type=str,
+        default=None,
+        choices=["ipv4", "ipv6", "dual"],
+        help="IP version for the node (default: dual). Use ipv4 to work around dual-stack bugs.",
+    )
+    bootstrap_prod_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompts and force overwrite stale state",
+    )
+
+    # === destroy-bootstrap-production ===
+    destroy_prod_parser = subparsers.add_parser(
+        "destroy-bootstrap-production",
+        help="Destroy production bootstrap network infrastructure",
+    )
+    destroy_prod_parser.add_argument(
+        "--name",
+        type=str,
+        default="ant-production",
+        help="Deployment name (default: ant-production)",
+    )
+    destroy_prod_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -549,6 +615,16 @@ def main():
         )
 
         cmd_provision_telegraf_metrics(args)
+    elif args.command == "bootstrap-production":
+        from saorsa_deploy.cmd.bootstrap_production import cmd_bootstrap_production
+
+        cmd_bootstrap_production(args)
+    elif args.command == "destroy-bootstrap-production":
+        from saorsa_deploy.cmd.destroy_bootstrap_production import (
+            cmd_destroy_bootstrap_production,
+        )
+
+        cmd_destroy_bootstrap_production(args)
 
 
 if __name__ == "__main__":
