@@ -19,6 +19,9 @@ ROOT_DIR = f"{MOUNT_POINT}/data/{SERVICE_NAME}"
 METRICS_PORT = 9100
 
 
+DEFAULT_REWARDS_ADDRESS = "0x03B770D9cD32077cC0bF330c13C114a87643B124"
+
+
 def _build_exec_start(
     port=None,
     ip_version="ipv4",
@@ -26,6 +29,7 @@ def _build_exec_start(
     testnet=False,
     upgrade_channel=None,
     metrics_port=METRICS_PORT,
+    rewards_address=DEFAULT_REWARDS_ADDRESS,
 ) -> str:
     """Build the ExecStart command line for the systemd service."""
     parts = [BINARY_INSTALL_PATH]
@@ -44,6 +48,7 @@ def _build_exec_start(
         parts.append(f"--upgrade-channel {upgrade_channel}")
     parts.append("--stop-on-upgrade")
     parts.append(f"--metrics-port {metrics_port}")
+    parts.append(f"--rewards-address {rewards_address}")
     return " ".join(parts)
 
 
@@ -81,6 +86,7 @@ class AntGenesisNodeProvisioner:
         binary_url: str | None = None,
         binary_is_archive: bool = True,
         upgrade_channel: str | None = None,
+        rewards_address: str = DEFAULT_REWARDS_ADDRESS,
     ):
         self.ip = ip
         self.ssh_key_path = ssh_key_path
@@ -92,6 +98,7 @@ class AntGenesisNodeProvisioner:
         self.binary_url = binary_url
         self.binary_is_archive = binary_is_archive
         self.upgrade_channel = upgrade_channel
+        self.rewards_address = rewards_address
 
     def execute(self) -> None:
         """Download the ant-node binary, install it, and start the genesis service."""
@@ -109,6 +116,7 @@ class AntGenesisNodeProvisioner:
             log_level=self.log_level,
             testnet=self.testnet,
             upgrade_channel=self.upgrade_channel,
+            rewards_address=self.rewards_address,
         )
         unit_content = _build_unit_file(exec_start)
 

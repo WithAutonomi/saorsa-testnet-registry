@@ -126,6 +126,10 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - If omitted, no upgrade channel is specified and the node uses its default behaviour
   - When set, all nodes are started with `--upgrade-channel <value>`
 
+- **rewards_address**: Arbitrum wallet address for node rewards
+  - Default: "0x03B770D9cD32077cC0bF330c13C114a87643B124"
+  - All nodes are started with `--rewards-address <value>`
+
 ## Node Binary Options
 
 These options control which ant-node binary is deployed. They are
@@ -214,6 +218,7 @@ async def create_deployment(
     repo_owner: str | None = None,
     enable_log_forwarding: bool = False,
     upgrade_channel: str | None = None,
+    rewards_address: str | None = None,
 ) -> str:
     """Create a new testnet deployment and trigger the launch workflow.
 
@@ -236,6 +241,7 @@ async def create_deployment(
         repo_owner: Repository owner for custom branch builds (default: "maidsafe")
         enable_log_forwarding: Enable Telegraf log forwarding to Elasticsearch (default: false)
         upgrade_channel: Upgrade channel for ant-node ("beta" or "stable")
+        rewards_address: Arbitrum wallet address for node rewards (default: "0x03B770D9cD32077cC0bF330c13C114a87643B124")
     """
     deploy_args = {
         "name": name,
@@ -263,6 +269,8 @@ async def create_deployment(
         deploy_args["enable_log_forwarding"] = True
     if upgrade_channel is not None:
         deploy_args["upgrade_channel"] = upgrade_channel
+    if rewards_address is not None:
+        deploy_args["rewards_address"] = rewards_address
 
     resp = await registry.post(
         "/api/deployments",

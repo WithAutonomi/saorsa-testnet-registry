@@ -5,6 +5,7 @@ import pytest
 from pyinfra.operations import server
 
 from saorsa_deploy.cmd.provision import cmd_provision
+from saorsa_deploy.provisioning.genesis import DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.node import (
     AntNodeProvisioner,
     _build_node_exec_start,
@@ -80,6 +81,16 @@ class TestBuildNodeExecStart:
         assert "--log-level info" in result
         assert "--network-mode testnet" in result
 
+    def test_default_rewards_address(self):
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        assert f"--rewards-address {DEFAULT_REWARDS_ADDRESS}" in result
+
+    def test_custom_rewards_address(self):
+        custom_addr = "0x1234567890abcdef1234567890abcdef12345678"
+        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, rewards_address=custom_addr)
+        assert f"--rewards-address {custom_addr}" in result
+        assert DEFAULT_REWARDS_ADDRESS not in result
+
 
 class TestBuildNodeUnitFile:
     def test_contains_service_name_in_description(self):
@@ -117,6 +128,7 @@ class TestAntNodeProvisioner:
         assert provisioner.log_level is None
         assert provisioner.testnet is False
         assert provisioner.upgrade_channel is None
+        assert provisioner.rewards_address == DEFAULT_REWARDS_ADDRESS
 
     def test_init_all_params(self):
         provisioner = AntNodeProvisioner(
@@ -130,6 +142,7 @@ class TestAntNodeProvisioner:
             log_level="debug",
             testnet=True,
             upgrade_channel="stable",
+            rewards_address="0xdeadbeef",
         )
         assert provisioner.ssh_key_path == "/tmp/key"
         assert provisioner.node_count == 3
@@ -138,6 +151,7 @@ class TestAntNodeProvisioner:
         assert provisioner.log_level == "debug"
         assert provisioner.testnet is True
         assert provisioner.upgrade_channel == "stable"
+        assert provisioner.rewards_address == "0xdeadbeef"
 
     @patch("saorsa_deploy.provisioning.node.disconnect_all")
     @patch("saorsa_deploy.provisioning.node.run_ops")
@@ -447,6 +461,7 @@ class TestCmdProvisionClearsKnownHosts:
             testnet=False,
             region=None,
             upgrade_channel=None,
+            rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
         cmd_provision(args)
 
@@ -485,6 +500,7 @@ class TestCmdProvisionClearsKnownHosts:
             testnet=False,
             region="lon1",
             upgrade_channel=None,
+            rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
         cmd_provision(args)
 
@@ -522,6 +538,7 @@ class TestCmdProvisionClearsKnownHosts:
             testnet=False,
             region=None,
             upgrade_channel=None,
+            rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
         cmd_provision(args)
 

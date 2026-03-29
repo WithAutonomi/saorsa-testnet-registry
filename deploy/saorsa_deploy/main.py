@@ -162,6 +162,13 @@ def main():
         choices=["beta", "stable"],
         help="Upgrade channel for ant-node (beta or stable)",
     )
+    provision_parser.add_argument(
+        "--rewards-address",
+        type=str,
+        default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
+        help="Arbitrum wallet address for node rewards "
+        "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
+    )
 
     # === provision-genesis ===
     provision_genesis_parser = subparsers.add_parser(
@@ -221,6 +228,13 @@ def main():
         type=str,
         choices=["beta", "stable"],
         help="Upgrade channel for ant-node (beta or stable)",
+    )
+    provision_genesis_parser.add_argument(
+        "--rewards-address",
+        type=str,
+        default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
+        help="Arbitrum wallet address for node rewards "
+        "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
     )
 
     # === provision-telegraf-logs (formerly provision-telegraf) ===

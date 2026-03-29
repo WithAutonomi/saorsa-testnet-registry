@@ -8,6 +8,7 @@ from saorsa_deploy.binary_source import get_release_url
 from saorsa_deploy.cmd.provision_genesis import cmd_provision_genesis
 from saorsa_deploy.provisioning.genesis import (
     BINARY_INSTALL_PATH,
+    DEFAULT_REWARDS_ADDRESS,
     ROOT_DIR,
     SERVICE_NAME,
     AntGenesisNodeProvisioner,
@@ -25,9 +26,9 @@ class TestBuildExecStart:
             " --ip-version ipv4"
             " --log-format json"
             f" --log-dir {LOG_DIR}/{SERVICE_NAME}"
-
             " --stop-on-upgrade"
             " --metrics-port 9100"
+            f" --rewards-address {DEFAULT_REWARDS_ADDRESS}"
         )
 
     def test_root_dir_always_present(self):
@@ -80,6 +81,16 @@ class TestBuildExecStart:
     def test_stop_on_upgrade_always_present(self):
         result = _build_exec_start()
         assert "--stop-on-upgrade" in result
+
+    def test_default_rewards_address(self):
+        result = _build_exec_start()
+        assert f"--rewards-address {DEFAULT_REWARDS_ADDRESS}" in result
+
+    def test_custom_rewards_address(self):
+        custom_addr = "0x1234567890abcdef1234567890abcdef12345678"
+        result = _build_exec_start(rewards_address=custom_addr)
+        assert f"--rewards-address {custom_addr}" in result
+        assert DEFAULT_REWARDS_ADDRESS not in result
 
 
 class TestBuildUnitFile:
@@ -173,6 +184,7 @@ class TestAntGenesisNodeProvisioner:
         assert node.log_level is None
         assert node.testnet is False
         assert node.upgrade_channel is None
+        assert node.rewards_address == DEFAULT_REWARDS_ADDRESS
 
     def test_init_all_params(self):
         node = AntGenesisNodeProvisioner(
@@ -183,6 +195,7 @@ class TestAntGenesisNodeProvisioner:
             log_level="debug",
             testnet=True,
             upgrade_channel="beta",
+            rewards_address="0xdeadbeef",
         )
         assert node.ip == "10.0.0.1"
         assert node.ssh_key_path == "/tmp/key"
@@ -191,6 +204,7 @@ class TestAntGenesisNodeProvisioner:
         assert node.log_level == "debug"
         assert node.testnet is True
         assert node.upgrade_channel == "beta"
+        assert node.rewards_address == "0xdeadbeef"
 
     @patch("saorsa_deploy.provisioning.genesis.disconnect_all")
     @patch("saorsa_deploy.provisioning.genesis.run_ops")
@@ -385,6 +399,7 @@ class TestCmdProvisionGenesisClearsKnownHosts:
             log_level=None,
             testnet=False,
             upgrade_channel=None,
+            rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
         cmd_provision_genesis(args)
 
@@ -416,6 +431,7 @@ class TestCmdProvisionGenesisClearsKnownHosts:
             log_level=None,
             testnet=False,
             upgrade_channel=None,
+            rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
         cmd_provision_genesis(args)
 

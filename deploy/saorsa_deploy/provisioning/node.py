@@ -6,7 +6,7 @@ from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
-from saorsa_deploy.provisioning.genesis import BINARY_INSTALL_PATH
+from saorsa_deploy.provisioning.genesis import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -27,6 +27,7 @@ def _build_node_exec_start(
     testnet=False,
     upgrade_channel=None,
     metrics_port=None,
+    rewards_address=DEFAULT_REWARDS_ADDRESS,
 ):
     """Build the ExecStart command line for a node service."""
     parts = [BINARY_INSTALL_PATH]
@@ -48,6 +49,7 @@ def _build_node_exec_start(
     parts.append("--stop-on-upgrade")
     if metrics_port is not None:
         parts.append(f"--metrics-port {metrics_port}")
+    parts.append(f"--rewards-address {rewards_address}")
     return " ".join(parts)
 
 
@@ -88,6 +90,7 @@ class AntNodeProvisioner:
         binary_url: str | None = None,
         binary_is_archive: bool = True,
         upgrade_channel: str | None = None,
+        rewards_address: str = DEFAULT_REWARDS_ADDRESS,
     ):
         self.host_ips = host_ips
         self.bootstrap_ip = bootstrap_ip
@@ -102,6 +105,7 @@ class AntNodeProvisioner:
         self.binary_url = binary_url
         self.binary_is_archive = binary_is_archive
         self.upgrade_channel = upgrade_channel
+        self.rewards_address = rewards_address
 
     def execute(self) -> None:
         """Provision all hosts with ant-node services."""
@@ -194,6 +198,7 @@ class AntNodeProvisioner:
                     testnet=self.testnet,
                     upgrade_channel=self.upgrade_channel,
                     metrics_port=metrics_port,
+                    rewards_address=self.rewards_address,
                 )
                 unit_content = _build_node_unit_file(service_name, exec_start)
                 unit_path = f"/etc/systemd/system/{service_name}.service"

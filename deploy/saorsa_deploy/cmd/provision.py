@@ -73,6 +73,7 @@ def cmd_provision(args):
         console.print("  Testnet mode: enabled")
     if args.upgrade_channel:
         console.print(f"  Upgrade channel: {args.upgrade_channel}")
+    console.print(f"  Rewards address: {args.rewards_address}")
     console.print()
 
     clear_known_hosts(all_ips, console)
@@ -87,6 +88,7 @@ def cmd_provision(args):
         "log_level": args.log_level,
         "testnet": args.testnet,
         "console": console,
+        "rewards_address": args.rewards_address,
     }
     if args.ip_version:
         kwargs["ip_version"] = args.ip_version
