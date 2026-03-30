@@ -22,6 +22,7 @@ def _build_node_exec_start(
     root_dir,
     log_dir=None,
     port=None,
+    ip_version="ipv4",
     log_level=None,
     testnet=False,
     upgrade_channel=None,
@@ -34,6 +35,8 @@ def _build_node_exec_start(
     parts.append(f"--bootstrap {bootstrap_ip}:{bootstrap_port}")
     if port is not None:
         parts.append(f"--port {port}")
+    if ip_version:
+        parts.append(f"--ip-version {ip_version}")
     if log_level:
         parts.append(f"--log-level {log_level}")
     parts.append("--log-format json")
@@ -80,6 +83,7 @@ class AntNodeProvisioner:
         ssh_key_path: str = "~/.ssh/id_rsa",
         node_count: int = 1,
         initial_port: int | None = None,
+        ip_version: str = "ipv4",
         log_level: str | None = None,
         testnet: bool = False,
         console: Console | None = None,
@@ -94,6 +98,7 @@ class AntNodeProvisioner:
         self.ssh_key_path = ssh_key_path
         self.node_count = node_count
         self.initial_port = initial_port
+        self.ip_version = ip_version
         self.log_level = log_level
         self.testnet = testnet
         self.console = console or Console()
@@ -188,6 +193,7 @@ class AntNodeProvisioner:
                     root_dir=root_dir,
                     log_dir=log_dir,
                     port=node_port,
+                    ip_version=self.ip_version,
                     log_level=self.log_level,
                     testnet=self.testnet,
                     upgrade_channel=self.upgrade_channel,

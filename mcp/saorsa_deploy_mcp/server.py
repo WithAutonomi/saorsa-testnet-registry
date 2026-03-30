@@ -107,6 +107,9 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - Example: "3" means 3 regions per cloud provider
   - VMs are distributed across the specified number of regions
 
+- **ip_version**: IP version for nodes to use, either "v4" or "v6"
+  - Omit to use the provider default
+
 - **log_level**: Logging level for all nodes
   - Common values: "trace", "debug", "info", "warn", "error"
 
@@ -207,6 +210,7 @@ async def create_deployment(
     testnet: bool = True,
     attached_volume_size: int | None = None,
     region_counts: str | None = None,
+    ip_version: str | None = None,
     log_level: str | None = None,
     port: int | None = None,
     node_version: str | None = None,
@@ -229,6 +233,7 @@ async def create_deployment(
         testnet: Run in testnet mode (default: true)
         attached_volume_size: Size of attached volume in GB
         region_counts: Comma-separated region counts per provider (default: "3")
+        ip_version: IP version the nodes will run with (v4 or v6)
         log_level: Logging level the nodes will run with
         port: Beginning of a port range for non-genesis nodes
         node_version: Specific released version of ant-node to deploy (e.g. "0.3.3")
@@ -249,6 +254,8 @@ async def create_deployment(
         deploy_args["attached_volume_size"] = attached_volume_size
     if region_counts is not None:
         deploy_args["region_counts"] = region_counts
+    if ip_version is not None:
+        deploy_args["ip_version"] = ip_version
     if log_level is not None:
         deploy_args["log_level"] = log_level
     if port is not None:

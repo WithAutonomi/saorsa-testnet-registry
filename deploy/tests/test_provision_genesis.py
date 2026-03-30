@@ -23,6 +23,7 @@ class TestBuildExecStart:
         result = _build_exec_start()
         assert result == (
             f"{BINARY_INSTALL_PATH} --root-dir {ROOT_DIR}"
+            " --ip-version ipv4"
             " --log-format json"
             f" --log-dir {LOG_DIR}/{SERVICE_NAME}"
             " --stop-on-upgrade"
@@ -35,16 +36,27 @@ class TestBuildExecStart:
         assert f"--root-dir {ROOT_DIR}" in result
 
     def test_all_flags(self):
-        result = _build_exec_start(port=10000, log_level="debug", testnet=True)
+        result = _build_exec_start(port=10000, ip_version="ipv4", log_level="debug", testnet=True)
         assert "--port 10000" in result
+        assert "--ip-version ipv4" in result
         assert "--log-level debug" in result
         assert "--network-mode testnet" in result
 
     def test_port_only(self):
         result = _build_exec_start(port=5000)
         assert "--port 5000" in result
+        assert "--ip-version ipv4" in result
         assert "--log-level" not in result
         assert "--network-mode" not in result
+
+    def test_default_ip_version_is_ipv4(self):
+        result = _build_exec_start()
+        assert "--ip-version ipv4" in result
+
+    def test_ip_version_can_be_overridden(self):
+        result = _build_exec_start(ip_version="ipv6")
+        assert "--ip-version ipv6" in result
+        assert "--ip-version ipv4" not in result
 
     def test_testnet_flag(self):
         result = _build_exec_start(testnet=True)
@@ -168,6 +180,7 @@ class TestAntGenesisNodeProvisioner:
         assert node.ip == "10.0.0.1"
         assert node.ssh_key_path == "~/.ssh/id_rsa"
         assert node.port is None
+        assert node.ip_version == "ipv4"
         assert node.log_level is None
         assert node.testnet is False
         assert node.upgrade_channel is None
@@ -178,6 +191,7 @@ class TestAntGenesisNodeProvisioner:
             ip="10.0.0.1",
             ssh_key_path="/tmp/key",
             port=10000,
+            ip_version="ipv4",
             log_level="debug",
             testnet=True,
             upgrade_channel="beta",
@@ -186,6 +200,7 @@ class TestAntGenesisNodeProvisioner:
         assert node.ip == "10.0.0.1"
         assert node.ssh_key_path == "/tmp/key"
         assert node.port == 10000
+        assert node.ip_version == "ipv4"
         assert node.log_level == "debug"
         assert node.testnet is True
         assert node.upgrade_channel == "beta"
@@ -210,7 +225,7 @@ class TestAntGenesisNodeProvisioner:
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = AntGenesisNodeProvisioner(ip="10.0.0.1", port=10000)
+        node = AntGenesisNodeProvisioner(ip="10.0.0.1", port=10000, ip_version="ipv4")
         node.execute()
 
         mock_connect.assert_called_once()
@@ -380,7 +395,7 @@ class TestCmdProvisionGenesisClearsKnownHosts:
             name="test-deploy",
             ssh_key_path="~/.ssh/id_rsa",
             port=None,
-
+            ip_version=None,
             log_level=None,
             testnet=False,
             upgrade_channel=None,
@@ -412,7 +427,7 @@ class TestCmdProvisionGenesisClearsKnownHosts:
             name="test-deploy",
             ssh_key_path="~/.ssh/id_rsa",
             port=None,
-
+            ip_version=None,
             log_level=None,
             testnet=False,
             upgrade_channel=None,

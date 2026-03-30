@@ -74,7 +74,7 @@ uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
 | `--branch-name` | string | No | - | Use custom-built binary from this branch (requires `--repo-owner`) |
-
+| `--ip-version` | string | No | - | IP version: `v4` or `v6` |
 | `--log-level` | string | No | - | Logging level for the node |
 | `--name` | string | Yes | - | Deployment name (must match `infra`) |
 | `--node-version` | string | No | - | Specific release version (e.g., `0.2.0`) |
@@ -97,7 +97,7 @@ uv run saorsa-deploy provision --name DEV-01 --node-count 10
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
 | `--branch-name` | string | No | - | Use custom-built binary from this branch (requires `--repo-owner`) |
-
+| `--ip-version` | string | No | - | IP version: `v4` or `v6` |
 | `--log-level` | string | No | - | Logging level for the nodes |
 | `--name` | string | Yes | - | Deployment name (must match `infra`) |
 | `--node-count` | int | Yes | - | Number of node services per VM |

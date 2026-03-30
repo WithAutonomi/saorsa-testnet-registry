@@ -103,6 +103,12 @@ def main():
         help="Use custom-built binary from this branch (requires --repo-owner)",
     )
     provision_parser.add_argument(
+        "--ip-version",
+        type=str,
+        choices=["v4", "v6"],
+        help="IP version the nodes will run with (v4 or v6)",
+    )
+    provision_parser.add_argument(
         "--log-level",
         type=str,
         help="Logging level the nodes will run with",
@@ -172,6 +178,12 @@ def main():
         "--branch-name",
         type=str,
         help="Use custom-built binary from this branch (requires --repo-owner)",
+    )
+    provision_genesis_parser.add_argument(
+        "--ip-version",
+        type=str,
+        choices=["v4", "v6"],
+        help="IP version the node will run with (v4 or v6)",
     )
     provision_genesis_parser.add_argument(
         "--log-level",

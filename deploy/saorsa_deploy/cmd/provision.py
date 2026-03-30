@@ -65,6 +65,8 @@ def cmd_provision(args):
     console.print(f"  SSH key: {args.ssh_key_path}")
     if args.port:
         console.print(f"  Port range start: {args.port}")
+    if args.ip_version:
+        console.print(f"  IP version: {args.ip_version}")
     if args.log_level:
         console.print(f"  Log level: {args.log_level}")
     if args.testnet:
@@ -88,6 +90,8 @@ def cmd_provision(args):
         "console": console,
         "rewards_address": args.rewards_address,
     }
+    if args.ip_version:
+        kwargs["ip_version"] = args.ip_version
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel
     if binary_url:
