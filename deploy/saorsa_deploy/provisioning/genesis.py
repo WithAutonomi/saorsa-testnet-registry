@@ -24,7 +24,6 @@ DEFAULT_REWARDS_ADDRESS = "0x03B770D9cD32077cC0bF330c13C114a87643B124"
 
 def _build_exec_start(
     port=None,
-    ip_version="ipv4",
     log_level=None,
     testnet=False,
     upgrade_channel=None,
@@ -36,8 +35,6 @@ def _build_exec_start(
     parts.append(f"--root-dir {ROOT_DIR}")
     if port:
         parts.append(f"--port {port}")
-    if ip_version:
-        parts.append(f"--ip-version {ip_version}")
     if log_level:
         parts.append(f"--log-level {log_level}")
     parts.append("--log-format json")
@@ -79,7 +76,6 @@ class AntGenesisNodeProvisioner:
         ip: str,
         ssh_key_path: str = "~/.ssh/id_rsa",
         port: int | None = None,
-        ip_version: str = "ipv4",
         log_level: str | None = None,
         testnet: bool = False,
         console: Console | None = None,
@@ -91,7 +87,6 @@ class AntGenesisNodeProvisioner:
         self.ip = ip
         self.ssh_key_path = ssh_key_path
         self.port = port
-        self.ip_version = ip_version
         self.log_level = log_level
         self.testnet = testnet
         self.console = console or Console()
@@ -112,7 +107,6 @@ class AntGenesisNodeProvisioner:
 
         exec_start = _build_exec_start(
             port=self.port,
-            ip_version=self.ip_version,
             log_level=self.log_level,
             testnet=self.testnet,
             upgrade_channel=self.upgrade_channel,

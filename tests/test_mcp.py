@@ -115,7 +115,6 @@ async def test_create_deployment_includes_optional_args():
             node_count=50,
             genesis_port=13000,
             attached_volume_size=100,
-            ip_version="v6",
             region_counts="us-east-1:3,eu-west-1:2",
             log_level="debug",
             port=14000,
@@ -125,7 +124,6 @@ async def test_create_deployment_includes_optional_args():
     deploy_args = body["deploy_args"]
 
     assert deploy_args["attached_volume_size"] == 100
-    assert deploy_args["ip_version"] == "v6"
     assert deploy_args["region_counts"] == "us-east-1:3,eu-west-1:2"
     assert deploy_args["log_level"] == "debug"
     assert deploy_args["port"] == 14000
@@ -161,7 +159,6 @@ async def test_create_deployment_omits_none_optional_args():
     optional_keys = [
         "attached_volume_size",
         "region_counts",
-        "ip_version",
         "log_level",
         "port",
     ]

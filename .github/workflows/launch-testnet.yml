@@ -15,7 +15,6 @@ on:
               "testnet": true,            (optional) Use testnet flag
               "attached_volume_size": 20, (optional) Volume size in GB
               "region_counts": "3",       (optional) Region counts
-              "ip_version": "v4",         (optional) IP version (v4/v6)
               "log_level": "info",        (optional) Log level
               "port": null,               (optional) Port number
               "region": null,             (optional) Region name
@@ -56,7 +55,6 @@ jobs:
           echo "testnet=$(echo "$DEPLOY_ARGS" | jq -r '.testnet // empty')" >> "$GITHUB_OUTPUT"
           echo "attached_volume_size=$(echo "$DEPLOY_ARGS" | jq -r '.attached_volume_size // empty')" >> "$GITHUB_OUTPUT"
           echo "region_counts=$(echo "$DEPLOY_ARGS" | jq -r '.region_counts // empty')" >> "$GITHUB_OUTPUT"
-          echo "ip_version=$(echo "$DEPLOY_ARGS" | jq -r '.ip_version // empty')" >> "$GITHUB_OUTPUT"
           echo "log_level=$(echo "$DEPLOY_ARGS" | jq -r '.log_level // empty')" >> "$GITHUB_OUTPUT"
           echo "port=$(echo "$DEPLOY_ARGS" | jq -r '.port // empty')" >> "$GITHUB_OUTPUT"
           echo "region=$(echo "$DEPLOY_ARGS" | jq -r '.region // empty')" >> "$GITHUB_OUTPUT"
@@ -124,9 +122,6 @@ jobs:
           CMD="$CMD --name ${{ steps.args.outputs.name }}"
           CMD="$CMD --port ${{ steps.args.outputs.genesis_port }}"
 
-          if [ -n "${{ steps.args.outputs.ip_version }}" ]; then
-            CMD="$CMD --ip-version ${{ steps.args.outputs.ip_version }}"
-          fi
           if [ -n "${{ steps.args.outputs.log_level }}" ]; then
             CMD="$CMD --log-level ${{ steps.args.outputs.log_level }}"
           fi
@@ -158,9 +153,6 @@ jobs:
           CMD="$CMD --name ${{ steps.args.outputs.name }}"
           CMD="$CMD --node-count ${{ steps.args.outputs.node_count }}"
 
-          if [ -n "${{ steps.args.outputs.ip_version }}" ]; then
-            CMD="$CMD --ip-version ${{ steps.args.outputs.ip_version }}"
-          fi
           if [ -n "${{ steps.args.outputs.port }}" ]; then
             CMD="$CMD --port ${{ steps.args.outputs.port }}"
           fi
