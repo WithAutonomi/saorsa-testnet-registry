@@ -233,8 +233,9 @@ def main():
     telegraf_parser.add_argument(
         "--name",
         type=str,
-        required=True,
-        help="Deployment name (must match the name used with infra command)",
+        default=None,
+        help="Deployment name (must match the name used with infra command). "
+        "Required unless --host-ips-file is provided.",
     )
     telegraf_parser.add_argument(
         "--elasticsearch-url",
@@ -277,6 +278,19 @@ def main():
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+    telegraf_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username for provisioning (default: root)",
+    )
+    telegraf_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing one IP address per line "
+        "(alternative to loading IPs from deployment state)",
     )
 
     # === destroy-elastic ===
@@ -481,6 +495,19 @@ def main():
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username for provisioning (default: root)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing one IP address per line "
+        "(alternative to --host-ips or loading IPs from deployment state)",
     )
 
     # === bootstrap-production ===

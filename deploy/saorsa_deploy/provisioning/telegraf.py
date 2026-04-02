@@ -30,6 +30,7 @@ class TelegrafProvisioner:
         host_role: str = "regular",
         branch_commit: str = "unknown",
         node_version: str = "unknown",
+        ssh_user: str = "root",
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -41,12 +42,13 @@ class TelegrafProvisioner:
         self.host_role = host_role
         self.branch_commit = branch_commit
         self.node_version = node_version
+        self.ssh_user = ssh_user
         self.console = console or Console()
 
     def execute(self) -> None:
         """Install and configure Telegraf on all hosts."""
         hosts_data = [
-            (ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path}) for ip in self.host_ips
+            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
         state = State(inventory=inventory, config=Config())

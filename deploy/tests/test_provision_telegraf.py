@@ -198,6 +198,11 @@ class TestTelegrafProvisionerInit:
         assert p.host_role == "regular"
         assert p.branch_commit == "unknown"
         assert p.node_version == "unknown"
+        assert p.ssh_user == "root"
+
+    def test_custom_ssh_user(self):
+        p = _make_provisioner(ssh_user="ubuntu")
+        assert p.ssh_user == "ubuntu"
 
 
 class TestTelegrafProvisionerExecute:
@@ -334,6 +339,32 @@ class TestTelegrafProvisionerExecute:
     @patch("saorsa_deploy.provisioning.telegraf.connect_all")
     @patch("saorsa_deploy.provisioning.telegraf.State")
     @patch("saorsa_deploy.provisioning.telegraf.Inventory")
+    def test_execute_uses_custom_ssh_user_in_inventory(
+        self,
+        mock_inventory,
+        mock_state,
+        _mock_connect,
+        _mock_add_op,
+        _mock_run_ops,
+        _mock_disconnect,
+    ):
+        mock_state_instance = MagicMock()
+        mock_state_instance.failed_hosts = set()
+        mock_state.return_value = mock_state_instance
+
+        p = _make_provisioner(host_ips=["10.0.0.1"], ssh_user="ubuntu")
+        p.execute()
+
+        inventory_call = mock_inventory.call_args
+        hosts_data = inventory_call[0][0][0]
+        assert hosts_data[0][1]["ssh_user"] == "ubuntu"
+
+    @patch("saorsa_deploy.provisioning.telegraf.disconnect_all")
+    @patch("saorsa_deploy.provisioning.telegraf.run_ops")
+    @patch("saorsa_deploy.provisioning.telegraf.add_op")
+    @patch("saorsa_deploy.provisioning.telegraf.connect_all")
+    @patch("saorsa_deploy.provisioning.telegraf.State")
+    @patch("saorsa_deploy.provisioning.telegraf.Inventory")
     def test_execute_writes_config_to_correct_path(
         self,
         _mock_inventory,
@@ -444,6 +475,54 @@ class TestTelegrafProvisionerExecute:
         assert any(f"test -f {TELEGRAF_ENV_PATH}" in cmd for cmd in commands)
 
 
+class TestReadIpsFromFile:
+    def test_reads_ips_from_file(self, tmp_path):
+        from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("10.0.0.1\n10.0.0.2\n10.0.0.3\n")
+        ips = read_ips_from_file(str(ip_file))
+        assert ips == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+
+    def test_ignores_blank_lines(self, tmp_path):
+        from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("10.0.0.1\n\n10.0.0.2\n\n")
+        ips = read_ips_from_file(str(ip_file))
+        assert ips == ["10.0.0.1", "10.0.0.2"]
+
+    def test_ignores_comments(self, tmp_path):
+        from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("# This is a comment\n10.0.0.1\n# Another\n10.0.0.2\n")
+        ips = read_ips_from_file(str(ip_file))
+        assert ips == ["10.0.0.1", "10.0.0.2"]
+
+    def test_strips_whitespace(self, tmp_path):
+        from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("  10.0.0.1  \n  10.0.0.2  \n")
+        ips = read_ips_from_file(str(ip_file))
+        assert ips == ["10.0.0.1", "10.0.0.2"]
+
+    def test_raises_on_empty_file(self, tmp_path):
+        from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("\n\n# only comments\n")
+        with pytest.raises(ValueError, match="No IP addresses found"):
+            read_ips_from_file(str(ip_file))
+
+    def test_raises_on_missing_file(self):
+        from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
+
+        with pytest.raises(OSError):
+            read_ips_from_file("/nonexistent/hosts.txt")
+
+
 class TestCmdProvisionTelegraf:
     @patch("saorsa_deploy.cmd.provision_telegraf.TelegrafProvisioner")
     @patch("saorsa_deploy.cmd.provision_telegraf.clear_known_hosts")
@@ -468,6 +547,8 @@ class TestCmdProvisionTelegraf:
         args = SimpleNamespace(
             name="DEV-01",
             ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            host_ips_file=None,
             elasticsearch_url="https://logs.example.com/es/api",
             elasticsearch_username="user",
             elasticsearch_password="pass",
@@ -483,6 +564,7 @@ class TestCmdProvisionTelegraf:
         genesis_call = mock_provisioner_cls.call_args_list[0]
         assert genesis_call.kwargs["host_ips"] == ["10.0.0.100"]
         assert genesis_call.kwargs["host_role"] == "GENESIS"
+        assert genesis_call.kwargs["ssh_user"] == "root"
 
         # Second call: regular VMs
         regular_call = mock_provisioner_cls.call_args_list[1]
@@ -511,6 +593,8 @@ class TestCmdProvisionTelegraf:
         args = SimpleNamespace(
             name="DEV-01",
             ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            host_ips_file=None,
             elasticsearch_url="https://logs.example.com/es/api",
             elasticsearch_username="user",
             elasticsearch_password="pass",
@@ -521,3 +605,87 @@ class TestCmdProvisionTelegraf:
         cmd_provision_telegraf(args)
 
         assert call_order[0] == "clear_known_hosts"
+
+    @patch("saorsa_deploy.cmd.provision_telegraf.TelegrafProvisioner")
+    @patch("saorsa_deploy.cmd.provision_telegraf.clear_known_hosts")
+    def test_host_ips_file_provisions_all_as_wan_node(
+        self,
+        mock_clear_known_hosts,
+        mock_provisioner_cls,
+        tmp_path,
+    ):
+        from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("10.0.0.1\n10.0.0.2\n")
+        mock_provisioner_cls.return_value.execute.return_value = None
+
+        args = SimpleNamespace(
+            name="DEV-01",
+            ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="ubuntu",
+            host_ips_file=str(ip_file),
+            elasticsearch_url="https://logs.example.com/es/api",
+            elasticsearch_username="user",
+            elasticsearch_password="pass",
+            node_version=None,
+            branch_commit=None,
+            repo_owner="maidsafe",
+        )
+        cmd_provision_telegraf(args)
+
+        assert mock_provisioner_cls.call_count == 1
+        call_kwargs = mock_provisioner_cls.call_args_list[0].kwargs
+        assert call_kwargs["host_ips"] == ["10.0.0.1", "10.0.0.2"]
+        assert call_kwargs["host_role"] == "WAN_NODE"
+        assert call_kwargs["ssh_user"] == "ubuntu"
+        assert call_kwargs["testnet_name"] == "DEV-01"
+
+    @patch("saorsa_deploy.cmd.provision_telegraf.TelegrafProvisioner")
+    @patch("saorsa_deploy.cmd.provision_telegraf.clear_known_hosts")
+    def test_host_ips_file_without_name(
+        self,
+        mock_clear_known_hosts,
+        mock_provisioner_cls,
+        tmp_path,
+    ):
+        from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("10.0.0.1\n")
+        mock_provisioner_cls.return_value.execute.return_value = None
+
+        args = SimpleNamespace(
+            name=None,
+            ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            host_ips_file=str(ip_file),
+            elasticsearch_url="https://logs.example.com/es/api",
+            elasticsearch_username="user",
+            elasticsearch_password="pass",
+            node_version=None,
+            branch_commit=None,
+            repo_owner="maidsafe",
+        )
+        cmd_provision_telegraf(args)
+
+        call_kwargs = mock_provisioner_cls.call_args_list[0].kwargs
+        assert call_kwargs["testnet_name"] == ""
+
+    def test_exits_when_neither_name_nor_file(self):
+        from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
+
+        args = SimpleNamespace(
+            name=None,
+            ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            host_ips_file=None,
+            elasticsearch_url="https://logs.example.com/es/api",
+            elasticsearch_username="user",
+            elasticsearch_password="pass",
+            node_version=None,
+            branch_commit=None,
+            repo_owner="maidsafe",
+        )
+        with pytest.raises(SystemExit):
+            cmd_provision_telegraf(args)

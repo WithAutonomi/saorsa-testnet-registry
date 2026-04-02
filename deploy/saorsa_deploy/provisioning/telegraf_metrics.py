@@ -32,6 +32,8 @@ class TelegrafMetricsProvisioner:
         testnet_name: str = "",
         node_count: int = 0,
         is_genesis: bool = False,
+        host_role: str = "WAN_NODE",
+        ssh_user: str = "root",
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -43,12 +45,14 @@ class TelegrafMetricsProvisioner:
         self.testnet_name = testnet_name
         self.node_count = node_count
         self.is_genesis = is_genesis
+        self.host_role = host_role
+        self.ssh_user = ssh_user
         self.console = console or Console()
 
     def execute(self) -> None:
         """Install and configure Telegraf for metrics on all hosts."""
         hosts_data = [
-            (ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})
+            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path})
             for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
@@ -167,6 +171,7 @@ class TelegrafMetricsProvisioner:
             f"INFLUXDB_ORG={self.influxdb_org}\n"
             f"INFLUXDB_BUCKET={self.influxdb_bucket}\n"
             f"ANT_TESTNET_NAME={self.testnet_name}\n"
+            f"SAORSA_HOST_ROLE={self.host_role}\n"
         )
 
     def _build_telegraf_config(self) -> str:
