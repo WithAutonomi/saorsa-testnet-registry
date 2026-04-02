@@ -127,7 +127,7 @@ class TestBuildTerraformConfigs:
         )
         assert len(configs) == 4
 
-    def test_hetzner_uses_primary_ip_id(self, sample_nodes, sample_ssh_key_ids):
+    def test_hetzner_uses_floating_ip_id(self, sample_nodes, sample_ssh_key_ids):
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -135,7 +135,7 @@ class TestBuildTerraformConfigs:
             sample_nodes, "ant-production", sample_ssh_key_ids, console
         )
         hz_config = next(c for c in configs if c.provider == "hetzner")
-        assert hz_config.variables["primary_ip_id"] == "12345"
+        assert hz_config.variables["floating_ip_id"] == "12345"
         assert hz_config.variables["location"] == "fsn1"
 
     def test_vultr_uses_reserved_ip_id(self, sample_nodes, sample_ssh_key_ids):
@@ -748,9 +748,18 @@ class TestCmdBootstrapProductionSuccessPath:
         mocks = {}
         tf_results = [MagicMock(success=True) for _ in self.SAMPLE_NODES]
 
+        def _mock_subprocess_run(cmd, **kwargs):
+            result = MagicMock(returncode=0)
+            # hcloud server ip returns the primary IP
+            if cmd and len(cmd) >= 3 and cmd[0] == "hcloud" and cmd[1] == "server":
+                result.stdout = "10.20.30.40\n"
+            else:
+                result.stdout = ""
+            return result
+
         with patch(
             "saorsa_deploy.cmd.bootstrap_production.subprocess.run",
-            return_value=MagicMock(returncode=0),
+            side_effect=_mock_subprocess_run,
         ) as m_subprocess, patch(
             "saorsa_deploy.cmd.bootstrap_production._load_production_config",
             return_value=(self.SAMPLE_NODES, self.SAMPLE_SSH_KEY_IDS),
@@ -798,16 +807,20 @@ class TestCmdBootstrapProductionSuccessPath:
         mocks = self._run_success(monkeypatch)
         mocks["clear_hosts"].assert_called_once()
         cleared_ips = mocks["clear_hosts"].call_args[0][0]
-        assert set(cleared_ips) == {"1.2.3.4", "5.6.7.8", "9.10.11.12"}
+        # Includes floating IPs, node IPs, AND Hetzner primary SSH IPs
+        assert {"1.2.3.4", "5.6.7.8", "9.10.11.12"}.issubset(set(cleared_ips))
 
     def test_hardens_all_nodes(self, monkeypatch):
         mocks = self._run_success(monkeypatch)
         hardener_cls = mocks["hardener_cls"]
         assert hardener_cls.call_count == len(self.SAMPLE_NODES)
+        # Hetzner nodes are hardened via their primary SSH IP, not floating IP
         hardened_ips = {
             call.kwargs["ip"] for call in hardener_cls.call_args_list
         }
-        assert hardened_ips == {"1.2.3.4", "5.6.7.8", "9.10.11.12"}
+        assert "1.2.3.4" in hardened_ips
+        assert "9.10.11.12" in hardened_ips
+        assert len(hardened_ips) == 3
 
     def test_provisions_genesis_first_without_peers(self, monkeypatch):
         mocks = self._run_success(monkeypatch)

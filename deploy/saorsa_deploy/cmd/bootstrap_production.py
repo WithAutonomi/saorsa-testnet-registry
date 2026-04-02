@@ -143,7 +143,7 @@ def _build_terraform_configs(
 
         if provider == "hetzner":
             variables["location"] = region
-            variables["primary_ip_id"] = resource_id
+            variables["floating_ip_id"] = resource_id
             variables["ssh_key_id"] = ssh_key_ids[provider]
             if node.get("server_type"):
                 variables["server_type"] = node["server_type"]
@@ -181,6 +181,7 @@ def _provision_node(
     evm_network: str,
     ip_version: str | None,
     console: Console,
+    ssh_ip: str | None = None,
 ) -> None:
     """Provision a single production node: striped volume, binary, service."""
     from io import StringIO
@@ -193,10 +194,11 @@ def _provision_node(
 
     from saorsa_deploy.binary_source import RELEASE_ASSET_NAME
 
+    connect_addr = ssh_ip or ip
     ssh_user = PROVIDER_SSH_USERS.get(provider, "root")
     connect_opts = {"ssh_user": ssh_user, "ssh_key": ssh_key_path}
     inventory = Inventory(
-        ([(ip, connect_opts)], {})
+        ([(connect_addr, connect_opts)], {})
     )
     config = Config()
     if ssh_user != "root":
@@ -213,6 +215,31 @@ def _provision_node(
             name="Create striped LVM volume",
             commands=[build_striped_volume_command(provider)],
         )
+
+        # Configure Hetzner floating IP on the network interface
+        if provider == "hetzner":
+            netplan_cfg = (
+                "network:\\n"
+                "  version: 2\\n"
+                "  ethernets:\\n"
+                "    eth0:\\n"
+                "      addresses:\\n"
+                f"        - {ip}/32"
+            )
+            add_op(
+                state,
+                server.shell,
+                name="Configure Hetzner floating IP",
+                commands=[
+                    f"ip addr add {ip}/32 dev eth0 2>/dev/null || true",
+                    "mkdir -p /etc/netplan",
+                    f"printf '{netplan_cfg}\\n' > /etc/netplan/60-floating-ip.yaml",
+                    "netplan apply 2>/dev/null || true",
+                    # Set floating IP as outbound source so peers see the correct address
+                    "GATEWAY=$(ip route show default | awk '{print $3}')",
+                    f"ip route replace default via $GATEWAY dev eth0 src {ip}",
+                ],
+            )
 
         # Create directories and set ownership
         add_op(
@@ -524,18 +551,37 @@ def cmd_bootstrap_production(args):
     )
     console.print()
 
+    # Resolve SSH IPs — for Hetzner floating IPs, we need to SSH via the
+    # server's auto-assigned primary IP, then configure the floating IP
+    ssh_ips = {}
+    for node in nodes:
+        if node["provider"] == "hetzner":
+            server_name = f"ant-bootstrap-{node['region']}"
+            result = subprocess.run(
+                ["hcloud", "server", "ip", server_name],
+                capture_output=True, text=True,
+            )
+            primary_ip = result.stdout.strip()
+            if primary_ip:
+                ssh_ips[node["ip"]] = primary_ip
+                console.print(
+                    f"[dim]Hetzner {node['region']}: SSH via {primary_ip} "
+                    f"(floating IP: {node['ip']})[/dim]"
+                )
+
     # Collect all IPs for SSH known_hosts cleanup
-    all_ips = [node["ip"] for node in nodes]
+    all_ips = list({node["ip"] for node in nodes} | set(ssh_ips.values()))
     clear_known_hosts(all_ips, console)
 
     # Phase 2: Harden all nodes
     console.print("[bold]Applying security hardening to all nodes...[/bold]")
     for node in nodes:
         ip = node["ip"]
-        console.print(f"  Hardening {node['provider']}/{node['region']} ({ip})...")
+        connect_ip = ssh_ips.get(ip, ip)
+        console.print(f"  Hardening {node['provider']}/{node['region']} ({connect_ip})...")
         ssh_user = PROVIDER_SSH_USERS.get(node["provider"], "root")
         hardener = ProductionHardeningProvisioner(
-            ip=ip,
+            ip=connect_ip,
             ssh_key_path=ssh_key_path,
             node_port=NODE_PORT,
             ssh_user=ssh_user,
@@ -569,6 +615,7 @@ def cmd_bootstrap_production(args):
         evm_network=args.evm_network,
         ip_version=args.ip_version,
         console=console,
+        ssh_ip=ssh_ips.get(genesis_node["ip"]),
     )
     console.print("[green]Genesis node provisioned.[/green]")
     console.print()
@@ -594,6 +641,7 @@ def cmd_bootstrap_production(args):
             evm_network=args.evm_network,
             ip_version=args.ip_version,
             console=console,
+            ssh_ip=ssh_ips.get(ip),
         )
         console.print("  [green]Done[/green]")
     console.print()

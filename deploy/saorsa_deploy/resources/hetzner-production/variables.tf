@@ -12,9 +12,9 @@ variable "location" {
   description = "Hetzner location (e.g. fsn1, ash)"
 }
 
-variable "primary_ip_id" {
-  type        = string
-  description = "ID of the pre-allocated Hetzner primary IP"
+variable "floating_ip_id" {
+  type        = number
+  description = "ID of the pre-allocated Hetzner floating IP"
 }
 
 variable "volume_size" {

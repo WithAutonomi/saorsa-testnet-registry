@@ -4,11 +4,11 @@ resource "hcloud_server" "production_node" {
   location    = var.location
   image       = "ubuntu-24.04"
   ssh_keys    = [var.ssh_key_id]
+}
 
-  public_net {
-    ipv4_enabled = true
-    ipv4         = var.primary_ip_id
-  }
+resource "hcloud_floating_ip_assignment" "production_ip" {
+  floating_ip_id = var.floating_ip_id
+  server_id      = hcloud_server.production_node.id
 }
 
 resource "hcloud_volume" "stripe_a" {

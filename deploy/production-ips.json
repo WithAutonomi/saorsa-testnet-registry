@@ -33,15 +33,15 @@
     {
       "provider": "hetzner",
       "region": "fsn1",
-      "ip": "167.235.201.229",
-      "resource_id": "123956850",
+      "ip": "49.12.119.240",
+      "resource_id": "124836455",
       "server_type": "cpx22"
     },
     {
       "provider": "hetzner",
       "region": "ash",
-      "ip": "178.156.129.121",
-      "resource_id": "123956851",
+      "ip": "5.161.25.133",
+      "resource_id": "124836456",
       "server_type": "cpx21"
     },
     {
