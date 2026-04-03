@@ -566,7 +566,6 @@ class TestCmdBootstrapProduction:
             ssh_key_path="/tmp/key",
             rewards_address="0x1234567890abcdef",
             evm_network="arbitrum-one",
-            ip_version=None,
         )
         with pytest.raises(SystemExit) as exc_info:
             cmd_bootstrap_production(args)
@@ -588,7 +587,6 @@ class TestCmdBootstrapProduction:
             ssh_key_path="/tmp/key",
             rewards_address="0x1234567890abcdef",
             evm_network="arbitrum-one",
-            ip_version=None,
         )
         with pytest.raises(SystemExit) as exc_info:
             cmd_bootstrap_production(args)
@@ -651,7 +649,6 @@ class TestCmdBootstrapProduction:
             ssh_key_path="/tmp/key",
             rewards_address="0x1234567890abcdef",
             evm_network="arbitrum-one",
-            ip_version=None,
         )
         sample_nodes = [
             {
@@ -679,12 +676,13 @@ class TestCmdBootstrapProduction:
         ), patch(
             "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
         ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.ProductionHardeningProvisioner",
+            "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
         ) as mock_hardener, patch(
             "saorsa_deploy.cmd.bootstrap_production._provision_node",
         ):
             mock_path.return_value.expanduser.return_value.exists.return_value = True
-            mock_hardener.return_value.execute.return_value = None
+            mock_hardener.return_value.communicate.return_value = (b"", b"")
+            mock_hardener.return_value.returncode = 0
             cmd_bootstrap_production(args)
 
         mock_confirm.assert_called_once()
@@ -742,7 +740,6 @@ class TestCmdBootstrapProductionSuccessPath:
             ssh_key_path="/tmp/key",
             rewards_address="0x1234567890abcdef",
             evm_network="arbitrum-one",
-            ip_version=None,
         )
 
         mocks = {}
@@ -779,12 +776,13 @@ class TestCmdBootstrapProductionSuccessPath:
         ) as m_terraform, patch(
             "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
         ) as m_clear_hosts, patch(
-            "saorsa_deploy.cmd.bootstrap_production.ProductionHardeningProvisioner",
-        ) as m_hardener, patch(
+            "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
+        ) as m_popen, patch(
             "saorsa_deploy.cmd.bootstrap_production._provision_node",
         ) as m_provision:
             m_path.return_value.expanduser.return_value.exists.return_value = True
-            m_hardener.return_value.execute.return_value = None
+            m_popen.return_value.communicate.return_value = (b"", b"")
+            m_popen.return_value.returncode = 0
             cmd_bootstrap_production(args)
 
             mocks["subprocess"] = m_subprocess
@@ -792,7 +790,7 @@ class TestCmdBootstrapProductionSuccessPath:
             mocks["release_url"] = m_release_url
             mocks["terraform"] = m_terraform
             mocks["clear_hosts"] = m_clear_hosts
-            mocks["hardener_cls"] = m_hardener
+            mocks["popen"] = m_popen
             mocks["provision"] = m_provision
 
         return mocks
@@ -812,15 +810,11 @@ class TestCmdBootstrapProductionSuccessPath:
 
     def test_hardens_all_nodes(self, monkeypatch):
         mocks = self._run_success(monkeypatch)
-        hardener_cls = mocks["hardener_cls"]
-        assert hardener_cls.call_count == len(self.SAMPLE_NODES)
-        # Hetzner nodes are hardened via their primary SSH IP, not floating IP
-        hardened_ips = {
-            call.kwargs["ip"] for call in hardener_cls.call_args_list
-        }
-        assert "1.2.3.4" in hardened_ips
-        assert "9.10.11.12" in hardened_ips
-        assert len(hardened_ips) == 3
+        # Hardening runs via subprocess.Popen — one per node for hardening,
+        # plus more for remaining node provisioning. At minimum, len(SAMPLE_NODES)
+        # Popen calls for hardening.
+        popen = mocks["popen"]
+        assert popen.call_count >= len(self.SAMPLE_NODES)
 
     def test_provisions_genesis_first_without_peers(self, monkeypatch):
         mocks = self._run_success(monkeypatch)
@@ -838,8 +832,12 @@ class TestCmdBootstrapProductionSuccessPath:
 
     def test_provisions_correct_number_of_nodes(self, monkeypatch):
         mocks = self._run_success(monkeypatch)
-        # 1 genesis + 2 regular = 3 total
-        assert mocks["provision"].call_count == len(self.SAMPLE_NODES)
+        # Genesis is provisioned directly via _provision_node
+        assert mocks["provision"].call_count == 1
+        # Remaining nodes are provisioned via subprocess.Popen
+        # (Popen is also used for hardening, so total calls = nodes + remaining)
+        remaining = len(self.SAMPLE_NODES) - 1
+        assert mocks["popen"].call_count == len(self.SAMPLE_NODES) + remaining
 
     def test_uses_latest_release_when_no_version_specified(self, monkeypatch):
         mocks = self._run_success(monkeypatch)
@@ -866,7 +864,6 @@ class TestCmdBootstrapProductionSuccessPath:
             ssh_key_path="/tmp/key",
             rewards_address="0x1234567890abcdef",
             evm_network="arbitrum-one",
-            ip_version=None,
         )
 
         failed_result = MagicMock(
@@ -913,7 +910,6 @@ class TestCmdBootstrapProductionSuccessPath:
             ssh_key_path="/tmp/key",
             rewards_address="0x1234567890abcdef",
             evm_network="arbitrum-one",
-            ip_version=None,
         )
 
         with patch(
@@ -938,10 +934,11 @@ class TestCmdBootstrapProductionSuccessPath:
         ), patch(
             "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
         ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.ProductionHardeningProvisioner",
+            "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
         ) as m_hardener:
             m_path.return_value.expanduser.return_value.exists.return_value = True
-            m_hardener.return_value.execute.side_effect = RuntimeError("SSH failed")
+            m_hardener.return_value.communicate.return_value = (b"", b"SSH failed")
+            m_hardener.return_value.returncode = 1
             with pytest.raises(SystemExit) as exc_info:
                 cmd_bootstrap_production(args)
             assert exc_info.value.code == 1

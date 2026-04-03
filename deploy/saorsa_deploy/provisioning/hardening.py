@@ -231,7 +231,6 @@ def build_systemd_unit(
     bootstrap_peers: str | None = None,
     rewards_address: str | None = None,
     evm_network: str | None = None,
-    ip_version: str | None = None,
 ) -> str:
     """Build a systemd unit file for a production ant-node service."""
     exec_args = [
@@ -245,8 +244,6 @@ def build_systemd_unit(
         exec_args.extend(["--rewards-address", rewards_address])
     if evm_network:
         exec_args.extend(["--evm-network", evm_network])
-    if ip_version:
-        exec_args.extend(["--ip-version", ip_version])
 
     exec_start = " ".join(exec_args)
 

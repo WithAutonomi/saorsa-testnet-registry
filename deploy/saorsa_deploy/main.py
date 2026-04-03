@@ -520,13 +520,6 @@ def main():
         help="EVM network for payments (default: arbitrum-one)",
     )
     bootstrap_prod_parser.add_argument(
-        "--ip-version",
-        type=str,
-        default=None,
-        choices=["ipv4", "ipv6", "dual"],
-        help="IP version for the node (default: dual). Use ipv4 to work around dual-stack bugs.",
-    )
-    bootstrap_prod_parser.add_argument(
         "--force",
         action="store_true",
         help="Skip confirmation prompts and force overwrite stale state",

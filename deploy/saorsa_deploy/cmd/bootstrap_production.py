@@ -19,7 +19,6 @@ from saorsa_deploy.binary_source import (
 )
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.provisioning.hardening import (
-    ProductionHardeningProvisioner,
     build_systemd_unit,
 )
 from saorsa_deploy.provisioning.volume import (
@@ -179,7 +178,6 @@ def _provision_node(
     bootstrap_peers: str | None,
     rewards_address: str,
     evm_network: str,
-    ip_version: str | None,
     console: Console,
     ssh_ip: str | None = None,
 ) -> None:
@@ -226,6 +224,10 @@ def _provision_node(
                 "      addresses:\\n"
                 f"        - {ip}/32"
             )
+            route_cmd = (
+                f"GATEWAY=$(ip route show default | awk '{{print $3}}') && "
+                f"ip route replace default via $GATEWAY dev eth0 src {ip}"
+            )
             add_op(
                 state,
                 server.shell,
@@ -235,9 +237,7 @@ def _provision_node(
                     "mkdir -p /etc/netplan",
                     f"printf '{netplan_cfg}\\n' > /etc/netplan/60-floating-ip.yaml",
                     "netplan apply 2>/dev/null || true",
-                    # Set floating IP as outbound source so peers see the correct address
-                    "GATEWAY=$(ip route show default | awk '{print $3}')",
-                    f"ip route replace default via $GATEWAY dev eth0 src {ip}",
+                    route_cmd,
                 ],
             )
 
@@ -289,7 +289,6 @@ def _provision_node(
             bootstrap_peers=bootstrap_peers,
             rewards_address=rewards_address,
             evm_network=evm_network,
-            ip_version=ip_version,
         )
         add_op(
             state,
@@ -573,28 +572,50 @@ def cmd_bootstrap_production(args):
     all_ips = list({node["ip"] for node in nodes} | set(ssh_ips.values()))
     clear_known_hosts(all_ips, console)
 
-    # Phase 2: Harden all nodes
+    # Phase 2: Harden all nodes in parallel (via subprocesses — Pyinfra is not thread-safe)
     console.print("[bold]Applying security hardening to all nodes...[/bold]")
+
+    hardening_procs = {}
     for node in nodes:
         ip = node["ip"]
         connect_ip = ssh_ips.get(ip, ip)
-        console.print(f"  Hardening {node['provider']}/{node['region']} ({connect_ip})...")
         ssh_user = PROVIDER_SSH_USERS.get(node["provider"], "root")
-        hardener = ProductionHardeningProvisioner(
-            ip=connect_ip,
-            ssh_key_path=ssh_key_path,
-            node_port=NODE_PORT,
-            ssh_user=ssh_user,
+        label = f"{node['provider']}/{node['region']}"
+        proc = subprocess.Popen(
+            [
+                sys.executable, "-c",
+                "from saorsa_deploy.provisioning.hardening import "
+                "ProductionHardeningProvisioner; "
+                f"ProductionHardeningProvisioner("
+                f"ip='{connect_ip}', "
+                f"ssh_key_path='{ssh_key_path}', "
+                f"node_port={NODE_PORT}, "
+                f"ssh_user='{ssh_user}'"
+                f").execute()",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        try:
-            hardener.execute()
-            console.print("  [green]Done[/green]")
-        except Exception as e:
-            console.print(f"  [bold red]Failed:[/bold red] {e}")
-            sys.exit(1)
+        hardening_procs[label] = proc
+
+    hardening_errors = []
+    for label, proc in hardening_procs.items():
+        _, stderr = proc.communicate()
+        if proc.returncode == 0:
+            console.print(f"  [green]{label}[/green] hardened")
+        else:
+            err_msg = stderr.decode().strip().split("\n")[-1] if stderr else "unknown"
+            console.print(f"  [bold red]{label} FAILED:[/bold red] {err_msg}")
+            hardening_errors.append(label)
+
+    if hardening_errors:
+        console.print(
+            f"[bold red]{len(hardening_errors)} node(s) failed hardening. Aborting.[/bold red]"
+        )
+        sys.exit(1)
     console.print()
 
-    # Phase 3: Provision genesis node
+    # Phase 3: Provision genesis node (must be first — others bootstrap from it)
     genesis_node = next((n for n in nodes if n.get("role") == "genesis"), None)
     if not genesis_node:
         console.print("[bold red]Error:[/bold red] No genesis node defined in production IPs")
@@ -613,37 +634,68 @@ def cmd_bootstrap_production(args):
         bootstrap_peers=None,
         rewards_address=args.rewards_address,
         evm_network=args.evm_network,
-        ip_version=args.ip_version,
         console=console,
         ssh_ip=ssh_ips.get(genesis_node["ip"]),
     )
     console.print("[green]Genesis node provisioned.[/green]")
     console.print()
 
-    # Phase 4: Provision remaining nodes (bootstrapping from genesis)
+    # Phase 4: Provision remaining nodes in parallel
     genesis_peer = f"{genesis_node['ip']}:{NODE_PORT}"
     other_nodes = [n for n in nodes if n.get("role") != "genesis"]
 
-    console.print(f"[bold]Provisioning {len(other_nodes)} remaining nodes...[/bold]")
+    if not other_nodes:
+        console.print("[dim]No remaining nodes to provision.[/dim]")
+    else:
+        console.print(
+            f"[bold]Provisioning {len(other_nodes)} remaining nodes in parallel...[/bold]"
+        )
+
+    provision_procs = {}
     for node in other_nodes:
         ip = node["ip"]
+        node_ssh_ip = ssh_ips.get(ip)
+        ssh_user = PROVIDER_SSH_USERS.get(node["provider"], "root")
+        label = f"{node['provider']}/{node['region']}"
+        # Build the provision call as a subprocess script
+        script = (
+            "from saorsa_deploy.cmd.bootstrap_production import _provision_node; "
+            "from rich.console import Console; "
+            f"_provision_node("
+            f"ip='{ip}', "
+            f"provider='{node['provider']}', "
+            f"ssh_key_path='{ssh_key_path}', "
+            f"binary_url='{binary_url}', "
+            f"binary_is_archive={binary_is_archive}, "
+            f"bootstrap_peers='{genesis_peer}', "
+            f"rewards_address='{args.rewards_address}', "
+            f"evm_network='{args.evm_network}', "
+            f"console=Console(), "
+            f"ssh_ip={repr(node_ssh_ip)}"
+            f")"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        provision_procs[label] = proc
+
+    provision_errors = []
+    for label, proc in provision_procs.items():
+        _, stderr = proc.communicate()
+        if proc.returncode == 0:
+            console.print(f"  [green]{label}[/green] provisioned")
+        else:
+            err_msg = stderr.decode().strip().split("\n")[-1] if stderr else "unknown"
+            console.print(f"  [bold red]{label} FAILED:[/bold red] {err_msg}")
+            provision_errors.append(label)
+
+    if provision_errors:
         console.print(
-            f"  Provisioning {node['provider']}/{node['region']} ({ip})..."
+            f"[bold red]{len(provision_errors)} node(s) failed provisioning.[/bold red]"
         )
-        _provision_node(
-            ip=ip,
-            provider=node["provider"],
-            ssh_key_path=ssh_key_path,
-            binary_url=binary_url,
-            binary_is_archive=binary_is_archive,
-            bootstrap_peers=genesis_peer,
-            rewards_address=args.rewards_address,
-            evm_network=args.evm_network,
-            ip_version=args.ip_version,
-            console=console,
-            ssh_ip=ssh_ips.get(ip),
-        )
-        console.print("  [green]Done[/green]")
+        sys.exit(1)
     console.print()
 
     console.print("[bold green]Production bootstrap network deployed successfully![/bold green]")
