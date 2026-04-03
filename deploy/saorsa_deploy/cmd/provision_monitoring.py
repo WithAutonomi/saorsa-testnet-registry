@@ -90,11 +90,11 @@ def cmd_provision_monitoring(args):
     console.print(f"  Monitoring VM: {vm_ip}")
     console.print()
 
-    grafana_password = os.environ.get("SAORSA_DEPLOY_GRAFANA_DEV_PASSWORD")
+    grafana_password = os.environ.get("ANT_DEPLOY_GRAFANA_DEV_PASSWORD")
     if not grafana_password:
         console.print(
             "[bold red]Error:[/bold red] "
-            "SAORSA_DEPLOY_GRAFANA_DEV_PASSWORD environment variable is required."
+            "ANT_DEPLOY_GRAFANA_DEV_PASSWORD environment variable is required."
         )
         sys.exit(1)
 
