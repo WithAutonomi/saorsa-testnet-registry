@@ -292,6 +292,13 @@ def main():
         help="Path to a text file containing one IP address per line "
         "(alternative to loading IPs from deployment state)",
     )
+    telegraf_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
+        "from each entry in the node_vms array.",
+    )
 
     # === destroy-elastic ===
     destroy_elastic_parser = subparsers.add_parser(
@@ -508,6 +515,13 @@ def main():
         default=None,
         help="Path to a text file containing one IP address per line "
         "(alternative to --host-ips or loading IPs from deployment state)",
+    )
+    telegraf_metrics_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
+        "from each entry in the node_vms array.",
     )
 
     # === bootstrap-production ===

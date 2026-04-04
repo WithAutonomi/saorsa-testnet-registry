@@ -1,4 +1,6 @@
+import json
 import sys
+from collections import defaultdict
 
 from rich.console import Console
 
@@ -23,12 +25,141 @@ def read_ips_from_file(file_path: str) -> list[str]:
     return ips
 
 
+def read_inventory(file_path: str) -> list[dict]:
+    """Read node VM entries from an inventory JSON file.
+
+    Returns a list of dicts with 'ip', 'ssh_user', and 'ssh_key' keys.
+    """
+    with open(file_path) as f:
+        data = json.load(f)
+    node_vms = data.get("node_vms", [])
+    if not node_vms:
+        raise ValueError(f"No node_vms found in {file_path}")
+    entries = []
+    for vm in node_vms:
+        entries.append({
+            "ip": vm["ip"],
+            "ssh_user": vm.get("ssh_user", "root"),
+            "ssh_key": vm.get("ssh_key", "~/.ssh/id_rsa"),
+        })
+    return entries
+
+
+def group_by_credentials(entries: list[dict]) -> dict[tuple, list[str]]:
+    """Group inventory entries by (ssh_user, ssh_key), returning IPs per group."""
+    groups = defaultdict(list)
+    for entry in entries:
+        key = (entry["ssh_user"], entry["ssh_key"])
+        groups[key].append(entry["ip"])
+    return dict(groups)
+
+
+def _resolve_es_credentials(args, console):
+    """Resolve Elasticsearch credentials from args or elastic state."""
+    es_url = args.elasticsearch_url
+    es_username = args.elasticsearch_username
+    es_password = args.elasticsearch_password
+
+    if not es_url and args.name:
+        console.print(
+            "[dim]Loading Elasticsearch credentials from elastic state...[/dim]"
+        )
+        try:
+            elastic_state = load_elastic_state(args.name)
+            es_url = elastic_state.get("elasticsearch_url", "")
+            es_username = elastic_state.get("elasticsearch_username", "")
+            es_password = elastic_state.get("elasticsearch_password", "")
+        except RuntimeError:
+            console.print(
+                "[bold red]Error:[/bold red] No Elasticsearch credentials "
+                "provided and no elastic state found.\n"
+                "Provide --elasticsearch-url, --elasticsearch-username, "
+                "and --elasticsearch-password."
+            )
+            sys.exit(1)
+
+    if not es_url or not es_username or not es_password:
+        console.print(
+            "[bold red]Error:[/bold red] Elasticsearch URL, username, and "
+            "password are all required. Provide them via CLI args, or also "
+            "pass --name to load from elastic state."
+        )
+        sys.exit(1)
+
+    return es_url, es_username, es_password
+
+
+def _resolve_version_info(args):
+    """Resolve node version and branch commit from args."""
+    if args.node_version:
+        node_version = args.node_version
+    elif args.branch_commit:
+        node_version = f"{args.repo_owner}/{args.branch_commit}"
+    else:
+        node_version = "unknown"
+    branch_commit = args.branch_commit or "unknown"
+    return node_version, branch_commit
+
+
 def cmd_provision_telegraf(args):
     """Provision Telegraf for Elasticsearch log forwarding on all VMs."""
     console = Console()
 
-    if args.host_ips_file:
-        # External hosts mode: read IPs from file, no deployment state needed
+    if args.inventory_path:
+        # Inventory mode: read VMs from inventory JSON
+        try:
+            entries = read_inventory(args.inventory_path)
+        except (OSError, ValueError, KeyError) as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
+
+        all_ips = [e["ip"] for e in entries]
+        console.print(
+            f"[bold]Using {len(entries)} VM(s) from inventory "
+            f"{args.inventory_path}...[/bold]"
+        )
+
+        es_url, es_username, es_password = _resolve_es_credentials(
+            args, console
+        )
+        node_version, branch_commit = _resolve_version_info(args)
+        testnet_name = args.name or ""
+
+        console.print(f"  Elasticsearch URL: {es_url}")
+        console.print(f"  Node version: {node_version}")
+        console.print(f"  Branch/commit: {branch_commit}")
+        console.print(f"  Target hosts: {len(entries)}")
+        console.print()
+
+        groups = group_by_credentials(entries)
+        clear_known_hosts(all_ips, console)
+
+        for (ssh_user, ssh_key), ips in groups.items():
+            console.print(
+                f"[bold]Provisioning {len(ips)} host(s) "
+                f"(ssh_user={ssh_user})...[/bold]"
+            )
+            try:
+                TelegrafProvisioner(
+                    host_ips=ips,
+                    host_role="WAN_NODE",
+                    ssh_key_path=ssh_key,
+                    ssh_user=ssh_user,
+                    testnet_name=testnet_name,
+                    elasticsearch_url=es_url,
+                    elasticsearch_username=es_username,
+                    elasticsearch_password=es_password,
+                    branch_commit=branch_commit,
+                    node_version=node_version,
+                    console=console,
+                ).execute()
+            except Exception as e:
+                console.print(
+                    f"[bold red]Telegraf provisioning failed:[/bold red] {e}"
+                )
+                sys.exit(1)
+    elif args.host_ips_file:
+        # External hosts mode: read IPs from file
         try:
             all_ips = read_ips_from_file(args.host_ips_file)
         except (OSError, ValueError) as e:
@@ -40,46 +171,10 @@ def cmd_provision_telegraf(args):
             f"{args.host_ips_file}...[/bold]"
         )
 
-        # Resolve Elasticsearch credentials: explicit args required,
-        # or loaded from elastic state if --name is also provided
-        es_url = args.elasticsearch_url
-        es_username = args.elasticsearch_username
-        es_password = args.elasticsearch_password
-
-        if not es_url and args.name:
-            console.print(
-                "[dim]Loading Elasticsearch credentials from elastic state...[/dim]"
-            )
-            try:
-                elastic_state = load_elastic_state(args.name)
-                es_url = elastic_state.get("elasticsearch_url", "")
-                es_username = elastic_state.get("elasticsearch_username", "")
-                es_password = elastic_state.get("elasticsearch_password", "")
-            except RuntimeError:
-                console.print(
-                    "[bold red]Error:[/bold red] No Elasticsearch credentials provided "
-                    "and no elastic state found for '--name'.\n"
-                    "Provide --elasticsearch-url, --elasticsearch-username, "
-                    "and --elasticsearch-password."
-                )
-                sys.exit(1)
-
-        if not es_url or not es_username or not es_password:
-            console.print(
-                "[bold red]Error:[/bold red] Elasticsearch URL, username, and password "
-                "are all required. Provide them via CLI args, or also pass --name "
-                "to load from elastic state."
-            )
-            sys.exit(1)
-
-        if args.node_version:
-            node_version = args.node_version
-        elif args.branch_commit:
-            node_version = f"{args.repo_owner}/{args.branch_commit}"
-        else:
-            node_version = "unknown"
-
-        branch_commit = args.branch_commit or "unknown"
+        es_url, es_username, es_password = _resolve_es_credentials(
+            args, console
+        )
+        node_version, branch_commit = _resolve_version_info(args)
         testnet_name = args.name or ""
 
         console.print(f"  Elasticsearch URL: {es_url}")
@@ -136,47 +231,10 @@ def cmd_provision_telegraf(args):
             )
             sys.exit(1)
 
-        # Resolve Elasticsearch credentials
-        es_url = args.elasticsearch_url
-        es_username = args.elasticsearch_username
-        es_password = args.elasticsearch_password
-
-        if not es_url:
-            console.print(
-                "[dim]Loading Elasticsearch credentials from elastic "
-                "state...[/dim]"
-            )
-            try:
-                elastic_state = load_elastic_state(args.name)
-                es_url = elastic_state.get("elasticsearch_url", "")
-                es_username = elastic_state.get("elasticsearch_username", "")
-                es_password = elastic_state.get("elasticsearch_password", "")
-            except RuntimeError:
-                console.print(
-                    "[bold red]Error:[/bold red] No Elasticsearch credentials "
-                    "provided and no elastic state found for this deployment.\n"
-                    "Either run elastic-infra + provision-elastic first, "
-                    "or provide --elasticsearch-url, --elasticsearch-username, "
-                    "and --elasticsearch-password."
-                )
-                sys.exit(1)
-
-        if not es_url or not es_username or not es_password:
-            console.print(
-                "[bold red]Error:[/bold red] Elasticsearch URL, username, and "
-                "password are all required. Provide them via CLI args or "
-                "elastic state."
-            )
-            sys.exit(1)
-
-        if args.node_version:
-            node_version = args.node_version
-        elif args.branch_commit:
-            node_version = f"{args.repo_owner}/{args.branch_commit}"
-        else:
-            node_version = "unknown"
-
-        branch_commit = args.branch_commit or "unknown"
+        es_url, es_username, es_password = _resolve_es_credentials(
+            args, console
+        )
+        node_version, branch_commit = _resolve_version_info(args)
 
         console.print(f"  Elasticsearch URL: {es_url}")
         console.print(f"  Node version: {node_version}")
@@ -239,7 +297,8 @@ def cmd_provision_telegraf(args):
     else:
         console.print(
             "[bold red]Error:[/bold red] "
-            "Either --name or --host-ips-file must be provided."
+            "Either --name, --host-ips-file, or --inventory-path "
+            "must be provided."
         )
         sys.exit(1)
 

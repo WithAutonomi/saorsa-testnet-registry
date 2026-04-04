@@ -475,6 +475,77 @@ class TestTelegrafProvisionerExecute:
         assert any(f"test -f {TELEGRAF_ENV_PATH}" in cmd for cmd in commands)
 
 
+class TestReadInventory:
+    def test_reads_node_vms(self, tmp_path):
+        import json
+
+        from saorsa_deploy.cmd.provision_telegraf import read_inventory
+
+        inv = tmp_path / "inventory.json"
+        inv.write_text(json.dumps({
+            "node_vms": [
+                {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"},
+                {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"},
+            ]
+        }))
+        entries = read_inventory(str(inv))
+        assert len(entries) == 2
+        assert entries[0] == {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"}
+        assert entries[1] == {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"}
+
+    def test_defaults_ssh_user_and_key(self, tmp_path):
+        import json
+
+        from saorsa_deploy.cmd.provision_telegraf import read_inventory
+
+        inv = tmp_path / "inventory.json"
+        inv.write_text(json.dumps({"node_vms": [{"ip": "10.0.0.1"}]}))
+        entries = read_inventory(str(inv))
+        assert entries[0]["ssh_user"] == "root"
+        assert entries[0]["ssh_key"] == "~/.ssh/id_rsa"
+
+    def test_raises_on_empty_node_vms(self, tmp_path):
+        import json
+
+        from saorsa_deploy.cmd.provision_telegraf import read_inventory
+
+        inv = tmp_path / "inventory.json"
+        inv.write_text(json.dumps({"node_vms": []}))
+        with pytest.raises(ValueError, match="No node_vms found"):
+            read_inventory(str(inv))
+
+    def test_raises_on_missing_file(self):
+        from saorsa_deploy.cmd.provision_telegraf import read_inventory
+
+        with pytest.raises(OSError):
+            read_inventory("/nonexistent/inventory.json")
+
+
+class TestGroupByCredentials:
+    def test_groups_by_ssh_user_and_key(self):
+        from saorsa_deploy.cmd.provision_telegraf import group_by_credentials
+
+        entries = [
+            {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"},
+            {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"},
+            {"ip": "10.0.0.3", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"},
+        ]
+        groups = group_by_credentials(entries)
+        assert groups[("ubuntu", "~/.ssh/key")] == ["10.0.0.1", "10.0.0.3"]
+        assert groups[("root", "~/.ssh/id_rsa")] == ["10.0.0.2"]
+
+    def test_single_group(self):
+        from saorsa_deploy.cmd.provision_telegraf import group_by_credentials
+
+        entries = [
+            {"ip": "10.0.0.1", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"},
+            {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"},
+        ]
+        groups = group_by_credentials(entries)
+        assert len(groups) == 1
+        assert groups[("root", "~/.ssh/id_rsa")] == ["10.0.0.1", "10.0.0.2"]
+
+
 class TestReadIpsFromFile:
     def test_reads_ips_from_file(self, tmp_path):
         from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
@@ -549,6 +620,7 @@ class TestCmdProvisionTelegraf:
             ssh_key_path="~/.ssh/id_rsa",
             ssh_user="root",
             host_ips_file=None,
+            inventory_path=None,
             elasticsearch_url="https://logs.example.com/es/api",
             elasticsearch_username="user",
             elasticsearch_password="pass",
@@ -595,6 +667,7 @@ class TestCmdProvisionTelegraf:
             ssh_key_path="~/.ssh/id_rsa",
             ssh_user="root",
             host_ips_file=None,
+            inventory_path=None,
             elasticsearch_url="https://logs.example.com/es/api",
             elasticsearch_username="user",
             elasticsearch_password="pass",
@@ -625,6 +698,7 @@ class TestCmdProvisionTelegraf:
             ssh_key_path="~/.ssh/id_rsa",
             ssh_user="ubuntu",
             host_ips_file=str(ip_file),
+            inventory_path=None,
             elasticsearch_url="https://logs.example.com/es/api",
             elasticsearch_username="user",
             elasticsearch_password="pass",
@@ -660,6 +734,7 @@ class TestCmdProvisionTelegraf:
             ssh_key_path="~/.ssh/id_rsa",
             ssh_user="root",
             host_ips_file=str(ip_file),
+            inventory_path=None,
             elasticsearch_url="https://logs.example.com/es/api",
             elasticsearch_username="user",
             elasticsearch_password="pass",
@@ -672,6 +747,59 @@ class TestCmdProvisionTelegraf:
         call_kwargs = mock_provisioner_cls.call_args_list[0].kwargs
         assert call_kwargs["testnet_name"] == ""
 
+    @patch("saorsa_deploy.cmd.provision_telegraf.TelegrafProvisioner")
+    @patch("saorsa_deploy.cmd.provision_telegraf.clear_known_hosts")
+    def test_inventory_path_groups_by_credentials(
+        self,
+        mock_clear_known_hosts,
+        mock_provisioner_cls,
+        tmp_path,
+    ):
+        import json
+
+        from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
+
+        inv = tmp_path / "inventory.json"
+        inv.write_text(json.dumps({
+            "node_vms": [
+                {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"},
+                {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"},
+                {"ip": "10.0.0.3", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"},
+            ]
+        }))
+        mock_provisioner_cls.return_value.execute.return_value = None
+
+        args = SimpleNamespace(
+            name="DEV-01",
+            ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            host_ips_file=None,
+            inventory_path=str(inv),
+            elasticsearch_url="https://logs.example.com/es/api",
+            elasticsearch_username="user",
+            elasticsearch_password="pass",
+            node_version=None,
+            branch_commit=None,
+            repo_owner="maidsafe",
+        )
+        cmd_provision_telegraf(args)
+
+        # Should create two provisioner calls (one per credential group)
+        assert mock_provisioner_cls.call_count == 2
+
+        # Collect all calls and verify credentials match
+        calls = mock_provisioner_cls.call_args_list
+        ubuntu_call = next(
+            c for c in calls if c.kwargs["ssh_user"] == "ubuntu"
+        )
+        root_call = next(
+            c for c in calls if c.kwargs["ssh_user"] == "root"
+        )
+        assert sorted(ubuntu_call.kwargs["host_ips"]) == ["10.0.0.1", "10.0.0.3"]
+        assert ubuntu_call.kwargs["ssh_key_path"] == "~/.ssh/key"
+        assert root_call.kwargs["host_ips"] == ["10.0.0.2"]
+        assert root_call.kwargs["ssh_key_path"] == "~/.ssh/id_rsa"
+
     def test_exits_when_neither_name_nor_file(self):
         from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
 
@@ -680,6 +808,7 @@ class TestCmdProvisionTelegraf:
             ssh_key_path="~/.ssh/id_rsa",
             ssh_user="root",
             host_ips_file=None,
+            inventory_path=None,
             elasticsearch_url="https://logs.example.com/es/api",
             elasticsearch_username="user",
             elasticsearch_password="pass",

@@ -2,7 +2,11 @@ import sys
 
 from rich.console import Console
 
-from saorsa_deploy.cmd.provision_telegraf import read_ips_from_file
+from saorsa_deploy.cmd.provision_telegraf import (
+    group_by_credentials,
+    read_inventory,
+    read_ips_from_file,
+)
 from saorsa_deploy.provisioning.telegraf_metrics import TelegrafMetricsProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, load_monitoring_state
@@ -56,7 +60,51 @@ def cmd_provision_telegraf_metrics(args):
     }
 
     # Resolve host IPs and node counts
-    if args.host_ips_file:
+    if args.inventory_path:
+        try:
+            entries = read_inventory(args.inventory_path)
+        except (OSError, ValueError, KeyError) as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
+
+        all_ips = [e["ip"] for e in entries]
+        console.print(
+            f"[bold]Using {len(entries)} VM(s) from inventory "
+            f"{args.inventory_path}...[/bold]"
+        )
+        console.print(f"  InfluxDB URL: {influxdb_url}")
+        console.print(f"  Target hosts: {len(entries)}")
+        console.print()
+
+        groups = group_by_credentials(entries)
+        clear_known_hosts(all_ips, console)
+
+        for (ssh_user, ssh_key), ips in groups.items():
+            console.print(
+                f"[bold]Provisioning {len(ips)} host(s) "
+                f"(ssh_user={ssh_user})...[/bold]"
+            )
+            try:
+                TelegrafMetricsProvisioner(
+                    host_ips=ips,
+                    ssh_key_path=ssh_key,
+                    ssh_user=ssh_user,
+                    node_count=0,
+                    host_role="WAN_NODE",
+                    influxdb_url=influxdb_url,
+                    influxdb_token=influxdb_token,
+                    influxdb_org=influxdb_org,
+                    influxdb_bucket=influxdb_bucket,
+                    testnet_name=args.name or "",
+                    console=console,
+                ).execute()
+            except Exception as e:
+                console.print(
+                    f"[bold red]Telegraf metrics provisioning failed:"
+                    f"[/bold red] {e}"
+                )
+                sys.exit(1)
+    elif args.host_ips_file:
         try:
             all_ips = read_ips_from_file(args.host_ips_file)
         except (OSError, ValueError) as e:
@@ -177,7 +225,8 @@ def cmd_provision_telegraf_metrics(args):
     else:
         console.print(
             "[bold red]Error:[/bold red] "
-            "Either --name, --host-ips, or --host-ips-file must be provided."
+            "Either --name, --host-ips, --host-ips-file, or --inventory-path "
+            "must be provided."
         )
         sys.exit(1)
 
