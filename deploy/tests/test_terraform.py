@@ -83,6 +83,7 @@ class TestBuildInitArgs:
             "terraform",
             "init",
             "-input=false",
+            "-reconfigure",
             "-backend-config=key=saorsa-deploy/do-TEST-lon1.tfstate",
         ]
 
@@ -129,6 +130,7 @@ class TestRunTerraform:
             "terraform",
             "init",
             "-input=false",
+            "-reconfigure",
             "-backend-config=key=saorsa-deploy/do-TEST-lon1.tfstate",
         ]
         assert init_call.kwargs["cwd"] == str(config.workspace_dir)

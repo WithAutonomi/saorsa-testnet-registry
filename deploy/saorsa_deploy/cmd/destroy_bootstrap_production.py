@@ -16,7 +16,6 @@ from saorsa_deploy.cmd.bootstrap_production import (
     _load_production_config,
 )
 from saorsa_deploy.executor import execute_terraform_runs
-from saorsa_deploy.state import delete_terraform_state
 
 
 def cmd_destroy_bootstrap_production(args):
@@ -69,13 +68,7 @@ def cmd_destroy_bootstrap_production(args):
         f"[bold green]All {len(results)} regions destroyed successfully.[/bold green]"
     )
 
-    # Clean up Terraform state files from S3
-    for config in configs:
-        try:
-            delete_terraform_state(config.state_key)
-        except Exception:
-            pass
-
     console.print()
     console.print("[bold green]Production network destroyed.[/bold green]")
     console.print("[dim]Static IPs have been preserved for reuse.[/dim]")
+    console.print("[dim]Terraform state files preserved in S3 (safe to re-apply).[/dim]")

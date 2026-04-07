@@ -53,6 +53,7 @@ def build_init_args(config: TerraformRunConfig) -> list[str]:
         "terraform",
         "init",
         "-input=false",
+        "-reconfigure",
         f"-backend-config=key={config.state_key}",
     ]
 
