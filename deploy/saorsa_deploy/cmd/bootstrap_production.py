@@ -41,8 +41,8 @@ HETZNER_TYPE_FALLBACKS = {
     "fsn1": [("cpx22", 109), ("cx23", 114)],
     "nbg1": [("cpx22", 109), ("cx23", 114)],
     "hel1": [("cpx22", 109), ("cx23", 114)],
-    "ash": [("cpx21", 23)],
-    "hil": [("cpx21", 23)],
+    "ash": [("cpx21", 23), ("cpx31", 24)],
+    "hil": [("cpx21", 23), ("cpx31", 24)],
 }
 NODE_PORT = 10000
 BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
