@@ -367,8 +367,6 @@ class MonitoringProvisioner:
 
         x = 0
 
-        # Host Statistics
-        row("Host Statistics")
         add(self._panel_cpu_usage)
         add(self._panel_memory_usage)
         add(self._panel_disk_usage, title="System Disk Usage", mount_path="/")
