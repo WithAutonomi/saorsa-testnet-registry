@@ -176,7 +176,7 @@ class TelegrafMetricsProvisioner:
             f"INFLUXDB_ORG={self.influxdb_org}\n"
             f"INFLUXDB_BUCKET={self.influxdb_bucket}\n"
             f"ANT_TESTNET_NAME={self.testnet_name}\n"
-            f"SAORSA_HOST_ROLE={self.host_role}\n"
+            f"ANT_HOST_ROLE={self.host_role}\n"
         )
 
     def _build_telegraf_config(self) -> str:
