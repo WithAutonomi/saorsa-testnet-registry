@@ -134,9 +134,9 @@ class MonitoringProvisioner:
                 f"mkdir -p {INFLUXDB_DATA_DIR}",
                 f"chown influxdb:influxdb {INFLUXDB_DATA_DIR}",
                 "mkdir -p /etc/influxdb2",
-                f'grep -q "bolt-path" /etc/influxdb2/config.toml 2>/dev/null && '
+                f'grep -q "bolt-path" /etc/influxdb/config.toml 2>/dev/null && '
                 f"echo 'INFLUXDB_CONFIG:SKIP' || "
-                f'cat > /etc/influxdb2/config.toml << \'CONF_EOF\'\n'
+                f'cat > /etc/influxdb/config.toml << \'CONF_EOF\'\n'
                 f'bolt-path = "{INFLUXDB_DATA_DIR}/influxd.bolt"\n'
                 f'engine-path = "{INFLUXDB_DATA_DIR}/engine"\n'
                 f"CONF_EOF",
