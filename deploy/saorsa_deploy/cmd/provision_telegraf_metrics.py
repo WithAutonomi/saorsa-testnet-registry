@@ -6,6 +6,7 @@ from saorsa_deploy.cmd.provision_telegraf import (
     group_by_credentials,
     read_inventory,
     read_ips_from_file,
+    set_hostnames,
 )
 from saorsa_deploy.provisioning.telegraf_metrics import TelegrafMetricsProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
@@ -78,6 +79,7 @@ def cmd_provision_telegraf_metrics(args):
 
         groups = group_by_credentials(entries)
         clear_known_hosts(all_ips, console)
+        set_hostnames(entries, console)
 
         for (ssh_user, ssh_key), ips in groups.items():
             console.print(

@@ -1,6 +1,8 @@
 import json
+import subprocess
 import sys
 from collections import defaultdict
+from pathlib import Path
 
 from rich.console import Console
 
@@ -37,11 +39,14 @@ def read_inventory(file_path: str) -> list[dict]:
         raise ValueError(f"No node_vms found in {file_path}")
     entries = []
     for vm in node_vms:
-        entries.append({
+        entry = {
             "ip": vm["ip"],
             "ssh_user": vm.get("ssh_user", "root"),
             "ssh_key": vm.get("ssh_key", "~/.ssh/id_rsa"),
-        })
+        }
+        if "name" in vm:
+            entry["name"] = vm["name"]
+        entries.append(entry)
     return entries
 
 
@@ -52,6 +57,64 @@ def group_by_credentials(entries: list[dict]) -> dict[tuple, list[str]]:
         key = (entry["ssh_user"], entry["ssh_key"])
         groups[key].append(entry["ip"])
     return dict(groups)
+
+
+def set_hostnames(entries: list[dict], console: Console) -> None:
+    """Set the system hostname on VMs that have a 'name' field in the inventory.
+
+    Runs per-host because each VM needs a different hostname. Skips entries
+    without a 'name' field or where the hostname already matches.
+    """
+    named = [e for e in entries if "name" in e]
+    if not named:
+        return
+
+    console.print(
+        f"[bold]Setting hostnames on {len(named)} VM(s)...[/bold]"
+    )
+    failed = []
+    for entry in named:
+        ip = entry["ip"]
+        name = entry["name"]
+        ssh_user = entry["ssh_user"]
+        ssh_key = str(Path(entry["ssh_key"]).expanduser())
+        sudo_prefix = "sudo " if ssh_user != "root" else ""
+        cmd = (
+            f"current=$(hostname) && "
+            f'[ "$current" = "{name}" ] && echo "HOSTNAME:SKIP" || '
+            f"({sudo_prefix}hostnamectl set-hostname {name} && "
+            f'echo "HOSTNAME:SET")'
+        )
+        ssh_cmd = [
+            "ssh", "-i", ssh_key,
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=10",
+            f"{ssh_user}@{ip}",
+            cmd,
+        ]
+        try:
+            result = subprocess.run(
+                ssh_cmd, capture_output=True, text=True, timeout=30,
+            )
+            output = result.stdout.strip()
+            if result.returncode != 0:
+                console.print(
+                    f"  [red]Failed {ip} ({name}):[/red] {result.stderr.strip()}"
+                )
+                failed.append(ip)
+            elif "HOSTNAME:SKIP" in output:
+                console.print(f"  [dim]{ip} already has hostname {name}[/dim]")
+            else:
+                console.print(f"  [green]{ip}[/green] → {name}")
+        except subprocess.TimeoutExpired:
+            console.print(f"  [red]Timeout setting hostname on {ip}[/red]")
+            failed.append(ip)
+    if failed:
+        console.print(
+            f"[yellow]Warning: hostname setting failed on "
+            f"{len(failed)} host(s)[/yellow]"
+        )
+    console.print()
 
 
 def _resolve_es_credentials(args, console):
@@ -133,6 +196,7 @@ def cmd_provision_telegraf(args):
 
         groups = group_by_credentials(entries)
         clear_known_hosts(all_ips, console)
+        set_hostnames(entries, console)
 
         for (ssh_user, ssh_key), ips in groups.items():
             console.print(
