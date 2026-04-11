@@ -67,7 +67,8 @@ class TelegrafProvisioner:
                 name="Install Telegraf",
                 commands=[
                     "dpkg -s telegraf >/dev/null 2>&1 && echo 'TELEGRAF:SKIP' || "
-                    "(wget -q https://dl.influxdata.com/telegraf/releases/"
+                    "(rm -f /tmp/telegraf.deb && "
+                    "wget -q https://dl.influxdata.com/telegraf/releases/"
                     "telegraf_1.33.0-1_amd64.deb -O /tmp/telegraf.deb && "
                     "dpkg -i /tmp/telegraf.deb && "
                     "rm -f /tmp/telegraf.deb && "
