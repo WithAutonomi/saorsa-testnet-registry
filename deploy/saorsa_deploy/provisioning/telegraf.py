@@ -51,7 +51,11 @@ class TelegrafProvisioner:
             (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
-        state = State(inventory=inventory, config=Config())
+        config = Config()
+        if self.ssh_user != "root":
+            config.SUDO = True
+            config.USE_SUDO_PASSWORD = False
+        state = State(inventory=inventory, config=config)
 
         self.console.print(f"Connecting to {len(self.host_ips)} host(s)...")
         connect_all(state)
