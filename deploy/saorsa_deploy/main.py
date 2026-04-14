@@ -535,11 +535,18 @@ def main():
         default="ant-production",
         help="Deployment name (default: ant-production)",
     )
-    bootstrap_prod_parser.add_argument(
+    bootstrap_prod_binary = bootstrap_prod_parser.add_mutually_exclusive_group()
+    bootstrap_prod_binary.add_argument(
         "--node-version",
         type=str,
         default=None,
         help="Specific ant-node release version (e.g., 0.3.0). Uses latest if not specified.",
+    )
+    bootstrap_prod_binary.add_argument(
+        "--path",
+        type=str,
+        default=None,
+        help="Path to a local ant-node binary to upload to nodes.",
     )
     bootstrap_prod_parser.add_argument(
         "--ssh-key-path",

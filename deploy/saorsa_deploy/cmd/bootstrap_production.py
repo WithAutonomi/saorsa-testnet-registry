@@ -173,13 +173,14 @@ def _provision_node(
     ip: str,
     provider: str,
     ssh_key_path: str,
-    binary_url: str,
+    binary_url: str | None,
     binary_is_archive: bool,
     bootstrap_peers: str | None,
     rewards_address: str,
     evm_network: str,
     console: Console,
     ssh_ip: str | None = None,
+    binary_path: str | None = None,
 ) -> None:
     """Provision a single production node: striped volume, binary, service."""
     from io import StringIO
@@ -253,7 +254,17 @@ def _provision_node(
         )
 
         # Install binary
-        if binary_is_archive:
+        if binary_path:
+            add_op(
+                state,
+                files.put,
+                name="Upload local ant-node binary",
+                src=binary_path,
+                dest=BINARY_INSTALL_PATH,
+                mode="755",
+                add_deploy_dir=False,
+            )
+        elif binary_is_archive:
             install_cmd = (
                 f"test -f {BINARY_INSTALL_PATH} "
                 f"&& echo 'ANT_BINARY:SKIP' || "
@@ -264,6 +275,12 @@ def _provision_node(
                 f"rm -f /tmp/{RELEASE_ASSET_NAME} && "
                 f"echo 'ANT_BINARY:INSTALLED')"
             )
+            add_op(
+                state,
+                server.shell,
+                name="Download and install ant-node binary",
+                commands=[install_cmd],
+            )
         else:
             install_cmd = (
                 f"test -f {BINARY_INSTALL_PATH} "
@@ -272,13 +289,12 @@ def _provision_node(
                 f"chmod +x {BINARY_INSTALL_PATH} && "
                 f"echo 'ANT_BINARY:INSTALLED')"
             )
-
-        add_op(
-            state,
-            server.shell,
-            name="Download and install ant-node binary",
-            commands=[install_cmd],
-        )
+            add_op(
+                state,
+                server.shell,
+                name="Download and install ant-node binary",
+                commands=[install_cmd],
+            )
 
         # Systemd unit
         unit_content = build_systemd_unit(
@@ -488,7 +504,23 @@ def cmd_bootstrap_production(args):
 
     # Resolve binary
     console.print("Resolving ant-node binary...")
-    if args.node_version:
+    binary_path = getattr(args, "path", None)
+    if binary_path:
+        binary_path = str(Path(binary_path).expanduser().resolve())
+        if not Path(binary_path).exists():
+            console.print(
+                f"[bold red]Error:[/bold red] Binary not found at {binary_path}"
+            )
+            sys.exit(1)
+        if not os.access(binary_path, os.R_OK):
+            console.print(
+                f"[bold red]Error:[/bold red] Binary at {binary_path} is not readable"
+            )
+            sys.exit(1)
+        binary_url = None
+        binary_is_archive = False
+        console.print(f"  Using local binary: {binary_path}")
+    elif args.node_version:
         if not check_release_exists(args.node_version):
             console.print(
                 f"[bold red]Error:[/bold red] Release v{args.node_version} not found"
@@ -636,6 +668,7 @@ def cmd_bootstrap_production(args):
         evm_network=args.evm_network,
         console=console,
         ssh_ip=ssh_ips.get(genesis_node["ip"]),
+        binary_path=binary_path,
     )
     console.print("[green]Genesis node provisioned.[/green]")
     console.print()
@@ -665,13 +698,14 @@ def cmd_bootstrap_production(args):
             f"ip='{ip}', "
             f"provider='{node['provider']}', "
             f"ssh_key_path='{ssh_key_path}', "
-            f"binary_url='{binary_url}', "
+            f"binary_url={repr(binary_url)}, "
             f"binary_is_archive={binary_is_archive}, "
             f"bootstrap_peers='{genesis_peer}', "
             f"rewards_address='{args.rewards_address}', "
             f"evm_network='{args.evm_network}', "
             f"console=Console(), "
-            f"ssh_ip={repr(node_ssh_ip)}"
+            f"ssh_ip={repr(node_ssh_ip)}, "
+            f"binary_path={repr(binary_path)}"
             f")"
         )
         proc = subprocess.Popen(
