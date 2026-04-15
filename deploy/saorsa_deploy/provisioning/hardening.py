@@ -238,6 +238,7 @@ def build_systemd_unit(
         "--port", str(port),
         "--root-dir", data_dir,
         "--enable-logging",
+        "--stop-on-upgrade",
     ]
     if bootstrap_peers:
         exec_args.extend(["--bootstrap", bootstrap_peers])

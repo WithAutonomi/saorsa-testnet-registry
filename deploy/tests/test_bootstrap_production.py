@@ -327,6 +327,10 @@ class TestBuildSystemdUnit:
         unit = build_systemd_unit("/usr/local/bin/ant-node", "/data")
         assert "--enable-logging" in unit
 
+    def test_includes_stop_on_upgrade(self):
+        unit = build_systemd_unit("/usr/local/bin/ant-node", "/data")
+        assert "--stop-on-upgrade" in unit
+
 
 # === Provider Terraform directories ===
 
