@@ -56,6 +56,11 @@ def cmd_destroy(args):
     resources_dir = get_resources_dir()
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
 
+    # Extract per-provider vm_count from state
+    providers_config = terraform_variables.get("providers", {})
+    # Fallback for old-format state with flat vm_count
+    fallback_vm_count = terraform_variables.get("vm_count")
+
     configs = []
     for provider_name, region in region_pairs:
         provider = PROVIDERS[provider_name]
@@ -64,8 +69,25 @@ def cmd_destroy(args):
         workspace_dir = workspace_base / f"{provider_name}-{name}-{region}"
         state_key = f"{provider.state_key_prefix}-{name}-{region}.tfstate"
 
-        variables = dict(terraform_variables)
-        variables["region"] = region
+        if provider_name in providers_config:
+            vm_count = str(providers_config[provider_name]["vm_count"])
+        elif fallback_vm_count:
+            vm_count = str(fallback_vm_count)
+        else:
+            console.print(
+                f"[bold red]Error:[/bold red] Cannot determine vm_count for {provider_name}"
+            )
+            sys.exit(1)
+
+        variables = {
+            "name": name,
+            "region": region,
+            "vm_count": vm_count,
+            "attached_volume_size": terraform_variables.get("attached_volume_size", "20"),
+        }
+        if provider_name == "hetzner" and provider_name in providers_config:
+            server_type = providers_config[provider_name].get("server_type", "cpx22")
+            variables["server_type"] = server_type
 
         config = TerraformRunConfig(
             provider=provider_name,

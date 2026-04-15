@@ -58,9 +58,6 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - Use DEV-01 through DEV-08 for development testnets
   - Must be unique across all active deployments
 
-- **vm_count**: Number of VMs to create per cloud provider per region
-  - Typical values: 1-5 for dev, 5-20 for larger testnets
-
 - **node_count**: Number of node services to run per VM
   - Typical values: 10-50 depending on VM size
 
@@ -68,18 +65,31 @@ DEPLOYMENT_CONFIG_DOCS = """# Testnet Deployment Configuration Reference
   - This port is used to construct the bootstrap address for other nodes
   - Typical value: 12000
 
+## Provider Configuration
+
+At least one provider must have vm_count > 0. Each provider has two
+parameters: vm_count (VMs per region) and regions (number of regions).
+
+- **do_vm_count**: Number of VMs per region on Digital Ocean (default: 0)
+- **do_regions**: Number of Digital Ocean regions to use (default: 3)
+  - Available: lon1, nyc1, ams3, sfo3, sgp1, blr1, fra1, tor1
+
+- **hetzner_vm_count**: Number of VMs per region on Hetzner (default: 0)
+  - Note: Hetzner accounts typically have a max of 50 VMs
+- **hetzner_regions**: Number of Hetzner regions to use (default: 3)
+  - Available: fsn1, nbg1, hel1, ash, hil
+
+- **vultr_vm_count**: Number of VMs per region on Vultr (default: 0)
+- **vultr_regions**: Number of Vultr regions to use (default: 3)
+  - Available: ewr, ord, dfw, lax, ams, lhr, fra, sjc, syd, nrt, cdg, sgp
+
 ## Optional Parameters
 
-- **testnet**: Whether to run in testnet mode (default: true)
-  - When true, uses Digital Ocean only in the lon1 region
-  - Nodes are started with the --testnet flag
+- **testnet**: Run nodes with --network-mode testnet (default: true)
+  - Applies to provision and provision-genesis commands
 
 - **attached_volume_size**: Size of attached storage volume in GB (default: 20)
   - Increase for testnets that will store significant data
-
-- **region_counts**: Comma-separated count of regions to use per provider (default: "3")
-  - Example: "3" means 3 regions per cloud provider
-  - VMs are distributed across the specified number of regions
 
 - **log_level**: Logging level for all nodes
   - Common values: "trace", "debug", "info", "warn", "error"
@@ -123,20 +133,15 @@ released binary is used.
 
 ## Examples
 
-### Minimal development testnet
-Deploy a testnet called DEV-01 with 1 VM, 10 nodes, genesis port 12000.
+### Minimal development testnet (Digital Ocean only)
+name=DEV-01, do_vm_count=1, do_regions=1, node_count=10, genesis_port=12000
 
-### Standard development testnet
-Deploy a DEV-02 testnet with 3 VMs, 25 nodes per VM, genesis port 12000,
-40GB volumes, log level debug, in testnet mode.
+### Multi-provider testnet
+name=DEV-02, do_vm_count=5, do_regions=3, hetzner_vm_count=3, hetzner_regions=2,
+vultr_vm_count=4, vultr_regions=3, node_count=25, genesis_port=12000
 
-### Deploying with a specific node version
-Deploy a DEV-04 testnet with 2 VMs, 10 nodes, genesis port 12000,
-using ant-node version 0.3.3.
-
-### Deploying with a custom node binary from a branch
-Deploy a DEV-05 testnet with 2 VMs, 10 nodes, genesis port 12000,
-building ant-node from the feat/my-change branch (maidsafe repo).
+### Hetzner-only testnet (respecting 50 VM limit)
+name=DEV-03, hetzner_vm_count=10, hetzner_regions=5, node_count=20, genesis_port=12000
 
 ## Tracking Deployments
 
@@ -169,12 +174,16 @@ def get_deployment_config_docs() -> str:
 @mcp.tool()
 def create_deployment(
     name: str,
-    vm_count: int,
     node_count: int,
     genesis_port: int,
+    do_vm_count: int = 0,
+    do_regions: int = 3,
+    hetzner_vm_count: int = 0,
+    hetzner_regions: int = 3,
+    vultr_vm_count: int = 0,
+    vultr_regions: int = 3,
     testnet: bool = True,
     attached_volume_size: int | None = None,
-    region_counts: str | None = None,
     log_level: str | None = None,
     port: int | None = None,
     node_version: str | None = None,
@@ -192,14 +201,20 @@ def create_deployment(
     Read the testnet://docs/deployment-config resource for full parameter
     documentation, defaults, and usage examples.
 
+    At least one provider must have vm_count > 0.
+
     Args:
         name: Unique deployment name (e.g. "DEV-01")
-        vm_count: Number of VMs per provider per region
         node_count: Number of node services per VM
         genesis_port: Port the genesis node will run on
-        testnet: Run in testnet mode (default: true)
+        do_vm_count: Number of VMs per region on Digital Ocean (0 = don't use)
+        do_regions: Number of Digital Ocean regions (default: 3)
+        hetzner_vm_count: Number of VMs per region on Hetzner (0 = don't use)
+        hetzner_regions: Number of Hetzner regions (default: 3)
+        vultr_vm_count: Number of VMs per region on Vultr (0 = don't use)
+        vultr_regions: Number of Vultr regions (default: 3)
+        testnet: Run nodes with --network-mode testnet (default: true)
         attached_volume_size: Size of attached volume in GB
-        region_counts: Comma-separated region counts per provider (default: "3")
         log_level: Logging level the nodes will run with
         port: Beginning of a port range for non-genesis nodes
         node_version: Specific released version of ant-node to deploy (e.g. "0.3.3")
@@ -209,6 +224,12 @@ def create_deployment(
         upgrade_channel: Upgrade channel for ant-node ("beta" or "stable")
         rewards_address: Arbitrum wallet address for node rewards
     """
+    if do_vm_count <= 0 and hetzner_vm_count <= 0 and vultr_vm_count <= 0:
+        return (
+            "Error: At least one provider must have vm_count > 0. "
+            "Set do_vm_count, hetzner_vm_count, or vultr_vm_count."
+        )
+
     output_lines = []
 
     # Step 1: Build binary if branch_name specified
@@ -227,17 +248,18 @@ def create_deployment(
         output_lines.append("Build completed.")
 
     # Step 2: Infrastructure
-    infra_args = [
-        "infra",
-        "--name", name,
-        "--vm-count", str(vm_count),
-    ]
-    if testnet:
-        infra_args.append("--testnet")
+    infra_args = ["infra", "--name", name]
+    if do_vm_count > 0:
+        infra_args.extend(["--do-vm-count", str(do_vm_count)])
+        infra_args.extend(["--do-regions", str(do_regions)])
+    if hetzner_vm_count > 0:
+        infra_args.extend(["--hetzner-vm-count", str(hetzner_vm_count)])
+        infra_args.extend(["--hetzner-regions", str(hetzner_regions)])
+    if vultr_vm_count > 0:
+        infra_args.extend(["--vultr-vm-count", str(vultr_vm_count)])
+        infra_args.extend(["--vultr-regions", str(vultr_regions)])
     if attached_volume_size is not None:
         infra_args.extend(["--attached-volume-size", str(attached_volume_size)])
-    if region_counts is not None:
-        infra_args.extend(["--region-counts", region_counts])
 
     output_lines.append("Provisioning infrastructure...")
     rc, stdout, stderr = _run_deploy(infra_args)

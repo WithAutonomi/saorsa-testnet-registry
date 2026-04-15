@@ -18,51 +18,62 @@ PROVIDERS = {
         tf_dir="digitalocean",
         state_key_prefix="saorsa-deploy/do",
     ),
+    "hetzner": ProviderConfig(
+        name="hetzner",
+        regions=["fsn1", "nbg1", "hel1", "sin"],
+        default_region="fsn1",
+        tf_dir="hetzner",
+        state_key_prefix="saorsa-deploy/hz",
+    ),
+    "vultr": ProviderConfig(
+        name="vultr",
+        regions=[
+            "ewr", "ord", "dfw", "lax", "ams", "lhr",
+            "fra", "sjc", "syd", "nrt", "cdg", "sgp",
+        ],
+        default_region="ewr",
+        tf_dir="vultr",
+        state_key_prefix="saorsa-deploy/vl",
+    ),
 }
 
 DEFAULT_PROVIDER = "digitalocean"
 
 
+@dataclass
+class ProviderSpec:
+    """Per-provider deployment specification from CLI flags."""
+
+    name: str
+    vm_count: int
+    region_count: int
+
+
 def resolve_regions(
-    region_counts: str,
-    testnet: bool,
+    provider_specs: list[ProviderSpec],
     providers: dict[str, ProviderConfig] | None = None,
 ) -> list[tuple[str, str]]:
-    """Resolve provider/region pairs based on arguments.
+    """Resolve provider/region pairs from per-provider specs.
 
     Returns a list of (provider_name, region) tuples.
 
-    If testnet is True, returns only the default provider with its default region.
-    Otherwise, parses region_counts as comma-separated integers, one per provider,
-    and selects that many regions from each provider's region list.
+    Only providers with vm_count > 0 are included.
     """
     if providers is None:
         providers = PROVIDERS
 
-    if testnet:
-        default = providers[DEFAULT_PROVIDER]
-        return [(default.name, default.default_region)]
-
-    counts = [int(c.strip()) for c in region_counts.split(",")]
-    provider_names = sorted(providers.keys())
-
-    if len(counts) == 1:
-        counts = counts * len(provider_names)
-    elif len(counts) != len(provider_names):
-        raise ValueError(
-            f"Expected {len(provider_names)} region counts (one per provider), got {len(counts)}"
-        )
-
     result = []
-    for provider_name, count in zip(provider_names, counts):
-        provider = providers[provider_name]
+    for spec in provider_specs:
+        if spec.vm_count <= 0:
+            continue
+        provider = providers[spec.name]
         available = provider.regions
-        if count > len(available):
+        if spec.region_count > len(available):
             raise ValueError(
-                f"Requested {count} regions for {provider_name}, "
+                f"Requested {spec.region_count} regions for {spec.name}, "
                 f"but only {len(available)} are available"
             )
-        for region in available[:count]:
-            result.append((provider_name, region))
+        for region in available[: spec.region_count]:
+            result.append((provider.name, region))
 
     return result

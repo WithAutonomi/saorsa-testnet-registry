@@ -4,32 +4,48 @@ from pyinfra.operations import server
 
 MOUNT_POINT = "/mnt/ant-node-storage"
 LOG_DIR = f"{MOUNT_POINT}/log"
-VOLUME_DEVICE_GLOB = "/dev/disk/by-id/scsi-0DO_Volume_*"
+VOLUME_DEVICE_GLOBS = [
+    "/dev/disk/by-id/scsi-0DO_Volume_*",   # Digital Ocean
+    "/dev/disk/by-id/scsi-0HC_Volume_*",   # Hetzner
+    "/dev/disk/by-id/virtio-*",            # Vultr
+]
+# DO-only alias used by monitoring/elastic (which remain DO-only)
+VOLUME_DEVICE_GLOB = VOLUME_DEVICE_GLOBS[0]
 STRIPE_VG_NAME = "ant_storage_vg"
 STRIPE_LV_NAME = "ant_storage_lv"
 
 
 def build_mount_volume_command(mount_point: str = MOUNT_POINT) -> str:
-    """Build a shell command that finds a DigitalOcean volume, mounts it, and adds an fstab entry.
+    """Build a shell command that finds an attached volume, mounts it, and adds an fstab entry.
 
+    Supports Digital Ocean, Hetzner, and Vultr volume device paths.
     The command is idempotent: it skips if already mounted and only adds the fstab entry once.
     Reports status via stdout markers:
       - ANT_VOLUME:ALREADY_MOUNTED — mount point already active
       - ANT_VOLUME:MOUNTED — volume was mounted and fstab updated
       - ANT_VOLUME:NO_DEVICE — no attached volume device found
     """
+    # Try each provider's glob pattern until one matches
+    discover_parts = " ".join(
+        f'[ -z "$DEVICE" ] && DEVICE=$(ls {glob} 2>/dev/null | head -n1);'
+        for glob in VOLUME_DEVICE_GLOBS
+    )
     return (
         f"if mountpoint -q {mount_point}; then "
         f"echo 'ANT_VOLUME:ALREADY_MOUNTED'; "
         f"else "
-        f"DEVICE=$(ls {VOLUME_DEVICE_GLOB} 2>/dev/null | head -n1); "
+        f"DEVICE=''; {discover_parts} "
         f'if [ -z "$DEVICE" ]; then '
         f"echo 'ANT_VOLUME:NO_DEVICE'; exit 1; "
         f"fi; "
+        f"if ! blkid -o value -s TYPE $DEVICE > /dev/null 2>&1; then "
+        f"mkfs.ext4 -q $DEVICE || {{ echo 'ANT_VOLUME:FORMAT_FAILED'; exit 1; }}; "
+        f"fi; "
         f"mkdir -p {mount_point} && "
-        f"mount -o defaults,nofail,discard $DEVICE {mount_point} && "
+        f"mount -o defaults,nofail,discard $DEVICE {mount_point} || "
+        f"{{ echo 'ANT_VOLUME:MOUNT_FAILED'; exit 1; }}; "
         f"grep -q '{mount_point}' /etc/fstab || "
-        f'echo "$DEVICE {mount_point} ext4 defaults,nofail,discard 0 2" >> /etc/fstab && '
+        f'echo "$DEVICE {mount_point} ext4 defaults,nofail,discard 0 2" >> /etc/fstab; '
         f"echo 'ANT_VOLUME:MOUNTED'; "
         f"fi"
     )

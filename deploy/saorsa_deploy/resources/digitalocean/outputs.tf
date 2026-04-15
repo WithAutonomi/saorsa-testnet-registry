@@ -1,8 +1,8 @@
-output "droplet_ips" {
+output "vm_ips" {
   value = digitalocean_droplet.node_vm[*].ipv4_address
 }
 
-output "droplet_ids" {
+output "vm_ids" {
   value = digitalocean_droplet.node_vm[*].id
 }
 

@@ -1,6 +1,6 @@
 from saorsa_deploy.provisioning.volume import (
     MOUNT_POINT,
-    VOLUME_DEVICE_GLOB,
+    VOLUME_DEVICE_GLOBS,
     build_mount_volume_command,
 )
 
@@ -31,9 +31,10 @@ class TestBuildMountVolumeCommand:
         cmd = build_mount_volume_command()
         assert "ANT_VOLUME:NO_DEVICE" in cmd
 
-    def test_uses_do_volume_glob(self):
+    def test_uses_all_provider_volume_globs(self):
         cmd = build_mount_volume_command()
-        assert VOLUME_DEVICE_GLOB in cmd
+        for glob in VOLUME_DEVICE_GLOBS:
+            assert glob in cmd
 
     def test_creates_mount_point_directory(self):
         cmd = build_mount_volume_command()

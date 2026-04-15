@@ -78,21 +78,46 @@ def main():
         help="Deployment name (used as prefix in VM names, e.g. DEV-01)",
     )
     infra_parser.add_argument(
-        "--region-counts",
-        type=str,
-        default="3",
-        help="Comma-separated region counts per provider (default: 3)",
-    )
-    infra_parser.add_argument(
-        "--testnet",
-        action="store_true",
-        help="Run in testnet mode (Digital Ocean only, lon1 region)",
-    )
-    infra_parser.add_argument(
-        "--vm-count",
+        "--do-vm-count",
         type=int,
-        required=True,
-        help="Number of VMs per provider per region",
+        default=0,
+        help="Number of VMs per region on Digital Ocean (default: 0, provider not used)",
+    )
+    infra_parser.add_argument(
+        "--do-regions",
+        type=int,
+        default=3,
+        help="Number of Digital Ocean regions to use (default: 3)",
+    )
+    infra_parser.add_argument(
+        "--hetzner-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on Hetzner (default: 0, provider not used)",
+    )
+    infra_parser.add_argument(
+        "--hetzner-regions",
+        type=int,
+        default=3,
+        help="Number of Hetzner regions to use (default: 3)",
+    )
+    infra_parser.add_argument(
+        "--hetzner-server-type",
+        type=str,
+        default="cpx22",
+        help="Hetzner server type (default: cpx22). Alternatives: cx23, cax11",
+    )
+    infra_parser.add_argument(
+        "--vultr-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on Vultr (default: 0, provider not used)",
+    )
+    infra_parser.add_argument(
+        "--vultr-regions",
+        type=int,
+        default=3,
+        help="Number of Vultr regions to use (default: 3)",
     )
 
     # === provision ===
@@ -148,7 +173,7 @@ def main():
     provision_parser.add_argument(
         "--testnet",
         action="store_true",
-        help="Run the nodes with the --testnet flag",
+        help="Run nodes with --network-mode testnet",
     )
     provision_parser.add_argument(
         "--upgrade-channel",
@@ -209,7 +234,7 @@ def main():
     provision_genesis_parser.add_argument(
         "--testnet",
         action="store_true",
-        help="Run the node with the --testnet flag",
+        help="Run node with --network-mode testnet",
     )
     provision_genesis_parser.add_argument(
         "--upgrade-channel",

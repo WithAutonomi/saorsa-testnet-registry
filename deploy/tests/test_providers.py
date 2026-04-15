@@ -1,6 +1,6 @@
 import pytest
 
-from saorsa_deploy.providers import ProviderConfig, resolve_regions
+from saorsa_deploy.providers import ProviderConfig, ProviderSpec, resolve_regions
 
 
 @pytest.fixture
@@ -17,15 +17,8 @@ def single_provider():
 
 
 @pytest.fixture
-def two_providers():
+def three_providers():
     return {
-        "aws": ProviderConfig(
-            name="aws",
-            regions=["us-east-1", "eu-west-1", "ap-southeast-1"],
-            default_region="us-east-1",
-            tf_dir="aws",
-            state_key_prefix="saorsa-deploy/aws",
-        ),
         "digitalocean": ProviderConfig(
             name="digitalocean",
             regions=["lon1", "nyc1", "ams3", "sfo3", "sgp1"],
@@ -33,22 +26,27 @@ def two_providers():
             tf_dir="digitalocean",
             state_key_prefix="saorsa-deploy/do",
         ),
+        "hetzner": ProviderConfig(
+            name="hetzner",
+            regions=["fsn1", "nbg1", "hel1", "ash", "hil"],
+            default_region="fsn1",
+            tf_dir="hetzner",
+            state_key_prefix="saorsa-deploy/hz",
+        ),
+        "vultr": ProviderConfig(
+            name="vultr",
+            regions=["ewr", "ord", "dfw", "lax", "ams", "lhr"],
+            default_region="ewr",
+            tf_dir="vultr",
+            state_key_prefix="saorsa-deploy/vl",
+        ),
     }
-
-
-class TestResolveRegionsTestnet:
-    def test_testnet_returns_default_provider_and_region(self, single_provider):
-        result = resolve_regions("3", testnet=True, providers=single_provider)
-        assert result == [("digitalocean", "lon1")]
-
-    def test_testnet_ignores_region_counts(self, single_provider):
-        result = resolve_regions("5", testnet=True, providers=single_provider)
-        assert result == [("digitalocean", "lon1")]
 
 
 class TestResolveRegionsSingleProvider:
     def test_selects_requested_number_of_regions(self, single_provider):
-        result = resolve_regions("3", testnet=False, providers=single_provider)
+        specs = [ProviderSpec("digitalocean", vm_count=5, region_count=3)]
+        result = resolve_regions(specs, providers=single_provider)
         assert result == [
             ("digitalocean", "lon1"),
             ("digitalocean", "nyc1"),
@@ -56,44 +54,59 @@ class TestResolveRegionsSingleProvider:
         ]
 
     def test_single_region(self, single_provider):
-        result = resolve_regions("1", testnet=False, providers=single_provider)
+        specs = [ProviderSpec("digitalocean", vm_count=5, region_count=1)]
+        result = resolve_regions(specs, providers=single_provider)
         assert result == [("digitalocean", "lon1")]
 
     def test_all_regions(self, single_provider):
-        result = resolve_regions("5", testnet=False, providers=single_provider)
+        specs = [ProviderSpec("digitalocean", vm_count=5, region_count=5)]
+        result = resolve_regions(specs, providers=single_provider)
         assert len(result) == 5
 
     def test_too_many_regions_raises(self, single_provider):
+        specs = [ProviderSpec("digitalocean", vm_count=5, region_count=10)]
         with pytest.raises(ValueError, match="only 5 are available"):
-            resolve_regions("10", testnet=False, providers=single_provider)
+            resolve_regions(specs, providers=single_provider)
 
 
 class TestResolveRegionsMultiProvider:
-    def test_single_count_applies_to_all_providers(self, two_providers):
-        result = resolve_regions("2", testnet=False, providers=two_providers)
-        assert ("aws", "us-east-1") in result
-        assert ("aws", "eu-west-1") in result
-        assert ("digitalocean", "lon1") in result
-        assert ("digitalocean", "nyc1") in result
-        assert len(result) == 4
-
-    def test_per_provider_counts(self, two_providers):
-        result = resolve_regions("1,3", testnet=False, providers=two_providers)
-        aws_regions = [(p, r) for p, r in result if p == "aws"]
+    def test_multiple_providers_with_different_region_counts(self, three_providers):
+        specs = [
+            ProviderSpec("digitalocean", vm_count=10, region_count=3),
+            ProviderSpec("hetzner", vm_count=5, region_count=2),
+            ProviderSpec("vultr", vm_count=8, region_count=4),
+        ]
+        result = resolve_regions(specs, providers=three_providers)
         do_regions = [(p, r) for p, r in result if p == "digitalocean"]
-        assert len(aws_regions) == 1
+        hz_regions = [(p, r) for p, r in result if p == "hetzner"]
+        vl_regions = [(p, r) for p, r in result if p == "vultr"]
         assert len(do_regions) == 3
+        assert len(hz_regions) == 2
+        assert len(vl_regions) == 4
 
-    def test_mismatched_counts_raises(self, two_providers):
-        with pytest.raises(ValueError, match="Expected 2 region counts"):
-            resolve_regions("1,2,3", testnet=False, providers=two_providers)
+    def test_single_provider_in_multi_provider_setup(self, three_providers):
+        specs = [ProviderSpec("hetzner", vm_count=5, region_count=2)]
+        result = resolve_regions(specs, providers=three_providers)
+        assert result == [("hetzner", "fsn1"), ("hetzner", "nbg1")]
+
+    def test_zero_vm_count_skips_provider(self, three_providers):
+        specs = [
+            ProviderSpec("digitalocean", vm_count=10, region_count=2),
+            ProviderSpec("hetzner", vm_count=0, region_count=3),
+            ProviderSpec("vultr", vm_count=5, region_count=1),
+        ]
+        result = resolve_regions(specs, providers=three_providers)
+        providers_used = {p for p, _ in result}
+        assert "hetzner" not in providers_used
+        assert len(result) == 3  # 2 DO + 1 Vultr
 
 
 class TestResolveRegionsEdgeCases:
-    def test_whitespace_in_counts(self, single_provider):
-        result = resolve_regions(" 2 ", testnet=False, providers=single_provider)
-        assert len(result) == 2
+    def test_empty_specs_returns_empty(self, single_provider):
+        result = resolve_regions([], providers=single_provider)
+        assert result == []
 
-    def test_whitespace_in_comma_separated(self, two_providers):
-        result = resolve_regions("1, 2", testnet=False, providers=two_providers)
-        assert len(result) == 3
+    def test_negative_vm_count_skips_provider(self, single_provider):
+        specs = [ProviderSpec("digitalocean", vm_count=-1, region_count=3)]
+        result = resolve_regions(specs, providers=single_provider)
+        assert result == []
