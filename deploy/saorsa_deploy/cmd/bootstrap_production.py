@@ -225,9 +225,30 @@ def _provision_node(
                 "      addresses:\\n"
                 f"        - {ip}/32"
             )
+            # Replace the default route's source IP so that UDP responses
+            # use the floating IP, not the DHCP-assigned primary address.
+            # Without this, QUIC handshakes fail because clients drop
+            # replies from an unexpected source IP.
+            #
+            # A dhclient exit hook re-applies the route after DHCP renewals,
+            # which would otherwise overwrite the source IP.
             route_cmd = (
                 f"GATEWAY=$(ip route show default | awk '{{print $3}}') && "
                 f"ip route replace default via $GATEWAY dev eth0 src {ip}"
+            )
+            dhclient_hook = (
+                f"mkdir -p /etc/dhcp/dhclient-exit-hooks.d && "
+                f"cat > /etc/dhcp/dhclient-exit-hooks.d/floating-ip-source << 'HOOK'\n"
+                f"if [ \"$reason\" = \"BOUND\" ] || [ \"$reason\" = \"RENEW\" ] || "
+                f"[ \"$reason\" = \"REBIND\" ]; then\n"
+                f"    GATEWAY=$(ip route show default | awk '{{print $3}}')\n"
+                f"    if [ -n \"$GATEWAY\" ]; then\n"
+                f"        ip route replace default via $GATEWAY dev eth0 src {ip} "
+                f"2>/dev/null || true\n"
+                f"    fi\n"
+                f"fi\n"
+                f"HOOK\n"
+                f"chmod +x /etc/dhcp/dhclient-exit-hooks.d/floating-ip-source"
             )
             add_op(
                 state,
@@ -239,6 +260,7 @@ def _provision_node(
                     f"printf '{netplan_cfg}\\n' > /etc/netplan/60-floating-ip.yaml",
                     "netplan apply 2>/dev/null || true",
                     route_cmd,
+                    dhclient_hook,
                 ],
             )
 
