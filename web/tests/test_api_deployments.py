@@ -1,13 +1,11 @@
-"""Tests for the deployments API validation logic."""
-
-from unittest.mock import MagicMock, patch
-
-import requests as http_requests
+"""Tests for the deployments API (read-only)."""
 
 import pytest
 
+from saorsa_db.db import Base
+from saorsa_db.models import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_web.app import create_app
-from saorsa_web.db import Base, db_session, session_factory
+from saorsa_web.db import db_session, session_factory
 
 
 @pytest.fixture()
@@ -17,11 +15,6 @@ def app():
             "TESTING": True,
             "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
             "SECRET_KEY": "test-secret",
-            "GITHUB_CLIENT_ID": "fake",
-            "GITHUB_CLIENT_SECRET": "fake",
-            "WORKFLOW_RUNNER_PAT": "fake",
-            "GITHUB_REPO": "owner/repo",
-            "WORKFLOW_FILE": "launch-testnet.yml",
         }
     )
 
@@ -42,152 +35,66 @@ def client(app):
     return app.test_client()
 
 
-@pytest.fixture(autouse=True)
-def _bypass_auth():
-    """Bypass auth by making get_current_user return a fake user."""
-    with patch(
-        "saorsa_web.web.auth.get_current_user",
-        return_value={"username": "test-user"},
-    ):
-        yield
-
-
-class TestUpgradeChannelValidation:
-    def test_rejects_invalid_upgrade_channel(self, client):
-        resp = client.post(
-            "/api/deployments",
-            json={
-                "name": "TEST-01",
-                "deploy_args": {"upgrade_channel": "invalid"},
-            },
+@pytest.fixture()
+def sample_deployment(app):
+    """Create a sample deployment in the database."""
+    with app.app_context():
+        deployment = Deployment(
+            name="TEST-01",
+            status=DeploymentStatus.RUNNING,
+            deploy_args={"vm_count": 2, "node_count": 10},
         )
-        assert resp.status_code == 400
-        assert "upgrade_channel" in resp.get_json()["error"]
+        db_session.add(deployment)
+        db_session.flush()
 
-    def test_accepts_beta_upgrade_channel(self, client):
-        with patch("saorsa_web.api.deployments.dispatch_workflow", return_value=123):
-            resp = client.post(
-                "/api/deployments",
-                json={
-                    "name": "TEST-01",
-                    "deploy_args": {"upgrade_channel": "beta"},
-                },
-            )
-        assert resp.status_code == 201
-
-    def test_accepts_stable_upgrade_channel(self, client):
-        with patch("saorsa_web.api.deployments.dispatch_workflow", return_value=456):
-            resp = client.post(
-                "/api/deployments",
-                json={
-                    "name": "TEST-02",
-                    "deploy_args": {"upgrade_channel": "stable"},
-                },
-            )
-        assert resp.status_code == 201
-
-    def test_accepts_no_upgrade_channel(self, client):
-        with patch("saorsa_web.api.deployments.dispatch_workflow", return_value=789):
-            resp = client.post(
-                "/api/deployments",
-                json={
-                    "name": "TEST-03",
-                    "deploy_args": {},
-                },
-            )
-        assert resp.status_code == 201
-
-    def test_rejects_empty_string_upgrade_channel(self, client):
-        resp = client.post(
-            "/api/deployments",
-            json={
-                "name": "TEST-04",
-                "deploy_args": {"upgrade_channel": ""},
-            },
+        event = DeploymentEvent(
+            deployment_id=deployment.id,
+            event_type="created",
+            details={"deploy_args": deployment.deploy_args},
         )
-        assert resp.status_code == 400
-        assert "upgrade_channel" in resp.get_json()["error"]
+        db_session.add(event)
+        db_session.commit()
+
+        return deployment.id
 
 
-class TestBranchNameValidation:
-    def test_rejects_branch_name_without_repo_owner(self, client):
-        resp = client.post(
-            "/api/deployments",
-            json={
-                "name": "TEST-01",
-                "deploy_args": {"branch_name": "main"},
-            },
-        )
-        assert resp.status_code == 400
-        assert "repo_owner" in resp.get_json()["error"]
+class TestListDeployments:
+    def test_empty_list(self, client):
+        resp = client.get("/api/deployments")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
 
-    def test_rejects_nonexistent_branch(self, client):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 404
-        with patch(
-            "saorsa_web.api.deployments.http_requests.get",
-            return_value=mock_resp,
-        ):
-            resp = client.post(
-                "/api/deployments",
-                json={
-                    "name": "TEST-02",
-                    "deploy_args": {
-                        "branch_name": "nonexistent",
-                        "repo_owner": "saorsa-labs",
-                    },
-                },
-            )
-        assert resp.status_code == 400
-        error = resp.get_json()["error"]
-        assert "nonexistent" in error
-        assert "saorsa-labs" in error
+    def test_returns_deployments(self, client, sample_deployment):
+        resp = client.get("/api/deployments")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) == 1
+        assert data[0]["name"] == "TEST-01"
+        assert data[0]["status"] == "running"
 
-    def test_accepts_valid_branch(self, client):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        with (
-            patch(
-                "saorsa_web.api.deployments.http_requests.get",
-                return_value=mock_resp,
-            ),
-            patch(
-                "saorsa_web.api.deployments.dispatch_workflow",
-                return_value=123,
-            ),
-        ):
-            resp = client.post(
-                "/api/deployments",
-                json={
-                    "name": "TEST-03",
-                    "deploy_args": {
-                        "branch_name": "main",
-                        "repo_owner": "saorsa-labs",
-                    },
-                },
-            )
-        assert resp.status_code == 201
 
-    def test_proceeds_if_github_check_fails(self, client):
-        """If the GitHub API is unreachable, don't block the deployment."""
-        with (
-            patch(
-                "saorsa_web.api.deployments.http_requests.get",
-                side_effect=http_requests.ConnectionError("connection error"),
-            ),
-            patch(
-                "saorsa_web.api.deployments.dispatch_workflow",
-                return_value=456,
-            ),
-        ):
-            resp = client.post(
-                "/api/deployments",
-                json={
-                    "name": "TEST-04",
-                    "deploy_args": {
-                        "branch_name": "main",
-                        "repo_owner": "saorsa-labs",
-                    },
-                },
-            )
-        assert resp.status_code == 201
+class TestGetDeployment:
+    def test_not_found(self, client):
+        resp = client.get("/api/deployments/999")
+        assert resp.status_code == 404
+
+    def test_returns_deployment_with_events(self, client, sample_deployment):
+        resp = client.get(f"/api/deployments/{sample_deployment}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["name"] == "TEST-01"
+        assert len(data["events"]) == 1
+        assert data["events"][0]["event_type"] == "created"
+
+
+class TestListEvents:
+    def test_not_found(self, client):
+        resp = client.get("/api/deployments/999/events")
+        assert resp.status_code == 404
+
+    def test_returns_events(self, client, sample_deployment):
+        resp = client.get(f"/api/deployments/{sample_deployment}/events")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) == 1
+        assert data[0]["event_type"] == "created"

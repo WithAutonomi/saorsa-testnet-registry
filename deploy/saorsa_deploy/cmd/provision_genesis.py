@@ -9,6 +9,7 @@ from saorsa_deploy.binary_source import (
     get_release_url,
 )
 from saorsa_deploy.provisioning.genesis import AntGenesisNodeProvisioner
+from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
 
@@ -116,13 +117,21 @@ def cmd_provision_genesis(args):
         kwargs["binary_is_archive"] = binary_is_archive
     node = AntGenesisNodeProvisioner(**kwargs)
 
+    record_event(args.name, "genesis_provisioning_started", {"ip": bootstrap_ip, "port": args.port})
+
     try:
         node.execute()
         console.print()
         console.print("[bold green]Genesis node provisioned successfully.[/bold green]")
     except Exception as e:
         console.print(f"[bold red]Failed to provision genesis node:[/bold red] {e}")
+        from saorsa_db.models import DeploymentStatus
+
+        record_event(args.name, "genesis_provisioning_failed", {"error": str(e)})
+        record_status(args.name, DeploymentStatus.FAILED)
         sys.exit(1)
+
+    record_event(args.name, "genesis_provisioned", {"ip": bootstrap_ip, "port": args.port})
 
     try:
         update_deployment_state(args.name, {"bootstrap_port": args.port})

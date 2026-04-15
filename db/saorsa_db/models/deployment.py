@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from saorsa_web.db import Base
+from saorsa_db.db import Base
 
 
 class DeploymentStatus(enum.Enum):
@@ -27,7 +27,9 @@ class Deployment(Base):
         default=DeploymentStatus.PENDING,
         nullable=False,
     )
-    workflow_run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    workflow_run_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
     deploy_args: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

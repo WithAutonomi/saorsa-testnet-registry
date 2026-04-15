@@ -1,78 +1,52 @@
-import functools
 import os
+import subprocess
 import sys
 
-import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from saorsa_db.db import get_session_factory
+from saorsa_db.models import DeploymentStatus
+from saorsa_db.repositories import SqlAlchemyDeploymentRepository
+
 load_dotenv()
 
-REGISTRY_URL = os.environ.get("REGISTRY_URL", "http://localhost:5000")
-REGISTRY_API_TOKEN = os.environ.get("REGISTRY_API_TOKEN", "")
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://saorsa_testnet:saorsa_testnet@localhost:5432/saorsa_testnet_registry",
+)
+SAORSA_DEPLOY_CMD = os.environ.get("SAORSA_DEPLOY_CMD", "saorsa-deploy")
+
+_session_factory = get_session_factory(DATABASE_URL)
 
 
-class RegistryClient:
-    """Thin async wrapper around the testnet registry REST API."""
-
-    def __init__(self, base_url: str = REGISTRY_URL, token: str = REGISTRY_API_TOKEN):
-        self.base_url = base_url
-        self.token = token
-
-    def _headers(self) -> dict[str, str]:
-        if self.token:
-            return {"Authorization": f"Bearer {self.token}"}
-        return {}
-
-    async def get(self, path: str) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=60.0, headers=self._headers()) as client:
-            resp = await client.get(f"{self.base_url}{path}")
-            resp.raise_for_status()
-            return resp
-
-    async def post(self, path: str, json: dict) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=60.0, headers=self._headers()) as client:
-            resp = await client.post(f"{self.base_url}{path}", json=json)
-            resp.raise_for_status()
-            return resp
+def _get_repo() -> SqlAlchemyDeploymentRepository:
+    session = _session_factory()
+    return SqlAlchemyDeploymentRepository(session)
 
 
-registry = RegistryClient()
-
-
-def handle_api_errors(fn):
-    """Decorator that catches httpx errors and returns formatted strings."""
-
-    @functools.wraps(fn)
-    async def wrapper(*args, **kwargs):
-        try:
-            return await fn(*args, **kwargs)
-        except httpx.HTTPStatusError as e:
-            ct = e.response.headers.get("content-type", "")
-            if ct.startswith("application/json"):
-                body = e.response.json().get("error", str(e))
-            else:
-                body = e.response.text
-            return f"API error ({e.response.status_code}): {body}"
-        except httpx.ConnectError:
-            return (
-                f"Failed to connect to registry at {registry.base_url}. "
-                "Is the server running?"
-            )
-
-    return wrapper
+def _run_deploy(args: list[str]) -> tuple[int, str, str]:
+    """Run a saorsa-deploy command and return (returncode, stdout, stderr)."""
+    cmd = [SAORSA_DEPLOY_CMD] + args
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "DATABASE_URL": DATABASE_URL},
+    )
+    return result.returncode, result.stdout, result.stderr
 
 
 mcp = FastMCP(
     "saorsa-testnet-registry",
     instructions=(
         "Use this server when the user asks to deploy, launch, or create a testnet. "
-        "The create_deployment tool triggers a deployment workflow. "
+        "The create_deployment tool triggers a deployment by running saorsa-deploy directly. "
         "The get_deployment tool checks deployment details and progress. "
         "Read the testnet://docs/deployment-config resource for parameter reference. "
         "Common requests: 'deploy a testnet', 'launch DEV-01', 'create a network', "
         "'check deployment status', 'wait for deployment to complete'. "
-        "The destroy_deployment tool triggers a destroy workflow to tear down infrastructure."
+        "The destroy_deployment tool triggers destruction of a testnet."
     ),
 )
 
@@ -167,20 +141,15 @@ building ant-node from the feat/my-change branch (maidsafe repo).
 ## Tracking Deployments
 
 After creating a deployment, use the get_deployment tool with the
-deployment ID to monitor progress. The background monitor polls GitHub
-Actions every 60 seconds and updates the deployment status automatically.
+deployment ID to monitor progress. The deployment status is updated
+directly by saorsa-deploy as each step completes.
 
 Deployment statuses: pending -> running (success) or failed.
 
 ## Destroying Deployments
 
 Use the destroy_deployment tool with the deployment name to tear down
-infrastructure. The deployment must be in 'running' state.
-
-The destroy process:
-1. Dispatches the destroy-testnet.yml workflow
-2. Sets status to 'destroying'
-3. Monitor tracks the workflow and sets status to 'destroyed' on success
+infrastructure. The deployment must be in 'running' or 'stopped' state.
 
 Destroy statuses: running -> destroying -> destroyed (success) or failed.
 """
@@ -198,8 +167,7 @@ def get_deployment_config_docs() -> str:
 
 
 @mcp.tool()
-@handle_api_errors
-async def create_deployment(
+def create_deployment(
     name: str,
     vm_count: int,
     node_count: int,
@@ -216,7 +184,10 @@ async def create_deployment(
     upgrade_channel: str | None = None,
     rewards_address: str | None = None,
 ) -> str:
-    """Create a new testnet deployment and trigger the launch workflow.
+    """Create a new testnet deployment by running saorsa-deploy commands.
+
+    This runs the full deployment sequence: infra -> provision-genesis -> provision.
+    The deployment is recorded in the database automatically by saorsa-deploy.
 
     Read the testnet://docs/deployment-config resource for full parameter
     documentation, defaults, and usage examples.
@@ -236,125 +207,200 @@ async def create_deployment(
         repo_owner: Repository owner for custom branch builds (default: "maidsafe")
         enable_log_forwarding: Enable Telegraf log forwarding to Elasticsearch (default: false)
         upgrade_channel: Upgrade channel for ant-node ("beta" or "stable")
-        rewards_address: Arbitrum wallet address for node rewards (default: "0x03B770D9cD32077cC0bF330c13C114a87643B124")
+        rewards_address: Arbitrum wallet address for node rewards
     """
-    deploy_args = {
-        "name": name,
-        "vm_count": vm_count,
-        "node_count": node_count,
-        "genesis_port": genesis_port,
-        "testnet": testnet,
-    }
-    if attached_volume_size is not None:
-        deploy_args["attached_volume_size"] = attached_volume_size
-    if region_counts is not None:
-        deploy_args["region_counts"] = region_counts
-    if log_level is not None:
-        deploy_args["log_level"] = log_level
-    if port is not None:
-        deploy_args["port"] = port
-    if node_version is not None:
-        deploy_args["node_version"] = node_version
-    if branch_name is not None:
-        deploy_args["branch_name"] = branch_name
-        deploy_args["repo_owner"] = repo_owner or "maidsafe"
-    if enable_log_forwarding:
-        deploy_args["enable_log_forwarding"] = True
-    if upgrade_channel is not None:
-        deploy_args["upgrade_channel"] = upgrade_channel
-    if rewards_address is not None:
-        deploy_args["rewards_address"] = rewards_address
+    output_lines = []
 
-    resp = await registry.post(
-        "/api/deployments",
-        json={"name": name, "deploy_args": deploy_args, "branch": "main"},
-    )
-    data = resp.json()
-    return (
-        f"Created deployment '{data['name']}' (id={data['id']})\n"
-        f"  Status: {data['status']}\n"
-        f"  Workflow Run ID: {data['workflow_run_id']}"
-    )
+    # Step 1: Build binary if branch_name specified
+    if branch_name:
+        owner = repo_owner or "maidsafe"
+        build_args = [
+            "build-ant-node-binary",
+            "--name", name,
+            "--branch-name", branch_name,
+            "--repo-owner", owner,
+        ]
+        output_lines.append(f"Building ant-node from {owner}/{branch_name}...")
+        rc, stdout, stderr = _run_deploy(build_args)
+        if rc != 0:
+            return f"Build failed (exit code {rc}):\n{stderr}\n{stdout}"
+        output_lines.append("Build completed.")
+
+    # Step 2: Infrastructure
+    infra_args = [
+        "infra",
+        "--name", name,
+        "--vm-count", str(vm_count),
+    ]
+    if testnet:
+        infra_args.append("--testnet")
+    if attached_volume_size is not None:
+        infra_args.extend(["--attached-volume-size", str(attached_volume_size)])
+    if region_counts is not None:
+        infra_args.extend(["--region-counts", region_counts])
+
+    output_lines.append("Provisioning infrastructure...")
+    rc, stdout, stderr = _run_deploy(infra_args)
+    if rc != 0:
+        return f"Infrastructure provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
+    output_lines.append("Infrastructure ready.")
+
+    # Step 3: Provision genesis
+    genesis_args = [
+        "provision-genesis",
+        "--name", name,
+        "--port", str(genesis_port),
+    ]
+    if testnet:
+        genesis_args.append("--testnet")
+    if log_level:
+        genesis_args.extend(["--log-level", log_level])
+    if node_version:
+        genesis_args.extend(["--node-version", node_version])
+    if branch_name:
+        genesis_args.extend(["--branch-name", branch_name])
+        genesis_args.extend(["--repo-owner", repo_owner or "maidsafe"])
+    if upgrade_channel:
+        genesis_args.extend(["--upgrade-channel", upgrade_channel])
+    if rewards_address:
+        genesis_args.extend(["--rewards-address", rewards_address])
+
+    output_lines.append("Provisioning genesis node...")
+    rc, stdout, stderr = _run_deploy(genesis_args)
+    if rc != 0:
+        return f"Genesis provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
+    output_lines.append("Genesis node ready.")
+
+    # Step 4: Provision remaining nodes
+    provision_args = [
+        "provision",
+        "--name", name,
+        "--node-count", str(node_count),
+    ]
+    if testnet:
+        provision_args.append("--testnet")
+    if log_level:
+        provision_args.extend(["--log-level", log_level])
+    if port:
+        provision_args.extend(["--port", str(port)])
+    if node_version:
+        provision_args.extend(["--node-version", node_version])
+    if branch_name:
+        provision_args.extend(["--branch-name", branch_name])
+        provision_args.extend(["--repo-owner", repo_owner or "maidsafe"])
+    if upgrade_channel:
+        provision_args.extend(["--upgrade-channel", upgrade_channel])
+    if rewards_address:
+        provision_args.extend(["--rewards-address", rewards_address])
+
+    output_lines.append("Provisioning nodes...")
+    rc, stdout, stderr = _run_deploy(provision_args)
+    if rc != 0:
+        return f"Node provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
+    output_lines.append("All nodes provisioned.")
+
+    # Step 5: Optional log forwarding
+    if enable_log_forwarding:
+        for step_name, step_args in [
+            ("elastic-infra", ["elastic-infra", "--name", name]),
+            ("provision-elastic", ["provision-elastic", "--name", name]),
+            ("provision-telegraf-logs", ["provision-telegraf-logs", "--name", name]),
+        ]:
+            output_lines.append(f"Running {step_name}...")
+            rc, stdout, stderr = _run_deploy(step_args)
+            if rc != 0:
+                output_lines.append(
+                    f"Warning: {step_name} failed (exit code {rc}), "
+                    "but deployment is running."
+                )
+                break
+            output_lines.append(f"{step_name} completed.")
+
+    # Read final state from DB
+    repo = _get_repo()
+    deployment = repo.get_by_name(name)
+    if deployment:
+        output_lines.append(
+            f"\nDeployment '{deployment.name}' (id={deployment.id}) "
+            f"is {deployment.status.value}."
+        )
+
+    return "\n".join(output_lines)
 
 
 @mcp.tool()
-@handle_api_errors
-async def destroy_deployment(name: str) -> str:
+def destroy_deployment(name: str) -> str:
     """Destroy a testnet deployment and tear down its infrastructure.
 
-    Dispatches the destroy workflow for the named deployment. The deployment
-    must be in 'running' state.
+    Runs saorsa-deploy destroy for the named deployment. The deployment
+    status is updated in the database automatically.
 
     Args:
         name: Name of the deployment to destroy (e.g. "DEV-01")
     """
-    resp = await registry.post("/api/deployments/destroy", json={"name": name})
-    data = resp.json()
-    return (
-        f"Destroy triggered for deployment '{data['name']}' (id={data['id']})\n"
-        f"  Status: {data['status']}\n"
-        f"  Workflow Run ID: {data['workflow_run_id']}"
-    )
+    rc, stdout, stderr = _run_deploy(["destroy", "--name", name, "--force"])
+    if rc != 0:
+        return f"Destroy failed (exit code {rc}):\n{stderr}\n{stdout}"
+
+    return f"Deployment '{name}' destroyed successfully."
 
 
 @mcp.tool()
-@handle_api_errors
-async def list_deployments() -> str:
+def list_deployments() -> str:
     """List all testnet deployments."""
-    resp = await registry.get("/api/deployments")
-    deployments = resp.json()
+    repo = _get_repo()
+    deployments = repo.list_all()
     if not deployments:
         return "No deployments found."
     lines = []
     for d in deployments:
         lines.append(
-            f"  {d['id']}: {d['name']} ({d['status']}) - created {d['created_at']}"
+            f"  {d.id}: {d.name} ({d.status.value}) - created {d.created_at.isoformat()}"
         )
     return f"Deployments ({len(deployments)}):\n" + "\n".join(lines)
 
 
 @mcp.tool()
-@handle_api_errors
-async def get_deployment(deployment_id: int) -> str:
+def get_deployment(deployment_id: int) -> str:
     """Get details and track progress of a specific deployment.
 
-    Returns status, workflow info, and events. Use this to poll for
-    deployment completion — terminal statuses (failed, destroyed) indicate
-    the deployment workflow has finished with an error or was torn down.
+    Returns status, configuration, and event history.
 
     Args:
         deployment_id: The deployment ID
     """
-    resp = await registry.get(f"/api/deployments/{deployment_id}")
-    d = resp.json()
-    status = d["status"]
+    repo = _get_repo()
+    d = repo.get(deployment_id)
+    if d is None:
+        return f"Deployment {deployment_id} not found."
 
     lines = [
-        f"Deployment: {d['name']}",
-        f"  ID: {d['id']}",
-        f"  Status: {status}",
-        f"  Workflow Run ID: {d['workflow_run_id']}",
-        f"  Created: {d['created_at']}",
-        f"  Updated: {d['updated_at']}",
+        f"Deployment: {d.name}",
+        f"  ID: {d.id}",
+        f"  Status: {d.status.value}",
+        f"  Created: {d.created_at.isoformat()}",
+        f"  Updated: {d.updated_at.isoformat()}",
     ]
 
-    events = d.get("events", [])
+    if d.deploy_args:
+        lines.append("  Config:")
+        for key, value in d.deploy_args.items():
+            lines.append(f"    {key}: {value}")
+
+    events = d.events
     if events:
         lines.append(f"  Events ({len(events)}):")
         for e in events:
-            lines.append(f"    [{e['created_at']}] {e['event_type']}")
-        latest = events[-1]
-        if latest.get("details") and "html_url" in latest["details"]:
-            lines.append(f"  Workflow URL: {latest['details']['html_url']}")
+            lines.append(f"    [{e.created_at.isoformat()}] {e.event_type}")
 
-    if status in ("failed", "destroyed"):
-        lines.append(f"\nDeployment has finished with status: {status}")
-    elif status == "running" and any(e["event_type"] == "completed" for e in events):
-        lines.append("\nDeployment is running (workflow completed successfully).")
-    elif status not in ("pending",):
-        lines.append(
-            f"\nDeployment is still {status}. Poll again to check for updates."
-        )
+    if d.status == DeploymentStatus.FAILED:
+        lines.append("\nDeployment has failed.")
+    elif d.status == DeploymentStatus.DESTROYED:
+        lines.append("\nDeployment has been destroyed.")
+    elif d.status == DeploymentStatus.RUNNING:
+        lines.append("\nDeployment is running.")
+    elif d.status == DeploymentStatus.PENDING:
+        lines.append("\nDeployment is still being provisioned.")
 
     return "\n".join(lines)
 

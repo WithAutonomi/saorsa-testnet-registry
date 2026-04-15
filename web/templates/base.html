@@ -25,13 +25,7 @@
                 Saorsa Testnet Registry
             </a>
             <nav class="flex items-center gap-4 text-sm">
-                {% if current_user %}
-                    <span class="text-slate-400">{{ current_user.username }}</span>
-                    <a href="{{ url_for('auth.tokens_page') }}" class="text-slate-300 hover:text-white transition-colors">API Tokens</a>
-                    <a href="{{ url_for('auth.logout') }}" class="text-slate-300 hover:text-white transition-colors">Logout</a>
-                {% else %}
-                    <a href="{{ url_for('auth.login') }}" class="text-slate-300 hover:text-white transition-colors">Login</a>
-                {% endif %}
+                <a href="/deployments" class="text-slate-300 hover:text-white transition-colors">Deployments</a>
             </nav>
         </div>
     </header>

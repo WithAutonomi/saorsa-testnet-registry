@@ -7,6 +7,7 @@ from rich.console import Console
 from saorsa_deploy.bootstrap import find_and_destroy_bootstrap_vm
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS
+from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     delete_deployment_state,
@@ -46,6 +47,11 @@ def cmd_destroy(args):
             sys.exit(0)
         console.print()
 
+    from saorsa_db.models import DeploymentStatus
+
+    record_event(args.name, "destroy_started")
+    record_status(args.name, DeploymentStatus.DESTROYING)
+
     # Build Terraform configs for each region
     resources_dir = get_resources_dir()
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
@@ -81,6 +87,8 @@ def cmd_destroy(args):
     if failures:
         console.print(f"[bold red]{len(failures)} region(s) failed to destroy.[/bold red]")
         console.print("[yellow]Bootstrap VM was NOT destroyed due to Terraform failures.[/yellow]")
+        record_event(args.name, "destroy_failed", {"failures": len(failures)})
+        record_status(args.name, DeploymentStatus.FAILED)
         sys.exit(1)
 
     console.print(f"[bold green]All {len(results)} region(s) destroyed successfully.[/bold green]")
@@ -125,6 +133,9 @@ def cmd_destroy(args):
     for config in configs:
         if config.workspace_dir.exists():
             shutil.rmtree(config.workspace_dir)
+
+    record_event(args.name, "destroyed")
+    record_status(args.name, DeploymentStatus.DESTROYED)
 
     console.print()
     console.print(f"[bold green]Deployment '{args.name}' fully destroyed.[/bold green]")

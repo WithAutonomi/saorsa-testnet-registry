@@ -4,6 +4,7 @@ from rich.console import Console
 
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
 from saorsa_deploy.provisioning.node import AntNodeProvisioner
+from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
 
@@ -95,13 +96,32 @@ def cmd_provision(args):
         kwargs["binary_is_archive"] = binary_is_archive
     provisioner = AntNodeProvisioner(**kwargs)
 
+    record_event(
+        args.name,
+        "nodes_provisioning_started",
+        {"vm_count": len(all_ips), "node_count": args.node_count},
+    )
+
     try:
         provisioner.execute()
         console.print()
         console.print("[bold green]All nodes provisioned successfully.[/bold green]")
     except Exception as e:
         console.print(f"[bold red]Provisioning failed:[/bold red] {e}")
+        from saorsa_db.models import DeploymentStatus
+
+        record_event(args.name, "nodes_provisioning_failed", {"error": str(e)})
+        record_status(args.name, DeploymentStatus.FAILED)
         sys.exit(1)
+
+    from saorsa_db.models import DeploymentStatus
+
+    record_event(
+        args.name,
+        "nodes_provisioned",
+        {"vm_count": len(all_ips), "node_count": args.node_count},
+    )
+    record_status(args.name, DeploymentStatus.RUNNING)
 
     try:
         update_deployment_state(args.name, {"node_count": args.node_count})

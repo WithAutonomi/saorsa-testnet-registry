@@ -1,14 +1,12 @@
 from flask import Blueprint, abort, render_template, request
 
+from saorsa_db.models import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_web.db import db_session
-from saorsa_web.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
-from saorsa_web.web.auth import require_auth
 
 bp = Blueprint("web_deployments", __name__, url_prefix="/deployments")
 
 
 @bp.route("")
-@require_auth
 def list_deployments():
     deployments = (
         db_session.query(Deployment).order_by(Deployment.created_at.desc()).all()
@@ -19,7 +17,6 @@ def list_deployments():
 
 
 @bp.route("/<int:deployment_id>")
-@require_auth
 def get_deployment(deployment_id):
     deployment = db_session.query(Deployment).get(deployment_id)
     if not deployment:
@@ -35,7 +32,6 @@ _MANUALLY_DESTROYABLE = {
 
 
 @bp.route("/<int:deployment_id>/mark-destroyed", methods=["POST"])
-@require_auth
 def mark_destroyed(deployment_id):
     deployment = db_session.query(Deployment).get(deployment_id)
     if not deployment:

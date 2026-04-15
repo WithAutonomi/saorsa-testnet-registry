@@ -1,4 +1,3 @@
-from saorsa_web.models.api_token import ApiToken
-from saorsa_web.models.deployment import Deployment, DeploymentEvent
+from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 
-__all__ = ["ApiToken", "Deployment", "DeploymentEvent"]
+__all__ = ["Deployment", "DeploymentEvent", "DeploymentStatus"]

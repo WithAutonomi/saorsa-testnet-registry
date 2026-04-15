@@ -6,6 +6,7 @@ from rich.console import Console
 from saorsa_deploy.bootstrap import create_bootstrap_vm
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS, resolve_regions
+from saorsa_deploy.registry import record_deployment_created, record_event, record_status
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
@@ -18,6 +19,16 @@ from saorsa_deploy.terraform import TerraformRunConfig
 def cmd_infra(args):
     """Execute the infra command: provision VMs using Terraform."""
     console = Console()
+
+    deploy_args = {
+        "name": args.name,
+        "vm_count": args.vm_count,
+        "attached_volume_size": args.attached_volume_size,
+        "region_counts": args.region_counts,
+        "testnet": args.testnet,
+    }
+    record_deployment_created(args.name, deploy_args)
+    record_event(args.name, "infra_started")
 
     # Create the bootstrap VM first (idempotent)
     console.print(f"[bold]Bootstrap VM ({args.name}-ant-bootstrap)...[/bold]")
@@ -100,6 +111,10 @@ def cmd_infra(args):
     failures = [r for r in results if not r.success]
     if failures:
         console.print(f"[bold red]{len(failures)} region(s) failed.[/bold red]")
+        from saorsa_db.models import DeploymentStatus
+
+        record_event(args.name, "infra_failed", {"failures": len(failures)})
+        record_status(args.name, DeploymentStatus.FAILED)
         sys.exit(1)
     else:
         console.print(
@@ -128,3 +143,9 @@ def cmd_infra(args):
         console.print("[dim]Deployment state saved to S3.[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to save deployment state: {e}[/yellow]")
+
+    record_event(
+        args.name,
+        "infra_completed",
+        {"regions": len(results), "vm_ips": vm_ips},
+    )

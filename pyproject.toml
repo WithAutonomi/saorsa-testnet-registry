@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["web", "mcp", "deploy"]
+members = ["db", "web", "mcp", "deploy"]
 
 [dependency-groups]
 dev = [

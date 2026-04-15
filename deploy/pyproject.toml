@@ -8,10 +8,14 @@ dependencies = [
     "pyinfra>=3",
     "requests>=2",
     "rich>=13",
+    "saorsa-db",
 ]
 
 [project.scripts]
 saorsa-deploy = "saorsa_deploy.main:main"
+
+[tool.uv.sources]
+saorsa-db = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
