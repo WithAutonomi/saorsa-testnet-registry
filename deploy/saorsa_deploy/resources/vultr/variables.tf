@@ -21,6 +21,12 @@ variable "attached_volume_size" {
   default = 20
 }
 
+variable "plan" {
+  type        = string
+  default     = "vc2-2c-4gb"
+  description = "Vultr plan slug (e.g. vc2-2c-4gb, vc2-4c-8gb)"
+}
+
 variable "ssh_key_ids" {
   type        = list(string)
   description = "IDs of pre-registered SSH keys in Vultr"

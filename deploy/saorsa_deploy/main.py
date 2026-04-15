@@ -90,6 +90,12 @@ def main():
         help="Number of Digital Ocean regions to use (default: 3)",
     )
     infra_parser.add_argument(
+        "--do-droplet-size",
+        type=str,
+        default="s-2vcpu-4gb",
+        help="Digital Ocean droplet size (default: s-2vcpu-4gb)",
+    )
+    infra_parser.add_argument(
         "--hetzner-vm-count",
         type=int,
         default=0,
@@ -112,6 +118,12 @@ def main():
         type=int,
         default=0,
         help="Number of VMs per region on Vultr (default: 0, provider not used)",
+    )
+    infra_parser.add_argument(
+        "--vultr-plan",
+        type=str,
+        default="vc2-2c-4gb",
+        help="Vultr instance plan (default: vc2-2c-4gb)",
     )
     infra_parser.add_argument(
         "--vultr-regions",

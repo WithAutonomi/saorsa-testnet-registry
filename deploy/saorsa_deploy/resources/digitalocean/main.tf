@@ -2,7 +2,7 @@ resource "digitalocean_droplet" "node_vm" {
   count    = var.vm_count
   name     = "${var.name}-ant-node-${var.region}-${count.index + 1}"
   region   = var.region
-  size     = "s-2vcpu-4gb"
+  size     = var.droplet_size
   image    = "ubuntu-24-04-x64"
   ssh_keys = var.ssh_key_ids
 }

@@ -3,7 +3,7 @@ resource "vultr_instance" "node_vm" {
   label       = "${var.name}-ant-node-${var.region}-${count.index + 1}"
   hostname    = "${var.name}-ant-node-${var.region}-${count.index + 1}"
   region      = var.region
-  plan        = "vc2-2c-4gb"
+  plan        = var.plan
   os_id       = 2284 # Ubuntu 24.04 LTS x64
   ssh_key_ids = var.ssh_key_ids
   enable_ipv6 = true

@@ -87,6 +87,8 @@ def cmd_infra(args):
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
 
     hetzner_server_type = getattr(args, "hetzner_server_type", "cpx22")
+    do_droplet_size = getattr(args, "do_droplet_size", "s-2vcpu-4gb")
+    vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
 
     configs = []
     for provider_name, region in region_pairs:
@@ -101,8 +103,12 @@ def cmd_infra(args):
             "vm_count": str(vm_count_by_provider[provider_name]),
             "attached_volume_size": str(args.attached_volume_size),
         }
-        if provider_name == "hetzner":
+        if provider_name == "digitalocean":
+            variables["droplet_size"] = do_droplet_size
+        elif provider_name == "hetzner":
             variables["server_type"] = hetzner_server_type
+        elif provider_name == "vultr":
+            variables["plan"] = vultr_plan
 
         config = TerraformRunConfig(
             provider=provider_name,
@@ -158,8 +164,12 @@ def cmd_infra(args):
     providers_state = {}
     for spec in provider_specs:
         entry = {"vm_count": spec.vm_count, "regions": spec.region_count}
-        if spec.name == "hetzner":
+        if spec.name == "digitalocean":
+            entry["droplet_size"] = do_droplet_size
+        elif spec.name == "hetzner":
             entry["server_type"] = hetzner_server_type
+        elif spec.name == "vultr":
+            entry["plan"] = vultr_plan
         providers_state[spec.name] = entry
 
     terraform_variables = {

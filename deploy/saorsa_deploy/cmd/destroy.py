@@ -85,9 +85,14 @@ def cmd_destroy(args):
             "vm_count": vm_count,
             "attached_volume_size": terraform_variables.get("attached_volume_size", "20"),
         }
-        if provider_name == "hetzner" and provider_name in providers_config:
-            server_type = providers_config[provider_name].get("server_type", "cpx22")
-            variables["server_type"] = server_type
+        if provider_name in providers_config:
+            p_cfg = providers_config[provider_name]
+            if provider_name == "digitalocean":
+                variables["droplet_size"] = p_cfg.get("droplet_size", "s-2vcpu-4gb")
+            elif provider_name == "hetzner":
+                variables["server_type"] = p_cfg.get("server_type", "cpx22")
+            elif provider_name == "vultr":
+                variables["plan"] = p_cfg.get("plan", "vc2-2c-4gb")
 
         config = TerraformRunConfig(
             provider=provider_name,

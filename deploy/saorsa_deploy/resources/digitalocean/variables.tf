@@ -20,6 +20,12 @@ variable "attached_volume_size" {
   default = 20
 }
 
+variable "droplet_size" {
+  type        = string
+  default     = "s-2vcpu-4gb"
+  description = "Droplet size slug (e.g. s-2vcpu-4gb, s-4vcpu-8gb)"
+}
+
 variable "ssh_key_ids" {
   type = list(number)
   default = [
