@@ -323,6 +323,10 @@ class TestBuildSystemdUnit:
         unit = build_systemd_unit("/usr/local/bin/ant-node", "/my/data")
         assert "--root-dir /my/data" in unit
 
+    def test_includes_enable_logging(self):
+        unit = build_systemd_unit("/usr/local/bin/ant-node", "/data")
+        assert "--enable-logging" in unit
+
 
 # === Provider Terraform directories ===
 
