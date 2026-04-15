@@ -8,7 +8,7 @@ from saorsa_deploy.binary_source import (
     get_custom_build_url,
     get_release_url,
 )
-from saorsa_deploy.provisioning.genesis import AntGenesisNodeProvisioner
+from saorsa_deploy.provisioning.bootstrap import AntBootstrapNodeProvisioner
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
@@ -77,7 +77,12 @@ def cmd_provision_genesis(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
-    bootstrap_ip = state.get("bootstrap_ip")
+    # Get genesis IP from bootstrap_nodes or fall back to legacy bootstrap_ip
+    bootstrap_nodes = state.get("bootstrap_nodes", [])
+    if bootstrap_nodes:
+        bootstrap_ip = bootstrap_nodes[0]["ip"]
+    else:
+        bootstrap_ip = state.get("bootstrap_ip")
     if not bootstrap_ip:
         console.print(
             "[bold red]Error:[/bold red] No bootstrap IP found in deployment state. "
@@ -103,6 +108,7 @@ def cmd_provision_genesis(args):
 
     kwargs = {
         "ip": bootstrap_ip,
+        "bootstrap_index": 1,
         "ssh_key_path": args.ssh_key_path,
         "port": args.port,
         "log_level": args.log_level,
@@ -115,7 +121,7 @@ def cmd_provision_genesis(args):
     if binary_url:
         kwargs["binary_url"] = binary_url
         kwargs["binary_is_archive"] = binary_is_archive
-    node = AntGenesisNodeProvisioner(**kwargs)
+    node = AntBootstrapNodeProvisioner(**kwargs)
 
     record_event(args.name, "genesis_provisioning_started", {"ip": bootstrap_ip, "port": args.port})
 
@@ -134,7 +140,12 @@ def cmd_provision_genesis(args):
     record_event(args.name, "genesis_provisioned", {"ip": bootstrap_ip, "port": args.port})
 
     try:
-        update_deployment_state(args.name, {"bootstrap_port": args.port})
+        state_updates = {"bootstrap_port": args.port}
+        # Update the genesis node entry with its port
+        if bootstrap_nodes:
+            bootstrap_nodes[0]["port"] = args.port
+            state_updates["bootstrap_nodes"] = bootstrap_nodes
+        update_deployment_state(args.name, state_updates)
         console.print("[dim]Bootstrap port saved to deployment state.[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to save bootstrap port to state: {e}[/yellow]")

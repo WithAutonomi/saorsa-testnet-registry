@@ -1,222 +1,164 @@
-import os
-import time
+import shutil
+from pathlib import Path
 
-import requests
+from rich.console import Console
 
-DO_API_URL = "https://api.digitalocean.com/v2"
-BOOTSTRAP_REGION = "lon1"
-BOOTSTRAP_SIZE = "s-2vcpu-4gb"
-BOOTSTRAP_IMAGE = "ubuntu-24-04-x64"
-DEFAULT_VOLUME_SIZE_GB = 20
-SSH_KEY_IDS = [
-    36971688,
-    30643816,
-    30113222,
-    42022675,
-    30878672,
-    31216015,
-    34183228,
-    38596814,
-    54385801,
-]
+from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.providers import PROVIDERS
+from saorsa_deploy.resources import get_resources_dir
+from saorsa_deploy.state import check_terraform_state_exists, delete_terraform_state
+from saorsa_deploy.terraform import TerraformRunConfig
+
+BOOTSTRAP_STATE_KEY_PREFIX = "saorsa-deploy/do-bootstrap"
+BOOTSTRAP_DROPLET_SIZE = "s-2vcpu-4gb"
 
 
-def _get_headers():
-    token = os.environ.get("DO_TOKEN")
-    if not token:
-        raise RuntimeError("DO_TOKEN environment variable is not set")
-    return {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
+def _select_bootstrap_regions(count: int) -> list[str]:
+    """Select geographically distributed DO regions for bootstrap nodes.
 
-
-def _find_droplet_by_name(droplet_name, headers):
-    """Find an existing droplet by exact name. Returns the droplet dict or None."""
-    resp = requests.get(f"{DO_API_URL}/droplets", headers=headers, params={"name": droplet_name})
-    resp.raise_for_status()
-    for droplet in resp.json()["droplets"]:
-        if droplet["name"] == droplet_name:
-            return droplet
-    return None
-
-
-def _find_volume_by_name(volume_name, headers):
-    """Find an existing volume by name and region. Returns the volume dict or None."""
-    resp = requests.get(
-        f"{DO_API_URL}/volumes",
-        headers=headers,
-        params={"name": volume_name, "region": BOOTSTRAP_REGION},
-    )
-    resp.raise_for_status()
-    for volume in resp.json()["volumes"]:
-        if volume["name"] == volume_name:
-            return volume
-    return None
-
-
-def _get_public_ip(droplet):
-    """Extract the public IP address from a droplet dict."""
-    ip_address = droplet["networks"]["v4"][0]["ip_address"]
-    for net in droplet["networks"]["v4"]:
-        if net["type"] == "public":
-            ip_address = net["ip_address"]
-            break
-    return ip_address
-
-
-def _wait_for_droplet_active(droplet_id, headers, timeout=300):
-    """Poll until the droplet status is 'active'."""
-    start = time.monotonic()
-    while time.monotonic() - start < timeout:
-        resp = requests.get(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
-        resp.raise_for_status()
-        status = resp.json()["droplet"]["status"]
-        if status == "active":
-            return resp.json()["droplet"]
-        time.sleep(5)
-    raise TimeoutError(f"Droplet {droplet_id} did not become active within {timeout}s")
-
-
-def create_bootstrap_vm(name, volume_size=DEFAULT_VOLUME_SIZE_GB):
-    """Create the bootstrap VM with an attached volume via the DO API.
-
-    Idempotent: skips creation of droplet/volume if they already exist.
-
-    Returns a dict with keys: droplet_id, droplet_name, ip_address, volume_id, created.
-    The 'created' key is True if resources were newly created, False if they already existed.
+    Returns the first `count` regions from the DO provider's region list.
     """
-    headers = _get_headers()
-    droplet_name = f"{name}-ant-bootstrap"
-    volume_name = f"{name}-ant-bootstrap-storage".lower()
-
-    created = False
-
-    # Check for existing droplet
-    existing_droplet = _find_droplet_by_name(droplet_name, headers)
-    if existing_droplet:
-        droplet_id = existing_droplet["id"]
-        ip_address = _get_public_ip(existing_droplet)
-    else:
-        droplet_resp = requests.post(
-            f"{DO_API_URL}/droplets",
-            headers=headers,
-            json={
-                "name": droplet_name,
-                "region": BOOTSTRAP_REGION,
-                "size": BOOTSTRAP_SIZE,
-                "image": BOOTSTRAP_IMAGE,
-                "ssh_keys": SSH_KEY_IDS,
-            },
+    do_regions = PROVIDERS["digitalocean"].regions
+    if count > len(do_regions):
+        raise ValueError(
+            f"Requested {count} bootstrap nodes, but only {len(do_regions)} "
+            "Digital Ocean regions are available"
         )
-        droplet_resp.raise_for_status()
-        droplet_id = droplet_resp.json()["droplet"]["id"]
-        droplet = _wait_for_droplet_active(droplet_id, headers)
-        ip_address = _get_public_ip(droplet)
-        created = True
+    return do_regions[:count]
 
-    # Check for existing volume
-    existing_volume = _find_volume_by_name(volume_name, headers)
-    if existing_volume:
-        volume_id = existing_volume["id"]
-        # Ensure it's attached to our droplet
-        if droplet_id not in existing_volume.get("droplet_ids", []):
-            attach_resp = requests.post(
-                f"{DO_API_URL}/volumes/{volume_id}/actions",
-                headers=headers,
-                json={
-                    "type": "attach",
-                    "droplet_id": droplet_id,
-                    "region": BOOTSTRAP_REGION,
-                },
+
+def _build_bootstrap_configs(
+    name: str,
+    regions: list[str],
+    volume_size: int = 20,
+    droplet_size: str = BOOTSTRAP_DROPLET_SIZE,
+) -> list[TerraformRunConfig]:
+    """Build Terraform run configs for bootstrap nodes."""
+    resources_dir = get_resources_dir()
+    tf_source = resources_dir / "digitalocean-bootstrap"
+    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+
+    configs = []
+    for i, region in enumerate(regions):
+        bootstrap_index = i + 1
+        workspace_dir = workspace_base / f"do-bootstrap-{name}-{region}"
+        state_key = f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-{region}.tfstate"
+
+        variables = {
+            "name": name,
+            "region": region,
+            "attached_volume_size": str(volume_size),
+            "droplet_size": droplet_size,
+            "bootstrap_index": str(bootstrap_index),
+        }
+
+        configs.append(
+            TerraformRunConfig(
+                provider="digitalocean",
+                region=region,
+                tf_source_dir=tf_source,
+                workspace_dir=workspace_dir,
+                state_key=state_key,
+                variables=variables,
             )
-            attach_resp.raise_for_status()
-    else:
-        volume_resp = requests.post(
-            f"{DO_API_URL}/volumes",
-            headers=headers,
-            json={
-                "size_gigabytes": volume_size,
-                "name": volume_name,
-                "region": BOOTSTRAP_REGION,
-                "filesystem_type": "ext4",
-            },
         )
-        volume_resp.raise_for_status()
-        volume_id = volume_resp.json()["volume"]["id"]
-        created = True
-
-        # Attach volume to droplet
-        attach_resp = requests.post(
-            f"{DO_API_URL}/volumes/{volume_id}/actions",
-            headers=headers,
-            json={
-                "type": "attach",
-                "droplet_id": droplet_id,
-                "region": BOOTSTRAP_REGION,
-            },
-        )
-        attach_resp.raise_for_status()
-
-    return {
-        "droplet_id": droplet_id,
-        "droplet_name": droplet_name,
-        "ip_address": ip_address,
-        "volume_id": volume_id,
-        "created": created,
-    }
+    return configs
 
 
-def destroy_bootstrap_vm(droplet_id, volume_id):
-    """Destroy the bootstrap VM and its volume."""
-    headers = _get_headers()
+def create_bootstrap_vms(
+    name: str,
+    count: int = 1,
+    volume_size: int = 20,
+    droplet_size: str = BOOTSTRAP_DROPLET_SIZE,
+    force: bool = False,
+    console: Console | None = None,
+) -> list[dict]:
+    """Create bootstrap VMs via Terraform across geographically distributed regions.
 
-    # Detach volume first
-    requests.post(
-        f"{DO_API_URL}/volumes/{volume_id}/actions",
-        headers=headers,
-        json={
-            "type": "detach",
-            "droplet_id": droplet_id,
-            "region": BOOTSTRAP_REGION,
-        },
-    )
-    # Wait for detach
-    time.sleep(15)
-
-    # Delete droplet
-    requests.delete(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
-
-    # Delete volume
-    requests.delete(f"{DO_API_URL}/volumes/{volume_id}", headers=headers)
-
-
-def find_and_destroy_bootstrap_vm(name):
-    """Find the bootstrap VM and volume by deployment name and destroy them.
-
-    Looks up the droplet and volume by their naming convention, then calls
-    destroy_bootstrap_vm(). Returns a dict with keys: found, droplet_name.
-
-    If neither the droplet nor volume is found, returns found=False and does nothing.
+    Returns a list of dicts with keys: ip, region, bootstrap_index.
+    The first entry (index=1) is the genesis node.
     """
-    headers = _get_headers()
-    droplet_name = f"{name}-ant-bootstrap"
-    volume_name = f"{name}-ant-bootstrap-storage".lower()
+    console = console or Console()
+    regions = _select_bootstrap_regions(count)
+    configs = _build_bootstrap_configs(name, regions, volume_size, droplet_size)
 
-    droplet = _find_droplet_by_name(droplet_name, headers)
-    volume = _find_volume_by_name(volume_name, headers)
+    # Check for stale state
+    stale_keys = [c.state_key for c in configs if check_terraform_state_exists(c.state_key)]
+    if stale_keys:
+        if not force:
+            console.print("[bold red]Error:[/bold red] Stale bootstrap Terraform state found:")
+            for key in stale_keys:
+                console.print(f"  {key}")
+            console.print("Use --force to delete and proceed.")
+            raise RuntimeError("Stale bootstrap Terraform state")
+        for key in stale_keys:
+            console.print(f"[yellow]Warning: Deleting stale bootstrap state: {key}[/yellow]")
+            delete_terraform_state(key)
 
-    if not droplet and not volume:
-        return {"found": False, "droplet_name": droplet_name}
+    console.print(
+        f"[bold]Creating {count} bootstrap VM(s) across "
+        f"{', '.join(regions)}...[/bold]"
+    )
 
-    droplet_id = droplet["id"] if droplet else None
-    volume_id = volume["id"] if volume else None
+    results = execute_terraform_runs(configs)
 
-    if droplet_id and volume_id:
-        destroy_bootstrap_vm(droplet_id, volume_id)
-    elif droplet_id:
-        requests.delete(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
-    elif volume_id:
-        requests.delete(f"{DO_API_URL}/volumes/{volume_id}", headers=headers)
+    failures = [r for r in results if not r.success]
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} bootstrap region(s) failed to provision"
+        )
 
-    return {"found": True, "droplet_name": droplet_name}
+    bootstrap_nodes = []
+    for config, result in zip(configs, results):
+        if result.success:
+            ip = result.outputs.get("vm_ip")
+            if not ip:
+                raise RuntimeError(
+                    f"No IP output from bootstrap Terraform in {config.region}"
+                )
+            bootstrap_nodes.append({
+                "ip": ip,
+                "region": config.region,
+                "bootstrap_index": int(config.variables["bootstrap_index"]),
+            })
+
+    bootstrap_nodes.sort(key=lambda n: n["bootstrap_index"])
+    return bootstrap_nodes
+
+
+def destroy_bootstrap_vms(
+    name: str,
+    regions: list[str],
+    volume_size: int = 20,
+    droplet_size: str = BOOTSTRAP_DROPLET_SIZE,
+    console: Console | None = None,
+) -> None:
+    """Destroy bootstrap VMs via Terraform."""
+    console = console or Console()
+    configs = _build_bootstrap_configs(name, regions, volume_size, droplet_size)
+
+    # Only destroy configs where state exists
+    active_configs = [c for c in configs if check_terraform_state_exists(c.state_key)]
+    if not active_configs:
+        console.print("[yellow]No bootstrap Terraform state found, nothing to destroy.[/yellow]")
+        return
+
+    console.print(
+        f"[bold]Destroying {len(active_configs)} bootstrap VM(s)...[/bold]"
+    )
+    results = execute_terraform_runs(active_configs, action="destroy")
+
+    failures = [r for r in results if not r.success]
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} bootstrap region(s) failed to destroy"
+        )
+
+    # Clean up Terraform state and workspace directories
+    for config in active_configs:
+        try:
+            delete_terraform_state(config.state_key)
+        except Exception:
+            pass
+        if config.workspace_dir.exists():
+            shutil.rmtree(config.workspace_dir)

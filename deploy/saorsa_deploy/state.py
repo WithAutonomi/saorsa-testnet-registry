@@ -15,15 +15,21 @@ def save_deployment_state(
     name: str,
     regions: list[tuple[str, str]],
     terraform_variables: dict[str, str],
-    bootstrap_ip: str,
+    bootstrap_nodes: list[dict],
     vm_ips: dict[str, list[str]],
 ) -> None:
-    """Save deployment metadata to S3 for later use by other commands."""
+    """Save deployment metadata to S3 for later use by other commands.
+
+    Args:
+        bootstrap_nodes: List of dicts with keys: ip, region, bootstrap_index.
+            The first entry (index=1) is the genesis node.
+    """
     state = {
         "name": name,
         "regions": [[provider, region] for provider, region in regions],
         "terraform_variables": terraform_variables,
-        "bootstrap_ip": bootstrap_ip,
+        "bootstrap_nodes": bootstrap_nodes,
+        "bootstrap_ip": bootstrap_nodes[0]["ip"] if bootstrap_nodes else "",
         "vm_ips": vm_ips,
     }
     client = _get_s3_client()

@@ -83,6 +83,15 @@ parameters: vm_count (VMs per region) and regions (number of regions).
 - **vultr_regions**: Number of Vultr regions to use (default: 3)
   - Available: ewr, ord, dfw, lax, ams, lhr, fra, sjc, syd, nrt, cdg, sgp
 
+## Bootstrap Configuration
+
+- **bootstrap_count**: Number of bootstrap nodes to deploy (default: 1, max: 7)
+  - Node #1 is always the genesis node
+  - Additional bootstrap nodes (2-7) use the genesis as their bootstrap peer
+  - All regular nodes connect to ALL bootstrap nodes
+  - Bootstrap nodes are geographically distributed across Digital Ocean regions
+  - Available regions: lon1, nyc1, ams3, sfo3, sgp1, blr1, fra1 (max 7)
+
 ## Optional Parameters
 
 - **testnet**: Run nodes with --network-mode testnet (default: true)
@@ -192,10 +201,12 @@ def create_deployment(
     enable_log_forwarding: bool = False,
     upgrade_channel: str | None = None,
     rewards_address: str | None = None,
+    bootstrap_count: int = 1,
 ) -> str:
     """Create a new testnet deployment by running saorsa-deploy commands.
 
-    This runs the full deployment sequence: infra -> provision-genesis -> provision.
+    This runs the full deployment sequence:
+    infra -> provision-genesis -> provision-bootstraps (if count > 1) -> provision.
     The deployment is recorded in the database automatically by saorsa-deploy.
 
     Read the testnet://docs/deployment-config resource for full parameter
@@ -223,6 +234,7 @@ def create_deployment(
         enable_log_forwarding: Enable Telegraf log forwarding to Elasticsearch (default: false)
         upgrade_channel: Upgrade channel for ant-node ("beta" or "stable")
         rewards_address: Arbitrum wallet address for node rewards
+        bootstrap_count: Number of bootstrap nodes (1-7, default: 1)
     """
     if do_vm_count <= 0 and hetzner_vm_count <= 0 and vultr_vm_count <= 0:
         return (
@@ -260,6 +272,8 @@ def create_deployment(
         infra_args.extend(["--vultr-regions", str(vultr_regions)])
     if attached_volume_size is not None:
         infra_args.extend(["--attached-volume-size", str(attached_volume_size)])
+    if bootstrap_count > 1:
+        infra_args.extend(["--bootstrap-count", str(bootstrap_count)])
 
     output_lines.append("Provisioning infrastructure...")
     rc, stdout, stderr = _run_deploy(infra_args)
@@ -292,6 +306,37 @@ def create_deployment(
     if rc != 0:
         return f"Genesis provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
     output_lines.append("Genesis node ready.")
+
+    # Step 3b: Provision additional bootstrap nodes (if bootstrap_count > 1)
+    if bootstrap_count > 1:
+        bootstrap_args = [
+            "provision-bootstraps",
+            "--name", name,
+            "--port", str(genesis_port),
+        ]
+        if testnet:
+            bootstrap_args.append("--testnet")
+        if log_level:
+            bootstrap_args.extend(["--log-level", log_level])
+        if node_version:
+            bootstrap_args.extend(["--node-version", node_version])
+        if branch_name:
+            bootstrap_args.extend(["--branch-name", branch_name])
+            bootstrap_args.extend(["--repo-owner", repo_owner or "maidsafe"])
+        if upgrade_channel:
+            bootstrap_args.extend(["--upgrade-channel", upgrade_channel])
+        if rewards_address:
+            bootstrap_args.extend(["--rewards-address", rewards_address])
+
+        output_lines.append(
+            f"Provisioning {bootstrap_count - 1} additional bootstrap node(s)..."
+        )
+        rc, stdout, stderr = _run_deploy(bootstrap_args)
+        if rc != 0:
+            return (
+                f"Bootstrap provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
+            )
+        output_lines.append("All bootstrap nodes ready.")
 
     # Step 4: Provision remaining nodes
     provision_args = [

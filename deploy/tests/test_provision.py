@@ -5,7 +5,7 @@ import pytest
 from pyinfra.operations import server
 
 from saorsa_deploy.cmd.provision import cmd_provision
-from saorsa_deploy.provisioning.genesis import DEFAULT_REWARDS_ADDRESS
+from saorsa_deploy.provisioning.bootstrap import DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.node import (
     AntNodeProvisioner,
     _build_node_exec_start,
@@ -18,52 +18,52 @@ class TestBuildNodeExecStart:
     ROOT = f"{MOUNT_POINT}/data/ant-node-1"
 
     def test_includes_bootstrap_address(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
         assert "--bootstrap 10.0.0.1:5000" in result
 
     def test_includes_root_dir(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
         assert f"--root-dir {self.ROOT}" in result
 
     def test_includes_port_when_specified(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, port=6000)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, port=6000)
         assert "--port 6000" in result
 
     def test_no_port_when_not_specified(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
         assert "--port" not in result
 
     def test_includes_log_level(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, log_level="debug")
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, log_level="debug")
         assert "--log-level debug" in result
 
     def test_includes_testnet_flag(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, testnet=True)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, testnet=True)
         assert "--network-mode testnet" in result
 
     def test_no_network_mode_when_not_testnet(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, testnet=False)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, testnet=False)
         assert "--network-mode" not in result
 
     def test_upgrade_channel_beta(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, upgrade_channel="beta")
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, upgrade_channel="beta")
         assert "--upgrade-channel beta" in result
 
     def test_upgrade_channel_stable(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, upgrade_channel="stable")
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, upgrade_channel="stable")
         assert "--upgrade-channel stable" in result
 
     def test_no_upgrade_channel_by_default(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
         assert "--upgrade-channel" not in result
 
     def test_stop_on_upgrade_always_present(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
         assert "--stop-on-upgrade" in result
 
     def test_all_flags(self):
         result = _build_node_exec_start(
-            "10.0.0.1", 5000, self.ROOT, port=6000, log_level="info", testnet=True
+            ["10.0.0.1:5000"], self.ROOT, port=6000, log_level="info", testnet=True
         )
         assert f"--root-dir {self.ROOT}" in result
         assert "--bootstrap 10.0.0.1:5000" in result
@@ -72,12 +72,12 @@ class TestBuildNodeExecStart:
         assert "--network-mode testnet" in result
 
     def test_default_rewards_address(self):
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
         assert f"--rewards-address {DEFAULT_REWARDS_ADDRESS}" in result
 
     def test_custom_rewards_address(self):
         custom_addr = "0x1234567890abcdef1234567890abcdef12345678"
-        result = _build_node_exec_start("10.0.0.1", 5000, self.ROOT, rewards_address=custom_addr)
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, rewards_address=custom_addr)
         assert f"--rewards-address {custom_addr}" in result
         assert DEFAULT_REWARDS_ADDRESS not in result
 
@@ -105,12 +105,10 @@ class TestAntNodeProvisioner:
     def test_init_defaults(self):
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1", "10.0.0.2"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
         )
         assert provisioner.host_ips == ["10.0.0.1", "10.0.0.2"]
-        assert provisioner.bootstrap_ip == "10.0.0.100"
-        assert provisioner.bootstrap_port == 5000
+        assert provisioner.bootstrap_peers == ["10.0.0.100:5000"]
         assert provisioner.ssh_key_path == "~/.ssh/id_rsa"
         assert provisioner.node_count == 1
         assert provisioner.initial_port is None
@@ -122,8 +120,7 @@ class TestAntNodeProvisioner:
     def test_init_all_params(self):
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
             ssh_key_path="/tmp/key",
             node_count=3,
             initial_port=6000,
@@ -164,8 +161,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
             node_count=2,
         )
         provisioner.execute()
@@ -198,8 +194,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
         )
         with pytest.raises(RuntimeError, match="connection failed"):
             provisioner.execute()
@@ -230,8 +225,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1", "10.0.0.2", "10.0.0.3"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
             ssh_key_path="/tmp/mykey",
         )
         provisioner.execute()
@@ -269,8 +263,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
             node_count=3,
         )
         provisioner.execute()
@@ -304,8 +297,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
         )
         with pytest.raises(RuntimeError, match="1 host\\(s\\) failed provisioning"):
             provisioner.execute()
@@ -334,8 +326,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
             node_count=2,
         )
         provisioner.execute()
@@ -367,8 +358,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
         )
         provisioner.execute()
 
@@ -401,8 +391,7 @@ class TestAntNodeProvisioner:
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
-            bootstrap_ip="10.0.0.100",
-            bootstrap_port=5000,
+            bootstrap_peers=["10.0.0.100:5000"],
             node_count=2,
         )
         provisioner.execute()
@@ -429,8 +418,11 @@ class TestCmdProvisionClearsKnownHosts:
         _mock_update_state,
     ):
         mock_load_state.return_value = {
-            "bootstrap_ip": "10.0.0.100",
+            "bootstrap_nodes": [
+                {"ip": "10.0.0.100", "region": "lon1", "bootstrap_index": 1, "port": 5000},
+            ],
             "bootstrap_port": 5000,
+            "bootstrap_ip": "10.0.0.100",
             "vm_ips": {
                 "lon1": ["10.0.0.1", "10.0.0.2"],
                 "nyc1": ["10.0.0.3"],
@@ -468,8 +460,11 @@ class TestCmdProvisionClearsKnownHosts:
         _mock_update_state,
     ):
         mock_load_state.return_value = {
-            "bootstrap_ip": "10.0.0.100",
+            "bootstrap_nodes": [
+                {"ip": "10.0.0.100", "region": "lon1", "bootstrap_index": 1, "port": 5000},
+            ],
             "bootstrap_port": 5000,
+            "bootstrap_ip": "10.0.0.100",
             "vm_ips": {
                 "lon1": ["10.0.0.1", "10.0.0.2"],
                 "nyc1": ["10.0.0.3"],
@@ -507,8 +502,11 @@ class TestCmdProvisionClearsKnownHosts:
         _mock_update_state,
     ):
         mock_load_state.return_value = {
-            "bootstrap_ip": "10.0.0.100",
+            "bootstrap_nodes": [
+                {"ip": "10.0.0.100", "region": "lon1", "bootstrap_index": 1, "port": 5000},
+            ],
             "bootstrap_port": 5000,
+            "bootstrap_ip": "10.0.0.100",
             "vm_ips": {"lon1": ["10.0.0.1"]},
         }
         call_order = []

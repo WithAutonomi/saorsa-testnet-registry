@@ -6,7 +6,7 @@ from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
-from saorsa_deploy.provisioning.genesis import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
+from saorsa_deploy.provisioning.bootstrap import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -17,8 +17,7 @@ METRICS_PORT_BASE = 9100
 
 
 def _build_node_exec_start(
-    bootstrap_ip,
-    bootstrap_port,
+    bootstrap_peers,
     root_dir,
     log_dir=None,
     port=None,
@@ -28,10 +27,15 @@ def _build_node_exec_start(
     metrics_port=None,
     rewards_address=DEFAULT_REWARDS_ADDRESS,
 ):
-    """Build the ExecStart command line for a node service."""
+    """Build the ExecStart command line for a node service.
+
+    Args:
+        bootstrap_peers: List of "ip:port" strings for all bootstrap nodes.
+    """
     parts = [BINARY_INSTALL_PATH]
     parts.append(f"--root-dir {root_dir}")
-    parts.append(f"--bootstrap {bootstrap_ip}:{bootstrap_port}")
+    for peer in bootstrap_peers:
+        parts.append(f"--bootstrap {peer}")
     if port is not None:
         parts.append(f"--port {port}")
     if log_level:
@@ -75,8 +79,7 @@ class AntNodeProvisioner:
     def __init__(
         self,
         host_ips: list[str],
-        bootstrap_ip: str,
-        bootstrap_port: int,
+        bootstrap_peers: list[str],
         ssh_key_path: str = "~/.ssh/id_rsa",
         node_count: int = 1,
         initial_port: int | None = None,
@@ -89,8 +92,7 @@ class AntNodeProvisioner:
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
     ):
         self.host_ips = host_ips
-        self.bootstrap_ip = bootstrap_ip
-        self.bootstrap_port = bootstrap_port
+        self.bootstrap_peers = bootstrap_peers
         self.ssh_key_path = ssh_key_path
         self.node_count = node_count
         self.initial_port = initial_port
@@ -183,8 +185,7 @@ class AntNodeProvisioner:
                 log_dir = f"{LOG_DIR}/{service_name}"
                 metrics_port = METRICS_PORT_BASE + i
                 exec_start = _build_node_exec_start(
-                    bootstrap_ip=self.bootstrap_ip,
-                    bootstrap_port=self.bootstrap_port,
+                    bootstrap_peers=self.bootstrap_peers,
                     root_dir=root_dir,
                     log_dir=log_dir,
                     port=node_port,

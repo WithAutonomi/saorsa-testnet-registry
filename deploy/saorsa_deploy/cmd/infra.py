@@ -3,7 +3,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from saorsa_deploy.bootstrap import create_bootstrap_vm
+from saorsa_deploy.bootstrap import create_bootstrap_vms
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS, ProviderSpec, resolve_regions
 from saorsa_deploy.registry import record_deployment_created, record_event, record_status
@@ -42,9 +42,17 @@ def cmd_infra(args):
         )
         sys.exit(1)
 
+    bootstrap_count = getattr(args, "bootstrap_count", 1)
+    if bootstrap_count < 1 or bootstrap_count > 7:
+        console.print(
+            "[bold red]Error:[/bold red] --bootstrap-count must be between 1 and 7."
+        )
+        sys.exit(1)
+
     deploy_args = {
         "name": args.name,
         "attached_volume_size": args.attached_volume_size,
+        "bootstrap_count": bootstrap_count,
         "providers": {
             spec.name: {"vm_count": spec.vm_count, "regions": spec.region_count}
             for spec in provider_specs
@@ -53,22 +61,25 @@ def cmd_infra(args):
     record_deployment_created(args.name, deploy_args)
     record_event(args.name, "infra_started")
 
-    # Create the bootstrap VM first (idempotent, always on Digital Ocean)
-    console.print(f"[bold]Bootstrap VM ({args.name}-ant-bootstrap)...[/bold]")
+    # Create bootstrap VM(s) via Terraform (geographically distributed on DO)
+    console.print(
+        f"[bold]Creating {bootstrap_count} bootstrap VM(s) for {args.name}...[/bold]"
+    )
     try:
-        bootstrap = create_bootstrap_vm(args.name, volume_size=args.attached_volume_size)
-        if bootstrap["created"]:
+        bootstrap_nodes = create_bootstrap_vms(
+            args.name,
+            count=bootstrap_count,
+            volume_size=args.attached_volume_size,
+            force=getattr(args, "force", False),
+            console=console,
+        )
+        for node in bootstrap_nodes:
             console.print(
-                f"[green]Bootstrap VM created: {bootstrap['droplet_name']} "
-                f"({bootstrap['ip_address']})[/green]"
-            )
-        else:
-            console.print(
-                f"[green]Bootstrap VM already exists: {bootstrap['droplet_name']} "
-                f"({bootstrap['ip_address']})[/green]"
+                f"[green]  Bootstrap #{node['bootstrap_index']}: "
+                f"{node['ip']} ({node['region']})[/green]"
             )
     except Exception as e:
-        console.print(f"[bold red]Failed to create bootstrap VM:[/bold red] {e}")
+        console.print(f"[bold red]Failed to create bootstrap VMs:[/bold red] {e}")
         sys.exit(1)
 
     console.print()
@@ -182,7 +193,7 @@ def cmd_infra(args):
             args.name,
             region_pairs,
             terraform_variables,
-            bootstrap["ip_address"],
+            bootstrap_nodes,
             vm_ips=vm_ips,
         )
         console.print("[dim]Deployment state saved to S3.[/dim]")

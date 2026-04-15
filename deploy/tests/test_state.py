@@ -29,7 +29,7 @@ class TestSaveDeploymentState:
             name="DEV-01",
             regions=[("digitalocean", "lon1"), ("digitalocean", "nyc1")],
             terraform_variables={"name": "DEV-01", "vm_count": "2"},
-            bootstrap_ip="143.198.100.50",
+            bootstrap_nodes=[{"ip": "143.198.100.50", "region": "lon1", "bootstrap_index": 1}],
             vm_ips={"digitalocean/lon1": ["10.0.0.1"], "digitalocean/nyc1": ["10.0.0.2"]},
         )
 
@@ -50,7 +50,7 @@ class TestSaveDeploymentState:
             name="TEST",
             regions=[("digitalocean", "ams3")],
             terraform_variables={},
-            bootstrap_ip="10.0.0.1",
+            bootstrap_nodes=[{"ip": "10.0.0.1", "region": "ams3", "bootstrap_index": 1}],
             vm_ips={"digitalocean/ams3": ["10.0.0.2"]},
         )
 
@@ -62,7 +62,7 @@ class TestSaveDeploymentState:
             name="DEV-01",
             regions=[("digitalocean", "lon1")],
             terraform_variables={"name": "DEV-01"},
-            bootstrap_ip="143.198.100.50",
+            bootstrap_nodes=[{"ip": "143.198.100.50", "region": "lon1", "bootstrap_index": 1}],
             vm_ips={"digitalocean/lon1": ["10.0.0.1"]},
         )
 
@@ -78,7 +78,7 @@ class TestSaveDeploymentState:
             name="DEV-01",
             regions=[("digitalocean", "lon1"), ("digitalocean", "ams3")],
             terraform_variables={"name": "DEV-01"},
-            bootstrap_ip="143.198.100.50",
+            bootstrap_nodes=[{"ip": "143.198.100.50", "region": "lon1", "bootstrap_index": 1}],
             vm_ips=vm_ips,
         )
 

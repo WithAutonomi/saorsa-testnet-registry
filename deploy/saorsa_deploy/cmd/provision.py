@@ -28,11 +28,8 @@ def cmd_provision(args):
         )
         sys.exit(1)
 
-    bootstrap_ip = state.get("bootstrap_ip")
-    if not bootstrap_ip:
-        console.print("[bold red]Error:[/bold red] No bootstrap IP found in deployment state.")
-        sys.exit(1)
-
+    # Build bootstrap peers list from state
+    bootstrap_nodes = state.get("bootstrap_nodes", [])
     bootstrap_port = state.get("bootstrap_port")
     if not bootstrap_port:
         console.print(
@@ -40,6 +37,21 @@ def cmd_provision(args):
             "Has the provision-genesis command been run?"
         )
         sys.exit(1)
+
+    if bootstrap_nodes:
+        bootstrap_peers = []
+        for node in bootstrap_nodes:
+            port = node.get("port", bootstrap_port)
+            bootstrap_peers.append(f"{node['ip']}:{port}")
+    else:
+        # Backwards compat: old state format with single bootstrap_ip
+        bootstrap_ip = state.get("bootstrap_ip")
+        if not bootstrap_ip:
+            console.print(
+                "[bold red]Error:[/bold red] No bootstrap IP found in deployment state."
+            )
+            sys.exit(1)
+        bootstrap_peers = [f"{bootstrap_ip}:{bootstrap_port}"]
 
     binary_url, binary_is_archive = _resolve_binary_source(args, console)
 
@@ -61,7 +73,7 @@ def cmd_provision(args):
             f"[bold]Provisioning {len(all_ips)} VM(s) across {len(vm_ips)} region(s)...[/bold]"
         )
 
-    console.print(f"  Bootstrap: {bootstrap_ip}:{bootstrap_port}")
+    console.print(f"  Bootstrap peers: {', '.join(bootstrap_peers)}")
     console.print(f"  Node count per VM: {args.node_count}")
     console.print(f"  SSH key: {args.ssh_key_path}")
     if args.port:
@@ -79,8 +91,7 @@ def cmd_provision(args):
 
     kwargs = {
         "host_ips": all_ips,
-        "bootstrap_ip": bootstrap_ip,
-        "bootstrap_port": bootstrap_port,
+        "bootstrap_peers": bootstrap_peers,
         "ssh_key_path": args.ssh_key_path,
         "node_count": args.node_count,
         "initial_port": args.port,

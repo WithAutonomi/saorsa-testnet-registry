@@ -4,7 +4,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from saorsa_deploy.bootstrap import find_and_destroy_bootstrap_vm
+from saorsa_deploy.bootstrap import destroy_bootstrap_vms
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.registry import record_event, record_status
@@ -132,21 +132,27 @@ def cmd_destroy(args):
                 f"{config.state_key}: {e}[/yellow]"
             )
 
-    # Destroy bootstrap VM
-    console.print(f"[bold]Destroying bootstrap VM ({args.name}-ant-bootstrap)...[/bold]")
+    # Destroy bootstrap VM(s) via Terraform
+    bootstrap_nodes = state.get("bootstrap_nodes", [])
+    if bootstrap_nodes:
+        bootstrap_regions = [n["region"] for n in bootstrap_nodes]
+    else:
+        # Legacy fallback: single bootstrap in lon1
+        bootstrap_regions = ["lon1"]
+    console.print(
+        f"[bold]Destroying {len(bootstrap_regions)} bootstrap VM(s)...[/bold]"
+    )
     try:
-        bootstrap_result = find_and_destroy_bootstrap_vm(args.name)
-        if bootstrap_result["found"]:
-            console.print(
-                f"[green]Bootstrap VM destroyed: {bootstrap_result['droplet_name']}[/green]"
-            )
-        else:
-            console.print(
-                f"[yellow]Bootstrap VM not found: {bootstrap_result['droplet_name']} "
-                "(may already be destroyed)[/yellow]"
-            )
+        volume_size = int(terraform_variables.get("attached_volume_size", "20"))
+        destroy_bootstrap_vms(
+            args.name,
+            regions=bootstrap_regions,
+            volume_size=volume_size,
+            console=console,
+        )
+        console.print("[green]Bootstrap VM(s) destroyed.[/green]")
     except Exception as e:
-        console.print(f"[bold red]Failed to destroy bootstrap VM:[/bold red] {e}")
+        console.print(f"[bold red]Failed to destroy bootstrap VMs:[/bold red] {e}")
         sys.exit(1)
 
     # Delete deployment state from S3

@@ -131,6 +131,14 @@ def main():
         default=3,
         help="Number of Vultr regions to use (default: 3)",
     )
+    infra_parser.add_argument(
+        "--bootstrap-count",
+        type=int,
+        default=1,
+        help="Number of bootstrap nodes (1-7, default: 1). "
+        "Node #1 is the genesis node. Additional nodes are geographically "
+        "distributed across Digital Ocean regions.",
+    )
 
     # === provision ===
     provision_parser = subparsers.add_parser("provision", help="Provision nodes on all VMs")
@@ -255,6 +263,68 @@ def main():
         help="Upgrade channel for ant-node (beta or stable)",
     )
     provision_genesis_parser.add_argument(
+        "--rewards-address",
+        type=str,
+        default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
+        help="Arbitrum wallet address for node rewards "
+        "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
+    )
+
+    # === provision-bootstraps ===
+    provision_bootstraps_parser = subparsers.add_parser(
+        "provision-bootstraps",
+        help="Provision additional bootstrap nodes (index 2+) after genesis",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built binary from this branch (requires --repo-owner)",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--log-level",
+        type=str,
+        help="Logging level the nodes will run with",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra command)",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--node-version",
+        type=str,
+        help="Specific release version to deploy (e.g., 0.2.0)",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--port",
+        type=int,
+        required=True,
+        help="Port the bootstrap nodes will run with",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built binary (requires --branch-name)",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--testnet",
+        action="store_true",
+        help="Run nodes with --network-mode testnet",
+    )
+    provision_bootstraps_parser.add_argument(
+        "--upgrade-channel",
+        type=str,
+        choices=["beta", "stable"],
+        help="Upgrade channel for ant-node (beta or stable)",
+    )
+    provision_bootstraps_parser.add_argument(
         "--rewards-address",
         type=str,
         default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
@@ -653,6 +723,10 @@ def main():
         from saorsa_deploy.cmd.provision_genesis import cmd_provision_genesis
 
         cmd_provision_genesis(args)
+    elif args.command == "provision-bootstraps":
+        from saorsa_deploy.cmd.provision_bootstraps import cmd_provision_bootstraps
+
+        cmd_provision_bootstraps(args)
     elif args.command == "provision-telegraf-logs":
         from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
 
