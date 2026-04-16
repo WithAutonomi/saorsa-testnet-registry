@@ -76,7 +76,7 @@ while true; do
 
     # Submit to InfluxDB
     timestamp_ns="$end_ns"
-    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i ${timestamp_ns}"
+    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i ${timestamp_ns}"
     submit_metric "$line"
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"
