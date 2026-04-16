@@ -237,6 +237,71 @@ def delete_elastic_state(name: str) -> None:
     )
 
 
+S3_CLIENT_KEY_PREFIX = "saorsa-deploy/clients"
+
+
+def save_client_state(name: str, clients: list[dict]) -> None:
+    """Save client deployment metadata to S3.
+
+    Args:
+        name: Deployment name.
+        clients: List of client specs, each a dict with keys:
+            region, file_size_mb, vm_size, ip, client_index.
+    """
+    state = {
+        "name": name,
+        "clients": clients,
+    }
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(state, indent=2),
+        ContentType="application/json",
+    )
+
+
+def update_client_state(name: str, updates: dict) -> None:
+    """Merge updates into existing client state in S3."""
+    state = load_client_state(name)
+    state.update(updates)
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(state, indent=2),
+        ContentType="application/json",
+    )
+
+
+def load_client_state(name: str) -> dict:
+    """Load client deployment metadata from S3.
+
+    Raises RuntimeError if the client state is not found.
+    """
+    client = _get_s3_client()
+    try:
+        resp = client.get_object(
+            Bucket=S3_BUCKET,
+            Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        )
+        return json.loads(resp["Body"].read())
+    except client.exceptions.NoSuchKey:
+        raise RuntimeError(
+            f"No client state found for '{name}'. "
+            "Was this client deployment created with the infra-client command?"
+        )
+
+
+def delete_client_state(name: str) -> None:
+    """Delete client deployment metadata from S3."""
+    client = _get_s3_client()
+    client.delete_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+    )
+
+
 def check_terraform_state_exists(state_key: str) -> bool:
     """Check if a Terraform state file already exists in S3."""
     client = _get_s3_client()

@@ -472,6 +472,147 @@ def get_deployment(deployment_id: int) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def create_clients(
+    name: str,
+    clients: list[str],
+    wallet_secret_key: str | None = None,
+    branch_name: str | None = None,
+    repo_owner: str | None = None,
+    ant_version: str | None = None,
+    influx_url: str | None = None,
+    influx_token: str | None = None,
+    influx_org: str = "ant",
+    influx_bucket: str = "testnet-metrics",
+    monitoring_name: str | None = None,
+) -> str:
+    """Create client VMs and provision them with uploader/downloader services.
+
+    Runs infra-client to create VMs, then provision-client to set up services.
+    Services are created but NOT started. Use start_client_services to begin.
+
+    Each client spec is a string: 'region:file_size_mb[:vm_size]'.
+    Default VM size is s-2vcpu-4gb.
+
+    The wallet secret key is required for uploads. It can be passed directly
+    or will be read from the ANT_DEPLOY_SECRET_KEY environment variable.
+
+    For InfluxDB metrics, either provide influx_url + influx_token directly,
+    or set monitoring_name to load config from an existing monitoring stack.
+
+    Args:
+        name: Deployment name (e.g. "DEV-01"). Must match an existing deployment.
+        clients: List of client specs (e.g. ["lon1:50", "nyc1:100:s-4vcpu-8gb"])
+        wallet_secret_key: EVM wallet private key for uploads
+        branch_name: Git branch for custom-built ant binary
+        repo_owner: Repository owner for custom builds (default: maidsafe)
+        ant_version: Specific ant release version (e.g. "0.3.0")
+        influx_url: InfluxDB URL for metrics
+        influx_token: InfluxDB API token
+        influx_org: InfluxDB organization (default: ant)
+        influx_bucket: InfluxDB bucket (default: testnet-metrics)
+        monitoring_name: Load InfluxDB config from monitoring state with this name
+    """
+    if not clients:
+        return "Error: At least one client spec is required."
+
+    output_lines = []
+
+    # Step 1: Build ant binary if branch_name specified
+    if branch_name:
+        owner = repo_owner or "maidsafe"
+        build_args = [
+            "build-ant-binary",
+            "--name", name,
+            "--branch-name", branch_name,
+            "--repo-owner", owner,
+        ]
+        output_lines.append(f"Building ant from {owner}/{branch_name}...")
+        rc, stdout, stderr = _run_deploy(build_args)
+        if rc != 0:
+            return f"Build failed (exit code {rc}):\n{stderr}\n{stdout}"
+        output_lines.append("Build completed.")
+
+    # Step 2: Create client VMs
+    infra_args = ["infra-client", "--name", name, "--force"]
+    for client_spec in clients:
+        infra_args.extend(["--client", client_spec])
+
+    output_lines.append(f"Creating {len(clients)} client VM(s)...")
+    rc, stdout, stderr = _run_deploy(infra_args)
+    if rc != 0:
+        return f"Client infrastructure failed (exit code {rc}):\n{stderr}\n{stdout}"
+    output_lines.append("Client VMs ready.")
+
+    # Step 3: Provision clients
+    provision_args = ["provision-client", "--name", name]
+    if wallet_secret_key:
+        provision_args.extend(["--wallet-secret-key", wallet_secret_key])
+    if branch_name:
+        provision_args.extend(["--branch-name", branch_name])
+        provision_args.extend(["--repo-owner", repo_owner or "maidsafe"])
+    if ant_version:
+        provision_args.extend(["--ant-version", ant_version])
+    if influx_url and influx_token:
+        provision_args.extend(["--influx-url", influx_url])
+        provision_args.extend(["--influx-token", influx_token])
+        provision_args.extend(["--influx-org", influx_org])
+        provision_args.extend(["--influx-bucket", influx_bucket])
+    elif monitoring_name:
+        provision_args.extend(["--monitoring-name", monitoring_name])
+
+    output_lines.append("Provisioning clients...")
+    rc, stdout, stderr = _run_deploy(provision_args)
+    if rc != 0:
+        return f"Client provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
+    output_lines.append("All clients provisioned.")
+    output_lines.append(
+        "\nServices are created but NOT started. "
+        "Use start_client_services to begin upload/download."
+    )
+
+    return "\n".join(output_lines)
+
+
+@mcp.tool()
+def start_client_services(name: str) -> str:
+    """Start the uploader and downloader services on all client VMs.
+
+    Args:
+        name: Deployment name (e.g. "DEV-01")
+    """
+    rc, stdout, stderr = _run_deploy(["start-clients", "--name", name])
+    if rc != 0:
+        return f"Start failed (exit code {rc}):\n{stderr}\n{stdout}"
+    return f"Client services started for '{name}'."
+
+
+@mcp.tool()
+def stop_client_services(name: str) -> str:
+    """Stop the uploader and downloader services on all client VMs.
+
+    Args:
+        name: Deployment name (e.g. "DEV-01")
+    """
+    rc, stdout, stderr = _run_deploy(["stop-clients", "--name", name])
+    if rc != 0:
+        return f"Stop failed (exit code {rc}):\n{stderr}\n{stdout}"
+    return f"Client services stopped for '{name}'."
+
+
+@mcp.tool()
+def destroy_clients(name: str) -> str:
+    """Destroy client VMs and clean up their infrastructure.
+
+    Args:
+        name: Deployment name (e.g. "DEV-01")
+    """
+    rc, stdout, stderr = _run_deploy(["destroy-clients", "--name", name, "--force"])
+    if rc != 0:
+        return f"Destroy clients failed (exit code {rc}):\n{stderr}\n{stdout}"
+    return f"Client VMs for '{name}' destroyed successfully."
+
+
 if __name__ == "__main__":
     print("Starting Saorsa MCP server...", file=sys.stderr)
     mcp.run(transport="stdio")

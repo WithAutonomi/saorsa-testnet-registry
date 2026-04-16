@@ -44,6 +44,35 @@ def main():
         help="Path to SSH key for provisioning the build VM (default: ~/.ssh/id_rsa)",
     )
 
+    # === build-ant-binary ===
+    build_ant_parser = subparsers.add_parser(
+        "build-ant-binary", help="Build ant client binary from source and upload to S3"
+    )
+    build_ant_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (used to isolate build artifacts)",
+    )
+    build_ant_parser.add_argument(
+        "--branch-name",
+        type=str,
+        required=True,
+        help="Git branch to build from",
+    )
+    build_ant_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        required=True,
+        help="GitHub repository owner (e.g., WithAutonomi)",
+    )
+    build_ant_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning the build VM (default: ~/.ssh/id_rsa)",
+    )
+
     # === destroy ===
     destroy_parser = subparsers.add_parser("destroy", help="Destroy testnet infrastructure")
     destroy_parser.add_argument(
@@ -138,6 +167,30 @@ def main():
         help="Number of bootstrap nodes (1-7, default: 1). "
         "Node #1 is the genesis node. Additional nodes are geographically "
         "distributed across Digital Ocean regions.",
+    )
+
+    # === infra-client ===
+    infra_client_parser = subparsers.add_parser(
+        "infra-client", help="Create client VMs on Digital Ocean"
+    )
+    infra_client_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (used as prefix in VM names)",
+    )
+    infra_client_parser.add_argument(
+        "--client",
+        type=str,
+        action="append",
+        help="Client VM spec: 'region:file_size_mb[:vm_size]'. "
+        "Repeat for multiple clients. Default VM size: s-2vcpu-4gb. "
+        "Example: --client 'lon1:50' --client 'nyc1:100:s-4vcpu-8gb'",
+    )
+    infra_client_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete stale Terraform state files and proceed",
     )
 
     # === provision ===
@@ -332,6 +385,111 @@ def main():
         "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
     )
 
+    # === provision-client ===
+    provision_client_parser = subparsers.add_parser(
+        "provision-client",
+        help="Provision client VMs with uploader/downloader services",
+    )
+    provision_client_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra-client)",
+    )
+    provision_client_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner)",
+    )
+    provision_client_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name)",
+    )
+    provision_client_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to deploy (e.g., 0.3.0)",
+    )
+    provision_client_parser.add_argument(
+        "--influx-url",
+        type=str,
+        default=None,
+        help="InfluxDB URL for metrics (e.g., http://1.2.3.4:8086)",
+    )
+    provision_client_parser.add_argument(
+        "--influx-token",
+        type=str,
+        default=None,
+        help="InfluxDB API token for metrics",
+    )
+    provision_client_parser.add_argument(
+        "--influx-org",
+        type=str,
+        default="ant",
+        help="InfluxDB organization (default: ant)",
+    )
+    provision_client_parser.add_argument(
+        "--influx-bucket",
+        type=str,
+        default="testnet-metrics",
+        help="InfluxDB bucket (default: testnet-metrics)",
+    )
+    provision_client_parser.add_argument(
+        "--monitoring-name",
+        type=str,
+        default=None,
+        help="Load InfluxDB config from monitoring state with this name "
+        "(alternative to --influx-url/--influx-token)",
+    )
+    provision_client_parser.add_argument(
+        "--wallet-secret-key",
+        type=str,
+        default=None,
+        help="EVM wallet private key for uploads. "
+        "Falls back to ANT_DEPLOY_SECRET_KEY env var if not provided.",
+    )
+    provision_client_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+
+    # === start-clients ===
+    start_clients_parser = subparsers.add_parser(
+        "start-clients", help="Start uploader/downloader services on client VMs"
+    )
+    start_clients_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra-client)",
+    )
+    start_clients_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+
+    # === stop-clients ===
+    stop_clients_parser = subparsers.add_parser(
+        "stop-clients", help="Stop uploader/downloader services on client VMs"
+    )
+    stop_clients_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra-client)",
+    )
+    stop_clients_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+
     # === provision-telegraf-logs (formerly provision-telegraf) ===
     telegraf_parser = subparsers.add_parser(
         "provision-telegraf-logs",
@@ -405,6 +563,22 @@ def main():
         default=None,
         help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
         "from each entry in the node_vms array.",
+    )
+
+    # === destroy-clients ===
+    destroy_clients_parser = subparsers.add_parser(
+        "destroy-clients", help="Destroy client VM infrastructure"
+    )
+    destroy_clients_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra-client)",
+    )
+    destroy_clients_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompt",
     )
 
     # === destroy-elastic ===
@@ -707,6 +881,10 @@ def main():
         from saorsa_deploy.cmd.build import cmd_build
 
         cmd_build(args)
+    elif args.command == "build-ant-binary":
+        from saorsa_deploy.cmd.build_ant import cmd_build_ant
+
+        cmd_build_ant(args)
     elif args.command == "destroy":
         from saorsa_deploy.cmd.destroy import cmd_destroy
 
@@ -715,6 +893,10 @@ def main():
         from saorsa_deploy.cmd.infra import cmd_infra
 
         cmd_infra(args)
+    elif args.command == "infra-client":
+        from saorsa_deploy.cmd.infra_client import cmd_infra_client
+
+        cmd_infra_client(args)
     elif args.command == "provision":
         from saorsa_deploy.cmd.provision import cmd_provision
 
@@ -727,10 +909,26 @@ def main():
         from saorsa_deploy.cmd.provision_bootstraps import cmd_provision_bootstraps
 
         cmd_provision_bootstraps(args)
+    elif args.command == "provision-client":
+        from saorsa_deploy.cmd.provision_client import cmd_provision_client
+
+        cmd_provision_client(args)
+    elif args.command == "start-clients":
+        from saorsa_deploy.cmd.start_clients import cmd_start_clients
+
+        cmd_start_clients(args)
+    elif args.command == "stop-clients":
+        from saorsa_deploy.cmd.stop_clients import cmd_stop_clients
+
+        cmd_stop_clients(args)
     elif args.command == "provision-telegraf-logs":
         from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
 
         cmd_provision_telegraf(args)
+    elif args.command == "destroy-clients":
+        from saorsa_deploy.cmd.destroy_clients import cmd_destroy_clients
+
+        cmd_destroy_clients(args)
     elif args.command == "destroy-elastic":
         from saorsa_deploy.cmd.destroy_elastic import cmd_destroy_elastic
 
