@@ -26,7 +26,9 @@ def cmd_build_ant(args):
     droplet_id = None
     try:
         console.print("[bold]Creating build droplet...[/bold]")
-        vm = create_build_vm(args.name, args.repo_owner, args.branch_name)
+        vm = create_build_vm(
+            args.name, args.repo_owner, args.branch_name, args.build_vm_size
+        )
         droplet_id = vm["droplet_id"]
         if vm.get("reused"):
             console.print(
@@ -52,6 +54,7 @@ def cmd_build_ant(args):
             repo_owner=args.repo_owner,
             branch_name=args.branch_name,
             console=console,
+            validation_string=args.validation_string,
         )
         s3_url = builder.execute()
 

@@ -202,6 +202,7 @@ def create_deployment(
     upgrade_channel: str | None = None,
     rewards_address: str | None = None,
     bootstrap_count: int = 1,
+    validation_string: str | None = None,
 ) -> str:
     """Create a new testnet deployment by running saorsa-deploy commands.
 
@@ -235,6 +236,7 @@ def create_deployment(
         upgrade_channel: Upgrade channel for ant-node ("beta" or "stable")
         rewards_address: Arbitrum wallet address for node rewards
         bootstrap_count: Number of bootstrap nodes (1-7, default: 1)
+        validation_string: String to search for in the compiled binary (fails build if not found)
     """
     if do_vm_count <= 0 and hetzner_vm_count <= 0 and vultr_vm_count <= 0:
         return (
@@ -253,6 +255,8 @@ def create_deployment(
             "--branch-name", branch_name,
             "--repo-owner", owner,
         ]
+        if validation_string:
+            build_args.extend(["--validation-string", validation_string])
         output_lines.append(f"Building ant-node from {owner}/{branch_name}...")
         rc, stdout, stderr = _run_deploy(build_args)
         if rc != 0:
@@ -485,6 +489,7 @@ def create_clients(
     influx_org: str = "ant",
     influx_bucket: str = "testnet-metrics",
     monitoring_name: str | None = None,
+    validation_string: str | None = None,
 ) -> str:
     """Create client VMs and provision them with uploader/downloader services.
 
@@ -512,6 +517,7 @@ def create_clients(
         influx_org: InfluxDB organization (default: ant)
         influx_bucket: InfluxDB bucket (default: testnet-metrics)
         monitoring_name: Load InfluxDB config from monitoring state with this name
+        validation_string: String to search for in the compiled binary (fails build if not found)
     """
     if not clients:
         return "Error: At least one client spec is required."
@@ -527,6 +533,8 @@ def create_clients(
             "--branch-name", branch_name,
             "--repo-owner", owner,
         ]
+        if validation_string:
+            build_args.extend(["--validation-string", validation_string])
         output_lines.append(f"Building ant from {owner}/{branch_name}...")
         rc, stdout, stderr = _run_deploy(build_args)
         if rc != 0:

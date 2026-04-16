@@ -2,6 +2,7 @@ import os
 
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
+from pyinfra.api.exceptions import PyinfraError
 from pyinfra.api.operation import add_op
 from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
@@ -21,6 +22,7 @@ class AntBuilder:
         repo_owner: str,
         branch_name: str,
         console: Console | None = None,
+        validation_string: str | None = None,
     ):
         self.name = name
         self.ip = ip
@@ -28,6 +30,7 @@ class AntBuilder:
         self.repo_owner = repo_owner
         self.branch_name = branch_name
         self.console = console or Console()
+        self.validation_string = validation_string
         self.s3_key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/ant"
 
     def execute(self) -> str:
@@ -54,6 +57,7 @@ class AntBuilder:
         state = State(inventory=inventory, config=Config())
         connect_all(state)
 
+        validate_op = None
         try:
             add_op(
                 state,
@@ -80,7 +84,7 @@ class AntBuilder:
                     'curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" '
                     "-o /tmp/awscliv2.zip && "
                     "unzip -q /tmp/awscliv2.zip -d /tmp && "
-                    "/tmp/aws/install && "
+                    "/tmp/aws/install --update && "
                     "rm -rf /tmp/awscliv2.zip /tmp/aws"
                 ],
             )
@@ -114,6 +118,17 @@ class AntBuilder:
                 ],
             )
 
+            if self.validation_string:
+                validate_op = add_op(
+                    state,
+                    server.shell,
+                    name="Validate binary",
+                    commands=[
+                        "strings /root/ant-client/target/release/ant "
+                        f"| grep -q '{self.validation_string}'"
+                    ],
+                )
+
             add_op(
                 state,
                 server.shell,
@@ -127,9 +142,24 @@ class AntBuilder:
             )
 
             self.console.print("Running build operations...")
-            run_ops(state)
+            try:
+                run_ops(state)
+            except PyinfraError:
+                pass
         finally:
             disconnect_all(state)
+
+        if validate_op:
+            for _host, op_meta in validate_op.items():
+                if op_meta.is_complete() and op_meta.did_error():
+                    raise RuntimeError(
+                        f"Binary validation failed: "
+                        f"'{self.validation_string}' not found "
+                        f"in ant binary"
+                    )
+
+        if state.failed_hosts:
+            raise RuntimeError("ant build failed on build VM")
 
         from saorsa_deploy.binary_source import get_ant_custom_build_url
 

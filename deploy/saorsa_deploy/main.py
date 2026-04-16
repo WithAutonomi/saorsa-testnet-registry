@@ -43,6 +43,18 @@ def main():
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning the build VM (default: ~/.ssh/id_rsa)",
     )
+    build_parser.add_argument(
+        "--validation-string",
+        type=str,
+        default=None,
+        help="String to search for in the compiled binary using `strings`",
+    )
+    build_parser.add_argument(
+        "--build-vm-size",
+        type=str,
+        default=None,
+        help="DigitalOcean droplet size for the build VM (default: c-32)",
+    )
 
     # === build-ant-binary ===
     build_ant_parser = subparsers.add_parser(
@@ -71,6 +83,18 @@ def main():
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning the build VM (default: ~/.ssh/id_rsa)",
+    )
+    build_ant_parser.add_argument(
+        "--validation-string",
+        type=str,
+        default=None,
+        help="String to search for in the compiled binary using `strings`",
+    )
+    build_ant_parser.add_argument(
+        "--build-vm-size",
+        type=str,
+        default=None,
+        help="DigitalOcean droplet size for the build VM (default: c-32)",
     )
 
     # === destroy ===

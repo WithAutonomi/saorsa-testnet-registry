@@ -6,7 +6,7 @@ import requests
 
 DO_API_URL = "https://api.digitalocean.com/v2"
 BUILD_REGIONS = ["lon1", "ams3", "nyc1", "syd1"]
-BUILD_SIZE = "c-16"
+BUILD_SIZE = "c-32"
 BUILD_IMAGE = "ubuntu-24-04-x64"
 SSH_KEY_IDS = [
     36971688,
@@ -77,7 +77,12 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> None:
     raise TimeoutError(f"SSH on {ip} not available within {timeout}s")
 
 
-def create_build_vm(name: str, repo_owner: str, branch_name: str) -> dict:
+def create_build_vm(
+    name: str,
+    repo_owner: str,
+    branch_name: str,
+    build_vm_size: str | None = None,
+) -> dict:
     """Create an ephemeral DO droplet for building ant-node.
 
     If a droplet with the same name already exists (from a failed previous run),
@@ -85,6 +90,7 @@ def create_build_vm(name: str, repo_owner: str, branch_name: str) -> dict:
 
     Returns a dict with keys: droplet_id, droplet_name, ip_address.
     """
+    size = build_vm_size or BUILD_SIZE
     headers = _get_headers()
     safe_branch = branch_name.replace("_", "-").replace("/", "-")
     droplet_name = f"ant-build-{name}-{repo_owner}-{safe_branch}"
@@ -107,7 +113,7 @@ def create_build_vm(name: str, repo_owner: str, branch_name: str) -> dict:
             json={
                 "name": droplet_name,
                 "region": region,
-                "size": BUILD_SIZE,
+                "size": size,
                 "image": BUILD_IMAGE,
                 "ssh_keys": SSH_KEY_IDS,
             },
