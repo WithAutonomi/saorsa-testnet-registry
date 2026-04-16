@@ -1,10 +1,13 @@
+import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from rich.console import Console
 
 from saorsa_deploy.bootstrap import create_bootstrap_vms
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.hetzner_availability import resolve_hetzner_regions
 from saorsa_deploy.providers import PROVIDERS, ProviderSpec, resolve_regions
 from saorsa_deploy.registry import record_deployment_created, record_event, record_status
 from saorsa_deploy.resources import get_resources_dir
@@ -84,9 +87,22 @@ def cmd_infra(args):
 
     console.print()
 
+    # Preflight: check Hetzner capacity and substitute fallback regions when
+    # preferred ones lack capacity for the chosen server type.
+    hetzner_server_type = getattr(args, "hetzner_server_type", "cpx22")
+    try:
+        providers_for_resolve = _apply_hetzner_preflight(
+            provider_specs, hetzner_server_type, console
+        )
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
     # Resolve regions for the main deployment
     try:
-        region_pairs = resolve_regions(provider_specs)
+        region_pairs = resolve_regions(
+            provider_specs, providers=providers_for_resolve
+        )
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -97,7 +113,6 @@ def cmd_infra(args):
     resources_dir = get_resources_dir()
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
 
-    hetzner_server_type = getattr(args, "hetzner_server_type", "cpx22")
     do_droplet_size = getattr(args, "do_droplet_size", "s-2vcpu-4gb")
     vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
 
@@ -167,10 +182,16 @@ def cmd_infra(args):
         )
 
     vm_ips = {}
+    vm_ids = {}
     for result in results:
         if result.success and result.outputs.get("vm_ips"):
             key = f"{result.provider}/{result.region}"
             vm_ips[key] = result.outputs["vm_ips"]
+            # Persist provider instance IDs in the same order as IPs so downstream
+            # commands (e.g. generate-inventory) can match each VM to its provider_id.
+            ids = result.outputs.get("vm_ids")
+            if ids:
+                vm_ids[key] = [str(i) for i in ids]
 
     providers_state = {}
     for spec in provider_specs:
@@ -195,6 +216,7 @@ def cmd_infra(args):
             terraform_variables,
             bootstrap_nodes,
             vm_ips=vm_ips,
+            vm_ids=vm_ids,
         )
         console.print("[dim]Deployment state saved to S3.[/dim]")
     except Exception as e:
@@ -205,3 +227,48 @@ def cmd_infra(args):
         "infra_completed",
         {"regions": len(results), "vm_ips": vm_ips},
     )
+
+
+def _apply_hetzner_preflight(
+    provider_specs: list[ProviderSpec],
+    server_type: str,
+    console: Console,
+) -> dict:
+    """Check Hetzner capacity for the chosen server type; substitute fallbacks.
+
+    Returns a providers dict (copy of PROVIDERS) with the Hetzner region list
+    replaced by regions that currently have capacity for ``server_type``, in
+    the order they should be consumed. No-op when Hetzner isn't used.
+    """
+    hetzner_spec = next((s for s in provider_specs if s.name == "hetzner"), None)
+    if hetzner_spec is None:
+        return PROVIDERS
+
+    token = os.environ.get("HCLOUD_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "HCLOUD_TOKEN is not set; Hetzner availability preflight cannot run."
+        )
+
+    hetzner_cfg = PROVIDERS["hetzner"]
+    preferred = hetzner_cfg.regions[: hetzner_spec.region_count]
+    console.print(
+        f"[bold]Checking Hetzner capacity for {server_type} "
+        f"in {', '.join(preferred)}...[/bold]"
+    )
+    resolved, notes = resolve_hetzner_regions(
+        preferred=preferred,
+        server_type=server_type,
+        count=hetzner_spec.region_count,
+        token=token,
+        fallback_pool=hetzner_cfg.regions,
+    )
+    for note in notes:
+        console.print(f"[yellow]{note}[/yellow]")
+    console.print(
+        f"[green]Hetzner preflight ok: using {', '.join(resolved)}[/green]"
+    )
+
+    new_providers = dict(PROVIDERS)
+    new_providers["hetzner"] = replace(hetzner_cfg, regions=resolved)
+    return new_providers

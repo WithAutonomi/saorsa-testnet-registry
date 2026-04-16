@@ -135,7 +135,33 @@ def cmd_provision(args):
     record_status(args.name, DeploymentStatus.RUNNING)
 
     try:
-        update_deployment_state(args.name, {"node_count": args.node_count})
-        console.print("[dim]Node count saved to deployment state.[/dim]")
+        state_updates = {"node_count": args.node_count}
+        binary_info = _build_binary_info(args, binary_url, binary_is_archive)
+        if binary_info:
+            state_updates["binary"] = binary_info
+        update_deployment_state(args.name, state_updates)
+        console.print("[dim]Node count and binary info saved to deployment state.[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to save node count to state: {e}[/yellow]")
+
+
+def _build_binary_info(args, binary_url, binary_is_archive):
+    """Build the binary metadata dict persisted to deployment state.
+
+    Returns None if no binary source was specified (defaults used).
+    """
+    version = getattr(args, "node_version", None)
+    branch = getattr(args, "branch_name", None)
+    owner = getattr(args, "repo_owner", None)
+    if not version and not (branch and owner):
+        return None
+    info = {
+        "url": binary_url or "",
+        "is_archive": bool(binary_is_archive),
+    }
+    if version:
+        info["version"] = version
+    if branch and owner:
+        info["branch"] = branch
+        info["repo_owner"] = owner
+    return info

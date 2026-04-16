@@ -829,6 +829,41 @@ def main():
         "from each entry in the node_vms array.",
     )
 
+    # === generate-inventory ===
+    generate_inventory_parser = subparsers.add_parser(
+        "generate-inventory",
+        help="Generate a schema-version-3 inventory.json for a deployment",
+    )
+    generate_inventory_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name",
+    )
+    generate_inventory_parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help=(
+            "Output file path (default: ~/.autonomi/testnets/<name>/inventory.json)"
+        ),
+    )
+    generate_inventory_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key path recorded per VM in the inventory (default: ~/.ssh/id_rsa)",
+    )
+    generate_inventory_parser.add_argument(
+        "--node-count",
+        type=int,
+        default=None,
+        help=(
+            "Number of node services per VM. Defaults to the node_count saved by the "
+            "provision command."
+        ),
+    )
+
     # === bootstrap-production ===
     bootstrap_prod_parser = subparsers.add_parser(
         "bootstrap-production",
@@ -991,6 +1026,10 @@ def main():
         )
 
         cmd_provision_telegraf_metrics(args)
+    elif args.command == "generate-inventory":
+        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
+
+        cmd_generate_inventory(args)
     elif args.command == "bootstrap-production":
         from saorsa_deploy.cmd.bootstrap_production import cmd_bootstrap_production
 
