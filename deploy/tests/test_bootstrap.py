@@ -1,9 +1,14 @@
+from unittest.mock import patch
+
 import pytest
 
 from saorsa_deploy.bootstrap import (
     BOOTSTRAP_STATE_KEY_PREFIX,
     _build_bootstrap_configs,
+    _region_from_bootstrap_state_key,
     _select_bootstrap_regions,
+    list_stale_bootstrap_state_keys,
+    purge_stale_bootstrap_state,
 )
 
 
@@ -118,6 +123,112 @@ class TestMultiBootstrapExecStart:
         peers = [f"10.0.0.{i}:5000" for i in range(1, 8)]
         result = _build_node_exec_start(peers, root_dir)
         assert result.count("--bootstrap") == 7
+
+
+class TestRegionFromBootstrapStateKey:
+    def test_extracts_region_from_well_formed_key(self):
+        region = _region_from_bootstrap_state_key(
+            "saorsa-deploy/do-bootstrap-DEV-02-lon1.tfstate", "DEV-02"
+        )
+        assert region == "lon1"
+
+    def test_handles_hyphenated_region(self):
+        region = _region_from_bootstrap_state_key(
+            "saorsa-deploy/do-bootstrap-DEV-02-ams3.tfstate", "DEV-02"
+        )
+        assert region == "ams3"
+
+    def test_raises_on_unexpected_key(self):
+        with pytest.raises(ValueError):
+            _region_from_bootstrap_state_key(
+                "saorsa-deploy/something-else.tfstate", "DEV-02"
+            )
+
+
+class TestListStaleBootstrapStateKeys:
+    def test_delegates_to_list_terraform_state_keys_with_prefix(self):
+        with patch(
+            "saorsa_deploy.bootstrap.list_terraform_state_keys"
+        ) as mock_list:
+            mock_list.return_value = [
+                f"{BOOTSTRAP_STATE_KEY_PREFIX}-DEV-02-lon1.tfstate",
+            ]
+            result = list_stale_bootstrap_state_keys("DEV-02")
+            mock_list.assert_called_once_with(
+                f"{BOOTSTRAP_STATE_KEY_PREFIX}-DEV-02-"
+            )
+            assert result == [
+                f"{BOOTSTRAP_STATE_KEY_PREFIX}-DEV-02-lon1.tfstate",
+            ]
+
+
+class TestPurgeStaleBootstrapState:
+    def test_no_op_when_no_stale_keys(self):
+        with patch(
+            "saorsa_deploy.bootstrap.list_stale_bootstrap_state_keys"
+        ) as mock_list, patch(
+            "saorsa_deploy.bootstrap.execute_terraform_runs"
+        ) as mock_exec:
+            mock_list.return_value = []
+            purge_stale_bootstrap_state("DEV-02")
+            mock_exec.assert_not_called()
+
+    def test_runs_destroy_then_deletes_each_state(self, tmp_path):
+        from saorsa_deploy.terraform import TerraformResult
+
+        with patch(
+            "saorsa_deploy.bootstrap.list_stale_bootstrap_state_keys"
+        ) as mock_list, patch(
+            "saorsa_deploy.bootstrap.execute_terraform_runs"
+        ) as mock_exec, patch(
+            "saorsa_deploy.bootstrap.delete_terraform_state"
+        ) as mock_delete, patch(
+            "saorsa_deploy.bootstrap.Path.cwd",
+            return_value=tmp_path,
+        ):
+            mock_list.return_value = [
+                f"{BOOTSTRAP_STATE_KEY_PREFIX}-DEV-02-lon1.tfstate",
+                f"{BOOTSTRAP_STATE_KEY_PREFIX}-DEV-02-nyc1.tfstate",
+            ]
+            mock_exec.return_value = [
+                TerraformResult(success=True, provider="digitalocean", region="lon1"),
+                TerraformResult(success=True, provider="digitalocean", region="nyc1"),
+            ]
+
+            purge_stale_bootstrap_state("DEV-02")
+
+            assert mock_exec.call_count == 1
+            args, kwargs = mock_exec.call_args
+            configs = args[0]
+            assert kwargs == {"action": "destroy"}
+            assert [c.region for c in configs] == ["lon1", "nyc1"]
+            assert mock_delete.call_count == 2
+
+    def test_raises_when_destroy_fails(self, tmp_path):
+        from saorsa_deploy.terraform import TerraformResult
+
+        with patch(
+            "saorsa_deploy.bootstrap.list_stale_bootstrap_state_keys"
+        ) as mock_list, patch(
+            "saorsa_deploy.bootstrap.execute_terraform_runs"
+        ) as mock_exec, patch(
+            "saorsa_deploy.bootstrap.delete_terraform_state"
+        ) as mock_delete, patch(
+            "saorsa_deploy.bootstrap.Path.cwd",
+            return_value=tmp_path,
+        ):
+            mock_list.return_value = [
+                f"{BOOTSTRAP_STATE_KEY_PREFIX}-DEV-02-lon1.tfstate",
+            ]
+            mock_exec.return_value = [
+                TerraformResult(
+                    success=False, provider="digitalocean", region="lon1"
+                ),
+            ]
+
+            with pytest.raises(RuntimeError, match="Failed to destroy"):
+                purge_stale_bootstrap_state("DEV-02")
+            mock_delete.assert_not_called()
 
 
 class TestBootstrapNodeExecStart:

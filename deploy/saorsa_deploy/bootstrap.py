@@ -6,7 +6,10 @@ from rich.console import Console
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.resources import get_resources_dir
-from saorsa_deploy.state import check_terraform_state_exists, delete_terraform_state
+from saorsa_deploy.state import (
+    delete_terraform_state,
+    list_terraform_state_keys,
+)
 from saorsa_deploy.terraform import TerraformRunConfig
 
 BOOTSTRAP_STATE_KEY_PREFIX = "saorsa-deploy/do-bootstrap"
@@ -65,35 +68,103 @@ def _build_bootstrap_configs(
     return configs
 
 
+def list_stale_bootstrap_state_keys(name: str) -> list[str]:
+    """List all bootstrap tfstate keys in S3 for the given deployment name."""
+    return list_terraform_state_keys(f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-")
+
+
+def _region_from_bootstrap_state_key(state_key: str, name: str) -> str:
+    """Extract the region from a bootstrap tfstate key."""
+    prefix = f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-"
+    suffix = ".tfstate"
+    if not state_key.startswith(prefix) or not state_key.endswith(suffix):
+        raise ValueError(f"Unexpected bootstrap state key: {state_key}")
+    return state_key[len(prefix) : -len(suffix)]
+
+
+def purge_stale_bootstrap_state(
+    name: str,
+    volume_size: int = 20,
+    droplet_size: str = BOOTSTRAP_DROPLET_SIZE,
+    console: Console | None = None,
+) -> None:
+    """Destroy cloud resources for any bootstrap tfstate left for this name.
+
+    Runs ``terraform destroy`` via each stale tfstate, then removes the state
+    file and its local workspace. The bootstrap_index variable is only needed
+    for planning (not for destroy), so a placeholder value is used.
+    """
+    console = console or Console()
+    stale_keys = list_stale_bootstrap_state_keys(name)
+    if not stale_keys:
+        return
+
+    resources_dir = get_resources_dir()
+    tf_source = resources_dir / "digitalocean-bootstrap"
+    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+
+    configs = []
+    for key in stale_keys:
+        region = _region_from_bootstrap_state_key(key, name)
+        workspace_dir = workspace_base / f"do-bootstrap-{name}-{region}"
+        configs.append(
+            TerraformRunConfig(
+                provider="digitalocean",
+                region=region,
+                tf_source_dir=tf_source,
+                workspace_dir=workspace_dir,
+                state_key=key,
+                variables={
+                    "name": name,
+                    "region": region,
+                    "attached_volume_size": str(volume_size),
+                    "droplet_size": droplet_size,
+                    "bootstrap_index": "1",
+                },
+            )
+        )
+
+    console.print(
+        f"[yellow]Destroying cloud resources tracked by "
+        f"{len(configs)} stale bootstrap tfstate(s)...[/yellow]"
+    )
+    results = execute_terraform_runs(configs, action="destroy")
+    failures = [r for r in results if not r.success]
+    if failures:
+        raise RuntimeError(
+            f"Failed to destroy {len(failures)} stale bootstrap tfstate(s). "
+            "Resolve manually and retry."
+        )
+
+    for config in configs:
+        try:
+            delete_terraform_state(config.state_key)
+        except Exception:
+            pass
+        if config.workspace_dir.exists():
+            shutil.rmtree(config.workspace_dir)
+
+
 def create_bootstrap_vms(
     name: str,
     count: int = 1,
     volume_size: int = 20,
     droplet_size: str = BOOTSTRAP_DROPLET_SIZE,
-    force: bool = False,
     console: Console | None = None,
 ) -> list[dict]:
     """Create bootstrap VMs via Terraform across geographically distributed regions.
 
-    Returns a list of dicts with keys: ip, region, bootstrap_index.
-    The first entry (index=1) is the genesis node.
+    The caller is responsible for ensuring no stale bootstrap Terraform state
+    exists (use ``list_stale_bootstrap_state_keys`` / ``purge_stale_bootstrap_state``
+    when appropriate). Terraform's own state handling makes re-running
+    idempotent once state exists.
+
+    Returns a list of dicts with keys: ip, region, bootstrap_index. The first
+    entry (index=1) is the genesis node.
     """
     console = console or Console()
     regions = _select_bootstrap_regions(count)
     configs = _build_bootstrap_configs(name, regions, volume_size, droplet_size)
-
-    # Check for stale state
-    stale_keys = [c.state_key for c in configs if check_terraform_state_exists(c.state_key)]
-    if stale_keys:
-        if not force:
-            console.print("[bold red]Error:[/bold red] Stale bootstrap Terraform state found:")
-            for key in stale_keys:
-                console.print(f"  {key}")
-            console.print("Use --force to delete and proceed.")
-            raise RuntimeError("Stale bootstrap Terraform state")
-        for key in stale_keys:
-            console.print(f"[yellow]Warning: Deleting stale bootstrap state: {key}[/yellow]")
-            delete_terraform_state(key)
 
     console.print(
         f"[bold]Creating {count} bootstrap VM(s) across "
@@ -136,6 +207,8 @@ def destroy_bootstrap_vms(
     """Destroy bootstrap VMs via Terraform."""
     console = console or Console()
     configs = _build_bootstrap_configs(name, regions, volume_size, droplet_size)
+
+    from saorsa_deploy.state import check_terraform_state_exists
 
     # Only destroy configs where state exists
     active_configs = [c for c in configs if check_terraform_state_exists(c.state_key)]

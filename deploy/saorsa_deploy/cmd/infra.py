@@ -5,7 +5,11 @@ from pathlib import Path
 
 from rich.console import Console
 
-from saorsa_deploy.bootstrap import create_bootstrap_vms
+from saorsa_deploy.bootstrap import (
+    create_bootstrap_vms,
+    list_stale_bootstrap_state_keys,
+    purge_stale_bootstrap_state,
+)
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.hetzner_availability import resolve_hetzner_regions
 from saorsa_deploy.providers import PROVIDERS, ProviderSpec, resolve_regions
@@ -14,6 +18,7 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
     delete_terraform_state,
+    load_deployment_state,
     save_deployment_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
@@ -31,6 +36,32 @@ def _build_provider_specs(args) -> list[ProviderSpec]:
     if args.vultr_vm_count > 0:
         specs.append(ProviderSpec("vultr", args.vultr_vm_count, args.vultr_regions))
     return specs
+
+
+def _try_load_deployment_state(name: str) -> dict | None:
+    try:
+        return load_deployment_state(name)
+    except RuntimeError:
+        return None
+
+
+def _build_provider_state(
+    provider_specs: list[ProviderSpec],
+    do_droplet_size: str,
+    hetzner_server_type: str,
+    vultr_plan: str,
+) -> dict:
+    providers_state = {}
+    for spec in provider_specs:
+        entry = {"vm_count": spec.vm_count, "regions": spec.region_count}
+        if spec.name == "digitalocean":
+            entry["droplet_size"] = do_droplet_size
+        elif spec.name == "hetzner":
+            entry["server_type"] = hetzner_server_type
+        elif spec.name == "vultr":
+            entry["plan"] = vultr_plan
+        providers_state[spec.name] = entry
+    return providers_state
 
 
 def cmd_infra(args):
@@ -64,32 +95,118 @@ def cmd_infra(args):
     record_deployment_created(args.name, deploy_args)
     record_event(args.name, "infra_started")
 
-    # Create bootstrap VM(s) via Terraform (geographically distributed on DO)
-    console.print(
-        f"[bold]Creating {bootstrap_count} bootstrap VM(s) for {args.name}...[/bold]"
-    )
-    try:
-        bootstrap_nodes = create_bootstrap_vms(
-            args.name,
-            count=bootstrap_count,
-            volume_size=args.attached_volume_size,
-            force=getattr(args, "force", False),
-            console=console,
+    do_droplet_size = getattr(args, "do_droplet_size", "s-2vcpu-4gb")
+    hetzner_server_type = getattr(args, "hetzner_server_type", "cpx22")
+    vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
+    force = getattr(args, "force", False)
+
+    # --- Bootstrap phase ---
+    existing_state = _try_load_deployment_state(args.name)
+
+    if existing_state and existing_state.get("bootstrap_nodes"):
+        bootstrap_nodes = existing_state["bootstrap_nodes"]
+        if len(bootstrap_nodes) != bootstrap_count:
+            console.print(
+                f"[bold red]Error:[/bold red] Deployment '{args.name}' already has "
+                f"{len(bootstrap_nodes)} bootstrap node(s), but --bootstrap-count is "
+                f"{bootstrap_count}. Destroy the existing deployment first or re-run "
+                "with the matching count."
+            )
+            sys.exit(1)
+        console.print(
+            f"[bold]Reusing {len(bootstrap_nodes)} existing bootstrap VM(s) "
+            f"for {args.name}.[/bold]"
         )
         for node in bootstrap_nodes:
             console.print(
                 f"[green]  Bootstrap #{node['bootstrap_index']}: "
                 f"{node['ip']} ({node['region']})[/green]"
             )
+    else:
+        stale_bootstrap_keys = list_stale_bootstrap_state_keys(args.name)
+        if stale_bootstrap_keys:
+            if not force:
+                console.print(
+                    "[bold red]Error:[/bold red] Bootstrap Terraform state exists for "
+                    f"'{args.name}' but no parent deployment state was found:"
+                )
+                for key in stale_bootstrap_keys:
+                    console.print(f"  {key}")
+                console.print(
+                    "These are orphaned. Use --force to destroy the tracked cloud "
+                    "resources and proceed."
+                )
+                sys.exit(1)
+            try:
+                purge_stale_bootstrap_state(
+                    args.name,
+                    volume_size=args.attached_volume_size,
+                    console=console,
+                )
+            except Exception as e:
+                console.print(
+                    f"[bold red]Failed to purge stale bootstrap state:[/bold red] {e}"
+                )
+                sys.exit(1)
+
+        console.print(
+            f"[bold]Creating {bootstrap_count} bootstrap VM(s) for {args.name}...[/bold]"
+        )
+        try:
+            bootstrap_nodes = create_bootstrap_vms(
+                args.name,
+                count=bootstrap_count,
+                volume_size=args.attached_volume_size,
+                console=console,
+            )
+            for node in bootstrap_nodes:
+                console.print(
+                    f"[green]  Bootstrap #{node['bootstrap_index']}: "
+                    f"{node['ip']} ({node['region']})[/green]"
+                )
+        except Exception as e:
+            console.print(f"[bold red]Failed to create bootstrap VMs:[/bold red] {e}")
+            sys.exit(1)
+
+    # --- Persist state immediately so a later crash leaves destroy-able state ---
+    initial_regions = (
+        [tuple(r) for r in existing_state.get("regions", [])] if existing_state else []
+    )
+    initial_vm_ips = existing_state.get("vm_ips", {}) if existing_state else {}
+    initial_vm_ids = existing_state.get("vm_ids", {}) if existing_state else {}
+
+    initial_providers_state = _build_provider_state(
+        provider_specs, do_droplet_size, hetzner_server_type, vultr_plan
+    )
+    initial_terraform_variables = {
+        "name": args.name,
+        "attached_volume_size": str(args.attached_volume_size),
+        "providers": initial_providers_state,
+    }
+
+    try:
+        save_deployment_state(
+            args.name,
+            initial_regions,
+            initial_terraform_variables,
+            bootstrap_nodes,
+            vm_ips=initial_vm_ips,
+            vm_ids=initial_vm_ids,
+        )
     except Exception as e:
-        console.print(f"[bold red]Failed to create bootstrap VMs:[/bold red] {e}")
+        console.print(
+            f"[bold red]Failed to save deployment state after bootstraps:[/bold red] {e}"
+        )
+        console.print(
+            "[bold red]Aborting — without saved state, destroy cannot clean up "
+            "these bootstraps.[/bold red]"
+        )
         sys.exit(1)
 
     console.print()
 
     # Preflight: check Hetzner capacity and substitute fallback regions when
     # preferred ones lack capacity for the chosen server type.
-    hetzner_server_type = getattr(args, "hetzner_server_type", "cpx22")
     try:
         providers_for_resolve = _apply_hetzner_preflight(
             provider_specs, hetzner_server_type, console
@@ -112,9 +229,6 @@ def cmd_infra(args):
 
     resources_dir = get_resources_dir()
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
-
-    do_droplet_size = getattr(args, "do_droplet_size", "s-2vcpu-4gb")
-    vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
 
     configs = []
     for provider_name, region in region_pairs:
@@ -146,18 +260,37 @@ def cmd_infra(args):
         )
         configs.append(config)
 
-    # Check for stale Terraform state files
-    stale_keys = [c.state_key for c in configs if check_terraform_state_exists(c.state_key)]
-    if stale_keys:
-        if not getattr(args, "force", False):
-            console.print("[bold red]Error:[/bold red] Stale Terraform state found:")
-            for key in stale_keys:
-                console.print(f"  {key}")
-            console.print("Use --force to delete and proceed.")
-            sys.exit(1)
-        for key in stale_keys:
-            console.print(f"[yellow]Warning: Deleting stale Terraform state: {key}[/yellow]")
-            delete_terraform_state(key)
+    # Stale main-VM tfstate only applies when there is no parent deployment
+    # state. Re-runs on an existing deployment rely on Terraform's own
+    # idempotency (apply on matching state is a no-op).
+    if existing_state is None:
+        stale_configs = [c for c in configs if check_terraform_state_exists(c.state_key)]
+        if stale_configs:
+            if not force:
+                console.print("[bold red]Error:[/bold red] Main-VM Terraform state exists:")
+                for c in stale_configs:
+                    console.print(f"  {c.state_key}")
+                console.print(
+                    "These are orphaned (no parent deployment state). Use --force "
+                    "to destroy the tracked cloud resources and proceed."
+                )
+                sys.exit(1)
+            console.print(
+                f"[yellow]Destroying cloud resources tracked by "
+                f"{len(stale_configs)} stale main-VM tfstate(s)...[/yellow]"
+            )
+            purge_results = execute_terraform_runs(stale_configs, action="destroy")
+            if any(not r.success for r in purge_results):
+                console.print(
+                    "[bold red]Failed to destroy stale main-VM resources. "
+                    "Resolve manually and retry.[/bold red]"
+                )
+                sys.exit(1)
+            for c in stale_configs:
+                try:
+                    delete_terraform_state(c.state_key)
+                except Exception:
+                    pass
 
     console.print(f"[bold]Provisioning infrastructure across {len(configs)} region(s)...[/bold]")
     for spec in provider_specs:
@@ -193,17 +326,9 @@ def cmd_infra(args):
             if ids:
                 vm_ids[key] = [str(i) for i in ids]
 
-    providers_state = {}
-    for spec in provider_specs:
-        entry = {"vm_count": spec.vm_count, "regions": spec.region_count}
-        if spec.name == "digitalocean":
-            entry["droplet_size"] = do_droplet_size
-        elif spec.name == "hetzner":
-            entry["server_type"] = hetzner_server_type
-        elif spec.name == "vultr":
-            entry["plan"] = vultr_plan
-        providers_state[spec.name] = entry
-
+    providers_state = _build_provider_state(
+        provider_specs, do_droplet_size, hetzner_server_type, vultr_plan
+    )
     terraform_variables = {
         "name": args.name,
         "attached_volume_size": str(args.attached_volume_size),

@@ -9,6 +9,7 @@ from saorsa_deploy.state import (
     check_terraform_state_exists,
     delete_deployment_state,
     delete_terraform_state,
+    list_terraform_state_keys,
     load_deployment_state,
     save_deployment_state,
     update_deployment_state,
@@ -183,3 +184,36 @@ class TestCheckTerraformStateExists:
         mock_s3.head_object.side_effect = error_class("not found")
 
         assert check_terraform_state_exists("saorsa-deploy/do-DEV-01-lon1.tfstate") is False
+
+
+class TestListTerraformStateKeys:
+    def test_returns_keys_matching_prefix(self, mock_s3):
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {
+                "Contents": [
+                    {"Key": "saorsa-deploy/do-bootstrap-DEV-02-lon1.tfstate"},
+                    {"Key": "saorsa-deploy/do-bootstrap-DEV-02-nyc1.tfstate"},
+                ]
+            }
+        ]
+        mock_s3.get_paginator.return_value = paginator
+
+        keys = list_terraform_state_keys("saorsa-deploy/do-bootstrap-DEV-02-")
+
+        mock_s3.get_paginator.assert_called_once_with("list_objects_v2")
+        paginator.paginate.assert_called_once_with(
+            Bucket=S3_BUCKET,
+            Prefix="saorsa-deploy/do-bootstrap-DEV-02-",
+        )
+        assert keys == [
+            "saorsa-deploy/do-bootstrap-DEV-02-lon1.tfstate",
+            "saorsa-deploy/do-bootstrap-DEV-02-nyc1.tfstate",
+        ]
+
+    def test_empty_when_no_matches(self, mock_s3):
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{}]
+        mock_s3.get_paginator.return_value = paginator
+
+        assert list_terraform_state_keys("saorsa-deploy/do-bootstrap-NONE-") == []

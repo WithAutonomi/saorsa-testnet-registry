@@ -314,3 +314,14 @@ def check_terraform_state_exists(state_key: str) -> bool:
         return True
     except client.exceptions.ClientError:
         return False
+
+
+def list_terraform_state_keys(prefix: str) -> list[str]:
+    """List all S3 keys matching the given prefix."""
+    client = _get_s3_client()
+    paginator = client.get_paginator("list_objects_v2")
+    keys = []
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys.append(obj["Key"])
+    return keys
