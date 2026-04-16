@@ -77,8 +77,15 @@ def cmd_monitoring_infra(args):
         console.print("[dim]Monitoring state saved to S3.[/dim]")
     except Exception as e:
         console.print(
-            f"[yellow]Warning: Failed to save monitoring state: {e}[/yellow]"
+            f"[bold red]Error: Failed to save monitoring state: {e}[/bold red]"
         )
+        console.print(
+            "[bold red]The monitoring VM was created but state was not saved.[/bold red]"
+        )
+        console.print(
+            "[bold red]The VM must be destroyed manually to avoid orphaned resources.[/bold red]"
+        )
+        sys.exit(1)
 
     console.print()
     console.print(
