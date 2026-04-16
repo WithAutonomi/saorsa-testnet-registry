@@ -26,6 +26,7 @@ def _build_exec_start(
     upgrade_channel=None,
     metrics_port=METRICS_PORT,
     rewards_address=DEFAULT_REWARDS_ADDRESS,
+    evm_network="arbitrum-sepolia",
 ) -> str:
     """Build the ExecStart command line for a bootstrap node service.
 
@@ -53,6 +54,8 @@ def _build_exec_start(
     if upgrade_channel:
         parts.append(f"--upgrade-channel {upgrade_channel}")
     parts.append("--stop-on-upgrade")
+    if evm_network:
+        parts.append(f"--evm-network {evm_network}")
     parts.append(f"--metrics-port {metrics_port}")
     parts.append(f"--rewards-address {rewards_address}")
     return " ".join(parts)

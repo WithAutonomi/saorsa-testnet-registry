@@ -236,6 +236,9 @@ class AntClientProvisioner:
             case_block = "\n".join(case_entries)
 
             bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
+            secret_key = self.wallet_secret_key
+            if not secret_key.startswith("0x"):
+                secret_key = "0x" + secret_key
             env_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
@@ -246,7 +249,7 @@ cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
 BOOTSTRAP_ARGS="{bootstrap_args}"
 FILE_SIZE_KB=$FILE_SIZE_KB
-SECRET_KEY={self.wallet_secret_key if self.wallet_secret_key.startswith('0x') else '0x' + self.wallet_secret_key}
+SECRET_KEY={secret_key}
 ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt
 UPLOAD_DIR={CLIENT_DATA_DIR}/uploads
