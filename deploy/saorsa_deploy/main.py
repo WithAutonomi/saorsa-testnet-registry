@@ -111,6 +111,24 @@ def main():
         help="Deployment name to destroy",
     )
 
+    # === hetzner-availability ===
+    hetzner_avail_parser = subparsers.add_parser(
+        "hetzner-availability",
+        help="Show which Hetzner server types are currently available per region",
+    )
+    hetzner_avail_parser.add_argument(
+        "--server-type",
+        type=str,
+        default=None,
+        help="Filter the table to a single server type (e.g. cpx41)",
+    )
+    hetzner_avail_parser.add_argument(
+        "--region",
+        type=str,
+        default=None,
+        help="Comma-separated list of regions to show (e.g. fsn1,nbg1,hel1)",
+    )
+
     # === infra ===
     infra_parser = subparsers.add_parser("infra", help="Manage testnet infrastructure")
     infra_parser.add_argument(
@@ -948,6 +966,10 @@ def main():
         from saorsa_deploy.cmd.destroy import cmd_destroy
 
         cmd_destroy(args)
+    elif args.command == "hetzner-availability":
+        from saorsa_deploy.cmd.hetzner_availability import cmd_hetzner_availability
+
+        cmd_hetzner_availability(args)
     elif args.command == "infra":
         from saorsa_deploy.cmd.infra import cmd_infra
 

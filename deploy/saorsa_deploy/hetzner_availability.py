@@ -48,6 +48,23 @@ def fetch_server_type_id(server_type_name: str, token: str) -> int:
     )
 
 
+def fetch_server_types(token: str) -> list[dict]:
+    """Fetch every Hetzner server type with its metadata.
+
+    Returns a list of dicts (one per server type) with the raw fields Hetzner
+    exposes — ``id``, ``name``, ``cores``, ``memory``, ``disk``, ``cpu_type``,
+    ``architecture``, etc.
+    """
+    path = "/server_types?per_page=50"
+    results: list[dict] = []
+    while path:
+        data = _fetch(path, token)
+        results.extend(data.get("server_types", []))
+        next_page = data.get("meta", {}).get("pagination", {}).get("next_page")
+        path = f"/server_types?per_page=50&page={next_page}" if next_page else None
+    return results
+
+
 def fetch_availability_map(token: str) -> dict[str, set[int]]:
     """Return ``location_name -> set(server_type_id)`` for currently available types.
 

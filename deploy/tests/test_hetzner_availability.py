@@ -120,6 +120,38 @@ class TestResolveHetznerRegions:
         assert notes == []
 
 
+class TestFetchServerTypes:
+    def test_returns_all_types_from_single_page(self):
+        with patch.object(
+            hetzner_availability,
+            "_fetch",
+            side_effect=_mock_fetch_with({"/server_types": SERVER_TYPES_PAGE_1}),
+        ):
+            result = hetzner_availability.fetch_server_types("t")
+        assert [st["name"] for st in result] == ["cpx22", "cpx41"]
+
+    def test_paginates_until_exhausted(self):
+        page_1 = {
+            "server_types": [{"id": 1, "name": "a"}],
+            "meta": {"pagination": {"next_page": 2}},
+        }
+        page_2 = {
+            "server_types": [{"id": 2, "name": "b"}],
+            "meta": {"pagination": {"next_page": None}},
+        }
+
+        call_log = []
+
+        def fake(path, token):
+            call_log.append(path)
+            return page_2 if "page=2" in path else page_1
+
+        with patch.object(hetzner_availability, "_fetch", side_effect=fake):
+            result = hetzner_availability.fetch_server_types("t")
+        assert [st["name"] for st in result] == ["a", "b"]
+        assert len(call_log) == 2
+
+
 class TestFetchAvailabilityMap:
     def test_unions_across_datacenters_in_same_location(self):
         dcs = [
