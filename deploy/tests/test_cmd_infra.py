@@ -240,6 +240,44 @@ class TestCmdInfraVultrPreflight:
             assert kwargs["plan"] == "vc2-8c-32gb"
             assert kwargs["count"] == 1
 
+    def test_preflights_run_before_bootstrap_creation(self, patches, monkeypatch):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+        patches.create_boot.return_value = [
+            {"ip": "1.2.3.4", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "5.6.7.8", "region": "nyc1", "bootstrap_index": 2},
+            {"ip": "9.10.11.12", "region": "ams3", "bootstrap_index": 3},
+        ]
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="vultr",
+                region="lhr",
+                outputs={"vm_ips": ["10.0.0.1"], "vm_ids": ["abc"]},
+            ),
+        ]
+        monkeypatch.setenv("VULTR_API_KEY", "t")
+
+        create_count_when_preflight_ran = []
+
+        def _track(*_a, **_kw):
+            create_count_when_preflight_ran.append(patches.create_boot.call_count)
+            return (["lhr"], [])
+
+        with patch(
+            "saorsa_deploy.cmd.infra.resolve_vultr_regions", side_effect=_track
+        ):
+            cmd_infra(
+                _args(
+                    do_vm_count=0, do_regions=0,
+                    vultr_vm_count=1, vultr_regions=1,
+                    vultr_plan="vc2-8c-32gb",
+                )
+            )
+
+        # Preflight fired while create_bootstrap_vms was still at call_count 0.
+        assert create_count_when_preflight_ran == [0]
+        patches.create_boot.assert_called_once()
+
     def test_vultr_preflight_skipped_when_vultr_not_used(self, patches):
         patches.load_state.side_effect = RuntimeError("No deployment state found")
         patches.create_boot.return_value = [

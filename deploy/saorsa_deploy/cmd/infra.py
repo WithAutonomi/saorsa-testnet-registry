@@ -101,8 +101,37 @@ def cmd_infra(args):
     vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
     force = getattr(args, "force", False)
 
-    # --- Bootstrap phase ---
     existing_state = _try_load_deployment_state(args.name)
+
+    # --- Preflight phase (runs before bootstraps so misconfigured main-VM
+    #   options fail fast instead of after 2+ minutes of bootstrap work) ---
+    try:
+        providers_for_resolve = _apply_hetzner_preflight(
+            provider_specs, hetzner_server_type, console
+        )
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    try:
+        providers_for_resolve = _apply_vultr_preflight(
+            provider_specs, vultr_plan, providers_for_resolve, console
+        )
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    try:
+        region_pairs = resolve_regions(
+            provider_specs, providers=providers_for_resolve
+        )
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    console.print()
+
+    # --- Bootstrap phase ---
 
     if existing_state and existing_state.get("bootstrap_nodes"):
         bootstrap_nodes = existing_state["bootstrap_nodes"]
@@ -205,35 +234,6 @@ def cmd_infra(args):
         sys.exit(1)
 
     console.print()
-
-    # Preflight: check Hetzner capacity and substitute fallback regions when
-    # preferred ones lack capacity for the chosen server type.
-    try:
-        providers_for_resolve = _apply_hetzner_preflight(
-            provider_specs, hetzner_server_type, console
-        )
-    except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
-
-    # Preflight: check that the chosen Vultr plan is actually offered in the
-    # preferred regions, substituting fallbacks otherwise.
-    try:
-        providers_for_resolve = _apply_vultr_preflight(
-            provider_specs, vultr_plan, providers_for_resolve, console
-        )
-    except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
-
-    # Resolve regions for the main deployment
-    try:
-        region_pairs = resolve_regions(
-            provider_specs, providers=providers_for_resolve
-        )
-    except ValueError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
 
     # Build a lookup for per-provider vm_count
     vm_count_by_provider = {spec.name: spec.vm_count for spec in provider_specs}
