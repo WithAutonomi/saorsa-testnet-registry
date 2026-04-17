@@ -79,6 +79,31 @@ def _build_node_vms_field(state: dict, ssh_key: str, node_count: int) -> list[di
     return entries
 
 
+def _build_bootstrap_vms_field(state: dict, ssh_key: str) -> list[dict]:
+    name = state["name"]
+    bootstrap_nodes = state.get("bootstrap_nodes") or []
+
+    entries = []
+    for node in sorted(bootstrap_nodes, key=lambda n: n.get("bootstrap_index", 0)):
+        index = node["bootstrap_index"]
+        service = f"ant-bootstrap-{index}"
+        entries.append(
+            {
+                "name": f"{name}-ant-bootstrap-{index}",
+                "provider": "digitalocean",
+                "provider_id": node.get("provider_id", ""),
+                "region": node["region"],
+                "ip": node["ip"],
+                "bootstrap_index": index,
+                "ssh_user": DEFAULT_SSH_USER,
+                "ssh_key": ssh_key,
+                "nodes": [{"service_name": service}],
+                "services": [service],
+            }
+        )
+    return entries
+
+
 def build_inventory(
     state: dict,
     ssh_key: str = DEFAULT_SSH_KEY,
@@ -104,6 +129,7 @@ def build_inventory(
         "created_at": created,
         "binary": _build_binary_field(state),
         "firewalls": _build_firewalls_field(state),
+        "bootstrap_vms": _build_bootstrap_vms_field(state, ssh_key),
         "node_vms": _build_node_vms_field(state, ssh_key, resolved_node_count),
     }
 
@@ -139,7 +165,9 @@ def cmd_generate_inventory(args):
     node_vm_count = len(inventory["node_vms"])
     services_per_vm = len(inventory["node_vms"][0]["services"]) if node_vm_count else 0
     total_nodes = node_vm_count * services_per_vm
+    bootstrap_vm_count = len(inventory["bootstrap_vms"])
     console.print(f"[bold green]Wrote inventory to {output_path}[/bold green]")
+    console.print(f"  {bootstrap_vm_count} bootstrap VM(s)")
     console.print(
         f"  {node_vm_count} node VMs × {services_per_vm} service(s) each = {total_nodes} nodes"
     )

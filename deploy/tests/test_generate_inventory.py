@@ -56,6 +56,7 @@ class TestBuildInventory:
             "created_at",
             "binary",
             "firewalls",
+            "bootstrap_vms",
             "node_vms",
         }
         assert inv["schema_version"] == INVENTORY_SCHEMA_VERSION
@@ -195,6 +196,98 @@ class TestBuildInventory:
         inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
         round_tripped = json.loads(json.dumps(inv))
         assert round_tripped == inv
+
+
+class TestBootstrapVmsField:
+    def _multi_bootstrap_state(self):
+        return _state(
+            bootstrap_nodes=[
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+                {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+                {"ip": "3.3.3.3", "region": "ams3", "bootstrap_index": 3},
+            ],
+        )
+
+    def test_one_entry_per_bootstrap_node(self):
+        inv = build_inventory(
+            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
+        )
+        assert len(inv["bootstrap_vms"]) == 3
+
+    def test_entries_are_sorted_by_bootstrap_index(self):
+        state = _state(
+            bootstrap_nodes=[
+                {"ip": "3.3.3.3", "region": "ams3", "bootstrap_index": 3},
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+                {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+            ],
+        )
+        inv = build_inventory(state, created_at="2026-04-16T18:00:00Z")
+        indices = [v["bootstrap_index"] for v in inv["bootstrap_vms"]]
+        assert indices == [1, 2, 3]
+
+    def test_each_entry_has_required_fields(self):
+        inv = build_inventory(
+            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
+        )
+        entry = inv["bootstrap_vms"][0]
+        assert set(entry.keys()) == {
+            "name",
+            "provider",
+            "provider_id",
+            "region",
+            "ip",
+            "bootstrap_index",
+            "ssh_user",
+            "ssh_key",
+            "nodes",
+            "services",
+        }
+
+    def test_service_name_follows_ant_bootstrap_index(self):
+        inv = build_inventory(
+            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
+        )
+        services = [v["services"] for v in inv["bootstrap_vms"]]
+        assert services == [
+            ["ant-bootstrap-1"],
+            ["ant-bootstrap-2"],
+            ["ant-bootstrap-3"],
+        ]
+        for entry in inv["bootstrap_vms"]:
+            assert entry["nodes"] == [{"service_name": entry["services"][0]}]
+
+    def test_name_uses_testnet_id_and_index(self):
+        inv = build_inventory(
+            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
+        )
+        names = [v["name"] for v in inv["bootstrap_vms"]]
+        assert names == [
+            "DEV-02-ant-bootstrap-1",
+            "DEV-02-ant-bootstrap-2",
+            "DEV-02-ant-bootstrap-3",
+        ]
+
+    def test_provider_is_digitalocean(self):
+        inv = build_inventory(
+            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
+        )
+        assert all(v["provider"] == "digitalocean" for v in inv["bootstrap_vms"])
+
+    def test_ssh_defaults_and_override(self):
+        inv = build_inventory(
+            self._multi_bootstrap_state(),
+            ssh_key="~/.ssh/ant_deploy",
+            created_at="2026-04-16T18:00:00Z",
+        )
+        for entry in inv["bootstrap_vms"]:
+            assert entry["ssh_user"] == DEFAULT_SSH_USER
+            assert entry["ssh_key"] == "~/.ssh/ant_deploy"
+
+    def test_empty_when_no_bootstrap_nodes_in_state(self):
+        state = _state(bootstrap_nodes=[])
+        inv = build_inventory(state, created_at="2026-04-16T18:00:00Z")
+        assert inv["bootstrap_vms"] == []
 
 
 class TestCmdGenerateInventory:
