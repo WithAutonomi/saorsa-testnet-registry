@@ -93,6 +93,35 @@ def delete_terraform_state(state_key: str) -> None:
     client.delete_object(Bucket=S3_BUCKET, Key=state_key)
 
 
+def load_terraform_state(state_key: str) -> dict:
+    """Download a Terraform state file from S3 and return it parsed.
+
+    Raises RuntimeError if the state file is missing.
+    """
+    client = _get_s3_client()
+    try:
+        resp = client.get_object(Bucket=S3_BUCKET, Key=state_key)
+        return json.loads(resp["Body"].read())
+    except client.exceptions.NoSuchKey:
+        raise RuntimeError(f"No Terraform state at {state_key}")
+
+
+def terraform_state_attributes(
+    tfstate: dict, resource_type: str, resource_name: str
+) -> dict | None:
+    """Return the attributes dict for a single Terraform resource instance.
+
+    Looks up ``resource_type.resource_name`` in the state. Returns ``None``
+    when the resource isn't present or has no instances.
+    """
+    for resource in tfstate.get("resources", []):
+        if resource.get("type") == resource_type and resource.get("name") == resource_name:
+            instances = resource.get("instances") or []
+            if instances:
+                return instances[0].get("attributes", {}) or {}
+    return None
+
+
 S3_MONITORING_KEY_PREFIX = "saorsa-deploy/monitoring"
 
 

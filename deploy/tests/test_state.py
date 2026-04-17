@@ -11,7 +11,9 @@ from saorsa_deploy.state import (
     delete_terraform_state,
     list_terraform_state_keys,
     load_deployment_state,
+    load_terraform_state,
     save_deployment_state,
+    terraform_state_attributes,
     update_deployment_state,
 )
 
@@ -217,3 +219,62 @@ class TestListTerraformStateKeys:
         mock_s3.get_paginator.return_value = paginator
 
         assert list_terraform_state_keys("saorsa-deploy/do-bootstrap-NONE-") == []
+
+
+class TestLoadTerraformState:
+    def test_parses_json_from_s3(self, mock_s3):
+        payload = {"resources": [{"type": "x", "name": "y", "instances": []}]}
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(payload).encode()
+        mock_s3.get_object.return_value = {"Body": mock_body}
+
+        result = load_terraform_state("saorsa-deploy/do-DEV-02-lon1.tfstate")
+
+        assert result == payload
+        mock_s3.get_object.assert_called_once_with(
+            Bucket=S3_BUCKET,
+            Key="saorsa-deploy/do-DEV-02-lon1.tfstate",
+        )
+
+    def test_raises_when_missing(self, mock_s3):
+        err = type("NoSuchKey", (Exception,), {})
+        mock_s3.exceptions.NoSuchKey = err
+        mock_s3.get_object.side_effect = err("not found")
+
+        with pytest.raises(RuntimeError, match="No Terraform state"):
+            load_terraform_state("saorsa-deploy/missing.tfstate")
+
+
+class TestTerraformStateAttributes:
+    TFSTATE = {
+        "resources": [
+            {
+                "type": "digitalocean_volume",
+                "name": "monitoring_storage",
+                "instances": [
+                    {"attributes": {"name": "x", "size": 100}},
+                ],
+            },
+            {
+                "type": "digitalocean_droplet",
+                "name": "monitoring",
+                "instances": [],
+            },
+        ]
+    }
+
+    def test_returns_attributes_for_matching_resource(self):
+        attrs = terraform_state_attributes(
+            self.TFSTATE, "digitalocean_volume", "monitoring_storage"
+        )
+        assert attrs == {"name": "x", "size": 100}
+
+    def test_returns_none_when_resource_missing(self):
+        assert terraform_state_attributes(
+            self.TFSTATE, "digitalocean_volume", "other"
+        ) is None
+
+    def test_returns_none_when_instances_empty(self):
+        assert terraform_state_attributes(
+            self.TFSTATE, "digitalocean_droplet", "monitoring"
+        ) is None

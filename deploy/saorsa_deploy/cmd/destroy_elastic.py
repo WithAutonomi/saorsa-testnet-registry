@@ -10,6 +10,8 @@ from saorsa_deploy.state import (
     delete_elastic_state,
     delete_terraform_state,
     load_elastic_state,
+    load_terraform_state,
+    terraform_state_attributes,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
 
@@ -45,6 +47,11 @@ def cmd_destroy_elastic(args):
     workspace_dir = workspace_base / f"digitalocean-elastic-{args.name}-{region}"
     state_key = f"saorsa-deploy/do-elastic-{args.name}-{region}.tfstate"
 
+    # Pull the actual volume_size and droplet_size from tfstate so Terraform's
+    # plan doesn't try to shrink or resize — DO refuses volume shrinks and
+    # droplet resize under some conditions, breaking destroy.
+    tfstate_vars = _destroy_vars_from_tfstate(state_key)
+
     config = TerraformRunConfig(
         provider="digitalocean",
         region=region,
@@ -54,6 +61,8 @@ def cmd_destroy_elastic(args):
         variables={
             "name": args.name,
             "region": region,
+            "volume_size": tfstate_vars.get("volume_size", "100"),
+            "droplet_size": tfstate_vars.get("droplet_size", "s-4vcpu-8gb"),
         },
     )
 
@@ -99,3 +108,29 @@ def cmd_destroy_elastic(args):
     console.print(
         f"[bold green]Elasticsearch stack '{args.name}' fully destroyed.[/bold green]"
     )
+
+
+def _destroy_vars_from_tfstate(state_key: str) -> dict:
+    """Return volume_size / droplet_size (as strings) from the tfstate.
+
+    Missing keys just drop out of the dict so callers can apply defaults.
+    """
+    try:
+        tfstate = load_terraform_state(state_key)
+    except Exception:
+        return {}
+
+    out: dict = {}
+    vol = terraform_state_attributes(
+        tfstate, "digitalocean_volume", "elastic_storage"
+    )
+    if vol and vol.get("size") is not None:
+        out["volume_size"] = str(vol["size"])
+
+    droplet = terraform_state_attributes(
+        tfstate, "digitalocean_droplet", "elastic"
+    )
+    if droplet and droplet.get("size"):
+        out["droplet_size"] = droplet["size"]
+
+    return out

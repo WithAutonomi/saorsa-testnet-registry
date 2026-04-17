@@ -10,6 +10,8 @@ from saorsa_deploy.state import (
     delete_monitoring_state,
     delete_terraform_state,
     load_monitoring_state,
+    load_terraform_state,
+    terraform_state_attributes,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
 
@@ -45,6 +47,11 @@ def cmd_destroy_monitoring(args):
     workspace_dir = workspace_base / f"digitalocean-monitoring-{args.name}-{region}"
     state_key = f"saorsa-deploy/do-monitoring-{args.name}-{region}.tfstate"
 
+    # Pull the actual volume_size from tfstate so Terraform's plan doesn't try
+    # to shrink it — DO refuses volume shrinks, breaking destroy when the
+    # infra was created with a non-default size.
+    volume_size = _volume_size_from_tfstate(state_key) or "50"
+
     config = TerraformRunConfig(
         provider="digitalocean",
         region=region,
@@ -54,6 +61,7 @@ def cmd_destroy_monitoring(args):
         variables={
             "name": args.name,
             "region": region,
+            "volume_size": volume_size,
         },
     )
 
@@ -99,3 +107,21 @@ def cmd_destroy_monitoring(args):
     console.print(
         f"[bold green]Monitoring stack '{args.name}' fully destroyed.[/bold green]"
     )
+
+
+def _volume_size_from_tfstate(state_key: str) -> str | None:
+    """Return the monitoring volume size recorded in the tfstate, as a string.
+
+    Returns None when the tfstate is missing or doesn't contain the volume.
+    """
+    try:
+        tfstate = load_terraform_state(state_key)
+    except Exception:
+        return None
+    attrs = terraform_state_attributes(
+        tfstate, "digitalocean_volume", "monitoring_storage"
+    )
+    if not attrs:
+        return None
+    size = attrs.get("size")
+    return None if size is None else str(size)
