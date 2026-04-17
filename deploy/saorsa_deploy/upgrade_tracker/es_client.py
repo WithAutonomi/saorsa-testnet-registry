@@ -129,7 +129,15 @@ class ESClient:
                 ]
             }
         }
-        sort = [{"@timestamp": "asc"}, {"_id": "asc"}]
+        # `_id` as a sort tie-breaker is disallowed in ES 8.x without
+        # enabling fielddata cluster-wide. Use keyword subfields on the
+        # host + service tags — together with the (microsecond) timestamp
+        # the compound key is effectively unique per event.
+        sort = [
+            {"@timestamp": "asc"},
+            {"tag.host.keyword": "asc"},
+            {"tag.service_number.keyword": "asc"},
+        ]
 
         search_after: Optional[list] = None
         while True:
