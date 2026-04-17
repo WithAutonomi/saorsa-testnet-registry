@@ -9,6 +9,7 @@ from saorsa_deploy.state import (
     check_terraform_state_exists,
     delete_terraform_state,
     save_client_state,
+    update_client_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
 
@@ -115,25 +116,40 @@ def cmd_infra_clients(args):
             console.print(f"[yellow]Warning: Deleting stale Terraform state: {key}[/yellow]")
             delete_terraform_state(key)
 
-    results = execute_terraform_runs(configs)
-
-    failures = [r for r in results if not r.success]
-    if failures:
-        console.print(f"[bold red]{len(failures)} client VM(s) failed.[/bold red]")
+    # Save client state UPFRONT (with empty IPs) so that destroy-clients can
+    # always tear down whatever terraform may have started, even on partial
+    # or total failure. IPs get merged in after the apply completes.
+    upfront_specs = [{**spec, "ip": ""} for spec in client_specs]
+    try:
+        save_client_state(args.name, upfront_specs)
+    except Exception as e:
+        console.print(
+            f"[bold red]Failed to save initial client state:[/bold red] {e}"
+        )
+        console.print(
+            "[bold red]Aborting — without saved state, destroy-clients "
+            "couldn't clean up a partial apply.[/bold red]"
+        )
         sys.exit(1)
 
-    # Collect IPs and save state
-    for i, (spec, result) in enumerate(zip(client_specs, results)):
+    results = execute_terraform_runs(configs)
+
+    # Merge whichever IPs came back (partial success included).
+    for spec, result in zip(client_specs, results):
         if result.success and result.outputs.get("vm_ip"):
             spec["ip"] = result.outputs["vm_ip"]
         else:
             spec["ip"] = ""
 
     try:
-        save_client_state(args.name, client_specs)
-        console.print("[dim]Client state saved to S3.[/dim]")
+        update_client_state(args.name, {"clients": client_specs})
     except Exception as e:
-        console.print(f"[yellow]Warning: Failed to save client state: {e}[/yellow]")
+        console.print(f"[yellow]Warning: Failed to update client state: {e}[/yellow]")
+
+    failures = [r for r in results if not r.success]
+    if failures:
+        console.print(f"[bold red]{len(failures)} client VM(s) failed.[/bold red]")
+        sys.exit(1)
 
     console.print()
     console.print(

@@ -8,9 +8,12 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     delete_client_state,
     delete_terraform_state,
+    list_terraform_state_keys,
     load_client_state,
+    load_terraform_state,
+    terraform_state_attributes,
 )
-from saorsa_deploy.terraform import TerraformRunConfig
+from saorsa_deploy.terraform import TerraformRunConfig, run_terraform_destroy
 
 CLIENT_STATE_KEY_PREFIX = "saorsa-deploy/do-client"
 
@@ -20,15 +23,22 @@ def cmd_destroy_clients(args):
     console = Console()
 
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
+    clients: list[dict] = []
     try:
         client_state = load_client_state(args.name)
-    except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
+        clients = client_state.get("clients", []) or []
+    except RuntimeError:
+        console.print(
+            "[yellow]No client state in S3 — scanning for orphan client tfstate "
+            "files...[/yellow]"
+        )
+        clients = _recover_clients_from_tfstate(args.name, console)
 
-    clients = client_state.get("clients", [])
     if not clients:
-        console.print("[bold red]Error:[/bold red] No clients found in state.")
+        console.print(
+            f"[bold red]Error:[/bold red] No clients found for '{args.name}' "
+            "(neither client state nor tfstate)."
+        )
         sys.exit(1)
 
     console.print(f"[dim]Found {len(clients)} client VM(s) to destroy.[/dim]")
@@ -80,8 +90,6 @@ def cmd_destroy_clients(args):
 
     console.print(f"[bold]Destroying {len(configs)} client VM(s)...[/bold]")
 
-    from saorsa_deploy.terraform import run_terraform_destroy
-
     failures = []
     for config in configs:
         result = run_terraform_destroy(config)
@@ -125,3 +133,55 @@ def cmd_destroy_clients(args):
     console.print(
         f"[bold green]All {len(clients)} client VM(s) destroyed successfully.[/bold green]"
     )
+
+
+def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
+    """Reconstruct client specs from S3-backed tfstate when client state is missing.
+
+    Used when an earlier infra-clients run crashed before saving client state,
+    leaving orphan droplets that destroy-clients otherwise couldn't see.
+    """
+    prefix = f"{CLIENT_STATE_KEY_PREFIX}-{name}-"
+    keys = list_terraform_state_keys(prefix)
+    if not keys:
+        return []
+
+    recovered: list[dict] = []
+    for key in keys:
+        # Key shape: saorsa-deploy/do-client-{name}-{region}-{client_index}.tfstate
+        suffix = key[len(prefix) : -len(".tfstate")]
+        region, _, index_str = suffix.rpartition("-")
+        if not region or not index_str.isdigit():
+            console.print(
+                f"[yellow]Skipping unparseable tfstate key: {key}[/yellow]"
+            )
+            continue
+
+        vm_size = "s-2vcpu-4gb"
+        try:
+            tfstate = load_terraform_state(key)
+            droplet = terraform_state_attributes(
+                tfstate, "digitalocean_droplet", "client_vm"
+            )
+            if droplet and droplet.get("size"):
+                vm_size = droplet["size"]
+        except Exception:
+            # Empty/corrupt tfstate (e.g. the 181-byte init-only files from a
+            # failed create) — nothing to destroy; skip.
+            continue
+
+        recovered.append(
+            {
+                "region": region,
+                "client_index": int(index_str),
+                "file_size_mb": 0,
+                "vm_size": vm_size,
+                "ip": "",
+            }
+        )
+
+    recovered.sort(key=lambda c: (c["region"], c["client_index"]))
+    console.print(
+        f"[dim]Recovered {len(recovered)} client(s) from tfstate.[/dim]"
+    )
+    return recovered
