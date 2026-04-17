@@ -43,8 +43,8 @@ def parse_client_spec(spec: str) -> dict:
     }
 
 
-def cmd_infra_client(args):
-    """Execute the infra-client command: create client VMs via Terraform."""
+def cmd_infra_clients(args):
+    """Execute the infra-clients command: create client VMs via Terraform."""
     console = Console()
 
     if not args.client:

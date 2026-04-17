@@ -30,98 +30,97 @@ The `ANT_BUILD_AWS_*` credentials are for the `ant-build-uploader` IAM user, whi
 
 ## Usage
 
-### `infra` command
+A deployment is built up in phases. Each phase has its own `infra-*` /
+`destroy-*` command so partial-failure recovery is independent:
 
-Provision VMs with attached storage volumes using Terraform.
+```
+infra-bootstraps   →  creates bootstrap VMs (Digital Ocean)
+infra-nodes        →  creates node VMs (DO / Hetzner / Vultr) — requires bootstraps
+provision-genesis  →  starts the genesis node on bootstrap #1
+provision-bootstraps (optional) — starts extra bootstrap nodes #2..N
+provision-nodes    →  starts ant-node services on every node VM
 
-```bash
-uv run saorsa-deploy infra --name DEV-01 --node-count 10 --vm-count 3 --testnet
+destroy-nodes      →  tears down node VMs, leaves bootstraps alone
+destroy-bootstraps →  tears down bootstraps (refuses while nodes are still up)
 ```
 
-#### Arguments
+Run `saorsa-deploy <subcommand> --help` for the authoritative argument list
+for each subcommand. The per-phase commands are:
 
-| Argument | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `--attached-volume-size` | int | No | 20 | Size of attached volume in GB |
-| `--name` | string | Yes | - | Deployment name (used as prefix in VM names) |
-| `--node-count` | int | Yes | - | Number of nodes per VM |
-| `--region-counts` | string | No | 3 | Comma-separated region counts per provider |
-| `--testnet` | flag | No | - | Testnet mode: Digital Ocean only, lon1 region |
-| `--vm-count` | int | Yes | - | Number of VMs per provider per region |
+### `infra-bootstraps`
 
-#### Examples
+Create only the bootstrap VMs. These live on Digital Ocean (one per region,
+geographically distributed) and are what the rest of the testnet peers with.
 
-Deploy a testnet (single provider, single region):
 ```bash
-uv run saorsa-deploy infra --name DEV-01 --node-count 10 --vm-count 3 --testnet
+uv run saorsa-deploy infra-bootstraps --name DEV-01 \
+    --bootstrap-count 7 --attached-volume-size 50
 ```
 
-Deploy across 2 regions with larger volumes:
+Writes the deployment's state file to S3 with `bootstrap_nodes` populated
+and `regions` empty. Re-running with the same count is a no-op
+(idempotent); a different `--bootstrap-count` errors out — destroy the
+existing bootstraps first.
+
+### `infra-nodes`
+
+Create the node (main) VMs across one or more providers. Requires
+`infra-bootstraps` to have run first (errors out otherwise). Runs
+availability preflights against Hetzner (server-type capacity) and Vultr
+(plan-region offering) before touching Terraform, and records the resolved
+regions in deployment state **before** `terraform apply` — so a partial
+failure still leaves something destroyable.
+
 ```bash
-uv run saorsa-deploy infra --name PERF-05 --node-count 10 --vm-count 5 --region-counts 2 --attached-volume-size 50
+uv run saorsa-deploy infra-nodes --name DEV-01 \
+    --attached-volume-size 50 \
+    --do-vm-count 10 --do-regions 3 --do-droplet-size s-8vcpu-16gb \
+    --vultr-vm-count 5 --vultr-regions 3 --vultr-plan vhp-8c-16gb-intel \
+    --hetzner-vm-count 2 --hetzner-regions 3 --hetzner-server-type cpx42
 ```
 
-### `provision-genesis` command
+### `provision-genesis` / `provision-bootstraps` / `provision-nodes`
 
-Provision the genesis node on the bootstrap VM.
+Start ant-node services. `provision-genesis` runs the genesis node on
+bootstrap #1 (it's the one peer everyone dials). `provision-bootstraps`
+starts any additional bootstraps (#2..N). `provision-nodes` starts all the
+main-VM node services.
 
 ```bash
 uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000
+uv run saorsa-deploy provision-bootstraps --name DEV-01 --port 12000   # if --bootstrap-count > 1
+uv run saorsa-deploy provision-nodes --name DEV-01 --node-count 25
 ```
-
-#### Arguments
-
-| Argument | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `--branch-name` | string | No | - | Use custom-built binary from this branch (requires `--repo-owner`) |
-
-| `--log-level` | string | No | - | Logging level for the node |
-| `--name` | string | Yes | - | Deployment name (must match `infra`) |
-| `--node-version` | string | No | - | Specific release version (e.g., `0.2.0`) |
-| `--port` | int | Yes | - | Port for the genesis node |
-| `--repo-owner` | string | No | - | GitHub repo owner (requires `--branch-name`) |
-| `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
-| `--testnet` | flag | No | - | Run with `--testnet` flag |
-| `--upgrade-channel` | string | No | - | Upgrade channel: `beta` or `stable` |
-
-### `provision` command
-
-Provision node services on all VMs (or a specific region).
-
-```bash
-uv run saorsa-deploy provision --name DEV-01 --node-count 10
-```
-
-#### Arguments
-
-| Argument | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `--branch-name` | string | No | - | Use custom-built binary from this branch (requires `--repo-owner`) |
-
-| `--log-level` | string | No | - | Logging level for the nodes |
-| `--name` | string | Yes | - | Deployment name (must match `infra`) |
-| `--node-count` | int | Yes | - | Number of node services per VM |
-| `--node-version` | string | No | - | Specific release version (e.g., `0.2.0`) |
-| `--port` | int | No | - | Beginning of port range (omit for random) |
-| `--region` | string | No | - | Provision only VMs in this region |
-| `--repo-owner` | string | No | - | GitHub repo owner (requires `--branch-name`) |
-| `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
-| `--testnet` | flag | No | - | Run with `--testnet` flag |
-| `--upgrade-channel` | string | No | - | Upgrade channel: `beta` or `stable` |
 
 #### Binary version selection
 
-By default, provisioning uses the latest GitHub release. You can override this:
+By default provisioning uses the latest GitHub release. Override with:
 
 ```bash
-# Use a specific release version
+# Specific release
 uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000 --node-version 0.2.0
 
-# Use a custom-built binary (must run build-ant-node-binary first)
-uv run saorsa-deploy provision --name DEV-01 --node-count 10 --branch-name feature-x --repo-owner myorg
+# Custom branch build (see build-ant-node-binary)
+uv run saorsa-deploy provision-nodes --name DEV-01 --node-count 25 \
+    --branch-name feature-x --repo-owner myorg
 ```
 
-`--node-version` and `--branch-name`/`--repo-owner` are mutually exclusive. `--branch-name` and `--repo-owner` must be used together.
+`--node-version` and `--branch-name`/`--repo-owner` are mutually exclusive.
+`--branch-name` and `--repo-owner` must be used together.
+
+### `destroy-nodes` / `destroy-bootstraps`
+
+Tear down in reverse phase order: nodes first, bootstraps second.
+
+```bash
+uv run saorsa-deploy destroy-nodes --name DEV-01 --force
+uv run saorsa-deploy destroy-bootstraps --name DEV-01 --force
+```
+
+`destroy-bootstraps` refuses while node state is still populated. Both
+commands have a fallback path that scans S3 for orphan tfstate files when
+the deployment state is missing, so interrupted runs can still be cleaned
+up.
 
 ### `build-ant-node-binary` command
 
@@ -157,33 +156,6 @@ terraform init
 terraform apply
 # Then create the access key manually:
 aws iam create-access-key --user-name ant-build-uploader
-```
-
-### `destroy` command
-
-Tear down all infrastructure for a named deployment. Reads deployment metadata from S3 (saved automatically by the `infra` command), so you only need to specify the deployment name.
-
-```bash
-uv run saorsa-deploy destroy --name DEV-01
-```
-
-#### Arguments
-
-| Argument | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `--force` | flag | No | - | Skip the confirmation prompt |
-| `--name` | string | Yes | - | Deployment name to destroy |
-
-#### Examples
-
-Destroy a deployment (with confirmation prompt):
-```bash
-uv run saorsa-deploy destroy --name DEV-01
-```
-
-Destroy without confirmation (for CI/CD pipelines):
-```bash
-uv run saorsa-deploy destroy --name DEV-01 --force
 ```
 
 ### `provision-telegraf-logs` command

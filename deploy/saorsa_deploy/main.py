@@ -97,18 +97,38 @@ def main():
         help="DigitalOcean droplet size for the build VM (default: c-32)",
     )
 
-    # === destroy ===
-    destroy_parser = subparsers.add_parser("destroy", help="Destroy testnet infrastructure")
-    destroy_parser.add_argument(
+    # === destroy-bootstraps ===
+    destroy_bootstraps_parser = subparsers.add_parser(
+        "destroy-bootstraps",
+        help="Destroy bootstrap VMs (refuses if nodes are still up)",
+    )
+    destroy_bootstraps_parser.add_argument(
         "--force",
         action="store_true",
         help="Skip confirmation prompt",
     )
-    destroy_parser.add_argument(
+    destroy_bootstraps_parser.add_argument(
         "--name",
         type=str,
         required=True,
-        help="Deployment name to destroy",
+        help="Deployment name to destroy bootstraps for",
+    )
+
+    # === destroy-nodes ===
+    destroy_nodes_parser = subparsers.add_parser(
+        "destroy-nodes",
+        help="Destroy node (main) VMs, leaving bootstraps alone",
+    )
+    destroy_nodes_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    destroy_nodes_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name to destroy nodes for",
     )
 
     # === vultr-availability ===
@@ -147,80 +167,29 @@ def main():
         help="Comma-separated list of regions to show (e.g. fsn1,nbg1,hel1)",
     )
 
-    # === infra ===
-    infra_parser = subparsers.add_parser("infra", help="Manage testnet infrastructure")
-    infra_parser.add_argument(
+    # === infra-bootstraps ===
+    infra_bootstraps_parser = subparsers.add_parser(
+        "infra-bootstraps",
+        help="Create only the bootstrap VMs for a deployment",
+    )
+    infra_bootstraps_parser.add_argument(
         "--force",
         action="store_true",
-        help="Delete stale Terraform state files and proceed",
+        help="Destroy any orphan bootstrap Terraform state and proceed",
     )
-    infra_parser.add_argument(
+    infra_bootstraps_parser.add_argument(
         "--attached-volume-size",
         type=int,
         default=20,
         help="Size of attached volume in GB (default: 20)",
     )
-    infra_parser.add_argument(
+    infra_bootstraps_parser.add_argument(
         "--name",
         type=str,
         required=True,
         help="Deployment name (used as prefix in VM names, e.g. DEV-01)",
     )
-    infra_parser.add_argument(
-        "--do-vm-count",
-        type=int,
-        default=0,
-        help="Number of VMs per region on Digital Ocean (default: 0, provider not used)",
-    )
-    infra_parser.add_argument(
-        "--do-regions",
-        type=int,
-        default=3,
-        help="Number of Digital Ocean regions to use (default: 3)",
-    )
-    infra_parser.add_argument(
-        "--do-droplet-size",
-        type=str,
-        default="s-2vcpu-4gb",
-        help="Digital Ocean droplet size (default: s-2vcpu-4gb)",
-    )
-    infra_parser.add_argument(
-        "--hetzner-vm-count",
-        type=int,
-        default=0,
-        help="Number of VMs per region on Hetzner (default: 0, provider not used)",
-    )
-    infra_parser.add_argument(
-        "--hetzner-regions",
-        type=int,
-        default=3,
-        help="Number of Hetzner regions to use (default: 3)",
-    )
-    infra_parser.add_argument(
-        "--hetzner-server-type",
-        type=str,
-        default="cpx22",
-        help="Hetzner server type (default: cpx22). Alternatives: cx23, cax11",
-    )
-    infra_parser.add_argument(
-        "--vultr-vm-count",
-        type=int,
-        default=0,
-        help="Number of VMs per region on Vultr (default: 0, provider not used)",
-    )
-    infra_parser.add_argument(
-        "--vultr-plan",
-        type=str,
-        default="vc2-2c-4gb",
-        help="Vultr instance plan (default: vc2-2c-4gb)",
-    )
-    infra_parser.add_argument(
-        "--vultr-regions",
-        type=int,
-        default=3,
-        help="Number of Vultr regions to use (default: 3)",
-    )
-    infra_parser.add_argument(
+    infra_bootstraps_parser.add_argument(
         "--bootstrap-count",
         type=int,
         default=1,
@@ -229,17 +198,94 @@ def main():
         "distributed across Digital Ocean regions.",
     )
 
-    # === infra-client ===
-    infra_client_parser = subparsers.add_parser(
-        "infra-client", help="Create client VMs on Digital Ocean"
+    # === infra-nodes ===
+    infra_nodes_parser = subparsers.add_parser(
+        "infra-nodes",
+        help="Create the node (main) VMs for a deployment. Requires bootstraps to already exist.",
     )
-    infra_client_parser.add_argument(
+    infra_nodes_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Destroy any orphan main-VM Terraform state and proceed",
+    )
+    infra_nodes_parser.add_argument(
+        "--attached-volume-size",
+        type=int,
+        default=20,
+        help="Size of attached volume in GB (default: 20)",
+    )
+    infra_nodes_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra-bootstraps)",
+    )
+    infra_nodes_parser.add_argument(
+        "--do-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on Digital Ocean (default: 0, provider not used)",
+    )
+    infra_nodes_parser.add_argument(
+        "--do-regions",
+        type=int,
+        default=3,
+        help="Number of Digital Ocean regions to use (default: 3)",
+    )
+    infra_nodes_parser.add_argument(
+        "--do-droplet-size",
+        type=str,
+        default="s-2vcpu-4gb",
+        help="Digital Ocean droplet size (default: s-2vcpu-4gb)",
+    )
+    infra_nodes_parser.add_argument(
+        "--hetzner-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on Hetzner (default: 0, provider not used)",
+    )
+    infra_nodes_parser.add_argument(
+        "--hetzner-regions",
+        type=int,
+        default=3,
+        help="Number of Hetzner regions to use (default: 3)",
+    )
+    infra_nodes_parser.add_argument(
+        "--hetzner-server-type",
+        type=str,
+        default="cpx22",
+        help="Hetzner server type (default: cpx22). Alternatives: cx23, cax11",
+    )
+    infra_nodes_parser.add_argument(
+        "--vultr-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on Vultr (default: 0, provider not used)",
+    )
+    infra_nodes_parser.add_argument(
+        "--vultr-plan",
+        type=str,
+        default="vc2-2c-4gb",
+        help="Vultr instance plan (default: vc2-2c-4gb)",
+    )
+    infra_nodes_parser.add_argument(
+        "--vultr-regions",
+        type=int,
+        default=3,
+        help="Number of Vultr regions to use (default: 3)",
+    )
+
+    # === infra-clients ===
+    infra_clients_parser = subparsers.add_parser(
+        "infra-clients", help="Create client VMs on Digital Ocean"
+    )
+    infra_clients_parser.add_argument(
         "--name",
         type=str,
         required=True,
         help="Deployment name (used as prefix in VM names)",
     )
-    infra_client_parser.add_argument(
+    infra_clients_parser.add_argument(
         "--client",
         type=str,
         action="append",
@@ -247,74 +293,76 @@ def main():
         "Repeat for multiple clients. Default VM size: s-2vcpu-4gb. "
         "Example: --client 'lon1:50' --client 'nyc1:100:s-4vcpu-8gb'",
     )
-    infra_client_parser.add_argument(
+    infra_clients_parser.add_argument(
         "--force",
         action="store_true",
         help="Delete stale Terraform state files and proceed",
     )
 
-    # === provision ===
-    provision_parser = subparsers.add_parser("provision", help="Provision nodes on all VMs")
-    provision_parser.add_argument(
+    # === provision-nodes ===
+    provision_nodes_parser = subparsers.add_parser(
+        "provision-nodes", help="Provision ant-node services on node VMs"
+    )
+    provision_nodes_parser.add_argument(
         "--branch-name",
         type=str,
         help="Use custom-built binary from this branch (requires --repo-owner)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--log-level",
         type=str,
         help="Logging level the nodes will run with",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--name",
         type=str,
         required=True,
-        help="Deployment name (must match the name used with infra command)",
+        help="Deployment name (must match the name used with infra-nodes)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--node-count",
         type=int,
         required=True,
         help="Number of node services per VM",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--node-version",
         type=str,
         help="Specific release version to deploy (e.g., 0.2.0)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--port",
         type=int,
         help="Beginning of a port range from PORT to PORT+N (omit for random ports)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--region",
         type=str,
         help="Provision only VMs in this region (e.g., digitalocean/lon1)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--repo-owner",
         type=str,
         help="GitHub repo owner for custom-built binary (requires --branch-name)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--testnet",
         action="store_true",
         help="Run nodes with --network-mode testnet",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--upgrade-channel",
         type=str,
         choices=["beta", "stable"],
         help="Upgrade channel for ant-node (beta or stable)",
     )
-    provision_parser.add_argument(
+    provision_nodes_parser.add_argument(
         "--rewards-address",
         type=str,
         default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
@@ -445,71 +493,71 @@ def main():
         "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
     )
 
-    # === provision-client ===
-    provision_client_parser = subparsers.add_parser(
-        "provision-client",
+    # === provision-clients ===
+    provision_clients_parser = subparsers.add_parser(
+        "provision-clients",
         help="Provision client VMs with uploader/downloader services",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--name",
         type=str,
         required=True,
-        help="Deployment name (must match the name used with infra-client)",
+        help="Deployment name (must match the name used with infra-clients)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--branch-name",
         type=str,
         help="Use custom-built ant binary from this branch (requires --repo-owner)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--repo-owner",
         type=str,
         help="GitHub repo owner for custom-built ant binary (requires --branch-name)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--ant-version",
         type=str,
         help="Specific release version of ant to deploy (e.g., 0.3.0)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--influx-url",
         type=str,
         default=None,
         help="InfluxDB URL for metrics (e.g., http://1.2.3.4:8086)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--influx-token",
         type=str,
         default=None,
         help="InfluxDB API token for metrics",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--influx-org",
         type=str,
         default="ant",
         help="InfluxDB organization (default: ant)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--influx-bucket",
         type=str,
         default="testnet-metrics",
         help="InfluxDB bucket (default: testnet-metrics)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--monitoring-name",
         type=str,
         default=None,
         help="Load InfluxDB config from monitoring state with this name "
         "(alternative to --influx-url/--influx-token)",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--wallet-secret-key",
         type=str,
         default=None,
         help="EVM wallet private key for uploads. "
         "Falls back to ANT_DEPLOY_SECRET_KEY env var if not provided.",
     )
-    provision_client_parser.add_argument(
+    provision_clients_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
@@ -980,10 +1028,14 @@ def main():
         from saorsa_deploy.cmd.build_ant import cmd_build_ant
 
         cmd_build_ant(args)
-    elif args.command == "destroy":
-        from saorsa_deploy.cmd.destroy import cmd_destroy
+    elif args.command == "destroy-bootstraps":
+        from saorsa_deploy.cmd.destroy_bootstraps import cmd_destroy_bootstraps
 
-        cmd_destroy(args)
+        cmd_destroy_bootstraps(args)
+    elif args.command == "destroy-nodes":
+        from saorsa_deploy.cmd.destroy_nodes import cmd_destroy_nodes
+
+        cmd_destroy_nodes(args)
     elif args.command == "hetzner-availability":
         from saorsa_deploy.cmd.hetzner_availability import cmd_hetzner_availability
 
@@ -992,18 +1044,22 @@ def main():
         from saorsa_deploy.cmd.vultr_availability import cmd_vultr_availability
 
         cmd_vultr_availability(args)
-    elif args.command == "infra":
-        from saorsa_deploy.cmd.infra import cmd_infra
+    elif args.command == "infra-bootstraps":
+        from saorsa_deploy.cmd.infra_bootstraps import cmd_infra_bootstraps
 
-        cmd_infra(args)
-    elif args.command == "infra-client":
-        from saorsa_deploy.cmd.infra_client import cmd_infra_client
+        cmd_infra_bootstraps(args)
+    elif args.command == "infra-nodes":
+        from saorsa_deploy.cmd.infra_nodes import cmd_infra_nodes
 
-        cmd_infra_client(args)
-    elif args.command == "provision":
-        from saorsa_deploy.cmd.provision import cmd_provision
+        cmd_infra_nodes(args)
+    elif args.command == "infra-clients":
+        from saorsa_deploy.cmd.infra_clients import cmd_infra_clients
 
-        cmd_provision(args)
+        cmd_infra_clients(args)
+    elif args.command == "provision-nodes":
+        from saorsa_deploy.cmd.provision_nodes import cmd_provision_nodes
+
+        cmd_provision_nodes(args)
     elif args.command == "provision-genesis":
         from saorsa_deploy.cmd.provision_genesis import cmd_provision_genesis
 
@@ -1012,10 +1068,10 @@ def main():
         from saorsa_deploy.cmd.provision_bootstraps import cmd_provision_bootstraps
 
         cmd_provision_bootstraps(args)
-    elif args.command == "provision-client":
-        from saorsa_deploy.cmd.provision_client import cmd_provision_client
+    elif args.command == "provision-clients":
+        from saorsa_deploy.cmd.provision_clients import cmd_provision_clients
 
-        cmd_provision_client(args)
+        cmd_provision_clients(args)
     elif args.command == "start-clients":
         from saorsa_deploy.cmd.start_clients import cmd_start_clients
 

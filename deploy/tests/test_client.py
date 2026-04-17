@@ -12,7 +12,7 @@ from saorsa_deploy.binary_source import (
     get_ant_custom_build_url,
     get_ant_release_url,
 )
-from saorsa_deploy.cmd.infra_client import parse_client_spec
+from saorsa_deploy.cmd.infra_clients import parse_client_spec
 from saorsa_deploy.state import (
     S3_BUCKET,
     S3_CLIENT_KEY_PREFIX,

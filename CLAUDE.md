@@ -66,7 +66,7 @@ deploy/
     ssh.py                      # SSH operations
     state.py                    # Deployment state management (S3)
     terraform.py                # Terraform orchestration
-    cmd/                        # CLI subcommands (infra, provision, destroy, monitoring, etc.)
+    cmd/                        # CLI subcommands (infra-bootstraps, infra-nodes, provision-nodes, destroy-nodes, monitoring, etc.)
     provisioning/               # Pyinfra provisioning logic (genesis, node, build, monitoring)
     resources/                  # Terraform manifests (digitalocean/, digitalocean-monitoring/, aws-build-infra/)
   tests/                        # pytest test suite
@@ -135,8 +135,10 @@ The data flow is: **Claude → MCP → saorsa-deploy (subprocess) → infrastruc
 
 When asked to deploy, launch, create, or destroy a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
 
-- `create_deployment` — runs the full deployment sequence (infra → provision-genesis → provision)
-- `destroy_deployment` — runs saorsa-deploy destroy to tear down infrastructure
+- `create_deployment` — runs the full deployment sequence (infra-bootstraps → infra-nodes → provision-genesis → provision-bootstraps → provision-nodes)
+- `destroy_deployment` — runs saorsa-deploy destroy-nodes then destroy-bootstraps to tear down infrastructure
+
+NOTE: the MCP server currently still shells out to the pre-split `infra`/`destroy` commands and needs an update before Claude can use these tools end-to-end. Until then, run the saorsa-deploy CLI directly.
 - `list_deployments` — lists all deployments from the database
 - `get_deployment` — gets deployment details, events, and status
 - `testnet://docs/deployment-config` — resource with full parameter documentation

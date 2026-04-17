@@ -1,0 +1,200 @@
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from saorsa_deploy.cmd.infra_nodes import cmd_infra_nodes
+from saorsa_deploy.terraform import TerraformResult
+
+
+def _args(**overrides):
+    defaults = {
+        "name": "DEV-02",
+        "attached_volume_size": 20,
+        "do_vm_count": 1,
+        "do_regions": 1,
+        "do_droplet_size": "s-2vcpu-4gb",
+        "hetzner_vm_count": 0,
+        "hetzner_regions": 0,
+        "hetzner_server_type": "cpx22",
+        "vultr_vm_count": 0,
+        "vultr_regions": 0,
+        "vultr_plan": "vc2-2c-4gb",
+        "force": False,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _state_with_bootstraps():
+    return {
+        "name": "DEV-02",
+        "bootstrap_nodes": [
+            {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+            {"ip": "3.3.3.3", "region": "ams3", "bootstrap_index": 3},
+        ],
+        "regions": [],
+        "vm_ips": {},
+        "vm_ids": {},
+    }
+
+
+@pytest.fixture
+def patches():
+    with (
+        patch("saorsa_deploy.cmd.infra_nodes.record_event") as p_record_event,
+        patch("saorsa_deploy.cmd.infra_nodes.record_status") as p_record_status,
+        patch("saorsa_deploy.cmd.infra_nodes.load_deployment_state") as p_load_state,
+        patch(
+            "saorsa_deploy.cmd.infra_nodes.update_deployment_state"
+        ) as p_update_state,
+        patch(
+            "saorsa_deploy.cmd.infra_nodes.check_terraform_state_exists"
+        ) as p_check_state,
+        patch(
+            "saorsa_deploy.cmd.infra_nodes.delete_terraform_state"
+        ) as p_delete_state,
+        patch(
+            "saorsa_deploy.cmd.infra_nodes.execute_terraform_runs"
+        ) as p_execute,
+    ):
+        p_check_state.return_value = False
+        p_execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="lon1",
+                outputs={"vm_ips": ["10.0.0.1"], "vm_ids": [1234]},
+            ),
+        ]
+        yield SimpleNamespace(
+            record_event=p_record_event,
+            record_status=p_record_status,
+            load_state=p_load_state,
+            update_state=p_update_state,
+            check_state=p_check_state,
+            delete_state=p_delete_state,
+            execute=p_execute,
+        )
+
+
+class TestRefusesWithoutBootstraps:
+    def test_errors_when_no_deployment_state(self, patches):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+
+        with pytest.raises(SystemExit):
+            cmd_infra_nodes(_args())
+
+        patches.execute.assert_not_called()
+
+    def test_errors_when_state_has_no_bootstrap_nodes(self, patches):
+        patches.load_state.return_value = {"bootstrap_nodes": []}
+
+        with pytest.raises(SystemExit):
+            cmd_infra_nodes(_args())
+
+        patches.execute.assert_not_called()
+
+
+class TestPartialStateBugFix:
+    """The bug this whole split exists to fix: destroy couldn't clean up
+    main-VM orphans because infra used to save regions=[] upfront. The new
+    infra-nodes must write regions BEFORE terraform apply."""
+
+    def test_writes_regions_before_running_terraform(self, patches):
+        patches.load_state.return_value = _state_with_bootstraps()
+
+        execute_seen_updates = []
+
+        def _track(*_a, **_kw):
+            execute_seen_updates.append(patches.update_state.call_count)
+            return patches.execute.return_value
+
+        patches.execute.side_effect = _track
+
+        cmd_infra_nodes(_args())
+
+        # update_deployment_state must have been called at least once before
+        # terraform started, and that call must include populated regions.
+        assert execute_seen_updates == [1]
+        first_update = patches.update_state.call_args_list[0]
+        updates = first_update.args[1]
+        assert "regions" in updates
+        assert updates["regions"] == [["digitalocean", "lon1"]]
+        assert "terraform_variables" in updates
+
+    def test_updates_vm_ips_after_terraform(self, patches):
+        patches.load_state.return_value = _state_with_bootstraps()
+
+        cmd_infra_nodes(_args())
+
+        # Two update calls: first with regions, second with vm_ips/vm_ids.
+        assert patches.update_state.call_count == 2
+        second_updates = patches.update_state.call_args_list[1].args[1]
+        assert "vm_ips" in second_updates
+        assert second_updates["vm_ips"] == {"digitalocean/lon1": ["10.0.0.1"]}
+
+
+class TestStaleMainVmCheck:
+    def test_errors_when_stale_state_without_force(self, patches):
+        patches.load_state.return_value = _state_with_bootstraps()
+        patches.check_state.return_value = True
+
+        with pytest.raises(SystemExit):
+            cmd_infra_nodes(_args(force=False))
+
+        patches.execute.assert_not_called()
+
+    def test_force_purges_stale_state_then_applies(self, patches):
+        patches.load_state.return_value = _state_with_bootstraps()
+        patches.check_state.return_value = True
+
+        execute_calls = []
+
+        def _track(configs, action="apply"):
+            execute_calls.append(action)
+            return patches.execute.return_value
+
+        patches.execute.side_effect = _track
+
+        cmd_infra_nodes(_args(force=True))
+
+        assert execute_calls == ["destroy", "apply"]
+
+    def test_skips_stale_check_on_rerun_with_existing_regions(self, patches):
+        state = _state_with_bootstraps()
+        state["regions"] = [["digitalocean", "lon1"]]
+        patches.load_state.return_value = state
+
+        cmd_infra_nodes(_args())
+
+        patches.check_state.assert_not_called()
+
+
+class TestPartialFailureRecordsVmIps:
+    def test_vm_ips_for_successful_regions_are_saved_even_on_failure(self, patches):
+        patches.load_state.return_value = _state_with_bootstraps()
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="lon1",
+                outputs={"vm_ips": ["10.0.0.1"], "vm_ids": [1234]},
+            ),
+            TerraformResult(
+                success=False,
+                provider="hetzner",
+                region="fsn1",
+                stderr="boom",
+            ),
+        ]
+
+        with pytest.raises(SystemExit):
+            cmd_infra_nodes(_args(hetzner_vm_count=1, hetzner_regions=1))
+
+        # regions were saved before apply; vm_ips for the one success were
+        # recorded before the failure caused the exit.
+        assert patches.update_state.call_count == 2
+        second = patches.update_state.call_args_list[1].args[1]
+        assert second["vm_ips"] == {"digitalocean/lon1": ["10.0.0.1"]}

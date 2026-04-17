@@ -9,8 +9,8 @@ from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
 
 
-def cmd_provision(args):
-    """Execute the provision command: provision nodes on all VMs."""
+def cmd_provision_nodes(args):
+    """Execute the provision-nodes command: provision nodes on all VMs."""
     console = Console()
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")

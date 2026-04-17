@@ -115,8 +115,8 @@ def _resolve_wallet_secret_key(args, console):
     sys.exit(1)
 
 
-def cmd_provision_client(args):
-    """Execute the provision-client command: provision client VMs with uploader/downloader."""
+def cmd_provision_clients(args):
+    """Execute the provision-clients command: provision client VMs with uploader/downloader."""
     console = Console()
 
     wallet_secret_key = _resolve_wallet_secret_key(args, console)

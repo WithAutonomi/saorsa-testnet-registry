@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pyinfra.operations import server
 
-from saorsa_deploy.cmd.provision import cmd_provision
+from saorsa_deploy.cmd.provision_nodes import cmd_provision_nodes
 from saorsa_deploy.provisioning.bootstrap import DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.node import (
     AntNodeProvisioner,
@@ -406,10 +406,10 @@ class TestAntNodeProvisioner:
 
 
 class TestCmdProvisionClearsKnownHosts:
-    @patch("saorsa_deploy.cmd.provision.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision.AntNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision.load_deployment_state")
+    @patch("saorsa_deploy.cmd.provision_nodes.update_deployment_state")
+    @patch("saorsa_deploy.cmd.provision_nodes.AntNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision_nodes.clear_known_hosts")
+    @patch("saorsa_deploy.cmd.provision_nodes.load_deployment_state")
     def test_clears_known_hosts_for_all_vm_ips(
         self,
         mock_load_state,
@@ -442,16 +442,16 @@ class TestCmdProvisionClearsKnownHosts:
             upgrade_channel=None,
             rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
-        cmd_provision(args)
+        cmd_provision_nodes(args)
 
         mock_clear_known_hosts.assert_called_once()
         called_ips = mock_clear_known_hosts.call_args[0][0]
         assert sorted(called_ips) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
 
-    @patch("saorsa_deploy.cmd.provision.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision.AntNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision.load_deployment_state")
+    @patch("saorsa_deploy.cmd.provision_nodes.update_deployment_state")
+    @patch("saorsa_deploy.cmd.provision_nodes.AntNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision_nodes.clear_known_hosts")
+    @patch("saorsa_deploy.cmd.provision_nodes.load_deployment_state")
     def test_clears_known_hosts_for_single_region(
         self,
         mock_load_state,
@@ -484,16 +484,16 @@ class TestCmdProvisionClearsKnownHosts:
             upgrade_channel=None,
             rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
-        cmd_provision(args)
+        cmd_provision_nodes(args)
 
         mock_clear_known_hosts.assert_called_once()
         called_ips = mock_clear_known_hosts.call_args[0][0]
         assert called_ips == ["10.0.0.1", "10.0.0.2"]
 
-    @patch("saorsa_deploy.cmd.provision.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision.AntNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision.load_deployment_state")
+    @patch("saorsa_deploy.cmd.provision_nodes.update_deployment_state")
+    @patch("saorsa_deploy.cmd.provision_nodes.AntNodeProvisioner")
+    @patch("saorsa_deploy.cmd.provision_nodes.clear_known_hosts")
+    @patch("saorsa_deploy.cmd.provision_nodes.load_deployment_state")
     def test_clears_known_hosts_before_provisioner_executes(
         self,
         mock_load_state,
@@ -525,6 +525,6 @@ class TestCmdProvisionClearsKnownHosts:
             upgrade_channel=None,
             rewards_address=DEFAULT_REWARDS_ADDRESS,
         )
-        cmd_provision(args)
+        cmd_provision_nodes(args)
 
         assert call_order == ["clear_known_hosts", "execute"]
