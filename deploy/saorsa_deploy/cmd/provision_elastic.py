@@ -98,6 +98,7 @@ def cmd_provision_elastic(args):
             host_ip=vm_ip,
             ssh_key_path=args.ssh_key_path,
             testnet_name=args.name,
+            retention_days=args.retention_days,
             console=console,
         )
         connection_details = provisioner.execute()

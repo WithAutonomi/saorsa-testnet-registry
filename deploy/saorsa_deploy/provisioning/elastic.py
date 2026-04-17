@@ -24,6 +24,8 @@ ES_DEB_URL = (
 
 INDEX_PATTERN = "telegraf-ant-nodes-*"
 ES_USERNAME = "ant-log-writer"
+ILM_POLICY_NAME = "ant-logs-policy"
+DEFAULT_RETENTION_DAYS = 7
 
 
 class ElasticProvisioner:
@@ -34,11 +36,17 @@ class ElasticProvisioner:
         host_ip: str,
         ssh_key_path: str,
         testnet_name: str,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
         console: Console | None = None,
     ):
+        if retention_days < 1:
+            raise ValueError(
+                f"retention_days must be >= 1 (got {retention_days})"
+            )
         self.host_ip = host_ip
         self.ssh_key_path = ssh_key_path
         self.testnet_name = testnet_name
+        self.retention_days = retention_days
         self.console = console or Console()
         self._es_password = secrets.token_urlsafe(24)
 
@@ -126,7 +134,6 @@ class ElasticProvisioner:
 
     def _add_configure_elasticsearch_ops(self, state: State):
         es_yml = self._build_elasticsearch_yml()
-        jvm_options = self._build_jvm_options()
 
         add_op(
             state,
@@ -152,11 +159,8 @@ class ElasticProvisioner:
         add_op(
             state,
             server.shell,
-            name="Write JVM options override",
-            commands=[
-                f"cat > /etc/elasticsearch/jvm.options.d/heap.options << 'JVM_EOF'\n"
-                f"{jvm_options}JVM_EOF",
-            ],
+            name="Write JVM options override (dynamic heap sizing)",
+            commands=[self._build_heap_options_command()],
         )
 
     def _add_start_elasticsearch_ops(self, state: State):
@@ -218,12 +222,17 @@ class ElasticProvisioner:
             f"    authz_exception: false\n"
         )
 
-    def _build_jvm_options(self) -> str:
-        # Use half of available RAM, capped at 31g (compressed oops threshold)
+    def _build_heap_options_command(self) -> str:
+        # Heap = min(50% of RAM, 31g) with a 1g floor. 31g cap preserves the
+        # JVM compressed-oops threshold.
         return (
-            "# Auto-detect heap size: use half of available RAM\n"
-            "-Xms4g\n"
-            "-Xmx4g\n"
+            "mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo) && "
+            "heap_mb=$((mem_kb / 1024 / 2)) && "
+            "if [ \"$heap_mb\" -gt 31744 ]; then heap_mb=31744; fi && "
+            "if [ \"$heap_mb\" -lt 1024 ]; then heap_mb=1024; fi && "
+            "printf '# Auto-sized heap: 50%% of RAM, capped at 31g\\n"
+            "-Xms%sm\\n-Xmx%sm\\n' \"$heap_mb\" \"$heap_mb\" "
+            "> /etc/elasticsearch/jvm.options.d/heap.options"
         )
 
     def _build_setup_script(self) -> str:
@@ -237,6 +246,8 @@ class ElasticProvisioner:
             f"USERNAME = '{ES_USERNAME}'\n"
             f"PASSWORD = '{self._es_password}'\n"
             f"INDEX_PATTERN = '{INDEX_PATTERN}'\n"
+            f"ILM_POLICY_NAME = '{ILM_POLICY_NAME}'\n"
+            f"RETENTION_DAYS = {self.retention_days}\n"
             "\n"
             "\n"
             "def es_request(method, path, data=None):\n"
@@ -303,7 +314,29 @@ class ElasticProvisioner:
             "        raise\n"
             "\n"
             "\n"
-            "# 2. Create index template for ant node logs\n"
+            "# 2a. Create ILM policy for log retention\n"
+            "print(f'Creating ILM policy {ILM_POLICY_NAME} ('\n"
+            "      f'retention={RETENTION_DAYS}d)...')\n"
+            "es_auth_request('PUT', f'/_ilm/policy/{ILM_POLICY_NAME}', {\n"
+            "    'policy': {\n"
+            "        'phases': {\n"
+            "            'hot': {\n"
+            "                'min_age': '0ms',\n"
+            "                'actions': {\n"
+            "                    'set_priority': {'priority': 100},\n"
+            "                },\n"
+            "            },\n"
+            "            'delete': {\n"
+            "                'min_age': f'{RETENTION_DAYS}d',\n"
+            "                'actions': {'delete': {}},\n"
+            "            },\n"
+            "        }\n"
+            "    }\n"
+            "})\n"
+            "print('ILM policy created.')\n"
+            "\n"
+            "\n"
+            "# 2b. Create index template for ant node logs (attaches ILM policy)\n"
             "print('Creating index template...')\n"
             "es_auth_request('PUT', '/_index_template/ant-node-logs', {\n"
             "    'index_patterns': [INDEX_PATTERN],\n"
@@ -311,6 +344,7 @@ class ElasticProvisioner:
             "        'settings': {\n"
             "            'number_of_shards': 1,\n"
             "            'number_of_replicas': 0,\n"
+            "            'index.lifecycle.name': ILM_POLICY_NAME,\n"
             "        },\n"
             "        'mappings': {\n"
             "            'properties': {\n"

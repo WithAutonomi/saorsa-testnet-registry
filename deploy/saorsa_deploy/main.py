@@ -699,6 +699,27 @@ def main():
         help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
         "from each entry in the node_vms array.",
     )
+    telegraf_tail_group = telegraf_parser.add_mutually_exclusive_group()
+    telegraf_tail_group.add_argument(
+        "--from-start",
+        dest="from_beginning",
+        action="store_true",
+        default=True,
+        help=(
+            "Telegraf reads each log file from the beginning (default). "
+            "Use this for fresh deployments where startup logs matter."
+        ),
+    )
+    telegraf_tail_group.add_argument(
+        "--only-new-logs",
+        dest="from_beginning",
+        action="store_false",
+        help=(
+            "Telegraf tails from the end of each existing log file (no "
+            "backfill). Use this for post-hoc attachment to a running "
+            "testnet to avoid re-ingesting historical logs."
+        ),
+    )
 
     # === destroy-clients ===
     destroy_clients_parser = subparsers.add_parser(
@@ -731,6 +752,166 @@ def main():
         required=True,
         help="Elasticsearch stack name to destroy",
     )
+
+    # === clean-elastic ===
+    clean_elastic_parser = subparsers.add_parser(
+        "clean-elastic",
+        help=(
+            "Remove telegraf-ant-elasticsearch log forwarder from node VMs "
+            "(leaves telegraf deb, metrics sidecar, and ant-node untouched)"
+        ),
+    )
+    clean_elastic_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Deployment name (loads IPs from deployment state). Required "
+            "unless --host-ips-file or --inventory-path is provided."
+        ),
+    )
+    clean_elastic_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
+            "from each entry in the node_vms array."
+        ),
+    )
+    clean_elastic_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help=(
+            "Path to a text file containing one IP address per line "
+            "(alternative to loading IPs from deployment state)"
+        ),
+    )
+    clean_elastic_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+    clean_elastic_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username (default: root)",
+    )
+
+    # === track-upgrades (parent) ===
+    track_upgrades_parser = subparsers.add_parser(
+        "track-upgrades",
+        help=(
+            "Track ant-node auto-upgrade progress by polling Elasticsearch "
+            "and writing per-node state to a local SQLite DB."
+        ),
+    )
+    track_upgrades_sub = track_upgrades_parser.add_subparsers(
+        dest="track_upgrades_verb", required=True
+    )
+
+    def _add_common_es_args(p):
+        p.add_argument(
+            "--name",
+            type=str,
+            default=None,
+            help=(
+                "Elasticsearch stack name — if set, credentials are loaded "
+                "from the elastic state (recommended)."
+            ),
+        )
+        p.add_argument("--es-url", type=str, default=None)
+        p.add_argument("--es-username", type=str, default=None)
+        p.add_argument("--es-password", type=str, default=None)
+        p.add_argument("--es-api-key", type=str, default=None)
+        p.add_argument(
+            "--es-index-pattern",
+            type=str,
+            default=None,
+            help=(
+                "ES index pattern to search (default derived from --name "
+                "or testnet_name)."
+            ),
+        )
+        p.add_argument(
+            "--testnet-name",
+            type=str,
+            default=None,
+            help=(
+                "The tag.testnet_name.keyword value that was set on the "
+                "telegraf global_tags at provisioning time. Defaults to "
+                "--name."
+            ),
+        )
+
+    # init
+    ti_init = track_upgrades_sub.add_parser(
+        "init",
+        help="Seed the SQLite DB from an inventory + baseline/target versions",
+    )
+    _add_common_es_args(ti_init)
+    ti_init.add_argument(
+        "--inventory-path", type=str, required=True,
+        help="Path to inventory JSON (node_vms[].{name, services/nodes}).",
+    )
+    ti_init.add_argument(
+        "--from-version", type=str, required=True,
+        help="Baseline version currently running on every node.",
+    )
+    ti_init.add_argument(
+        "--to-version", type=str, required=True,
+        help="Target version we expect every node to upgrade to.",
+    )
+    ti_init.add_argument(
+        "--db", type=str, default=None,
+        help=(
+            "Path to the SQLite DB file. Default: "
+            "~/.saorsa-deploy/upgrades/<testnet>.db"
+        ),
+    )
+    ti_init.add_argument(
+        "--since", type=str, default=None,
+        help=(
+            "Ignore ES logs older than this ISO timestamp. Default: now "
+            "(captures only logs emitted after init)."
+        ),
+    )
+    ti_init.add_argument(
+        "--reset", action="store_true",
+        help="Wipe existing rows and metadata before seeding.",
+    )
+
+    # sync
+    ti_sync = track_upgrades_sub.add_parser(
+        "sync",
+        help="Incrementally pull upgrade logs from ES and update the DB.",
+    )
+    ti_sync.add_argument("--db", type=str, required=True)
+    ti_sync.add_argument(
+        "--watch", action="store_true",
+        help="Loop forever, polling every --interval. Ctrl-C to stop.",
+    )
+    ti_sync.add_argument(
+        "--interval", type=str, default="5m",
+        help="Polling interval in watch mode (e.g. 30s, 5m, 1h). Default 5m.",
+    )
+
+    # summary
+    ti_summary = track_upgrades_sub.add_parser(
+        "summary",
+        help="Compact progress dashboard.",
+    )
+    ti_summary.add_argument("--db", type=str, required=True)
+
+    # details
+    ti_details = track_upgrades_sub.add_parser(
+        "details",
+        help="Per-node status table (hostname, service, versions, schedule).",
+    )
+    ti_details.add_argument("--db", type=str, required=True)
 
     # === destroy-monitoring ===
     destroy_monitoring_parser = subparsers.add_parser(
@@ -853,6 +1034,15 @@ def main():
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+    provision_elastic_parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=7,
+        help=(
+            "ILM retention in days before log indices are deleted "
+            "(default: 7). Re-run provision-elastic to change."
+        ),
     )
 
     # === provision-monitoring ===
@@ -1119,6 +1309,32 @@ def main():
         from saorsa_deploy.cmd.destroy_elastic import cmd_destroy_elastic
 
         cmd_destroy_elastic(args)
+    elif args.command == "clean-elastic":
+        from saorsa_deploy.cmd.clean_elastic import cmd_clean_elastic
+
+        cmd_clean_elastic(args)
+    elif args.command == "track-upgrades":
+        verb = args.track_upgrades_verb
+        if verb == "init":
+            from saorsa_deploy.cmd.track_upgrades.init_cmd import (
+                cmd_track_upgrades_init,
+            )
+            cmd_track_upgrades_init(args)
+        elif verb == "sync":
+            from saorsa_deploy.cmd.track_upgrades.sync_cmd import (
+                cmd_track_upgrades_sync,
+            )
+            cmd_track_upgrades_sync(args)
+        elif verb == "summary":
+            from saorsa_deploy.cmd.track_upgrades.summary_cmd import (
+                cmd_track_upgrades_summary,
+            )
+            cmd_track_upgrades_summary(args)
+        elif verb == "details":
+            from saorsa_deploy.cmd.track_upgrades.details_cmd import (
+                cmd_track_upgrades_details,
+            )
+            cmd_track_upgrades_details(args)
     elif args.command == "elastic-infra":
         from saorsa_deploy.cmd.elastic_infra import cmd_elastic_infra
 

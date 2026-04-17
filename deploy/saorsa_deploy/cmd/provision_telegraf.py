@@ -215,6 +215,7 @@ def cmd_provision_telegraf(args):
                     elasticsearch_password=es_password,
                     branch_commit=branch_commit,
                     node_version=node_version,
+                    from_beginning=args.from_beginning,
                     console=console,
                 ).execute()
             except Exception as e:
@@ -261,6 +262,7 @@ def cmd_provision_telegraf(args):
                 elasticsearch_password=es_password,
                 branch_commit=branch_commit,
                 node_version=node_version,
+                from_beginning=args.from_beginning,
                 console=console,
             ).execute()
         except Exception as e:
@@ -314,6 +316,7 @@ def cmd_provision_telegraf(args):
             "elasticsearch_password": es_password,
             "branch_commit": branch_commit,
             "node_version": node_version,
+            "from_beginning": args.from_beginning,
             "console": console,
         }
 

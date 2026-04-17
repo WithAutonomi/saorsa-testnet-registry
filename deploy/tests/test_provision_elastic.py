@@ -3,11 +3,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from saorsa_deploy.provisioning.elastic import (
+    DEFAULT_RETENTION_DAYS,
     ELASTIC_DATA_DIR,
     ELASTIC_LOG_DIR,
     ELASTIC_MOUNT_POINT,
     ES_USERNAME,
     ES_VERSION,
+    ILM_POLICY_NAME,
     INDEX_PATTERN,
     ElasticProvisioner,
 )
@@ -60,12 +62,53 @@ class TestElasticsearchYml:
         assert "authz_exception: false" in yml
 
 
-class TestJvmOptions:
-    def test_sets_heap_size(self):
+class TestHeapOptionsCommand:
+    def test_reads_meminfo(self):
         p = _make_provisioner()
-        jvm = p._build_jvm_options()
-        assert "-Xms4g" in jvm
-        assert "-Xmx4g" in jvm
+        cmd = p._build_heap_options_command()
+        assert "/proc/meminfo" in cmd
+        assert "MemTotal" in cmd
+
+    def test_caps_at_31g(self):
+        p = _make_provisioner()
+        cmd = p._build_heap_options_command()
+        # 31g = 31744 MiB preserves compressed-oops threshold.
+        assert "31744" in cmd
+
+    def test_floors_at_1g(self):
+        p = _make_provisioner()
+        cmd = p._build_heap_options_command()
+        assert "1024" in cmd
+
+    def test_writes_heap_options_file(self):
+        p = _make_provisioner()
+        cmd = p._build_heap_options_command()
+        assert "/etc/elasticsearch/jvm.options.d/heap.options" in cmd
+        assert "-Xms" in cmd
+        assert "-Xmx" in cmd
+
+
+def _simulate_heap_shell(mem_kb: int) -> int:
+    """Python reference implementation that mirrors the shell logic."""
+    heap_mb = mem_kb // 1024 // 2
+    if heap_mb > 31744:
+        heap_mb = 31744
+    if heap_mb < 1024:
+        heap_mb = 1024
+    return heap_mb
+
+
+class TestHeapSizingLogic:
+    @pytest.mark.parametrize("mem_kb,expected_mb", [
+        (8_000_000, 3906),       # ~8 GB RAM → ~3.9g
+        (16_432_000, 8023),      # ~16 GB RAM → ~8g
+        (32_000_000, 15625),     # ~32 GB RAM → ~15.6g
+        (66_000_000, 31744),     # ~64 GB RAM → capped at 31g
+        (100_000_000, 31744),    # 100 GB RAM → still capped at 31g
+        (512_000, 1024),         # ~500 MB RAM → floored at 1g
+    ])
+    def test_expected_heap(self, mem_kb, expected_mb):
+        assert _simulate_heap_shell(mem_kb) == expected_mb
 
 
 class TestSetupScript:
@@ -109,6 +152,34 @@ class TestSetupScript:
         script = p._build_setup_script()
         assert "/etc/elasticsearch/ant-credentials" in script
         assert "SETUP_COMPLETE" in script
+
+    def test_creates_ilm_policy_with_default_retention(self):
+        p = _make_provisioner()
+        script = p._build_setup_script()
+        assert f"ILM_POLICY_NAME = '{ILM_POLICY_NAME}'" in script
+        assert f"RETENTION_DAYS = {DEFAULT_RETENTION_DAYS}" in script
+        assert "/_ilm/policy/" in script
+        assert "'delete'" in script
+        assert "f'{RETENTION_DAYS}d'" in script
+
+    def test_creates_ilm_policy_with_custom_retention(self):
+        p = _make_provisioner(retention_days=3)
+        script = p._build_setup_script()
+        assert "RETENTION_DAYS = 3" in script
+
+    def test_rejects_zero_retention(self):
+        with pytest.raises(ValueError, match="retention_days"):
+            _make_provisioner(retention_days=0)
+
+    def test_rejects_negative_retention(self):
+        with pytest.raises(ValueError, match="retention_days"):
+            _make_provisioner(retention_days=-1)
+
+    def test_index_template_attaches_ilm_policy(self):
+        p = _make_provisioner()
+        script = p._build_setup_script()
+        assert "index.lifecycle.name" in script
+        assert "ILM_POLICY_NAME" in script
 
     def test_index_template_has_expected_mappings(self):
         p = _make_provisioner()

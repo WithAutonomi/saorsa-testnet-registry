@@ -31,6 +31,7 @@ class TelegrafProvisioner:
         branch_commit: str = "unknown",
         node_version: str = "unknown",
         ssh_user: str = "root",
+        from_beginning: bool = True,
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -43,6 +44,7 @@ class TelegrafProvisioner:
         self.branch_commit = branch_commit
         self.node_version = node_version
         self.ssh_user = ssh_user
+        self.from_beginning = from_beginning
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -170,6 +172,7 @@ class TelegrafProvisioner:
 
     def _build_telegraf_config(self) -> str:
         """Generate the Telegraf TOML configuration."""
+        from_beginning = "true" if self.from_beginning else "false"
         return """\
 ###############################################################################
 #                            GLOBAL TAGS                                      #
@@ -205,7 +208,7 @@ class TelegrafProvisioner:
 [[inputs.tail]]
   files = ["${ANT_LOG_DIR}/ant-*/ant-node*.log*"]
 
-  from_beginning = true
+  from_beginning = __FROM_BEGINNING__
   watch_method = "inotify"
   max_undelivered_lines = 50000
 
@@ -284,7 +287,7 @@ def apply(metric):
 
   manage_template = false
   overwrite_template = false
-"""
+""".replace("__FROM_BEGINNING__", from_beginning)
 
     def _build_unit_file(self) -> str:
         """Generate the systemd unit file content for Telegraf."""

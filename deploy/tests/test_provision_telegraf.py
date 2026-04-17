@@ -139,6 +139,24 @@ class TestBuildTelegrafConfig:
         assert "def apply(metric):" in config
         assert "service_number" in config
 
+    def test_from_beginning_true_by_default(self):
+        p = _make_provisioner()
+        config = p._build_telegraf_config()
+        assert "from_beginning = true" in config
+        assert "from_beginning = false" not in config
+
+    def test_from_beginning_false_when_opt_out(self):
+        p = _make_provisioner(from_beginning=False)
+        config = p._build_telegraf_config()
+        assert "from_beginning = false" in config
+        assert "from_beginning = true" not in config
+
+    def test_from_beginning_placeholder_fully_substituted(self):
+        # Guards against regressions where the __FROM_BEGINNING__ sentinel
+        # leaks through if the substitution is ever removed.
+        p = _make_provisioner(from_beginning=True)
+        assert "__FROM_BEGINNING__" not in p._build_telegraf_config()
+
 
 class TestBuildUnitFile:
     def test_has_systemd_sections(self):
@@ -199,6 +217,7 @@ class TestTelegrafProvisionerInit:
         assert p.branch_commit == "unknown"
         assert p.node_version == "unknown"
         assert p.ssh_user == "root"
+        assert p.from_beginning is True
 
     def test_custom_ssh_user(self):
         p = _make_provisioner(ssh_user="ubuntu")
@@ -627,6 +646,7 @@ class TestCmdProvisionTelegraf:
             node_version=None,
             branch_commit="abc123",
             repo_owner="maidsafe",
+            from_beginning=True,
         )
         cmd_provision_telegraf(args)
 
@@ -674,6 +694,7 @@ class TestCmdProvisionTelegraf:
             node_version=None,
             branch_commit=None,
             repo_owner="maidsafe",
+            from_beginning=True,
         )
         cmd_provision_telegraf(args)
 
@@ -705,6 +726,7 @@ class TestCmdProvisionTelegraf:
             node_version=None,
             branch_commit=None,
             repo_owner="maidsafe",
+            from_beginning=True,
         )
         cmd_provision_telegraf(args)
 
@@ -741,6 +763,7 @@ class TestCmdProvisionTelegraf:
             node_version=None,
             branch_commit=None,
             repo_owner="maidsafe",
+            from_beginning=True,
         )
         cmd_provision_telegraf(args)
 
@@ -781,6 +804,7 @@ class TestCmdProvisionTelegraf:
             node_version=None,
             branch_commit=None,
             repo_owner="maidsafe",
+            from_beginning=True,
         )
         cmd_provision_telegraf(args)
 
@@ -815,6 +839,77 @@ class TestCmdProvisionTelegraf:
             node_version=None,
             branch_commit=None,
             repo_owner="maidsafe",
+            from_beginning=True,
         )
         with pytest.raises(SystemExit):
             cmd_provision_telegraf(args)
+
+    @patch("saorsa_deploy.cmd.provision_telegraf.TelegrafProvisioner")
+    @patch("saorsa_deploy.cmd.provision_telegraf.clear_known_hosts")
+    def test_only_new_logs_propagates_to_provisioner(
+        self,
+        mock_clear_known_hosts,
+        mock_provisioner_cls,
+        tmp_path,
+    ):
+        from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
+
+        ip_file = tmp_path / "hosts.txt"
+        ip_file.write_text("10.0.0.1\n")
+        mock_provisioner_cls.return_value.execute.return_value = None
+
+        args = SimpleNamespace(
+            name=None,
+            ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            host_ips_file=str(ip_file),
+            inventory_path=None,
+            elasticsearch_url="https://logs.example.com/es/api",
+            elasticsearch_username="user",
+            elasticsearch_password="pass",
+            node_version=None,
+            branch_commit=None,
+            repo_owner="maidsafe",
+            from_beginning=False,
+        )
+        cmd_provision_telegraf(args)
+
+        call_kwargs = mock_provisioner_cls.call_args_list[0].kwargs
+        assert call_kwargs["from_beginning"] is False
+
+    @patch("saorsa_deploy.cmd.provision_telegraf.TelegrafProvisioner")
+    @patch("saorsa_deploy.cmd.provision_telegraf.clear_known_hosts")
+    @patch("saorsa_deploy.cmd.provision_telegraf.load_deployment_state")
+    def test_from_beginning_propagates_via_common_kwargs(
+        self,
+        mock_load_state,
+        mock_clear_known_hosts,
+        mock_provisioner_cls,
+    ):
+        from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
+
+        mock_load_state.return_value = {
+            "bootstrap_ip": "10.0.0.100",
+            "vm_ips": {"lon1": ["10.0.0.1"]},
+        }
+        mock_provisioner_cls.return_value.execute.return_value = None
+
+        args = SimpleNamespace(
+            name="DEV-01",
+            ssh_key_path="~/.ssh/id_rsa",
+            ssh_user="root",
+            host_ips_file=None,
+            inventory_path=None,
+            elasticsearch_url="https://logs.example.com/es/api",
+            elasticsearch_username="user",
+            elasticsearch_password="pass",
+            node_version=None,
+            branch_commit=None,
+            repo_owner="maidsafe",
+            from_beginning=False,
+        )
+        cmd_provision_telegraf(args)
+
+        # Both genesis and regular-vm calls should carry the flag.
+        for call in mock_provisioner_cls.call_args_list:
+            assert call.kwargs["from_beginning"] is False
