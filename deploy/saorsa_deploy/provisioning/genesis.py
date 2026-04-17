@@ -35,6 +35,9 @@ def _build_exec_start(
     parts.append(f"--root-dir {ROOT_DIR}")
     if port:
         parts.append(f"--port {port}")
+    # --enable-logging must precede the other log-related flags, otherwise
+    # ant-node silently ignores them.
+    parts.append("--enable-logging")
     if log_level:
         parts.append(f"--log-level {log_level}")
     parts.append("--log-format json")

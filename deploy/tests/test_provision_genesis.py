@@ -24,6 +24,7 @@ class TestBuildExecStart:
         result = _build_exec_start(bootstrap_index=1)
         assert result == (
             f"{BINARY_INSTALL_PATH} --root-dir {GENESIS_ROOT_DIR}"
+            " --enable-logging"
             " --log-format json"
             f" --log-dir {LOG_DIR}/{GENESIS_SERVICE_NAME}"
             " --stop-on-upgrade"
@@ -91,6 +92,17 @@ class TestBuildExecStart:
     def test_stop_on_upgrade_always_present(self):
         result = _build_exec_start(bootstrap_index=1)
         assert "--stop-on-upgrade" in result
+
+    def test_enable_logging_always_present(self):
+        """--enable-logging must be emitted so the other log-* flags aren't
+        silently ignored by ant-node."""
+        result = _build_exec_start(bootstrap_index=1)
+        assert "--enable-logging" in result
+
+    def test_enable_logging_precedes_other_log_flags(self):
+        result = _build_exec_start(bootstrap_index=1)
+        assert result.index("--enable-logging") < result.index("--log-format")
+        assert result.index("--enable-logging") < result.index("--log-dir")
 
     def test_default_rewards_address(self):
         result = _build_exec_start(bootstrap_index=1)

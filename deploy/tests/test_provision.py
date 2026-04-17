@@ -61,6 +61,19 @@ class TestBuildNodeExecStart:
         result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
         assert "--stop-on-upgrade" in result
 
+    def test_enable_logging_always_present(self):
+        """--enable-logging must be emitted so the other log-* flags aren't
+        silently ignored by ant-node."""
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT)
+        assert "--enable-logging" in result
+
+    def test_enable_logging_precedes_other_log_flags(self):
+        result = _build_node_exec_start(
+            ["10.0.0.1:5000"], self.ROOT, log_dir="/var/log/ant-node-1"
+        )
+        assert result.index("--enable-logging") < result.index("--log-format")
+        assert result.index("--enable-logging") < result.index("--log-dir")
+
     def test_all_flags(self):
         result = _build_node_exec_start(
             ["10.0.0.1:5000"], self.ROOT, port=6000, log_level="info", testnet=True
