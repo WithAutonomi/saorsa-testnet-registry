@@ -293,6 +293,56 @@ class TestCmdInfraVultrPreflight:
             mock_resolve.assert_not_called()
 
 
+class TestCmdInfraStaleMainVmChecksBeforeBootstrap:
+    def test_stale_main_vm_state_errors_before_bootstrapping(self, patches):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+        patches.check_state.return_value = True  # pretend main-VM tfstate exists
+
+        with pytest.raises(SystemExit):
+            cmd_infra(_args(force=False))
+
+        # No bootstrap work should have been attempted.
+        patches.create_boot.assert_not_called()
+        patches.save_state.assert_not_called()
+
+    def test_force_purges_stale_main_vm_state_before_bootstrapping(self, patches):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+        patches.check_state.return_value = True  # pretend main-VM tfstate exists
+        patches.create_boot.return_value = [
+            {"ip": "1.2.3.4", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "5.6.7.8", "region": "nyc1", "bootstrap_index": 2},
+            {"ip": "9.10.11.12", "region": "ams3", "bootstrap_index": 3},
+        ]
+        # First execute call is the stale-state purge (action="destroy"), the
+        # second is the real provisioning run.
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="lon1",
+                outputs={"vm_ips": ["10.0.0.1"], "vm_ids": [1234]},
+            ),
+        ]
+
+        create_count_when_purge_ran = []
+        execute_calls_seen: list[str] = []
+
+        def _track(configs, action="apply"):
+            execute_calls_seen.append(action)
+            if action == "destroy":
+                create_count_when_purge_ran.append(patches.create_boot.call_count)
+            return patches.execute.return_value
+
+        patches.execute.side_effect = _track
+
+        cmd_infra(_args(force=True))
+
+        assert execute_calls_seen == ["destroy", "apply"]
+        # Purge ran before bootstraps were created.
+        assert create_count_when_purge_ran == [0]
+        patches.create_boot.assert_called_once()
+
+
 class TestCmdInfraAbortsOnStateSaveFailure:
     def test_exits_if_initial_state_save_fails_after_bootstraps(self, patches):
         patches.load_state.side_effect = RuntimeError("No deployment state found")

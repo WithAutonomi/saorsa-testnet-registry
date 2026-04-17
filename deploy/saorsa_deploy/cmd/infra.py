@@ -131,6 +131,76 @@ def cmd_infra(args):
 
     console.print()
 
+    # Build main-VM Terraform configs now so the stale-state check can run
+    # before we spend time on bootstrap provisioning. The same config list is
+    # reused by the main terraform apply later.
+    vm_count_by_provider = {spec.name: spec.vm_count for spec in provider_specs}
+    resources_dir = get_resources_dir()
+    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
+
+    configs = []
+    for provider_name, region in region_pairs:
+        provider = PROVIDERS[provider_name]
+        tf_source = resources_dir / provider.tf_dir
+        workspace_dir = workspace_base / f"{provider_name}-{args.name}-{region}"
+        state_key = f"{provider.state_key_prefix}-{args.name}-{region}.tfstate"
+
+        variables = {
+            "name": args.name,
+            "region": region,
+            "vm_count": str(vm_count_by_provider[provider_name]),
+            "attached_volume_size": str(args.attached_volume_size),
+        }
+        if provider_name == "digitalocean":
+            variables["droplet_size"] = do_droplet_size
+        elif provider_name == "hetzner":
+            variables["server_type"] = hetzner_server_type
+        elif provider_name == "vultr":
+            variables["plan"] = vultr_plan
+
+        config = TerraformRunConfig(
+            provider=provider_name,
+            region=region,
+            tf_source_dir=tf_source,
+            workspace_dir=workspace_dir,
+            state_key=state_key,
+            variables=variables,
+        )
+        configs.append(config)
+
+    # Stale main-VM tfstate check — only applies on a fresh deployment (no
+    # parent deployment state). Running this before the bootstrap phase means
+    # orphaned tfstate fails fast instead of after 2 minutes of bootstraps.
+    # Re-runs on an existing deployment rely on Terraform's own idempotency.
+    if existing_state is None:
+        stale_configs = [c for c in configs if check_terraform_state_exists(c.state_key)]
+        if stale_configs:
+            if not force:
+                console.print("[bold red]Error:[/bold red] Main-VM Terraform state exists:")
+                for c in stale_configs:
+                    console.print(f"  {c.state_key}")
+                console.print(
+                    "These are orphaned (no parent deployment state). Use --force "
+                    "to destroy the tracked cloud resources and proceed."
+                )
+                sys.exit(1)
+            console.print(
+                f"[yellow]Destroying cloud resources tracked by "
+                f"{len(stale_configs)} stale main-VM tfstate(s)...[/yellow]"
+            )
+            purge_results = execute_terraform_runs(stale_configs, action="destroy")
+            if any(not r.success for r in purge_results):
+                console.print(
+                    "[bold red]Failed to destroy stale main-VM resources. "
+                    "Resolve manually and retry.[/bold red]"
+                )
+                sys.exit(1)
+            for c in stale_configs:
+                try:
+                    delete_terraform_state(c.state_key)
+                except Exception:
+                    pass
+
     # --- Bootstrap phase ---
 
     if existing_state and existing_state.get("bootstrap_nodes"):
@@ -234,74 +304,6 @@ def cmd_infra(args):
         sys.exit(1)
 
     console.print()
-
-    # Build a lookup for per-provider vm_count
-    vm_count_by_provider = {spec.name: spec.vm_count for spec in provider_specs}
-
-    resources_dir = get_resources_dir()
-    workspace_base = Path.cwd() / ".saorsa" / "workspaces"
-
-    configs = []
-    for provider_name, region in region_pairs:
-        provider = PROVIDERS[provider_name]
-        tf_source = resources_dir / provider.tf_dir
-        workspace_dir = workspace_base / f"{provider_name}-{args.name}-{region}"
-        state_key = f"{provider.state_key_prefix}-{args.name}-{region}.tfstate"
-
-        variables = {
-            "name": args.name,
-            "region": region,
-            "vm_count": str(vm_count_by_provider[provider_name]),
-            "attached_volume_size": str(args.attached_volume_size),
-        }
-        if provider_name == "digitalocean":
-            variables["droplet_size"] = do_droplet_size
-        elif provider_name == "hetzner":
-            variables["server_type"] = hetzner_server_type
-        elif provider_name == "vultr":
-            variables["plan"] = vultr_plan
-
-        config = TerraformRunConfig(
-            provider=provider_name,
-            region=region,
-            tf_source_dir=tf_source,
-            workspace_dir=workspace_dir,
-            state_key=state_key,
-            variables=variables,
-        )
-        configs.append(config)
-
-    # Stale main-VM tfstate only applies when there is no parent deployment
-    # state. Re-runs on an existing deployment rely on Terraform's own
-    # idempotency (apply on matching state is a no-op).
-    if existing_state is None:
-        stale_configs = [c for c in configs if check_terraform_state_exists(c.state_key)]
-        if stale_configs:
-            if not force:
-                console.print("[bold red]Error:[/bold red] Main-VM Terraform state exists:")
-                for c in stale_configs:
-                    console.print(f"  {c.state_key}")
-                console.print(
-                    "These are orphaned (no parent deployment state). Use --force "
-                    "to destroy the tracked cloud resources and proceed."
-                )
-                sys.exit(1)
-            console.print(
-                f"[yellow]Destroying cloud resources tracked by "
-                f"{len(stale_configs)} stale main-VM tfstate(s)...[/yellow]"
-            )
-            purge_results = execute_terraform_runs(stale_configs, action="destroy")
-            if any(not r.success for r in purge_results):
-                console.print(
-                    "[bold red]Failed to destroy stale main-VM resources. "
-                    "Resolve manually and retry.[/bold red]"
-                )
-                sys.exit(1)
-            for c in stale_configs:
-                try:
-                    delete_terraform_state(c.state_key)
-                except Exception:
-                    pass
 
     console.print(f"[bold]Provisioning infrastructure across {len(configs)} region(s)...[/bold]")
     for spec in provider_specs:
