@@ -230,7 +230,16 @@ def main():
         "--do-regions",
         type=int,
         default=3,
-        help="Number of Digital Ocean regions to use (default: 3)",
+        help="Number of Digital Ocean regions to use (default: 3). "
+        "Ignored if --do-regions-list is set.",
+    )
+    infra_nodes_parser.add_argument(
+        "--do-regions-list",
+        type=str,
+        default=None,
+        help="Comma-separated list of specific Digital Ocean regions to use "
+        "(e.g. lon1,nyc1,ams3). Overrides --do-regions and the default "
+        "ordering; no fallback substitution.",
     )
     infra_nodes_parser.add_argument(
         "--do-droplet-size",
@@ -248,7 +257,16 @@ def main():
         "--hetzner-regions",
         type=int,
         default=3,
-        help="Number of Hetzner regions to use (default: 3)",
+        help="Number of Hetzner regions to use (default: 3). "
+        "Ignored if --hetzner-regions-list is set.",
+    )
+    infra_nodes_parser.add_argument(
+        "--hetzner-regions-list",
+        type=str,
+        default=None,
+        help="Comma-separated list of specific Hetzner regions to use "
+        "(e.g. fsn1,nbg1,hel1). Overrides --hetzner-regions and the "
+        "default ordering; no fallback substitution.",
     )
     infra_nodes_parser.add_argument(
         "--hetzner-server-type",
@@ -272,7 +290,16 @@ def main():
         "--vultr-regions",
         type=int,
         default=3,
-        help="Number of Vultr regions to use (default: 3)",
+        help="Number of Vultr regions to use (default: 3). "
+        "Ignored if --vultr-regions-list is set.",
+    )
+    infra_nodes_parser.add_argument(
+        "--vultr-regions-list",
+        type=str,
+        default=None,
+        help="Comma-separated list of specific Vultr regions to use "
+        "(e.g. ewr,ord,lax). Overrides --vultr-regions and the default "
+        "ordering; no fallback substitution.",
     )
 
     # === infra-clients ===

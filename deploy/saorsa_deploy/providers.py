@@ -27,9 +27,12 @@ PROVIDERS = {
     ),
     "vultr": ProviderConfig(
         name="vultr",
+        # dfw is last because it has the VM plans but frequently lacks block
+        # storage clusters (attached-volume creates fail with
+        # "Unable to find a block storage cluster in that location").
         regions=[
-            "ewr", "ord", "dfw", "lax", "ams", "lhr",
-            "fra", "sjc", "syd", "nrt", "cdg", "sgp",
+            "ewr", "ord", "lax", "ams", "lhr", "fra",
+            "sjc", "syd", "nrt", "cdg", "sgp", "dfw",
         ],
         default_region="ewr",
         tf_dir="vultr",
@@ -42,11 +45,17 @@ DEFAULT_PROVIDER = "digitalocean"
 
 @dataclass
 class ProviderSpec:
-    """Per-provider deployment specification from CLI flags."""
+    """Per-provider deployment specification from CLI flags.
+
+    ``regions_override``, when set, pins the exact regions to use — the
+    default ordering is ignored and no fallback substitution happens.
+    ``region_count`` is then implied by ``len(regions_override)``.
+    """
 
     name: str
     vm_count: int
     region_count: int
+    regions_override: list[str] | None = None
 
 
 def resolve_regions(
@@ -67,6 +76,17 @@ def resolve_regions(
         if spec.vm_count <= 0:
             continue
         provider = providers[spec.name]
+        if spec.regions_override is not None:
+            unknown = [r for r in spec.regions_override if r not in provider.regions]
+            if unknown:
+                raise ValueError(
+                    f"Unknown {spec.name} region(s): {', '.join(unknown)}. "
+                    f"Known: {', '.join(provider.regions)}"
+                )
+            for region in spec.regions_override:
+                result.append((provider.name, region))
+            continue
+
         available = provider.regions
         if spec.region_count > len(available):
             raise ValueError(

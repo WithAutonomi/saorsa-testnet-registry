@@ -13,12 +13,15 @@ def _args(**overrides):
         "attached_volume_size": 20,
         "do_vm_count": 1,
         "do_regions": 1,
+        "do_regions_list": None,
         "do_droplet_size": "s-2vcpu-4gb",
         "hetzner_vm_count": 0,
         "hetzner_regions": 0,
+        "hetzner_regions_list": None,
         "hetzner_server_type": "cpx22",
         "vultr_vm_count": 0,
         "vultr_regions": 0,
+        "vultr_regions_list": None,
         "vultr_plan": "vc2-2c-4gb",
         "force": False,
     }
@@ -170,6 +173,85 @@ class TestStaleMainVmCheck:
         cmd_infra_nodes(_args())
 
         patches.check_state.assert_not_called()
+
+
+class TestRegionsOverride:
+    def test_do_regions_list_pins_exact_regions(self, patches):
+        patches.load_state.return_value = _state_with_bootstraps()
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="lon1",
+                outputs={"vm_ips": ["10.0.0.1"], "vm_ids": [1]},
+            ),
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="ams3",
+                outputs={"vm_ips": ["10.0.0.2"], "vm_ids": [2]},
+            ),
+        ]
+
+        cmd_infra_nodes(
+            _args(
+                do_vm_count=5,
+                do_regions=1,
+                do_regions_list="lon1,ams3",
+            )
+        )
+
+        # First state save: regions came from the override, not the default
+        # top-of-list ordering.
+        first_update = patches.update_state.call_args_list[0].args[1]
+        assert first_update["regions"] == [
+            ["digitalocean", "lon1"],
+            ["digitalocean", "ams3"],
+        ]
+
+    def test_vultr_regions_list_feeds_preflight(self, patches, monkeypatch):
+        patches.load_state.return_value = _state_with_bootstraps()
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="vultr",
+                region="ewr",
+                outputs={"vm_ips": ["10.0.0.1"], "vm_ids": ["a"]},
+            ),
+        ]
+        monkeypatch.setenv("VULTR_API_KEY", "t")
+
+        with patch(
+            "saorsa_deploy.cmd.infra_nodes.resolve_vultr_regions"
+        ) as mock_resolve:
+            mock_resolve.return_value = (["ewr", "ord", "lax"], [])
+            cmd_infra_nodes(
+                _args(
+                    do_vm_count=0, do_regions=0,
+                    vultr_vm_count=5,
+                    vultr_regions=3,
+                    vultr_regions_list="ewr,ord,lax",
+                    vultr_plan="vc2-8c-32gb",
+                )
+            )
+            kwargs = mock_resolve.call_args.kwargs
+            assert kwargs["preferred"] == ["ewr", "ord", "lax"]
+            # Fallback pool is the same list — no silent substitution.
+            assert kwargs["fallback_pool"] == ["ewr", "ord", "lax"]
+            assert kwargs["count"] == 3
+
+    def test_unknown_region_in_override_errors_out(self, patches):
+        patches.load_state.return_value = _state_with_bootstraps()
+
+        with pytest.raises(SystemExit):
+            cmd_infra_nodes(
+                _args(
+                    do_vm_count=5,
+                    do_regions_list="lon1,bogus-region",
+                )
+            )
+
+        patches.execute.assert_not_called()
 
 
 class TestPartialFailureRecordsVmIps:

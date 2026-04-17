@@ -20,17 +20,39 @@ from saorsa_deploy.terraform import TerraformRunConfig
 from saorsa_deploy.vultr_availability import resolve_vultr_regions
 
 
+def _parse_regions_list(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    parts = [r.strip() for r in raw.split(",") if r.strip()]
+    return parts or None
+
+
 def _build_provider_specs(args) -> list[ProviderSpec]:
-    """Build provider specs from per-provider CLI flags."""
+    """Build provider specs from per-provider CLI flags.
+
+    When a ``--<provider>-regions-list`` flag is supplied it overrides both
+    the default region ordering and the corresponding count flag — the list
+    length becomes the region count.
+    """
     specs = []
     if args.do_vm_count > 0:
-        specs.append(ProviderSpec("digitalocean", args.do_vm_count, args.do_regions))
-    if args.hetzner_vm_count > 0:
+        override = _parse_regions_list(getattr(args, "do_regions_list", None))
+        count = len(override) if override else args.do_regions
         specs.append(
-            ProviderSpec("hetzner", args.hetzner_vm_count, args.hetzner_regions)
+            ProviderSpec("digitalocean", args.do_vm_count, count, override)
+        )
+    if args.hetzner_vm_count > 0:
+        override = _parse_regions_list(getattr(args, "hetzner_regions_list", None))
+        count = len(override) if override else args.hetzner_regions
+        specs.append(
+            ProviderSpec("hetzner", args.hetzner_vm_count, count, override)
         )
     if args.vultr_vm_count > 0:
-        specs.append(ProviderSpec("vultr", args.vultr_vm_count, args.vultr_regions))
+        override = _parse_regions_list(getattr(args, "vultr_regions_list", None))
+        count = len(override) if override else args.vultr_regions
+        specs.append(
+            ProviderSpec("vultr", args.vultr_vm_count, count, override)
+        )
     return specs
 
 
@@ -289,7 +311,12 @@ def _apply_hetzner_preflight(
         )
 
     hetzner_cfg = PROVIDERS["hetzner"]
-    preferred = hetzner_cfg.regions[: hetzner_spec.region_count]
+    if hetzner_spec.regions_override is not None:
+        preferred = list(hetzner_spec.regions_override)
+        fallback_pool = list(hetzner_spec.regions_override)
+    else:
+        preferred = hetzner_cfg.regions[: hetzner_spec.region_count]
+        fallback_pool = hetzner_cfg.regions
     console.print(
         f"[bold]Checking Hetzner capacity for {server_type} "
         f"in {', '.join(preferred)}...[/bold]"
@@ -299,7 +326,7 @@ def _apply_hetzner_preflight(
         server_type=server_type,
         count=hetzner_spec.region_count,
         token=token,
-        fallback_pool=hetzner_cfg.regions,
+        fallback_pool=fallback_pool,
     )
     for note in notes:
         console.print(f"[yellow]{note}[/yellow]")
@@ -330,7 +357,12 @@ def _apply_vultr_preflight(
         )
 
     vultr_cfg = providers_in["vultr"]
-    preferred = vultr_cfg.regions[: vultr_spec.region_count]
+    if vultr_spec.regions_override is not None:
+        preferred = list(vultr_spec.regions_override)
+        fallback_pool = list(vultr_spec.regions_override)
+    else:
+        preferred = vultr_cfg.regions[: vultr_spec.region_count]
+        fallback_pool = vultr_cfg.regions
     console.print(
         f"[bold]Checking Vultr availability for {plan} "
         f"in {', '.join(preferred)}...[/bold]"
@@ -340,7 +372,7 @@ def _apply_vultr_preflight(
         plan=plan,
         count=vultr_spec.region_count,
         token=token,
-        fallback_pool=vultr_cfg.regions,
+        fallback_pool=fallback_pool,
     )
     for note in notes:
         console.print(f"[yellow]{note}[/yellow]")

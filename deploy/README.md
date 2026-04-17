@@ -79,6 +79,20 @@ uv run saorsa-deploy infra-nodes --name DEV-01 \
     --hetzner-vm-count 2 --hetzner-regions 3 --hetzner-server-type cpx42
 ```
 
+Each provider has a `--<provider>-regions-list` flag that pins exact regions
+(comma-separated) instead of relying on the default top-of-list ordering.
+Useful when a region has a transient provider quirk (e.g. Vultr's `dfw`
+region often lacks block-storage clusters). When a list flag is set, the
+corresponding `--<provider>-regions` count flag is ignored and no fallback
+substitution happens — you get exactly the regions you asked for.
+
+```bash
+uv run saorsa-deploy infra-nodes --name DEV-01 \
+    --attached-volume-size 50 \
+    --do-vm-count 10 --do-regions-list lon1,nyc1,ams3 --do-droplet-size s-8vcpu-16gb \
+    --vultr-vm-count 5 --vultr-regions-list ewr,ord,lax --vultr-plan vhp-8c-16gb-intel
+```
+
 ### `provision-genesis` / `provision-bootstraps` / `provision-nodes`
 
 Start ant-node services. `provision-genesis` runs the genesis node on

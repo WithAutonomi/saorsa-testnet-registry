@@ -110,3 +110,29 @@ class TestResolveRegionsEdgeCases:
         specs = [ProviderSpec("digitalocean", vm_count=-1, region_count=3)]
         result = resolve_regions(specs, providers=single_provider)
         assert result == []
+
+
+class TestResolveRegionsOverride:
+    def test_override_bypasses_default_ordering(self, single_provider):
+        specs = [
+            ProviderSpec(
+                "digitalocean",
+                vm_count=5,
+                region_count=2,
+                regions_override=["ams3", "lon1"],
+            )
+        ]
+        result = resolve_regions(specs, providers=single_provider)
+        assert result == [("digitalocean", "ams3"), ("digitalocean", "lon1")]
+
+    def test_unknown_region_in_override_raises(self, single_provider):
+        specs = [
+            ProviderSpec(
+                "digitalocean",
+                vm_count=5,
+                region_count=2,
+                regions_override=["lon1", "bogus"],
+            )
+        ]
+        with pytest.raises(ValueError, match="Unknown digitalocean region"):
+            resolve_regions(specs, providers=single_provider)
