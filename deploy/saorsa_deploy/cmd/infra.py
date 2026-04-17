@@ -22,6 +22,7 @@ from saorsa_deploy.state import (
     save_deployment_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
+from saorsa_deploy.vultr_availability import resolve_vultr_regions
 
 
 def _build_provider_specs(args) -> list[ProviderSpec]:
@@ -215,6 +216,16 @@ def cmd_infra(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
+    # Preflight: check that the chosen Vultr plan is actually offered in the
+    # preferred regions, substituting fallbacks otherwise.
+    try:
+        providers_for_resolve = _apply_vultr_preflight(
+            provider_specs, vultr_plan, providers_for_resolve, console
+        )
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
     # Resolve regions for the main deployment
     try:
         region_pairs = resolve_regions(
@@ -396,4 +407,50 @@ def _apply_hetzner_preflight(
 
     new_providers = dict(PROVIDERS)
     new_providers["hetzner"] = replace(hetzner_cfg, regions=resolved)
+    return new_providers
+
+
+def _apply_vultr_preflight(
+    provider_specs: list[ProviderSpec],
+    plan: str,
+    providers_in: dict,
+    console: Console,
+) -> dict:
+    """Check that ``plan`` is offered in the preferred Vultr regions.
+
+    Returns a providers dict (copied from ``providers_in``) with the Vultr
+    region list replaced by regions that actually offer ``plan``. No-op when
+    Vultr isn't used.
+    """
+    vultr_spec = next((s for s in provider_specs if s.name == "vultr"), None)
+    if vultr_spec is None:
+        return providers_in
+
+    token = os.environ.get("VULTR_API_KEY")
+    if not token:
+        raise RuntimeError(
+            "VULTR_API_KEY is not set; Vultr availability preflight cannot run."
+        )
+
+    vultr_cfg = providers_in["vultr"]
+    preferred = vultr_cfg.regions[: vultr_spec.region_count]
+    console.print(
+        f"[bold]Checking Vultr availability for {plan} "
+        f"in {', '.join(preferred)}...[/bold]"
+    )
+    resolved, notes = resolve_vultr_regions(
+        preferred=preferred,
+        plan=plan,
+        count=vultr_spec.region_count,
+        token=token,
+        fallback_pool=vultr_cfg.regions,
+    )
+    for note in notes:
+        console.print(f"[yellow]{note}[/yellow]")
+    console.print(
+        f"[green]Vultr preflight ok: using {', '.join(resolved)}[/green]"
+    )
+
+    new_providers = dict(providers_in)
+    new_providers["vultr"] = replace(vultr_cfg, regions=resolved)
     return new_providers

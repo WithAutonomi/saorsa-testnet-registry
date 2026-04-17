@@ -111,6 +111,24 @@ def main():
         help="Deployment name to destroy",
     )
 
+    # === vultr-availability ===
+    vultr_avail_parser = subparsers.add_parser(
+        "vultr-availability",
+        help="Show which Vultr plans are offered in each region",
+    )
+    vultr_avail_parser.add_argument(
+        "--plan",
+        type=str,
+        default=None,
+        help="Filter the table to a single plan (e.g. vc2-8c-32gb)",
+    )
+    vultr_avail_parser.add_argument(
+        "--region",
+        type=str,
+        default=None,
+        help="Comma-separated list of regions to show (e.g. ewr,lhr,fra)",
+    )
+
     # === hetzner-availability ===
     hetzner_avail_parser = subparsers.add_parser(
         "hetzner-availability",
@@ -970,6 +988,10 @@ def main():
         from saorsa_deploy.cmd.hetzner_availability import cmd_hetzner_availability
 
         cmd_hetzner_availability(args)
+    elif args.command == "vultr-availability":
+        from saorsa_deploy.cmd.vultr_availability import cmd_vultr_availability
+
+        cmd_vultr_availability(args)
     elif args.command == "infra":
         from saorsa_deploy.cmd.infra import cmd_infra
 

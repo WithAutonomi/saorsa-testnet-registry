@@ -206,6 +206,55 @@ class TestCmdInfraReruns:
         patches.check_state.assert_not_called()
 
 
+class TestCmdInfraVultrPreflight:
+    def test_vultr_preflight_runs_when_vultr_requested(self, patches, monkeypatch):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+        patches.create_boot.return_value = [
+            {"ip": "1.2.3.4", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "5.6.7.8", "region": "nyc1", "bootstrap_index": 2},
+            {"ip": "9.10.11.12", "region": "ams3", "bootstrap_index": 3},
+        ]
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="vultr",
+                region="lhr",
+                outputs={"vm_ips": ["10.0.0.1"], "vm_ids": ["abc"]},
+            ),
+        ]
+        monkeypatch.setenv("VULTR_API_KEY", "t")
+
+        with patch(
+            "saorsa_deploy.cmd.infra.resolve_vultr_regions"
+        ) as mock_resolve:
+            mock_resolve.return_value = (["lhr"], [])
+            cmd_infra(
+                _args(
+                    do_vm_count=0, do_regions=0,
+                    vultr_vm_count=1, vultr_regions=1,
+                    vultr_plan="vc2-8c-32gb",
+                )
+            )
+            mock_resolve.assert_called_once()
+            kwargs = mock_resolve.call_args.kwargs
+            assert kwargs["plan"] == "vc2-8c-32gb"
+            assert kwargs["count"] == 1
+
+    def test_vultr_preflight_skipped_when_vultr_not_used(self, patches):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+        patches.create_boot.return_value = [
+            {"ip": "1.2.3.4", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "5.6.7.8", "region": "nyc1", "bootstrap_index": 2},
+            {"ip": "9.10.11.12", "region": "ams3", "bootstrap_index": 3},
+        ]
+
+        with patch(
+            "saorsa_deploy.cmd.infra.resolve_vultr_regions"
+        ) as mock_resolve:
+            cmd_infra(_args())
+            mock_resolve.assert_not_called()
+
+
 class TestCmdInfraAbortsOnStateSaveFailure:
     def test_exits_if_initial_state_save_fails_after_bootstraps(self, patches):
         patches.load_state.side_effect = RuntimeError("No deployment state found")
