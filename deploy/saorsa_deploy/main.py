@@ -699,6 +699,18 @@ def main():
         help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
         "from each entry in the node_vms array.",
     )
+    telegraf_parser.add_argument(
+        "--ant-log-dir",
+        type=str,
+        default=None,
+        help=(
+            "Override the ant-node log directory that telegraf tails. "
+            "Defaults to the production layout "
+            "(/mnt/ant-node-storage/log). Use a different path for "
+            "non-standard deployments such as bootstrap nodes that log to "
+            "/mnt/ant-node-storage/logs."
+        ),
+    )
     telegraf_tail_group = telegraf_parser.add_mutually_exclusive_group()
     telegraf_tail_group.add_argument(
         "--from-start",

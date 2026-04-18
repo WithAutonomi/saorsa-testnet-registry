@@ -216,6 +216,7 @@ def cmd_provision_telegraf(args):
                     branch_commit=branch_commit,
                     node_version=node_version,
                     from_beginning=args.from_beginning,
+                    ant_log_dir=args.ant_log_dir,
                     console=console,
                 ).execute()
             except Exception as e:
@@ -263,6 +264,7 @@ def cmd_provision_telegraf(args):
                 branch_commit=branch_commit,
                 node_version=node_version,
                 from_beginning=args.from_beginning,
+                ant_log_dir=args.ant_log_dir,
                 console=console,
             ).execute()
         except Exception as e:
@@ -317,6 +319,7 @@ def cmd_provision_telegraf(args):
             "branch_commit": branch_commit,
             "node_version": node_version,
             "from_beginning": args.from_beginning,
+            "ant_log_dir": args.ant_log_dir,
             "console": console,
         }
 

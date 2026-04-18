@@ -32,6 +32,7 @@ class TelegrafProvisioner:
         node_version: str = "unknown",
         ssh_user: str = "root",
         from_beginning: bool = True,
+        ant_log_dir: str | None = None,
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -45,6 +46,7 @@ class TelegrafProvisioner:
         self.node_version = node_version
         self.ssh_user = ssh_user
         self.from_beginning = from_beginning
+        self.ant_log_dir = ant_log_dir or LOG_DIR
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -162,7 +164,7 @@ class TelegrafProvisioner:
             f"TELEGRAF_ELASTICSEARCH_URL={self.elasticsearch_url}\n"
             f"TELEGRAF_ELASTICSEARCH_USERNAME={self.elasticsearch_username}\n"
             f"TELEGRAF_ELASTICSEARCH_PASSWORD={self.elasticsearch_password}\n"
-            f"ANT_LOG_DIR={LOG_DIR}\n"
+            f"ANT_LOG_DIR={self.ant_log_dir}\n"
             f"ANT_TESTNET_NAME={self.testnet_name}\n"
             f"ANT_TESTNET_NAME_LOWER={testnet_name_lower}\n"
             f"ANT_HOST_ROLE={self.host_role}\n"
@@ -244,6 +246,7 @@ class TelegrafProvisioner:
 # Parses paths like:
 #   /mnt/ant-node-storage/log/ant-node-17/ant-node.log -> "17"
 #   /mnt/ant-node-storage/log/ant-genesis-node/ant-node.log -> "genesis"
+#   /mnt/ant-node-storage/logs/ant-bootstrap/ant-node.log -> "1"
 [[processors.starlark]]
   order = 2
   source = '''
@@ -257,6 +260,9 @@ def apply(metric):
                 return metric
         if part.startswith("ant-genesis-"):
             metric.tags["service_number"] = "genesis"
+            return metric
+        if part == "ant-bootstrap":
+            metric.tags["service_number"] = "1"
             return metric
     return metric
 '''

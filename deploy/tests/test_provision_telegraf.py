@@ -139,6 +139,12 @@ class TestBuildTelegrafConfig:
         assert "def apply(metric):" in config
         assert "service_number" in config
 
+    def test_starlark_handles_ant_bootstrap(self):
+        p = _make_provisioner()
+        config = p._build_telegraf_config()
+        assert 'part == "ant-bootstrap"' in config
+        assert '"service_number"] = "1"' in config
+
     def test_from_beginning_true_by_default(self):
         p = _make_provisioner()
         config = p._build_telegraf_config()
@@ -222,6 +228,20 @@ class TestTelegrafProvisionerInit:
     def test_custom_ssh_user(self):
         p = _make_provisioner(ssh_user="ubuntu")
         assert p.ssh_user == "ubuntu"
+
+    def test_ant_log_dir_defaults_to_production(self):
+        from saorsa_deploy.provisioning.volume import LOG_DIR
+        p = _make_provisioner()
+        assert p.ant_log_dir == LOG_DIR
+
+    def test_ant_log_dir_can_be_overridden(self):
+        p = _make_provisioner(ant_log_dir="/mnt/ant-node-storage/logs")
+        assert p.ant_log_dir == "/mnt/ant-node-storage/logs"
+
+    def test_env_file_uses_custom_ant_log_dir(self):
+        p = _make_provisioner(ant_log_dir="/mnt/ant-node-storage/logs")
+        env = p._build_env_file()
+        assert "ANT_LOG_DIR=/mnt/ant-node-storage/logs" in env
 
 
 class TestTelegrafProvisionerExecute:
@@ -647,6 +667,7 @@ class TestCmdProvisionTelegraf:
             branch_commit="abc123",
             repo_owner="maidsafe",
             from_beginning=True,
+            ant_log_dir=None,
         )
         cmd_provision_telegraf(args)
 
@@ -695,6 +716,7 @@ class TestCmdProvisionTelegraf:
             branch_commit=None,
             repo_owner="maidsafe",
             from_beginning=True,
+            ant_log_dir=None,
         )
         cmd_provision_telegraf(args)
 
@@ -727,6 +749,7 @@ class TestCmdProvisionTelegraf:
             branch_commit=None,
             repo_owner="maidsafe",
             from_beginning=True,
+            ant_log_dir=None,
         )
         cmd_provision_telegraf(args)
 
@@ -764,6 +787,7 @@ class TestCmdProvisionTelegraf:
             branch_commit=None,
             repo_owner="maidsafe",
             from_beginning=True,
+            ant_log_dir=None,
         )
         cmd_provision_telegraf(args)
 
@@ -805,6 +829,7 @@ class TestCmdProvisionTelegraf:
             branch_commit=None,
             repo_owner="maidsafe",
             from_beginning=True,
+            ant_log_dir=None,
         )
         cmd_provision_telegraf(args)
 
@@ -840,6 +865,7 @@ class TestCmdProvisionTelegraf:
             branch_commit=None,
             repo_owner="maidsafe",
             from_beginning=True,
+            ant_log_dir=None,
         )
         with pytest.raises(SystemExit):
             cmd_provision_telegraf(args)
@@ -871,6 +897,7 @@ class TestCmdProvisionTelegraf:
             branch_commit=None,
             repo_owner="maidsafe",
             from_beginning=False,
+            ant_log_dir=None,
         )
         cmd_provision_telegraf(args)
 
@@ -907,6 +934,7 @@ class TestCmdProvisionTelegraf:
             branch_commit=None,
             repo_owner="maidsafe",
             from_beginning=False,
+            ant_log_dir=None,
         )
         cmd_provision_telegraf(args)
 
