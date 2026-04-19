@@ -48,7 +48,7 @@ def _state(**overrides):
 
 
 class TestBuildInventory:
-    def test_top_level_keys_match_schema_v3(self):
+    def test_top_level_keys_match_schema(self):
         inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
         assert set(inv.keys()) == {
             "schema_version",
@@ -58,6 +58,7 @@ class TestBuildInventory:
             "firewalls",
             "bootstrap_vms",
             "node_vms",
+            "client_vms",
         }
         assert inv["schema_version"] == INVENTORY_SCHEMA_VERSION
         assert inv["testnet_id"] == "DEV-02"
@@ -290,6 +291,107 @@ class TestBootstrapVmsField:
         assert inv["bootstrap_vms"] == []
 
 
+class TestClientVmsField:
+    def _clients(self):
+        return [
+            {
+                "region": "lon1",
+                "file_size_mb": 100,
+                "vm_size": "s-2vcpu-4gb",
+                "client_index": 2,
+                "ip": "5.5.5.5",
+            },
+            {
+                "region": "nyc1",
+                "file_size_mb": 250,
+                "vm_size": "s-4vcpu-8gb",
+                "client_index": 1,
+                "ip": "6.6.6.6",
+            },
+        ]
+
+    def test_empty_when_clients_omitted(self):
+        inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
+        assert inv["client_vms"] == []
+
+    def test_empty_when_clients_is_empty_list(self):
+        inv = build_inventory(_state(), clients=[], created_at="2026-04-16T18:00:00Z")
+        assert inv["client_vms"] == []
+
+    def test_one_entry_per_client(self):
+        inv = build_inventory(
+            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
+        )
+        assert len(inv["client_vms"]) == 2
+
+    def test_entries_sorted_by_client_index(self):
+        inv = build_inventory(
+            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
+        )
+        assert [c["client_index"] for c in inv["client_vms"]] == [1, 2]
+
+    def test_entry_shape(self):
+        inv = build_inventory(
+            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
+        )
+        entry = inv["client_vms"][0]
+        assert set(entry.keys()) == {
+            "name",
+            "provider",
+            "provider_id",
+            "region",
+            "ip",
+            "client_index",
+            "file_size_mb",
+            "vm_size",
+            "ssh_user",
+            "ssh_key",
+            "nodes",
+            "services",
+        }
+        assert entry["provider"] == "digitalocean"
+        assert entry["ssh_user"] == DEFAULT_SSH_USER
+        assert entry["ssh_key"] == DEFAULT_SSH_KEY
+
+    def test_name_uses_testnet_region_and_index(self):
+        inv = build_inventory(
+            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
+        )
+        names = [c["name"] for c in inv["client_vms"]]
+        assert names == ["DEV-02-ant-client-nyc1-1", "DEV-02-ant-client-lon1-2"]
+
+    def test_services_are_uploader_and_downloader(self):
+        inv = build_inventory(
+            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
+        )
+        for entry in inv["client_vms"]:
+            assert entry["services"] == ["ant-uploader", "ant-downloader"]
+            assert entry["nodes"] == [
+                {"service_name": "ant-uploader"},
+                {"service_name": "ant-downloader"},
+            ]
+
+    def test_file_size_and_vm_size_propagate(self):
+        inv = build_inventory(
+            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
+        )
+        by_index = {c["client_index"]: c for c in inv["client_vms"]}
+        assert by_index[1]["file_size_mb"] == 250
+        assert by_index[1]["vm_size"] == "s-4vcpu-8gb"
+        assert by_index[2]["file_size_mb"] == 100
+        assert by_index[2]["vm_size"] == "s-2vcpu-4gb"
+
+    def test_firewalls_include_digitalocean_when_only_clients(self):
+        state = _state(vm_ips={}, vm_ids={}, bootstrap_nodes=[])
+        inv = build_inventory(
+            state,
+            clients=self._clients(),
+            node_count=3,
+            created_at="2026-04-16T18:00:00Z",
+        )
+        assert inv["firewalls"] == {"digitalocean": FIREWALL_PLACEHOLDER}
+
+
 class TestCmdGenerateInventory:
     def test_writes_file_to_output_path(self, tmp_path):
         from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
@@ -304,6 +406,9 @@ class TestCmdGenerateInventory:
         with patch(
             "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
             return_value=_state(),
+        ), patch(
+            "saorsa_deploy.cmd.generate_inventory.load_client_state",
+            side_effect=RuntimeError("no client state"),
         ):
             cmd_generate_inventory(args)
 
@@ -311,3 +416,40 @@ class TestCmdGenerateInventory:
         assert data["testnet_id"] == "DEV-02"
         assert data["schema_version"] == INVENTORY_SCHEMA_VERSION
         assert len(data["node_vms"]) == 4
+        assert data["client_vms"] == []
+
+    def test_includes_client_vms_when_client_state_exists(self, tmp_path):
+        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
+
+        output = tmp_path / "DEV-02.json"
+        args = MagicMock()
+        args.name = "DEV-02"
+        args.output = str(output)
+        args.ssh_key_path = "~/.ssh/id_rsa"
+        args.node_count = None
+
+        client_state = {
+            "name": "DEV-02",
+            "clients": [
+                {
+                    "region": "lon1",
+                    "file_size_mb": 100,
+                    "vm_size": "s-2vcpu-4gb",
+                    "client_index": 1,
+                    "ip": "7.7.7.7",
+                },
+            ],
+        }
+        with patch(
+            "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
+            return_value=_state(),
+        ), patch(
+            "saorsa_deploy.cmd.generate_inventory.load_client_state",
+            return_value=client_state,
+        ):
+            cmd_generate_inventory(args)
+
+        data = json.loads(output.read_text())
+        assert len(data["client_vms"]) == 1
+        assert data["client_vms"][0]["ip"] == "7.7.7.7"
+        assert data["client_vms"][0]["name"] == "DEV-02-ant-client-lon1-1"

@@ -6,14 +6,15 @@ from pathlib import Path
 
 from rich.console import Console
 
-from saorsa_deploy.state import load_deployment_state
+from saorsa_deploy.state import load_client_state, load_deployment_state
 
-INVENTORY_SCHEMA_VERSION = 3
+INVENTORY_SCHEMA_VERSION = 4
 DEFAULT_SSH_USER = "root"
 DEFAULT_SSH_KEY = "~/.ssh/id_rsa"
 DEFAULT_OUTPUT_TEMPLATE = "~/.autonomi/testnets/{name}/inventory.json"
 
 FIREWALL_PLACEHOLDER = "managed by terraform"
+CLIENT_SERVICES = ("ant-uploader", "ant-downloader")
 
 
 def _default_output_path(name: str) -> Path:
@@ -40,11 +41,13 @@ def _build_binary_field(state: dict) -> dict:
     }
 
 
-def _build_firewalls_field(state: dict) -> dict:
+def _build_firewalls_field(state: dict, clients: list[dict] | None = None) -> dict:
     providers_used = set()
     for key in (state.get("vm_ips") or {}):
         providers_used.add(key.split("/", 1)[0])
     if state.get("bootstrap_nodes"):
+        providers_used.add("digitalocean")
+    if clients:
         providers_used.add("digitalocean")
     return {provider: FIREWALL_PLACEHOLDER for provider in sorted(providers_used)}
 
@@ -104,15 +107,49 @@ def _build_bootstrap_vms_field(state: dict, ssh_key: str) -> list[dict]:
     return entries
 
 
+def _build_client_vms_field(
+    state: dict, clients: list[dict] | None, ssh_key: str
+) -> list[dict]:
+    if not clients:
+        return []
+    name = state["name"]
+    services = list(CLIENT_SERVICES)
+    nodes = [{"service_name": svc} for svc in services]
+
+    entries = []
+    for client in sorted(clients, key=lambda c: c.get("client_index", 0)):
+        index = client["client_index"]
+        region = client["region"]
+        entries.append(
+            {
+                "name": f"{name}-ant-client-{region}-{index}",
+                "provider": "digitalocean",
+                "provider_id": client.get("provider_id", ""),
+                "region": region,
+                "ip": client.get("ip", ""),
+                "client_index": index,
+                "file_size_mb": client.get("file_size_mb"),
+                "vm_size": client.get("vm_size", ""),
+                "ssh_user": DEFAULT_SSH_USER,
+                "ssh_key": ssh_key,
+                "nodes": list(nodes),
+                "services": list(services),
+            }
+        )
+    return entries
+
+
 def build_inventory(
     state: dict,
     ssh_key: str = DEFAULT_SSH_KEY,
     node_count: int | None = None,
     created_at: str | None = None,
+    clients: list[dict] | None = None,
 ) -> dict:
-    """Build the schema-version-3 inventory dict from a loaded deployment state.
+    """Build the schema-version-4 inventory dict from a loaded deployment state.
 
-    Pure function, easy to unit test.
+    Pure function, easy to unit test. `clients` is optional; pass the list from
+    client state when present, or omit/None for deployments without client VMs.
     """
     resolved_node_count = node_count if node_count is not None else state.get("node_count")
     if resolved_node_count is None:
@@ -128,14 +165,15 @@ def build_inventory(
         "testnet_id": state["name"],
         "created_at": created,
         "binary": _build_binary_field(state),
-        "firewalls": _build_firewalls_field(state),
+        "firewalls": _build_firewalls_field(state, clients),
         "bootstrap_vms": _build_bootstrap_vms_field(state, ssh_key),
         "node_vms": _build_node_vms_field(state, ssh_key, resolved_node_count),
+        "client_vms": _build_client_vms_field(state, clients, ssh_key),
     }
 
 
 def cmd_generate_inventory(args):
-    """Generate a schema-version-3 inventory.json for a deployment."""
+    """Generate a schema-version-4 inventory.json for a deployment."""
     console = Console()
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
@@ -145,11 +183,20 @@ def cmd_generate_inventory(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
+    clients: list[dict] = []
+    try:
+        client_state = load_client_state(args.name)
+    except RuntimeError:
+        client_state = None
+    if client_state:
+        clients = client_state.get("clients") or []
+
     try:
         inventory = build_inventory(
             state,
             ssh_key=args.ssh_key_path,
             node_count=args.node_count,
+            clients=clients,
         )
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -166,8 +213,10 @@ def cmd_generate_inventory(args):
     services_per_vm = len(inventory["node_vms"][0]["services"]) if node_vm_count else 0
     total_nodes = node_vm_count * services_per_vm
     bootstrap_vm_count = len(inventory["bootstrap_vms"])
+    client_vm_count = len(inventory["client_vms"])
     console.print(f"[bold green]Wrote inventory to {output_path}[/bold green]")
     console.print(f"  {bootstrap_vm_count} bootstrap VM(s)")
     console.print(
         f"  {node_vm_count} node VMs × {services_per_vm} service(s) each = {total_nodes} nodes"
     )
+    console.print(f"  {client_vm_count} client VM(s)")

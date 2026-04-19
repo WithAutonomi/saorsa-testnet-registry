@@ -1151,7 +1151,7 @@ def main():
     # === generate-inventory ===
     generate_inventory_parser = subparsers.add_parser(
         "generate-inventory",
-        help="Generate a schema-version-3 inventory.json for a deployment",
+        help="Generate a schema-version-4 inventory.json for a deployment",
     )
     generate_inventory_parser.add_argument(
         "--name",
