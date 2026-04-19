@@ -819,6 +819,169 @@ def main():
         help="SSH username (default: root)",
     )
 
+    # === clean-bootstraps ===
+    clean_bootstraps_parser = subparsers.add_parser(
+        "clean-bootstraps",
+        help=(
+            "Remove ant-bootstrap-* services + data/log/binary from bootstrap "
+            "VMs without destroying the VMs (covers genesis too)"
+        ),
+    )
+    clean_bootstraps_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Deployment name (loads bootstrap IPs from deployment state). "
+            "Required unless --host-ips-file is provided."
+        ),
+    )
+    clean_bootstraps_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing one IP address per line",
+    )
+    clean_bootstraps_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+    clean_bootstraps_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username (default: root)",
+    )
+
+    # === clean-nodes ===
+    clean_nodes_parser = subparsers.add_parser(
+        "clean-nodes",
+        help=(
+            "Remove ant-node-* services + data/log/binary from node VMs "
+            "without destroying the VMs"
+        ),
+    )
+    clean_nodes_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Deployment name (loads node IPs from deployment state). "
+            "Required unless --host-ips-file is provided."
+        ),
+    )
+    clean_nodes_parser.add_argument(
+        "--region",
+        type=str,
+        default=None,
+        help=(
+            "Clean only one region (e.g., digitalocean/lon1). "
+            "Only used with --name."
+        ),
+    )
+    clean_nodes_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing one IP address per line",
+    )
+    clean_nodes_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+    clean_nodes_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username (default: root)",
+    )
+
+    # === clean-clients ===
+    clean_clients_parser = subparsers.add_parser(
+        "clean-clients",
+        help=(
+            "Remove ant-uploader/ant-downloader services + data/binary from "
+            "client VMs without destroying the VMs"
+        ),
+    )
+    clean_clients_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Deployment name (loads client IPs from client state). "
+            "Required unless --host-ips-file is provided."
+        ),
+    )
+    clean_clients_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing one IP address per line",
+    )
+    clean_clients_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+    clean_clients_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username (default: root)",
+    )
+
+    # === clean-monitoring ===
+    clean_monitoring_parser = subparsers.add_parser(
+        "clean-monitoring",
+        help=(
+            "Remove the telegraf-ant-metrics sidecar from node VMs (leaves "
+            "telegraf deb, log forwarder, ant-node, and the monitoring VM "
+            "itself untouched)"
+        ),
+    )
+    clean_monitoring_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Deployment name (loads IPs from deployment state). Required "
+            "unless --host-ips-file or --inventory-path is provided."
+        ),
+    )
+    clean_monitoring_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
+            "from each entry in the node_vms array."
+        ),
+    )
+    clean_monitoring_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing one IP address per line",
+    )
+    clean_monitoring_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+    clean_monitoring_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username (default: root)",
+    )
+
     # === track-upgrades (parent) ===
     track_upgrades_parser = subparsers.add_parser(
         "track-upgrades",
@@ -1335,6 +1498,22 @@ def main():
         from saorsa_deploy.cmd.clean_elastic import cmd_clean_elastic
 
         cmd_clean_elastic(args)
+    elif args.command == "clean-bootstraps":
+        from saorsa_deploy.cmd.clean_bootstraps import cmd_clean_bootstraps
+
+        cmd_clean_bootstraps(args)
+    elif args.command == "clean-nodes":
+        from saorsa_deploy.cmd.clean_nodes import cmd_clean_nodes
+
+        cmd_clean_nodes(args)
+    elif args.command == "clean-clients":
+        from saorsa_deploy.cmd.clean_clients import cmd_clean_clients
+
+        cmd_clean_clients(args)
+    elif args.command == "clean-monitoring":
+        from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring
+
+        cmd_clean_monitoring(args)
     elif args.command == "track-upgrades":
         verb = args.track_upgrades_verb
         if verb == "init":
