@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -24,6 +25,14 @@ from saorsa_deploy.upgrade_tracker.state_machine import (
     identify,
 )
 
+# ES ingestion is approximately time-ordered but can deliver individual
+# docs a few seconds late, out of order with their `@timestamp`. If we
+# advance the cursor all the way to the most recent doc we've seen, a
+# slightly-late doc with an earlier `@timestamp` will be permanently
+# missed. Hold the cursor back by this many seconds behind wall-clock
+# time to give late arrivals a chance to be picked up on the next pass.
+CURSOR_LAG_SECONDS = 120
+
 
 def _load_creds_from_meta(repo: Repository) -> ESCredentials:
     url = repo.get_meta("es_url")
@@ -37,6 +46,34 @@ def _load_creds_from_meta(repo: Repository) -> ESCredentials:
         password=repo.get_meta("es_password"),
         api_key=repo.get_meta("es_api_key"),
     )
+
+
+def _advance_cursor(
+    old_cursor: str,
+    max_ts_seen: str,
+    now_iso: str,
+    lag_seconds: int = CURSOR_LAG_SECONDS,
+) -> str:
+    """Return the new sync cursor, clamped to avoid missing late-indexed events.
+
+    Logic:
+      1. Compute the lag cutoff = `now - lag_seconds`. We never advance the
+         cursor past this point — this is the window in which ES might still
+         be indexing a doc whose `@timestamp` is within our query range.
+      2. Clamp `max_ts_seen` to the lag cutoff.
+      3. Never let the cursor go backwards from `old_cursor`.
+
+    Pure function for testability.
+    """
+    now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    lag_cutoff_dt = now - timedelta(seconds=lag_seconds)
+    lag_cutoff = lag_cutoff_dt.astimezone(timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+    candidate = max_ts_seen if max_ts_seen <= lag_cutoff else lag_cutoff
+    if candidate <= old_cursor:
+        return old_cursor
+    return candidate
 
 
 def _parse_interval(s: str) -> int:
@@ -107,19 +144,26 @@ def _sync_once(
     for row in touched.values():
         repo.update_node(row)
 
-    # Advance cursor (exclusive advance to avoid re-reading the last doc).
-    repo.set_meta("sync_cursor", max_ts_seen)
+    # Advance cursor, but hold it behind wall-clock time so late-indexed
+    # ES docs whose @timestamp falls in our window still get picked up on
+    # the next pass (see CURSOR_LAG_SECONDS).
+    new_cursor = _advance_cursor(
+        old_cursor=cursor,
+        max_ts_seen=max_ts_seen,
+        now_iso=utcnow_iso(),
+    )
+    repo.set_meta("sync_cursor", new_cursor)
 
     summary = {
         "events": events,
         "rows_touched": len(touched),
         "skipped_unknown": skipped_unknown,
-        "cursor": max_ts_seen,
+        "cursor": new_cursor,
     }
     console.print(
         f"[dim]sync: {events} events, "
         f"{len(touched)} rows updated, "
-        f"cursor={max_ts_seen}[/dim]"
+        f"cursor={new_cursor}[/dim]"
     )
     return summary
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from saorsa_deploy.cmd.track_upgrades.init_cmd import _enumerate_nodes
+from saorsa_deploy.cmd.track_upgrades.sync_cmd import _advance_cursor
 from saorsa_deploy.upgrade_tracker.db import (
     NodeUpgrade,
     Repository,
@@ -344,6 +345,63 @@ class TestEnumerateNodes:
         }))
         pairs = list(_enumerate_nodes(inv))
         assert pairs == [("VM", "1")]
+
+
+class TestAdvanceCursor:
+    """The cursor-advance must never advance past now-lag, nor go backwards.
+
+    This guards against the ES-ingestion-order race where a late-arriving
+    doc's @timestamp is in the past relative to max_ts_seen from other hosts.
+    """
+
+    def test_advances_when_safely_behind_lag_cutoff(self):
+        out = _advance_cursor(
+            old_cursor="2026-04-18T12:00:00Z",
+            max_ts_seen="2026-04-18T12:30:00Z",
+            now_iso="2026-04-18T13:00:00Z",
+            lag_seconds=120,
+        )
+        assert out == "2026-04-18T12:30:00Z"
+
+    def test_clamps_when_max_ts_crosses_lag_cutoff(self):
+        # now=13:00:00, lag=120s -> cutoff=12:58:00. max_ts=12:59:30 must clamp.
+        out = _advance_cursor(
+            old_cursor="2026-04-18T12:00:00Z",
+            max_ts_seen="2026-04-18T12:59:30Z",
+            now_iso="2026-04-18T13:00:00Z",
+            lag_seconds=120,
+        )
+        assert out == "2026-04-18T12:58:00Z"
+
+    def test_does_not_go_backwards_from_old_cursor(self):
+        # Empty scan: max_ts_seen == old_cursor. Don't move.
+        out = _advance_cursor(
+            old_cursor="2026-04-18T12:00:00Z",
+            max_ts_seen="2026-04-18T12:00:00Z",
+            now_iso="2026-04-18T13:00:00Z",
+            lag_seconds=120,
+        )
+        assert out == "2026-04-18T12:00:00Z"
+
+    def test_does_not_go_backwards_when_clamped_below_old(self):
+        # Odd case: lag_cutoff is earlier than old_cursor (e.g. very large
+        # lag). Must NOT move cursor backwards.
+        out = _advance_cursor(
+            old_cursor="2026-04-18T12:59:00Z",
+            max_ts_seen="2026-04-18T13:10:00Z",
+            now_iso="2026-04-18T13:00:00Z",
+            lag_seconds=3600,
+        )
+        assert out == "2026-04-18T12:59:00Z"
+
+    def test_fractional_seconds_handled(self):
+        out = _advance_cursor(
+            old_cursor="2026-04-18T12:00:00.000000Z",
+            max_ts_seen="2026-04-18T12:30:45.123456Z",
+            now_iso="2026-04-18T13:00:00Z",
+            lag_seconds=120,
+        )
+        assert out == "2026-04-18T12:30:45.123456Z"
 
 
 class TestAntProd01FullShape:
