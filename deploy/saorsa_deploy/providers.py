@@ -13,7 +13,9 @@ class ProviderConfig:
 PROVIDERS = {
     "digitalocean": ProviderConfig(
         name="digitalocean",
-        regions=["lon1", "nyc1", "ams3", "sfo3", "sgp1", "blr1", "fra1", "tor1"],
+        regions=[
+            "lon1", "nyc1", "ams3", "sfo3", "sgp1", "blr1", "fra1", "tor1", "syd1",
+        ],
         default_region="lon1",
         tf_dir="digitalocean",
         state_key_prefix="saorsa-deploy/do",

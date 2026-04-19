@@ -131,6 +131,12 @@ def main():
         help="Deployment name to destroy nodes for",
     )
 
+    # === list-regions ===
+    subparsers.add_parser(
+        "list-regions",
+        help="List the supported regions for each cloud provider",
+    )
+
     # === vultr-availability ===
     vultr_avail_parser = subparsers.add_parser(
         "vultr-availability",
@@ -1265,6 +1271,10 @@ def main():
         from saorsa_deploy.cmd.destroy_nodes import cmd_destroy_nodes
 
         cmd_destroy_nodes(args)
+    elif args.command == "list-regions":
+        from saorsa_deploy.cmd.list_regions import cmd_list_regions
+
+        cmd_list_regions(args)
     elif args.command == "hetzner-availability":
         from saorsa_deploy.cmd.hetzner_availability import cmd_hetzner_availability
 
