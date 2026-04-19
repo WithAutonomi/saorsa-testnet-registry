@@ -41,7 +41,7 @@ class TestCmdBuild:
             )
             cmd_build(args)
 
-            mock_create.assert_called_once_with("DEV-01", "myorg", "feature-x", None)
+            mock_create.assert_called_once_with("ant-node", "DEV-01", "myorg", "feature-x", None)
             mock_wait_ssh.assert_called_once_with("1.2.3.4")
             mock_clear_hosts.assert_called_once()
             mock_builder_cls.assert_called_once()

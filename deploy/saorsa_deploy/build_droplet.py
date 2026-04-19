@@ -78,22 +78,27 @@ def wait_for_ssh(ip: str, timeout: int = 300) -> None:
 
 
 def create_build_vm(
+    kind: str,
     name: str,
     repo_owner: str,
     branch_name: str,
     build_vm_size: str | None = None,
 ) -> dict:
-    """Create an ephemeral DO droplet for building ant-node.
+    """Create an ephemeral DO droplet for building a binary.
+
+    `kind` is the binary name (e.g. `ant`, `ant-node`) and becomes the droplet
+    name prefix, so each command that uses a distinct `kind` gets its own VM
+    and the two can run in parallel.
 
     If a droplet with the same name already exists (from a failed previous run),
-    it is destroyed first.
+    it is reused.
 
-    Returns a dict with keys: droplet_id, droplet_name, ip_address.
+    Returns a dict with keys: droplet_id, droplet_name, ip_address, reused.
     """
     size = build_vm_size or BUILD_SIZE
     headers = _get_headers()
     safe_branch = branch_name.replace("_", "-").replace("/", "-")
-    droplet_name = f"ant-build-{name}-{repo_owner}-{safe_branch}"
+    droplet_name = f"{kind}-build-{name}-{repo_owner}-{safe_branch}"
 
     existing = _find_droplet_by_name(droplet_name, headers)
     if existing:

@@ -27,7 +27,7 @@ def cmd_build_ant(args):
     try:
         console.print("[bold]Creating build droplet...[/bold]")
         vm = create_build_vm(
-            args.name, args.repo_owner, args.branch_name, args.build_vm_size
+            "ant", args.name, args.repo_owner, args.branch_name, args.build_vm_size
         )
         droplet_id = vm["droplet_id"]
         if vm.get("reused"):
