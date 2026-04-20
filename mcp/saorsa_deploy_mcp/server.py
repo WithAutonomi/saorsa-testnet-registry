@@ -609,6 +609,53 @@ def stop_client_services(name: str) -> str:
 
 
 @mcp.tool()
+def record_file_results(
+    name: str,
+    monitoring_name: str | None = None,
+    window: str | None = None,
+    influx_url: str | None = None,
+    influx_token: str | None = None,
+    influx_org: str | None = None,
+    influx_bucket: str | None = None,
+) -> str:
+    """Record per-client upload/download aggregates from InfluxDB to Postgres.
+
+    Queries the testnet's InfluxDB for upload and download operation points,
+    aggregates them per (client hostname, op type, file size), and upserts
+    the aggregates into the deployment_file_results table linked to the
+    named deployment.
+
+    Args:
+        name: Deployment name (e.g. "DEV-01")
+        monitoring_name: Monitoring stack name to load Influx creds from
+            (defaults to the deployment name)
+        window: Flux range start (e.g. "-30d", "-7d", "-24h"). Default: -30d
+        influx_url: Override InfluxDB URL (otherwise loaded from monitoring state)
+        influx_token: Override InfluxDB API token
+        influx_org: Override InfluxDB organization
+        influx_bucket: Override InfluxDB bucket
+    """
+    cli_args = ["record-file-results", "--name", name]
+    if monitoring_name:
+        cli_args.extend(["--monitoring-name", monitoring_name])
+    if window:
+        cli_args.extend(["--window", window])
+    if influx_url:
+        cli_args.extend(["--influx-url", influx_url])
+    if influx_token:
+        cli_args.extend(["--influx-token", influx_token])
+    if influx_org:
+        cli_args.extend(["--influx-org", influx_org])
+    if influx_bucket:
+        cli_args.extend(["--influx-bucket", influx_bucket])
+
+    rc, stdout, stderr = _run_deploy(cli_args)
+    if rc != 0:
+        return f"record-file-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+    return stdout or f"File results recorded for '{name}'."
+
+
+@mcp.tool()
 def destroy_clients(name: str) -> str:
     """Destroy client VMs and clean up their infrastructure.
 

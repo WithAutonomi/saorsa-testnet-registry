@@ -982,6 +982,63 @@ def main():
         help="SSH username (default: root)",
     )
 
+    # === record-file-results ===
+    record_file_results_parser = subparsers.add_parser(
+        "record-file-results",
+        help=(
+            "Read per-client upload/download aggregates from the testnet's "
+            "InfluxDB and upsert them into the deployment_file_results table."
+        ),
+    )
+    record_file_results_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match a row in the registry deployments table)",
+    )
+    record_file_results_parser.add_argument(
+        "--monitoring-name",
+        type=str,
+        default=None,
+        help=(
+            "Monitoring stack name to load Influx credentials from "
+            "(defaults to --name)."
+        ),
+    )
+    record_file_results_parser.add_argument(
+        "--influx-url",
+        type=str,
+        default=None,
+        help="InfluxDB URL (overrides monitoring state lookup)",
+    )
+    record_file_results_parser.add_argument(
+        "--influx-token",
+        type=str,
+        default=None,
+        help="InfluxDB API token (overrides monitoring state lookup)",
+    )
+    record_file_results_parser.add_argument(
+        "--influx-org",
+        type=str,
+        default=None,
+        help="InfluxDB organization (default: from monitoring state, else 'ant')",
+    )
+    record_file_results_parser.add_argument(
+        "--influx-bucket",
+        type=str,
+        default=None,
+        help=(
+            "InfluxDB bucket (default: from monitoring state, else "
+            "'testnet-metrics')"
+        ),
+    )
+    record_file_results_parser.add_argument(
+        "--window",
+        type=str,
+        default="-30d",
+        help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
+    )
+
     # === track-upgrades (parent) ===
     track_upgrades_parser = subparsers.add_parser(
         "track-upgrades",
@@ -1514,6 +1571,10 @@ def main():
         from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring
 
         cmd_clean_monitoring(args)
+    elif args.command == "record-file-results":
+        from saorsa_deploy.cmd.record_file_results import cmd_record_file_results
+
+        cmd_record_file_results(args)
     elif args.command == "track-upgrades":
         verb = args.track_upgrades_verb
         if verb == "init":

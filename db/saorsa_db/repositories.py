@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
+from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
 
 
 class DeploymentRepository(ABC):
@@ -53,6 +54,29 @@ class DeploymentRepository(ABC):
 
     @abstractmethod
     def delete(self, deployment_id: int) -> None:
+        ...
+
+    @abstractmethod
+    def upsert_file_result(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        op_type: FileOpType,
+        file_size_bytes: int,
+        first_started_at: datetime,
+        last_finished_at: datetime,
+        success_count: int,
+        failure_count: int,
+        avg_duration_ms: int | None,
+        min_duration_ms: int | None,
+        max_duration_ms: int | None,
+    ) -> DeploymentFileResult:
+        ...
+
+    @abstractmethod
+    def list_file_results_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentFileResult]:
         ...
 
 
@@ -162,3 +186,68 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             raise ValueError(f"Deployment {deployment_id} not found")
         self.session.delete(deployment)
         self.session.commit()
+
+    def upsert_file_result(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        op_type: FileOpType,
+        file_size_bytes: int,
+        first_started_at: datetime,
+        last_finished_at: datetime,
+        success_count: int,
+        failure_count: int,
+        avg_duration_ms: int | None,
+        min_duration_ms: int | None,
+        max_duration_ms: int | None,
+    ) -> DeploymentFileResult:
+        existing = (
+            self.session.query(DeploymentFileResult)
+            .filter(
+                DeploymentFileResult.deployment_id == deployment_id,
+                DeploymentFileResult.client_hostname == client_hostname,
+                DeploymentFileResult.op_type == op_type,
+                DeploymentFileResult.file_size_bytes == file_size_bytes,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = DeploymentFileResult(
+                deployment_id=deployment_id,
+                client_hostname=client_hostname,
+                op_type=op_type,
+                file_size_bytes=file_size_bytes,
+                first_started_at=first_started_at,
+                last_finished_at=last_finished_at,
+                success_count=success_count,
+                failure_count=failure_count,
+                avg_duration_ms=avg_duration_ms,
+                min_duration_ms=min_duration_ms,
+                max_duration_ms=max_duration_ms,
+            )
+            self.session.add(existing)
+        else:
+            existing.first_started_at = first_started_at
+            existing.last_finished_at = last_finished_at
+            existing.success_count = success_count
+            existing.failure_count = failure_count
+            existing.avg_duration_ms = avg_duration_ms
+            existing.min_duration_ms = min_duration_ms
+            existing.max_duration_ms = max_duration_ms
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def list_file_results_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentFileResult]:
+        return (
+            self.session.query(DeploymentFileResult)
+            .filter(DeploymentFileResult.deployment_id == deployment_id)
+            .order_by(
+                DeploymentFileResult.client_hostname,
+                DeploymentFileResult.op_type,
+                DeploymentFileResult.file_size_bytes,
+            )
+            .all()
+        )

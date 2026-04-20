@@ -1,11 +1,14 @@
 import enum
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from saorsa_db.db import Base
+
+if TYPE_CHECKING:
+    from saorsa_db.models.file_result import DeploymentFileResult
 
 
 class DeploymentStatus(enum.Enum):
@@ -46,6 +49,12 @@ class Deployment(Base):
     events: Mapped[list["DeploymentEvent"]] = relationship(
         back_populates="deployment",
         order_by="DeploymentEvent.created_at",
+        cascade="all, delete-orphan",
+    )
+
+    file_results: Mapped[list["DeploymentFileResult"]] = relationship(
+        back_populates="deployment",
+        order_by="DeploymentFileResult.client_hostname",
         cascade="all, delete-orphan",
     )
 
