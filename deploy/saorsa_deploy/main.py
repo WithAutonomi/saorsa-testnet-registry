@@ -1039,6 +1039,73 @@ def main():
         help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
     )
 
+    # === record-results ===
+    record_results_parser = subparsers.add_parser(
+        "record-results",
+        help=(
+            "Read per-host CPU/memory/bandwidth aggregates from the testnet's "
+            "InfluxDB and upsert them into the deployment_host_results table, "
+            "optionally with a freeform summary of the test run."
+        ),
+    )
+    record_results_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match a row in the registry deployments table)",
+    )
+    record_results_parser.add_argument(
+        "--monitoring-name",
+        type=str,
+        default=None,
+        help=(
+            "Monitoring stack name to load Influx credentials from "
+            "(defaults to --name)."
+        ),
+    )
+    record_results_parser.add_argument(
+        "--influx-url",
+        type=str,
+        default=None,
+        help="InfluxDB URL (overrides monitoring state lookup)",
+    )
+    record_results_parser.add_argument(
+        "--influx-token",
+        type=str,
+        default=None,
+        help="InfluxDB API token (overrides monitoring state lookup)",
+    )
+    record_results_parser.add_argument(
+        "--influx-org",
+        type=str,
+        default=None,
+        help="InfluxDB organization (default: from monitoring state, else 'ant')",
+    )
+    record_results_parser.add_argument(
+        "--influx-bucket",
+        type=str,
+        default=None,
+        help=(
+            "InfluxDB bucket (default: from monitoring state, else "
+            "'testnet-metrics')"
+        ),
+    )
+    record_results_parser.add_argument(
+        "--window",
+        type=str,
+        default="-6h",
+        help="Flux range start (e.g. -6h, -24h, -7d). Default: -6h",
+    )
+    record_results_parser.add_argument(
+        "--summary",
+        type=str,
+        default=None,
+        help=(
+            "Freeform summary text describing the testnet run outcome. "
+            "If omitted, any existing summary on the row is preserved."
+        ),
+    )
+
     # === track-upgrades (parent) ===
     track_upgrades_parser = subparsers.add_parser(
         "track-upgrades",
@@ -1575,6 +1642,10 @@ def main():
         from saorsa_deploy.cmd.record_file_results import cmd_record_file_results
 
         cmd_record_file_results(args)
+    elif args.command == "record-results":
+        from saorsa_deploy.cmd.record_results import cmd_record_results
+
+        cmd_record_results(args)
     elif args.command == "track-upgrades":
         verb = args.track_upgrades_verb
         if verb == "init":

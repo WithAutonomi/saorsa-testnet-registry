@@ -656,6 +656,63 @@ def record_file_results(
 
 
 @mcp.tool()
+def record_results(
+    name: str,
+    summary: str | None = None,
+    monitoring_name: str | None = None,
+    window: str | None = None,
+    influx_url: str | None = None,
+    influx_token: str | None = None,
+    influx_org: str | None = None,
+    influx_bucket: str | None = None,
+) -> str:
+    """Record per-host CPU/memory/bandwidth aggregates and an optional summary.
+
+    Queries the testnet's InfluxDB for host metrics, computes deterministic
+    per-host avg/min/max for CPU %, memory %, inbound bandwidth, and outbound
+    bandwidth along with each host's start/end timestamps, and upserts one
+    row per deployment into the deployment_host_results table. When
+    ``summary`` is provided, the freeform summary text is stored on the row;
+    when omitted, any existing summary is preserved.
+
+    Use this tool to persist the results of a testnet run so they can be
+    reviewed later alongside the file-operation results.
+
+    Args:
+        name: Deployment name (e.g. "DEV-01")
+        summary: Freeform text summarising the testnet run outcome
+            (not about raw metrics — about the change that was tested)
+        monitoring_name: Monitoring stack name to load Influx creds from
+            (defaults to the deployment name)
+        window: Flux range start (e.g. "-6h", "-24h", "-7d"). Default: -6h
+        influx_url: Override InfluxDB URL (otherwise loaded from monitoring state)
+        influx_token: Override InfluxDB API token
+        influx_org: Override InfluxDB organization
+        influx_bucket: Override InfluxDB bucket
+    """
+    cli_args = ["record-results", "--name", name]
+    if summary is not None:
+        cli_args.extend(["--summary", summary])
+    if monitoring_name:
+        cli_args.extend(["--monitoring-name", monitoring_name])
+    if window:
+        cli_args.extend(["--window", window])
+    if influx_url:
+        cli_args.extend(["--influx-url", influx_url])
+    if influx_token:
+        cli_args.extend(["--influx-token", influx_token])
+    if influx_org:
+        cli_args.extend(["--influx-org", influx_org])
+    if influx_bucket:
+        cli_args.extend(["--influx-bucket", influx_bucket])
+
+    rc, stdout, stderr = _run_deploy(cli_args)
+    if rc != 0:
+        return f"record-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+    return stdout or f"Host results recorded for '{name}'."
+
+
+@mcp.tool()
 def destroy_clients(name: str) -> str:
     """Destroy client VMs and clean up their infrastructure.
 

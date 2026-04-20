@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
+from saorsa_db.models.host_result import DeploymentHostResult
 
 
 class DeploymentRepository(ABC):
@@ -77,6 +78,29 @@ class DeploymentRepository(ABC):
     def list_file_results_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentFileResult]:
+        ...
+
+    @abstractmethod
+    def upsert_host_result(
+        self,
+        deployment_id: int,
+        host_metrics: list,
+        metrics_started_at: datetime,
+        metrics_ended_at: datetime,
+        summary: str | None = None,
+    ) -> DeploymentHostResult:
+        ...
+
+    @abstractmethod
+    def get_host_result_for_deployment(
+        self, deployment_id: int
+    ) -> DeploymentHostResult | None:
+        ...
+
+    @abstractmethod
+    def set_host_result_summary(
+        self, deployment_id: int, summary: str
+    ) -> DeploymentHostResult:
         ...
 
 
@@ -251,3 +275,61 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+    def upsert_host_result(
+        self,
+        deployment_id: int,
+        host_metrics: list,
+        metrics_started_at: datetime,
+        metrics_ended_at: datetime,
+        summary: str | None = None,
+    ) -> DeploymentHostResult:
+        existing = (
+            self.session.query(DeploymentHostResult)
+            .filter(DeploymentHostResult.deployment_id == deployment_id)
+            .one_or_none()
+        )
+        if existing is None:
+            existing = DeploymentHostResult(
+                deployment_id=deployment_id,
+                host_metrics=host_metrics,
+                metrics_started_at=metrics_started_at,
+                metrics_ended_at=metrics_ended_at,
+                summary=summary,
+            )
+            self.session.add(existing)
+        else:
+            existing.host_metrics = host_metrics
+            existing.metrics_started_at = metrics_started_at
+            existing.metrics_ended_at = metrics_ended_at
+            if summary is not None:
+                existing.summary = summary
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def get_host_result_for_deployment(
+        self, deployment_id: int
+    ) -> DeploymentHostResult | None:
+        return (
+            self.session.query(DeploymentHostResult)
+            .filter(DeploymentHostResult.deployment_id == deployment_id)
+            .one_or_none()
+        )
+
+    def set_host_result_summary(
+        self, deployment_id: int, summary: str
+    ) -> DeploymentHostResult:
+        existing = (
+            self.session.query(DeploymentHostResult)
+            .filter(DeploymentHostResult.deployment_id == deployment_id)
+            .one_or_none()
+        )
+        if existing is None:
+            raise ValueError(
+                f"No host result recorded for deployment {deployment_id}"
+            )
+        existing.summary = summary
+        existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing

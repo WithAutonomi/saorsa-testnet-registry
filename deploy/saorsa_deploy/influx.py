@@ -194,3 +194,225 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
         key=lambda r: (r["client_hostname"], r["op_type"], r["file_size_bytes"])
     )
     return results
+
+
+HOST_FLUX_CPU = """from(bucket: "{bucket}")
+  |> range(start: {start})
+  |> filter(fn: (r) =>
+       r._measurement == "cpu"
+       and r.cpu == "cpu-total"
+       and r._field == "usage_idle")
+"""
+
+HOST_FLUX_MEM = """from(bucket: "{bucket}")
+  |> range(start: {start})
+  |> filter(fn: (r) => r._measurement == "mem" and r._field == "used_percent")
+"""
+
+HOST_FLUX_NET = """from(bucket: "{bucket}")
+  |> range(start: {start})
+  |> filter(fn: (r) =>
+       r._measurement == "net"
+       and r.interface != "lo"
+       and (r._field == "bytes_recv" or r._field == "bytes_sent"))
+"""
+
+
+def _run_flux(url: str, token: str, org: str, flux: str, timeout: int = 30) -> str:
+    resp = requests.post(
+        f"{url.rstrip('/')}/api/v2/query",
+        params={"org": org},
+        headers={
+            "Authorization": f"Token {token}",
+            "Content-Type": "application/vnd.flux",
+            "Accept": "application/csv",
+        },
+        data=flux,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.text
+
+
+def _parse_flux_csv(body: str) -> list[dict]:
+    """Parse an annotated Flux CSV response into row dicts with a parsed ``_time``.
+
+    Keeps every column from the response as-is except ``_time``, which is
+    converted to a tz-aware ``datetime``. Rows without ``_time``, ``_value``
+    or ``host`` are skipped. Blank lines and ``#``-prefixed metadata rows
+    reset the table header.
+    """
+    rows: list[dict] = []
+    reader = csv.reader(io.StringIO(body))
+    header: list[str] | None = None
+    for row in reader:
+        if not row or not any(row):
+            header = None
+            continue
+        if row[0].startswith("#"):
+            header = None
+            continue
+        if header is None:
+            header = row
+            continue
+        record = dict(zip(header, row))
+        time_str = record.get("_time")
+        if not time_str:
+            continue
+        if record.get("host") in (None, ""):
+            continue
+        try:
+            record["_time"] = _parse_ts(time_str)
+        except (KeyError, ValueError):
+            continue
+        rows.append(record)
+    return rows
+
+
+def fetch_host_metric_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    start: str = "-6h",
+    timeout: int = 30,
+) -> dict:
+    """Run three Flux queries (cpu/mem/net) and return the raw points.
+
+    Returns a dict with keys ``cpu``, ``mem``, ``net``, each mapping to a
+    list of row dicts from :func:`_parse_flux_csv`.
+    """
+    result: dict = {}
+    for key, template in (
+        ("cpu", HOST_FLUX_CPU),
+        ("mem", HOST_FLUX_MEM),
+        ("net", HOST_FLUX_NET),
+    ):
+        flux = template.format(bucket=bucket, start=start)
+        body = _run_flux(url, token, org, flux, timeout=timeout)
+        result[key] = _parse_flux_csv(body)
+    return result
+
+
+def _to_float(value) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _stats(samples: list[float]) -> dict:
+    if not samples:
+        return {"avg": None, "min": None, "max": None, "samples": 0}
+    return {
+        "avg": sum(samples) / len(samples),
+        "min": min(samples),
+        "max": max(samples),
+        "samples": len(samples),
+    }
+
+
+def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
+    """Aggregate raw host metric points into per-host summary dicts.
+
+    For each host seen across the input points, produces one entry with:
+
+    * ``cpu_percent`` — stats of ``100 - cpu.usage_idle`` (``cpu=cpu-total``)
+    * ``mem_percent`` — stats of ``mem.used_percent``
+    * ``bytes_in_per_sec`` / ``bytes_out_per_sec`` — stats of per-second
+      deltas of ``net.bytes_recv`` / ``net.bytes_sent``, computed
+      separately per interface (``lo`` excluded) then pooled.
+    * ``metrics_started_at`` / ``metrics_ended_at`` — earliest/latest
+      timestamp of any point contributing to that host.
+
+    Each stat dict is ``{"avg", "min", "max", "samples"}``; missing series
+    produce all-``None`` stats with ``samples=0``.
+    """
+    hosts: dict[str, dict] = {}
+
+    def host_entry(name: str) -> dict:
+        return hosts.setdefault(
+            name,
+            {
+                "cpu_samples": [],
+                "mem_samples": [],
+                "bytes_in_samples": [],
+                "bytes_out_samples": [],
+                "metrics_started_at": None,
+                "metrics_ended_at": None,
+            },
+        )
+
+    def track_time(entry: dict, ts: datetime) -> None:
+        if entry["metrics_started_at"] is None or ts < entry["metrics_started_at"]:
+            entry["metrics_started_at"] = ts
+        if entry["metrics_ended_at"] is None or ts > entry["metrics_ended_at"]:
+            entry["metrics_ended_at"] = ts
+
+    for p in points_by_measurement.get("cpu", []):
+        host = p.get("host")
+        idle = _to_float(p.get("_value"))
+        if not host or idle is None:
+            continue
+        entry = host_entry(host)
+        entry["cpu_samples"].append(100.0 - idle)
+        track_time(entry, p["_time"])
+
+    for p in points_by_measurement.get("mem", []):
+        host = p.get("host")
+        val = _to_float(p.get("_value"))
+        if not host or val is None:
+            continue
+        entry = host_entry(host)
+        entry["mem_samples"].append(val)
+        track_time(entry, p["_time"])
+
+    net_groups: dict[tuple[str, str, str], list[dict]] = {}
+    for p in points_by_measurement.get("net", []):
+        host = p.get("host")
+        interface = p.get("interface")
+        field = p.get("_field")
+        if not host or not interface or interface == "lo":
+            continue
+        if field not in ("bytes_recv", "bytes_sent"):
+            continue
+        net_groups.setdefault((host, interface, field), []).append(p)
+
+    for (host, _interface, field), pts in net_groups.items():
+        pts.sort(key=lambda p: p["_time"])
+        entry = host_entry(host)
+        target = (
+            "bytes_in_samples" if field == "bytes_recv" else "bytes_out_samples"
+        )
+        for prev, curr in zip(pts, pts[1:]):
+            prev_val = _to_float(prev.get("_value"))
+            curr_val = _to_float(curr.get("_value"))
+            if prev_val is None or curr_val is None:
+                continue
+            delta_bytes = curr_val - prev_val
+            delta_sec = (curr["_time"] - prev["_time"]).total_seconds()
+            if delta_bytes < 0 or delta_sec <= 0:
+                continue
+            entry[target].append(delta_bytes / delta_sec)
+            track_time(entry, prev["_time"])
+            track_time(entry, curr["_time"])
+
+    results: list[dict] = []
+    for host in sorted(hosts.keys()):
+        h = hosts[host]
+        if h["metrics_started_at"] is None or h["metrics_ended_at"] is None:
+            continue
+        results.append(
+            {
+                "host": host,
+                "metrics_started_at": h["metrics_started_at"],
+                "metrics_ended_at": h["metrics_ended_at"],
+                "cpu_percent": _stats(h["cpu_samples"]),
+                "mem_percent": _stats(h["mem_samples"]),
+                "bytes_in_per_sec": _stats(h["bytes_in_samples"]),
+                "bytes_out_per_sec": _stats(h["bytes_out_samples"]),
+            }
+        )
+    return results
