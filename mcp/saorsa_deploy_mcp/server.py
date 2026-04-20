@@ -713,6 +713,26 @@ def record_results(
 
 
 @mcp.tool()
+def set_results_summary(name: str, summary: str) -> str:
+    """Update the freeform summary on a deployment's recorded host results.
+
+    Use this to revise the AI-authored test-run summary without re-querying
+    InfluxDB. Requires `record_results` to have been run for this
+    deployment at least once.
+
+    Args:
+        name: Deployment name (e.g. "DEV-01")
+        summary: New freeform summary text describing the testnet run outcome
+    """
+    rc, stdout, stderr = _run_deploy(
+        ["set-results-summary", "--name", name, "--summary", summary]
+    )
+    if rc != 0:
+        return f"set-results-summary failed (exit code {rc}):\n{stderr}\n{stdout}"
+    return stdout or f"Summary updated for '{name}'."
+
+
+@mcp.tool()
 def destroy_clients(name: str) -> str:
     """Destroy client VMs and clean up their infrastructure.
 

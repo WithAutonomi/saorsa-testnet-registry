@@ -1106,6 +1106,27 @@ def main():
         ),
     )
 
+    # === set-results-summary ===
+    set_results_summary_parser = subparsers.add_parser(
+        "set-results-summary",
+        help=(
+            "Update the freeform summary on an existing deployment_host_results "
+            "row without re-querying InfluxDB."
+        ),
+    )
+    set_results_summary_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match a row in the registry deployments table)",
+    )
+    set_results_summary_parser.add_argument(
+        "--summary",
+        type=str,
+        required=True,
+        help="Freeform summary text describing the testnet run outcome.",
+    )
+
     # === track-upgrades (parent) ===
     track_upgrades_parser = subparsers.add_parser(
         "track-upgrades",
@@ -1646,6 +1667,10 @@ def main():
         from saorsa_deploy.cmd.record_results import cmd_record_results
 
         cmd_record_results(args)
+    elif args.command == "set-results-summary":
+        from saorsa_deploy.cmd.set_results_summary import cmd_set_results_summary
+
+        cmd_set_results_summary(args)
     elif args.command == "track-upgrades":
         verb = args.track_upgrades_verb
         if verb == "init":
