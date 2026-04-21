@@ -175,6 +175,7 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
                 "region": region,
                 "client_index": int(index_str),
                 "file_size_mb": 0,
+                "store_concurrency": 0,
                 "vm_size": vm_size,
                 "ip": "",
             }

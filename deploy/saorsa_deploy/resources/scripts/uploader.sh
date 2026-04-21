@@ -5,6 +5,7 @@ set -euo pipefail
 : "${BOOTSTRAP_ARGS:?BOOTSTRAP_ARGS must be set}"
 : "${FILE_SIZE_KB:?FILE_SIZE_KB must be set (e.g. 51200 for 50MB)}"
 : "${SECRET_KEY:?SECRET_KEY must be set}"
+: "${STORE_CONCURRENCY:=8}"
 : "${INFLUX_URL:=}"
 : "${INFLUX_TOKEN:=}"
 : "${INFLUX_ORG:=ant}"
@@ -32,7 +33,7 @@ submit_metric() {
 mkdir -p "$UPLOAD_DIR"
 touch "$ADDRESSES_FILE"
 
-echo "Uploader starting: host=${CLIENT_HOST} region=${REGION} file_size=${FILE_SIZE_KB}KB"
+echo "Uploader starting: host=${CLIENT_HOST} region=${REGION} file_size=${FILE_SIZE_KB}KB store_concurrency=${STORE_CONCURRENCY}"
 
 seq_num=0
 while true; do
@@ -51,7 +52,7 @@ while true; do
 
     # shellcheck disable=SC2086
     set +e
-    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia --store-concurrency 16 file upload --public "$file_path" \
+    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia --store-concurrency "$STORE_CONCURRENCY" file upload --public "$file_path" \
         2>&1 | tee "$output_file"
     exit_code=${PIPESTATUS[0]}
     set -e

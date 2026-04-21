@@ -173,7 +173,8 @@ def cmd_provision_clients(args):
     for c in clients:
         console.print(
             f"    #{c['client_index']}: {c.get('ip', 'N/A')} "
-            f"({c['region']}, {c['file_size_mb']}MB)"
+            f"({c['region']}, {c['file_size_mb']}MB, "
+            f"sc={c.get('store_concurrency', 8)})"
         )
     console.print()
 

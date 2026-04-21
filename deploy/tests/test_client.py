@@ -32,6 +32,7 @@ class TestParseClientSpec:
             "region": "lon1",
             "file_size_mb": 50,
             "vm_size": "s-2vcpu-4gb",
+            "store_concurrency": 8,
         }
 
     def test_region_file_size_and_vm_size(self):
@@ -40,7 +41,21 @@ class TestParseClientSpec:
             "region": "nyc1",
             "file_size_mb": 100,
             "vm_size": "s-4vcpu-8gb",
+            "store_concurrency": 8,
         }
+
+    def test_region_file_size_vm_size_and_store_concurrency(self):
+        result = parse_client_spec("nyc1:100:s-4vcpu-8gb:16")
+        assert result == {
+            "region": "nyc1",
+            "file_size_mb": 100,
+            "vm_size": "s-4vcpu-8gb",
+            "store_concurrency": 16,
+        }
+
+    def test_default_store_concurrency(self):
+        result = parse_client_spec("lon1:50:s-2vcpu-4gb")
+        assert result["store_concurrency"] == 8
 
     def test_invalid_too_few_parts(self):
         with pytest.raises(ValueError, match="Invalid client spec"):
@@ -48,11 +63,15 @@ class TestParseClientSpec:
 
     def test_invalid_too_many_parts(self):
         with pytest.raises(ValueError, match="Invalid client spec"):
-            parse_client_spec("lon1:50:s-2vcpu-4gb:extra")
+            parse_client_spec("lon1:50:s-2vcpu-4gb:16:extra")
 
     def test_invalid_file_size(self):
         with pytest.raises(ValueError, match="Invalid file size"):
             parse_client_spec("lon1:abc")
+
+    def test_invalid_store_concurrency(self):
+        with pytest.raises(ValueError, match="Invalid store concurrency"):
+            parse_client_spec("lon1:50:s-2vcpu-4gb:not-a-number")
 
     def test_zero_file_size(self):
         result = parse_client_spec("lon1:0")

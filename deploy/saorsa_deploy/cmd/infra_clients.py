@@ -15,18 +15,19 @@ from saorsa_deploy.terraform import TerraformRunConfig
 
 CLIENT_STATE_KEY_PREFIX = "saorsa-deploy/do-client"
 DEFAULT_VM_SIZE = "s-2vcpu-4gb"
+DEFAULT_STORE_CONCURRENCY = 8
 
 
 def parse_client_spec(spec: str) -> dict:
-    """Parse a client spec string: 'region:file_size_mb[:vm_size]'.
+    """Parse a client spec string: 'region:file_size_mb[:vm_size[:store_concurrency]]'.
 
-    Returns a dict with keys: region, file_size_mb, vm_size.
+    Returns a dict with keys: region, file_size_mb, vm_size, store_concurrency.
     """
     parts = spec.split(":")
-    if len(parts) < 2 or len(parts) > 3:
+    if len(parts) < 2 or len(parts) > 4:
         raise ValueError(
             f"Invalid client spec '{spec}'. "
-            f"Expected format: region:file_size_mb[:vm_size]"
+            f"Expected format: region:file_size_mb[:vm_size[:store_concurrency]]"
         )
     region = parts[0]
     try:
@@ -36,11 +37,22 @@ def parse_client_spec(spec: str) -> dict:
             f"Invalid file size '{parts[1]}' in client spec '{spec}'. "
             f"Must be an integer (MB)."
         )
-    vm_size = parts[2] if len(parts) == 3 else DEFAULT_VM_SIZE
+    vm_size = parts[2] if len(parts) >= 3 else DEFAULT_VM_SIZE
+    if len(parts) == 4:
+        try:
+            store_concurrency = int(parts[3])
+        except ValueError:
+            raise ValueError(
+                f"Invalid store concurrency '{parts[3]}' in client spec '{spec}'. "
+                f"Must be an integer."
+            )
+    else:
+        store_concurrency = DEFAULT_STORE_CONCURRENCY
     return {
         "region": region,
         "file_size_mb": file_size_mb,
         "vm_size": vm_size,
+        "store_concurrency": store_concurrency,
     }
 
 
@@ -51,7 +63,7 @@ def cmd_infra_clients(args):
     if not args.client:
         console.print(
             "[bold red]Error:[/bold red] At least one --client spec is required. "
-            "Format: --client 'region:file_size_mb[:vm_size]'"
+            "Format: --client 'region:file_size_mb[:vm_size[:store_concurrency]]'"
         )
         sys.exit(1)
 
@@ -70,7 +82,8 @@ def cmd_infra_clients(args):
     for spec in client_specs:
         console.print(
             f"  Client #{spec['client_index']}: {spec['region']} "
-            f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads)"
+            f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads, "
+            f"sc={spec['store_concurrency']})"
         )
     console.print()
 

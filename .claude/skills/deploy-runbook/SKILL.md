@@ -103,8 +103,9 @@ If yes, ask for the client count, then for each client collect:
 
 - **Region** — a DigitalOcean region slug (`lon1`, `nyc1`, `ams3`, `sfo3`, `sgp1`, `blr1`, `fra1`, `tor1`).
 - **File size** — in MB, integer. This is the upload/download test size.
+- **Store concurrency** — integer, default **8** (ant's own default). This becomes the `--store-concurrency` value the uploader passes to `ant file upload`. Accept the default unless the user explicitly wants to override; higher values upload more chunks in parallel.
 
-Clients always run on DO (saorsa-deploy doesn't support other providers for clients). Each client is passed as a separate `--client '<region>:<size_mb>'` flag to `infra-clients`.
+Clients always run on DO (saorsa-deploy doesn't support other providers for clients). Each client is passed as a separate `--client` flag to `infra-clients`. The spec format is positional: `region:file_size_mb[:vm_size[:store_concurrency]]`. To override `store_concurrency` you must also state `vm_size` explicitly (the default is `s-2vcpu-4gb`) — positional slots can't be skipped.
 
 If clients are enabled, the runbook must preflight-check `ANT_DEPLOY_SECRET_KEY` is set in the environment (see template below) — fail fast if it isn't.
 
@@ -248,7 +249,7 @@ uv run saorsa-deploy monitoring-infra --name "$NAME"
 {{#if clients}}
 uv run saorsa-deploy infra-clients \
   --name "$NAME" \
-  {{#each client}}--client '{{region}}:{{file_size_mb}}' \
+  {{#each client}}--client '{{region}}:{{file_size_mb}}{{#if store_concurrency_overridden}}:s-2vcpu-4gb:{{store_concurrency}}{{/if}}' \
   {{/each}}
 {{/if}}
 

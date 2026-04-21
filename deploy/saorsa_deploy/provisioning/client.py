@@ -20,6 +20,7 @@ SCRIPTS_DIR = "/root/ant-client"
 def _build_env_file(
     bootstrap_peers: list[str],
     file_size_mb: int,
+    store_concurrency: int = 8,
     influx_url: str = "",
     influx_token: str = "",
     influx_org: str = "ant",
@@ -31,6 +32,7 @@ def _build_env_file(
     lines = [
         f'BOOTSTRAP_ARGS="{bootstrap_args}"',
         f"FILE_SIZE_KB={file_size_kb}",
+        f"STORE_CONCURRENCY={store_concurrency}",
         "SECRET_KEY=placeholder",
         f"ANT={ANT_INSTALL_PATH}",
         f"ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt",
@@ -224,15 +226,23 @@ class AntClientProvisioner:
             # Write per-host environment files
             # Since Pyinfra runs the same ops on all hosts, we write per-host
             # env files using a shell command that reads the hostname to determine
-            # file size. We prepare a mapping script.
-            ip_to_file_size = {
-                c["ip"]: c["file_size_mb"] for c in self.clients if c.get("ip")
+            # the per-client values. We prepare a mapping script.
+            ip_to_env = {
+                c["ip"]: {
+                    "file_size_kb": c["file_size_mb"] * 1024,
+                    "store_concurrency": c.get("store_concurrency", 8),
+                }
+                for c in self.clients
+                if c.get("ip")
             }
 
-            # Build a case statement that maps IP to file size
+            # Build a case statement that maps IP to per-client values
             case_entries = []
-            for ip, file_size_mb in ip_to_file_size.items():
-                case_entries.append(f'    "{ip}") FILE_SIZE_KB={file_size_mb * 1024} ;;')
+            for ip, env in ip_to_env.items():
+                case_entries.append(
+                    f'    "{ip}") FILE_SIZE_KB={env["file_size_kb"]}; '
+                    f'STORE_CONCURRENCY={env["store_concurrency"]} ;;'
+                )
             case_block = "\n".join(case_entries)
 
             bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
@@ -243,12 +253,13 @@ class AntClientProvisioner:
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) FILE_SIZE_KB=51200 ;;
+    *) FILE_SIZE_KB=51200; STORE_CONCURRENCY=8 ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
 BOOTSTRAP_ARGS="{bootstrap_args}"
 FILE_SIZE_KB=$FILE_SIZE_KB
+STORE_CONCURRENCY=$STORE_CONCURRENCY
 SECRET_KEY={secret_key}
 ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt

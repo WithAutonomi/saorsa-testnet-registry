@@ -368,6 +368,7 @@ class TestClientVmsField:
             "ip",
             "client_index",
             "file_size_mb",
+            "store_concurrency",
             "vm_size",
             "ssh_user",
             "ssh_key",
