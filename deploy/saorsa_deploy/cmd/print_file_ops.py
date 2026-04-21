@@ -89,8 +89,16 @@ def _run(args, op_type: str) -> None:
         ops = sorted(
             by_host[host], key=lambda p: p.get("start_ns") or 0
         )
+        total = len(ops)
+        if args.recent:
+            ops = ops[-10:]
+        title_count = (
+            f"{len(ops)} of {total} op(s)"
+            if args.recent and total > len(ops)
+            else f"{len(ops)} op(s)"
+        )
         table = Table(
-            title=f"{op_type.capitalize()}s — {host} ({len(ops)} op(s))",
+            title=f"{op_type.capitalize()}s — {host} ({title_count})",
             title_style="bold",
         )
         show_concurrency = op_type == "upload"

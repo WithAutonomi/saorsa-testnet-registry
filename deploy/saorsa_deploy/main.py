@@ -815,6 +815,11 @@ def main():
             default="-30d",
             help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
         )
+        p.add_argument(
+            "--recent",
+            action="store_true",
+            help="Only show the 10 most recent operations per client",
+        )
 
     # === print-downloads ===
     print_downloads_parser = subparsers.add_parser(
