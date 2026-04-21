@@ -59,7 +59,7 @@ while true; do
 
     # shellcheck disable=SC2086
     set +e
-    "$ANT" $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file download "$address" \
+    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file download "$address" \
         -o "$output_path" > "$output_file" 2>&1
     exit_code=$?
     set -e
