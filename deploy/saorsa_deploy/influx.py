@@ -7,7 +7,7 @@ upload/download operation to measurements `upload` and `download` in the
 Point schema (per operation):
     tags:   host, region
     fields: file_size (bytes), start_ns (ns since epoch), status (0=ok, 1=fail),
-            total_ms, upload_secs|download_secs
+            total_ms, upload_secs|download_secs, store_concurrency
 
 This module exposes two pure-ish entry points:
 
@@ -35,6 +35,7 @@ PIVOT_FLUX_TEMPLATE = """from(bucket: "{bucket}")
        r._field == "file_size" or
        r._field == "start_ns" or
        r._field == "status" or
+       r._field == "store_concurrency" or
        r._field == "total_ms")
   |> pivot(rowKey: ["_time", "host"], columnKey: ["_field"], valueColumn: "_value")
 """
@@ -76,7 +77,7 @@ def fetch_operation_points(
     Each dict contains: ``_time`` (datetime, UTC), ``host`` (str),
     ``_measurement`` (str: "upload"|"download"), ``file_size`` (int, bytes),
     ``start_ns`` (int), ``status`` (int: 0=success, 1=failure), ``total_ms``
-    (int).
+    (int), ``store_concurrency`` (int).
     """
     flux = PIVOT_FLUX_TEMPLATE.format(bucket=bucket, start=start)
     resp = requests.post(
@@ -121,6 +122,9 @@ def _parse_pivoted_csv(body: str) -> list[dict]:
                     "file_size": _parse_int(record.get("file_size", "")),
                     "start_ns": _parse_int(record.get("start_ns", "")),
                     "status": _parse_int(record.get("status", "")),
+                    "store_concurrency": _parse_int(
+                        record.get("store_concurrency", "")
+                    ),
                     "total_ms": _parse_int(record.get("total_ms", "")),
                 }
             )

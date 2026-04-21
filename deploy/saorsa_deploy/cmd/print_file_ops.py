@@ -93,21 +93,29 @@ def _run(args, op_type: str) -> None:
             title=f"{op_type.capitalize()}s — {host} ({len(ops)} op(s))",
             title_style="bold",
         )
+        show_concurrency = op_type == "upload"
         table.add_column("#", justify="right")
         table.add_column("Started (UTC)")
         table.add_column("Completed (UTC)")
         table.add_column("Size", justify="right")
+        if show_concurrency:
+            table.add_column("Concurrency", justify="right")
         table.add_column("Status")
         table.add_column("Duration", justify="right")
         for i, op in enumerate(ops, start=1):
-            table.add_row(
+            row = [
                 str(i),
                 _fmt_start(op.get("start_ns")),
                 _fmt_time(op.get("_time")),
                 _fmt_size(op.get("file_size")),
+            ]
+            if show_concurrency:
+                row.append(str(op["store_concurrency"]))
+            row.extend([
                 _fmt_status(op.get("status")),
                 _fmt_duration(op.get("total_ms")),
-            )
+            ])
+            table.add_row(*row)
         console.print(table)
 
 
