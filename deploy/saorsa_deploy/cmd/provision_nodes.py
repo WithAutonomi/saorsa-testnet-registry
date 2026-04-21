@@ -3,6 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
+from saorsa_deploy.provisioning.nat import select_nat_ips
 from saorsa_deploy.provisioning.node import AntNodeProvisioner
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.ssh import clear_known_hosts
@@ -55,6 +56,8 @@ def cmd_provision_nodes(args):
 
     binary_url, binary_is_archive = _resolve_binary_source(args, console)
 
+    nat_ips = _resolve_nat_ips(args, state, vm_ips, console)
+
     if args.region:
         if args.region not in vm_ips:
             available = ", ".join(sorted(vm_ips.keys()))
@@ -99,6 +102,7 @@ def cmd_provision_nodes(args):
         "testnet": args.testnet,
         "console": console,
         "rewards_address": args.rewards_address,
+        "nat_ips": nat_ips,
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel
@@ -143,6 +147,44 @@ def cmd_provision_nodes(args):
         console.print("[dim]Node count and binary info saved to deployment state.[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to save node count to state: {e}[/yellow]")
+
+
+def _resolve_nat_ips(args, state, vm_ips_by_region, console) -> set[str]:
+    """Determine which VM IPs should be NAT-simulated.
+
+    Uses the persisted selection from deployment state when available —
+    re-running provision-nodes never flips a VM between NAT and non-NAT
+    unless ``--force-nat-reselect`` is passed.
+    """
+    nat_percent = getattr(args, "nat_percent", 0) or 0
+    force_reselect = getattr(args, "force_nat_reselect", False)
+    existing = state.get("nat_vm_ips")
+
+    if existing is None or force_reselect:
+        new_list = select_nat_ips(vm_ips_by_region, nat_percent) if nat_percent > 0 else []
+        if new_list or existing is not None:
+            try:
+                update_deployment_state(args.name, {"nat_vm_ips": new_list})
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: failed to persist nat_vm_ips to state: {e}[/yellow]"
+                )
+        if new_list:
+            console.print(
+                f"  NAT VMs: {len(new_list)} selected at {nat_percent}% "
+                "(persisted to state)"
+            )
+        return set(new_list)
+
+    locked = set(existing)
+    if nat_percent > 0 and locked:
+        console.print(
+            f"  NAT VMs: {len(locked)} locked from state "
+            "(--nat-percent ignored; pass --force-nat-reselect to recompute)"
+        )
+    elif locked:
+        console.print(f"  NAT VMs: {len(locked)} from state")
+    return locked
 
 
 def _build_binary_info(args, binary_url, binary_is_archive):

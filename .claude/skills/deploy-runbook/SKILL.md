@@ -86,6 +86,15 @@ If the user wants a single "tier" (e.g. "4/8"), map to equivalents: DO `s-4vcpu-
 
 Boolean yes/no. If yes, pass `--testnet` to **all three** of `provision-genesis`, `provision-bootstraps` (if emitted), and `provision-nodes`.
 
+### 5b. Port-restricted NAT simulation
+
+Boolean yes/no. If yes, ask for a **percentage** (1–100) of node VMs that should run behind a simulated port-restricted NAT (Linux network namespace + iptables DNAT/MASQUERADE).
+
+- If yes, pass `--nat-percent N` to `provision-nodes`.
+- If no (or 0%), omit the flag entirely — current behaviour is unchanged.
+- Selection is deterministic ("one per region first, then round-robin") and is locked into deployment state on first run. `--force-nat-reselect` can reshuffle but the runbook should not emit it without being asked.
+- NAT only applies to regular node VMs. Bootstrap, genesis, client, and monitoring/elastic VMs are always public.
+
 ### 6. Clients
 
 Ask first: "Do you want clients at all?" If no, skip the rest of this section and omit `infra-clients`, `provision-clients`, and `start-clients` from the runbook.
@@ -117,6 +126,15 @@ Boolean yes/no. If yes, emit:
 - `provision-telegraf-metrics --name $NAME` after nodes are provisioned (auto-loads Influx creds from monitoring state)
 - `destroy-monitoring --name $NAME --force` at the end of the destroy script
 
+### 9. SSH key path
+
+Ask for the **absolute path to the SSH private key** that should be used for all provisioning SSH (e.g. `/home/chris/.ssh/ant_deploy`). The key's public half must be registered with every provider in use (DO, Hetzner, Vultr) — if it isn't, Terraform fails before any VM is created.
+
+- Default is `~/.ssh/id_rsa`; the user will almost always want to override this with a project-specific key, so always ask.
+- Emit the path as a top-level `SSH_KEY="..."` variable in the runbook and pass `--ssh-key-path "$SSH_KEY"` to every command that accepts it.
+- Commands that accept `--ssh-key-path` (anything that SSHes into a VM): `build-ant-node-binary`, `build-ant-binary`, `provision-genesis`, `provision-bootstraps`, `provision-nodes`, `start-nodes`, `provision-monitoring`, `provision-elastic`, `provision-telegraf-metrics`, `provision-telegraf-logs`, `provision-clients`, `start-clients`.
+- Infra/destroy commands (`infra-*`, `monitoring-infra`, `elastic-infra`, `destroy-*`) do **not** take `--ssh-key-path` — they're pure Terraform, no SSH. Don't emit the flag on those.
+
 ## Generation rules
 
 Once the interview is done, before writing the files:
@@ -138,9 +156,11 @@ These are non-negotiable; the generated script must respect them:
 - `provision-genesis` before `provision-bootstraps` and `provision-nodes`
 - `provision-elastic` before `provision-telegraf-logs`
 - `provision-monitoring` before `provision-telegraf-metrics`
+- `provision-nodes` before `start-nodes` (provision-nodes enables services; start-nodes brings them up)
+- `start-nodes` before `provision-telegraf-*` (telegraf targets running nodes)
 - `provision-nodes` before `provision-telegraf-*` (telegraf targets node VMs)
 - `infra-clients` before `provision-clients` before `start-clients`
-- Destroy order: `stop-clients` → `destroy-clients` → `destroy-nodes` → `destroy-bootstraps` → `destroy-elastic` → `destroy-monitoring`
+- Destroy order: `destroy-clients` → `destroy-nodes` → `destroy-bootstraps` → `destroy-elastic` → `destroy-monitoring` (skip `stop-clients` — the VMs are about to die anyway)
 
 ### Flag rules
 
@@ -149,6 +169,7 @@ These are non-negotiable; the generated script must respect them:
 - Port `10000` for `provision-genesis --port` and `provision-bootstraps --port`.
 - Always include `--name "$NAME"` on every command.
 - Use `--force` on all destroy commands (user already ran through the interview; no interactive confirm needed).
+- **Do not** use `--force` on infra-creation commands (`infra-bootstraps`, `infra-nodes`, `infra-clients`, `monitoring-infra`, `elastic-infra`). On those commands `--force` only deletes the stale S3 tfstate — it does **not** destroy the real cloud resources that state references. The next Terraform run then creates new resources that collide with the orphans (volume/firewall name conflicts, duplicate droplets, etc.) and leaves the account in a worse state. If a stale-state error fires, tell the user to run the matching `destroy-*` command first, then retry — don't paper over it with `--force`.
 
 ## Deploy runbook template
 
@@ -165,16 +186,19 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 #                  Hetzner = {{HETZNER_PER_REGION}} × {{HETZNER_REGIONS}} region(s) = {{HETZNER_TOTAL}}
 #                  Vultr   = {{VULTR_PER_REGION}} × {{VULTR_REGIONS}} region(s) = {{VULTR_TOTAL}}
 #   Testnet:     {{YES_OR_NO}}
+#   NAT sim:     {{NAT_YES_NO_WITH_PERCENT}}
 #   Clients:     {{CLIENT_COUNT_OR_NONE}}
 #   Elastic:     {{YES_OR_NO}}
 #   Monitoring:  {{YES_OR_NO}}
 #   ant-node:    {{VERSION_OR_BRANCH_DESC}}
 #   ant:         {{VERSION_OR_BRANCH_DESC_OR_NA}}
+#   SSH key:     {{SSH_KEY_PATH}}
 
 set -euo pipefail
 
 NAME="{{NAME}}"
 BOOTSTRAP_PORT=10000
+SSH_KEY="{{SSH_KEY_PATH}}"
 
 cd "$(dirname "$0")/.."
 
@@ -192,6 +216,7 @@ uv run saorsa-deploy build-ant-node-binary \
   --name "$NAME" \
   --branch-name "{{ANT_NODE_BRANCH}}" \
   --repo-owner "{{ANT_NODE_REPO_OWNER}}" \
+  --ssh-key-path "$SSH_KEY" \
   {{#if ant_node_validation}}--validation-string "{{ANT_NODE_VALIDATION}}"{{/if}}
 {{/if}}
 {{#if ant_from_branch}}
@@ -199,6 +224,7 @@ uv run saorsa-deploy build-ant-binary \
   --name "$NAME" \
   --branch-name "{{ANT_BRANCH}}" \
   --repo-owner "{{ANT_REPO_OWNER}}" \
+  --ssh-key-path "$SSH_KEY" \
   {{#if ant_validation}}--validation-string "{{ANT_VALIDATION}}"{{/if}}
 {{/if}}
 
@@ -228,46 +254,65 @@ uv run saorsa-deploy infra-clients \
 
 # --- Phase 3: Provisioning ---
 {{#if elastic}}
-uv run saorsa-deploy provision-elastic --name "$NAME"
+uv run saorsa-deploy provision-elastic \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
 {{/if}}
 {{#if monitoring}}
-uv run saorsa-deploy provision-monitoring --name "$NAME"
+uv run saorsa-deploy provision-monitoring \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
 {{/if}}
 
 uv run saorsa-deploy provision-genesis \
   --name "$NAME" \
   --port $BOOTSTRAP_PORT \
   {{BINARY_FLAGS_NODE}} \
-  {{#if testnet}}--testnet{{/if}}
+  {{#if testnet}}--testnet{{/if}} \
+  --ssh-key-path "$SSH_KEY"
 
 {{#if multi_bootstrap}}
 uv run saorsa-deploy provision-bootstraps \
   --name "$NAME" \
   --port $BOOTSTRAP_PORT \
   {{BINARY_FLAGS_NODE}} \
-  {{#if testnet}}--testnet{{/if}}
+  {{#if testnet}}--testnet{{/if}} \
+  --ssh-key-path "$SSH_KEY"
 {{/if}}
 
 uv run saorsa-deploy provision-nodes \
   --name "$NAME" \
   --node-count 1 \
   {{BINARY_FLAGS_NODE}} \
-  {{#if testnet}}--testnet{{/if}}
+  {{#if testnet}}--testnet{{/if}} \
+  {{#if nat_enabled}}--nat-percent {{NAT_PERCENT}}{{/if}} \
+  --ssh-key-path "$SSH_KEY"
+
+uv run saorsa-deploy start-nodes \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
 
 {{#if elastic}}
-uv run saorsa-deploy provision-telegraf-logs --name "$NAME"
+uv run saorsa-deploy provision-telegraf-logs \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
 {{/if}}
 {{#if monitoring}}
-uv run saorsa-deploy provision-telegraf-metrics --name "$NAME"
+uv run saorsa-deploy provision-telegraf-metrics \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
 {{/if}}
 
 {{#if clients}}
 uv run saorsa-deploy provision-clients \
   --name "$NAME" \
   {{BINARY_FLAGS_ANT}} \
-  {{#if monitoring}}--monitoring-name "$NAME"{{/if}}
+  {{#if monitoring}}--monitoring-name "$NAME"{{/if}} \
+  --ssh-key-path "$SSH_KEY"
 
-uv run saorsa-deploy start-clients --name "$NAME"
+uv run saorsa-deploy start-clients \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
 {{/if}}
 
 echo ""
@@ -298,7 +343,6 @@ NAME="{{NAME}}"
 cd "$(dirname "$0")/.."
 
 {{#if clients}}
-uv run saorsa-deploy stop-clients --name "$NAME" || true
 uv run saorsa-deploy destroy-clients --name "$NAME" --force
 {{/if}}
 
@@ -316,13 +360,14 @@ echo ""
 echo "Testnet $NAME has been destroyed."
 ```
 
-`stop-clients` is the one exception to the no-`|| true` rule: if clients are already stopped (or the services never started because an earlier run failed mid-way), we still want the destroy to continue. All other commands should propagate failures.
+Do **not** emit `stop-clients` in the destroy script. The VMs are about to be torn down by `destroy-clients`, so gracefully stopping the services first is a redundant step that just adds latency (and can spuriously fail if services were never running). Destroy propagates all errors — no `|| true` anywhere.
 
 ## Common pitfalls
 
 - **`--do-vm-count` is per-region, not total.** Same for `--hetzner-vm-count` and `--vultr-vm-count`. The provider total is `vm-count × regions`. Always confirm the math with the user before generating.
 - **Don't emit a provider's `--*-vm-count` flag if its total is 0.** CLI default is 0 (provider not used); an explicit 0 still no-ops but adds noise.
 - **Don't include `provision-bootstraps` when `bootstrap-count == 1`.** The genesis bootstrap is the only one; `provision-bootstraps` would no-op or error.
+- **`start-nodes` is always required after `provision-nodes`.** `provision-nodes` only enables the systemd units — it no longer starts them, so the runbook must emit `start-nodes` next, regardless of whether NAT simulation is enabled. Telegraf steps go after `start-nodes` so they target running nodes.
 - **Don't mix `--node-version` and `--branch-name` on the same command.** They're mutually exclusive flags in saorsa-deploy.
 - **Don't emit `provision-telegraf-logs` without elastic** (nor `provision-telegraf-metrics` without monitoring). Those commands auto-load credentials from state files that only exist if the corresponding stack was provisioned.
 - **Do pass `--monitoring-name "$NAME"` to `provision-clients` when monitoring is enabled.** Without it, client upload/download metrics never reach the testnet's InfluxDB, which defeats the point of running both stacks.

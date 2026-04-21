@@ -402,6 +402,22 @@ def main():
         help="Arbitrum wallet address for node rewards "
         "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
     )
+    provision_nodes_parser.add_argument(
+        "--nat-percent",
+        type=int,
+        default=0,
+        help="Percentage of node VMs to run behind simulated port-restricted "
+        "NAT (0-100, default: 0 = disabled). Selection is 'one per region "
+        "first, then round-robin' and is persisted to deployment state on "
+        "first run.",
+    )
+    provision_nodes_parser.add_argument(
+        "--force-nat-reselect",
+        action="store_true",
+        help="Re-compute the NAT VM selection from --nat-percent even if "
+        "deployment state already has one recorded. Use with caution — this "
+        "can flip a VM between NAT and non-NAT between runs.",
+    )
 
     # === provision-genesis ===
     provision_genesis_parser = subparsers.add_parser(
@@ -595,6 +611,29 @@ def main():
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+
+    # === start-nodes ===
+    start_nodes_parser = subparsers.add_parser(
+        "start-nodes",
+        help="Start ant-node services on node VMs (required after provision-nodes)",
+    )
+    start_nodes_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with infra-nodes)",
+    )
+    start_nodes_parser.add_argument(
+        "--region",
+        type=str,
+        help="Start only VMs in this region (e.g., digitalocean/lon1)",
+    )
+    start_nodes_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
     )
 
     # === start-clients ===
@@ -1619,6 +1658,10 @@ def main():
         from saorsa_deploy.cmd.provision_clients import cmd_provision_clients
 
         cmd_provision_clients(args)
+    elif args.command == "start-nodes":
+        from saorsa_deploy.cmd.start_nodes import cmd_start_nodes
+
+        cmd_start_nodes(args)
     elif args.command == "start-clients":
         from saorsa_deploy.cmd.start_clients import cmd_start_clients
 

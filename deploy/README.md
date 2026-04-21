@@ -38,7 +38,8 @@ infra-bootstraps   →  creates bootstrap VMs (Digital Ocean)
 infra-nodes        →  creates node VMs (DO / Hetzner / Vultr) — requires bootstraps
 provision-genesis  →  starts the genesis node on bootstrap #1
 provision-bootstraps (optional) — starts extra bootstrap nodes #2..N
-provision-nodes    →  starts ant-node services on every node VM
+provision-nodes    →  installs ant-node binary + writes systemd units + enables services (does NOT start them)
+start-nodes        →  starts ant-node services across every node VM (parallel systemctl start)
 
 destroy-nodes      →  tears down node VMs, leaves bootstraps alone
 destroy-bootstraps →  tears down bootstraps (refuses while nodes are still up)
@@ -93,17 +94,45 @@ uv run saorsa-deploy infra-nodes --name DEV-01 \
     --vultr-vm-count 5 --vultr-regions-list ewr,ord,lax --vultr-plan vhp-8c-16gb-intel
 ```
 
-### `provision-genesis` / `provision-bootstraps` / `provision-nodes`
+### `provision-genesis` / `provision-bootstraps` / `provision-nodes` / `start-nodes`
 
 Start ant-node services. `provision-genesis` runs the genesis node on
 bootstrap #1 (it's the one peer everyone dials). `provision-bootstraps`
-starts any additional bootstraps (#2..N). `provision-nodes` starts all the
-main-VM node services.
+starts any additional bootstraps (#2..N). `provision-nodes` installs the
+binary, writes systemd unit files, and **enables** the services on every
+main-VM. `start-nodes` then brings the services up — the split exists so
+that optional setup steps (e.g. NAT simulation) can run between unit-write
+and service-start.
 
 ```bash
 uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000
 uv run saorsa-deploy provision-bootstraps --name DEV-01 --port 12000   # if --bootstrap-count > 1
 uv run saorsa-deploy provision-nodes --name DEV-01 --node-count 25
+uv run saorsa-deploy start-nodes --name DEV-01
+```
+
+#### Port-restricted NAT simulation
+
+`provision-nodes` can run a configurable percentage of VMs behind a
+simulated port-restricted NAT (Linux network namespace + iptables DNAT /
+MASQUERADE). Useful for modelling real-world reachability constraints.
+
+```bash
+uv run saorsa-deploy provision-nodes --name DEV-01 --node-count 25 --nat-percent 20
+uv run saorsa-deploy start-nodes --name DEV-01
+```
+
+Selection is deterministic ("one per region first, then round-robin") and
+is recorded in deployment state on first run. Subsequent `provision-nodes`
+runs honour the locked selection — `--nat-percent` is ignored unless you
+pass `--force-nat-reselect`, which recomputes the set and can flip VMs
+between NAT and non-NAT.
+
+On a NAT VM you can verify the rules are in place:
+
+```bash
+ssh root@<VM> "iptables -t nat -L PREROUTING -n | grep -c DNAT"   # expect 2
+ssh root@<VM> "ip netns list"                                      # expect 'ant_nat'
 ```
 
 #### Binary version selection

@@ -14,6 +14,30 @@ from saorsa_deploy.provisioning.node import (
 from saorsa_deploy.provisioning.volume import MOUNT_POINT
 
 
+def _mock_active_hosts(host_ips):
+    """Build mock Host-like objects for a mocked Pyinfra state.
+
+    Pyinfra operations use ``state.inventory.get_active_hosts()`` to decide
+    which hosts an op targets, so tests that patch State must provide a list
+    whose members expose a ``.name`` attribute matching each host IP.
+    """
+    hosts = []
+    for ip in host_ips:
+        host = MagicMock()
+        host.name = ip
+        hosts.append(host)
+    return hosts
+
+
+def _configure_state_mock(mock_state, host_ips, failed=()):
+    """Configure a patched State mock to behave like a real Pyinfra state."""
+    instance = MagicMock()
+    instance.failed_hosts = set(failed)
+    instance.inventory.get_active_hosts.return_value = _mock_active_hosts(host_ips)
+    mock_state.return_value = instance
+    return instance
+
+
 class TestBuildNodeExecStart:
     ROOT = f"{MOUNT_POINT}/data/ant-node-1"
 
@@ -168,9 +192,7 @@ class TestAntNodeProvisioner:
         mock_disconnect,
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
-        mock_state_instance = MagicMock()
-        mock_state_instance.failed_hosts = set()
-        mock_state.return_value = mock_state_instance
+        _configure_state_mock(mock_state, ["10.0.0.1"])
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
@@ -180,7 +202,7 @@ class TestAntNodeProvisioner:
         provisioner.execute()
 
         mock_connect.assert_called_once()
-        # 1 volume-mount + 1 log-dirs + 1 download + 1 write-units + 1 enable-and-start = 5
+        # 1 volume-mount + 1 log-dirs + 1 download + 1 write-units + 1 enable = 5
         assert mock_add_op.call_count == 5
         mock_run_ops.assert_called_once()
         mock_disconnect.assert_called_once()
@@ -270,9 +292,7 @@ class TestAntNodeProvisioner:
         _mock_disconnect,
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
-        mock_state_instance = MagicMock()
-        mock_state_instance.failed_hosts = set()
-        mock_state.return_value = mock_state_instance
+        _configure_state_mock(mock_state, ["10.0.0.1"])
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
@@ -281,7 +301,7 @@ class TestAntNodeProvisioner:
         )
         provisioner.execute()
 
-        # 1 volume-mount + 1 log-dirs + 1 download + 1 write-units + 1 enable-and-start = 5
+        # 1 volume-mount + 1 log-dirs + 1 download + 1 write-units + 1 enable = 5
         assert mock_add_op.call_count == 5
 
     @patch("saorsa_deploy.provisioning.node.disconnect_all")
@@ -387,7 +407,7 @@ class TestAntNodeProvisioner:
     @patch("saorsa_deploy.provisioning.node.State")
     @patch("saorsa_deploy.provisioning.node.Inventory")
     @patch("saorsa_deploy.provisioning.node.get_release_url")
-    def test_execute_service_enable_has_is_active_guard(
+    def test_execute_service_enable_has_is_enabled_guard(
         self,
         mock_release_url,
         _mock_inventory,
@@ -398,9 +418,7 @@ class TestAntNodeProvisioner:
         _mock_disconnect,
     ):
         mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
-        mock_state_instance = MagicMock()
-        mock_state_instance.failed_hosts = set()
-        mock_state.return_value = mock_state_instance
+        _configure_state_mock(mock_state, ["10.0.0.1"])
 
         provisioner = AntNodeProvisioner(
             host_ips=["10.0.0.1"],
@@ -409,13 +427,16 @@ class TestAntNodeProvisioner:
         )
         provisioner.execute()
 
-        # Fifth add_op call is enable-and-start
-        enable_call = mock_add_op.call_args_list[4]
+        # Last add_op is the enable step (services are not started here —
+        # start-nodes handles that after NAT rules are in place)
+        enable_call = mock_add_op.call_args_list[-1]
         commands = enable_call.kwargs.get("commands", [])
-        # First command is daemon-reload, rest are guarded service starts
         assert commands[0] == "systemctl daemon-reload"
-        assert "systemctl is-active --quiet ant-node-1" in commands[1]
-        assert "systemctl is-active --quiet ant-node-2" in commands[2]
+        assert "systemctl is-enabled --quiet ant-node-1" in commands[1]
+        assert "systemctl enable ant-node-1" in commands[1]
+        assert "--now" not in commands[1]
+        assert "systemctl is-enabled --quiet ant-node-2" in commands[2]
+        assert "--now" not in commands[2]
 
 
 class TestCmdProvisionClearsKnownHosts:

@@ -56,8 +56,8 @@ def _build_node_vms_field(state: dict, ssh_key: str, node_count: int) -> list[di
     name = state["name"]
     vm_ips = state.get("vm_ips") or {}
     vm_ids = state.get("vm_ids") or {}
+    nat_ips = set(state.get("nat_vm_ips") or [])
     services = [f"ant-node-{i + 1}" for i in range(node_count)]
-    nodes = [{"service_name": svc} for svc in services]
 
     entries = []
     for key in sorted(vm_ips.keys()):
@@ -66,6 +66,7 @@ def _build_node_vms_field(state: dict, ssh_key: str, node_count: int) -> list[di
         ids = vm_ids.get(key, [])
         for index, ip in enumerate(ips):
             provider_id = ids[index] if index < len(ids) else ""
+            is_nat = ip in nat_ips
             entries.append(
                 {
                     "name": f"{name}-ant-node-{region}-{index + 1}",
@@ -75,7 +76,11 @@ def _build_node_vms_field(state: dict, ssh_key: str, node_count: int) -> list[di
                     "ip": ip,
                     "ssh_user": DEFAULT_SSH_USER,
                     "ssh_key": ssh_key,
-                    "nodes": nodes,
+                    "nat_simulated": is_nat,
+                    "nodes": [
+                        {"service_name": svc, "nat_simulated": is_nat}
+                        for svc in services
+                    ],
                     "services": list(services),
                 }
             )
@@ -214,9 +219,12 @@ def cmd_generate_inventory(args):
     total_nodes = node_vm_count * services_per_vm
     bootstrap_vm_count = len(inventory["bootstrap_vms"])
     client_vm_count = len(inventory["client_vms"])
+    nat_vm_count = sum(1 for vm in inventory["node_vms"] if vm.get("nat_simulated"))
     console.print(f"[bold green]Wrote inventory to {output_path}[/bold green]")
     console.print(f"  {bootstrap_vm_count} bootstrap VM(s)")
+    nat_suffix = f" ({nat_vm_count} NAT-simulated)" if nat_vm_count else ""
     console.print(
-        f"  {node_vm_count} node VMs × {services_per_vm} service(s) each = {total_nodes} nodes"
+        f"  {node_vm_count} node VMs × {services_per_vm} service(s) each = "
+        f"{total_nodes} nodes{nat_suffix}"
     )
     console.print(f"  {client_vm_count} client VM(s)")

@@ -7,6 +7,7 @@ from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
 from saorsa_deploy.provisioning.bootstrap import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
+from saorsa_deploy.provisioning.nat import NAT_IP_EXEC_PREFIX, build_nat_setup_command
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -60,17 +61,29 @@ def _build_node_exec_start(
     return " ".join(parts)
 
 
-def _build_node_unit_file(service_name, exec_start):
-    """Build the systemd unit file content for a node service."""
+def _build_node_unit_file(service_name, exec_start, is_nat=False):
+    """Build the systemd unit file content for a node service.
+
+    When ``is_nat=True``, wrap ExecStart with ``ip netns exec ant_nat`` so the
+    process runs inside the port-restricted-NAT namespace, and tag the
+    Description so the NAT status is visible in ``systemctl status``. All
+    other unit settings and the ant-node CLI flags are identical to the
+    non-NAT unit by design — the reference SKILL.md only dictates the NAT
+    mechanism, not the rest of the unit file.
+    """
+    description_suffix = " (port-restricted NAT)" if is_nat else ""
+    wrapped_exec_start = (
+        f"{NAT_IP_EXEC_PREFIX}{exec_start}" if is_nat else exec_start
+    )
     return f"""\
 [Unit]
-Description=Ant Node ({service_name})
+Description=Ant Node ({service_name}){description_suffix}
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={exec_start}
+ExecStart={wrapped_exec_start}
 Restart=on-success
 RestartSec=5
 
@@ -80,7 +93,13 @@ WantedBy=multi-user.target
 
 
 class AntNodeProvisioner:
-    """Provisions ant-node services on multiple hosts using Pyinfra."""
+    """Provisions ant-node services on multiple hosts using Pyinfra.
+
+    NAT hosts (IPs in ``nat_ips``) get an extra namespace+iptables setup step
+    and a wrapped systemd ExecStart. Services are ``enable``d but never
+    started — ``start-nodes`` is run afterwards to bring them up once NAT
+    rules are in place.
+    """
 
     def __init__(
         self,
@@ -96,6 +115,7 @@ class AntNodeProvisioner:
         binary_is_archive: bool = True,
         upgrade_channel: str | None = None,
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
+        nat_ips: set[str] | None = None,
     ):
         self.host_ips = host_ips
         self.bootstrap_peers = bootstrap_peers
@@ -109,6 +129,32 @@ class AntNodeProvisioner:
         self.binary_is_archive = binary_is_archive
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
+        self.nat_ips = set(nat_ips) if nat_ips else set()
+
+    def _build_unit_commands(self, is_nat: bool) -> list[str]:
+        """Build the list of `cat > unit-file` commands for one host variant."""
+        commands = []
+        for i in range(self.node_count):
+            service_name = f"ant-node-{i + 1}"
+            node_port = (self.initial_port + i) if self.initial_port is not None else None
+            root_dir = f"{MOUNT_POINT}/data/{service_name}"
+            log_dir = f"{LOG_DIR}/{service_name}"
+            metrics_port = METRICS_PORT_BASE + i
+            exec_start = _build_node_exec_start(
+                bootstrap_peers=self.bootstrap_peers,
+                root_dir=root_dir,
+                log_dir=log_dir,
+                port=node_port,
+                log_level=self.log_level,
+                testnet=self.testnet,
+                upgrade_channel=self.upgrade_channel,
+                metrics_port=metrics_port,
+                rewards_address=self.rewards_address,
+            )
+            unit_content = _build_node_unit_file(service_name, exec_start, is_nat=is_nat)
+            unit_path = f"/etc/systemd/system/{service_name}.service"
+            commands.append(f"cat > {unit_path} << 'UNIT_EOF'\n{unit_content}UNIT_EOF")
+        return commands
 
     def execute(self) -> None:
         """Provision all hosts with ant-node services."""
@@ -119,6 +165,12 @@ class AntNodeProvisioner:
             self.console.print("Fetching latest release from GitHub...")
             download_url = get_release_url()
             self.console.print(f"  Release URL: {download_url}")
+
+        if self.nat_ips:
+            self.console.print(
+                f"[cyan]NAT simulation enabled on {len(self.nat_ips)}/"
+                f"{len(self.host_ips)} host(s).[/cyan]"
+            )
 
         hosts_data = [
             (ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path}) for ip in self.host_ips
@@ -136,6 +188,10 @@ class AntNodeProvisioner:
         try:
             self.console.print(f"Connecting to {len(self.host_ips)} host(s) as root...")
             connect_all(state)
+
+            active_hosts = list(state.inventory.get_active_hosts())
+            nat_hosts = [h for h in active_hosts if h.name in self.nat_ips]
+            plain_hosts = [h for h in active_hosts if h.name not in self.nat_ips]
 
             add_op(
                 state,
@@ -181,50 +237,45 @@ class AntNodeProvisioner:
                 commands=[install_cmd],
             )
 
-            unit_commands = []
-            service_names = []
-            for i in range(self.node_count):
-                service_name = f"ant-node-{i + 1}"
-                service_names.append(service_name)
-                node_port = (self.initial_port + i) if self.initial_port is not None else None
-                root_dir = f"{MOUNT_POINT}/data/{service_name}"
-                log_dir = f"{LOG_DIR}/{service_name}"
-                metrics_port = METRICS_PORT_BASE + i
-                exec_start = _build_node_exec_start(
-                    bootstrap_peers=self.bootstrap_peers,
-                    root_dir=root_dir,
-                    log_dir=log_dir,
-                    port=node_port,
-                    log_level=self.log_level,
-                    testnet=self.testnet,
-                    upgrade_channel=self.upgrade_channel,
-                    metrics_port=metrics_port,
-                    rewards_address=self.rewards_address,
+            if nat_hosts:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Configure port-restricted NAT (netns + iptables)",
+                    commands=[build_nat_setup_command()],
+                    host=nat_hosts,
                 )
-                unit_content = _build_node_unit_file(service_name, exec_start)
-                unit_path = f"/etc/systemd/system/{service_name}.service"
-                unit_commands.append(f"cat > {unit_path} << 'UNIT_EOF'\n{unit_content}UNIT_EOF")
+                add_op(
+                    state,
+                    server.shell,
+                    name="Write systemd unit files (NAT variant)",
+                    commands=self._build_unit_commands(is_nat=True),
+                    host=nat_hosts,
+                )
 
-            add_op(
-                state,
-                server.shell,
-                name="Write systemd unit files",
-                commands=unit_commands,
-            )
+            if plain_hosts:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Write systemd unit files",
+                    commands=self._build_unit_commands(is_nat=False),
+                    host=plain_hosts,
+                )
 
+            service_names = [f"ant-node-{i + 1}" for i in range(self.node_count)]
             enable_commands = ["systemctl daemon-reload"]
             for service_name in service_names:
                 enable_commands.append(
-                    f"systemctl is-active --quiet {service_name} "
-                    f"&& echo 'ANT_SVC:RUNNING:{service_name}' "
-                    f"|| (systemctl enable --now {service_name} "
-                    f"&& echo 'ANT_SVC:STARTED:{service_name}')"
+                    f"systemctl is-enabled --quiet {service_name} "
+                    f"&& echo 'ANT_SVC:ENABLED_ALREADY:{service_name}' "
+                    f"|| (systemctl enable {service_name} "
+                    f"&& echo 'ANT_SVC:ENABLED:{service_name}')"
                 )
 
             svc_results = add_op(
                 state,
                 server.shell,
-                name="Enable and start node services",
+                name="Enable node services (not started — use start-nodes)",
                 commands=enable_commands,
             )
 
@@ -251,6 +302,10 @@ class AntNodeProvisioner:
             raise RuntimeError(f"{len(failed)} host(s) failed provisioning")
 
         self._report_results(install_results, svc_results)
+        self.console.print(
+            "[dim]Services enabled but not started. "
+            "Run `saorsa-deploy start-nodes --name <name>` to bring them up.[/dim]"
+        )
 
     def _report_results(self, install_results, svc_results):
         """Print post-execution summary with idempotency information."""
@@ -261,8 +316,8 @@ class AntNodeProvisioner:
 
         binary_installed = 0
         binary_skipped = 0
-        svcs_started = 0
-        svcs_running = 0
+        svcs_enabled = 0
+        svcs_already = 0
 
         for host in hosts:
             install_meta = install_results[host]
@@ -274,10 +329,10 @@ class AntNodeProvisioner:
 
             svc_meta = svc_results[host]
             for line in svc_meta.stdout_lines:
-                if "ANT_SVC:RUNNING:" in line:
-                    svcs_running += 1
-                elif "ANT_SVC:STARTED:" in line:
-                    svcs_started += 1
+                if "ANT_SVC:ENABLED_ALREADY:" in line:
+                    svcs_already += 1
+                elif "ANT_SVC:ENABLED:" in line:
+                    svcs_enabled += 1
 
         total_hosts = len(hosts)
         if binary_skipped == total_hosts:
@@ -289,12 +344,12 @@ class AntNodeProvisioner:
                 f"  Binary: installed on {binary_installed}, already installed on {binary_skipped}"
             )
 
-        total_svcs = svcs_started + svcs_running
-        if svcs_running == total_svcs and total_svcs > 0:
-            self.console.print(f"  Services: all {svcs_running} already running")
-        elif svcs_started == total_svcs and total_svcs > 0:
-            self.console.print(f"  Services: {svcs_started} started")
+        total_svcs = svcs_enabled + svcs_already
+        if svcs_already == total_svcs and total_svcs > 0:
+            self.console.print(f"  Services: all {svcs_already} already enabled")
+        elif svcs_enabled == total_svcs and total_svcs > 0:
+            self.console.print(f"  Services: {svcs_enabled} enabled")
         elif total_svcs > 0:
             self.console.print(
-                f"  Services: {svcs_started} started, {svcs_running} already running"
+                f"  Services: {svcs_enabled} enabled, {svcs_already} already enabled"
             )

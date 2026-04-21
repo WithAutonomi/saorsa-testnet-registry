@@ -135,10 +135,12 @@ The data flow is: **Claude → MCP → saorsa-deploy (subprocess) → infrastruc
 
 When asked to deploy, launch, create, or destroy a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
 
-- `create_deployment` — runs the full deployment sequence (infra-bootstraps → infra-nodes → provision-genesis → provision-bootstraps → provision-nodes)
+- `create_deployment` — runs the full deployment sequence (infra-bootstraps → infra-nodes → provision-genesis → provision-bootstraps → provision-nodes → start-nodes)
 - `destroy_deployment` — runs saorsa-deploy destroy-nodes then destroy-bootstraps to tear down infrastructure
 
 NOTE: the MCP server currently still shells out to the pre-split `infra`/`destroy` commands and needs an update before Claude can use these tools end-to-end. Until then, run the saorsa-deploy CLI directly.
+
+`provision-nodes` installs the ant-node binary, writes systemd unit files, and **enables** the services; it does not start them. `start-nodes` is a separate step that runs `systemctl start ant-node-{1..N}` in parallel across every node VM. The split exists so that optional setup (notably port-restricted NAT simulation configured via `--nat-percent`) can run between unit-write and service-start.
 - `list_deployments` — lists all deployments from the database
 - `get_deployment` — gets deployment details, events, and status
 - `testnet://docs/deployment-config` — resource with full parameter documentation
