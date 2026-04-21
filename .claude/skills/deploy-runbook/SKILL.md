@@ -86,6 +86,14 @@ If the user wants a single "tier" (e.g. "4/8"), map to equivalents: DO `s-4vcpu-
 
 Boolean yes/no. If yes, pass `--testnet` to **all three** of `provision-genesis`, `provision-bootstraps` (if emitted), and `provision-nodes`.
 
+### 5a. Upgrade channel
+
+Ask: "Which ant-node upgrade channel — `beta`, `stable`, or none?" Only `beta` and `stable` are valid saorsa-deploy choices; "none" means omit the flag entirely (ant-node's built-in default applies).
+
+- If `beta` or `stable`, pass `--upgrade-channel {beta|stable}` to **all three** of `provision-genesis`, `provision-bootstraps` (if emitted), and `provision-nodes` — same value on all three, never mix channels across the commands.
+- If "none", omit `--upgrade-channel` from all three.
+- This setting only affects `ant-node` (nodes/bootstraps/genesis); clients do not take `--upgrade-channel`.
+
 ### 5b. Port-restricted NAT simulation
 
 Boolean yes/no. If yes, ask for a **percentage** (1–100) of node VMs that should run behind a simulated port-restricted NAT (Linux network namespace + iptables DNAT/MASQUERADE).
@@ -166,6 +174,7 @@ These are non-negotiable; the generated script must respect them:
 ### Flag rules
 
 - `--testnet` goes on `provision-genesis`, `provision-bootstraps`, and `provision-nodes` — all three or none.
+- `--upgrade-channel {beta|stable}` goes on `provision-genesis`, `provision-bootstraps`, and `provision-nodes` — same value on all three, or omit from all three. Only accepts `beta` or `stable`; never emit the flag with any other value. The flag is unique to node provisioning — do not emit it on `provision-clients` or any other command.
 - Binary selection is mutually exclusive **per binary**: either `--node-version X` or `--branch-name Y --repo-owner Z`, never both, on the same command.
 - Port `10000` for `provision-genesis --port` and `provision-bootstraps --port`.
 - Always include `--name "$NAME"` on every command.
@@ -187,6 +196,7 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 #                  Hetzner = {{HETZNER_PER_REGION}} × {{HETZNER_REGIONS}} region(s) = {{HETZNER_TOTAL}}
 #                  Vultr   = {{VULTR_PER_REGION}} × {{VULTR_REGIONS}} region(s) = {{VULTR_TOTAL}}
 #   Testnet:     {{YES_OR_NO}}
+#   Upgrade chan: {{UPGRADE_CHANNEL_OR_NONE}}
 #   NAT sim:     {{NAT_YES_NO_WITH_PERCENT}}
 #   Clients:     {{CLIENT_COUNT_OR_NONE}}
 #   Elastic:     {{YES_OR_NO}}
@@ -270,6 +280,7 @@ uv run saorsa-deploy provision-genesis \
   --port $BOOTSTRAP_PORT \
   {{BINARY_FLAGS_NODE}} \
   {{#if testnet}}--testnet{{/if}} \
+  {{#if upgrade_channel}}--upgrade-channel {{UPGRADE_CHANNEL}}{{/if}} \
   --ssh-key-path "$SSH_KEY"
 
 {{#if multi_bootstrap}}
@@ -278,6 +289,7 @@ uv run saorsa-deploy provision-bootstraps \
   --port $BOOTSTRAP_PORT \
   {{BINARY_FLAGS_NODE}} \
   {{#if testnet}}--testnet{{/if}} \
+  {{#if upgrade_channel}}--upgrade-channel {{UPGRADE_CHANNEL}}{{/if}} \
   --ssh-key-path "$SSH_KEY"
 {{/if}}
 
@@ -286,6 +298,7 @@ uv run saorsa-deploy provision-nodes \
   --node-count 1 \
   {{BINARY_FLAGS_NODE}} \
   {{#if testnet}}--testnet{{/if}} \
+  {{#if upgrade_channel}}--upgrade-channel {{UPGRADE_CHANNEL}}{{/if}} \
   {{#if nat_enabled}}--nat-percent {{NAT_PERCENT}}{{/if}} \
   --ssh-key-path "$SSH_KEY"
 
