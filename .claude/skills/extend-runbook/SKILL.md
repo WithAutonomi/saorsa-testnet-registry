@@ -189,6 +189,13 @@ SSH_KEY="{{SSH_KEY_PATH}}"
 
 cd "$(dirname "$0")/.."
 
+# --- Load .env ---
+# `uv run` already picks up .env for the python subprocesses, but the preflight
+# checks below are plain bash and would otherwise miss vars defined only there.
+set -a
+[ -f .env ] && . .env
+set +a
+
 # --- Preflight ---
 {{#if clients}}
 if [[ -z "${ANT_DEPLOY_SECRET_KEY:-}" ]]; then

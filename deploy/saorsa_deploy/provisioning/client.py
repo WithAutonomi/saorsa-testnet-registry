@@ -248,14 +248,25 @@ class AntClientProvisioner:
                 ],
             )
 
-            # Install awscli — uploaders flush to S3 and downloaders fetch from S3
+            # Install AWS CLI v2 via the official installer — uploaders flush
+            # to S3 and downloaders fetch from S3. We avoid the distro `awscli`
+            # package (CLI v1, deprecated, and missing from Ubuntu 24.04
+            # minimal images) in favour of AWS's static binary.
             add_op(
                 state,
                 server.shell,
-                name="Install awscli",
+                name="Install AWS CLI v2",
                 commands=[
-                    "DEBIAN_FRONTEND=noninteractive apt-get update -qq",
-                    "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq awscli",
+                    "command -v aws >/dev/null && echo 'AWSCLI:SKIP' || "
+                    "(DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                    "unzip curl ca-certificates && "
+                    "curl -sSL 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' "
+                    "-o /tmp/awscliv2.zip && "
+                    "unzip -q -o /tmp/awscliv2.zip -d /tmp && "
+                    "/tmp/aws/install --update && "
+                    "rm -rf /tmp/aws /tmp/awscliv2.zip && "
+                    "echo 'AWSCLI:INSTALLED')",
                 ],
             )
 

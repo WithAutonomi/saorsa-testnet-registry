@@ -45,7 +45,7 @@ def cmd_start_clients(args):
     connect_all(state)
 
     case_entries = "\n".join(
-        f'    "{ip}") UNIT=ant-{role} ;;' for ip, role in hosts_with_role
+        f'    "{ip}") UNIT=ant-{role}er ;;' for ip, role in hosts_with_role
     )
     start_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
