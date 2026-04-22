@@ -6,12 +6,17 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.evm import get_evm_network_info
+from saorsa_deploy.provisioning.volume import MOUNT_POINT
 from saorsa_deploy.state import load_client_state, load_deployment_state
 
 INVENTORY_SCHEMA_VERSION = 4
 DEFAULT_SSH_USER = "root"
 DEFAULT_SSH_KEY = "~/.ssh/id_rsa"
 DEFAULT_OUTPUT_TEMPLATE = "~/.autonomi/testnets/{name}/inventory.json"
+DEVNET_MANIFEST_FILENAME = "devnet-manifest.json"
+DEVNET_DATA_DIR = f"{MOUNT_POINT}/data"
+DEVNET_EVM_NETWORK = "arbitrum-sepolia"
 
 FIREWALL_PLACEHOLDER = "managed by terraform"
 CLIENT_SERVICES = ("ant-uploader", "ant-downloader")
@@ -178,9 +183,99 @@ def build_inventory(
     }
 
 
+def _bootstrap_multiaddrs(state: dict) -> list[str]:
+    bootstrap_port = state.get("bootstrap_port")
+    bootstrap_nodes = state.get("bootstrap_nodes") or []
+    multiaddrs = []
+    for node in sorted(bootstrap_nodes, key=lambda n: n.get("bootstrap_index", 0)):
+        port = node.get("port", bootstrap_port)
+        multiaddrs.append(f"/ip4/{node['ip']}/udp/{port}/quic")
+    return multiaddrs
+
+
+def _total_node_count(state: dict, node_count_per_vm: int) -> int:
+    vm_ips = state.get("vm_ips") or {}
+    node_vm_count = sum(len(ips) for ips in vm_ips.values())
+    return node_count_per_vm * node_vm_count
+
+
+def build_devnet_manifest(
+    state: dict,
+    wallet_private_key: str,
+    evm_network: str = DEVNET_EVM_NETWORK,
+    node_count: int | None = None,
+    created_at: str | None = None,
+) -> dict:
+    """Build the `ant_node::devnet::DevnetManifest` dict for a deployment.
+
+    Pure function for testability. Shape matches ant-node byte-for-byte so
+    that `serde_json::from_str::<DevnetManifest>` accepts the output.
+
+    Args:
+        state: Loaded deployment state (from `load_deployment_state`).
+        wallet_private_key: EVM wallet private key to embed in the manifest's
+            `evm` block.
+        evm_network: EVM network key into `saorsa_deploy.evm` (default
+            arbitrum-sepolia).
+        node_count: Nodes-per-VM; defaults to `state['node_count']`. The
+            manifest emits the cluster total (per-VM × node VM count).
+        created_at: Override timestamp (for deterministic tests). Default is
+            `datetime.now(UTC).isoformat()`.
+    """
+    resolved_per_vm = node_count if node_count is not None else state.get("node_count")
+    if resolved_per_vm is None:
+        raise ValueError(
+            "node_count is missing from deployment state. "
+            "Run 'provision' first (or pass --node-count to override)."
+        )
+
+    bootstrap_port = state.get("bootstrap_port")
+    if not bootstrap_port:
+        raise ValueError(
+            "bootstrap_port is missing from deployment state. "
+            "Has the provision-genesis command been run?"
+        )
+
+    evm_info = get_evm_network_info(evm_network)
+    created = created_at or datetime.now(timezone.utc).isoformat()
+
+    return {
+        "base_port": bootstrap_port,
+        "node_count": _total_node_count(state, resolved_per_vm),
+        "bootstrap": _bootstrap_multiaddrs(state),
+        "data_dir": DEVNET_DATA_DIR,
+        "created_at": created,
+        "evm": {
+            "rpc_url": evm_info["rpc_url"],
+            "wallet_private_key": wallet_private_key,
+            "payment_token_address": evm_info["payment_token_address"],
+            "payment_vault_address": evm_info["payment_vault_address"],
+        },
+    }
+
+
+def _resolve_wallet_secret_key(args) -> str:
+    """Resolve the wallet secret key from args or env.
+
+    Priority: --wallet-secret-key > ANT_DEPLOY_SECRET_KEY. Exits on miss.
+    """
+    key = getattr(args, "wallet_secret_key", None) or os.environ.get(
+        "ANT_DEPLOY_SECRET_KEY"
+    )
+    if not key:
+        Console().print(
+            "[bold red]Error:[/bold red] No wallet secret key provided. "
+            "Use --wallet-secret-key or set ANT_DEPLOY_SECRET_KEY."
+        )
+        sys.exit(1)
+    return key
+
+
 def cmd_generate_inventory(args):
     """Generate a schema-version-4 inventory.json for a deployment."""
     console = Console()
+
+    wallet_secret_key = _resolve_wallet_secret_key(args)
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
     try:
@@ -208,12 +303,25 @@ def cmd_generate_inventory(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
+    try:
+        manifest = build_devnet_manifest(
+            state,
+            wallet_private_key=wallet_secret_key,
+            node_count=args.node_count,
+        )
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
     if args.output:
         output_path = Path(os.path.expanduser(args.output))
     else:
         output_path = _default_output_path(args.name)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(inventory, indent=2) + "\n")
+
+    manifest_path = output_path.parent / DEVNET_MANIFEST_FILENAME
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
     node_vm_count = len(inventory["node_vms"])
     services_per_vm = len(inventory["node_vms"][0]["services"]) if node_vm_count else 0
@@ -229,3 +337,9 @@ def cmd_generate_inventory(args):
         f"{total_nodes} nodes{nat_suffix}"
     )
     console.print(f"  {client_vm_count} client VM(s)")
+    console.print(f"[bold green]Wrote devnet manifest to {manifest_path}[/bold green]")
+    console.print(
+        f"  {len(manifest['bootstrap'])} bootstrap multiaddr(s), "
+        f"{manifest['node_count']} nodes total, "
+        f"evm={DEVNET_EVM_NETWORK}"
+    )

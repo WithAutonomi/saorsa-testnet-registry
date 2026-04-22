@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -6,10 +7,14 @@ import pytest
 from saorsa_deploy.cmd.generate_inventory import (
     DEFAULT_SSH_KEY,
     DEFAULT_SSH_USER,
+    DEVNET_DATA_DIR,
+    DEVNET_EVM_NETWORK,
     FIREWALL_PLACEHOLDER,
     INVENTORY_SCHEMA_VERSION,
+    build_devnet_manifest,
     build_inventory,
 )
+from saorsa_deploy.evm import get_evm_network_info
 
 
 def _state(**overrides):
@@ -25,6 +30,7 @@ def _state(**overrides):
             {"ip": "143.198.0.1", "region": "lon1", "bootstrap_index": 1},
         ],
         "bootstrap_ip": "143.198.0.1",
+        "bootstrap_port": 30000,
         "vm_ips": {
             "digitalocean/lon1": ["10.0.0.1", "10.0.0.2"],
             "hetzner/fsn1": ["10.1.0.1"],
@@ -419,15 +425,19 @@ class TestClientVmsField:
 
 
 class TestCmdGenerateInventory:
+    def _args(self, tmp_path, name="DEV-02"):
+        args = MagicMock()
+        args.name = name
+        args.output = str(tmp_path / f"{name}.json")
+        args.ssh_key_path = "~/.ssh/id_rsa"
+        args.node_count = None
+        args.wallet_secret_key = "0xdeadbeef"
+        return args
+
     def test_writes_file_to_output_path(self, tmp_path):
         from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
 
-        output = tmp_path / "DEV-02.json"
-        args = MagicMock()
-        args.name = "DEV-02"
-        args.output = str(output)
-        args.ssh_key_path = "~/.ssh/id_rsa"
-        args.node_count = None
+        args = self._args(tmp_path)
 
         with patch(
             "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
@@ -438,7 +448,7 @@ class TestCmdGenerateInventory:
         ):
             cmd_generate_inventory(args)
 
-        data = json.loads(output.read_text())
+        data = json.loads(Path(args.output).read_text())
         assert data["testnet_id"] == "DEV-02"
         assert data["schema_version"] == INVENTORY_SCHEMA_VERSION
         assert len(data["node_vms"]) == 4
@@ -447,12 +457,7 @@ class TestCmdGenerateInventory:
     def test_includes_client_vms_when_client_state_exists(self, tmp_path):
         from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
 
-        output = tmp_path / "DEV-02.json"
-        args = MagicMock()
-        args.name = "DEV-02"
-        args.output = str(output)
-        args.ssh_key_path = "~/.ssh/id_rsa"
-        args.node_count = None
+        args = self._args(tmp_path)
 
         client_state = {
             "name": "DEV-02",
@@ -475,7 +480,192 @@ class TestCmdGenerateInventory:
         ):
             cmd_generate_inventory(args)
 
-        data = json.loads(output.read_text())
+        data = json.loads(Path(args.output).read_text())
         assert len(data["client_vms"]) == 1
         assert data["client_vms"][0]["ip"] == "7.7.7.7"
         assert data["client_vms"][0]["name"] == "DEV-02-ant-client-lon1-1"
+
+    def test_writes_devnet_manifest_alongside_inventory(self, tmp_path):
+        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
+
+        args = self._args(tmp_path)
+
+        with patch(
+            "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
+            return_value=_state(),
+        ), patch(
+            "saorsa_deploy.cmd.generate_inventory.load_client_state",
+            side_effect=RuntimeError("no client state"),
+        ):
+            cmd_generate_inventory(args)
+
+        manifest_path = Path(args.output).parent / "devnet-manifest.json"
+        assert manifest_path.exists()
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["base_port"] == 30000
+        assert manifest["node_count"] == 12  # 3 per VM × 4 node VMs
+        assert manifest["bootstrap"] == ["/ip4/143.198.0.1/udp/30000/quic"]
+        assert manifest["data_dir"] == DEVNET_DATA_DIR
+        assert manifest["evm"]["wallet_private_key"] == "0xdeadbeef"
+
+    def test_wallet_key_falls_back_to_env_var(self, tmp_path, monkeypatch):
+        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
+
+        args = self._args(tmp_path)
+        args.wallet_secret_key = None
+        monkeypatch.setenv("ANT_DEPLOY_SECRET_KEY", "0xfromenv")
+
+        with patch(
+            "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
+            return_value=_state(),
+        ), patch(
+            "saorsa_deploy.cmd.generate_inventory.load_client_state",
+            side_effect=RuntimeError("no client state"),
+        ):
+            cmd_generate_inventory(args)
+
+        manifest_path = Path(args.output).parent / "devnet-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["evm"]["wallet_private_key"] == "0xfromenv"
+
+    def test_exits_when_no_wallet_key_available(self, tmp_path, monkeypatch):
+        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
+
+        args = self._args(tmp_path)
+        args.wallet_secret_key = None
+        monkeypatch.delenv("ANT_DEPLOY_SECRET_KEY", raising=False)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_generate_inventory(args)
+        assert exc.value.code == 1
+
+
+class TestBuildDevnetManifest:
+    def test_top_level_shape(self):
+        manifest = build_devnet_manifest(
+            _state(),
+            wallet_private_key="0xabc",
+            created_at="2026-04-22T14:00:00.000000+00:00",
+        )
+        assert set(manifest.keys()) == {
+            "base_port",
+            "node_count",
+            "bootstrap",
+            "data_dir",
+            "created_at",
+            "evm",
+        }
+
+    def test_base_port_from_bootstrap_port(self):
+        manifest = build_devnet_manifest(
+            _state(bootstrap_port=40001), wallet_private_key="k"
+        )
+        assert manifest["base_port"] == 40001
+
+    def test_node_count_is_total_across_node_vms(self):
+        # 3 per VM × (2 + 1 + 1) VMs = 12
+        manifest = build_devnet_manifest(_state(), wallet_private_key="k")
+        assert manifest["node_count"] == 12
+
+    def test_node_count_override_multiplies_by_vm_count(self):
+        # 5 per VM × 4 VMs = 20
+        manifest = build_devnet_manifest(
+            _state(), wallet_private_key="k", node_count=5
+        )
+        assert manifest["node_count"] == 20
+
+    def test_bootstrap_multiaddrs_use_state_port_by_default(self):
+        state = _state(
+            bootstrap_nodes=[
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+                {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+            ],
+            bootstrap_port=31337,
+        )
+        manifest = build_devnet_manifest(state, wallet_private_key="k")
+        assert manifest["bootstrap"] == [
+            "/ip4/1.1.1.1/udp/31337/quic",
+            "/ip4/2.2.2.2/udp/31337/quic",
+        ]
+
+    def test_bootstrap_multiaddrs_use_per_node_port_when_set(self):
+        # provision-bootstraps stamps `port` on each entry; should take precedence.
+        state = _state(
+            bootstrap_nodes=[
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1, "port": 22000},
+                {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2, "port": 22000},
+            ],
+            bootstrap_port=30000,
+        )
+        manifest = build_devnet_manifest(state, wallet_private_key="k")
+        assert manifest["bootstrap"] == [
+            "/ip4/1.1.1.1/udp/22000/quic",
+            "/ip4/2.2.2.2/udp/22000/quic",
+        ]
+
+    def test_bootstrap_multiaddrs_sorted_by_index(self):
+        state = _state(
+            bootstrap_nodes=[
+                {"ip": "3.3.3.3", "region": "ams3", "bootstrap_index": 3},
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+                {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+            ],
+        )
+        manifest = build_devnet_manifest(state, wallet_private_key="k")
+        ips_in_order = [m.split("/")[2] for m in manifest["bootstrap"]]
+        assert ips_in_order == ["1.1.1.1", "2.2.2.2", "3.3.3.3"]
+
+    def test_data_dir_is_mount_point(self):
+        manifest = build_devnet_manifest(_state(), wallet_private_key="k")
+        assert manifest["data_dir"] == DEVNET_DATA_DIR
+        assert manifest["data_dir"].startswith("/mnt/")
+
+    def test_created_at_defaults_to_iso_with_utc_offset(self):
+        manifest = build_devnet_manifest(_state(), wallet_private_key="k")
+        # datetime.isoformat() with UTC timezone yields '...+00:00' (RFC3339-compatible)
+        assert "T" in manifest["created_at"]
+        assert manifest["created_at"].endswith("+00:00")
+
+    def test_created_at_override_preserved(self):
+        manifest = build_devnet_manifest(
+            _state(),
+            wallet_private_key="k",
+            created_at="2026-04-22T14:00:00.000000+00:00",
+        )
+        assert manifest["created_at"] == "2026-04-22T14:00:00.000000+00:00"
+
+    def test_evm_block_uses_sepolia_constants_by_default(self):
+        manifest = build_devnet_manifest(_state(), wallet_private_key="0xabc")
+        sepolia = get_evm_network_info(DEVNET_EVM_NETWORK)
+        assert manifest["evm"] == {
+            "rpc_url": sepolia["rpc_url"],
+            "wallet_private_key": "0xabc",
+            "payment_token_address": sepolia["payment_token_address"],
+            "payment_vault_address": sepolia["payment_vault_address"],
+        }
+
+    def test_raises_when_bootstrap_port_missing(self):
+        state = _state()
+        del state["bootstrap_port"]
+        with pytest.raises(ValueError, match="bootstrap_port is missing"):
+            build_devnet_manifest(state, wallet_private_key="k")
+
+    def test_raises_when_node_count_missing(self):
+        state = _state()
+        del state["node_count"]
+        with pytest.raises(ValueError, match="node_count is missing"):
+            build_devnet_manifest(state, wallet_private_key="k")
+
+    def test_raises_for_unknown_evm_network(self):
+        with pytest.raises(ValueError, match="Unknown EVM network"):
+            build_devnet_manifest(
+                _state(), wallet_private_key="k", evm_network="bogus"
+            )
+
+    def test_round_trips_through_json(self):
+        manifest = build_devnet_manifest(
+            _state(),
+            wallet_private_key="k",
+            created_at="2026-04-22T14:00:00.000000+00:00",
+        )
+        assert json.loads(json.dumps(manifest)) == manifest

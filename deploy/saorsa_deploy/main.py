@@ -560,6 +560,13 @@ def main():
             "provision command."
         ),
     )
+    generate_inventory_parser.add_argument(
+        "--wallet-secret-key",
+        type=str,
+        default=None,
+        help="EVM wallet private key embedded in devnet-manifest.json. "
+        "Falls back to ANT_DEPLOY_SECRET_KEY env var if not provided.",
+    )
 
     # === hetzner-availability ===
     hetzner_avail_parser = subparsers.add_parser(
