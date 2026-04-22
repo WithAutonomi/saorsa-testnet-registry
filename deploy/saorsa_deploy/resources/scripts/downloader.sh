@@ -3,18 +3,20 @@ set -euo pipefail
 
 # --- Configuration (set via environment) ---
 : "${BOOTSTRAP_ARGS:?BOOTSTRAP_ARGS must be set}"
+: "${ADDRESSES_S3_BUCKET:?ADDRESSES_S3_BUCKET must be set}"
+: "${ADDRESSES_S3_PREFIX:?ADDRESSES_S3_PREFIX must be set}"
+: "${REGION:?REGION must be set}"
 : "${INFLUX_URL:=}"
 : "${INFLUX_TOKEN:=}"
 : "${INFLUX_ORG:=ant}"
 : "${INFLUX_BUCKET:=testnet-metrics}"
-: "${REGION:=$(hostname | sed 's/.*-do-\([a-z0-9]*\)-.*/\1/')}"
 : "${SLEEP_SECS:=10}"
-: "${ADDRESSES_FILE:=/var/lib/ant-client/addresses.txt}"
 : "${DOWNLOAD_DIR:=/var/lib/ant-client/downloads}"
 : "${ANT:=/root/.local/bin/ant}"
 : "${RUN_ONCE:=false}"
 
 CLIENT_HOST=$(hostname)
+S3_URI_PREFIX="s3://${ADDRESSES_S3_BUCKET}/${ADDRESSES_S3_PREFIX}/"
 
 submit_metric() {
     if [ -z "$INFLUX_URL" ] || [ -z "$INFLUX_TOKEN" ]; then
@@ -27,24 +29,35 @@ submit_metric() {
         --data-binary "$line_protocol" || echo "WARN: failed to submit metric to InfluxDB"
 }
 
+pick_random_address() {
+    # List upload-* objects under the prefix, pick a random one, fetch it,
+    # pick a random line. Returns empty string if no addresses available.
+    local listing key s3_uri address
+    listing=$(aws s3 ls "$S3_URI_PREFIX" 2>/dev/null | awk '{print $NF}' | grep '^upload-' || true)
+    if [ -z "$listing" ]; then
+        return 0
+    fi
+    key=$(echo "$listing" | shuf -n 1)
+    if [ -z "$key" ]; then
+        return 0
+    fi
+    s3_uri="${S3_URI_PREFIX}${key}"
+    address=$(aws s3 cp --quiet "$s3_uri" - 2>/dev/null | shuf -n 1 || true)
+    echo "$address"
+}
+
 mkdir -p "$DOWNLOAD_DIR"
 
-echo "Downloader starting: host=${CLIENT_HOST} region=${REGION}"
+echo "Downloader starting: host=${CLIENT_HOST} region=${REGION} s3_prefix=${S3_URI_PREFIX}"
 
 while true; do
-    # Wait for addresses to be available
-    if [ ! -s "$ADDRESSES_FILE" ]; then
-        echo "[$(date -u +%H:%M:%S)] No addresses yet, waiting..."
-        sleep "$SLEEP_SECS"
+    address=$(pick_random_address)
+    if [ -z "$address" ]; then
+        echo "[$(date -u +%H:%M:%S)] No addresses available in ${S3_URI_PREFIX}, waiting..."
         if [ "$RUN_ONCE" = "true" ]; then
             echo "RUN_ONCE=true but no addresses available, exiting."
             exit 1
         fi
-        continue
-    fi
-
-    address=$(shuf -n 1 "$ADDRESSES_FILE")
-    if [ -z "$address" ]; then
         sleep "$SLEEP_SECS"
         continue
     fi

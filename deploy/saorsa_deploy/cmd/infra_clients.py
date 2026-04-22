@@ -16,17 +16,20 @@ from saorsa_deploy.terraform import TerraformRunConfig
 CLIENT_STATE_KEY_PREFIX = "saorsa-deploy/do-client"
 DEFAULT_VM_SIZE = "s-2vcpu-4gb"
 DEFAULT_STORE_CONCURRENCY = 8
+ROLE_UPLOAD = "upload"
+ROLE_DOWNLOAD = "download"
 
 
-def parse_client_spec(spec: str) -> dict:
-    """Parse a client spec string: 'region:file_size_mb[:vm_size[:store_concurrency]]'.
+def parse_uploader_spec(spec: str) -> dict:
+    """Parse an uploader spec: 'region:file_size_mb[:vm_size[:store_concurrency]]'.
 
-    Returns a dict with keys: region, file_size_mb, vm_size, store_concurrency.
+    Returns a dict with keys: role=upload, region, file_size_mb, vm_size,
+    store_concurrency.
     """
     parts = spec.split(":")
     if len(parts) < 2 or len(parts) > 4:
         raise ValueError(
-            f"Invalid client spec '{spec}'. "
+            f"Invalid uploader spec '{spec}'. "
             f"Expected format: region:file_size_mb[:vm_size[:store_concurrency]]"
         )
     region = parts[0]
@@ -34,7 +37,7 @@ def parse_client_spec(spec: str) -> dict:
         file_size_mb = int(parts[1])
     except ValueError:
         raise ValueError(
-            f"Invalid file size '{parts[1]}' in client spec '{spec}'. "
+            f"Invalid file size '{parts[1]}' in uploader spec '{spec}'. "
             f"Must be an integer (MB)."
         )
     vm_size = parts[2] if len(parts) >= 3 else DEFAULT_VM_SIZE
@@ -43,12 +46,13 @@ def parse_client_spec(spec: str) -> dict:
             store_concurrency = int(parts[3])
         except ValueError:
             raise ValueError(
-                f"Invalid store concurrency '{parts[3]}' in client spec '{spec}'. "
+                f"Invalid store concurrency '{parts[3]}' in uploader spec '{spec}'. "
                 f"Must be an integer."
             )
     else:
         store_concurrency = DEFAULT_STORE_CONCURRENCY
     return {
+        "role": ROLE_UPLOAD,
         "region": region,
         "file_size_mb": file_size_mb,
         "vm_size": vm_size,
@@ -56,35 +60,69 @@ def parse_client_spec(spec: str) -> dict:
     }
 
 
+def parse_downloader_spec(spec: str) -> dict:
+    """Parse a downloader spec: 'region[:vm_size]'.
+
+    Returns a dict with keys: role=download, region, vm_size.
+    """
+    parts = spec.split(":")
+    if len(parts) < 1 or len(parts) > 2:
+        raise ValueError(
+            f"Invalid downloader spec '{spec}'. "
+            f"Expected format: region[:vm_size]"
+        )
+    region = parts[0]
+    if not region:
+        raise ValueError(f"Invalid downloader spec '{spec}': region cannot be empty.")
+    vm_size = parts[1] if len(parts) == 2 else DEFAULT_VM_SIZE
+    return {
+        "role": ROLE_DOWNLOAD,
+        "region": region,
+        "vm_size": vm_size,
+    }
+
+
 def cmd_infra_clients(args):
     """Execute the infra-clients command: create client VMs via Terraform."""
     console = Console()
 
-    if not args.client:
+    uploader_specs_raw = args.uploader or []
+    downloader_specs_raw = args.downloader or []
+
+    if not uploader_specs_raw and not downloader_specs_raw:
         console.print(
-            "[bold red]Error:[/bold red] At least one --client spec is required. "
-            "Format: --client 'region:file_size_mb[:vm_size[:store_concurrency]]'"
+            "[bold red]Error:[/bold red] At least one --uploader or --downloader "
+            "spec is required."
         )
         sys.exit(1)
 
-    # Parse client specs
-    client_specs = []
-    for i, spec_str in enumerate(args.client, start=1):
-        try:
-            spec = parse_client_spec(spec_str)
+    client_specs: list[dict] = []
+    try:
+        for i, spec_str in enumerate(uploader_specs_raw, start=1):
+            spec = parse_uploader_spec(spec_str)
             spec["client_index"] = i
             client_specs.append(spec)
-        except ValueError as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
-            sys.exit(1)
+        for i, spec_str in enumerate(downloader_specs_raw, start=1):
+            spec = parse_downloader_spec(spec_str)
+            spec["client_index"] = i
+            client_specs.append(spec)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
 
     console.print(f"[bold]Creating {len(client_specs)} client VM(s) for {args.name}...[/bold]")
     for spec in client_specs:
-        console.print(
-            f"  Client #{spec['client_index']}: {spec['region']} "
-            f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads, "
-            f"sc={spec['store_concurrency']})"
-        )
+        if spec["role"] == ROLE_UPLOAD:
+            console.print(
+                f"  Uploader #{spec['client_index']}: {spec['region']} "
+                f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads, "
+                f"sc={spec['store_concurrency']})"
+            )
+        else:
+            console.print(
+                f"  Downloader #{spec['client_index']}: {spec['region']} "
+                f"({spec['vm_size']})"
+            )
     console.print()
 
     resources_dir = get_resources_dir()
@@ -94,14 +132,16 @@ def cmd_infra_clients(args):
     configs = []
     for spec in client_specs:
         workspace_dir = (
-            workspace_base / f"do-client-{args.name}-{spec['region']}-{spec['client_index']}"
+            workspace_base
+            / f"do-client-{args.name}-{spec['role']}-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
-            f"{CLIENT_STATE_KEY_PREFIX}-{args.name}"
+            f"{CLIENT_STATE_KEY_PREFIX}-{args.name}-{spec['role']}"
             f"-{spec['region']}-{spec['client_index']}.tfstate"
         )
         variables = {
             "name": args.name,
+            "role": spec["role"],
             "region": spec["region"],
             "client_index": str(spec["client_index"]),
             "droplet_size": spec["vm_size"],
@@ -169,7 +209,8 @@ def cmd_infra_clients(args):
         f"[bold green]All {len(results)} client VM(s) provisioned successfully.[/bold green]"
     )
     for spec in client_specs:
+        label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
         console.print(
-            f"  Client #{spec['client_index']}: {spec.get('ip', 'N/A')} "
+            f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
             f"({spec['region']}, {spec['vm_size']})"
         )

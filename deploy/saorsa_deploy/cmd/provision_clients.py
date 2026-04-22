@@ -90,6 +90,32 @@ def _resolve_ant_binary(args, console):
     return None, True
 
 
+def _resolve_client_aws_creds(console):
+    """Resolve AWS creds that client VMs use for the per-testnet S3 addresses folder.
+
+    Reads ANT_CLIENT_AWS_ACCESS_KEY_ID and ANT_CLIENT_AWS_SECRET_ACCESS_KEY from
+    the environment. These should come from the aws-client-s3 Terraform module
+    outputs. Exits if missing.
+    """
+    import os
+
+    access_key = os.environ.get("ANT_CLIENT_AWS_ACCESS_KEY_ID", "")
+    secret_key = os.environ.get("ANT_CLIENT_AWS_SECRET_ACCESS_KEY", "")
+    if not access_key or not secret_key:
+        console.print(
+            "[bold red]Error:[/bold red] Client AWS credentials missing. Set "
+            "ANT_CLIENT_AWS_ACCESS_KEY_ID and ANT_CLIENT_AWS_SECRET_ACCESS_KEY "
+            "in your environment (see .env.example)."
+        )
+        console.print(
+            "[dim]Create the IAM user with: "
+            "terraform -chdir=deploy/saorsa_deploy/resources/aws-client-s3 apply"
+            "[/dim]"
+        )
+        sys.exit(1)
+    return access_key, secret_key
+
+
 def _resolve_wallet_secret_key(args, console):
     """Resolve the wallet secret key from args or environment.
 
@@ -120,6 +146,7 @@ def cmd_provision_clients(args):
     console = Console()
 
     wallet_secret_key = _resolve_wallet_secret_key(args, console)
+    aws_access_key_id, aws_secret_access_key = _resolve_client_aws_creds(console)
 
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
     try:
@@ -171,11 +198,18 @@ def cmd_provision_clients(args):
     console.print(f"  Bootstrap peers: {', '.join(bootstrap_peers)}")
     console.print(f"  Client VMs: {len(host_ips)}")
     for c in clients:
-        console.print(
-            f"    #{c['client_index']}: {c.get('ip', 'N/A')} "
-            f"({c['region']}, {c['file_size_mb']}MB, "
-            f"sc={c.get('store_concurrency', 8)})"
-        )
+        role = c.get("role", "upload")
+        if role == "upload":
+            console.print(
+                f"    Uploader #{c['client_index']}: {c.get('ip', 'N/A')} "
+                f"({c['region']}, {c.get('file_size_mb', 0)}MB, "
+                f"sc={c.get('store_concurrency', 8)})"
+            )
+        else:
+            console.print(
+                f"    Downloader #{c['client_index']}: {c.get('ip', 'N/A')} "
+                f"({c['region']})"
+            )
     console.print()
 
     clear_known_hosts(host_ips, console)
@@ -183,6 +217,10 @@ def cmd_provision_clients(args):
     provisioner = AntClientProvisioner(
         clients=clients,
         bootstrap_peers=bootstrap_peers,
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key,
+        addresses_s3_bucket="maidsafe-org-infra-tfstate",
+        addresses_s3_prefix=f"saorsa-deploy/addresses/{args.name}",
         ssh_key_path=args.ssh_key_path,
         console=console,
         binary_url=binary_url,

@@ -23,11 +23,16 @@ def cmd_start_clients(args):
         sys.exit(1)
 
     clients = client_state.get("clients", [])
-    host_ips = [c["ip"] for c in clients if c.get("ip")]
-    if not host_ips:
+    hosts_with_role = [
+        (c["ip"], c.get("role", "upload"))
+        for c in clients
+        if c.get("ip")
+    ]
+    if not hosts_with_role:
         console.print("[bold red]Error:[/bold red] No client IPs found in state.")
         sys.exit(1)
 
+    host_ips = [ip for ip, _ in hosts_with_role]
     console.print(f"[bold]Starting services on {len(host_ips)} client VM(s)...[/bold]")
 
     clear_known_hosts(host_ips, console)
@@ -39,14 +44,23 @@ def cmd_start_clients(args):
     state = State(inventory=inventory, config=Config())
     connect_all(state)
 
+    case_entries = "\n".join(
+        f'    "{ip}") UNIT=ant-{role} ;;' for ip, role in hosts_with_role
+    )
+    start_script = f"""\
+MY_IP=$(hostname -I | awk '{{print $1}}')
+case "$MY_IP" in
+{case_entries}
+    *) UNIT=ant-uploader ;;
+esac
+systemctl enable --now "$UNIT\""""
+
     try:
         add_op(
             state,
             server.shell,
-            name="Start client services",
-            commands=[
-                "systemctl enable --now ant-uploader ant-downloader",
-            ],
+            name="Start client services (role-aware)",
+            commands=[start_script],
         )
         run_ops(state)
     finally:

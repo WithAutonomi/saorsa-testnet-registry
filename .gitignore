@@ -19,6 +19,7 @@ venv/
 .DS_Store
 
 .terraform/
+.terraform.lock.hcl
 
 .claude/plans/
 .saorsa/

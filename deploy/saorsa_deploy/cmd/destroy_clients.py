@@ -6,6 +6,7 @@ from rich.console import Console
 
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
+    delete_client_addresses_prefix,
     delete_client_state,
     delete_terraform_state,
     list_terraform_state_keys,
@@ -16,6 +17,9 @@ from saorsa_deploy.state import (
 from saorsa_deploy.terraform import TerraformRunConfig, run_terraform_destroy
 
 CLIENT_STATE_KEY_PREFIX = "saorsa-deploy/do-client"
+ROLE_UPLOAD = "upload"
+ROLE_DOWNLOAD = "download"
+VALID_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD)
 
 
 def cmd_destroy_clients(args):
@@ -43,8 +47,9 @@ def cmd_destroy_clients(args):
 
     console.print(f"[dim]Found {len(clients)} client VM(s) to destroy.[/dim]")
     for c in clients:
+        role = c.get("role", ROLE_UPLOAD)
         console.print(
-            f"  [dim]#{c['client_index']}: {c.get('ip', 'N/A')} "
+            f"  [dim]{role} #{c['client_index']}: {c.get('ip', 'N/A')} "
             f"({c['region']}, {c['vm_size']})[/dim]"
         )
     console.print()
@@ -64,16 +69,18 @@ def cmd_destroy_clients(args):
 
     configs = []
     for spec in clients:
+        role = spec.get("role", ROLE_UPLOAD)
         workspace_dir = (
             workspace_base
-            / f"do-client-{args.name}-{spec['region']}-{spec['client_index']}"
+            / f"do-client-{args.name}-{role}-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
-            f"{CLIENT_STATE_KEY_PREFIX}-{args.name}"
+            f"{CLIENT_STATE_KEY_PREFIX}-{args.name}-{role}"
             f"-{spec['region']}-{spec['client_index']}.tfstate"
         )
         variables = {
             "name": args.name,
+            "role": role,
             "region": spec["region"],
             "client_index": str(spec["client_index"]),
             "droplet_size": spec.get("vm_size", "s-2vcpu-4gb"),
@@ -129,6 +136,20 @@ def cmd_destroy_clients(args):
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to delete client state: {e}[/yellow]")
 
+    # Wipe the per-testnet addresses S3 folder so a future testnet with the
+    # same name doesn't see stale uploader addresses.
+    try:
+        deleted = delete_client_addresses_prefix(args.name)
+        if deleted:
+            console.print(
+                f"[dim]Deleted {deleted} address file(s) from "
+                f"s3://.../saorsa-deploy/addresses/{args.name}/[/dim]"
+            )
+    except Exception as e:
+        console.print(
+            f"[yellow]Warning: Failed to delete addresses prefix: {e}[/yellow]"
+        )
+
     console.print()
     console.print(
         f"[bold green]All {len(clients)} client VM(s) destroyed successfully.[/bold green]"
@@ -148,14 +169,17 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
 
     recovered: list[dict] = []
     for key in keys:
-        # Key shape: saorsa-deploy/do-client-{name}-{region}-{client_index}.tfstate
+        # Key shape: saorsa-deploy/do-client-{name}-{role}-{region}-{client_index}.tfstate
         suffix = key[len(prefix) : -len(".tfstate")]
-        region, _, index_str = suffix.rpartition("-")
-        if not region or not index_str.isdigit():
+        parts = suffix.split("-")
+        if len(parts) < 3 or not parts[-1].isdigit() or parts[0] not in VALID_ROLES:
             console.print(
                 f"[yellow]Skipping unparseable tfstate key: {key}[/yellow]"
             )
             continue
+        role = parts[0]
+        client_index = int(parts[-1])
+        region = "-".join(parts[1:-1])
 
         vm_size = "s-2vcpu-4gb"
         try:
@@ -170,18 +194,19 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
             # failed create) — nothing to destroy; skip.
             continue
 
-        recovered.append(
-            {
-                "region": region,
-                "client_index": int(index_str),
-                "file_size_mb": 0,
-                "store_concurrency": 0,
-                "vm_size": vm_size,
-                "ip": "",
-            }
-        )
+        entry = {
+            "role": role,
+            "region": region,
+            "client_index": client_index,
+            "vm_size": vm_size,
+            "ip": "",
+        }
+        if role == ROLE_UPLOAD:
+            entry["file_size_mb"] = 0
+            entry["store_concurrency"] = 0
+        recovered.append(entry)
 
-    recovered.sort(key=lambda c: (c["region"], c["client_index"]))
+    recovered.sort(key=lambda c: (c["role"], c["region"], c["client_index"]))
     console.print(
         f"[dim]Recovered {len(recovered)} client(s) from tfstate.[/dim]"
     )

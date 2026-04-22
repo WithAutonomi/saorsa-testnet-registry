@@ -107,15 +107,35 @@ Boolean yes/no. If yes, ask for a **percentage** (1–100) of node VMs that shou
 
 Ask first: "Do you want clients at all?" If no, skip the rest of this section and omit `infra-clients`, `provision-clients`, and `start-clients` from the runbook.
 
-If yes, ask for the client count, then for each client collect:
+If yes: clients are split by role. Each client VM is **either** an **uploader** (produces test files and publishes addresses) **or** a **downloader** (consumes those addresses and verifies retrieval). They run on separate VMs now. Collect **at least one uploader and at least one downloader** — downloaders do nothing without uploaders producing addresses.
 
+Ask how many of each, then for each:
+
+**Uploaders** — collect:
 - **Region** — a DigitalOcean region slug (`lon1`, `nyc1`, `ams3`, `sfo3`, `sgp1`, `blr1`, `fra1`, `tor1`).
-- **File size** — in MB, integer. This is the upload/download test size.
-- **Store concurrency** — integer, default **8** (ant's own default). This becomes the `--store-concurrency` value the uploader passes to `ant file upload`. Accept the default unless the user explicitly wants to override; higher values upload more chunks in parallel.
+- **File size** — in MB, integer. This is the upload size.
+- **VM size** — defaults to `s-2vcpu-4gb`.
+- **Store concurrency** — integer, default **8** (ant's own default). This becomes the `--store-concurrency` value the uploader passes to `ant file upload`. Accept the default unless the user explicitly wants to override.
 
-Clients always run on DO (saorsa-deploy doesn't support other providers for clients). Each client is passed as a separate `--client` flag to `infra-clients`. The spec format is positional: `region:file_size_mb[:vm_size[:store_concurrency]]`. To override `store_concurrency` you must also state `vm_size` explicitly (the default is `s-2vcpu-4gb`) — positional slots can't be skipped.
+Emit each uploader as a separate `--uploader` flag to `infra-clients`. Spec format (positional): `region:file_size_mb[:vm_size[:store_concurrency]]`. To override `store_concurrency` you must also state `vm_size`.
 
-If clients are enabled, the runbook must preflight-check `ANT_DEPLOY_SECRET_KEY` is set in the environment (see template below) — fail fast if it isn't.
+**Downloaders** — collect:
+- **Region** — same slug list.
+- **VM size** — defaults to `s-2vcpu-4gb`.
+
+Emit each downloader as a separate `--downloader` flag. Spec format: `region[:vm_size]`. Downloaders have no file-size / store-concurrency slots — address selection is random and lives on S3.
+
+Clients always run on DO (saorsa-deploy doesn't support other providers for clients).
+
+If clients are enabled, the runbook must preflight-check **three** environment variables — fail fast if any is missing:
+
+1. `ANT_DEPLOY_SECRET_KEY` — the EVM wallet key for uploads.
+2. `ANT_CLIENT_AWS_ACCESS_KEY_ID` — from the `aws-client-s3` Terraform module.
+3. `ANT_CLIENT_AWS_SECRET_ACCESS_KEY` — same source.
+
+The AWS creds are consumed by `provision-clients`, which injects them into each client VM's `/etc/ant-client.env` so uploaders can push to and downloaders can pull from `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`. See `deploy/README.md` "Client VMs" for the one-time `terraform apply` needed to create the IAM user.
+
+Note: `destroy-clients` now wipes the per-testnet addresses prefix automatically — no extra step is needed in the destroy runbook.
 
 ### 7. Elasticsearch
 
@@ -230,7 +250,7 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 #   Testnet:     {{YES_OR_NO}}
 #   Upgrade chan: {{UPGRADE_CHANNEL_OR_NONE}}
 #   NAT sim:     {{NAT_YES_NO_WITH_PERCENT}}
-#   Clients:     {{CLIENT_COUNT_OR_NONE}}
+#   Clients:     {{UPLOADER_COUNT_OR_NONE}} uploader(s), {{DOWNLOADER_COUNT_OR_NONE}} downloader(s)
 #   Elastic:     {{YES_OR_NO}}{{#if elastic}}
 #                  droplet={{ES_DROPLET_SIZE}} volume={{ES_VOLUME_SIZE}}GB shards={{ES_SHARDS}}
 #                  retention={{ES_RETENTION_DAYS}}d drop_levels={{ES_DROP_LEVELS}} buffer={{ES_BUFFER_LIMIT}}{{/if}}
@@ -251,6 +271,11 @@ cd "$(dirname "$0")/.."
 {{#if clients}}
 if [[ -z "${ANT_DEPLOY_SECRET_KEY:-}" ]]; then
   echo "ERROR: ANT_DEPLOY_SECRET_KEY must be set in the environment for provision-clients" >&2
+  exit 1
+fi
+if [[ -z "${ANT_CLIENT_AWS_ACCESS_KEY_ID:-}" || -z "${ANT_CLIENT_AWS_SECRET_ACCESS_KEY:-}" ]]; then
+  echo "ERROR: ANT_CLIENT_AWS_ACCESS_KEY_ID and ANT_CLIENT_AWS_SECRET_ACCESS_KEY must be set for provision-clients" >&2
+  echo "Generate these once via: terraform -chdir=deploy/saorsa_deploy/resources/aws-client-s3 apply" >&2
   exit 1
 fi
 {{/if}}
@@ -296,7 +321,8 @@ uv run saorsa-deploy monitoring-infra --name "$NAME"
 {{#if clients}}
 uv run saorsa-deploy infra-clients \
   --name "$NAME" \
-  {{#each client}}--client '{{region}}:{{file_size_mb}}{{#if store_concurrency_overridden}}:s-2vcpu-4gb:{{store_concurrency}}{{/if}}' \
+  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if store_concurrency_overridden}}:{{vm_size}}:{{store_concurrency}}{{else}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}{{/if}}' \
+  {{/each}}{{#each downloader}}--downloader '{{region}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
   {{/each}}
 {{/if}}
 
@@ -431,6 +457,8 @@ Do **not** emit `stop-clients` in the destroy script. The VMs are about to be to
 - **Don't mix `--node-version` and `--branch-name` on the same command.** They're mutually exclusive flags in saorsa-deploy.
 - **Don't emit `provision-telegraf-logs` without elastic** (nor `provision-telegraf-metrics` without monitoring). Those commands auto-load credentials from state files that only exist if the corresponding stack was provisioned.
 - **Do pass `--monitoring-name "$NAME"` to `provision-clients` when monitoring is enabled.** Without it, client upload/download metrics never reach the testnet's InfluxDB, which defeats the point of running both stacks.
+- **Always emit at least one `--uploader` AND one `--downloader` when clients are enabled.** Downloaders fetch addresses from S3 that uploaders publish — downloaders on their own have nothing to pull, and uploaders with no downloaders are pointless. Refuse to generate a clients section unless the user has confirmed both.
+- **Never emit the old `--client` flag.** It was removed. Only `--uploader` / `--downloader` are valid on `infra-clients`.
 - **Don't parameterize the timestamp.** It's baked into the filename at generation and the header comment for traceability; runtime regeneration defeats the point.
 - **Don't add retry loops or sleeps.** If a command fails, the user wants to see it and decide what to do — `set -e` is the contract.
 - **Don't skip the large-testnet ES warning.** For any testnet with ≥ 500 nodes, emit the reminder in section 7a verbatim *before* collecting ES sizing answers — don't let the user slide into the default 100 GB / 4-shard / 4-vCPU sizing without seeing the sizing table. The defaults are designed for small runs; a 1000-node testnet will silently lose logs on them.

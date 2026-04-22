@@ -215,6 +215,36 @@ touches the source's bootstrap VMs.
 any extension references them — `unextend` each dependent first.
 `--force` does not override this check.
 
+### Client VMs (uploaders / downloaders)
+
+Client VMs run the ant binary as long-running upload-or-download workers against a testnet. Each VM runs *either* an uploader *or* a downloader — not both — and the downloader VMs pull addresses produced by uploaders through a per-testnet S3 folder.
+
+Commands:
+
+- `infra-clients --name <testnet> --uploader region:file_size_mb[:vm_size[:store_concurrency]] [--uploader ...] --downloader region[:vm_size] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required.
+- `provision-clients` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM).
+- `start-clients` / `stop-clients` — start or stop the appropriate service per-VM based on role.
+- `destroy-clients` — tear down VMs and wipe the per-testnet addresses folder at `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`.
+- `clean-clients` — remove services + artefacts without destroying the VMs; idempotent and role-tolerant.
+
+Uploader flow (`uploader.sh`): uploads a random file via `ant`, appends the returned address to a local tail buffer capped at `ADDRESSES_TAIL_SIZE` (default 10k), and flushes the buffer to `upload-<region>-<client_index>.txt` under the testnet's addresses prefix every `S3_FLUSH_EVERY_N` addresses or `S3_FLUSH_INTERVAL_SECS` seconds, whichever comes first.
+
+Downloader flow (`downloader.sh`): lists the testnet's addresses prefix, picks a random uploader file, pulls it, shuffles one address, and runs `ant file download` against it.
+
+#### AWS Client S3 Setup
+
+Client VMs need scoped AWS credentials for the shared addresses folder. The IAM user + policy + access key are managed by a small Terraform module:
+
+```bash
+cd deploy/saorsa_deploy/resources/aws-client-s3
+terraform init
+terraform apply
+terraform output -raw access_key_id            # -> ANT_CLIENT_AWS_ACCESS_KEY_ID
+terraform output -raw secret_access_key        # -> ANT_CLIENT_AWS_SECRET_ACCESS_KEY
+```
+
+Copy both into your `.env`. The user has `s3:ListBucket` on `maidsafe-org-infra-tfstate` (scoped to the `saorsa-deploy/addresses/*` prefix) plus `GetObject`/`PutObject`/`DeleteObject` on objects under that prefix — nothing else.
+
 ### `build-ant-node-binary` command
 
 Build ant-node from a Git branch on an ephemeral DO droplet and upload the binary to S3.

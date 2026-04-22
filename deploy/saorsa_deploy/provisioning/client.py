@@ -72,11 +72,15 @@ WantedBy=multi-user.target
 
 
 def _build_downloader_unit() -> str:
-    """Build the systemd unit file for the ant-downloader service."""
+    """Build the systemd unit file for the ant-downloader service.
+
+    Downloaders run on dedicated VMs now, so there's no local ant-uploader to
+    wait for — addresses are fetched from S3.
+    """
     return f"""\
 [Unit]
 Description=Ant Client Downloader
-After=network-online.target ant-uploader.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -105,10 +109,15 @@ class AntClientProvisioner:
         self,
         clients: list[dict],
         bootstrap_peers: list[str],
+        aws_access_key_id: str,
+        aws_secret_access_key: str,
+        addresses_s3_bucket: str,
+        addresses_s3_prefix: str,
         ssh_key_path: str = "~/.ssh/id_rsa",
         console: Console | None = None,
         binary_url: str | None = None,
         binary_is_archive: bool = False,
+        aws_region: str = "eu-west-2",
         influx_url: str = "",
         influx_token: str = "",
         influx_org: str = "ant",
@@ -117,6 +126,11 @@ class AntClientProvisioner:
     ):
         self.clients = clients
         self.bootstrap_peers = bootstrap_peers
+        self.aws_access_key_id = aws_access_key_id
+        self.aws_secret_access_key = aws_secret_access_key
+        self.aws_region = aws_region
+        self.addresses_s3_bucket = addresses_s3_bucket
+        self.addresses_s3_prefix = addresses_s3_prefix
         self.ssh_key_path = ssh_key_path
         self.console = console or Console()
         self.binary_url = binary_url
@@ -234,25 +248,49 @@ class AntClientProvisioner:
                 ],
             )
 
-            # Write per-host environment files
-            # Since Pyinfra runs the same ops on all hosts, we write per-host
-            # env files using a shell command that reads the hostname to determine
-            # the per-client values. We prepare a mapping script.
-            ip_to_env = {
-                c["ip"]: {
-                    "file_size_kb": c["file_size_mb"] * 1024,
-                    "store_concurrency": c.get("store_concurrency", 8),
-                }
-                for c in self.clients
-                if c.get("ip")
-            }
+            # Install awscli — uploaders flush to S3 and downloaders fetch from S3
+            add_op(
+                state,
+                server.shell,
+                name="Install awscli",
+                commands=[
+                    "DEBIAN_FRONTEND=noninteractive apt-get update -qq",
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq awscli",
+                ],
+            )
 
-            # Build a case statement that maps IP to per-client values
+            # Build a case statement that maps IP to role-specific values.
+            # Emits ROLE / FILE_SIZE_KB / STORE_CONCURRENCY / REGION / CLIENT_INDEX.
+            ip_to_env = {}
+            for c in self.clients:
+                if not c.get("ip"):
+                    continue
+                role = c.get("role", "upload")
+                if role == "upload":
+                    ip_to_env[c["ip"]] = {
+                        "role": "upload",
+                        "file_size_kb": c["file_size_mb"] * 1024,
+                        "store_concurrency": c.get("store_concurrency", 8),
+                        "region": c["region"],
+                        "client_index": c["client_index"],
+                    }
+                else:
+                    ip_to_env[c["ip"]] = {
+                        "role": "download",
+                        "file_size_kb": 0,
+                        "store_concurrency": 0,
+                        "region": c["region"],
+                        "client_index": c["client_index"],
+                    }
+
             case_entries = []
             for ip, env in ip_to_env.items():
                 case_entries.append(
-                    f'    "{ip}") FILE_SIZE_KB={env["file_size_kb"]}; '
-                    f'STORE_CONCURRENCY={env["store_concurrency"]} ;;'
+                    f'    "{ip}") ROLE={env["role"]}; '
+                    f'FILE_SIZE_KB={env["file_size_kb"]}; '
+                    f'STORE_CONCURRENCY={env["store_concurrency"]}; '
+                    f'REGION={env["region"]}; '
+                    f'CLIENT_INDEX={env["client_index"]} ;;'
                 )
             case_block = "\n".join(case_entries)
 
@@ -264,10 +302,13 @@ class AntClientProvisioner:
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) FILE_SIZE_KB=51200; STORE_CONCURRENCY=8 ;;
+    *) ROLE=upload; FILE_SIZE_KB=51200; STORE_CONCURRENCY=8; REGION=unknown; CLIENT_INDEX=0 ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
+ROLE=$ROLE
+REGION=$REGION
+CLIENT_INDEX=$CLIENT_INDEX
 BOOTSTRAP_ARGS="{bootstrap_args}"
 FILE_SIZE_KB=$FILE_SIZE_KB
 STORE_CONCURRENCY=$STORE_CONCURRENCY
@@ -275,7 +316,15 @@ SECRET_KEY={secret_key}
 ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt
 UPLOAD_DIR={CLIENT_DATA_DIR}/uploads
-DOWNLOAD_DIR={CLIENT_DATA_DIR}/downloads"""
+DOWNLOAD_DIR={CLIENT_DATA_DIR}/downloads
+AWS_ACCESS_KEY_ID={self.aws_access_key_id}
+AWS_SECRET_ACCESS_KEY={self.aws_secret_access_key}
+AWS_DEFAULT_REGION={self.aws_region}
+ADDRESSES_S3_BUCKET={self.addresses_s3_bucket}
+ADDRESSES_S3_PREFIX={self.addresses_s3_prefix}
+ADDRESSES_TAIL_SIZE=10000
+S3_FLUSH_INTERVAL_SECS=30
+S3_FLUSH_EVERY_N=50"""
 
             if self.influx_url and self.influx_token:
                 env_script += f"""
@@ -294,21 +343,39 @@ ENV_EOF"""
                 commands=[env_script],
             )
 
-            # Write systemd unit files
+            # Write only the systemd unit matching each host's role. The old
+            # unit (if any) is removed so stale services don't linger when a VM
+            # flips role during reprovisioning.
             uploader_unit = _build_uploader_unit()
             downloader_unit = _build_downloader_unit()
+
+            unit_case_entries = []
+            for ip, env in ip_to_env.items():
+                unit_case_entries.append(f'    "{ip}") ROLE={env["role"]} ;;')
+            unit_case_block = "\n".join(unit_case_entries)
+
+            systemd_script = f"""\
+MY_IP=$(hostname -I | awk '{{print $1}}')
+case "$MY_IP" in
+{unit_case_block}
+    *) ROLE=upload ;;
+esac
+if [ "$ROLE" = "upload" ]; then
+    cat > /etc/systemd/system/ant-uploader.service << 'UNIT_EOF'
+{uploader_unit}UNIT_EOF
+    rm -f /etc/systemd/system/ant-downloader.service
+else
+    cat > /etc/systemd/system/ant-downloader.service << 'UNIT_EOF'
+{downloader_unit}UNIT_EOF
+    rm -f /etc/systemd/system/ant-uploader.service
+fi
+systemctl daemon-reload"""
 
             add_op(
                 state,
                 server.shell,
-                name="Write systemd unit files",
-                commands=[
-                    f"cat > /etc/systemd/system/ant-uploader.service << 'UNIT_EOF'\n"
-                    f"{uploader_unit}UNIT_EOF",
-                    f"cat > /etc/systemd/system/ant-downloader.service << 'UNIT_EOF'\n"
-                    f"{downloader_unit}UNIT_EOF",
-                    "systemctl daemon-reload",
-                ],
+                name="Write systemd unit files (role-aware)",
+                commands=[systemd_script],
             )
 
             run_ops(state)

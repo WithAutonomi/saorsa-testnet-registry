@@ -12,10 +12,15 @@ from saorsa_deploy.binary_source import (
     get_ant_custom_build_url,
     get_ant_release_url,
 )
-from saorsa_deploy.cmd.infra_clients import parse_client_spec
+from saorsa_deploy.cmd.infra_clients import (
+    parse_downloader_spec,
+    parse_uploader_spec,
+)
 from saorsa_deploy.state import (
     S3_BUCKET,
+    S3_CLIENT_ADDRESSES_PREFIX,
     S3_CLIENT_KEY_PREFIX,
+    delete_client_addresses_prefix,
     delete_client_state,
     load_client_state,
     save_client_state,
@@ -25,10 +30,11 @@ from saorsa_deploy.state import (
 # --- Client spec parsing ---
 
 
-class TestParseClientSpec:
+class TestParseUploaderSpec:
     def test_region_and_file_size(self):
-        result = parse_client_spec("lon1:50")
+        result = parse_uploader_spec("lon1:50")
         assert result == {
+            "role": "upload",
             "region": "lon1",
             "file_size_mb": 50,
             "vm_size": "s-2vcpu-4gb",
@@ -36,8 +42,9 @@ class TestParseClientSpec:
         }
 
     def test_region_file_size_and_vm_size(self):
-        result = parse_client_spec("nyc1:100:s-4vcpu-8gb")
+        result = parse_uploader_spec("nyc1:100:s-4vcpu-8gb")
         assert result == {
+            "role": "upload",
             "region": "nyc1",
             "file_size_mb": 100,
             "vm_size": "s-4vcpu-8gb",
@@ -45,8 +52,9 @@ class TestParseClientSpec:
         }
 
     def test_region_file_size_vm_size_and_store_concurrency(self):
-        result = parse_client_spec("nyc1:100:s-4vcpu-8gb:16")
+        result = parse_uploader_spec("nyc1:100:s-4vcpu-8gb:16")
         assert result == {
+            "role": "upload",
             "region": "nyc1",
             "file_size_mb": 100,
             "vm_size": "s-4vcpu-8gb",
@@ -54,28 +62,54 @@ class TestParseClientSpec:
         }
 
     def test_default_store_concurrency(self):
-        result = parse_client_spec("lon1:50:s-2vcpu-4gb")
+        result = parse_uploader_spec("lon1:50:s-2vcpu-4gb")
         assert result["store_concurrency"] == 8
 
     def test_invalid_too_few_parts(self):
-        with pytest.raises(ValueError, match="Invalid client spec"):
-            parse_client_spec("lon1")
+        with pytest.raises(ValueError, match="Invalid uploader spec"):
+            parse_uploader_spec("lon1")
 
     def test_invalid_too_many_parts(self):
-        with pytest.raises(ValueError, match="Invalid client spec"):
-            parse_client_spec("lon1:50:s-2vcpu-4gb:16:extra")
+        with pytest.raises(ValueError, match="Invalid uploader spec"):
+            parse_uploader_spec("lon1:50:s-2vcpu-4gb:16:extra")
 
     def test_invalid_file_size(self):
         with pytest.raises(ValueError, match="Invalid file size"):
-            parse_client_spec("lon1:abc")
+            parse_uploader_spec("lon1:abc")
 
     def test_invalid_store_concurrency(self):
         with pytest.raises(ValueError, match="Invalid store concurrency"):
-            parse_client_spec("lon1:50:s-2vcpu-4gb:not-a-number")
+            parse_uploader_spec("lon1:50:s-2vcpu-4gb:not-a-number")
 
     def test_zero_file_size(self):
-        result = parse_client_spec("lon1:0")
+        result = parse_uploader_spec("lon1:0")
         assert result["file_size_mb"] == 0
+
+
+class TestParseDownloaderSpec:
+    def test_region_only(self):
+        result = parse_downloader_spec("lon1")
+        assert result == {
+            "role": "download",
+            "region": "lon1",
+            "vm_size": "s-2vcpu-4gb",
+        }
+
+    def test_region_and_vm_size(self):
+        result = parse_downloader_spec("nyc1:s-4vcpu-8gb")
+        assert result == {
+            "role": "download",
+            "region": "nyc1",
+            "vm_size": "s-4vcpu-8gb",
+        }
+
+    def test_invalid_empty_region(self):
+        with pytest.raises(ValueError, match="region cannot be empty"):
+            parse_downloader_spec("")
+
+    def test_invalid_too_many_parts(self):
+        with pytest.raises(ValueError, match="Invalid downloader spec"):
+            parse_downloader_spec("lon1:s-2vcpu-4gb:extra")
 
 
 # --- Client state management ---
@@ -175,6 +209,81 @@ class TestDeleteClientState:
             Bucket=S3_BUCKET,
             Key=f"{S3_CLIENT_KEY_PREFIX}/DEV-01.json",
         )
+
+
+class TestClientStateRoundTripsRole:
+    def test_role_survives_save_and_load(self, mock_s3):
+        clients = [
+            {
+                "role": "upload",
+                "region": "lon1",
+                "file_size_mb": 50,
+                "store_concurrency": 8,
+                "vm_size": "s-2vcpu-4gb",
+                "client_index": 1,
+                "ip": "10.0.0.1",
+            },
+            {
+                "role": "download",
+                "region": "lon1",
+                "vm_size": "s-2vcpu-4gb",
+                "client_index": 1,
+                "ip": "10.0.0.2",
+            },
+        ]
+        save_client_state("DEV-01", clients)
+
+        # Whatever save_client_state put in S3 should round-trip via load
+        body = mock_s3.put_object.call_args.kwargs["Body"]
+        mock_body = MagicMock()
+        mock_body.read.return_value = body.encode() if isinstance(body, str) else body
+        mock_s3.get_object.return_value = {"Body": mock_body}
+
+        result = load_client_state("DEV-01")
+        roles = [c["role"] for c in result["clients"]]
+        assert roles == ["upload", "download"]
+
+
+class TestDeleteClientAddressesPrefix:
+    def test_paginates_and_batch_deletes(self, mock_s3):
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {
+                "Contents": [
+                    {"Key": f"{S3_CLIENT_ADDRESSES_PREFIX}/DEV-01/upload-lon1-1.txt"},
+                    {"Key": f"{S3_CLIENT_ADDRESSES_PREFIX}/DEV-01/upload-nyc1-1.txt"},
+                ],
+            },
+            {
+                "Contents": [
+                    {"Key": f"{S3_CLIENT_ADDRESSES_PREFIX}/DEV-01/upload-ams3-1.txt"},
+                ],
+            },
+        ]
+        mock_s3.get_paginator.return_value = paginator
+
+        deleted = delete_client_addresses_prefix("DEV-01")
+
+        assert deleted == 3
+        paginator.paginate.assert_called_once_with(
+            Bucket=S3_BUCKET,
+            Prefix=f"{S3_CLIENT_ADDRESSES_PREFIX}/DEV-01/",
+        )
+        # Two batch deletes (one per non-empty page)
+        assert mock_s3.delete_objects.call_count == 2
+        first_call = mock_s3.delete_objects.call_args_list[0].kwargs
+        assert first_call["Bucket"] == S3_BUCKET
+        assert len(first_call["Delete"]["Objects"]) == 2
+
+    def test_empty_prefix_returns_zero(self, mock_s3):
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"Contents": []}]
+        mock_s3.get_paginator.return_value = paginator
+
+        deleted = delete_client_addresses_prefix("DEV-EMPTY")
+
+        assert deleted == 0
+        mock_s3.delete_objects.assert_not_called()
 
 
 # --- Ant binary source ---

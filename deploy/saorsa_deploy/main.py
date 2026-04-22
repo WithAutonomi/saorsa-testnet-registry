@@ -638,14 +638,24 @@ def main():
         help="Deployment name (used as prefix in VM names)",
     )
     infra_clients_parser.add_argument(
-        "--client",
+        "--uploader",
         type=str,
         action="append",
-        help="Client VM spec: 'region:file_size_mb[:vm_size[:store_concurrency]]'. "
-        "Repeat for multiple clients. Defaults: vm_size=s-2vcpu-4gb, "
+        default=[],
+        help="Uploader VM spec: 'region:file_size_mb[:vm_size[:store_concurrency]]'. "
+        "Repeat for multiple uploaders. Defaults: vm_size=s-2vcpu-4gb, "
         "store_concurrency=8. To set store_concurrency you must also state "
-        "vm_size. Example: --client 'lon1:50' --client "
+        "vm_size. Example: --uploader 'lon1:50' --uploader "
         "'nyc1:100:s-4vcpu-8gb:16'",
+    )
+    infra_clients_parser.add_argument(
+        "--downloader",
+        type=str,
+        action="append",
+        default=[],
+        help="Downloader VM spec: 'region[:vm_size]'. Repeat for multiple "
+        "downloaders. Default vm_size=s-2vcpu-4gb. Example: "
+        "--downloader 'lon1' --downloader 'nyc1:s-4vcpu-8gb'",
     )
     infra_clients_parser.add_argument(
         "--force",

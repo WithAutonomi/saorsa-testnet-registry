@@ -195,6 +195,11 @@ if [[ -z "${ANT_DEPLOY_SECRET_KEY:-}" ]]; then
   echo "ERROR: ANT_DEPLOY_SECRET_KEY must be set in the environment for provision-clients" >&2
   exit 1
 fi
+if [[ -z "${ANT_CLIENT_AWS_ACCESS_KEY_ID:-}" || -z "${ANT_CLIENT_AWS_SECRET_ACCESS_KEY:-}" ]]; then
+  echo "ERROR: ANT_CLIENT_AWS_ACCESS_KEY_ID and ANT_CLIENT_AWS_SECRET_ACCESS_KEY must be set for provision-clients" >&2
+  echo "Generate these once via: terraform -chdir=deploy/saorsa_deploy/resources/aws-client-s3 apply" >&2
+  exit 1
+fi
 {{/if}}
 
 # --- Phase 1: Extend state from source ---
@@ -237,7 +242,8 @@ uv run saorsa-deploy monitoring-infra --name "$NAME"
 {{#if clients}}
 uv run saorsa-deploy infra-clients \
   --name "$NAME" \
-  {{#each client}}--client '{{region}}:{{file_size_mb}}{{#if store_concurrency_overridden}}:s-2vcpu-4gb:{{store_concurrency}}{{/if}}' \
+  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if store_concurrency_overridden}}:{{vm_size}}:{{store_concurrency}}{{else}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}{{/if}}' \
+  {{/each}}{{#each downloader}}--downloader '{{region}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
   {{/each}}
 {{/if}}
 

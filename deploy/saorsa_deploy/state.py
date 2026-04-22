@@ -279,7 +279,8 @@ def save_client_state(name: str, clients: list[dict]) -> None:
     Args:
         name: Deployment name.
         clients: List of client specs, each a dict with keys:
-            region, file_size_mb, vm_size, ip, client_index.
+            role ('upload' or 'download'), region, vm_size, ip, client_index.
+            Uploader specs additionally carry file_size_mb and store_concurrency.
     """
     state = {
         "name": name,
@@ -333,6 +334,31 @@ def delete_client_state(name: str) -> None:
         Bucket=S3_BUCKET,
         Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
     )
+
+
+S3_CLIENT_ADDRESSES_PREFIX = "saorsa-deploy/addresses"
+
+
+def delete_client_addresses_prefix(name: str) -> int:
+    """Delete every object under the per-testnet client-addresses prefix.
+
+    Returns the number of objects deleted. Safe to call when the prefix is
+    empty — returns 0.
+    """
+    client = _get_s3_client()
+    prefix = f"{S3_CLIENT_ADDRESSES_PREFIX}/{name}/"
+    paginator = client.get_paginator("list_objects_v2")
+    deleted = 0
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if not objects:
+            continue
+        client.delete_objects(
+            Bucket=S3_BUCKET,
+            Delete={"Objects": objects},
+        )
+        deleted += len(objects)
+    return deleted
 
 
 def check_terraform_state_exists(state_key: str) -> bool:

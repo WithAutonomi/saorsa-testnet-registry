@@ -10,7 +10,8 @@ from saorsa_deploy.terraform import TerraformResult
 def _args(**overrides):
     defaults = {
         "name": "DEV-02",
-        "client": ["lon1:50", "nyc3:50"],
+        "uploader": ["lon1:50", "nyc3:50"],
+        "downloader": [],
         "force": False,
     }
     defaults.update(overrides)
@@ -117,7 +118,7 @@ class TestUpfrontStateSave:
 class TestNoClients:
     def test_rejects_empty_client_list(self, patches):
         with pytest.raises(SystemExit):
-            cmd_infra_clients(_args(client=None))
+            cmd_infra_clients(_args(uploader=[], downloader=[]))
 
         patches.execute.assert_not_called()
         patches.save.assert_not_called()

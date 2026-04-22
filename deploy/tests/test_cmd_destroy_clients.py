@@ -56,8 +56,8 @@ class TestFallbackWhenNoClientState:
     def test_scans_tfstate_when_client_state_missing(self, patches):
         patches.load_client.side_effect = RuntimeError("no client state")
         patches.list_keys.return_value = [
-            "saorsa-deploy/do-client-DEV-02-lon1-1.tfstate",
-            "saorsa-deploy/do-client-DEV-02-nyc3-3.tfstate",
+            "saorsa-deploy/do-client-DEV-02-upload-lon1-1.tfstate",
+            "saorsa-deploy/do-client-DEV-02-download-nyc3-3.tfstate",
         ]
         patches.load_tf.return_value = {
             "resources": [
@@ -90,14 +90,14 @@ class TestFallbackWhenNoClientState:
 
 
 class TestRecoverClientsFromTfstate:
-    def test_parses_region_and_index_from_key(self):
+    def test_parses_role_region_and_index_from_key(self):
         console = SimpleNamespace(print=lambda *a, **k: None)
         with (
             patch(
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
                 return_value=[
-                    "saorsa-deploy/do-client-DEV-02-lon1-1.tfstate",
-                    "saorsa-deploy/do-client-DEV-02-ams3-6.tfstate",
+                    "saorsa-deploy/do-client-DEV-02-upload-lon1-1.tfstate",
+                    "saorsa-deploy/do-client-DEV-02-download-ams3-6.tfstate",
                 ],
             ),
             patch(
@@ -115,16 +115,17 @@ class TestRecoverClientsFromTfstate:
         ):
             recovered = _recover_clients_from_tfstate("DEV-02", console)
 
+        # Sorted by (role, region, client_index): download < upload alphabetically
         assert recovered == [
             {
+                "role": "download",
                 "region": "ams3",
                 "client_index": 6,
-                "file_size_mb": 0,
-                "store_concurrency": 0,
                 "vm_size": "s-2vcpu-4gb",
                 "ip": "",
             },
             {
+                "role": "upload",
                 "region": "lon1",
                 "client_index": 1,
                 "file_size_mb": 0,
@@ -142,7 +143,7 @@ class TestRecoverClientsFromTfstate:
         with (
             patch(
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
-                return_value=["saorsa-deploy/do-client-DEV-02-sgp1-7.tfstate"],
+                return_value=["saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"],
             ),
             patch(
                 "saorsa_deploy.cmd.destroy_clients.load_terraform_state",
@@ -170,7 +171,7 @@ class TestRecoverClientsFromTfstate:
         with (
             patch(
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
-                return_value=["saorsa-deploy/do-client-DEV-02-sgp1-7.tfstate"],
+                return_value=["saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"],
             ),
             patch(
                 "saorsa_deploy.cmd.destroy_clients.load_terraform_state",

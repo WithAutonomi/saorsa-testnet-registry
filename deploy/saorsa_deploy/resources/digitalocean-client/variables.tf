@@ -11,6 +11,15 @@ variable "region" {
   type = string
 }
 
+variable "role" {
+  type        = string
+  description = "Client role: 'upload' or 'download'"
+  validation {
+    condition     = contains(["upload", "download"], var.role)
+    error_message = "role must be either 'upload' or 'download'."
+  }
+}
+
 variable "client_index" {
   type        = number
   description = "Index of this client VM (used in naming)"
