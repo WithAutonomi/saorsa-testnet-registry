@@ -169,6 +169,7 @@ These are non-negotiable; the generated script must respect them:
 - `start-nodes` before `provision-telegraf-*` (telegraf targets running nodes)
 - `provision-nodes` before `provision-telegraf-*` (telegraf targets node VMs)
 - `infra-clients` before `provision-clients` before `start-clients`
+- `generate-inventory` is always the **final** saorsa-deploy command in the deploy script — after every provision/start step (including clients/telegraf), before the closing `echo`. It writes `inventory.json` under `~/.autonomi/testnets/$NAME/` summarising the VMs and ports for downstream tooling; it must run after everything else so the snapshot reflects the final topology.
 - Destroy order: `destroy-clients` → `destroy-nodes` → `destroy-bootstraps` → `destroy-elastic` → `destroy-monitoring` (skip `stop-clients` — the VMs are about to die anyway)
 
 ### Flag rules
@@ -328,6 +329,11 @@ uv run saorsa-deploy start-clients \
   --name "$NAME" \
   --ssh-key-path "$SSH_KEY"
 {{/if}}
+
+# --- Phase 4: Inventory snapshot ---
+uv run saorsa-deploy generate-inventory \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
 
 echo ""
 echo "Testnet $NAME is up."

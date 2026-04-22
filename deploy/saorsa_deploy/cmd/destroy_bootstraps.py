@@ -10,6 +10,7 @@ from saorsa_deploy.bootstrap import (
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.state import (
     delete_deployment_state,
+    list_extensions_of,
     load_deployment_state,
     update_deployment_state,
 )
@@ -37,6 +38,29 @@ def cmd_destroy_bootstraps(args):
             f"[bold red]Error:[/bold red] Deployment '{args.name}' still has "
             f"{len(regions)} node region(s) in state. Run "
             f"`saorsa-deploy destroy-nodes --name {args.name}` first."
+        )
+        sys.exit(1)
+
+    try:
+        dependents = list_extensions_of(args.name)
+    except Exception as e:
+        console.print(
+            f"[bold red]Error:[/bold red] Failed to scan for extensions of "
+            f"'{args.name}': {e}"
+        )
+        sys.exit(1)
+    if dependents:
+        console.print(
+            f"[bold red]Error:[/bold red] Cannot destroy bootstraps of "
+            f"'{args.name}' — the following extension testnet(s) share "
+            "these bootstraps:"
+        )
+        for dep in dependents:
+            console.print(f"  [red]- {dep}[/red]")
+        console.print(
+            "\n[bold]Run `saorsa-deploy unextend --name <extension>` for "
+            "each before retrying.[/bold] --force does not override this "
+            "check."
         )
         sys.exit(1)
 

@@ -39,8 +39,12 @@ def patches():
         patch(
             "saorsa_deploy.cmd.destroy_bootstraps.purge_stale_bootstrap_state"
         ) as p_purge_stale,
+        patch(
+            "saorsa_deploy.cmd.destroy_bootstraps.list_extensions_of"
+        ) as p_list_exts,
     ):
         p_list_stale.return_value = []
+        p_list_exts.return_value = []
         yield SimpleNamespace(
             record_event=p_record_event,
             record_status=p_record_status,
@@ -50,6 +54,7 @@ def patches():
             destroy_boot=p_destroy_boot,
             list_stale=p_list_stale,
             purge_stale=p_purge_stale,
+            list_exts=p_list_exts,
         )
 
 
@@ -88,6 +93,40 @@ class TestRefusesWhenNodesPresent:
             cmd_destroy_bootstraps(_args())
 
         patches.destroy_boot.assert_not_called()
+
+
+class TestExtensionGuard:
+    def test_refuses_when_extensions_depend_on_these_bootstraps(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-01",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [],
+            "terraform_variables": {},
+        }
+        patches.list_exts.return_value = ["DEV-02", "DEV-03"]
+
+        with pytest.raises(SystemExit):
+            cmd_destroy_bootstraps(_args(name="DEV-01"))
+
+        patches.destroy_boot.assert_not_called()
+        patches.delete_state.assert_not_called()
+
+    def test_proceeds_when_no_extensions(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-01",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [],
+            "terraform_variables": {},
+        }
+        patches.list_exts.return_value = []
+
+        cmd_destroy_bootstraps(_args(name="DEV-01"))
+
+        patches.destroy_boot.assert_called_once()
 
 
 class TestMissingStateFallback:

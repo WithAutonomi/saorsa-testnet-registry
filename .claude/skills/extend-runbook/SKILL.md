@@ -1,0 +1,325 @@
+---
+name: extend-runbook
+description: Interview the user to gather the spec for an _extension_ testnet (one that reuses another testnet's bootstraps) and then generate a self-contained bash runbook that chains the correct saorsa-deploy commands to deploy (and unextend) it. Use this skill whenever the user asks to "plan an extension", "extend an existing testnet", "add a sibling testnet", "generate an extend script", "script a compatibility testnet", or otherwise wants the set of saorsa-deploy commands for a testnet that shares bootstraps with another — even if they don't say the word "runbook". Prefer this skill over hand-rolling the command sequence yourself; it correctly skips the infra-bootstraps / provision-genesis / provision-bootstraps stages and wires in `extend` / `unextend` at the right points.
+---
+
+# extend-runbook
+
+Generate an executable bash runbook that deploys an _extension_ testnet — a second testnet that peers with an existing testnet's bootstraps but has its own fresh node VMs, typically running a different `ant-node` binary for compatibility testing. Also emits a matching unextend runbook.
+
+## Why this skill exists
+
+An extension testnet is deployed with a subset of the full saorsa-deploy pipeline:
+
+- **Skipped entirely:** `infra-bootstraps`, `provision-genesis`, `provision-bootstraps` (the source testnet already has these running).
+- **Replaced by:** a single `saorsa-deploy extend --name <NEW> --source <EXISTING>` at the very start, which seeds the new testnet's state from the source's bootstraps.
+- **Everything else is the same as a normal deploy:** `infra-nodes`, `provision-nodes`, `start-nodes`, optional clients / elastic / monitoring, and `generate-inventory` at the end.
+
+Destroy is also different: no `destroy-bootstraps`, because the extension doesn't own any — instead, `unextend` removes only the extension's state record. The source's bootstraps are untouched.
+
+The sequencing is easy to get subtly wrong by hand, especially around "is `--testnet` still needed for provision-nodes" (yes), "is `provision-elastic` still needed" (yes, if you enabled elastic for the extension), and "do I need to build the ant-node binary" (yes, if the extension uses a branch — that's the whole point of running an extension in most cases).
+
+## Output contract
+
+Two files per run, both placed in `runbooks/`:
+
+- `runbooks/<NAME>-<YYYYMMDD-HHMMSS>-extend.sh`
+- `runbooks/<NAME>-<YYYYMMDD-HHMMSS>-unextend.sh`
+
+Where `<NAME>` is the **extension** testnet name (not the source). Timestamp is computed at generation time.
+
+Both files are executable (`chmod +x`). Both start with `set -euo pipefail`. No `|| true` anywhere.
+
+## The interview
+
+Ask questions in the order below. Batch tightly related sub-questions into a single turn. Echo understanding back after each answer. If the user gives a partial spec upfront ("extend DEV-01 into DEV-02 with 5 DO nodes on the chore-foo branch"), extract what you can and only ask about gaps.
+
+### 1. Source testnet name
+
+The **existing** testnet that already has bootstraps deployed. Required. Example: `DEV-01`.
+
+If the user can't remember the name, tell them `saorsa-deploy list-regions` won't help but they can check their own `~/.autonomi/testnets/` directory or the MCP `list_deployments` tool.
+
+### 2. Extension testnet name
+
+The **new** testnet being created. Required. Must be different from the source. Convention: `UPPERCASE-NN`, e.g. `DEV-02`. This is the `<NAME>` used for both output filenames.
+
+### 3. ant-node binary
+
+Same as deploy-runbook question 2, but only for `ant-node` — not for the `ant` client binary (that's only relevant if clients are enabled; ask then if needed).
+
+Ask:
+- **Version** (GitHub release, e.g. `0.2.0`), or
+- **Branch** (requires `build-ant-node-binary` step; collect `--branch-name`, `--repo-owner`, optional `--validation-string`).
+
+In practice an extension almost always uses a branch — the common case is testing a new binary against the source's stable one.
+
+### 4. Node count and provider distribution
+
+Same as deploy-runbook question 4:
+
+- Ask for **total** non-bootstrap node count.
+- Propose DO/Hetzner/Vultr distribution. Guidelines: Hetzner 2–4 max (or 0 for small totals), DO ~50–60%, Vultr fills the rest.
+- Translate to per-region × regions math: `--<provider>-vm-count` is per-region, default 3 regions per provider. If provider total doesn't divide cleanly by 3, pick the closest region count.
+- Confirm **VM sizes** per provider (defaults: DO `s-2vcpu-4gb`, Hetzner `cpx22`, Vultr `vc2-2c-4gb`; for 4/8 tier: DO `s-4vcpu-8gb`, Hetzner `cpx32`, Vultr `vc2-4c-8gb`).
+- If a provider total is 0, omit its `--*-vm-count` flag entirely.
+
+### 5. Testnet mode
+
+Boolean yes/no. If yes, pass `--testnet` to `provision-nodes` **only** for extensions — there is no `provision-genesis` / `provision-bootstraps` in this pipeline.
+
+### 5a. Upgrade channel
+
+Same choice as deploy-runbook: `beta`, `stable`, or none. If `beta` or `stable`, pass `--upgrade-channel {beta|stable}` to `provision-nodes` only. If none, omit.
+
+### 5b. Port-restricted NAT simulation
+
+Same as deploy-runbook: boolean + percent. If yes, `--nat-percent N` goes on `provision-nodes`.
+
+### 6. Clients for the extension
+
+Ask: "Do you want clients for the extension?" If no, skip.
+
+If yes: same per-client spec as deploy-runbook (region, file size, store concurrency; DO-only; `ANT_DEPLOY_SECRET_KEY` preflight). Clients are independent per extension — they don't share anything with the source's clients.
+
+If clients are enabled, you must also ask about the `ant` client binary (same version-or-branch choice as the node binary); emit a `build-ant-binary` step if the user picks a branch.
+
+### 7. Elasticsearch for the extension
+
+Boolean yes/no. If yes, the extension gets its own independent Elasticsearch VM (no sharing with the source). Emit `elastic-infra` / `provision-elastic` / `provision-telegraf-logs` / `destroy-elastic` as usual.
+
+In practice, extensions often reuse nothing beyond the bootstraps and it's common to leave elastic off. Confirm with the user.
+
+### 8. Monitoring for the extension
+
+Same as question 7 but for InfluxDB + Grafana.
+
+### 9. SSH key path
+
+Same as deploy-runbook question 9. Default `~/.ssh/id_rsa`; almost always override. Emit as top-level `SSH_KEY="..."` and pass `--ssh-key-path "$SSH_KEY"` to every provisioning command that accepts it. Infra/destroy commands (`infra-nodes`, `infra-clients`, `elastic-infra`, `monitoring-infra`, `destroy-*`) do not take `--ssh-key-path`. `extend` and `unextend` also do **not** take `--ssh-key-path` — they're pure S3 state operations.
+
+## Generation rules
+
+Once the interview is done:
+
+1. **Recap the plan** as a bullet list. Wait for "go" before generating files.
+2. **Compute timestamp once** (`date +%Y%m%d-%H%M%S`).
+3. **`mkdir -p runbooks`**.
+4. Write both files, `chmod +x` them.
+5. **Do not run the generated script.** Report the paths and say what's next.
+6. **If `runbooks/` isn't in `.gitignore`**, tell the user — don't edit `.gitignore` yourself.
+
+### Command-ordering invariants
+
+These are non-negotiable:
+
+- `extend` is the **first** saorsa-deploy command in the extend script.
+- `build-ant-node-binary` / `build-ant-binary` (if a branch) must come after `extend` but before any `provision-*` step that consumes them.
+- `infra-nodes` before `provision-nodes`.
+- `provision-elastic` before `provision-telegraf-logs`.
+- `provision-monitoring` before `provision-telegraf-metrics`.
+- `provision-nodes` before `start-nodes` (provision-nodes enables; start-nodes runs them).
+- `start-nodes` before `provision-telegraf-*`.
+- `provision-nodes` before `provision-telegraf-*`.
+- `infra-clients` before `provision-clients` before `start-clients`.
+- `generate-inventory` is the **final** saorsa-deploy command in the extend script.
+- Unextend order: `destroy-clients` → `destroy-nodes` → `destroy-elastic` → `destroy-monitoring` → `unextend`. **Do not emit `destroy-bootstraps`** — the extension doesn't own any. `unextend` is the last command.
+
+### Flag rules
+
+- `--testnet` goes on `provision-nodes` only (there is no genesis/bootstraps stage). Emit or omit uniformly.
+- `--upgrade-channel {beta|stable}` goes on `provision-nodes` only. Never emit with any other value. Client binaries do not take it.
+- Binary flags on each command are mutually exclusive per binary (`--node-version X` XOR `--branch-name Y --repo-owner Z`).
+- Always include `--name "$NAME"` on every command.
+- Use `--force` on `destroy-nodes`, `destroy-clients`, `destroy-elastic`, `destroy-monitoring`, and `unextend` (user already went through the interview).
+- Do NOT use `--force` on `extend` unless you are explicitly repointing an existing extension at a different source — that's outside this skill's scope; if the user asks for that, tell them to run `extend --force` by hand.
+- Do NOT use `--force` on `infra-*` commands (`infra-nodes`, `infra-clients`, `elastic-infra`, `monitoring-infra`) — same rule as deploy-runbook; `--force` there only wipes stale tfstate and leaves cloud orphans.
+
+## Extend runbook template
+
+```bash
+#!/usr/bin/env bash
+# Runbook: extend {{SOURCE}} → {{NAME}}
+# Generated: {{TIMESTAMP_HUMAN}}
+# Spec:
+#   Source:      {{SOURCE}}
+#   Extension:   {{NAME}}
+#   Nodes:       {{TOTAL_NODES}} total
+#                  DO      = {{DO_PER_REGION}} × {{DO_REGIONS}} region(s) = {{DO_TOTAL}}
+#                  Hetzner = {{HETZNER_PER_REGION}} × {{HETZNER_REGIONS}} region(s) = {{HETZNER_TOTAL}}
+#                  Vultr   = {{VULTR_PER_REGION}} × {{VULTR_REGIONS}} region(s) = {{VULTR_TOTAL}}
+#   Testnet:     {{YES_OR_NO}}
+#   Upgrade chan: {{UPGRADE_CHANNEL_OR_NONE}}
+#   NAT sim:     {{NAT_YES_NO_WITH_PERCENT}}
+#   Clients:     {{CLIENT_COUNT_OR_NONE}}
+#   Elastic:     {{YES_OR_NO}}
+#   Monitoring:  {{YES_OR_NO}}
+#   ant-node:    {{VERSION_OR_BRANCH_DESC}}
+#   ant:         {{VERSION_OR_BRANCH_DESC_OR_NA}}
+#   SSH key:     {{SSH_KEY_PATH}}
+
+set -euo pipefail
+
+NAME="{{NAME}}"
+SOURCE="{{SOURCE}}"
+SSH_KEY="{{SSH_KEY_PATH}}"
+
+cd "$(dirname "$0")/.."
+
+# --- Preflight ---
+{{#if clients}}
+if [[ -z "${ANT_DEPLOY_SECRET_KEY:-}" ]]; then
+  echo "ERROR: ANT_DEPLOY_SECRET_KEY must be set in the environment for provision-clients" >&2
+  exit 1
+fi
+{{/if}}
+
+# --- Phase 1: Extend state from source ---
+uv run saorsa-deploy extend --name "$NAME" --source "$SOURCE"
+
+# --- Phase 2: Build binaries (if branch) ---
+{{#if ant_node_from_branch}}
+uv run saorsa-deploy build-ant-node-binary \
+  --name "$NAME" \
+  --branch-name "{{ANT_NODE_BRANCH}}" \
+  --repo-owner "{{ANT_NODE_REPO_OWNER}}" \
+  --ssh-key-path "$SSH_KEY" \
+  {{#if ant_node_validation}}--validation-string "{{ANT_NODE_VALIDATION}}"{{/if}}
+{{/if}}
+{{#if ant_from_branch}}
+uv run saorsa-deploy build-ant-binary \
+  --name "$NAME" \
+  --branch-name "{{ANT_BRANCH}}" \
+  --repo-owner "{{ANT_REPO_OWNER}}" \
+  --ssh-key-path "$SSH_KEY" \
+  {{#if ant_validation}}--validation-string "{{ANT_VALIDATION}}"{{/if}}
+{{/if}}
+
+# --- Phase 3: Infrastructure (no bootstraps — reused from source) ---
+uv run saorsa-deploy infra-nodes \
+  --name "$NAME" \
+  {{#if do_used}}--do-vm-count {{DO_PER_REGION}} --do-regions {{DO_REGIONS}} --do-droplet-size "{{DO_SIZE}}"{{/if}} \
+  {{#if hetzner_used}}--hetzner-vm-count {{HETZNER_PER_REGION}} --hetzner-regions {{HETZNER_REGIONS}} --hetzner-server-type "{{HETZNER_SIZE}}"{{/if}} \
+  {{#if vultr_used}}--vultr-vm-count {{VULTR_PER_REGION}} --vultr-regions {{VULTR_REGIONS}} --vultr-plan "{{VULTR_SIZE}}"{{/if}}
+
+{{#if elastic}}
+uv run saorsa-deploy elastic-infra --name "$NAME"
+{{/if}}
+{{#if monitoring}}
+uv run saorsa-deploy monitoring-infra --name "$NAME"
+{{/if}}
+{{#if clients}}
+uv run saorsa-deploy infra-clients \
+  --name "$NAME" \
+  {{#each client}}--client '{{region}}:{{file_size_mb}}{{#if store_concurrency_overridden}}:s-2vcpu-4gb:{{store_concurrency}}{{/if}}' \
+  {{/each}}
+{{/if}}
+
+# --- Phase 4: Provisioning ---
+{{#if elastic}}
+uv run saorsa-deploy provision-elastic \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
+{{/if}}
+{{#if monitoring}}
+uv run saorsa-deploy provision-monitoring \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
+{{/if}}
+
+uv run saorsa-deploy provision-nodes \
+  --name "$NAME" \
+  {{BINARY_FLAGS_NODE}} \
+  {{#if testnet}}--testnet{{/if}} \
+  {{#if upgrade_channel}}--upgrade-channel {{UPGRADE_CHANNEL}}{{/if}} \
+  {{#if nat_enabled}}--nat-percent {{NAT_PERCENT}}{{/if}} \
+  --ssh-key-path "$SSH_KEY"
+
+uv run saorsa-deploy start-nodes \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
+
+{{#if elastic}}
+uv run saorsa-deploy provision-telegraf-logs \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
+{{/if}}
+{{#if monitoring}}
+uv run saorsa-deploy provision-telegraf-metrics \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
+{{/if}}
+
+{{#if clients}}
+uv run saorsa-deploy provision-clients \
+  --name "$NAME" \
+  {{BINARY_FLAGS_ANT}} \
+  {{#if monitoring}}--monitoring-name "$NAME"{{/if}} \
+  --ssh-key-path "$SSH_KEY"
+
+uv run saorsa-deploy start-clients \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
+{{/if}}
+
+# --- Phase 5: Inventory snapshot ---
+uv run saorsa-deploy generate-inventory \
+  --name "$NAME" \
+  --ssh-key-path "$SSH_KEY"
+
+echo ""
+echo "Extension $NAME (source=$SOURCE) is up."
+```
+
+`{{BINARY_FLAGS_NODE}}` expands to either `--node-version {{ANT_NODE_VERSION}}` or `--branch-name {{ANT_NODE_BRANCH}} --repo-owner {{ANT_NODE_REPO_OWNER}}`.
+
+`{{BINARY_FLAGS_ANT}}` expands to either `--ant-version {{ANT_VERSION}}` or `--branch-name {{ANT_BRANCH}} --repo-owner {{ANT_REPO_OWNER}}`.
+
+## Unextend runbook template
+
+```bash
+#!/usr/bin/env bash
+# Runbook: unextend {{NAME}}
+# Generated: {{TIMESTAMP_HUMAN}}
+# Source testnet ({{SOURCE}}) is NOT touched — its bootstraps stay up.
+
+set -euo pipefail
+
+NAME="{{NAME}}"
+
+cd "$(dirname "$0")/.."
+
+{{#if clients}}
+uv run saorsa-deploy destroy-clients --name "$NAME" --force
+{{/if}}
+
+uv run saorsa-deploy destroy-nodes --name "$NAME" --force
+
+{{#if elastic}}
+uv run saorsa-deploy destroy-elastic --name "$NAME" --force
+{{/if}}
+{{#if monitoring}}
+uv run saorsa-deploy destroy-monitoring --name "$NAME" --force
+{{/if}}
+
+uv run saorsa-deploy unextend --name "$NAME" --force
+
+echo ""
+echo "Extension $NAME has been removed. Source testnet bootstraps are untouched."
+```
+
+Do **not** emit `stop-clients` in the unextend script (same reason as deploy-runbook's destroy script). Do **not** emit `destroy-bootstraps` — extensions don't own bootstraps.
+
+## Common pitfalls
+
+- **Don't emit `infra-bootstraps`, `provision-genesis`, or `provision-bootstraps` for an extension.** The source already has those; running them for the extension would create orphaned bootstrap VMs and confuse state.
+- **Don't emit `destroy-bootstraps` in the unextend script.** There are no bootstraps to destroy for an extension.
+- **`extend` must be the first saorsa-deploy command.** All subsequent commands rely on the state file it creates.
+- **`build-ant-*-binary` still goes _after_ `extend` but _before_ the first `provision-*` that uses the branch.** Same timing rule as deploy-runbook — builds are independent of bootstrap/genesis stages.
+- **`--do-vm-count` (and Hetzner/Vultr equivalents) are still per-region, not total.** Same as deploy-runbook; confirm the math with the user before generating.
+- **Don't emit a provider's `--*-vm-count` flag if its total is 0.**
+- **Don't emit `provision-telegraf-logs` without elastic** (nor `provision-telegraf-metrics` without monitoring). Same as deploy-runbook.
+- **Pass `--monitoring-name "$NAME"` to `provision-clients` when monitoring is enabled on the extension.** Without it, client metrics don't reach the extension's InfluxDB.
+- **Don't parameterize the timestamp.** Baked at generation for traceability.
+- **`--force` on `extend`** repoints an existing extension at a different source. Don't emit it by default; tell the user to run it by hand if they really want that.
+- **`unextend` does not destroy cloud resources.** It only removes the extension's S3 state record (and marks the DB row destroyed). That's the whole point — the source's bootstrap VMs stay up.

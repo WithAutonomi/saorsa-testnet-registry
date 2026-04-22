@@ -354,3 +354,31 @@ def list_terraform_state_keys(prefix: str) -> list[str]:
         for obj in page.get("Contents", []):
             keys.append(obj["Key"])
     return keys
+
+
+def list_extensions_of(source_name: str) -> list[str]:
+    """Return the names of any deployments that extend ``source_name``.
+
+    Scans every deployment state file under ``saorsa-deploy/deployments/`` and
+    returns the names whose ``shared_bootstrap_from`` equals ``source_name``.
+    Used by ``destroy-bootstraps`` to refuse when extensions would be silently
+    broken.
+    """
+    client = _get_s3_client()
+    paginator = client.get_paginator("list_objects_v2")
+    extensions = []
+    for page in paginator.paginate(
+        Bucket=S3_BUCKET, Prefix=f"{S3_KEY_PREFIX}/"
+    ):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            try:
+                resp = client.get_object(Bucket=S3_BUCKET, Key=key)
+                state = json.loads(resp["Body"].read())
+            except (client.exceptions.NoSuchKey, json.JSONDecodeError):
+                continue
+            if state.get("shared_bootstrap_from") == source_name:
+                name = state.get("name")
+                if name and name != source_name:
+                    extensions.append(name)
+    return extensions

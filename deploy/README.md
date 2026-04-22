@@ -160,10 +160,48 @@ uv run saorsa-deploy destroy-nodes --name DEV-01 --force
 uv run saorsa-deploy destroy-bootstraps --name DEV-01 --force
 ```
 
-`destroy-bootstraps` refuses while node state is still populated. Both
-commands have a fallback path that scans S3 for orphan tfstate files when
-the deployment state is missing, so interrupted runs can still be cleaned
-up.
+`destroy-bootstraps` refuses while node state is still populated, and
+also refuses while any _extension_ testnet is sharing these bootstraps
+(see `extend` below). Both commands have a fallback path that scans S3
+for orphan tfstate files when the deployment state is missing, so
+interrupted runs can still be cleaned up.
+
+### `extend` / `unextend`
+
+Deploy a second testnet that reuses an existing testnet's bootstrap VMs.
+Typical use case: binary-compatibility testing — run DEV-02 with a
+different `ant-node` binary alongside DEV-01, peering with the same
+bootstrap layer.
+
+```bash
+# Seed DEV-02's deployment state from DEV-01's bootstraps
+uv run saorsa-deploy extend --name DEV-02 --source DEV-01
+
+# From here on, DEV-02 is a normal deployment — run the usual pipeline,
+# skipping the bootstrap/genesis stages:
+uv run saorsa-deploy infra-nodes --name DEV-02 --do-vm-count 5 --do-regions 2
+uv run saorsa-deploy provision-nodes --name DEV-02 \
+    --branch-name feature-x --repo-owner myorg
+uv run saorsa-deploy start-nodes --name DEV-02
+
+# Teardown — note: no destroy-bootstraps for an extension
+uv run saorsa-deploy destroy-nodes --name DEV-02 --force
+uv run saorsa-deploy unextend --name DEV-02 --force
+```
+
+`extend` copies `bootstrap_nodes`, `bootstrap_ip`, and `bootstrap_port`
+from the source's state into the new testnet's state, and records
+`shared_bootstrap_from: <source>`. It's idempotent: re-running with the
+same source refreshes the bootstrap fields (useful if the source was
+re-provisioned). Re-running with a different source requires `--force`.
+
+`unextend` deletes the extension's deployment state. It refuses if the
+extension still has nodes (run `destroy-nodes` first) and it never
+touches the source's bootstrap VMs.
+
+`destroy-bootstraps` will refuse to destroy a testnet's bootstraps while
+any extension references them — `unextend` each dependent first.
+`--force` does not override this check.
 
 ### `build-ant-node-binary` command
 

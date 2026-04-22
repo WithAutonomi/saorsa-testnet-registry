@@ -502,6 +502,30 @@ def main():
         "Use s-8vcpu-16gb or larger for 5000+ node testnets.",
     )
 
+    # === extend ===
+    extend_parser = subparsers.add_parser(
+        "extend",
+        help="Seed an extension testnet's state from an existing testnet's bootstraps",
+    )
+    extend_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Name of the new extension testnet (e.g. DEV-02)",
+    )
+    extend_parser.add_argument(
+        "--source",
+        type=str,
+        required=True,
+        help="Name of the existing testnet whose bootstraps will be reused "
+        "(e.g. DEV-01). Must already have bootstraps recorded in state.",
+    )
+    extend_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Repoint an existing extension at a different source",
+    )
+
     # === generate-inventory ===
     generate_inventory_parser = subparsers.add_parser(
         "generate-inventory",
@@ -1655,6 +1679,23 @@ def main():
     )
     ti_details.add_argument("--db", type=str, required=True)
 
+    # === unextend ===
+    unextend_parser = subparsers.add_parser(
+        "unextend",
+        help="Tear down an extension testnet's state (does not touch the source)",
+    )
+    unextend_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Name of the extension testnet (must have been created with `extend`)",
+    )
+    unextend_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the interactive confirmation prompt",
+    )
+
     # === vultr-availability ===
     vultr_avail_parser = subparsers.add_parser(
         "vultr-availability",
@@ -1747,6 +1788,10 @@ def main():
         from saorsa_deploy.cmd.elastic_infra import cmd_elastic_infra
 
         cmd_elastic_infra(args)
+    elif args.command == "extend":
+        from saorsa_deploy.cmd.extend import cmd_extend
+
+        cmd_extend(args)
     elif args.command == "generate-inventory":
         from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
 
@@ -1867,6 +1912,10 @@ def main():
                 cmd_track_upgrades_details,
             )
             cmd_track_upgrades_details(args)
+    elif args.command == "unextend":
+        from saorsa_deploy.cmd.unextend import cmd_unextend
+
+        cmd_unextend(args)
     elif args.command == "vultr-availability":
         from saorsa_deploy.cmd.vultr_availability import cmd_vultr_availability
 

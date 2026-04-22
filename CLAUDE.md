@@ -145,6 +145,17 @@ NOTE: the MCP server currently still shells out to the pre-split `infra`/`destro
 - `get_deployment` — gets deployment details, events, and status
 - `testnet://docs/deployment-config` — resource with full parameter documentation
 
+### Extending a testnet (shared bootstraps)
+
+A testnet can be deployed as an **extension** of another — it reuses the source testnet's bootstrap VMs and peers with them, but has its own fresh node VMs (typically running a different `ant-node` binary for compatibility testing). Commands:
+
+- `extend --name DEV-02 --source DEV-01` — seeds DEV-02's state with a copy of DEV-01's `bootstrap_nodes` / `bootstrap_ip` / `bootstrap_port` and records `shared_bootstrap_from: "DEV-01"`. No infrastructure is created. Idempotent: re-running refreshes the bootstrap fields from the source.
+- `unextend --name DEV-02 --force` — inverse: deletes DEV-02's deployment state. Never touches the source. Refuses if DEV-02 still has nodes (run `destroy-nodes` first).
+
+The pipeline for an extension skips the bootstrap/genesis stages entirely: `extend` → `infra-nodes` → `provision-nodes` → `start-nodes`. Destroy: `destroy-nodes` → `unextend`.
+
+`destroy-bootstraps` now scans for any deployment whose `shared_bootstrap_from` matches the name being destroyed and refuses if dependents exist. `--force` does not override this — the user must `unextend` each dependent first.
+
 ### Deployment Statuses
 
 `pending` → `running` → `stopped` (success) or `failed`
