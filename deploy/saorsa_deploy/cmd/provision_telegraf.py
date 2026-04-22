@@ -28,26 +28,53 @@ def read_ips_from_file(file_path: str) -> list[str]:
 
 
 def read_inventory(file_path: str) -> list[dict]:
-    """Read node VM entries from an inventory JSON file.
+    """Read all VM entries (bootstrap + node) from an inventory JSON file.
 
-    Returns a list of dicts with 'ip', 'ssh_user', and 'ssh_key' keys.
+    Each returned dict has:
+      - ``ip``, ``ssh_user``, ``ssh_key`` — connection info
+      - ``name`` (optional) — inventory name, used for hostnamectl
+      - ``role`` — one of ``GENESIS`` (bootstrap_index == 1),
+        ``BOOTSTRAP`` (bootstrap_index >= 2), or ``WAN_NODE`` (node VM)
     """
     with open(file_path) as f:
         data = json.load(f)
-    node_vms = data.get("node_vms", [])
-    if not node_vms:
-        raise ValueError(f"No node_vms found in {file_path}")
     entries = []
-    for vm in node_vms:
+    for vm in data.get("bootstrap_vms", []):
+        idx = vm.get("bootstrap_index", 0)
+        role = "GENESIS" if idx == 1 else "BOOTSTRAP"
         entry = {
             "ip": vm["ip"],
             "ssh_user": vm.get("ssh_user", "root"),
             "ssh_key": vm.get("ssh_key", "~/.ssh/id_rsa"),
+            "role": role,
         }
         if "name" in vm:
             entry["name"] = vm["name"]
         entries.append(entry)
+    for vm in data.get("node_vms", []):
+        entry = {
+            "ip": vm["ip"],
+            "ssh_user": vm.get("ssh_user", "root"),
+            "ssh_key": vm.get("ssh_key", "~/.ssh/id_rsa"),
+            "role": "WAN_NODE",
+        }
+        if "name" in vm:
+            entry["name"] = vm["name"]
+        entries.append(entry)
+    if not entries:
+        raise ValueError(f"No bootstrap_vms or node_vms found in {file_path}")
     return entries
+
+
+def group_by_role_and_credentials(
+    entries: list[dict],
+) -> dict[tuple, list[str]]:
+    """Group inventory entries by (role, ssh_user, ssh_key), returning IPs per group."""
+    groups: dict[tuple, list[str]] = defaultdict(list)
+    for entry in entries:
+        key = (entry["role"], entry["ssh_user"], entry["ssh_key"])
+        groups[key].append(entry["ip"])
+    return dict(groups)
 
 
 def group_by_credentials(entries: list[dict]) -> dict[tuple, list[str]]:
@@ -164,6 +191,28 @@ def _resolve_version_info(args):
     return node_version, branch_commit
 
 
+def _resolve_telegraf_tuning(args):
+    """Extract the optional Telegraf tuning knobs as a dict of kwargs.
+
+    Returns only the keys that the caller actually provided, so the
+    ``TelegrafProvisioner`` defaults keep working when callers (or tests)
+    pass a ``SimpleNamespace`` without these fields.
+    """
+    kwargs: dict = {}
+    drop = getattr(args, "drop_log_levels", None)
+    if drop is not None:
+        # Empty string -> keep every line; otherwise comma-split and upper.
+        parsed = [lvl.strip().upper() for lvl in drop.split(",") if lvl.strip()]
+        kwargs["drop_log_levels"] = parsed
+    buffer_limit = getattr(args, "buffer_limit", None)
+    if buffer_limit is not None:
+        kwargs["metric_buffer_limit"] = buffer_limit
+    max_undelivered = getattr(args, "max_undelivered_lines", None)
+    if max_undelivered is not None:
+        kwargs["max_undelivered_lines"] = max_undelivered
+    return kwargs
+
+
 def cmd_provision_telegraf(args):
     """Provision Telegraf for Elasticsearch log forwarding on all VMs."""
     console = Console()
@@ -194,19 +243,19 @@ def cmd_provision_telegraf(args):
         console.print(f"  Target hosts: {len(entries)}")
         console.print()
 
-        groups = group_by_credentials(entries)
+        groups = group_by_role_and_credentials(entries)
         clear_known_hosts(all_ips, console)
         set_hostnames(entries, console)
 
-        for (ssh_user, ssh_key), ips in groups.items():
+        for (role, ssh_user, ssh_key), ips in groups.items():
             console.print(
                 f"[bold]Provisioning {len(ips)} host(s) "
-                f"(ssh_user={ssh_user})...[/bold]"
+                f"(role={role}, ssh_user={ssh_user})...[/bold]"
             )
             try:
                 TelegrafProvisioner(
                     host_ips=ips,
-                    host_role="WAN_NODE",
+                    host_role=role,
                     ssh_key_path=ssh_key,
                     ssh_user=ssh_user,
                     testnet_name=testnet_name,
@@ -218,6 +267,7 @@ def cmd_provision_telegraf(args):
                     from_beginning=args.from_beginning,
                     ant_log_dir=args.ant_log_dir,
                     console=console,
+                    **_resolve_telegraf_tuning(args),
                 ).execute()
             except Exception as e:
                 console.print(
@@ -266,6 +316,7 @@ def cmd_provision_telegraf(args):
                 from_beginning=args.from_beginning,
                 ant_log_dir=args.ant_log_dir,
                 console=console,
+                **_resolve_telegraf_tuning(args),
             ).execute()
         except Exception as e:
             console.print(
@@ -283,10 +334,11 @@ def cmd_provision_telegraf(args):
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
 
+        bootstrap_nodes = state.get("bootstrap_nodes") or []
         bootstrap_ip = state.get("bootstrap_ip")
-        if not bootstrap_ip:
+        if not bootstrap_nodes and not bootstrap_ip:
             console.print(
-                "[bold red]Error:[/bold red] No bootstrap IP found in "
+                "[bold red]Error:[/bold red] No bootstrap nodes or IP found in "
                 "deployment state."
             )
             sys.exit(1)
@@ -321,26 +373,43 @@ def cmd_provision_telegraf(args):
             "from_beginning": args.from_beginning,
             "ant_log_dir": args.ant_log_dir,
             "console": console,
+            **_resolve_telegraf_tuning(args),
         }
 
-        # Provision genesis VM
-        console.print(
-            f"[bold]Provisioning Telegraf on genesis node "
-            f"({bootstrap_ip})...[/bold]"
-        )
-        clear_known_hosts([bootstrap_ip], console)
-        try:
-            TelegrafProvisioner(
-                host_ips=[bootstrap_ip],
-                host_role="GENESIS",
-                **common_kwargs,
-            ).execute()
-        except Exception as e:
+        # Provision bootstrap VMs (genesis + any secondary bootstraps)
+        if bootstrap_nodes:
+            genesis_ips = [
+                n["ip"] for n in bootstrap_nodes
+                if n.get("bootstrap_index") == 1 and n.get("ip")
+            ]
+            secondary_ips = [
+                n["ip"] for n in bootstrap_nodes
+                if n.get("bootstrap_index", 0) >= 2 and n.get("ip")
+            ]
+        else:
+            genesis_ips = [bootstrap_ip] if bootstrap_ip else []
+            secondary_ips = []
+
+        for role, ips in [("GENESIS", genesis_ips), ("BOOTSTRAP", secondary_ips)]:
+            if not ips:
+                continue
             console.print(
-                f"[bold red]Telegraf provisioning failed on genesis:"
-                f"[/bold red] {e}"
+                f"[bold]Provisioning Telegraf on {len(ips)} {role} "
+                f"node(s): {', '.join(ips)}...[/bold]"
             )
-            sys.exit(1)
+            clear_known_hosts(ips, console)
+            try:
+                TelegrafProvisioner(
+                    host_ips=ips,
+                    host_role=role,
+                    **common_kwargs,
+                ).execute()
+            except Exception as e:
+                console.print(
+                    f"[bold red]Telegraf provisioning failed on {role}:"
+                    f"[/bold red] {e}"
+                )
+                sys.exit(1)
 
         # Provision regular VMs
         regular_ips = []

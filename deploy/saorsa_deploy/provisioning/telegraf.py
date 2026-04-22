@@ -16,6 +16,38 @@ TELEGRAF_SERVICE_NAME = "telegraf-ant-elasticsearch"
 TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 
 
+#: Log levels dropped before lines are shipped to Elasticsearch. Only the
+#: truly low-signal levels are dropped by default: ``DEBUG`` and ``TRACE``
+#: are rarely useful unless you're actively debugging, and ES pays a real
+#: cost for indexing them. ``INFO`` is kept because it carries the
+#: breadcrumbs needed for post-hoc investigation ("accepted connection
+#: from peer X", "registered peer ID Y", etc.) — dropping it makes it
+#: impossible to reconstruct what a node was doing at a given moment.
+#:
+#: Override via ``--drop-log-levels`` on the ``provision-telegraf-logs``
+#: command. Use ``--drop-log-levels ""`` to keep every line.
+DEFAULT_DROP_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "TRACE")
+
+#: Upper bound on the number of metrics Telegraf buffers in its output
+#: queue while waiting for Elasticsearch to accept them. When full,
+#: Telegraf drops the oldest metrics — that's how DEV-01 lost all
+#: node-side log forwarding from 01:30 UTC onward: with the previous
+#: default of 200_000 lines, any ES slowdown longer than ~5 seconds at
+#: peak load meant oldest-first eviction, and once the tail position
+#: advanced past dropped lines we never caught up.
+#:
+#: 2_000_000 gives ~50 s of headroom at 40k lines/sec — enough to ride
+#: out ES garbage-collection pauses and shard-rollover stalls. Override
+#: with ``--buffer-limit`` when you know a testnet's logging profile.
+DEFAULT_METRIC_BUFFER_LIMIT: int = 2_000_000
+
+#: Upper bound on how many lines ``inputs.tail`` holds between reading a
+#: file and handing off to the output. Should be >= output flush batch
+#: size with some headroom; defaults to 1/4 of ``metric_buffer_limit`` so
+#: the two scale together under a single knob.
+DEFAULT_MAX_UNDELIVERED_LINES: int = DEFAULT_METRIC_BUFFER_LIMIT // 4
+
+
 class TelegrafProvisioner:
     """Provisions Telegraf for Elasticsearch log forwarding on testnet VMs."""
 
@@ -33,6 +65,9 @@ class TelegrafProvisioner:
         ssh_user: str = "root",
         from_beginning: bool = True,
         ant_log_dir: str | None = None,
+        drop_log_levels: tuple[str, ...] | list[str] | None = None,
+        metric_buffer_limit: int = DEFAULT_METRIC_BUFFER_LIMIT,
+        max_undelivered_lines: int | None = None,
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -47,6 +82,24 @@ class TelegrafProvisioner:
         self.ssh_user = ssh_user
         self.from_beginning = from_beginning
         self.ant_log_dir = ant_log_dir or LOG_DIR
+        # `None` -> default; explicit empty list -> no filtering
+        self.drop_log_levels = (
+            tuple(DEFAULT_DROP_LOG_LEVELS)
+            if drop_log_levels is None
+            else tuple(drop_log_levels)
+        )
+        if metric_buffer_limit < 1:
+            raise ValueError(
+                f"metric_buffer_limit must be >= 1 (got {metric_buffer_limit})"
+            )
+        self.metric_buffer_limit = metric_buffer_limit
+        # Default the tail buffer to 1/4 of the output buffer so the two
+        # scale together when the caller only tunes one knob.
+        self.max_undelivered_lines = (
+            max_undelivered_lines
+            if max_undelivered_lines is not None
+            else max(1, metric_buffer_limit // 4)
+        )
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -175,6 +228,15 @@ class TelegrafProvisioner:
     def _build_telegraf_config(self) -> str:
         """Generate the Telegraf TOML configuration."""
         from_beginning = "true" if self.from_beginning else "false"
+        if self.drop_log_levels:
+            levels_list = ", ".join(f'"{lvl}"' for lvl in self.drop_log_levels)
+            tagdrop_block = (
+                "\n  # Drop noisy log levels before flushing to Elasticsearch.\n"
+                "  [inputs.tail.tagdrop]\n"
+                f"    level = [{levels_list}]\n"
+            )
+        else:
+            tagdrop_block = ""
         return """\
 ###############################################################################
 #                            GLOBAL TAGS                                      #
@@ -195,7 +257,7 @@ class TelegrafProvisioner:
   interval = "60s"
   round_interval = true
   metric_batch_size = 1000
-  metric_buffer_limit = 200000
+  metric_buffer_limit = __METRIC_BUFFER_LIMIT__
   collection_jitter = "0s"
   flush_interval = "10s"
   flush_jitter = "0s"
@@ -212,7 +274,7 @@ class TelegrafProvisioner:
 
   from_beginning = __FROM_BEGINNING__
   watch_method = "inotify"
-  max_undelivered_lines = 50000
+  max_undelivered_lines = __MAX_UNDELIVERED_LINES__
 
   data_format = "json"
 
@@ -229,7 +291,7 @@ class TelegrafProvisioner:
   json_time_format = "2006-01-02T15:04:05.999999999Z"
 
   tag_keys = ["level", "target"]
-
+__TAGDROP_BLOCK__
 ###############################################################################
 #                            PROCESSORS                                       #
 ###############################################################################
@@ -293,7 +355,13 @@ def apply(metric):
 
   manage_template = false
   overwrite_template = false
-""".replace("__FROM_BEGINNING__", from_beginning)
+""".replace("__FROM_BEGINNING__", from_beginning).replace(
+            "__TAGDROP_BLOCK__", tagdrop_block
+        ).replace(
+            "__METRIC_BUFFER_LIMIT__", str(self.metric_buffer_limit)
+        ).replace(
+            "__MAX_UNDELIVERED_LINES__", str(self.max_undelivered_lines)
+        )
 
     def _build_unit_file(self) -> str:
         """Generate the systemd unit file content for Telegraf."""

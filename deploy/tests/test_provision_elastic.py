@@ -171,6 +171,21 @@ class TestSetupScript:
         with pytest.raises(ValueError, match="retention_days"):
             _make_provisioner(retention_days=0)
 
+    def test_default_shards_matches_s_4vcpu_droplet(self):
+        p = _make_provisioner()
+        script = p._build_setup_script()
+        assert "NUMBER_OF_SHARDS = 4" in script
+        assert "'number_of_shards': NUMBER_OF_SHARDS" in script
+
+    def test_custom_shards(self):
+        p = _make_provisioner(shards=8)
+        script = p._build_setup_script()
+        assert "NUMBER_OF_SHARDS = 8" in script
+
+    def test_rejects_zero_shards(self):
+        with pytest.raises(ValueError, match="shards"):
+            _make_provisioner(shards=0)
+
     def test_rejects_negative_retention(self):
         with pytest.raises(ValueError, match="retention_days"):
             _make_provisioner(retention_days=-1)

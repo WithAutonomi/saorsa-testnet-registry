@@ -10,6 +10,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.provisioning.apt import (
+    DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    build_disable_unattended_upgrades_command,
+)
 from saorsa_deploy.provisioning.volume import VOLUME_DEVICE_GLOB
 from saorsa_deploy.resources import get_resources_dir
 
@@ -63,6 +67,13 @@ class MonitoringProvisioner:
                 server.shell,
                 name="Wait for cloud-init to finish",
                 commands=["cloud-init status --wait || true"],
+            )
+
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
             )
 
             self._add_mount_volume_op(state)

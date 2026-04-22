@@ -115,6 +115,7 @@ def cmd_provision_genesis(args):
         "testnet": args.testnet,
         "console": console,
         "rewards_address": args.rewards_address,
+        "testnet_name": args.name,
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel

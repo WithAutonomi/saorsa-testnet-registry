@@ -90,6 +90,27 @@ Boolean yes/no. If yes, the extension gets its own independent Elasticsearch VM 
 
 In practice, extensions often reuse nothing beyond the bootstraps and it's common to leave elastic off. Confirm with the user.
 
+**If elastic is enabled**, follow the same sizing interview as `deploy-runbook` section 7 (7a large-testnet warning + 7b sizing knobs). The **extension's own node count** is what drives the sizing — it's independent from the source testnet. The warning fires when the extension has ≥ 500 nodes:
+
+> Heads up — with ~{TOTAL_NODES} nodes on this extension you're past the default ES sizing envelope. A 1000-node testnet generates roughly **500 GB of index data per day** at the default `--log-level info`. Recommend:
+>
+> - **Droplet size:** `s-8vcpu-16gb` (from `s-4vcpu-8gb`)
+> - **Volume size:** `500` GB for 1 day, `1000` GB for 2 days (from `100`)
+> - **Shards:** `8` to match the 8 vCPU on the bigger droplet (from `4`)
+
+Knobs (default / override):
+
+| Knob | Default | Flag |
+|---|---|---|
+| ES droplet size | `s-4vcpu-8gb` | `elastic-infra --droplet-size` |
+| ES volume size (GB) | `100` | `elastic-infra --volume-size` |
+| Primary shards per index | `4` | `provision-elastic --shards` |
+| ILM retention days | `7` | `provision-elastic --retention-days` |
+| Telegraf drop log levels | `DEBUG,TRACE` | `provision-telegraf-logs --drop-log-levels` |
+| Telegraf output buffer lines | `2000000` | `provision-telegraf-logs --buffer-limit` |
+
+Only emit a flag when the user picks a non-default value — keeps small-extension scripts tidy.
+
 ### 8. Monitoring for the extension
 
 Same as question 7 but for InfluxDB + Grafana.
@@ -152,7 +173,9 @@ These are non-negotiable:
 #   Upgrade chan: {{UPGRADE_CHANNEL_OR_NONE}}
 #   NAT sim:     {{NAT_YES_NO_WITH_PERCENT}}
 #   Clients:     {{CLIENT_COUNT_OR_NONE}}
-#   Elastic:     {{YES_OR_NO}}
+#   Elastic:     {{YES_OR_NO}}{{#if elastic}}
+#                  droplet={{ES_DROPLET_SIZE}} volume={{ES_VOLUME_SIZE}}GB shards={{ES_SHARDS}}
+#                  retention={{ES_RETENTION_DAYS}}d drop_levels={{ES_DROP_LEVELS}} buffer={{ES_BUFFER_LIMIT}}{{/if}}
 #   Monitoring:  {{YES_OR_NO}}
 #   ant-node:    {{VERSION_OR_BRANCH_DESC}}
 #   ant:         {{VERSION_OR_BRANCH_DESC_OR_NA}}
@@ -203,7 +226,10 @@ uv run saorsa-deploy infra-nodes \
   {{#if vultr_used}}--vultr-vm-count {{VULTR_PER_REGION}} --vultr-regions {{VULTR_REGIONS}} --vultr-plan "{{VULTR_SIZE}}"{{/if}}
 
 {{#if elastic}}
-uv run saorsa-deploy elastic-infra --name "$NAME"
+uv run saorsa-deploy elastic-infra \
+  --name "$NAME" \
+  {{#if es_droplet_size_override}}--droplet-size "{{ES_DROPLET_SIZE}}"{{/if}} \
+  {{#if es_volume_size_override}}--volume-size {{ES_VOLUME_SIZE}}{{/if}}
 {{/if}}
 {{#if monitoring}}
 uv run saorsa-deploy monitoring-infra --name "$NAME"
@@ -219,6 +245,8 @@ uv run saorsa-deploy infra-clients \
 {{#if elastic}}
 uv run saorsa-deploy provision-elastic \
   --name "$NAME" \
+  {{#if es_shards_override}}--shards {{ES_SHARDS}}{{/if}} \
+  {{#if es_retention_override}}--retention-days {{ES_RETENTION_DAYS}}{{/if}} \
   --ssh-key-path "$SSH_KEY"
 {{/if}}
 {{#if monitoring}}
@@ -242,6 +270,8 @@ uv run saorsa-deploy start-nodes \
 {{#if elastic}}
 uv run saorsa-deploy provision-telegraf-logs \
   --name "$NAME" \
+  {{#if es_drop_levels_override}}--drop-log-levels "{{ES_DROP_LEVELS}}"{{/if}} \
+  {{#if es_buffer_limit_override}}--buffer-limit {{ES_BUFFER_LIMIT}}{{/if}} \
   --ssh-key-path "$SSH_KEY"
 {{/if}}
 {{#if monitoring}}

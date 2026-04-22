@@ -119,12 +119,43 @@ If clients are enabled, the runbook must preflight-check `ANT_DEPLOY_SECRET_KEY`
 
 ### 7. Elasticsearch
 
-Boolean yes/no. If yes, emit these in the right places:
+First: boolean yes/no. If yes, emit these in the right places:
 
 - `elastic-infra --name $NAME` during the infra phase
 - `provision-elastic --name $NAME` during the provision phase (before `provision-telegraf-logs`)
 - `provision-telegraf-logs --name $NAME` **after** nodes are provisioned (it auto-loads ES creds from elastic state)
 - `destroy-elastic --name $NAME --force` at the end of the destroy script
+
+Then ask about sizing. ES is the single part of the stack that falls over quietly at scale — DEV-01 (2026-04-22) lost 90% of node-side log forwarding because the default `s-4vcpu-8gb` + single-shard + 100 GB sizing couldn't keep up with ~900 nodes. The defaults below are fine for small/short testnets but must be bumped for anything approaching 1000 nodes or a multi-day run.
+
+#### 7a. Proactive large-testnet warning
+
+**Before asking about sizing**, check the total node count from section 4. If it's **≥ 500 nodes**, surface the following reminder verbatim to the user and ask them to confirm the ES sizing accordingly:
+
+> Heads up — with ~{TOTAL_NODES} nodes you're past the default ES sizing envelope. A 1000-node testnet generates roughly **500 GB of index data per day** at the default `--log-level info`, and ingest bottlenecks on a 4-core droplet with one shard per daily index. Recommend bumping:
+>
+> - **Droplet size:** `s-8vcpu-16gb` (from `s-4vcpu-8gb`)
+> - **Volume size:** `500` GB for 1 day, `1000` GB for 2 days (from `100`)
+> - **Shards:** `8` to match the 8 vCPU on the bigger droplet (from `4`)
+>
+> We won't be running testnets bigger than ~1000 nodes, so you shouldn't need to go beyond `s-8vcpu-16gb` / 1 TB / 8 shards.
+
+For 100–499 nodes, skip the warning and just take the defaults unless the user says otherwise.
+
+#### 7b. Elasticsearch sizing knobs
+
+Collect each of these. Offer the default shown; only emit the corresponding `--flag` in the runbook when the user overrides it, to keep small-testnet scripts tidy.
+
+| Knob | Default | When to change |
+|---|---|---|
+| ES droplet size (`elastic-infra --droplet-size`) | `s-4vcpu-8gb` | Bump to `s-8vcpu-16gb` for testnets ≥ 500 nodes. |
+| ES volume size in GB (`elastic-infra --volume-size`) | `100` | `250` for ~500 nodes / 1 day. `500` for ~1000 nodes / 1 day. `1000` for ~1000 nodes / 2 days. |
+| Primary shards per index (`provision-elastic --shards`) | `4` | Match vCPU count of the ES droplet: `8` when on `s-8vcpu-16gb`. |
+| ILM retention days (`provision-elastic --retention-days`) | `7` | Rarely changed for testnets. Lower to `2` for very short/ephemeral runs. |
+| Telegraf drop log levels (`provision-telegraf-logs --drop-log-levels`) | `DEBUG,TRACE` | `""` to keep every line while debugging a specific bug. `DEBUG,TRACE,INFO` only when ES is genuinely overwhelmed and you accept losing forensic breadcrumbs. |
+| Telegraf output buffer lines (`provision-telegraf-logs --buffer-limit`) | `2000000` | Drop to `200000` for tiny/short runs. Raise to `5000000` for very large testnets where you expect sustained ES stalls. |
+
+A reasonable shortcut for the interview: ask one question — "small (≤100 nodes) / default (a few hundred) / large (≥ 500)" — and pre-fill the overrides for "large" without walking through every knob individually. Still let the user override specific values before moving on.
 
 ### 8. Monitoring (InfluxDB + Grafana)
 
@@ -200,7 +231,9 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 #   Upgrade chan: {{UPGRADE_CHANNEL_OR_NONE}}
 #   NAT sim:     {{NAT_YES_NO_WITH_PERCENT}}
 #   Clients:     {{CLIENT_COUNT_OR_NONE}}
-#   Elastic:     {{YES_OR_NO}}
+#   Elastic:     {{YES_OR_NO}}{{#if elastic}}
+#                  droplet={{ES_DROPLET_SIZE}} volume={{ES_VOLUME_SIZE}}GB shards={{ES_SHARDS}}
+#                  retention={{ES_RETENTION_DAYS}}d drop_levels={{ES_DROP_LEVELS}} buffer={{ES_BUFFER_LIMIT}}{{/if}}
 #   Monitoring:  {{YES_OR_NO}}
 #   ant-node:    {{VERSION_OR_BRANCH_DESC}}
 #   ant:         {{VERSION_OR_BRANCH_DESC_OR_NA}}
@@ -252,7 +285,10 @@ uv run saorsa-deploy infra-nodes \
   {{#if vultr_used}}--vultr-vm-count {{VULTR_PER_REGION}} --vultr-regions {{VULTR_REGIONS}} --vultr-plan "{{VULTR_SIZE}}"{{/if}}
 
 {{#if elastic}}
-uv run saorsa-deploy elastic-infra --name "$NAME"
+uv run saorsa-deploy elastic-infra \
+  --name "$NAME" \
+  {{#if es_droplet_size_override}}--droplet-size "{{ES_DROPLET_SIZE}}"{{/if}} \
+  {{#if es_volume_size_override}}--volume-size {{ES_VOLUME_SIZE}}{{/if}}
 {{/if}}
 {{#if monitoring}}
 uv run saorsa-deploy monitoring-infra --name "$NAME"
@@ -268,6 +304,8 @@ uv run saorsa-deploy infra-clients \
 {{#if elastic}}
 uv run saorsa-deploy provision-elastic \
   --name "$NAME" \
+  {{#if es_shards_override}}--shards {{ES_SHARDS}}{{/if}} \
+  {{#if es_retention_override}}--retention-days {{ES_RETENTION_DAYS}}{{/if}} \
   --ssh-key-path "$SSH_KEY"
 {{/if}}
 {{#if monitoring}}
@@ -310,6 +348,8 @@ uv run saorsa-deploy start-nodes \
 {{#if elastic}}
 uv run saorsa-deploy provision-telegraf-logs \
   --name "$NAME" \
+  {{#if es_drop_levels_override}}--drop-log-levels "{{ES_DROP_LEVELS}}"{{/if}} \
+  {{#if es_buffer_limit_override}}--buffer-limit {{ES_BUFFER_LIMIT}}{{/if}} \
   --ssh-key-path "$SSH_KEY"
 {{/if}}
 {{#if monitoring}}
@@ -393,3 +433,5 @@ Do **not** emit `stop-clients` in the destroy script. The VMs are about to be to
 - **Do pass `--monitoring-name "$NAME"` to `provision-clients` when monitoring is enabled.** Without it, client upload/download metrics never reach the testnet's InfluxDB, which defeats the point of running both stacks.
 - **Don't parameterize the timestamp.** It's baked into the filename at generation and the header comment for traceability; runtime regeneration defeats the point.
 - **Don't add retry loops or sleeps.** If a command fails, the user wants to see it and decide what to do — `set -e` is the contract.
+- **Don't skip the large-testnet ES warning.** For any testnet with ≥ 500 nodes, emit the reminder in section 7a verbatim *before* collecting ES sizing answers — don't let the user slide into the default 100 GB / 4-shard / 4-vCPU sizing without seeing the sizing table. The defaults are designed for small runs; a 1000-node testnet will silently lose logs on them.
+- **Only emit ES sizing flags when they differ from the default.** `--droplet-size s-4vcpu-8gb`, `--volume-size 100`, `--shards 4`, `--retention-days 7`, `--drop-log-levels DEBUG,TRACE`, `--buffer-limit 2000000` are all the CLI defaults — emitting them explicitly adds noise without changing behaviour. Only pass a flag when the user picked something else.

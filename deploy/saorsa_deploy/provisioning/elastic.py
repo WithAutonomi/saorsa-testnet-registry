@@ -10,6 +10,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.provisioning.apt import (
+    DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    build_disable_unattended_upgrades_command,
+)
 from saorsa_deploy.provisioning.volume import VOLUME_DEVICE_GLOB
 
 ELASTIC_MOUNT_POINT = "/mnt/elastic-storage"
@@ -27,6 +31,13 @@ ES_USERNAME = "ant-log-writer"
 ILM_POLICY_NAME = "ant-logs-policy"
 DEFAULT_RETENTION_DAYS = 7
 
+#: Default shards per daily index. With a single-node ES cluster, each
+#: shard pins to exactly one indexing thread — so N shards means N CPUs
+#: can flush concurrently. Matches the default ``s-4vcpu-8gb`` droplet;
+#: bump to 8 when running on ``s-8vcpu-16gb`` or larger. Setting > CPU
+#: count gives diminishing returns and raises per-shard overhead.
+DEFAULT_INDEX_SHARDS = 4
+
 
 class ElasticProvisioner:
     """Provisions Elasticsearch 8.x on a dedicated VM."""
@@ -37,16 +48,20 @@ class ElasticProvisioner:
         ssh_key_path: str,
         testnet_name: str,
         retention_days: int = DEFAULT_RETENTION_DAYS,
+        shards: int = DEFAULT_INDEX_SHARDS,
         console: Console | None = None,
     ):
         if retention_days < 1:
             raise ValueError(
                 f"retention_days must be >= 1 (got {retention_days})"
             )
+        if shards < 1:
+            raise ValueError(f"shards must be >= 1 (got {shards})")
         self.host_ip = host_ip
         self.ssh_key_path = ssh_key_path
         self.testnet_name = testnet_name
         self.retention_days = retention_days
+        self.shards = shards
         self.console = console or Console()
         self._es_password = secrets.token_urlsafe(24)
 
@@ -72,6 +87,13 @@ class ElasticProvisioner:
                 server.shell,
                 name="Wait for cloud-init to finish",
                 commands=["cloud-init status --wait || true"],
+            )
+
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
             )
 
             self._add_mount_volume_op(state)
@@ -248,6 +270,7 @@ class ElasticProvisioner:
             f"INDEX_PATTERN = '{INDEX_PATTERN}'\n"
             f"ILM_POLICY_NAME = '{ILM_POLICY_NAME}'\n"
             f"RETENTION_DAYS = {self.retention_days}\n"
+            f"NUMBER_OF_SHARDS = {self.shards}\n"
             "\n"
             "\n"
             "def es_request(method, path, data=None):\n"
@@ -342,7 +365,7 @@ class ElasticProvisioner:
             "    'index_patterns': [INDEX_PATTERN],\n"
             "    'template': {\n"
             "        'settings': {\n"
-            "            'number_of_shards': 1,\n"
+            "            'number_of_shards': NUMBER_OF_SHARDS,\n"
             "            'number_of_replicas': 0,\n"
             "            'index.lifecycle.name': ILM_POLICY_NAME,\n"
             "        },\n"

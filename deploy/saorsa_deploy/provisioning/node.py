@@ -6,6 +6,10 @@ from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
+from saorsa_deploy.provisioning.apt import (
+    DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    build_disable_unattended_upgrades_command,
+)
 from saorsa_deploy.provisioning.bootstrap import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.nat import NAT_IP_EXEC_PREFIX, build_nat_setup_command
 from saorsa_deploy.provisioning.progress import (
@@ -192,6 +196,13 @@ class AntNodeProvisioner:
             active_hosts = list(state.inventory.get_active_hosts())
             nat_hosts = [h for h in active_hosts if h.name in self.nat_ips]
             plain_hosts = [h for h in active_hosts if h.name not in self.nat_ips]
+
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
+            )
 
             add_op(
                 state,

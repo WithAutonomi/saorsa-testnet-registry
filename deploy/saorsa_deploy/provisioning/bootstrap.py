@@ -8,6 +8,12 @@ from pyinfra.operations import files, server, systemd
 from rich.console import Console
 
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME, get_release_url
+from saorsa_deploy.provisioning.apt import (
+    DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    SET_HOSTNAME_OP_NAME,
+    build_disable_unattended_upgrades_command,
+    build_set_hostname_command,
+)
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
@@ -104,6 +110,7 @@ class AntBootstrapNodeProvisioner:
         binary_is_archive: bool = True,
         upgrade_channel: str | None = None,
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
+        testnet_name: str | None = None,
     ):
         self.ip = ip
         self.bootstrap_index = bootstrap_index
@@ -117,6 +124,14 @@ class AntBootstrapNodeProvisioner:
         self.binary_is_archive = binary_is_archive
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
+        self.testnet_name = testnet_name
+
+    @property
+    def hostname(self) -> str | None:
+        """Inventory-matching OS hostname, or ``None`` if no testnet_name given."""
+        if not self.testnet_name:
+            return None
+        return f"{self.testnet_name}-ant-bootstrap-{self.bootstrap_index}"
 
     @property
     def service_name(self) -> str:
@@ -160,6 +175,21 @@ class AntBootstrapNodeProvisioner:
         connect_all(state)
 
         try:
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
+            )
+
+            if self.hostname:
+                add_op(
+                    state,
+                    server.shell,
+                    name=SET_HOSTNAME_OP_NAME,
+                    commands=[build_set_hostname_command(self.hostname)],
+                )
+
             add_op(
                 state,
                 server.shell,

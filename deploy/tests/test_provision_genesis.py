@@ -269,10 +269,54 @@ class TestAntBootstrapNodeProvisioner:
         node.execute()
 
         mock_connect.assert_called_once()
-        # volume-mount + log-dir + download + files.put + daemon_reload + service = 6
-        assert mock_add_op.call_count == 6
+        # disable-uu + volume-mount + log-dir + download + files.put + daemon_reload + service = 7
+        assert mock_add_op.call_count == 7
         mock_run_ops.assert_called_once()
         mock_disconnect.assert_called_once()
+
+    @patch("saorsa_deploy.provisioning.bootstrap.disconnect_all")
+    @patch("saorsa_deploy.provisioning.bootstrap.run_ops")
+    @patch("saorsa_deploy.provisioning.bootstrap.add_op")
+    @patch("saorsa_deploy.provisioning.bootstrap.connect_all")
+    @patch("saorsa_deploy.provisioning.bootstrap.State")
+    @patch("saorsa_deploy.provisioning.bootstrap.Inventory")
+    @patch("saorsa_deploy.provisioning.bootstrap.get_release_url")
+    def test_provision_sets_hostname_when_testnet_name_given(
+        self,
+        mock_release_url,
+        _mock_inventory,
+        _mock_state,
+        _mock_connect,
+        mock_add_op,
+        _mock_run_ops,
+        _mock_disconnect,
+    ):
+        mock_release_url.return_value = (
+            "https://github.com/download/v1.0.0/asset.tar.gz"
+        )
+
+        node = AntBootstrapNodeProvisioner(
+            ip="10.0.0.1",
+            bootstrap_index=3,
+            port=10000,
+            testnet_name="DEV-07",
+        )
+        node.execute()
+
+        # The hostname op is added immediately after the unattended-upgrades
+        # disable op, before any volume/log/binary work.
+        hostname_call = mock_add_op.call_args_list[1]
+        commands = hostname_call.kwargs.get("commands", [])
+        assert len(commands) == 1
+        assert "DEV-07-ant-bootstrap-3" in commands[0]
+        assert "hostnamectl set-hostname" in commands[0]
+
+    def test_no_hostname_op_when_testnet_name_omitted(self):
+        # The hostname property is None when testnet_name isn't provided,
+        # so no hostname op will be emitted during execute(). Guards the
+        # back-compat case for callers that don't yet pass testnet_name.
+        node = AntBootstrapNodeProvisioner(ip="10.0.0.1", bootstrap_index=1)
+        assert node.hostname is None
 
     @patch("saorsa_deploy.provisioning.bootstrap.disconnect_all")
     @patch("saorsa_deploy.provisioning.bootstrap.run_ops")
@@ -362,13 +406,14 @@ class TestAntBootstrapNodeProvisioner:
         node.execute()
 
         op_types = [call[0][1] for call in mock_add_op.call_args_list]
-        # volume mount, log-dir, binary install, files.put, daemon_reload, service
+        # disable-uu, volume mount, log-dir, binary install, files.put, daemon_reload, service
         assert op_types[0] is server.shell
         assert op_types[1] is server.shell
         assert op_types[2] is server.shell
-        assert op_types[3] is files.put
-        assert op_types[4] is systemd.daemon_reload
-        assert op_types[5] is systemd.service
+        assert op_types[3] is server.shell
+        assert op_types[4] is files.put
+        assert op_types[5] is systemd.daemon_reload
+        assert op_types[6] is systemd.service
 
     @patch("saorsa_deploy.provisioning.bootstrap.disconnect_all")
     @patch("saorsa_deploy.provisioning.bootstrap.run_ops")
@@ -394,7 +439,8 @@ class TestAntBootstrapNodeProvisioner:
         node = AntBootstrapNodeProvisioner(ip="10.0.0.1", bootstrap_index=1)
         node.execute()
 
-        download_call = mock_add_op.call_args_list[2]
+        # Op order: disable-uu, volume-mount, log-dir, binary-install, ...
+        download_call = mock_add_op.call_args_list[3]
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
         assert commands[0].startswith("test -f /usr/local/bin/ant-node")

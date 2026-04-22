@@ -6,6 +6,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.provisioning.apt import (
+    DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    build_disable_unattended_upgrades_command,
+)
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -151,6 +155,13 @@ class AntClientProvisioner:
         try:
             self.console.print(f"Connecting to {len(host_ips)} client host(s) as root...")
             connect_all(state)
+
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
+            )
 
             # Create directories
             add_op(

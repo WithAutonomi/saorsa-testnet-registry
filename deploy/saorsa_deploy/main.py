@@ -1023,6 +1023,20 @@ def main():
             "(default: 7). Re-run provision-elastic to change."
         ),
     )
+    provision_elastic_parser.add_argument(
+        "--shards",
+        type=int,
+        default=4,
+        help=(
+            "Number of primary shards per daily ant-node-logs index "
+            "(default: 4). Each shard pins to one indexing thread on "
+            "the ES VM, so set to the vCPU count of the droplet: 4 for "
+            "s-4vcpu-8gb (the elastic-infra default), 8 for "
+            "s-8vcpu-16gb. Only takes effect for indices created *after* "
+            "provision-elastic runs — existing indices retain their "
+            "original shard count."
+        ),
+    )
 
     # === provision-genesis ===
     provision_genesis_parser = subparsers.add_parser(
@@ -1294,6 +1308,41 @@ def main():
             "Telegraf tails from the end of each existing log file (no "
             "backfill). Use this for post-hoc attachment to a running "
             "testnet to avoid re-ingesting historical logs."
+        ),
+    )
+    telegraf_parser.add_argument(
+        "--drop-log-levels",
+        type=str,
+        default="DEBUG,TRACE",
+        help=(
+            "Comma-separated ant-node log levels Telegraf drops before "
+            "shipping to Elasticsearch (default: DEBUG,TRACE). INFO is "
+            "kept by default because its breadcrumbs are needed for "
+            "post-hoc investigation. Use --drop-log-levels \"\" to keep "
+            "every line, or --drop-log-levels DEBUG,TRACE,INFO to trim "
+            "the loudest levels when ES capacity is constrained."
+        ),
+    )
+    telegraf_parser.add_argument(
+        "--buffer-limit",
+        type=int,
+        default=None,
+        help=(
+            "Size of Telegraf's output buffer (metric_buffer_limit) in "
+            "lines. Default 2,000,000 gives ~50 s of headroom at 40k "
+            "lines/sec for a 900-node testnet; drop to 200,000 for "
+            "tiny/short runs. When full Telegraf evicts oldest-first — "
+            "that's how DEV-01 lost all node-side forwarding at 01:30."
+        ),
+    )
+    telegraf_parser.add_argument(
+        "--max-undelivered-lines",
+        type=int,
+        default=None,
+        help=(
+            "Size of the inputs.tail buffer in lines. Defaults to 1/4 of "
+            "--buffer-limit. Rarely needs tuning unless log files rotate "
+            "faster than Telegraf can drain."
         ),
     )
 

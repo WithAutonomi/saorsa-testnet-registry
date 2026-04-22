@@ -9,6 +9,10 @@ from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.binary_source import BUILDS_BUCKET, BUILDS_KEY_PREFIX
+from saorsa_deploy.provisioning.apt import (
+    DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    build_disable_unattended_upgrades_command,
+)
 
 
 class AntNodeBuilder:
@@ -64,6 +68,13 @@ class AntNodeBuilder:
                 server.shell,
                 name="Wait for cloud-init to finish",
                 commands=["cloud-init status --wait || true"],
+            )
+
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
             )
 
             add_op(

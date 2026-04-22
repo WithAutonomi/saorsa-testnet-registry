@@ -3,7 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.cmd.provision_telegraf import (
-    group_by_credentials,
+    group_by_role_and_credentials,
     read_inventory,
     read_ips_from_file,
     set_hostnames,
@@ -77,14 +77,17 @@ def cmd_provision_telegraf_metrics(args):
         console.print(f"  Target hosts: {len(entries)}")
         console.print()
 
-        groups = group_by_credentials(entries)
+        groups = group_by_role_and_credentials(entries)
         clear_known_hosts(all_ips, console)
         set_hostnames(entries, console)
 
-        for (ssh_user, ssh_key), ips in groups.items():
+        for (role, ssh_user, ssh_key), ips in groups.items():
+            # Bootstrap VMs run a single service; node VMs run many.
+            # node_count=0 makes telegraf_metrics auto-detect based on
+            # actual services present, so it's safe for either.
             console.print(
                 f"[bold]Provisioning {len(ips)} host(s) "
-                f"(ssh_user={ssh_user})...[/bold]"
+                f"(role={role}, ssh_user={ssh_user})...[/bold]"
             )
             try:
                 TelegrafMetricsProvisioner(
@@ -92,7 +95,7 @@ def cmd_provision_telegraf_metrics(args):
                     ssh_key_path=ssh_key,
                     ssh_user=ssh_user,
                     node_count=0,
-                    host_role="WAN_NODE",
+                    host_role=role,
                     influxdb_url=influxdb_url,
                     influxdb_token=influxdb_token,
                     influxdb_org=influxdb_org,
@@ -166,17 +169,28 @@ def cmd_provision_telegraf_metrics(args):
             sys.exit(1)
 
         node_count = state.get("node_count", 0)
+        bootstrap_nodes = state.get("bootstrap_nodes") or []
         bootstrap_ip = state.get("bootstrap_ip")
         vm_ips = state.get("vm_ips", {})
+
+        if bootstrap_nodes:
+            genesis_ips = [
+                n["ip"] for n in bootstrap_nodes
+                if n.get("bootstrap_index") == 1 and n.get("ip")
+            ]
+            secondary_ips = [
+                n["ip"] for n in bootstrap_nodes
+                if n.get("bootstrap_index", 0) >= 2 and n.get("ip")
+            ]
+        else:
+            genesis_ips = [bootstrap_ip] if bootstrap_ip else []
+            secondary_ips = []
 
         regular_ips = []
         for region_key in sorted(vm_ips.keys()):
             regular_ips.extend(vm_ips[region_key])
 
-        all_ips = []
-        if bootstrap_ip:
-            all_ips.append(bootstrap_ip)
-        all_ips.extend(regular_ips)
+        all_ips = list(genesis_ips) + list(secondary_ips) + list(regular_ips)
 
         console.print(f"  InfluxDB URL: {influxdb_url}")
         console.print(f"  Target hosts: {len(all_ips)}")
@@ -186,22 +200,28 @@ def cmd_provision_telegraf_metrics(args):
 
         clear_known_hosts(all_ips, console)
 
-        # Provision genesis VM (1 node)
-        if bootstrap_ip:
+        # Provision bootstrap VMs (genesis + any secondary bootstraps)
+        for role, is_genesis, ips in [
+            ("GENESIS", True, genesis_ips),
+            ("BOOTSTRAP", True, secondary_ips),
+        ]:
+            if not ips:
+                continue
             console.print(
-                f"[bold]Provisioning Telegraf on genesis node ({bootstrap_ip})...[/bold]"
+                f"[bold]Provisioning Telegraf on {len(ips)} {role} "
+                f"node(s): {', '.join(ips)}...[/bold]"
             )
             try:
                 TelegrafMetricsProvisioner(
-                    host_ips=[bootstrap_ip],
+                    host_ips=ips,
                     node_count=1,
-                    is_genesis=True,
-                    host_role="GENESIS",
+                    is_genesis=is_genesis,
+                    host_role=role,
                     **common_kwargs,
                 ).execute()
             except Exception as e:
                 console.print(
-                    f"[bold red]Telegraf metrics provisioning failed on genesis:"
+                    f"[bold red]Telegraf metrics provisioning failed on {role}:"
                     f"[/bold red] {e}"
                 )
                 sys.exit(1)

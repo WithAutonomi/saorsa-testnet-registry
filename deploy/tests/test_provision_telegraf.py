@@ -163,6 +163,87 @@ class TestBuildTelegrafConfig:
         p = _make_provisioner(from_beginning=True)
         assert "__FROM_BEGINNING__" not in p._build_telegraf_config()
 
+    def test_tagdrop_placeholder_fully_substituted(self):
+        p = _make_provisioner()
+        assert "__TAGDROP_BLOCK__" not in p._build_telegraf_config()
+
+    def test_default_drops_only_debug_and_trace(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        p = _make_provisioner()
+        config = p._build_telegraf_config()
+        parsed = tomllib.loads(config)
+        tagdrop = parsed["inputs"]["tail"][0]["tagdrop"]
+        # INFO is kept by default — post-hoc investigation needs it.
+        assert set(tagdrop["level"]) == {"DEBUG", "TRACE"}
+
+    def test_default_buffer_limits(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        p = _make_provisioner()
+        parsed = tomllib.loads(p._build_telegraf_config())
+        assert parsed["agent"]["metric_buffer_limit"] == 2_000_000
+        assert parsed["inputs"]["tail"][0]["max_undelivered_lines"] == 500_000
+
+    def test_custom_buffer_limit_scales_tail_default(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        p = _make_provisioner(metric_buffer_limit=400_000)
+        parsed = tomllib.loads(p._build_telegraf_config())
+        assert parsed["agent"]["metric_buffer_limit"] == 400_000
+        # tail buffer defaults to 1/4 of output buffer
+        assert parsed["inputs"]["tail"][0]["max_undelivered_lines"] == 100_000
+
+    def test_explicit_max_undelivered_lines_wins(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        p = _make_provisioner(
+            metric_buffer_limit=1_000_000,
+            max_undelivered_lines=50_000,
+        )
+        parsed = tomllib.loads(p._build_telegraf_config())
+        assert parsed["inputs"]["tail"][0]["max_undelivered_lines"] == 50_000
+
+    def test_rejects_nonpositive_buffer_limit(self):
+        with pytest.raises(ValueError, match="metric_buffer_limit"):
+            _make_provisioner(metric_buffer_limit=0)
+
+    def test_custom_drop_levels(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        p = _make_provisioner(drop_log_levels=["DEBUG"])
+        config = p._build_telegraf_config()
+        parsed = tomllib.loads(config)
+        tagdrop = parsed["inputs"]["tail"][0]["tagdrop"]
+        assert tagdrop["level"] == ["DEBUG"]
+
+    def test_empty_drop_levels_omits_tagdrop(self):
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        p = _make_provisioner(drop_log_levels=[])
+        config = p._build_telegraf_config()
+        parsed = tomllib.loads(config)
+        # No tagdrop key at all when the caller opts out explicitly
+        assert "tagdrop" not in parsed["inputs"]["tail"][0]
+
 
 class TestBuildUnitFile:
     def test_has_systemd_sections(self):
@@ -529,8 +610,18 @@ class TestReadInventory:
         }))
         entries = read_inventory(str(inv))
         assert len(entries) == 2
-        assert entries[0] == {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"}
-        assert entries[1] == {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"}
+        assert entries[0] == {
+            "ip": "10.0.0.1",
+            "ssh_user": "ubuntu",
+            "ssh_key": "~/.ssh/key",
+            "role": "WAN_NODE",
+        }
+        assert entries[1] == {
+            "ip": "10.0.0.2",
+            "ssh_user": "root",
+            "ssh_key": "~/.ssh/id_rsa",
+            "role": "WAN_NODE",
+        }
 
     def test_defaults_ssh_user_and_key(self, tmp_path):
         import json
@@ -542,15 +633,71 @@ class TestReadInventory:
         entries = read_inventory(str(inv))
         assert entries[0]["ssh_user"] == "root"
         assert entries[0]["ssh_key"] == "~/.ssh/id_rsa"
+        assert entries[0]["role"] == "WAN_NODE"
 
-    def test_raises_on_empty_node_vms(self, tmp_path):
+    def test_reads_bootstrap_vms_with_role(self, tmp_path):
         import json
 
         from saorsa_deploy.cmd.provision_telegraf import read_inventory
 
         inv = tmp_path / "inventory.json"
-        inv.write_text(json.dumps({"node_vms": []}))
-        with pytest.raises(ValueError, match="No node_vms found"):
+        inv.write_text(json.dumps({
+            "bootstrap_vms": [
+                {
+                    "name": "t-bs-1",
+                    "ip": "10.0.0.100",
+                    "bootstrap_index": 1,
+                    "ssh_user": "root",
+                    "ssh_key": "~/.ssh/id_rsa",
+                },
+                {
+                    "name": "t-bs-2",
+                    "ip": "10.0.0.101",
+                    "bootstrap_index": 2,
+                    "ssh_user": "root",
+                    "ssh_key": "~/.ssh/id_rsa",
+                },
+            ],
+            "node_vms": [],
+        }))
+        entries = read_inventory(str(inv))
+        assert [(e["ip"], e["role"], e["name"]) for e in entries] == [
+            ("10.0.0.100", "GENESIS", "t-bs-1"),
+            ("10.0.0.101", "BOOTSTRAP", "t-bs-2"),
+        ]
+
+    def test_reads_bootstrap_and_node_vms(self, tmp_path):
+        import json
+
+        from saorsa_deploy.cmd.provision_telegraf import read_inventory
+
+        inv = tmp_path / "inventory.json"
+        inv.write_text(json.dumps({
+            "bootstrap_vms": [
+                {"ip": "10.0.0.100", "bootstrap_index": 1},
+                {"ip": "10.0.0.101", "bootstrap_index": 2},
+            ],
+            "node_vms": [
+                {"ip": "10.0.1.1"},
+                {"ip": "10.0.1.2"},
+            ],
+        }))
+        entries = read_inventory(str(inv))
+        assert [e["role"] for e in entries] == [
+            "GENESIS",
+            "BOOTSTRAP",
+            "WAN_NODE",
+            "WAN_NODE",
+        ]
+
+    def test_raises_on_empty_inventory(self, tmp_path):
+        import json
+
+        from saorsa_deploy.cmd.provision_telegraf import read_inventory
+
+        inv = tmp_path / "inventory.json"
+        inv.write_text(json.dumps({"node_vms": [], "bootstrap_vms": []}))
+        with pytest.raises(ValueError, match="No bootstrap_vms or node_vms"):
             read_inventory(str(inv))
 
     def test_raises_on_missing_file(self):
@@ -558,6 +705,47 @@ class TestReadInventory:
 
         with pytest.raises(OSError):
             read_inventory("/nonexistent/inventory.json")
+
+
+class TestGroupByRoleAndCredentials:
+    def test_groups_by_role_and_credentials(self):
+        from saorsa_deploy.cmd.provision_telegraf import (
+            group_by_role_and_credentials,
+        )
+
+        entries = [
+            {
+                "ip": "10.0.0.1",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/id_rsa",
+                "role": "GENESIS",
+            },
+            {
+                "ip": "10.0.0.2",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/id_rsa",
+                "role": "BOOTSTRAP",
+            },
+            {
+                "ip": "10.0.0.3",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/id_rsa",
+                "role": "WAN_NODE",
+            },
+            {
+                "ip": "10.0.0.4",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/id_rsa",
+                "role": "WAN_NODE",
+            },
+        ]
+        groups = group_by_role_and_credentials(entries)
+        assert groups[("GENESIS", "root", "~/.ssh/id_rsa")] == ["10.0.0.1"]
+        assert groups[("BOOTSTRAP", "root", "~/.ssh/id_rsa")] == ["10.0.0.2"]
+        assert groups[("WAN_NODE", "root", "~/.ssh/id_rsa")] == [
+            "10.0.0.3",
+            "10.0.0.4",
+        ]
 
 
 class TestGroupByCredentials:
