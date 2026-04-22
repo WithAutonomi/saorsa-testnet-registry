@@ -22,6 +22,13 @@ def _try_load_deployment_state(name: str) -> dict | None:
         return None
 
 
+def _parse_regions_list(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    parts = [r.strip() for r in raw.split(",") if r.strip()]
+    return parts or None
+
+
 def cmd_infra_bootstraps(args):
     """Create the bootstrap VMs for a deployment.
 
@@ -31,10 +38,16 @@ def cmd_infra_bootstraps(args):
     """
     console = Console()
 
-    bootstrap_count = getattr(args, "bootstrap_count", 1)
+    regions_override = _parse_regions_list(getattr(args, "do_regions_list", None))
+    if regions_override is not None:
+        bootstrap_count = len(regions_override)
+    else:
+        bootstrap_count = getattr(args, "bootstrap_count", 1)
     if bootstrap_count < 1 or bootstrap_count > 7:
+        flag = "--do-regions-list" if regions_override is not None else "--bootstrap-count"
         console.print(
-            "[bold red]Error:[/bold red] --bootstrap-count must be between 1 and 7."
+            f"[bold red]Error:[/bold red] {flag} must resolve to between 1 and 7 "
+            "bootstrap node(s)."
         )
         sys.exit(1)
 
@@ -53,13 +66,29 @@ def cmd_infra_bootstraps(args):
     if existing_state and existing_state.get("bootstrap_nodes"):
         bootstrap_nodes = existing_state["bootstrap_nodes"]
         if len(bootstrap_nodes) != bootstrap_count:
+            mismatch_flag = (
+                "--do-regions-list"
+                if regions_override is not None
+                else "--bootstrap-count"
+            )
             console.print(
                 f"[bold red]Error:[/bold red] Deployment '{args.name}' already has "
-                f"{len(bootstrap_nodes)} bootstrap node(s), but --bootstrap-count is "
-                f"{bootstrap_count}. Destroy the existing bootstraps first or re-run "
-                "with the matching count."
+                f"{len(bootstrap_nodes)} bootstrap node(s), but {mismatch_flag} "
+                f"resolves to {bootstrap_count}. Destroy the existing bootstraps "
+                "first or re-run with the matching count."
             )
             sys.exit(1)
+        if regions_override is not None:
+            existing_regions = [n["region"] for n in bootstrap_nodes]
+            if existing_regions != regions_override:
+                console.print(
+                    f"[bold red]Error:[/bold red] Deployment '{args.name}' already has "
+                    f"bootstraps in regions {', '.join(existing_regions)}, but "
+                    f"--do-regions-list requests {', '.join(regions_override)}. "
+                    "Destroy the existing bootstraps first or re-run with the "
+                    "matching regions."
+                )
+                sys.exit(1)
         console.print(
             f"[bold]Reusing {len(bootstrap_nodes)} existing bootstrap VM(s) "
             f"for {args.name}.[/bold]"
@@ -107,6 +136,7 @@ def cmd_infra_bootstraps(args):
             count=bootstrap_count,
             volume_size=args.attached_volume_size,
             console=console,
+            regions_override=regions_override,
         )
         for node in bootstrap_nodes:
             console.print(

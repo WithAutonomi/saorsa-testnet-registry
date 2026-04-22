@@ -16,12 +16,31 @@ BOOTSTRAP_STATE_KEY_PREFIX = "saorsa-deploy/do-bootstrap"
 BOOTSTRAP_DROPLET_SIZE = "s-2vcpu-4gb"
 
 
-def _select_bootstrap_regions(count: int) -> list[str]:
-    """Select geographically distributed DO regions for bootstrap nodes.
+def _select_bootstrap_regions(
+    count: int,
+    regions_override: list[str] | None = None,
+) -> list[str]:
+    """Select Digital Ocean regions for bootstrap nodes.
 
-    Returns the first `count` regions from the DO provider's region list.
+    When ``regions_override`` is supplied the regions are pinned to that
+    exact list (order preserved); unknown region slugs raise ``ValueError``
+    listing the known regions. ``count`` is ignored in that case — the
+    caller should derive it from ``len(regions_override)``.
+
+    Otherwise returns the first ``count`` regions from the DO provider's
+    default ordering.
     """
     do_regions = PROVIDERS["digitalocean"].regions
+
+    if regions_override is not None:
+        unknown = [r for r in regions_override if r not in do_regions]
+        if unknown:
+            raise ValueError(
+                f"Unknown digitalocean region(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(do_regions)}"
+            )
+        return list(regions_override)
+
     if count > len(do_regions):
         raise ValueError(
             f"Requested {count} bootstrap nodes, but only {len(do_regions)} "
@@ -151,8 +170,13 @@ def create_bootstrap_vms(
     volume_size: int = 20,
     droplet_size: str = BOOTSTRAP_DROPLET_SIZE,
     console: Console | None = None,
+    regions_override: list[str] | None = None,
 ) -> list[dict]:
     """Create bootstrap VMs via Terraform across geographically distributed regions.
+
+    When ``regions_override`` is supplied the regions are pinned to that
+    exact list (``count`` is ignored — caller should pass
+    ``len(regions_override)``).
 
     The caller is responsible for ensuring no stale bootstrap Terraform state
     exists (use ``list_stale_bootstrap_state_keys`` / ``purge_stale_bootstrap_state``
@@ -163,7 +187,7 @@ def create_bootstrap_vms(
     entry (index=1) is the genesis node.
     """
     console = console or Console()
-    regions = _select_bootstrap_regions(count)
+    regions = _select_bootstrap_regions(count, regions_override=regions_override)
     configs = _build_bootstrap_configs(name, regions, volume_size, droplet_size)
 
     console.print(

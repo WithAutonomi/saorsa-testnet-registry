@@ -607,7 +607,17 @@ def main():
         default=1,
         help="Number of bootstrap nodes (1-7, default: 1). "
         "Node #1 is the genesis node. Additional nodes are geographically "
-        "distributed across Digital Ocean regions.",
+        "distributed across Digital Ocean regions. "
+        "Ignored if --do-regions-list is set.",
+    )
+    infra_bootstraps_parser.add_argument(
+        "--do-regions-list",
+        type=str,
+        default=None,
+        help="Comma-separated list of specific Digital Ocean regions to use "
+        "for bootstrap VMs (e.g. lon1,nyc1,ams3). Overrides --bootstrap-count "
+        "and the default ordering; no fallback substitution. List length "
+        "becomes the bootstrap count (1-7).",
     )
 
     # === infra-clients ===

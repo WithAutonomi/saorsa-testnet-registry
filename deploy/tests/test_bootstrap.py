@@ -29,12 +29,34 @@ class TestSelectBootstrapRegions:
         ]
 
     def test_raises_when_count_exceeds_available_regions(self):
-        with pytest.raises(ValueError, match="only 8"):
-            _select_bootstrap_regions(9)
+        with pytest.raises(ValueError, match="only 9"):
+            _select_bootstrap_regions(10)
 
     def test_all_regions_unique(self):
         regions = _select_bootstrap_regions(7)
         assert len(set(regions)) == 7
+
+    def test_override_pins_exact_regions_in_order(self):
+        regions = _select_bootstrap_regions(
+            1, regions_override=["fra1", "lon1", "syd1"]
+        )
+        assert regions == ["fra1", "lon1", "syd1"]
+
+    def test_override_ignores_count_argument(self):
+        regions = _select_bootstrap_regions(
+            99, regions_override=["lon1"]
+        )
+        assert regions == ["lon1"]
+
+    def test_override_rejects_unknown_region(self):
+        with pytest.raises(ValueError, match="Unknown digitalocean region"):
+            _select_bootstrap_regions(
+                2, regions_override=["lon1", "not-a-region"]
+            )
+
+    def test_override_lists_known_regions_in_error(self):
+        with pytest.raises(ValueError, match="lon1"):
+            _select_bootstrap_regions(1, regions_override=["bogus"])
 
 
 class TestBuildBootstrapConfigs:

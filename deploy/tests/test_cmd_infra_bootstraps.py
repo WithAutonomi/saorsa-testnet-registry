@@ -12,6 +12,7 @@ def _args(**overrides):
         "attached_volume_size": 20,
         "bootstrap_count": 3,
         "force": False,
+        "do_regions_list": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -156,3 +157,80 @@ class TestArgValidation:
     def test_rejects_bootstrap_count_above_seven(self, patches):
         with pytest.raises(SystemExit):
             cmd_infra_bootstraps(_args(bootstrap_count=8))
+
+
+class TestDoRegionsList:
+    def test_list_overrides_count_and_is_passed_through(self, patches):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+        patches.create_boot.return_value = [
+            {"ip": "1.2.3.4", "region": "fra1", "bootstrap_index": 1},
+            {"ip": "5.6.7.8", "region": "lon1", "bootstrap_index": 2},
+        ]
+
+        cmd_infra_bootstraps(
+            _args(bootstrap_count=7, do_regions_list="fra1, lon1")
+        )
+
+        patches.create_boot.assert_called_once()
+        kwargs = patches.create_boot.call_args.kwargs
+        assert kwargs["regions_override"] == ["fra1", "lon1"]
+        assert kwargs["count"] == 2
+
+    def test_empty_list_string_behaves_like_unset(self, patches):
+        patches.load_state.side_effect = RuntimeError("No deployment state found")
+        patches.create_boot.return_value = [
+            {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+            {"ip": "3.3.3.3", "region": "ams3", "bootstrap_index": 3},
+        ]
+
+        cmd_infra_bootstraps(_args(bootstrap_count=3, do_regions_list=""))
+
+        kwargs = patches.create_boot.call_args.kwargs
+        assert kwargs["regions_override"] is None
+        assert kwargs["count"] == 3
+
+    def test_list_with_more_than_seven_regions_errors(self, patches):
+        eight = "lon1,nyc1,ams3,sfo3,sgp1,blr1,fra1,tor1"
+        with pytest.raises(SystemExit):
+            cmd_infra_bootstraps(_args(do_regions_list=eight))
+
+        patches.create_boot.assert_not_called()
+
+    def test_rerun_with_matching_list_reuses_bootstraps(self, patches):
+        nodes = [
+            {"ip": "1.1.1.1", "region": "fra1", "bootstrap_index": 1},
+            {"ip": "2.2.2.2", "region": "lon1", "bootstrap_index": 2},
+        ]
+        patches.load_state.return_value = {"bootstrap_nodes": nodes}
+
+        cmd_infra_bootstraps(_args(do_regions_list="fra1,lon1"))
+
+        patches.create_boot.assert_not_called()
+        patches.save_state.assert_not_called()
+        patches.update_state.assert_not_called()
+
+    def test_rerun_with_mismatched_list_errors(self, patches):
+        nodes = [
+            {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+        ]
+        patches.load_state.return_value = {"bootstrap_nodes": nodes}
+
+        with pytest.raises(SystemExit):
+            cmd_infra_bootstraps(_args(do_regions_list="fra1,lon1"))
+
+        patches.create_boot.assert_not_called()
+
+    def test_rerun_with_mismatched_list_length_errors(self, patches):
+        nodes = [
+            {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            {"ip": "2.2.2.2", "region": "nyc1", "bootstrap_index": 2},
+            {"ip": "3.3.3.3", "region": "ams3", "bootstrap_index": 3},
+        ]
+        patches.load_state.return_value = {"bootstrap_nodes": nodes}
+
+        with pytest.raises(SystemExit):
+            cmd_infra_bootstraps(_args(do_regions_list="lon1,nyc1"))
+
+        patches.create_boot.assert_not_called()

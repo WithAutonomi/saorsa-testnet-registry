@@ -63,6 +63,18 @@ and `regions` empty. Re-running with the same count is a no-op
 (idempotent); a different `--bootstrap-count` errors out — destroy the
 existing bootstraps first.
 
+To pin the exact regions instead of relying on the default ordering — useful
+when a region is suffering availability issues — pass
+`--do-regions-list` (comma-separated). The list length becomes the
+bootstrap count, so `--bootstrap-count` is ignored. On rerun, the list
+must match the existing bootstrap regions (same values in the same order)
+or the command errors out.
+
+```bash
+uv run saorsa-deploy infra-bootstraps --name DEV-01 \
+    --do-regions-list lon1,nyc1,fra1 --attached-volume-size 50
+```
+
 ### `infra-nodes`
 
 Create the node (main) VMs across one or more providers. Requires
