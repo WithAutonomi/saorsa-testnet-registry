@@ -639,7 +639,7 @@ def record_file_results(
     if monitoring_name:
         cli_args.extend(["--monitoring-name", monitoring_name])
     if window:
-        cli_args.extend(["--window", window])
+        cli_args.append(f"--window={window}")
     if influx_url:
         cli_args.extend(["--influx-url", influx_url])
     if influx_token:
@@ -696,7 +696,7 @@ def record_results(
     if monitoring_name:
         cli_args.extend(["--monitoring-name", monitoring_name])
     if window:
-        cli_args.extend(["--window", window])
+        cli_args.append(f"--window={window}")
     if influx_url:
         cli_args.extend(["--influx-url", influx_url])
     if influx_token:
