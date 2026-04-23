@@ -866,10 +866,21 @@ def main():
             default="-30d",
             help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
         )
-        p.add_argument(
+        mode = p.add_mutually_exclusive_group()
+        mode.add_argument(
             "--recent",
             action="store_true",
             help="Only show the 10 most recent operations per client",
+        )
+        mode.add_argument(
+            "--summary",
+            action="store_true",
+            help=(
+                "Print a per-host aggregate summary (start time, elapsed, "
+                "total/success/failure counts, and average duration) instead "
+                "of per-operation tables. For uploads, averages are grouped "
+                "by store_concurrency."
+            ),
         )
 
     # === print-downloads ===
