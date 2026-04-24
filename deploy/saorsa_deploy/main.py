@@ -883,6 +883,101 @@ def main():
             ),
         )
 
+    # === prod (nested: prod <subsystem> <action>) ===
+    prod_parser = subparsers.add_parser(
+        "prod",
+        help="Production-network operations (e.g. prod continuous-downloader deploy).",
+    )
+    prod_subparsers = prod_parser.add_subparsers(
+        dest="prod_subcommand", required=True
+    )
+
+    # --- prod continuous-downloader ---
+    prod_cd_parser = prod_subparsers.add_parser(
+        "continuous-downloader",
+        help="Continuously download from the Autonomi production network "
+        "to measure performance.",
+    )
+    prod_cd_subparsers = prod_cd_parser.add_subparsers(
+        dest="prod_cd_action", required=True
+    )
+
+    prod_cd_deploy_parser = prod_cd_subparsers.add_parser(
+        "deploy",
+        help="Deploy a prod continuous-downloader client VM and its monitoring stack.",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (also used for the paired monitoring stack).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--spec",
+        type=str,
+        required=True,
+        help="Downloader VM spec 'region[:vm_size]' (single client VM).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--addresses-file",
+        type=str,
+        default=None,
+        help="Local path to a newline-separated list of public file addresses. "
+        "Defaults to the list shipped in resources/prod_addresses.txt.",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--monitoring-volume-size",
+        type=int,
+        default=50,
+        help="Monitoring VM attached volume size in GB (default: 50).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa).",
+    )
+
+    prod_cd_destroy_parser = prod_cd_subparsers.add_parser(
+        "destroy",
+        help="Destroy a prod continuous-downloader deployment "
+        "(clients and, optionally, monitoring).",
+    )
+    prod_cd_destroy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name to tear down.",
+    )
+    prod_cd_destroy_parser.add_argument(
+        "--keep-monitoring",
+        action="store_true",
+        help="Leave the paired monitoring VM running so recorded metrics "
+        "remain queryable after the client VM is gone. "
+        "Default: the monitoring VM is destroyed alongside the client.",
+    )
+    prod_cd_destroy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
     # === print-downloads ===
     print_downloads_parser = subparsers.add_parser(
         "print-downloads",
@@ -1034,6 +1129,23 @@ def main():
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+    provision_clients_parser.add_argument(
+        "--addresses-file",
+        type=str,
+        default=None,
+        help="Local path to a newline-separated list of public file addresses. "
+        "When provided, the contents are written to /var/lib/ant-client/addresses.txt "
+        "on every download-role client VM, and the downloader reads from this file "
+        "instead of fetching from S3. Has no effect on upload-role VMs.",
+    )
+    provision_clients_parser.add_argument(
+        "--prod",
+        action="store_true",
+        help="Point the client VMs at the canonical Autonomi production network. "
+        "Fetches the bootstrap peers list from the WithAutonomi/ant-client repo "
+        "at runtime, skips the usual testnet deployment-state bootstrap lookup, "
+        "and relaxes wallet-secret-key / client-AWS-creds requirements (download-only).",
     )
 
     # === provision-elastic ===
@@ -1919,6 +2031,25 @@ def main():
         from saorsa_deploy.cmd.print_file_ops import cmd_print_uploads
 
         cmd_print_uploads(args)
+    elif args.command == "prod":
+        if (
+            args.prod_subcommand == "continuous-downloader"
+            and args.prod_cd_action == "deploy"
+        ):
+            from saorsa_deploy.cmd.prod_continuous_downloader import (
+                cmd_prod_continuous_downloader_deploy,
+            )
+
+            cmd_prod_continuous_downloader_deploy(args)
+        elif (
+            args.prod_subcommand == "continuous-downloader"
+            and args.prod_cd_action == "destroy"
+        ):
+            from saorsa_deploy.cmd.prod_continuous_downloader import (
+                cmd_prod_continuous_downloader_destroy,
+            )
+
+            cmd_prod_continuous_downloader_destroy(args)
     elif args.command == "provision-bootstraps":
         from saorsa_deploy.cmd.provision_bootstraps import cmd_provision_bootstraps
 

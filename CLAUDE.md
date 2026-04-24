@@ -156,6 +156,17 @@ The pipeline for an extension skips the bootstrap/genesis stages entirely: `exte
 
 `destroy-bootstraps` now scans for any deployment whose `shared_bootstrap_from` matches the name being destroyed and refuses if dependents exist. `--force` does not override this — the user must `unextend` each dependent first.
 
+### Running a prod continuous-downloader
+
+`prod continuous-downloader deploy` is a higher-level saorsa-deploy command that stands up a single-VM client deployment running `ant-downloader` continuously against the **production** Autonomi network, with a paired InfluxDB monitoring VM (always in `lon1`). The bootstrap peers list is fetched at runtime from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml); a curated list of public file addresses ships at `deploy/saorsa_deploy/resources/prod_addresses.txt` and can be overridden with `--addresses-file`.
+
+- Single VM per deployment; takes one `--spec region[:vm_size]` (download-only — uploaders are rejected).
+- Monitoring is mandatory and created inside the same command (reuses `monitoring-infra` + `provision-monitoring`).
+- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` so `record-file-results --name ... --monitoring-name ... --window -1h` works unchanged against it.
+- `prod continuous-downloader destroy` tears down the monitoring VM alongside the client by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack for after-the-fact analysis.
+
+See `deploy/README.md` §"Running continuous downloaders against production" for the full argument table and sequencing.
+
 ### Deployment Statuses
 
 `pending` → `running` → `stopped` (success) or `failed`

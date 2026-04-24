@@ -557,6 +557,61 @@ uv run saorsa-deploy destroy-bootstrap-production
 | `--ssh-key-path` | string | `~/.ssh/ant-production` | Path to SSH private key |
 | `--force` | flag | - | Skip confirmation prompt |
 
+### Running continuous downloaders against production (`prod continuous-downloader`)
+
+`prod continuous-downloader deploy` stands up a single client VM running `ant-downloader` continuously against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `record-file-results` workflow can be used to upsert download aggregates into PostgreSQL.
+
+Unlike `bootstrap-production`, this command does **not** provision any bootstrap/genesis/node infrastructure — it fetches the live peers list from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml) at runtime and points the downloader service at those peers via `--bootstrap ip:port`.
+
+```bash
+uv run saorsa-deploy prod continuous-downloader deploy \
+  --name PROD-DL-01 \
+  --spec lon1 \
+  --addresses-file my-addresses.txt   # optional, defaults to resources/prod_addresses.txt
+```
+
+Orchestrated sequence (each step is skipped when its state already exists, so the command is idempotent under reruns):
+
+1. `monitoring-infra` + `provision-monitoring` for an InfluxDB VM in `lon1` named identically to `--name`.
+2. `infra-clients` for the single `--spec` (passed internally as one `--downloader`; no uploaders — prod mode is download-only).
+3. `provision-clients --prod --addresses-file <path> --monitoring-name <name>` which:
+   - Fetches the prod peers list and writes `BOOTSTRAP_ARGS` against them.
+   - Writes the address list to `/var/lib/ant-client/addresses.txt` on the VM.
+   - Teaches `downloader.sh` to prefer that file over the usual S3 uploader-emitted feed.
+4. `start-clients` to launch the `ant-downloader` systemd service.
+
+Arguments (for `prod continuous-downloader deploy`):
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | — | Deployment name; also used for the paired monitoring stack |
+| `--spec` | string | — | Downloader VM `region[:vm_size]` (single VM) |
+| `--addresses-file` | path | shipped default | Local file of newline-separated addresses |
+| `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
+| `--ant-version` | string | — | Optional explicit release version |
+| `--monitoring-volume-size` | int | `50` | Monitoring VM attached volume size (GB) |
+| `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key |
+
+The monitoring VM always uses region `lon1`.
+
+After the command reports success, record download aggregates into Postgres on demand:
+
+```bash
+uv run saorsa-deploy record-file-results \
+  --name PROD-DL-01 --monitoring-name PROD-DL-01 --window -1h
+```
+
+The command registers a row in the `deployments` table with `deploy_args.kind = "prod-continuous-downloader"` so the web UI and API can distinguish these from testnet deployments.
+
+To tear down:
+
+```bash
+uv run saorsa-deploy prod continuous-downloader destroy --name PROD-DL-01
+# add --keep-monitoring to preserve the InfluxDB VM so historical metrics remain queryable
+```
+
+By default the monitoring VM is destroyed alongside the client. Pass `--keep-monitoring` when you want to keep the InfluxDB + Grafana stack running for after-the-fact analysis.
+
 ### Static IP Management
 
 Static IPs are allocated outside Terraform and stored in `deploy/production-ips.json`. This ensures IPs survive VM teardown and recreation. The IPs were allocated using provider CLIs:

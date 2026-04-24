@@ -24,13 +24,38 @@ SET_HOSTNAME_OP_NAME = "Set system hostname"
 
 def build_disable_unattended_upgrades_command() -> str:
     """Return a shell command that fully disables Ubuntu's automatic upgrade
-    machinery. Idempotent; requires root.
+    machinery and waits for any in-flight apt transaction to release its locks
+    before returning. Idempotent; requires root.
+
+    On a fresh DigitalOcean/Hetzner Ubuntu droplet, cloud-init often launches
+    ``apt-daily.service`` / ``apt-daily-upgrade.service`` / ``unattended-upgrades``
+    within seconds of the VM coming up, and the running apt-get holds
+    ``/var/lib/dpkg/lock-frontend`` + ``/var/lib/apt/lists/lock``. Just
+    disabling the timers isn't enough — we have to stop whatever is currently
+    running, wait for it to let go, then mask + purge so nothing relaunches.
     """
     return (
+        # Stop the one-shot services themselves in addition to the timers, so
+        # an in-flight run gets SIGTERM'd instead of being allowed to finish.
+        "systemctl stop apt-daily.service apt-daily-upgrade.service "
+        "unattended-upgrades.service 2>/dev/null || true; "
         "systemctl disable --now apt-daily.timer apt-daily-upgrade.timer "
         "2>/dev/null || true; "
         "systemctl mask apt-daily.service apt-daily-upgrade.service "
+        "unattended-upgrades.service "
         "apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true; "
+        # Wait up to ~5 minutes for any apt-get still holding the locks to
+        # finish. If it still won't let go after that, skip the purge but let
+        # downstream ops try anyway — any later apt op will also retry-wait
+        # since it hits the same lock.
+        "for i in $(seq 1 150); do "
+        "if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 "
+        "&& ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1 "
+        "&& ! fuser /var/lib/dpkg/lock >/dev/null 2>&1; then "
+        "break; "
+        "fi; "
+        "sleep 2; "
+        "done; "
         "DEBIAN_FRONTEND=noninteractive apt-get -y purge unattended-upgrades "
         "2>/dev/null || true; "
         "echo 'UU:DISABLED'"
