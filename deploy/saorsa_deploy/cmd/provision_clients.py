@@ -2,6 +2,7 @@ import sys
 
 from rich.console import Console
 
+from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_client_state, load_deployment_state
@@ -141,12 +142,36 @@ def _resolve_wallet_secret_key(args, console):
     sys.exit(1)
 
 
+def _resolve_addresses_file_content(args, console) -> str | None:
+    """Load the local addresses file into a string, or return None if not provided.
+
+    Exits with an error if the path is given but unreadable / empty.
+    """
+    path = getattr(args, "addresses_file", None)
+    if not path:
+        return None
+    try:
+        content = open(path).read()
+    except OSError as e:
+        console.print(
+            f"[bold red]Error:[/bold red] Cannot read --addresses-file {path}: {e}"
+        )
+        sys.exit(1)
+    stripped = content.strip()
+    if not stripped:
+        console.print(
+            f"[bold red]Error:[/bold red] --addresses-file {path} is empty."
+        )
+        sys.exit(1)
+    line_count = sum(1 for line in stripped.splitlines() if line.strip())
+    console.print(f"  Addresses file: {path} ({line_count} address(es))")
+    return stripped + "\n"
+
+
 def cmd_provision_clients(args):
     """Execute the provision-clients command: provision client VMs with uploader/downloader."""
     console = Console()
-
-    wallet_secret_key = _resolve_wallet_secret_key(args, console)
-    aws_access_key_id, aws_secret_access_key = _resolve_client_aws_creds(console)
+    prod_mode = getattr(args, "prod", False)
 
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
     try:
@@ -160,36 +185,63 @@ def cmd_provision_clients(args):
         console.print("[bold red]Error:[/bold red] No clients found in client state.")
         sys.exit(1)
 
-    # Load bootstrap peers from deployment state
-    console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
-    try:
-        deploy_state = load_deployment_state(args.name)
-    except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
+    has_uploaders = any(c.get("role", "upload") == "upload" for c in clients)
 
-    bootstrap_nodes = deploy_state.get("bootstrap_nodes", [])
-    bootstrap_port = deploy_state.get("bootstrap_port")
-    if not bootstrap_port:
+    if prod_mode and has_uploaders:
         console.print(
-            "[bold red]Error:[/bold red] No bootstrap port found in deployment state. "
-            "Has the provision-genesis command been run?"
+            "[bold red]Error:[/bold red] --prod mode does not support upload-role clients. "
+            "Re-run infra-clients with --downloader specs only."
         )
         sys.exit(1)
 
-    bootstrap_peers = []
-    for node in bootstrap_nodes:
-        port = node.get("port", bootstrap_port)
-        bootstrap_peers.append(f"{node['ip']}:{port}")
+    if has_uploaders:
+        wallet_secret_key = _resolve_wallet_secret_key(args, console)
+        aws_access_key_id, aws_secret_access_key = _resolve_client_aws_creds(console)
+    else:
+        wallet_secret_key = ""
+        aws_access_key_id, aws_secret_access_key = "", ""
+        console.print("  Wallet key: skipped (download-only deployment)")
+        console.print("  Client AWS creds: skipped (download-only deployment)")
+    addresses_file_content = _resolve_addresses_file_content(args, console)
 
-    if not bootstrap_peers:
-        bootstrap_ip = deploy_state.get("bootstrap_ip")
-        if not bootstrap_ip:
+    if prod_mode:
+        console.print("[bold]Fetching production bootstrap peers...[/bold]")
+        try:
+            bootstrap_peers = fetch_prod_bootstraps()
+        except ProdBootstrapsError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
+        console.print(f"  Using {len(bootstrap_peers)} production peers.")
+    else:
+        console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
+        try:
+            deploy_state = load_deployment_state(args.name)
+        except RuntimeError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
+
+        bootstrap_nodes = deploy_state.get("bootstrap_nodes", [])
+        bootstrap_port = deploy_state.get("bootstrap_port")
+        if not bootstrap_port:
             console.print(
-                "[bold red]Error:[/bold red] No bootstrap IP found in deployment state."
+                "[bold red]Error:[/bold red] No bootstrap port found in deployment state. "
+                "Has the provision-genesis command been run?"
             )
             sys.exit(1)
-        bootstrap_peers = [f"{bootstrap_ip}:{bootstrap_port}"]
+
+        bootstrap_peers = []
+        for node in bootstrap_nodes:
+            port = node.get("port", bootstrap_port)
+            bootstrap_peers.append(f"{node['ip']}:{port}")
+
+        if not bootstrap_peers:
+            bootstrap_ip = deploy_state.get("bootstrap_ip")
+            if not bootstrap_ip:
+                console.print(
+                    "[bold red]Error:[/bold red] No bootstrap IP found in deployment state."
+                )
+                sys.exit(1)
+            bootstrap_peers = [f"{bootstrap_ip}:{bootstrap_port}"]
 
     binary_url, binary_is_archive = _resolve_ant_binary(args, console)
     influx_url, influx_token, influx_org, influx_bucket = _resolve_influx_config(args, console)
@@ -230,6 +282,7 @@ def cmd_provision_clients(args):
         influx_org=influx_org,
         influx_bucket=influx_bucket,
         wallet_secret_key=wallet_secret_key,
+        addresses_file_content=addresses_file_content,
     )
 
     try:

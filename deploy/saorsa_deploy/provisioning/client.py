@@ -1,4 +1,6 @@
 
+import base64
+
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
 from pyinfra.api.operation import add_op
@@ -123,6 +125,7 @@ class AntClientProvisioner:
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
         wallet_secret_key: str = "",
+        addresses_file_content: str | None = None,
     ):
         self.clients = clients
         self.bootstrap_peers = bootstrap_peers
@@ -140,6 +143,7 @@ class AntClientProvisioner:
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
         self.wallet_secret_key = wallet_secret_key
+        self.addresses_file_content = addresses_file_content
 
     def execute(self) -> None:
         """Provision all client hosts with uploader/downloader services."""
@@ -388,6 +392,36 @@ systemctl daemon-reload"""
                 name="Write systemd unit files (role-aware)",
                 commands=[systemd_script],
             )
+
+            if self.addresses_file_content is not None:
+                download_ips = [
+                    ip for ip, env in ip_to_env.items() if env["role"] == "download"
+                ]
+                if download_ips:
+                    encoded = base64.b64encode(
+                        self.addresses_file_content.encode("utf-8")
+                    ).decode("ascii")
+                    addresses_case_entries = [
+                        f'    "{ip}") MATCH=1 ;;' for ip in download_ips
+                    ]
+                    addresses_case_block = "\n".join(addresses_case_entries)
+                    addresses_script = f"""\
+MY_IP=$(hostname -I | awk '{{print $1}}')
+MATCH=0
+case "$MY_IP" in
+{addresses_case_block}
+    *) MATCH=0 ;;
+esac
+if [ "$MATCH" = "1" ]; then
+    mkdir -p {CLIENT_DATA_DIR}
+    echo '{encoded}' | base64 -d > {CLIENT_DATA_DIR}/addresses.txt
+fi"""
+                    add_op(
+                        state,
+                        server.shell,
+                        name="Write static addresses file (download role only)",
+                        commands=[addresses_script],
+                    )
 
             run_ops(state)
 

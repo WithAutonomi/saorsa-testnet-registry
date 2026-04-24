@@ -3,9 +3,10 @@ set -euo pipefail
 
 # --- Configuration (set via environment) ---
 : "${BOOTSTRAP_ARGS:?BOOTSTRAP_ARGS must be set}"
-: "${ADDRESSES_S3_BUCKET:?ADDRESSES_S3_BUCKET must be set}"
-: "${ADDRESSES_S3_PREFIX:?ADDRESSES_S3_PREFIX must be set}"
 : "${REGION:?REGION must be set}"
+: "${ADDRESSES_FILE:=/var/lib/ant-client/addresses.txt}"
+: "${ADDRESSES_S3_BUCKET:=}"
+: "${ADDRESSES_S3_PREFIX:=}"
 : "${INFLUX_URL:=}"
 : "${INFLUX_TOKEN:=}"
 : "${INFLUX_ORG:=ant}"
@@ -16,7 +17,11 @@ set -euo pipefail
 : "${RUN_ONCE:=false}"
 
 CLIENT_HOST=$(hostname)
-S3_URI_PREFIX="s3://${ADDRESSES_S3_BUCKET}/${ADDRESSES_S3_PREFIX}/"
+if [ -n "$ADDRESSES_S3_BUCKET" ] && [ -n "$ADDRESSES_S3_PREFIX" ]; then
+    S3_URI_PREFIX="s3://${ADDRESSES_S3_BUCKET}/${ADDRESSES_S3_PREFIX}/"
+else
+    S3_URI_PREFIX=""
+fi
 
 submit_metric() {
     if [ -z "$INFLUX_URL" ] || [ -z "$INFLUX_TOKEN" ]; then
@@ -30,9 +35,18 @@ submit_metric() {
 }
 
 pick_random_address() {
-    # List upload-* objects under the prefix, pick a random one, fetch it,
-    # pick a random line. Returns empty string if no addresses available.
+    # Prefer a locally-provisioned static address list (e.g. from
+    # prod-continuous-downloader) when present and non-empty. Falls back to
+    # listing S3 uploader-emitted objects when no local file is available
+    # (the standard testnet flow).
     local listing key s3_uri address
+    if [ -s "$ADDRESSES_FILE" ]; then
+        shuf -n 1 "$ADDRESSES_FILE" || true
+        return 0
+    fi
+    if [ -z "$S3_URI_PREFIX" ]; then
+        return 0
+    fi
     listing=$(aws s3 ls "$S3_URI_PREFIX" 2>/dev/null | awk '{print $NF}' | grep '^upload-' || true)
     if [ -z "$listing" ]; then
         return 0
@@ -48,12 +62,21 @@ pick_random_address() {
 
 mkdir -p "$DOWNLOAD_DIR"
 
-echo "Downloader starting: host=${CLIENT_HOST} region=${REGION} s3_prefix=${S3_URI_PREFIX}"
+if [ -s "$ADDRESSES_FILE" ]; then
+    echo "Downloader starting: host=${CLIENT_HOST} region=${REGION} source=file:${ADDRESSES_FILE} ($(wc -l < "$ADDRESSES_FILE") addresses)"
+else
+    echo "Downloader starting: host=${CLIENT_HOST} region=${REGION} source=s3:${S3_URI_PREFIX:-<none>}"
+fi
 
 while true; do
     address=$(pick_random_address)
     if [ -z "$address" ]; then
-        echo "[$(date -u +%H:%M:%S)] No addresses available in ${S3_URI_PREFIX}, waiting..."
+        if [ -s "$ADDRESSES_FILE" ]; then
+            source_desc="file:${ADDRESSES_FILE}"
+        else
+            source_desc="s3:${S3_URI_PREFIX:-<none>}"
+        fi
+        echo "[$(date -u +%H:%M:%S)] No addresses available in ${source_desc}, waiting..."
         if [ "$RUN_ONCE" = "true" ]; then
             echo "RUN_ONCE=true but no addresses available, exiting."
             exit 1
