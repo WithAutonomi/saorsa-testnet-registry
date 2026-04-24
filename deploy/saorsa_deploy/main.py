@@ -816,6 +816,14 @@ def main():
         default=50,
         help="Size of attached volume in GB for InfluxDB data (default: 50)",
     )
+    monitoring_infra_parser.add_argument(
+        "--droplet-size",
+        type=str,
+        default="s-2vcpu-4gb",
+        help="Droplet size slug (default: s-2vcpu-4gb). "
+        "Use s-4vcpu-8gb or larger for large testnets with many "
+        "metric-forwarding VMs.",
+    )
 
     def _add_print_file_ops_args(p):
         p.add_argument(

@@ -1,7 +1,7 @@
 resource "digitalocean_droplet" "monitoring" {
   name     = "${var.name}-ant-monitoring-${var.region}"
   region   = var.region
-  size     = "s-2vcpu-4gb"
+  size     = var.droplet_size
   image    = "ubuntu-24-04-x64"
   ssh_keys = var.ssh_key_ids
 }

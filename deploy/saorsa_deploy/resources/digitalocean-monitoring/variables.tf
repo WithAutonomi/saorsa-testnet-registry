@@ -11,6 +11,11 @@ variable "region" {
   type = string
 }
 
+variable "droplet_size" {
+  type    = string
+  default = "s-2vcpu-4gb"
+}
+
 variable "volume_size" {
   type    = number
   default = 50

@@ -19,6 +19,7 @@ def cmd_monitoring_infra(args):
 
     region = getattr(args, "region", "lon1") or "lon1"
     volume_size = getattr(args, "volume_size", 50) or 50
+    droplet_size = getattr(args, "droplet_size", "s-2vcpu-4gb") or "s-2vcpu-4gb"
 
     resources_dir = get_resources_dir()
     tf_source = resources_dir / "digitalocean-monitoring"
@@ -48,11 +49,13 @@ def cmd_monitoring_infra(args):
             "name": args.name,
             "region": region,
             "volume_size": str(volume_size),
+            "droplet_size": droplet_size,
         },
     )
 
     console.print(
-        f"[bold]Creating monitoring VM for '{args.name}' in {region}...[/bold]"
+        f"[bold]Creating monitoring VM for '{args.name}' in {region} "
+        f"(size: {droplet_size}, volume: {volume_size}GB)...[/bold]"
     )
     console.print()
 

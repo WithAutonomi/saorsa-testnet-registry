@@ -327,6 +327,7 @@ uv run saorsa-deploy monitoring-infra --name DEV-01
 | `--name` | string | Yes | - | Monitoring stack name |
 | `--region` | string | No | `lon1` | Region for the monitoring VM |
 | `--volume-size` | int | No | 50 | Attached volume size in GB (for InfluxDB data) |
+| `--droplet-size` | string | No | `s-2vcpu-4gb` | Droplet size slug; bump for large testnets with many metric-forwarding VMs |
 
 ### `provision-monitoring` command
 
