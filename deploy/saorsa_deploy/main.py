@@ -986,6 +986,55 @@ def main():
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
+    # --- prod extend-unmanaged-volumes ---
+    prod_euv_parser = prod_subparsers.add_parser(
+        "extend-unmanaged-volumes",
+        help="Grow the LVM-backed data volume on every node VM in a production "
+        "inventory, sequentially and without stopping ant-node services.",
+    )
+    prod_euv_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        required=True,
+        help="Path to the production inventory JSON (schema_version 3).",
+    )
+    prod_euv_parser.add_argument(
+        "--size",
+        type=int,
+        required=True,
+        help="Target volume size in GB (must exceed current size to do work).",
+    )
+    prod_euv_parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        choices=["aws", "digitalocean", "hetzner", "vultr"],
+        help="Restrict to a single provider (default: every provider in the inventory).",
+    )
+    prod_euv_parser.add_argument(
+        "--limit-to",
+        type=str,
+        default=None,
+        help="Comma-separated VM names to restrict the run to (matched against "
+        "inventory 'name' field). Combine with --provider for fine-grained tests.",
+    )
+    prod_euv_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key for every VM (default: each VM's inventory ssh_key).",
+    )
+    prod_euv_parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue past per-VM failures instead of stopping at the first error.",
+    )
+    prod_euv_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt.",
+    )
+
     # === print-downloads ===
     print_downloads_parser = subparsers.add_parser(
         "print-downloads",
@@ -2058,6 +2107,12 @@ def main():
             )
 
             cmd_prod_continuous_downloader_destroy(args)
+        elif args.prod_subcommand == "extend-unmanaged-volumes":
+            from saorsa_deploy.cmd.prod_extend_unmanaged_volumes import (
+                cmd_prod_extend_unmanaged_volumes,
+            )
+
+            cmd_prod_extend_unmanaged_volumes(args)
     elif args.command == "provision-bootstraps":
         from saorsa_deploy.cmd.provision_bootstraps import cmd_provision_bootstraps
 
