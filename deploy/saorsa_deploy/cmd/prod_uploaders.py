@@ -41,7 +41,7 @@ from saorsa_deploy.registry import (
     record_event,
     record_status,
 )
-from saorsa_deploy.ssh import clear_known_hosts
+from saorsa_deploy.ssh import clear_known_hosts, wait_for_ssh
 from saorsa_deploy.state import load_client_state, load_monitoring_state
 
 MONITORING_REGION = "lon1"
@@ -341,6 +341,14 @@ def _provision_uploaders(
 
     host_ips = [u["ip"] for u in uploaders_for_provisioner]
     clear_known_hosts(host_ips, console)
+
+    not_ready = wait_for_ssh(host_ips, args.ssh_key_path, console=console)
+    if not_ready:
+        console.print(
+            f"[bold red]Error:[/bold red] SSH never came up on: "
+            f"{', '.join(not_ready)}"
+        )
+        sys.exit(1)
 
     console.print(
         "[bold cyan]Step 4b/5: provisioning ant-prod-uploader on uploader "
