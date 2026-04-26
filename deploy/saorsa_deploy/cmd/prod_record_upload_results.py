@@ -132,6 +132,7 @@ def cmd_prod_record_upload_results(args):
             upload_secs=p.get("upload_secs"),
             started_at=_started_at(p),
             finished_at=p["_time"],
+            reason=p.get("reason") or None,
         )
         recorded += 1
 

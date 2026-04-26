@@ -126,6 +126,7 @@ class DeploymentRepository(ABC):
         upload_secs: float | None,
         started_at: datetime,
         finished_at: datetime,
+        reason: str | None = None,
     ) -> DeploymentProdUploadResult:
         ...
 
@@ -384,6 +385,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         upload_secs: float | None,
         started_at: datetime,
         finished_at: datetime,
+        reason: str | None = None,
     ) -> DeploymentProdUploadResult:
         existing = (
             self.session.query(DeploymentProdUploadResult)
@@ -412,6 +414,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 upload_secs=upload_secs,
                 started_at=started_at,
                 finished_at=finished_at,
+                reason=reason,
             )
             self.session.add(existing)
         else:
@@ -428,6 +431,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.upload_secs = upload_secs
             existing.started_at = started_at
             existing.finished_at = finished_at
+            existing.reason = reason
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing

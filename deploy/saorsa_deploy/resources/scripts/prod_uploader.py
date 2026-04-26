@@ -48,6 +48,18 @@ STATUS_SUCCESS = 0
 STATUS_PARTIAL_UPLOAD = 1
 STATUS_DOWNLOAD_FAILED = 2
 
+# Cap the stderr block we forward to journald per failure. ant -v can emit
+# tens of thousands of lines per upload; dumping the whole thing trips
+# journald's per-unit rate limit (~10 000 msgs / 30 s on Ubuntu defaults)
+# and starves earlier entries from the journal. The full stderr always
+# goes to a per-file log file on disk regardless.
+STDERR_TAIL_LINES = 200
+
+# Per-file log directory on each uploader VM. Holds the full ant stderr
+# for every failed upload so diagnostics survive journal rotation and
+# rate limiting.
+LOG_DIR = "/var/log/ant-prod-uploader"
+
 
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
@@ -135,6 +147,7 @@ def _build_line(
     address: str,
     file_name: str,
     source_url: str,
+    reason: str,
     timestamp_ns: int,
 ) -> str:
     tag_set = f"host={_escape_tag(host)},region={_escape_tag(region)}"
@@ -150,7 +163,8 @@ def _build_line(
         f"total_chunks={total_chunks}i,"
         f'address="{_escape_field_string(address)}",'
         f'file_name="{_escape_field_string(file_name)}",'
-        f'source_url="{_escape_field_string(source_url)}"'
+        f'source_url="{_escape_field_string(source_url)}",'
+        f'reason="{_escape_field_string(reason)}"'
     )
     return f"{MEASUREMENT},{tag_set} {field_set} {timestamp_ns}"
 
@@ -228,6 +242,49 @@ def _classify(parsed: dict | None) -> int:
     return STATUS_SUCCESS
 
 
+def _tail_lines(text: str, n: int) -> str:
+    """Return the last ``n`` newline-delimited lines of ``text``.
+
+    Empty input yields an empty string. Trailing newline of the input is
+    preserved on the output if present, so consumers don't need to worry
+    about adding one.
+    """
+    if not text:
+        return ""
+    lines = text.splitlines()
+    tail = lines[-n:] if n > 0 else lines
+    out = "\n".join(tail)
+    if text.endswith("\n"):
+        out += "\n"
+    return out
+
+
+def _write_failure_log(idx: int, file_name: str, stderr_text: str) -> str | None:
+    """Persist the full ``ant`` stderr for a failed upload to disk.
+
+    Returns the absolute path written, or ``None`` if the write failed
+    (we never let logging trouble abort the upload loop).
+    """
+    if not stderr_text:
+        return None
+    try:
+        log_dir = Path(LOG_DIR)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # Strip path separators / nulls just in case file_name slipped
+        # past _safe_filename — defence in depth only.
+        safe = file_name.replace("/", "_").replace("\x00", "_") or "unnamed"
+        path = log_dir / f"{idx:04d}-{safe}.stderr"
+        path.write_text(stderr_text, encoding="utf-8", errors="replace")
+        return str(path)
+    except OSError as e:
+        print(
+            f"WARN: could not write failure log for #{idx}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+
+
 def main() -> int:
     bootstrap_arg_str = _require_env("BOOTSTRAP_ARGS")
     secret_key = _require_env("SECRET_KEY")
@@ -290,6 +347,7 @@ def main() -> int:
                     store_concurrency=store_concurrency,
                     chunks_stored=0, chunks_failed=0, total_chunks=0,
                     address="", file_name=file_name, source_url=url,
+                    reason=str(e),
                     timestamp_ns=download_end_ns,
                 )
                 _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
@@ -332,6 +390,7 @@ def main() -> int:
         total_chunks = int((parsed or {}).get("total_chunks") or 0)
         upload_secs = float((parsed or {}).get("elapsed_secs") or 0.0)
         address = str((parsed or {}).get("address") or "")
+        reason = str((parsed or {}).get("reason") or "")
 
         if status == STATUS_SUCCESS:
             print(
@@ -341,17 +400,29 @@ def main() -> int:
             )
         else:
             failures += 1
+            # Persist the FULL ant stderr to a per-file log file on disk so
+            # the diagnostic survives journald rotation and rate limiting.
+            log_path = _write_failure_log(idx, file_name, stderr_text)
+            log_pointer = f" stderr_log={log_path}" if log_path else ""
+            reason_str = f" reason={reason!r}" if reason else ""
             print(
                 f"  FAILED: chunks={chunks_stored}/{total_chunks} "
-                f"failed={chunks_failed} exit={exit_code} total={total_ms}ms",
+                f"failed={chunks_failed} exit={exit_code} "
+                f"total={total_ms}ms{reason_str}{log_pointer}",
                 flush=True,
             )
-            # Forward ant's verbose tracing to our stderr so journald keeps a
-            # diagnosable record. Only on failure — successful uploads stay
-            # quiet to avoid swamping the journal with per-wave info logs.
-            if stderr_text:
-                sys.stderr.write(stderr_text)
-                if not stderr_text.endswith("\n"):
+            # Tail the trace to the journal: enough context to diagnose
+            # routine partial-upload causes inline, but bounded so we don't
+            # swamp the journal's per-unit rate limit and lose other
+            # entries (we already learned this the hard way).
+            tail = _tail_lines(stderr_text, STDERR_TAIL_LINES)
+            if tail:
+                sys.stderr.write(
+                    f"--- last {STDERR_TAIL_LINES} lines of ant stderr "
+                    f"(full log: {log_path or '<not written>'}) ---\n"
+                )
+                sys.stderr.write(tail)
+                if not tail.endswith("\n"):
                     sys.stderr.write("\n")
                 sys.stderr.flush()
 
@@ -365,6 +436,7 @@ def main() -> int:
                 chunks_stored=chunks_stored, chunks_failed=chunks_failed,
                 total_chunks=total_chunks,
                 address=address, file_name=file_name, source_url=url,
+                reason=reason,
                 timestamp_ns=end_ns,
             )
             _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)

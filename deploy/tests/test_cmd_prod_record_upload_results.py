@@ -42,6 +42,7 @@ def _influx_point(**overrides):
         "address": "addr-abc",
         "file_name": "file.bin",
         "source_url": "https://example.com/file.bin",
+        "reason": "",
     }
     base.update(overrides)
     return base
@@ -70,6 +71,7 @@ def test_records_one_row_per_point(repo):
             file_name="partial.bin",
             chunks_failed=2,
             chunks_stored=40,
+            reason="wave store failed after retries",
         ),
         _influx_point(
             status=2,
@@ -79,6 +81,7 @@ def test_records_one_row_per_point(repo):
             chunks_stored=0,
             chunks_failed=0,
             total_chunks=0,
+            reason="HTTP 404",
         ),
     ]
 
@@ -98,14 +101,20 @@ def test_records_one_row_per_point(repo):
     assert len(rows) == 3
     by_url = {row.source_url: row for row in rows}
     assert by_url["https://example.com/file.bin"].status == ProdUploadStatus.SUCCESS
+    assert by_url["https://example.com/file.bin"].reason is None
     assert (
         by_url["https://example.com/partial.bin"].status
         == ProdUploadStatus.PARTIAL_UPLOAD
     )
     assert (
+        by_url["https://example.com/partial.bin"].reason
+        == "wave store failed after retries"
+    )
+    assert (
         by_url["https://example.com/missing.bin"].status
         == ProdUploadStatus.DOWNLOAD_FAILED
     )
+    assert by_url["https://example.com/missing.bin"].reason == "HTTP 404"
 
 
 def test_re_run_updates_existing_row(repo):

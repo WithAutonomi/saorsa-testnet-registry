@@ -222,7 +222,8 @@ def fetch_prod_upload_points(
     ``total_ms`` (int), ``upload_secs`` (float), ``file_size`` (int, bytes),
     ``start_ns`` (int), ``store_concurrency`` (int), ``chunks_stored`` (int),
     ``chunks_failed`` (int), ``total_chunks`` (int), ``address`` (str),
-    ``file_name`` (str), ``source_url`` (str).
+    ``file_name`` (str), ``source_url`` (str), ``reason`` (str — populated
+    on partial_upload from ant's JSON ``reason`` field; empty otherwise).
 
     The default ``start: 0`` queries from the Unix epoch — prod uploaders
     are bounded runs so a wide window is the right default.
@@ -290,6 +291,7 @@ def _parse_prod_upload_csv(body: str) -> list[dict]:
                     "address": record.get("address", "") or "",
                     "file_name": record.get("file_name", "") or "",
                     "source_url": record.get("source_url", "") or "",
+                    "reason": record.get("reason", "") or "",
                 }
             )
         except (KeyError, ValueError):

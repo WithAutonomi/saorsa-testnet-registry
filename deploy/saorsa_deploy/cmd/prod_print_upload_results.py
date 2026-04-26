@@ -139,6 +139,7 @@ def _print_details(by_host: dict[str, list[dict]], console: Console) -> None:
             console.print(f"  Address:           {op.get('address') or '-'}")
             console.print(f"  Duration (ms):     {op.get('total_ms') or 0}")
             console.print(f"  Upload secs:       {op.get('upload_secs') or 0}")
+            console.print(f"  Reason:            {op.get('reason') or '-'}")
             console.print()
 
 

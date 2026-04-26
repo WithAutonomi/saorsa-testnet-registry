@@ -92,6 +92,7 @@ class TestInfluxLine:
             address="addr-xyz",
             file_name="file.bin",
             source_url="https://example.com/file.bin",
+            reason="",
             timestamp_ns=10**18 + 1,
         )
         defaults.update(overrides)
@@ -132,3 +133,61 @@ class TestReadUrls:
         )
         urls = service._read_urls(str(p))
         assert urls == ["https://example.com/a", "https://example.com/b"]
+
+
+class TestTailLines:
+    def test_returns_last_n_lines(self, service):
+        text = "\n".join(f"line {i}" for i in range(1, 11)) + "\n"
+        out = service._tail_lines(text, 3)
+        assert out == "line 8\nline 9\nline 10\n"
+
+    def test_keeps_all_when_fewer_than_n(self, service):
+        text = "a\nb\nc\n"
+        assert service._tail_lines(text, 100) == "a\nb\nc\n"
+
+    def test_empty_input_yields_empty(self, service):
+        assert service._tail_lines("", 50) == ""
+
+    def test_no_trailing_newline_preserved(self, service):
+        text = "a\nb\nc"
+        assert service._tail_lines(text, 2) == "b\nc"
+
+
+class TestWriteFailureLog:
+    def test_writes_full_stderr_under_idx_filename(
+        self, service, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(service, "LOG_DIR", str(tmp_path))
+        path = service._write_failure_log(7, "song.mp3", "line1\nline2\n")
+        assert path is not None
+        from pathlib import Path
+        written = Path(path)
+        assert written.parent == tmp_path
+        assert written.name == "0007-song.mp3.stderr"
+        assert written.read_text() == "line1\nline2\n"
+
+    def test_returns_none_for_empty_stderr(self, service, tmp_path, monkeypatch):
+        monkeypatch.setattr(service, "LOG_DIR", str(tmp_path))
+        assert service._write_failure_log(1, "x", "") is None
+
+    def test_strips_path_separators_in_filename(
+        self, service, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(service, "LOG_DIR", str(tmp_path))
+        path = service._write_failure_log(3, "evil/../escape", "data")
+        assert path is not None
+        from pathlib import Path
+        assert Path(path).parent == tmp_path
+        assert "/" not in Path(path).name
+
+
+class TestInfluxLineReason:
+    def test_reason_field_appears_in_line(self, service):
+        line = TestInfluxLine()._line(
+            service, status=1, reason="wave store failed after retries"
+        )
+        assert 'reason="wave store failed after retries"' in line
+
+    def test_empty_reason_emits_empty_string(self, service):
+        line = TestInfluxLine()._line(service)
+        assert 'reason=""' in line

@@ -42,12 +42,19 @@ ANT_INSTALL_PATH = "/root/.local/bin/ant"
 SERVICE_NAME = "ant-prod-uploader"
 DATA_DIR = "/var/lib/ant-prod-uploader"
 SCRIPTS_DIR = "/root/ant-prod-uploader"
+LOG_DIR = "/var/log/ant-prod-uploader"
 URLS_PATH = f"{DATA_DIR}/urls.txt"
 SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ENV_PATH = "/etc/ant-prod-uploader.env"
 
 
 def _build_systemd_unit() -> str:
+    # `-u` plus `PYTHONUNBUFFERED=1` forces unbuffered stdout/stderr so
+    # every print() lands in journald immediately. Without this, Python
+    # block-buffers when stdout is a non-TTY pipe and you can wait minutes
+    # for output to appear (or never, if the process is killed first).
+    # StandardOutput / StandardError are journal by default on systemd
+    # 240+, but spelled out here to remove any doubt.
     return f"""\
 [Unit]
 Description=Ant Production Uploader
@@ -57,7 +64,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile={ENV_PATH}
-ExecStart=/usr/bin/python3 {SCRIPTS_DIR}/prod_uploader.py
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -u {SCRIPTS_DIR}/prod_uploader.py
+StandardOutput=journal
+StandardError=journal
 Restart=no
 
 [Install]
@@ -139,7 +149,7 @@ class ProdUploaderProvisioner:
                 name="Create prod-uploader directories",
                 commands=[
                     f"mkdir -p {DATA_DIR} {DATA_DIR}/files {SCRIPTS_DIR} "
-                    f"/root/.local/bin",
+                    f"{LOG_DIR} /root/.local/bin",
                 ],
             )
 

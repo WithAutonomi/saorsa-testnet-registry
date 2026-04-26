@@ -55,6 +55,7 @@ class DeploymentProdUploadResult(Base):
     store_concurrency: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     upload_secs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -91,6 +92,7 @@ class DeploymentProdUploadResult(Base):
             "store_concurrency": self.store_concurrency,
             "duration_ms": self.duration_ms,
             "upload_secs": self.upload_secs,
+            "reason": self.reason,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat(),
             "recorded_at": self.recorded_at.isoformat(),
