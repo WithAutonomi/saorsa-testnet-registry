@@ -891,6 +891,50 @@ def main():
             ),
         )
 
+    def _add_prod_upload_query_args(p):
+        p.add_argument(
+            "--name",
+            type=str,
+            required=True,
+            help="Deployment name (used to locate the monitoring stack).",
+        )
+        p.add_argument(
+            "--monitoring-name",
+            type=str,
+            default=None,
+            help=(
+                "Monitoring stack name to load Influx credentials from "
+                "(defaults to --name)."
+            ),
+        )
+        p.add_argument(
+            "--influx-url",
+            type=str,
+            default=None,
+            help="InfluxDB URL (overrides monitoring state lookup).",
+        )
+        p.add_argument(
+            "--influx-token",
+            type=str,
+            default=None,
+            help="InfluxDB API token (overrides monitoring state lookup).",
+        )
+        p.add_argument(
+            "--influx-org",
+            type=str,
+            default=None,
+            help="InfluxDB organization (default: from monitoring state, else 'ant').",
+        )
+        p.add_argument(
+            "--influx-bucket",
+            type=str,
+            default=None,
+            help=(
+                "InfluxDB bucket (default: from monitoring state, else "
+                "'testnet-metrics')."
+            ),
+        )
+
     # === prod (nested: prod <subsystem> <action>) ===
     prod_parser = subparsers.add_parser(
         "prod",
@@ -985,6 +1029,135 @@ def main():
         default="~/.ssh/id_rsa",
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
+
+    # --- prod uploaders ---
+    prod_up_parser = prod_subparsers.add_parser(
+        "uploaders",
+        help=(
+            "Deploy multiple uploader VMs that push real public files to the "
+            "Autonomi production network."
+        ),
+    )
+    prod_up_subparsers = prod_up_parser.add_subparsers(
+        dest="prod_up_action", required=True
+    )
+
+    prod_up_deploy_parser = prod_up_subparsers.add_parser(
+        "deploy",
+        help="Deploy prod uploader VMs and their paired monitoring stack.",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (also used for the paired monitoring stack).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--uploader",
+        action="append",
+        default=[],
+        metavar="REGION:VM_SIZE:concurrency=N:urls=PATH",
+        help=(
+            "Uploader spec, repeatable. Example: "
+            "lon1:s-2vcpu-4gb:concurrency=8:urls=/path/to/list.txt"
+        ),
+    )
+    prod_up_deploy_parser.add_argument(
+        "--secret-key",
+        type=str,
+        default=None,
+        help=(
+            "Arbitrum One wallet secret key for prod uploads (with or without "
+            "0x prefix). Falls back to ARBITRUM_ONE_SECRET_KEY env var. "
+            "Must be a funded mainnet wallet — uploads cost real ETH; this is "
+            "deliberately distinct from the testnet ANT_DEPLOY_SECRET_KEY."
+        ),
+    )
+    prod_up_deploy_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--monitoring-volume-size",
+        type=int,
+        default=50,
+        help="Monitoring VM attached volume size in GB (default: 50).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa).",
+    )
+
+    prod_up_destroy_parser = prod_up_subparsers.add_parser(
+        "destroy",
+        help=(
+            "Destroy a prod uploaders deployment "
+            "(uploader VMs and, optionally, monitoring)."
+        ),
+    )
+    prod_up_destroy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name to tear down.",
+    )
+    prod_up_destroy_parser.add_argument(
+        "--keep-monitoring",
+        action="store_true",
+        help=(
+            "Leave the paired monitoring VM running so recorded metrics "
+            "remain queryable after the uploader VMs are gone. "
+            "Default: the monitoring VM is destroyed alongside the uploaders."
+        ),
+    )
+    prod_up_destroy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
+    # --- prod print-upload-results ---
+    prod_pur_parser = prod_subparsers.add_parser(
+        "print-upload-results",
+        help=(
+            "Print every prod_upload record stored in the deployment's "
+            "InfluxDB, one table per uploader VM."
+        ),
+    )
+    _add_prod_upload_query_args(prod_pur_parser)
+    prod_pur_parser.add_argument(
+        "--details",
+        action="store_true",
+        help=(
+            "Print one full record per upload with no truncation — full "
+            "addresses, full file names, source URL, raw byte counts. "
+            "Use when you need to grab values verbatim."
+        ),
+    )
+
+    # --- prod record-upload-results ---
+    prod_rur_parser = prod_subparsers.add_parser(
+        "record-upload-results",
+        help=(
+            "Read every prod_upload record from the deployment's InfluxDB and "
+            "upsert per-file rows into the deployment_prod_upload_results table."
+        ),
+    )
+    _add_prod_upload_query_args(prod_rur_parser)
 
     # --- prod extend-unmanaged-volumes ---
     prod_euv_parser = prod_subparsers.add_parser(
@@ -2107,6 +2280,32 @@ def main():
             )
 
             cmd_prod_continuous_downloader_destroy(args)
+        elif (
+            args.prod_subcommand == "uploaders"
+            and args.prod_up_action == "deploy"
+        ):
+            from saorsa_deploy.cmd.prod_uploaders import cmd_prod_uploaders_deploy
+
+            cmd_prod_uploaders_deploy(args)
+        elif (
+            args.prod_subcommand == "uploaders"
+            and args.prod_up_action == "destroy"
+        ):
+            from saorsa_deploy.cmd.prod_uploaders import cmd_prod_uploaders_destroy
+
+            cmd_prod_uploaders_destroy(args)
+        elif args.prod_subcommand == "print-upload-results":
+            from saorsa_deploy.cmd.prod_print_upload_results import (
+                cmd_prod_print_upload_results,
+            )
+
+            cmd_prod_print_upload_results(args)
+        elif args.prod_subcommand == "record-upload-results":
+            from saorsa_deploy.cmd.prod_record_upload_results import (
+                cmd_prod_record_upload_results,
+            )
+
+            cmd_prod_record_upload_results(args)
         elif args.prod_subcommand == "extend-unmanaged-volumes":
             from saorsa_deploy.cmd.prod_extend_unmanaged_volumes import (
                 cmd_prod_extend_unmanaged_volumes,

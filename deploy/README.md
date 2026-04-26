@@ -613,6 +613,66 @@ uv run saorsa-deploy prod continuous-downloader destroy --name PROD-DL-01
 
 By default the monitoring VM is destroyed alongside the client. Pass `--keep-monitoring` when you want to keep the InfluxDB + Grafana stack running for after-the-fact analysis.
 
+### Running uploaders against production (`prod uploaders`)
+
+`prod uploaders deploy` stands up one or more client VMs that each upload a list of public files to the canonical Autonomi production network with `ant --json file upload --public`, recording per-file metrics in InfluxDB. Each VM downloads its source files at runtime from the URL list you supply, uploads each one in turn, and exits when its list is exhausted — teardown is explicit via `prod uploaders destroy`.
+
+Like `prod continuous-downloader`, this command does not provision any bootstrap/genesis/node infrastructure. It fetches the live prod peers list at runtime and points the upload service at those peers.
+
+```bash
+uv run saorsa-deploy prod uploaders deploy \
+  --name PROD-UP-01 \
+  --secret-key "$ARBITRUM_ONE_SECRET_KEY" \
+  --uploader lon1:s-2vcpu-4gb:concurrency=8:urls=./uploads-lon1.txt \
+  --uploader nyc1:s-4vcpu-8gb:concurrency=16:urls=./uploads-nyc1.txt
+```
+
+Orchestrated sequence (each step is skipped when its state already exists, so the command is idempotent under reruns):
+
+1. `monitoring-infra` + `provision-monitoring` for an InfluxDB VM in `lon1` named identically to `--name`.
+2. `infra-clients` for one upload-role VM per `--uploader` spec (synthesised from the per-uploader region / vm_size / concurrency).
+3. A custom Pyinfra provisioner that installs the `ant` binary, deploys the `prod_uploader.py` Python service, writes per-host URL lists, writes `/etc/ant-prod-uploader.env`, and registers the `ant-prod-uploader.service` systemd unit (`Type=simple`, `Restart=no`).
+4. Enables the service on each VM, which uploads each URL in turn and emits one Influx line per upload to the `prod_upload` measurement.
+
+Arguments (for `prod uploaders deploy`):
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | — | Deployment name; also used for the paired monitoring stack |
+| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:concurrency=N:urls=PATH`. All four parts required. |
+| `--secret-key` | string | `$ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet secret key shared across all uploaders. Deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` — prod uploads cost real ETH. |
+| `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
+| `--ant-version` | string | — | Optional explicit release version |
+| `--monitoring-volume-size` | int | `50` | Monitoring VM attached volume size (GB) |
+| `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key |
+
+The wallet secret key is shared across every uploader VM. Each uploader file is downloaded once from its source URL, uploaded with `--public`, then deleted from the VM.
+
+After uploads have started, inspect them with:
+
+```bash
+uv run saorsa-deploy prod print-upload-results --name PROD-UP-01
+```
+
+This prints one Rich table per uploader VM with file name, size, status (success / partial / dl-fail), chunks stored vs total, public address, and duration.
+
+When the run completes, persist every Influx record into the registry database for future comparison:
+
+```bash
+uv run saorsa-deploy prod record-upload-results --name PROD-UP-01
+```
+
+Each record becomes one row in `deployment_prod_upload_results` keyed by `(deployment_id, client_hostname, source_url)`. Re-running the command updates rows in place, so it is safe to run repeatedly.
+
+To tear down:
+
+```bash
+uv run saorsa-deploy prod uploaders destroy --name PROD-UP-01
+# add --keep-monitoring to preserve the InfluxDB VM so historical metrics remain queryable
+```
+
+The deployment registers a row in the `deployments` table with `deploy_args.kind = "prod-uploaders"`.
+
 ### Static IP Management
 
 Static IPs are allocated outside Terraform and stored in `deploy/production-ips.json`. This ensures IPs survive VM teardown and recreation. The IPs were allocated using provider CLIs:

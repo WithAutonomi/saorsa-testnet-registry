@@ -200,6 +200,103 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
     return results
 
 
+PROD_UPLOAD_FLUX_TEMPLATE = """from(bucket: "{bucket}")
+  |> range(start: {start})
+  |> filter(fn: (r) => r._measurement == "prod_upload")
+  |> pivot(rowKey: ["_time", "host"], columnKey: ["_field"], valueColumn: "_value")
+"""
+
+
+def fetch_prod_upload_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    start: str = "0",
+    timeout: int = 30,
+) -> list[dict]:
+    """Run a Flux query and return one dict per prod-upload point.
+
+    Each dict contains: ``_time`` (datetime, UTC), ``host`` (str), ``region``
+    (str), ``status`` (int: 0=success, 1=partial_upload, 2=download_failed),
+    ``total_ms`` (int), ``upload_secs`` (float), ``file_size`` (int, bytes),
+    ``start_ns`` (int), ``store_concurrency`` (int), ``chunks_stored`` (int),
+    ``chunks_failed`` (int), ``total_chunks`` (int), ``address`` (str),
+    ``file_name`` (str), ``source_url`` (str).
+
+    The default ``start: 0`` queries from the Unix epoch — prod uploaders
+    are bounded runs so a wide window is the right default.
+    """
+    flux = PROD_UPLOAD_FLUX_TEMPLATE.format(bucket=bucket, start=start)
+    resp = requests.post(
+        f"{url.rstrip('/')}/api/v2/query",
+        params={"org": org},
+        headers={
+            "Authorization": f"Token {token}",
+            "Content-Type": "application/vnd.flux",
+            "Accept": "application/csv",
+        },
+        data=flux,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return _parse_prod_upload_csv(resp.text)
+
+
+def _parse_float(value: str) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_prod_upload_csv(body: str) -> list[dict]:
+    points: list[dict] = []
+    reader = csv.reader(io.StringIO(body))
+    header: list[str] | None = None
+    for row in reader:
+        if not row or not any(row):
+            header = None
+            continue
+        if row[0].startswith("#"):
+            continue
+        if header is None:
+            header = row
+            continue
+        record = dict(zip(header, row))
+        if record.get("_measurement") != "prod_upload":
+            continue
+        if record.get("host") in (None, ""):
+            continue
+        try:
+            points.append(
+                {
+                    "_time": _parse_ts(record["_time"]),
+                    "host": record["host"],
+                    "region": record.get("region", ""),
+                    "status": _parse_int(record.get("status", "")),
+                    "total_ms": _parse_int(record.get("total_ms", "")),
+                    "upload_secs": _parse_float(record.get("upload_secs", "")),
+                    "file_size": _parse_int(record.get("file_size", "")),
+                    "start_ns": _parse_int(record.get("start_ns", "")),
+                    "store_concurrency": _parse_int(
+                        record.get("store_concurrency", "")
+                    ),
+                    "chunks_stored": _parse_int(record.get("chunks_stored", "")),
+                    "chunks_failed": _parse_int(record.get("chunks_failed", "")),
+                    "total_chunks": _parse_int(record.get("total_chunks", "")),
+                    "address": record.get("address", "") or "",
+                    "file_name": record.get("file_name", "") or "",
+                    "source_url": record.get("source_url", "") or "",
+                }
+            )
+        except (KeyError, ValueError):
+            continue
+    return points
+
+
 HOST_FLUX_CPU = """from(bucket: "{bucket}")
   |> range(start: {start})
   |> filter(fn: (r) =>

@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
 from saorsa_db.models.host_result import DeploymentHostResult
+from saorsa_db.models.prod_upload_result import (
+    DeploymentProdUploadResult,
+    ProdUploadStatus,
+)
 
 
 class DeploymentRepository(ABC):
@@ -101,6 +105,34 @@ class DeploymentRepository(ABC):
     def set_host_result_summary(
         self, deployment_id: int, summary: str
     ) -> DeploymentHostResult:
+        ...
+
+    @abstractmethod
+    def upsert_prod_upload_result(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str,
+        source_url: str,
+        file_name: str,
+        file_size_bytes: int,
+        status: ProdUploadStatus,
+        address: str | None,
+        chunks_stored: int,
+        chunks_failed: int,
+        total_chunks: int,
+        store_concurrency: int | None,
+        duration_ms: int | None,
+        upload_secs: float | None,
+        started_at: datetime,
+        finished_at: datetime,
+    ) -> DeploymentProdUploadResult:
+        ...
+
+    @abstractmethod
+    def list_prod_upload_results_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdUploadResult]:
         ...
 
 
@@ -333,3 +365,82 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
+
+    def upsert_prod_upload_result(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str,
+        source_url: str,
+        file_name: str,
+        file_size_bytes: int,
+        status: ProdUploadStatus,
+        address: str | None,
+        chunks_stored: int,
+        chunks_failed: int,
+        total_chunks: int,
+        store_concurrency: int | None,
+        duration_ms: int | None,
+        upload_secs: float | None,
+        started_at: datetime,
+        finished_at: datetime,
+    ) -> DeploymentProdUploadResult:
+        existing = (
+            self.session.query(DeploymentProdUploadResult)
+            .filter(
+                DeploymentProdUploadResult.deployment_id == deployment_id,
+                DeploymentProdUploadResult.client_hostname == client_hostname,
+                DeploymentProdUploadResult.source_url == source_url,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = DeploymentProdUploadResult(
+                deployment_id=deployment_id,
+                client_hostname=client_hostname,
+                region=region,
+                source_url=source_url,
+                file_name=file_name,
+                file_size_bytes=file_size_bytes,
+                status=status,
+                address=address,
+                chunks_stored=chunks_stored,
+                chunks_failed=chunks_failed,
+                total_chunks=total_chunks,
+                store_concurrency=store_concurrency,
+                duration_ms=duration_ms,
+                upload_secs=upload_secs,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            self.session.add(existing)
+        else:
+            existing.region = region
+            existing.file_name = file_name
+            existing.file_size_bytes = file_size_bytes
+            existing.status = status
+            existing.address = address
+            existing.chunks_stored = chunks_stored
+            existing.chunks_failed = chunks_failed
+            existing.total_chunks = total_chunks
+            existing.store_concurrency = store_concurrency
+            existing.duration_ms = duration_ms
+            existing.upload_secs = upload_secs
+            existing.started_at = started_at
+            existing.finished_at = finished_at
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def list_prod_upload_results_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdUploadResult]:
+        return (
+            self.session.query(DeploymentProdUploadResult)
+            .filter(DeploymentProdUploadResult.deployment_id == deployment_id)
+            .order_by(
+                DeploymentProdUploadResult.client_hostname,
+                DeploymentProdUploadResult.started_at,
+            )
+            .all()
+        )

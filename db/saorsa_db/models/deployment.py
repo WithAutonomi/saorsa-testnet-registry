@@ -10,6 +10,7 @@ from saorsa_db.db import Base
 if TYPE_CHECKING:
     from saorsa_db.models.file_result import DeploymentFileResult
     from saorsa_db.models.host_result import DeploymentHostResult
+    from saorsa_db.models.prod_upload_result import DeploymentProdUploadResult
 
 
 class DeploymentStatus(enum.Enum):
@@ -63,6 +64,12 @@ class Deployment(Base):
         back_populates="deployment",
         cascade="all, delete-orphan",
         uselist=False,
+    )
+
+    prod_upload_results: Mapped[list["DeploymentProdUploadResult"]] = relationship(
+        back_populates="deployment",
+        order_by="DeploymentProdUploadResult.client_hostname",
+        cascade="all, delete-orphan",
     )
 
     def to_dict(self):

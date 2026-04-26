@@ -167,6 +167,20 @@ The pipeline for an extension skips the bootstrap/genesis stages entirely: `exte
 
 See `deploy/README.md` §"Running continuous downloaders against production" for the full argument table and sequencing.
 
+### Running prod uploaders
+
+`prod uploaders deploy` is the upload-side equivalent of `prod continuous-downloader`: it stands up one or more client VMs that each upload a list of public files to the production Autonomi network with `ant --json file upload --public`, then exit when the list is exhausted. Per-file results (chunks_stored / chunks_failed / address / file size / duration) are emitted to a `prod_upload` Influx measurement on a paired monitoring VM.
+
+- Multi-VM. Repeatable `--uploader REGION:VM_SIZE:concurrency=N:urls=PATH` (all four parts required); each uploader VM downloads its assigned URL list at runtime, uploads each file with `--public`, deletes the local copy, exits.
+- Single shared `--secret-key` across all uploaders (or `ARBITRUM_ONE_SECRET_KEY` env var — deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` because prod uploads need a funded Arbitrum One mainnet wallet and cost real ETH).
+- Monitoring is mandatory and created inside the same command (reuses `monitoring-infra` + `provision-monitoring`).
+- Service is implemented in Python (`deploy/saorsa_deploy/resources/scripts/prod_uploader.py`) — not bash — because per-upload JSON parsing and metric emission was easier that way. The systemd unit is `Type=simple, Restart=no` so the service stops on its own.
+- Registers a `Deployment` row with `deploy_args.kind = "prod-uploaders"`.
+- Companion commands: `prod print-upload-results --name <name>` (per-host Rich tables of every recorded upload) and `prod record-upload-results --name <name>` (upserts every Influx record into the `deployment_prod_upload_results` Postgres table — bounded run, so no `--window` flag).
+- `prod uploaders destroy` tears down the monitoring VM alongside the uploader VMs by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack.
+
+See `deploy/README.md` §"Running uploaders against production" for the full argument table and sequencing.
+
 ### Deployment Statuses
 
 `pending` → `running` → `stopped` (success) or `failed`
