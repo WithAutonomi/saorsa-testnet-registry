@@ -94,7 +94,7 @@ def _print_table(by_host: dict[str, list[dict]], console: Console) -> None:
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
         table = Table(
-            title=f"prod_upload — {host} ({len(ops)} record(s))",
+            title=f"prod_upload — {host} ({_fmt_host_summary(ops)})",
             title_style="bold",
             show_lines=True,
         )
@@ -121,7 +121,7 @@ def _print_table(by_host: dict[str, list[dict]], console: Console) -> None:
 def _print_details(by_host: dict[str, list[dict]], console: Console) -> None:
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
-        console.rule(f"[bold]{host} — {len(ops)} record(s)[/bold]")
+        console.rule(f"[bold]{host} — {_fmt_host_summary(ops)}[/bold]")
         for i, op in enumerate(ops, start=1):
             console.print(f"[bold]#{i}[/bold]")
             console.print(f"  Started (UTC):     {_fmt_start(op.get('start_ns'))}")
@@ -141,6 +141,29 @@ def _print_details(by_host: dict[str, list[dict]], console: Console) -> None:
             console.print(f"  Upload secs:       {op.get('upload_secs') or 0}")
             console.print(f"  Reason:            {op.get('reason') or '-'}")
             console.print()
+
+
+def _fmt_host_summary(ops: list[dict]) -> str:
+    """Build the parenthetical summary shown after the host name in headers.
+
+    Always carries the record count and, when present, the distinct
+    store_concurrency value(s) seen across this host's uploads. A single
+    uploader VM normally has one concurrency throughout, but if it ever
+    drifts (e.g. a mid-run reprovision) the set is shown so the operator
+    notices.
+    """
+    record_part = f"{len(ops)} record(s)"
+    concurrencies = sorted({
+        op.get("store_concurrency")
+        for op in ops
+        if op.get("store_concurrency") is not None
+    })
+    if not concurrencies:
+        return record_part
+    if len(concurrencies) == 1:
+        return f"concurrency={concurrencies[0]}, {record_part}"
+    joined = ",".join(str(v) for v in concurrencies)
+    return f"concurrency={{{joined}}}, {record_part}"
 
 
 def _fmt_size(num_bytes) -> str:
