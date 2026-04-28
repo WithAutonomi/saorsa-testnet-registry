@@ -328,3 +328,42 @@ def test_set_host_result_summary_raises_when_no_row(repo):
     deployment = r.create(name="DEV-TEST", deploy_args={})
     with pytest.raises(ValueError):
         r.set_host_result_summary(deployment.id, "nope")
+
+
+def test_merge_deploy_args_adds_new_keys(repo):
+    r, _ = repo
+    deployment = r.create(
+        name="DEV-MERGE", deploy_args={"bootstrap_count": 3, "name": "DEV-MERGE"}
+    )
+
+    updated = r.merge_deploy_args(deployment.id, {"node_count": 12})
+
+    assert updated.deploy_args == {
+        "bootstrap_count": 3,
+        "name": "DEV-MERGE",
+        "node_count": 12,
+    }
+
+
+def test_merge_deploy_args_overwrites_existing_keys(repo):
+    r, _ = repo
+    deployment = r.create(name="DEV-MERGE", deploy_args={"node_count": 5})
+
+    updated = r.merge_deploy_args(deployment.id, {"node_count": 9})
+
+    assert updated.deploy_args["node_count"] == 9
+
+
+def test_merge_deploy_args_handles_empty_starting_args(repo):
+    r, _ = repo
+    deployment = r.create(name="DEV-EMPTY", deploy_args={})
+
+    updated = r.merge_deploy_args(deployment.id, {"kind": "testnet"})
+
+    assert updated.deploy_args == {"kind": "testnet"}
+
+
+def test_merge_deploy_args_raises_when_deployment_missing(repo):
+    r, _ = repo
+    with pytest.raises(ValueError):
+        r.merge_deploy_args(99999, {"node_count": 1})

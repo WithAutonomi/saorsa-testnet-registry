@@ -49,6 +49,13 @@ class DeploymentRepository(ABC):
         ...
 
     @abstractmethod
+    def merge_deploy_args(
+        self, deployment_id: int, updates: dict
+    ) -> Deployment:
+        """Shallow-merge ``updates`` into the deployment's ``deploy_args`` JSON."""
+        ...
+
+    @abstractmethod
     def add_event(
         self,
         deployment_id: int,
@@ -215,6 +222,19 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         if deployment is None:
             raise ValueError(f"Deployment {deployment_id} not found")
         deployment.status = status
+        deployment.updated_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return deployment
+
+    def merge_deploy_args(
+        self, deployment_id: int, updates: dict
+    ) -> Deployment:
+        deployment = self.session.get(Deployment, deployment_id)
+        if deployment is None:
+            raise ValueError(f"Deployment {deployment_id} not found")
+        # Reassign rather than mutate in place — SQLAlchemy's JSON column
+        # does not track mutations on the underlying dict by default.
+        deployment.deploy_args = {**(deployment.deploy_args or {}), **updates}
         deployment.updated_at = datetime.now(timezone.utc)
         self.session.commit()
         return deployment

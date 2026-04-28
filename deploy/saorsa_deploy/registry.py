@@ -95,3 +95,29 @@ def record_status(
         repo.update_status(deployment.id, status)
     except Exception:
         logger.warning("Failed to update status in registry", exc_info=True)
+
+
+def record_deploy_args_update(
+    name: str,
+    updates: dict,
+    repo: DeploymentRepository | None = None,
+) -> None:
+    """Shallow-merge ``updates`` into the deployment's ``deploy_args``.
+
+    Silently no-ops when DATABASE_URL is unset or the deployment is not
+    found — must not break the caller's deploy flow.
+    """
+    repo = repo or get_repository()
+    if repo is None:
+        return
+    try:
+        deployment = _find_deployment(name, repo)
+        if deployment is None:
+            logger.debug(
+                "Deployment '%s' not found in registry, skipping deploy_args update",
+                name,
+            )
+            return
+        repo.merge_deploy_args(deployment.id, updates)
+    except Exception:
+        logger.warning("Failed to merge deploy_args in registry", exc_info=True)

@@ -8,7 +8,11 @@ from rich.console import Console
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.hetzner_availability import resolve_hetzner_regions
 from saorsa_deploy.providers import PROVIDERS, ProviderSpec, resolve_regions
-from saorsa_deploy.registry import record_event, record_status
+from saorsa_deploy.registry import (
+    record_deploy_args_update,
+    record_event,
+    record_status,
+)
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
@@ -144,6 +148,24 @@ def cmd_infra_nodes(args):
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
+
+    # Record planned node count + per-provider breakdown back into the
+    # deployment row so `saorsa-deploy ls` (and other DB consumers) can see it.
+    node_count = sum(spec.vm_count * spec.region_count for spec in provider_specs)
+    record_deploy_args_update(
+        args.name,
+        {
+            "node_count": node_count,
+            "node_specs": [
+                {
+                    "provider": spec.name,
+                    "vm_count": spec.vm_count,
+                    "region_count": spec.region_count,
+                }
+                for spec in provider_specs
+            ],
+        },
+    )
 
     console.print()
 
