@@ -773,6 +773,37 @@ def main():
         help="List the supported regions for each cloud provider",
     )
 
+    # === ls ===
+    ls_parser = subparsers.add_parser(
+        "ls",
+        help="List deployments registered in the database",
+    )
+    ls_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Show only deployments whose name contains this substring "
+        "(case-insensitive).",
+    )
+    ls_parser.add_argument(
+        "--recent",
+        action="store_true",
+        help="Show only deployments created in the last 7 days.",
+    )
+    ls_status_group = ls_parser.add_mutually_exclusive_group()
+    ls_status_group.add_argument(
+        "--status",
+        type=str,
+        default=None,
+        help="Show only deployments with this status (pending, running, "
+        "stopped, failed, destroying, destroyed).",
+    )
+    ls_status_group.add_argument(
+        "--active",
+        action="store_true",
+        help="Show only active deployments (pending, running, destroying).",
+    )
+
     # === monitoring-info ===
     monitoring_info_parser = subparsers.add_parser(
         "monitoring-info", help="Print monitoring stack connection details"
@@ -2245,6 +2276,10 @@ def main():
         from saorsa_deploy.cmd.list_regions import cmd_list_regions
 
         cmd_list_regions(args)
+    elif args.command == "ls":
+        from saorsa_deploy.cmd.ls import cmd_ls
+
+        cmd_ls(args)
     elif args.command == "monitoring-info":
         from saorsa_deploy.cmd.monitoring_info import cmd_monitoring_info
 
