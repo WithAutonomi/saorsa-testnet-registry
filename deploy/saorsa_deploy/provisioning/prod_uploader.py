@@ -9,7 +9,7 @@ Per host the provisioner:
 
 * installs the ``ant`` binary (release archive or custom build)
 * writes ``/etc/ant-prod-uploader.env`` with bootstrap args, secret key,
-  region, client_index, store concurrency, and Influx config
+  region, client_index, and Influx config
 * writes the per-host URL list to ``/var/lib/ant-prod-uploader/urls.txt``
 * deploys the prod_uploader.py service script to /root/ant-prod-uploader/
 * writes the ``ant-prod-uploader.service`` systemd unit (Type=simple,
@@ -79,8 +79,8 @@ class ProdUploaderProvisioner:
     """Provisions the prod uploader service across one or more client VMs.
 
     Each entry in ``uploaders`` must be a dict with keys ``ip``, ``region``,
-    ``client_index``, ``store_concurrency``, and ``urls_file_content``
-    (the literal text of that uploader's URL list).
+    ``client_index``, and ``urls_file_content`` (the literal text of that
+    uploader's URL list).
     """
 
     def __init__(
@@ -246,9 +246,9 @@ class ProdUploaderProvisioner:
         if secret_key and not secret_key.startswith("0x"):
             secret_key = "0x" + secret_key
 
-        # Build a per-IP case block carrying region / client_index / concurrency
-        # / urls payload. The URL list goes in base64 to survive arbitrary
-        # content via a heredoc-emitted shell variable.
+        # Build a per-IP case block carrying region / client_index / urls
+        # payload. The URL list goes in base64 to survive arbitrary content
+        # via a heredoc-emitted shell variable.
         case_entries = []
         for u in self.uploaders:
             if not u.get("ip"):
@@ -260,7 +260,6 @@ class ProdUploaderProvisioner:
                 f'    "{u["ip"]}") '
                 f'REGION={u["region"]}; '
                 f'CLIENT_INDEX={u["client_index"]}; '
-                f'STORE_CONCURRENCY={u["store_concurrency"]}; '
                 f'URLS_B64="{urls_b64}" ;;'
             )
         case_block = "\n".join(case_entries)
@@ -278,7 +277,7 @@ class ProdUploaderProvisioner:
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) REGION=unknown; CLIENT_INDEX=0; STORE_CONCURRENCY=8; URLS_B64="" ;;
+    *) REGION=unknown; CLIENT_INDEX=0; URLS_B64="" ;;
 esac
 mkdir -p {DATA_DIR}
 echo "$URLS_B64" | base64 -d > {URLS_PATH}
@@ -286,7 +285,6 @@ cat > {ENV_PATH} << ENV_EOF
 HOME=/root
 REGION=$REGION
 CLIENT_INDEX=$CLIENT_INDEX
-STORE_CONCURRENCY=$STORE_CONCURRENCY
 BOOTSTRAP_ARGS="{bootstrap_args}"
 SECRET_KEY={secret_key}
 ANT={ANT_INSTALL_PATH}

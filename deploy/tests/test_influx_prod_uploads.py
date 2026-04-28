@@ -3,16 +3,16 @@ from saorsa_deploy.influx import _parse_prod_upload_csv
 PROD_UPLOAD_CSV = (
     ",result,table,_start,_stop,_time,host,region,_measurement,address,"
     "chunks_failed,chunks_stored,file_name,file_size,reason,source_url,start_ns,"
-    "status,store_concurrency,total_chunks,total_ms,upload_secs\n"
+    "status,total_chunks,total_ms,upload_secs\n"
     ",_result,0,2026-04-01T00:00:00Z,2026-04-26T00:00:00Z,"
     "2026-04-19T16:19:36.708970856Z,prodhost-01,lon1,prod_upload,addr-abc,"
     "0,42,file.bin,1048576,,https://example.com/file.bin,"
-    "1776615435704524798,0,8,42,12345,3.5\n"
+    "1776615435704524798,0,42,12345,3.5\n"
     ",_result,0,2026-04-01T00:00:00Z,2026-04-26T00:00:00Z,"
     "2026-04-19T16:30:00.000000000Z,prodhost-01,lon1,prod_upload,,"
     "2,40,partial.bin,2097152,wave store failed after retries,"
     "https://example.com/partial.bin,"
-    "1776616100000000000,1,8,42,67890,7.2\n"
+    "1776616100000000000,1,42,67890,7.2\n"
 )
 
 
@@ -34,7 +34,6 @@ def test_parses_success_and_partial_rows():
     assert success["upload_secs"] == 3.5
     assert success["total_ms"] == 12345
     assert success["file_size"] == 1048576
-    assert success["store_concurrency"] == 8
     assert success["_time"].tzinfo is not None
 
     partial = points[1]

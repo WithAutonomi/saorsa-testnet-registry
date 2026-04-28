@@ -52,7 +52,6 @@ class DeploymentProdUploadResult(Base):
     chunks_stored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunks_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    store_concurrency: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     upload_secs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
@@ -89,7 +88,6 @@ class DeploymentProdUploadResult(Base):
             "chunks_stored": self.chunks_stored,
             "chunks_failed": self.chunks_failed,
             "total_chunks": self.total_chunks,
-            "store_concurrency": self.store_concurrency,
             "duration_ms": self.duration_ms,
             "upload_secs": self.upload_secs,
             "reason": self.reason,

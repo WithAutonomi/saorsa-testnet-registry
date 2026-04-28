@@ -76,8 +76,7 @@ def main():
             help=(
                 "Print a per-host aggregate summary (start time, elapsed, "
                 "total/success/failure counts, and average duration) instead "
-                "of per-operation tables. For uploads, averages are grouped "
-                "by store_concurrency."
+                "of per-operation tables."
             ),
         )
 
@@ -463,11 +462,9 @@ def main():
         type=str,
         action="append",
         default=[],
-        help="Uploader VM spec: 'region:file_size_mb[:vm_size[:store_concurrency]]'. "
-        "Repeat for multiple uploaders. Defaults: vm_size=s-2vcpu-4gb, "
-        "store_concurrency=8. To set store_concurrency you must also state "
-        "vm_size. Example: --uploader 'lon1:50' --uploader "
-        "'nyc1:100:s-4vcpu-8gb:16'",
+        help="Uploader VM spec: 'region:file_size_mb[:vm_size]'. "
+        "Repeat for multiple uploaders. Default vm_size=s-2vcpu-4gb. "
+        "Example: --uploader 'lon1:50' --uploader 'nyc1:100:s-4vcpu-8gb'",
     )
     clients_infra_parser.add_argument(
         "--downloader",
@@ -1960,10 +1957,10 @@ def main():
         "--uploader",
         action="append",
         default=[],
-        metavar="REGION:VM_SIZE:concurrency=N:urls=PATH",
+        metavar="REGION:VM_SIZE:urls=PATH",
         help=(
             "Uploader spec, repeatable. Example: "
-            "lon1:s-2vcpu-4gb:concurrency=8:urls=/path/to/list.txt"
+            "lon1:s-2vcpu-4gb:urls=/path/to/list.txt"
         ),
     )
     prod_up_deploy_parser.add_argument(

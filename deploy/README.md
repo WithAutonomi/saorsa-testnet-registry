@@ -221,7 +221,7 @@ Client VMs run the ant binary as long-running upload-or-download workers against
 
 Commands:
 
-- `clients infra --name <testnet> --uploader region:file_size_mb[:vm_size[:store_concurrency]] [--uploader ...] --downloader region[:vm_size] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required.
+- `clients infra --name <testnet> --uploader region:file_size_mb[:vm_size] [--uploader ...] --downloader region[:vm_size] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required.
 - `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM).
 - `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
 - `clients destroy` — tear down VMs and wipe the per-testnet addresses folder at `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`.
@@ -630,7 +630,7 @@ uv run saorsa-deploy prod uploaders deploy \
 Orchestrated sequence (each step is skipped when its state already exists, so the command is idempotent under reruns):
 
 1. `monitoring infra` + `monitoring provision` for an InfluxDB VM in `lon1` named identically to `--name`.
-2. `clients infra` for one upload-role VM per `--uploader` spec (synthesised from the per-uploader region / vm_size / concurrency).
+2. `clients infra` for one upload-role VM per `--uploader` spec (synthesised from the per-uploader region / vm_size).
 3. A custom Pyinfra provisioner that installs the `ant` binary, deploys the `prod_uploader.py` Python service, writes per-host URL lists, writes `/etc/ant-prod-uploader.env`, and registers the `ant-prod-uploader.service` systemd unit (`Type=simple`, `Restart=no`).
 4. Enables the service on each VM, which uploads each URL in turn and emits one Influx line per upload to the `prod_upload` measurement.
 
@@ -639,7 +639,7 @@ Arguments (for `prod uploaders deploy`):
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
-| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:concurrency=N:urls=PATH`. All four parts required. |
+| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH`. All three parts required. |
 | `--secret-key` | string | `$ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet secret key shared across all uploaders. Deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` — prod uploads cost real ETH. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
 | `--ant-version` | string | — | Optional explicit release version |

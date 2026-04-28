@@ -51,16 +51,15 @@ DEFAULT_MONITORING_VOLUME_SIZE = 50
 def parse_prod_uploader_spec(spec: str) -> dict:
     """Parse a ``--uploader`` spec.
 
-    Format: ``REGION:VM_SIZE:concurrency=N:urls=PATH``. All four parts are
-    required; the last two are key=value form so they can appear in any
-    order. Returns a dict with keys ``region``, ``vm_size``,
-    ``store_concurrency`` (int), and ``urls_file`` (str).
+    Format: ``REGION:VM_SIZE:urls=PATH``. The trailing ``urls=PATH`` is
+    key=value form for symmetry with future extensions. Returns a dict with
+    keys ``region``, ``vm_size``, and ``urls_file`` (str).
     """
     parts = spec.split(":")
-    if len(parts) < 4:
+    if len(parts) < 3:
         raise ValueError(
             f"Invalid uploader spec '{spec}'. "
-            f"Expected format: region:vm_size:concurrency=N:urls=PATH"
+            f"Expected format: region:vm_size:urls=PATH"
         )
 
     region = parts[0]
@@ -76,9 +75,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     tail_tokens: list[str] = []
     buf = parts[2]
     for next_part in parts[3:]:
-        if "=" in next_part and next_part.split("=", 1)[0] in (
-            "concurrency", "urls"
-        ):
+        if "=" in next_part and next_part.split("=", 1)[0] in ("urls",):
             tail_tokens.append(buf)
             buf = next_part
         else:
@@ -92,27 +89,19 @@ def parse_prod_uploader_spec(spec: str) -> dict:
                 f"Invalid uploader spec '{spec}': '{token}' is not key=value."
             )
         key, value = token.split("=", 1)
+        if key not in ("urls",):
+            raise ValueError(
+                f"Invalid uploader spec '{spec}': unknown key '{key}'."
+            )
         if key in options:
             raise ValueError(
                 f"Invalid uploader spec '{spec}': duplicate key '{key}'."
             )
         options[key] = value
 
-    if "concurrency" not in options or "urls" not in options:
+    if "urls" not in options:
         raise ValueError(
-            f"Invalid uploader spec '{spec}'. "
-            f"Both concurrency=N and urls=PATH are required."
-        )
-
-    try:
-        store_concurrency = int(options["concurrency"])
-    except ValueError:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}': concurrency must be an integer."
-        )
-    if store_concurrency <= 0:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}': concurrency must be positive."
+            f"Invalid uploader spec '{spec}'. urls=PATH is required."
         )
 
     urls_file = options["urls"]
@@ -124,7 +113,6 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     return {
         "region": region,
         "vm_size": vm_size,
-        "store_concurrency": store_concurrency,
         "urls_file": urls_file,
     }
 
@@ -243,10 +231,9 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
     """Create the uploader VMs via clients infra.
 
     The existing clients infra parser expects testnet uploader specs of the
-    form ``region:file_size_mb[:vm_size[:store_concurrency]]``. We synthesise
-    those with file_size_mb=0 because that field is only consumed by the
-    legacy testnet uploader.sh and is unused for prod uploads. The store
-    concurrency is preserved so it shows up in client state for diagnostics.
+    form ``region:file_size_mb[:vm_size]``. We synthesise those with
+    file_size_mb=0 because that field is only consumed by the legacy testnet
+    uploader.sh and is unused for prod uploads.
     """
     from saorsa_deploy.cmd.infra_clients import cmd_infra_clients
 
@@ -258,7 +245,7 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
         return
 
     synth_uploader_specs = [
-        f"{s['region']}:0:{s['vm_size']}:{s['store_concurrency']}"
+        f"{s['region']}:0:{s['vm_size']}"
         for s in parsed_specs
     ]
     console.print(
@@ -310,7 +297,6 @@ def _provision_uploaders(
             "ip": client["ip"],
             "region": spec["region"],
             "client_index": client["client_index"],
-            "store_concurrency": spec["store_concurrency"],
             "urls_file_content": spec["_urls_file_content"],
         })
 
@@ -440,7 +426,7 @@ def cmd_prod_uploaders_deploy(args):
         )
         console.print(
             f"  Uploader #{i}: {spec['region']} ({spec['vm_size']}, "
-            f"sc={spec['store_concurrency']}, urls={url_count})"
+            f"urls={url_count})"
         )
     console.print()
 
@@ -452,7 +438,6 @@ def cmd_prod_uploaders_deploy(args):
             {
                 "region": s["region"],
                 "vm_size": s["vm_size"],
-                "store_concurrency": s["store_concurrency"],
                 "urls_file": s["urls_file"],
             }
             for s in parsed_specs

@@ -85,7 +85,6 @@ class TestInfluxLine:
             upload_secs=2.5,
             file_size=1048576,
             start_ns=10**18,
-            store_concurrency=8,
             chunks_stored=42,
             chunks_failed=0,
             total_chunks=42,
@@ -110,7 +109,6 @@ class TestInfluxLine:
         assert "status=0i" in line
         assert "chunks_stored=42i" in line
         assert "total_chunks=42i" in line
-        assert "store_concurrency=8i" in line
 
     def test_string_fields_quoted(self, service):
         line = self._line(service, address="abc \"x\"")

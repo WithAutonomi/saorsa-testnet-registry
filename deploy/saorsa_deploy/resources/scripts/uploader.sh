@@ -9,7 +9,6 @@ set -euo pipefail
 : "${ADDRESSES_S3_PREFIX:?ADDRESSES_S3_PREFIX must be set}"
 : "${REGION:?REGION must be set}"
 : "${CLIENT_INDEX:?CLIENT_INDEX must be set}"
-: "${STORE_CONCURRENCY:=8}"
 : "${INFLUX_URL:=}"
 : "${INFLUX_TOKEN:=}"
 : "${INFLUX_ORG:=ant}"
@@ -59,7 +58,7 @@ flush_to_s3() {
 mkdir -p "$UPLOAD_DIR"
 touch "$ADDRESSES_FILE"
 
-echo "Uploader starting: host=${CLIENT_HOST} region=${REGION} index=${CLIENT_INDEX} file_size=${FILE_SIZE_KB}KB store_concurrency=${STORE_CONCURRENCY} s3=${S3_URI}"
+echo "Uploader starting: host=${CLIENT_HOST} region=${REGION} index=${CLIENT_INDEX} file_size=${FILE_SIZE_KB}KB s3=${S3_URI}"
 
 addresses_since_flush=0
 last_flush_ts=$(date +%s)
@@ -80,7 +79,7 @@ while true; do
 
     # shellcheck disable=SC2086
     set +e
-    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia --store-concurrency "$STORE_CONCURRENCY" file upload --public "$file_path" \
+    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file upload --public "$file_path" \
         2>&1 | tee "$output_file"
     exit_code=${PIPESTATUS[0]}
     set -e
@@ -117,7 +116,7 @@ while true; do
 
     # Submit to InfluxDB
     timestamp_ns="$end_ns"
-    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,store_concurrency=${STORE_CONCURRENCY}i ${timestamp_ns}"
+    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i ${timestamp_ns}"
     submit_metric "$line"
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"

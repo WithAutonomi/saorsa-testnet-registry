@@ -18,7 +18,6 @@ Required env:
 
 Optional env:
     ANT                /path/to/ant binary (default /root/.local/bin/ant).
-    STORE_CONCURRENCY  Store concurrency (default 8).
     WORK_DIR           Local directory used for downloaded source files
                        (default /var/lib/ant-prod-uploader/files).
     EVM_NETWORK        Payment chain (default arbitrum-one — Autonomi prod runs
@@ -140,7 +139,6 @@ def _build_line(
     upload_secs: float,
     file_size: int,
     start_ns: int,
-    store_concurrency: int,
     chunks_stored: int,
     chunks_failed: int,
     total_chunks: int,
@@ -157,7 +155,6 @@ def _build_line(
         f"upload_secs={upload_secs:.6f},"
         f"file_size={file_size}i,"
         f"start_ns={start_ns}i,"
-        f"store_concurrency={store_concurrency}i,"
         f"chunks_stored={chunks_stored}i,"
         f"chunks_failed={chunks_failed}i,"
         f"total_chunks={total_chunks}i,"
@@ -184,7 +181,7 @@ def _download(url: str, dest: Path, timeout: int) -> int:
 
 def _run_ant(
     *, ant_path: str, bootstrap_args: list[str], evm_network: str,
-    store_concurrency: int, secret_key: str, file_path: Path,
+    secret_key: str, file_path: Path,
 ) -> tuple[int, str, str]:
     """Run ant with --json and -v; return ``(exit_code, stdout, stderr)``.
 
@@ -198,7 +195,6 @@ def _run_ant(
         ant_path,
         *bootstrap_args,
         "--evm-network", evm_network,
-        "--store-concurrency", str(store_concurrency),
         "--json",
         "-v",
         "file", "upload", "--public", str(file_path),
@@ -293,7 +289,6 @@ def main() -> int:
     urls_file = _require_env("URLS_FILE")
 
     ant_path = os.environ.get("ANT", "/root/.local/bin/ant")
-    store_concurrency = int(os.environ.get("STORE_CONCURRENCY", "8"))
     work_dir = Path(os.environ.get("WORK_DIR", "/var/lib/ant-prod-uploader/files"))
     evm_network = os.environ.get("EVM_NETWORK", "arbitrum-one")
     influx_url = os.environ.get("INFLUX_URL", "")
@@ -316,7 +311,7 @@ def main() -> int:
 
     print(
         f"prod uploader starting: host={host} region={region} "
-        f"index={client_index} urls={len(urls)} concurrency={store_concurrency}",
+        f"index={client_index} urls={len(urls)}",
         flush=True,
     )
 
@@ -344,7 +339,6 @@ def main() -> int:
                     status=STATUS_DOWNLOAD_FAILED,
                     total_ms=0, upload_secs=0.0,
                     file_size=0, start_ns=download_start_ns,
-                    store_concurrency=store_concurrency,
                     chunks_stored=0, chunks_failed=0, total_chunks=0,
                     address="", file_name=file_name, source_url=url,
                     reason=str(e),
@@ -371,7 +365,6 @@ def main() -> int:
             ant_path=ant_path,
             bootstrap_args=bootstrap_args,
             evm_network=evm_network,
-            store_concurrency=store_concurrency,
             secret_key=secret_key,
             file_path=local_path,
         )
@@ -432,7 +425,6 @@ def main() -> int:
                 status=status,
                 total_ms=total_ms, upload_secs=upload_secs,
                 file_size=file_size, start_ns=upload_start_ns,
-                store_concurrency=store_concurrency,
                 chunks_stored=chunks_stored, chunks_failed=chunks_failed,
                 total_chunks=total_chunks,
                 address=address, file_name=file_name, source_url=url,

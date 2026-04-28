@@ -254,8 +254,7 @@ def cmd_provision_clients(args):
         if role == "upload":
             console.print(
                 f"    Uploader #{c['client_index']}: {c.get('ip', 'N/A')} "
-                f"({c['region']}, {c.get('file_size_mb', 0)}MB, "
-                f"sc={c.get('store_concurrency', 8)})"
+                f"({c['region']}, {c.get('file_size_mb', 0)}MB)"
             )
         else:
             console.print(

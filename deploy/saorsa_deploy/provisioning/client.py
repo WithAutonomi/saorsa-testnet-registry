@@ -26,7 +26,6 @@ SCRIPTS_DIR = "/root/ant-client"
 def _build_env_file(
     bootstrap_peers: list[str],
     file_size_mb: int,
-    store_concurrency: int = 8,
     influx_url: str = "",
     influx_token: str = "",
     influx_org: str = "ant",
@@ -38,7 +37,6 @@ def _build_env_file(
     lines = [
         f'BOOTSTRAP_ARGS="{bootstrap_args}"',
         f"FILE_SIZE_KB={file_size_kb}",
-        f"STORE_CONCURRENCY={store_concurrency}",
         "SECRET_KEY=placeholder",
         f"ANT={ANT_INSTALL_PATH}",
         f"ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt",
@@ -275,7 +273,7 @@ class AntClientProvisioner:
             )
 
             # Build a case statement that maps IP to role-specific values.
-            # Emits ROLE / FILE_SIZE_KB / STORE_CONCURRENCY / REGION / CLIENT_INDEX.
+            # Emits ROLE / FILE_SIZE_KB / REGION / CLIENT_INDEX.
             ip_to_env = {}
             for c in self.clients:
                 if not c.get("ip"):
@@ -285,7 +283,6 @@ class AntClientProvisioner:
                     ip_to_env[c["ip"]] = {
                         "role": "upload",
                         "file_size_kb": c["file_size_mb"] * 1024,
-                        "store_concurrency": c.get("store_concurrency", 8),
                         "region": c["region"],
                         "client_index": c["client_index"],
                     }
@@ -293,7 +290,6 @@ class AntClientProvisioner:
                     ip_to_env[c["ip"]] = {
                         "role": "download",
                         "file_size_kb": 0,
-                        "store_concurrency": 0,
                         "region": c["region"],
                         "client_index": c["client_index"],
                     }
@@ -303,7 +299,6 @@ class AntClientProvisioner:
                 case_entries.append(
                     f'    "{ip}") ROLE={env["role"]}; '
                     f'FILE_SIZE_KB={env["file_size_kb"]}; '
-                    f'STORE_CONCURRENCY={env["store_concurrency"]}; '
                     f'REGION={env["region"]}; '
                     f'CLIENT_INDEX={env["client_index"]} ;;'
                 )
@@ -317,7 +312,7 @@ class AntClientProvisioner:
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) ROLE=upload; FILE_SIZE_KB=51200; STORE_CONCURRENCY=8; REGION=unknown; CLIENT_INDEX=0 ;;
+    *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0 ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -326,7 +321,6 @@ REGION=$REGION
 CLIENT_INDEX=$CLIENT_INDEX
 BOOTSTRAP_ARGS="{bootstrap_args}"
 FILE_SIZE_KB=$FILE_SIZE_KB
-STORE_CONCURRENCY=$STORE_CONCURRENCY
 SECRET_KEY={secret_key}
 ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt

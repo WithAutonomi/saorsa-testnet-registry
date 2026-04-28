@@ -129,7 +129,6 @@ class TestRecoverClientsFromTfstate:
                 "region": "lon1",
                 "client_index": 1,
                 "file_size_mb": 0,
-                "store_concurrency": 0,
                 "vm_size": "s-2vcpu-4gb",
                 "ip": "",
             },

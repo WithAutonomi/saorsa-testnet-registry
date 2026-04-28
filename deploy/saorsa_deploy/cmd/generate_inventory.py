@@ -139,7 +139,6 @@ def _build_client_vms_field(
                 "ip": client.get("ip", ""),
                 "client_index": index,
                 "file_size_mb": client.get("file_size_mb"),
-                "store_concurrency": client.get("store_concurrency"),
                 "vm_size": client.get("vm_size", ""),
                 "ssh_user": DEFAULT_SSH_USER,
                 "ssh_key": ssh_key,

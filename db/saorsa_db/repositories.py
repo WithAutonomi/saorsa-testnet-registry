@@ -128,7 +128,6 @@ class DeploymentRepository(ABC):
         chunks_stored: int,
         chunks_failed: int,
         total_chunks: int,
-        store_concurrency: int | None,
         duration_ms: int | None,
         upload_secs: float | None,
         started_at: datetime,
@@ -400,7 +399,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         chunks_stored: int,
         chunks_failed: int,
         total_chunks: int,
-        store_concurrency: int | None,
         duration_ms: int | None,
         upload_secs: float | None,
         started_at: datetime,
@@ -429,7 +427,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 chunks_stored=chunks_stored,
                 chunks_failed=chunks_failed,
                 total_chunks=total_chunks,
-                store_concurrency=store_concurrency,
                 duration_ms=duration_ms,
                 upload_secs=upload_secs,
                 started_at=started_at,
@@ -446,7 +443,6 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.chunks_stored = chunks_stored
             existing.chunks_failed = chunks_failed
             existing.total_chunks = total_chunks
-            existing.store_concurrency = store_concurrency
             existing.duration_ms = duration_ms
             existing.upload_secs = upload_secs
             existing.started_at = started_at

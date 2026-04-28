@@ -38,7 +38,6 @@ class TestParseUploaderSpec:
             "region": "lon1",
             "file_size_mb": 50,
             "vm_size": "s-2vcpu-4gb",
-            "store_concurrency": 8,
         }
 
     def test_region_file_size_and_vm_size(self):
@@ -48,22 +47,7 @@ class TestParseUploaderSpec:
             "region": "nyc1",
             "file_size_mb": 100,
             "vm_size": "s-4vcpu-8gb",
-            "store_concurrency": 8,
         }
-
-    def test_region_file_size_vm_size_and_store_concurrency(self):
-        result = parse_uploader_spec("nyc1:100:s-4vcpu-8gb:16")
-        assert result == {
-            "role": "upload",
-            "region": "nyc1",
-            "file_size_mb": 100,
-            "vm_size": "s-4vcpu-8gb",
-            "store_concurrency": 16,
-        }
-
-    def test_default_store_concurrency(self):
-        result = parse_uploader_spec("lon1:50:s-2vcpu-4gb")
-        assert result["store_concurrency"] == 8
 
     def test_invalid_too_few_parts(self):
         with pytest.raises(ValueError, match="Invalid uploader spec"):
@@ -71,15 +55,11 @@ class TestParseUploaderSpec:
 
     def test_invalid_too_many_parts(self):
         with pytest.raises(ValueError, match="Invalid uploader spec"):
-            parse_uploader_spec("lon1:50:s-2vcpu-4gb:16:extra")
+            parse_uploader_spec("lon1:50:s-2vcpu-4gb:extra")
 
     def test_invalid_file_size(self):
         with pytest.raises(ValueError, match="Invalid file size"):
             parse_uploader_spec("lon1:abc")
-
-    def test_invalid_store_concurrency(self):
-        with pytest.raises(ValueError, match="Invalid store concurrency"):
-            parse_uploader_spec("lon1:50:s-2vcpu-4gb:not-a-number")
 
     def test_zero_file_size(self):
         result = parse_uploader_spec("lon1:0")
@@ -218,7 +198,6 @@ class TestClientStateRoundTripsRole:
                 "role": "upload",
                 "region": "lon1",
                 "file_size_mb": 50,
-                "store_concurrency": 8,
                 "vm_size": "s-2vcpu-4gb",
                 "client_index": 1,
                 "ip": "10.0.0.1",

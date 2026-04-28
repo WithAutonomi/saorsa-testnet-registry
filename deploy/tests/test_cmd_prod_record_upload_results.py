@@ -35,7 +35,6 @@ def _influx_point(**overrides):
         "upload_secs": 3.5,
         "file_size": 1048576,
         "start_ns": 1776700000000000000,
-        "store_concurrency": 8,
         "chunks_stored": 42,
         "chunks_failed": 0,
         "total_chunks": 42,

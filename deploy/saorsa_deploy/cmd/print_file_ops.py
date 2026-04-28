@@ -7,8 +7,7 @@ operation in the requested time window.
 
 With ``--summary``, the per-op tables are replaced by a per-host aggregate:
 start time, wall-clock elapsed since that start, total/success/failure
-counts, and the average duration of successful ops. For uploads the average
-is additionally broken out by ``store_concurrency``.
+counts, and the average duration of successful ops.
 """
 import sys
 from datetime import datetime, timezone
@@ -110,29 +109,21 @@ def _run(args, op_type: str) -> None:
             title=f"{op_type.capitalize()}s — {host} ({title_count})",
             title_style="bold",
         )
-        show_concurrency = op_type == "upload"
         table.add_column("#", justify="right")
         table.add_column("Started (UTC)")
         table.add_column("Completed (UTC)")
         table.add_column("Size", justify="right")
-        if show_concurrency:
-            table.add_column("Concurrency", justify="right")
         table.add_column("Status")
         table.add_column("Duration", justify="right")
         for i, op in enumerate(ops, start=1):
-            row = [
+            table.add_row(
                 str(i),
                 _fmt_start(op.get("start_ns")),
                 _fmt_time(op.get("_time")),
                 _fmt_size(op.get("file_size")),
-            ]
-            if show_concurrency:
-                row.append(str(op["store_concurrency"]))
-            row.extend([
                 _fmt_status(op.get("status")),
                 _fmt_duration(op.get("total_ms")),
-            ])
-            table.add_row(*row)
+            )
         console.print(table)
 
 
@@ -149,10 +140,6 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
       - ``total``, ``successes``, ``failures``: op counts.
       - ``overall_avg_ms``: mean ``total_ms`` across successful ops
         (``None`` if there were none).
-      - ``by_concurrency``: for ``op_type == "upload"``, a list of
-        ``(concurrency, count, avg_ms)`` tuples sorted by ``concurrency``
-        (``concurrency`` may be ``None`` if the field was absent).
-        Empty list for downloads — concurrency is an uploader-side concept.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -180,24 +167,6 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
         if success_durations else None
     )
 
-    by_concurrency: list[tuple] = []
-    if op_type == "upload":
-        groups: dict = {}
-        for o in ops:
-            c = o.get("store_concurrency")
-            groups.setdefault(c, []).append(o)
-        for c in sorted(groups.keys(), key=lambda v: (v is None, v)):
-            group_ops = groups[c]
-            group_successes = [
-                g["total_ms"] for g in group_ops
-                if g.get("status") == 0 and g.get("total_ms") is not None
-            ]
-            avg_ms = (
-                sum(group_successes) / len(group_successes)
-                if group_successes else None
-            )
-            by_concurrency.append((c, len(group_ops), avg_ms))
-
     return {
         "started_at": started_at,
         "elapsed_s": elapsed_s,
@@ -205,7 +174,6 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
         "successes": successes,
         "failures": failures,
         "overall_avg_ms": overall_avg_ms,
-        "by_concurrency": by_concurrency,
     }
 
 
@@ -245,18 +213,7 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
         table.add_row("Total ops", str(summary["total"]))
         table.add_row("Successes", str(summary["successes"]))
         table.add_row("Failures", str(summary["failures"]))
-        if op_type == "upload":
-            for concurrency, count, avg_ms in summary["by_concurrency"]:
-                c_label = "(unset)" if concurrency is None else str(concurrency)
-                op_word = "op" if count == 1 else "ops"
-                table.add_row(
-                    f"Avg @ concurrency {c_label} ({count} {op_word})",
-                    _fmt_duration(avg_ms),
-                )
-        else:
-            table.add_row(
-                "Avg duration", _fmt_duration(summary["overall_avg_ms"])
-            )
+        table.add_row("Avg duration", _fmt_duration(summary["overall_avg_ms"]))
         console.print(table)
 
 

@@ -115,15 +115,14 @@ Ask how many of each, then for each:
 - **Region** — a DigitalOcean region slug (`lon1`, `nyc1`, `ams3`, `sfo3`, `sgp1`, `blr1`, `fra1`, `tor1`).
 - **File size** — in MB, integer. This is the upload size.
 - **VM size** — defaults to `s-2vcpu-4gb`.
-- **Store concurrency** — integer, default **8** (ant's own default). This becomes the `--store-concurrency` value the uploader passes to `ant file upload`. Accept the default unless the user explicitly wants to override.
 
-Emit each uploader as a separate `--uploader` flag to `clients infra`. Spec format (positional): `region:file_size_mb[:vm_size[:store_concurrency]]`. To override `store_concurrency` you must also state `vm_size`.
+Emit each uploader as a separate `--uploader` flag to `clients infra`. Spec format (positional): `region:file_size_mb[:vm_size]`.
 
 **Downloaders** — collect:
 - **Region** — same slug list.
 - **VM size** — defaults to `s-2vcpu-4gb`.
 
-Emit each downloader as a separate `--downloader` flag. Spec format: `region[:vm_size]`. Downloaders have no file-size / store-concurrency slots — address selection is random and lives on S3.
+Emit each downloader as a separate `--downloader` flag. Spec format: `region[:vm_size]`. Downloaders have no file-size slot — address selection is random and lives on S3.
 
 Clients always run on DO (saorsa-deploy doesn't support other providers for clients).
 
@@ -328,7 +327,7 @@ uv run saorsa-deploy monitoring infra --name "$NAME"
 {{#if clients}}
 uv run saorsa-deploy clients infra \
   --name "$NAME" \
-  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if store_concurrency_overridden}}:{{vm_size}}:{{store_concurrency}}{{else}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}{{/if}}' \
+  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
   {{/each}}{{#each downloader}}--downloader '{{region}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
   {{/each}}
 {{/if}}
