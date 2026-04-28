@@ -101,7 +101,7 @@ class AntNodeProvisioner:
 
     NAT hosts (IPs in ``nat_ips``) get an extra namespace+iptables setup step
     and a wrapped systemd ExecStart. Services are ``enable``d but never
-    started — ``start-nodes`` is run afterwards to bring them up once NAT
+    started — ``nodes start`` is run afterwards to bring them up once NAT
     rules are in place.
     """
 
@@ -286,7 +286,7 @@ class AntNodeProvisioner:
             svc_results = add_op(
                 state,
                 server.shell,
-                name="Enable node services (not started — use start-nodes)",
+                name="Enable node services (not started — use nodes start)",
                 commands=enable_commands,
             )
 
@@ -315,7 +315,7 @@ class AntNodeProvisioner:
         self._report_results(install_results, svc_results)
         self.console.print(
             "[dim]Services enabled but not started. "
-            "Run `saorsa-deploy start-nodes --name <name>` to bring them up.[/dim]"
+            "Run `saorsa-deploy nodes start --name <name>` to bring them up.[/dim]"
         )
 
     def _report_results(self, install_results, svc_results):

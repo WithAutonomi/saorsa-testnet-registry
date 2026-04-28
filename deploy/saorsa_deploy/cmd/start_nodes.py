@@ -1,6 +1,6 @@
 """Start ant-node services on node VMs.
 
-Separated from provision-nodes so that port-restricted NAT rules (configured
+Separated from nodes provision so that port-restricted NAT rules (configured
 during provisioning) are in place before the services come up. Runs a simple
 parallel ``systemctl start`` across the target VMs — no staggering.
 """
@@ -19,7 +19,7 @@ from saorsa_deploy.state import load_deployment_state
 
 
 def cmd_start_nodes(args):
-    """Execute the start-nodes command."""
+    """Execute the nodes start command."""
     console = Console()
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
@@ -33,7 +33,7 @@ def cmd_start_nodes(args):
     if not vm_ips:
         console.print(
             "[bold red]Error:[/bold red] No VM IPs found in deployment state. "
-            "Run `saorsa-deploy infra-nodes` and `provision-nodes` first."
+            "Run `saorsa-deploy nodes infra` and `nodes provision` first."
         )
         sys.exit(1)
 
@@ -41,7 +41,7 @@ def cmd_start_nodes(args):
     if not node_count:
         console.print(
             "[bold red]Error:[/bold red] No node_count found in deployment state. "
-            "Run `saorsa-deploy provision-nodes` first."
+            "Run `saorsa-deploy nodes provision` first."
         )
         sys.exit(1)
 

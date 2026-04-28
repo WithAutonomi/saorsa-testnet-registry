@@ -12,7 +12,7 @@ from saorsa_deploy.state import load_client_state
 
 
 def cmd_start_clients(args):
-    """Execute the start-clients command: start uploader/downloader services."""
+    """Execute the clients start command: start uploader/downloader services."""
     console = Console()
 
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")

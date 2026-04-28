@@ -1,8 +1,8 @@
-"""Verify record-file-results works for prod-continuous-downloader deployment rows.
+"""Verify `deployments record-file-results` works for prod-continuous-downloader deployment rows.
 
 The existing testnet flow keys on ``deployment.name`` and the record command is
 generic over deployment kind — this test just pins that contract down so a
-future refactor can't accidentally couple record-file-results to testnet rows.
+future refactor can't accidentally couple `deployments record-file-results` to testnet rows.
 """
 
 from datetime import datetime, timezone

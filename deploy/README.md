@@ -21,8 +21,8 @@ uv sync
 |----------|-------------|
 | `AWS_ACCESS_KEY_ID` | AWS credentials for Terraform state backend and deployment state |
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials for Terraform state backend and deployment state |
-| `ANT_BUILD_AWS_ACCESS_KEY_ID` | AWS credentials for uploading custom-built binaries (only for `build-ant-node-binary`) |
-| `ANT_BUILD_AWS_SECRET_ACCESS_KEY` | AWS credentials for uploading custom-built binaries (only for `build-ant-node-binary`) |
+| `ANT_BUILD_AWS_ACCESS_KEY_ID` | AWS credentials for uploading custom-built binaries (only for `build ant-node`) |
+| `ANT_BUILD_AWS_SECRET_ACCESS_KEY` | AWS credentials for uploading custom-built binaries (only for `build ant-node`) |
 
 Terraform state and deployment metadata are stored in the `maidsafe-org-infra-tfstate` S3 bucket (region `eu-west-2`). AWS credentials are resolved via the standard boto3 credential chain (environment variables, `~/.aws/credentials`, or IAM roles).
 
@@ -34,27 +34,27 @@ A deployment is built up in phases. Each phase has its own `infra-*` /
 `destroy-*` command so partial-failure recovery is independent:
 
 ```
-infra-bootstraps   →  creates bootstrap VMs (Digital Ocean)
-infra-nodes        →  creates node VMs (DO / Hetzner / Vultr) — requires bootstraps
-provision-genesis  →  starts the genesis node on bootstrap #1
-provision-bootstraps (optional) — starts extra bootstrap nodes #2..N
-provision-nodes    →  installs ant-node binary + writes systemd units + enables services (does NOT start them)
-start-nodes        →  starts ant-node services across every node VM (parallel systemctl start)
+bootstraps infra   →  creates bootstrap VMs (Digital Ocean)
+nodes infra        →  creates node VMs (DO / Hetzner / Vultr) — requires bootstraps
+nodes provision-genesis  →  starts the genesis node on bootstrap #1
+bootstraps provision (optional) — starts extra bootstrap nodes #2..N
+nodes provision    →  installs ant-node binary + writes systemd units + enables services (does NOT start them)
+nodes start        →  starts ant-node services across every node VM (parallel systemctl start)
 
-destroy-nodes      →  tears down node VMs, leaves bootstraps alone
-destroy-bootstraps →  tears down bootstraps (refuses while nodes are still up)
+nodes destroy      →  tears down node VMs, leaves bootstraps alone
+bootstraps destroy →  tears down bootstraps (refuses while nodes are still up)
 ```
 
 Run `saorsa-deploy <subcommand> --help` for the authoritative argument list
 for each subcommand. The per-phase commands are:
 
-### `infra-bootstraps`
+### `bootstraps infra`
 
 Create only the bootstrap VMs. These live on Digital Ocean (one per region,
 geographically distributed) and are what the rest of the testnet peers with.
 
 ```bash
-uv run saorsa-deploy infra-bootstraps --name DEV-01 \
+uv run saorsa-deploy bootstraps infra --name DEV-01 \
     --bootstrap-count 7 --attached-volume-size 50
 ```
 
@@ -71,21 +71,21 @@ must match the existing bootstrap regions (same values in the same order)
 or the command errors out.
 
 ```bash
-uv run saorsa-deploy infra-bootstraps --name DEV-01 \
+uv run saorsa-deploy bootstraps infra --name DEV-01 \
     --do-regions-list lon1,nyc1,fra1 --attached-volume-size 50
 ```
 
-### `infra-nodes`
+### `nodes infra`
 
 Create the node (main) VMs across one or more providers. Requires
-`infra-bootstraps` to have run first (errors out otherwise). Runs
+`bootstraps infra` to have run first (errors out otherwise). Runs
 availability preflights against Hetzner (server-type capacity) and Vultr
 (plan-region offering) before touching Terraform, and records the resolved
 regions in deployment state **before** `terraform apply` — so a partial
 failure still leaves something destroyable.
 
 ```bash
-uv run saorsa-deploy infra-nodes --name DEV-01 \
+uv run saorsa-deploy nodes infra --name DEV-01 \
     --attached-volume-size 50 \
     --do-vm-count 10 --do-regions 3 --do-droplet-size s-8vcpu-16gb \
     --vultr-vm-count 5 --vultr-regions 3 --vultr-plan vhp-8c-16gb-intel \
@@ -100,42 +100,42 @@ corresponding `--<provider>-regions` count flag is ignored and no fallback
 substitution happens — you get exactly the regions you asked for.
 
 ```bash
-uv run saorsa-deploy infra-nodes --name DEV-01 \
+uv run saorsa-deploy nodes infra --name DEV-01 \
     --attached-volume-size 50 \
     --do-vm-count 10 --do-regions-list lon1,nyc1,ams3 --do-droplet-size s-8vcpu-16gb \
     --vultr-vm-count 5 --vultr-regions-list ewr,ord,lax --vultr-plan vhp-8c-16gb-intel
 ```
 
-### `provision-genesis` / `provision-bootstraps` / `provision-nodes` / `start-nodes`
+### `nodes provision-genesis` / `bootstraps provision` / `nodes provision` / `nodes start`
 
-Start ant-node services. `provision-genesis` runs the genesis node on
-bootstrap #1 (it's the one peer everyone dials). `provision-bootstraps`
-starts any additional bootstraps (#2..N). `provision-nodes` installs the
+Start ant-node services. `nodes provision-genesis` runs the genesis node on
+bootstrap #1 (it's the one peer everyone dials). `bootstraps provision`
+starts any additional bootstraps (#2..N). `nodes provision` installs the
 binary, writes systemd unit files, and **enables** the services on every
-main-VM. `start-nodes` then brings the services up — the split exists so
+main-VM. `nodes start` then brings the services up — the split exists so
 that optional setup steps (e.g. NAT simulation) can run between unit-write
 and service-start.
 
 ```bash
-uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000
-uv run saorsa-deploy provision-bootstraps --name DEV-01 --port 12000   # if --bootstrap-count > 1
-uv run saorsa-deploy provision-nodes --name DEV-01 --node-count 25
-uv run saorsa-deploy start-nodes --name DEV-01
+uv run saorsa-deploy nodes provision-genesis --name DEV-01 --port 12000
+uv run saorsa-deploy bootstraps provision --name DEV-01 --port 12000   # if --bootstrap-count > 1
+uv run saorsa-deploy nodes provision --name DEV-01 --node-count 25
+uv run saorsa-deploy nodes start --name DEV-01
 ```
 
 #### Port-restricted NAT simulation
 
-`provision-nodes` can run a configurable percentage of VMs behind a
+`nodes provision` can run a configurable percentage of VMs behind a
 simulated port-restricted NAT (Linux network namespace + iptables DNAT /
 MASQUERADE). Useful for modelling real-world reachability constraints.
 
 ```bash
-uv run saorsa-deploy provision-nodes --name DEV-01 --node-count 25 --nat-percent 20
-uv run saorsa-deploy start-nodes --name DEV-01
+uv run saorsa-deploy nodes provision --name DEV-01 --node-count 25 --nat-percent 20
+uv run saorsa-deploy nodes start --name DEV-01
 ```
 
 Selection is deterministic ("one per region first, then round-robin") and
-is recorded in deployment state on first run. Subsequent `provision-nodes`
+is recorded in deployment state on first run. Subsequent `nodes provision`
 runs honour the locked selection — `--nat-percent` is ignored unless you
 pass `--force-nat-reselect`, which recomputes the set and can flip VMs
 between NAT and non-NAT.
@@ -153,32 +153,32 @@ By default provisioning uses the latest GitHub release. Override with:
 
 ```bash
 # Specific release
-uv run saorsa-deploy provision-genesis --name DEV-01 --port 12000 --node-version 0.2.0
+uv run saorsa-deploy nodes provision-genesis --name DEV-01 --port 12000 --node-version 0.2.0
 
-# Custom branch build (see build-ant-node-binary)
-uv run saorsa-deploy provision-nodes --name DEV-01 --node-count 25 \
+# Custom branch build (see build ant-node)
+uv run saorsa-deploy nodes provision --name DEV-01 --node-count 25 \
     --branch-name feature-x --repo-owner myorg
 ```
 
 `--node-version` and `--branch-name`/`--repo-owner` are mutually exclusive.
 `--branch-name` and `--repo-owner` must be used together.
 
-### `destroy-nodes` / `destroy-bootstraps`
+### `nodes destroy` / `bootstraps destroy`
 
 Tear down in reverse phase order: nodes first, bootstraps second.
 
 ```bash
-uv run saorsa-deploy destroy-nodes --name DEV-01 --force
-uv run saorsa-deploy destroy-bootstraps --name DEV-01 --force
+uv run saorsa-deploy nodes destroy --name DEV-01 --force
+uv run saorsa-deploy bootstraps destroy --name DEV-01 --force
 ```
 
-`destroy-bootstraps` refuses while node state is still populated, and
+`bootstraps destroy` refuses while node state is still populated, and
 also refuses while any _extension_ testnet is sharing these bootstraps
-(see `extend` below). Both commands have a fallback path that scans S3
+(see `deployments extend` below). Both commands have a fallback path that scans S3
 for orphan tfstate files when the deployment state is missing, so
 interrupted runs can still be cleaned up.
 
-### `extend` / `unextend`
+### `deployments extend` / `deployments unextend`
 
 Deploy a second testnet that reuses an existing testnet's bootstrap VMs.
 Typical use case: binary-compatibility testing — run DEV-02 with a
@@ -187,32 +187,32 @@ bootstrap layer.
 
 ```bash
 # Seed DEV-02's deployment state from DEV-01's bootstraps
-uv run saorsa-deploy extend --name DEV-02 --source DEV-01
+uv run saorsa-deploy deployments extend --name DEV-02 --source DEV-01
 
 # From here on, DEV-02 is a normal deployment — run the usual pipeline,
 # skipping the bootstrap/genesis stages:
-uv run saorsa-deploy infra-nodes --name DEV-02 --do-vm-count 5 --do-regions 2
-uv run saorsa-deploy provision-nodes --name DEV-02 \
+uv run saorsa-deploy nodes infra --name DEV-02 --do-vm-count 5 --do-regions 2
+uv run saorsa-deploy nodes provision --name DEV-02 \
     --branch-name feature-x --repo-owner myorg
-uv run saorsa-deploy start-nodes --name DEV-02
+uv run saorsa-deploy nodes start --name DEV-02
 
-# Teardown — note: no destroy-bootstraps for an extension
-uv run saorsa-deploy destroy-nodes --name DEV-02 --force
-uv run saorsa-deploy unextend --name DEV-02 --force
+# Teardown — note: no bootstraps destroy for an extension
+uv run saorsa-deploy nodes destroy --name DEV-02 --force
+uv run saorsa-deploy deployments unextend --name DEV-02 --force
 ```
 
-`extend` copies `bootstrap_nodes`, `bootstrap_ip`, and `bootstrap_port`
+`deployments extend` copies `bootstrap_nodes`, `bootstrap_ip`, and `bootstrap_port`
 from the source's state into the new testnet's state, and records
 `shared_bootstrap_from: <source>`. It's idempotent: re-running with the
 same source refreshes the bootstrap fields (useful if the source was
 re-provisioned). Re-running with a different source requires `--force`.
 
-`unextend` deletes the extension's deployment state. It refuses if the
-extension still has nodes (run `destroy-nodes` first) and it never
+`deployments unextend` deletes the extension's deployment state. It refuses if the
+extension still has nodes (run `nodes destroy` first) and it never
 touches the source's bootstrap VMs.
 
-`destroy-bootstraps` will refuse to destroy a testnet's bootstraps while
-any extension references them — `unextend` each dependent first.
+`bootstraps destroy` will refuse to destroy a testnet's bootstraps while
+any extension references them — `deployments unextend` each dependent first.
 `--force` does not override this check.
 
 ### Client VMs (uploaders / downloaders)
@@ -221,11 +221,11 @@ Client VMs run the ant binary as long-running upload-or-download workers against
 
 Commands:
 
-- `infra-clients --name <testnet> --uploader region:file_size_mb[:vm_size[:store_concurrency]] [--uploader ...] --downloader region[:vm_size] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required.
-- `provision-clients` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM).
-- `start-clients` / `stop-clients` — start or stop the appropriate service per-VM based on role.
-- `destroy-clients` — tear down VMs and wipe the per-testnet addresses folder at `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`.
-- `clean-clients` — remove services + artefacts without destroying the VMs; idempotent and role-tolerant.
+- `clients infra --name <testnet> --uploader region:file_size_mb[:vm_size[:store_concurrency]] [--uploader ...] --downloader region[:vm_size] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required.
+- `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM).
+- `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
+- `clients destroy` — tear down VMs and wipe the per-testnet addresses folder at `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`.
+- `clients clean` — remove services + artefacts without destroying the VMs; idempotent and role-tolerant.
 
 Uploader flow (`uploader.sh`): uploads a random file via `ant`, appends the returned address to a local tail buffer capped at `ADDRESSES_TAIL_SIZE` (default 10k), and flushes the buffer to `upload-<region>-<client_index>.txt` under the testnet's addresses prefix every `S3_FLUSH_EVERY_N` addresses or `S3_FLUSH_INTERVAL_SECS` seconds, whichever comes first.
 
@@ -245,12 +245,12 @@ terraform output -raw secret_access_key        # -> ANT_CLIENT_AWS_SECRET_ACCESS
 
 Copy both into your `.env`. The user has `s3:ListBucket` on `maidsafe-org-infra-tfstate` (scoped to the `saorsa-deploy/addresses/*` prefix) plus `GetObject`/`PutObject`/`DeleteObject` on objects under that prefix — nothing else.
 
-### `build-ant-node-binary` command
+### `build ant-node` command
 
 Build ant-node from a Git branch on an ephemeral DO droplet and upload the binary to S3.
 
 ```bash
-uv run saorsa-deploy build-ant-node-binary --branch-name feature-x --repo-owner myorg
+uv run saorsa-deploy build ant-node --branch-name feature-x --repo-owner myorg
 ```
 
 #### Arguments
@@ -281,12 +281,12 @@ terraform apply
 aws iam create-access-key --user-name ant-build-uploader
 ```
 
-### `provision-telegraf-logs` command
+### `elastic provision-telegraf` command
 
 Install and configure Telegraf for Elasticsearch log forwarding on all testnet VMs. Formerly named `provision-telegraf`.
 
 ```bash
-uv run saorsa-deploy provision-telegraf-logs --name DEV-01 \
+uv run saorsa-deploy elastic provision-telegraf --name DEV-01 \
   --elasticsearch-url https://es.example.com \
   --elasticsearch-username user \
   --elasticsearch-password pass
@@ -311,12 +311,12 @@ Optional per-testnet monitoring stack: InfluxDB 2.x + Grafana on a single VM, wi
 
 The monitoring stack is standalone — it can be used by deployments from this repository or external setups.
 
-### `monitoring-infra` command
+### `monitoring infra` command
 
 Create a monitoring VM with attached storage using Terraform.
 
 ```bash
-uv run saorsa-deploy monitoring-infra --name DEV-01
+uv run saorsa-deploy monitoring infra --name DEV-01
 ```
 
 #### Arguments
@@ -329,35 +329,35 @@ uv run saorsa-deploy monitoring-infra --name DEV-01
 | `--volume-size` | int | No | 50 | Attached volume size in GB (for InfluxDB data) |
 | `--droplet-size` | string | No | `s-2vcpu-4gb` | Droplet size slug; bump for large testnets with many metric-forwarding VMs |
 
-### `provision-monitoring` command
+### `monitoring provision` command
 
 Install and configure InfluxDB 2.x and Grafana on the monitoring VM.
 
 ```bash
-uv run saorsa-deploy provision-monitoring --name DEV-01
+uv run saorsa-deploy monitoring provision --name DEV-01
 ```
 
 #### Arguments
 
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
-| `--name` | string | Yes | - | Monitoring stack name (must match `monitoring-infra`) |
+| `--name` | string | Yes | - | Monitoring stack name (must match `monitoring infra`) |
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
 
-On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `provision-telegraf-metrics` command.
+On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `monitoring provision-telegraf` command.
 
-### `provision-telegraf-metrics` command
+### `monitoring provision-telegraf` command
 
 Install Telegraf for InfluxDB metrics forwarding on testnet VMs. Collects host-level metrics: CPU, memory, disk space (all mount points), and network bandwidth.
 
 ```bash
 # Using deployment state (loads IPs from S3)
-uv run saorsa-deploy provision-telegraf-metrics --name DEV-01 \
+uv run saorsa-deploy monitoring provision-telegraf --name DEV-01 \
   --influxdb-url http://1.2.3.4:8086 \
   --influxdb-token TOKEN
 
 # Using explicit host IPs (for external setups)
-uv run saorsa-deploy provision-telegraf-metrics \
+uv run saorsa-deploy monitoring provision-telegraf \
   --host-ips 5.6.7.8,9.10.11.12 \
   --influxdb-url http://1.2.3.4:8086 \
   --influxdb-token TOKEN
@@ -377,16 +377,16 @@ uv run saorsa-deploy provision-telegraf-metrics \
 
 Either `--name` or `--host-ips` must be provided. The `--host-ips` flag allows provisioning machines from external testnet setups without any deployment state in this repository.
 
-### `monitoring-info` command
+### `monitoring info` command
 
 Print monitoring stack connection details from S3 state. Useful for retrieving credentials after provisioning, or for getting a ready-to-use Telegraf config for external setups.
 
 ```bash
 # Print connection summary
-uv run saorsa-deploy monitoring-info --name DEV-01
+uv run saorsa-deploy monitoring info --name DEV-01
 
 # Emit a complete Telegraf TOML config to stdout
-uv run saorsa-deploy monitoring-info --name DEV-01 --telegraf-config > telegraf.conf
+uv run saorsa-deploy monitoring info --name DEV-01 --telegraf-config > telegraf.conf
 ```
 
 #### Arguments
@@ -396,12 +396,12 @@ uv run saorsa-deploy monitoring-info --name DEV-01 --telegraf-config > telegraf.
 | `--name` | string | Yes | - | Monitoring stack name |
 | `--telegraf-config` | flag | No | - | Emit complete Telegraf TOML config to stdout |
 
-### `destroy-monitoring` command
+### `monitoring destroy` command
 
 Tear down monitoring infrastructure.
 
 ```bash
-uv run saorsa-deploy destroy-monitoring --name DEV-01
+uv run saorsa-deploy monitoring destroy --name DEV-01
 ```
 
 #### Arguments
@@ -415,26 +415,26 @@ uv run saorsa-deploy destroy-monitoring --name DEV-01
 
 ```bash
 # 1. Create monitoring VM
-uv run saorsa-deploy monitoring-infra --name DEV-01
+uv run saorsa-deploy monitoring infra --name DEV-01
 
 # 2. Install InfluxDB + Grafana (prints connection details)
-uv run saorsa-deploy provision-monitoring --name DEV-01
+uv run saorsa-deploy monitoring provision --name DEV-01
 
 # 3. Install Telegraf on testnet nodes
-uv run saorsa-deploy provision-telegraf-metrics --name DEV-01 \
+uv run saorsa-deploy monitoring provision-telegraf --name DEV-01 \
   --influxdb-url http://1.2.3.4:8086 \
   --influxdb-token TOKEN
 
 # 4. View Grafana dashboards at http://1.2.3.4:3000
 
 # 5. Get connection details later
-uv run saorsa-deploy monitoring-info --name DEV-01
+uv run saorsa-deploy monitoring info --name DEV-01
 
 # 6. Get a portable Telegraf config for external use
-uv run saorsa-deploy monitoring-info --name DEV-01 --telegraf-config
+uv run saorsa-deploy monitoring info --name DEV-01 --telegraf-config
 
 # 7. Tear down when done
-uv run saorsa-deploy destroy-monitoring --name DEV-01
+uv run saorsa-deploy monitoring destroy --name DEV-01
 ```
 
 ### How it works
@@ -484,7 +484,7 @@ uv run saorsa-deploy --version
 
 ## Production Network Deployment
 
-The `bootstrap-production` command deploys 7 hardened bootstrap nodes across 3 cloud providers for the production Autonomi network.
+The `prod bootstrap deploy` command deploys 7 hardened bootstrap nodes across 3 cloud providers for the production Autonomi network.
 
 ### Architecture
 
@@ -520,12 +520,12 @@ Each node runs on a dedicated VM (4 vCPU / 8 GB) with:
 
 ### Commands
 
-#### `bootstrap-production`
+#### `prod bootstrap deploy`
 
 Deploy the full production bootstrap network.
 
 ```bash
-uv run saorsa-deploy bootstrap-production
+uv run saorsa-deploy prod bootstrap deploy
 ```
 
 | Argument | Type | Default | Description |
@@ -544,12 +544,12 @@ The command:
 6. Provisions remaining 6 nodes with bootstrap peer address
 7. Saves deployment state to S3
 
-#### `destroy-bootstrap-production`
+#### `prod bootstrap destroy`
 
 Tear down all production infrastructure. Static IPs are preserved.
 
 ```bash
-uv run saorsa-deploy destroy-bootstrap-production
+uv run saorsa-deploy prod bootstrap destroy
 ```
 
 | Argument | Type | Default | Description |
@@ -560,9 +560,9 @@ uv run saorsa-deploy destroy-bootstrap-production
 
 ### Running continuous downloaders against production (`prod continuous-downloader`)
 
-`prod continuous-downloader deploy` stands up a single client VM running `ant-downloader` continuously against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `record-file-results` workflow can be used to upsert download aggregates into PostgreSQL.
+`prod continuous-downloader deploy` stands up a single client VM running `ant-downloader` continuously against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `deployments record-file-results` workflow can be used to upsert download aggregates into PostgreSQL.
 
-Unlike `bootstrap-production`, this command does **not** provision any bootstrap/genesis/node infrastructure — it fetches the live peers list from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml) at runtime and points the downloader service at those peers via `--bootstrap ip:port`.
+Unlike `prod bootstrap deploy`, this command does **not** provision any bootstrap/genesis/node infrastructure — it fetches the live peers list from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml) at runtime and points the downloader service at those peers via `--bootstrap ip:port`.
 
 ```bash
 uv run saorsa-deploy prod continuous-downloader deploy \
@@ -573,13 +573,13 @@ uv run saorsa-deploy prod continuous-downloader deploy \
 
 Orchestrated sequence (each step is skipped when its state already exists, so the command is idempotent under reruns):
 
-1. `monitoring-infra` + `provision-monitoring` for an InfluxDB VM in `lon1` named identically to `--name`.
-2. `infra-clients` for the single `--spec` (passed internally as one `--downloader`; no uploaders — prod mode is download-only).
-3. `provision-clients --prod --addresses-file <path> --monitoring-name <name>` which:
+1. `monitoring infra` + `monitoring provision` for an InfluxDB VM in `lon1` named identically to `--name`.
+2. `clients infra` for the single `--spec` (passed internally as one `--downloader`; no uploaders — prod mode is download-only).
+3. `clients provision --prod --addresses-file <path> --monitoring-name <name>` which:
    - Fetches the prod peers list and writes `BOOTSTRAP_ARGS` against them.
    - Writes the address list to `/var/lib/ant-client/addresses.txt` on the VM.
    - Teaches `downloader.sh` to prefer that file over the usual S3 uploader-emitted feed.
-4. `start-clients` to launch the `ant-downloader` systemd service.
+4. `clients start` to launch the `ant-downloader` systemd service.
 
 Arguments (for `prod continuous-downloader deploy`):
 
@@ -598,7 +598,7 @@ The monitoring VM always uses region `lon1`.
 After the command reports success, record download aggregates into Postgres on demand:
 
 ```bash
-uv run saorsa-deploy record-file-results \
+uv run saorsa-deploy deployments record-file-results \
   --name PROD-DL-01 --monitoring-name PROD-DL-01 --window -1h
 ```
 
@@ -629,8 +629,8 @@ uv run saorsa-deploy prod uploaders deploy \
 
 Orchestrated sequence (each step is skipped when its state already exists, so the command is idempotent under reruns):
 
-1. `monitoring-infra` + `provision-monitoring` for an InfluxDB VM in `lon1` named identically to `--name`.
-2. `infra-clients` for one upload-role VM per `--uploader` spec (synthesised from the per-uploader region / vm_size / concurrency).
+1. `monitoring infra` + `monitoring provision` for an InfluxDB VM in `lon1` named identically to `--name`.
+2. `clients infra` for one upload-role VM per `--uploader` spec (synthesised from the per-uploader region / vm_size / concurrency).
 3. A custom Pyinfra provisioner that installs the `ant` binary, deploys the `prod_uploader.py` Python service, writes per-host URL lists, writes `/etc/ant-prod-uploader.env`, and registers the `ant-prod-uploader.service` systemd unit (`Type=simple`, `Restart=no`).
 4. Enables the service on each VM, which uploads each URL in turn and emits one Influx line per upload to the `prod_upload` measurement.
 

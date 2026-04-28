@@ -1,6 +1,6 @@
 """Destroy bootstrap production network command.
 
-Tears down all infrastructure created by bootstrap-production across all providers.
+Tears down all infrastructure created by prod bootstrap deploy across all providers.
 Does NOT release the static IPs (those are managed outside Terraform).
 
 Reads the node list from production-ips.json and runs terraform destroy for each.
@@ -19,7 +19,7 @@ from saorsa_deploy.executor import execute_terraform_runs
 
 
 def cmd_destroy_bootstrap_production(args):
-    """Execute the destroy-bootstrap-production command."""
+    """Execute the prod bootstrap destroy command."""
     console = Console()
     name = args.name
 

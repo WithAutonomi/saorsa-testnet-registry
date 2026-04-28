@@ -53,7 +53,7 @@ def print_connection_summary(name: str, details: dict, console: Console):
         f"  [bold]Index Pattern:[/bold] {es_index}",
         "",
         "  [dim]Telegraf command:[/dim]",
-        f"  saorsa-deploy provision-telegraf-logs --name {name}",
+        f"  saorsa-deploy elastic provision-telegraf --name {name}",
         "",
         "  [dim]Query with API key:[/dim]",
         f'  curl -H "Authorization: ApiKey {es_api_key}" {es_url}/{es_index}/_search',

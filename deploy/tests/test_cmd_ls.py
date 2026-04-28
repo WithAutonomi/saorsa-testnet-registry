@@ -242,7 +242,7 @@ def test_ls_filter_recent_drops_rows_older_than_seven_days(capsys, repo):
 def test_ls_status_and_active_are_mutually_exclusive():
     """argparse should reject `--status X --active` at the CLI layer."""
     result = subprocess.run(
-        ["uv", "run", "saorsa-deploy", "ls", "--status", "running", "--active"],
+        ["uv", "run", "saorsa-deploy", "deployments", "ls", "--status", "running", "--active"],
         capture_output=True,
         text=True,
     )
@@ -254,7 +254,7 @@ def test_ls_argparse_wires_defaults():
     """Importing the parser-build is integration-level; assert via -h that the
     flags are registered and defaults work end-to-end."""
     result = subprocess.run(
-        ["uv", "run", "saorsa-deploy", "ls", "--help"],
+        ["uv", "run", "saorsa-deploy", "deployments", "ls", "--help"],
         capture_output=True,
         text=True,
     )

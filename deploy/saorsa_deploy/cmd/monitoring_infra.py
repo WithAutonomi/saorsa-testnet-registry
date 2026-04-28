@@ -92,6 +92,6 @@ def cmd_monitoring_infra(args):
 
     console.print()
     console.print(
-        f"[dim]Next step: saorsa-deploy provision-monitoring "
+        f"[dim]Next step: saorsa-deploy monitoring provision "
         f"--name {args.name} --ssh-key-path ~/.ssh/id_rsa[/dim]"
     )

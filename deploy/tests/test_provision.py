@@ -429,7 +429,7 @@ class TestAntNodeProvisioner:
         provisioner.execute()
 
         # Last add_op is the enable step (services are not started here —
-        # start-nodes handles that after NAT rules are in place)
+        # `nodes start` handles that after NAT rules are in place)
         enable_call = mock_add_op.call_args_list[-1]
         commands = enable_call.kwargs.get("commands", [])
         assert commands[0] == "systemctl daemon-reload"

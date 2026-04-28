@@ -233,7 +233,7 @@ def build_devnet_manifest(
     if not bootstrap_port:
         raise ValueError(
             "bootstrap_port is missing from deployment state. "
-            "Has the provision-genesis command been run?"
+            "Has the nodes provision-genesis command been run?"
         )
 
     evm_info = get_evm_network_info(evm_network)

@@ -23,7 +23,7 @@ VALID_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD)
 
 
 def cmd_destroy_clients(args):
-    """Execute the destroy-clients command: tear down client VMs."""
+    """Execute the clients destroy command: tear down client VMs."""
     console = Console()
 
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
@@ -159,8 +159,8 @@ def cmd_destroy_clients(args):
 def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
     """Reconstruct client specs from S3-backed tfstate when client state is missing.
 
-    Used when an earlier infra-clients run crashed before saving client state,
-    leaving orphan droplets that destroy-clients otherwise couldn't see.
+    Used when an earlier clients infra run crashed before saving client state,
+    leaving orphan droplets that clients destroy otherwise couldn't see.
     """
     prefix = f"{CLIENT_STATE_KEY_PREFIX}-{name}-"
     keys = list_terraform_state_keys(prefix)

@@ -11,7 +11,7 @@ from saorsa_deploy.state import load_deployment_state, update_deployment_state
 
 
 def cmd_provision_nodes(args):
-    """Execute the provision-nodes command: provision nodes on all VMs."""
+    """Execute the nodes provision command: provision nodes on all VMs."""
     console = Console()
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
@@ -35,7 +35,7 @@ def cmd_provision_nodes(args):
     if not bootstrap_port:
         console.print(
             "[bold red]Error:[/bold red] No bootstrap port found in deployment state. "
-            "Has the provision-genesis command been run?"
+            "Has the nodes provision-genesis command been run?"
         )
         sys.exit(1)
 
@@ -153,7 +153,7 @@ def _resolve_nat_ips(args, state, vm_ips_by_region, console) -> set[str]:
     """Determine which VM IPs should be NAT-simulated.
 
     Uses the persisted selection from deployment state when available —
-    re-running provision-nodes never flips a VM between NAT and non-NAT
+    re-running nodes provision never flips a VM between NAT and non-NAT
     unless ``--force-nat-reselect`` is passed.
     """
     nat_percent = getattr(args, "nat_percent", 0) or 0

@@ -19,7 +19,7 @@ from saorsa_deploy.state import (
 def cmd_destroy_bootstraps(args):
     """Tear down bootstrap VMs for a deployment.
 
-    Refuses when node-VM state is still populated — run ``destroy-nodes``
+    Refuses when node-VM state is still populated — run ``nodes destroy``
     first. Falls back to scanning S3 for orphaned bootstrap tfstate files
     when no deployment state is found.
     """
@@ -37,7 +37,7 @@ def cmd_destroy_bootstraps(args):
         console.print(
             f"[bold red]Error:[/bold red] Deployment '{args.name}' still has "
             f"{len(regions)} node region(s) in state. Run "
-            f"`saorsa-deploy destroy-nodes --name {args.name}` first."
+            f"`saorsa-deploy nodes destroy --name {args.name}` first."
         )
         sys.exit(1)
 

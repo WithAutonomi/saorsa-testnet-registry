@@ -14,7 +14,7 @@ def cmd_unextend(args):
 
     Inverse of ``extend``. Refuses if the deployment is not an extension
     (no ``shared_bootstrap_from`` recorded) or still has node regions
-    populated (run ``destroy-nodes`` first). Does not touch any cloud
+    populated (run ``nodes destroy`` first). Does not touch any cloud
     infrastructure — the source testnet's bootstraps are left alone.
     """
     console = Console()
@@ -36,7 +36,7 @@ def cmd_unextend(args):
         console.print(
             f"[bold red]Error:[/bold red] Deployment '{name}' is not an "
             "extension (no shared_bootstrap_from in state). Use "
-            "`destroy-bootstraps` for regular deployments."
+            "`bootstraps destroy` for regular deployments."
         )
         sys.exit(1)
 
@@ -45,7 +45,7 @@ def cmd_unextend(args):
         console.print(
             f"[bold red]Error:[/bold red] Extension '{name}' still has "
             f"{len(regions)} node region(s) in state. Run "
-            f"`saorsa-deploy destroy-nodes --name {name}` first."
+            f"`saorsa-deploy nodes destroy --name {name}` first."
         )
         sys.exit(1)
 

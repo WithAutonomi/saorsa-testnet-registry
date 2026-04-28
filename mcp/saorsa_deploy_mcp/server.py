@@ -207,7 +207,7 @@ def create_deployment(
     """Create a new testnet deployment by running saorsa-deploy commands.
 
     This runs the full deployment sequence:
-    infra -> provision-genesis -> provision-bootstraps (if count > 1) -> provision.
+    infra -> nodes provision-genesis -> bootstraps provision (if count > 1) -> provision.
     The deployment is recorded in the database automatically by saorsa-deploy.
 
     Read the testnet://docs/deployment-config resource for full parameter
@@ -250,7 +250,7 @@ def create_deployment(
     if branch_name:
         owner = repo_owner or "maidsafe"
         build_args = [
-            "build-ant-node-binary",
+            "build", "ant-node",
             "--name", name,
             "--branch-name", branch_name,
             "--repo-owner", owner,
@@ -287,7 +287,7 @@ def create_deployment(
 
     # Step 3: Provision genesis
     genesis_args = [
-        "provision-genesis",
+        "nodes", "provision-genesis",
         "--name", name,
         "--port", str(genesis_port),
     ]
@@ -314,7 +314,7 @@ def create_deployment(
     # Step 3b: Provision additional bootstrap nodes (if bootstrap_count > 1)
     if bootstrap_count > 1:
         bootstrap_args = [
-            "provision-bootstraps",
+            "bootstraps", "provision",
             "--name", name,
             "--port", str(genesis_port),
         ]
@@ -373,9 +373,9 @@ def create_deployment(
     # Step 5: Optional log forwarding
     if enable_log_forwarding:
         for step_name, step_args in [
-            ("elastic-infra", ["elastic-infra", "--name", name]),
-            ("provision-elastic", ["provision-elastic", "--name", name]),
-            ("provision-telegraf-logs", ["provision-telegraf-logs", "--name", name]),
+            ("elastic infra", ["elastic", "infra", "--name", name]),
+            ("elastic provision", ["elastic", "provision", "--name", name]),
+            ("elastic provision-telegraf", ["elastic", "provision-telegraf", "--name", name]),
         ]:
             output_lines.append(f"Running {step_name}...")
             rc, stdout, stderr = _run_deploy(step_args)
@@ -528,7 +528,7 @@ def create_clients(
     if branch_name:
         owner = repo_owner or "maidsafe"
         build_args = [
-            "build-ant-binary",
+            "build", "ant",
             "--name", name,
             "--branch-name", branch_name,
             "--repo-owner", owner,
@@ -589,7 +589,7 @@ def start_client_services(name: str) -> str:
     Args:
         name: Deployment name (e.g. "DEV-01")
     """
-    rc, stdout, stderr = _run_deploy(["start-clients", "--name", name])
+    rc, stdout, stderr = _run_deploy(["clients", "start", "--name", name])
     if rc != 0:
         return f"Start failed (exit code {rc}):\n{stderr}\n{stdout}"
     return f"Client services started for '{name}'."
@@ -602,7 +602,7 @@ def stop_client_services(name: str) -> str:
     Args:
         name: Deployment name (e.g. "DEV-01")
     """
-    rc, stdout, stderr = _run_deploy(["stop-clients", "--name", name])
+    rc, stdout, stderr = _run_deploy(["clients", "stop", "--name", name])
     if rc != 0:
         return f"Stop failed (exit code {rc}):\n{stderr}\n{stdout}"
     return f"Client services stopped for '{name}'."
@@ -635,7 +635,7 @@ def record_file_results(
         influx_org: Override InfluxDB organization
         influx_bucket: Override InfluxDB bucket
     """
-    cli_args = ["record-file-results", "--name", name]
+    cli_args = ["deployments", "record-file-results", "--name", name]
     if monitoring_name:
         cli_args.extend(["--monitoring-name", monitoring_name])
     if window:
@@ -651,7 +651,7 @@ def record_file_results(
 
     rc, stdout, stderr = _run_deploy(cli_args)
     if rc != 0:
-        return f"record-file-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return f"deployments record-file-results failed (exit code {rc}):\n{stderr}\n{stdout}"
     return stdout or f"File results recorded for '{name}'."
 
 
@@ -690,7 +690,7 @@ def record_results(
         influx_org: Override InfluxDB organization
         influx_bucket: Override InfluxDB bucket
     """
-    cli_args = ["record-results", "--name", name]
+    cli_args = ["deployments", "record-results", "--name", name]
     if summary is not None:
         cli_args.extend(["--summary", summary])
     if monitoring_name:
@@ -708,7 +708,7 @@ def record_results(
 
     rc, stdout, stderr = _run_deploy(cli_args)
     if rc != 0:
-        return f"record-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return f"deployments record-results failed (exit code {rc}):\n{stderr}\n{stdout}"
     return stdout or f"Host results recorded for '{name}'."
 
 
@@ -725,10 +725,10 @@ def set_results_summary(name: str, summary: str) -> str:
         summary: New freeform summary text describing the testnet run outcome
     """
     rc, stdout, stderr = _run_deploy(
-        ["set-results-summary", "--name", name, "--summary", summary]
+        ["deployments", "set-results-summary", "--name", name, "--summary", summary]
     )
     if rc != 0:
-        return f"set-results-summary failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return f"deployments set-results-summary failed (exit code {rc}):\n{stderr}\n{stdout}"
     return stdout or f"Summary updated for '{name}'."
 
 
@@ -739,7 +739,7 @@ def destroy_clients(name: str) -> str:
     Args:
         name: Deployment name (e.g. "DEV-01")
     """
-    rc, stdout, stderr = _run_deploy(["destroy-clients", "--name", name, "--force"])
+    rc, stdout, stderr = _run_deploy(["clients", "destroy", "--name", name, "--force"])
     if rc != 0:
         return f"Destroy clients failed (exit code {rc}):\n{stderr}\n{stdout}"
     return f"Client VMs for '{name}' destroyed successfully."

@@ -56,7 +56,7 @@ def _resolve_binary_source(args, console):
             console.print(
                 f"[bold red]Error:[/bold red] No custom build found for "
                 f"{args.repo_owner}/{args.branch_name}. "
-                f"Run 'build-ant-node-binary' first."
+                f"Run 'build ant-node' first."
             )
             sys.exit(1)
         url = get_custom_build_url(args.name, args.repo_owner, args.branch_name)
@@ -67,7 +67,7 @@ def _resolve_binary_source(args, console):
 
 
 def cmd_provision_genesis(args):
-    """Execute the provision-genesis command: provision the genesis node."""
+    """Execute the nodes provision-genesis command: provision the genesis node."""
     console = Console()
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")

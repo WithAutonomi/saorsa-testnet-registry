@@ -82,7 +82,7 @@ def _build_provider_state(
 def cmd_infra_nodes(args):
     """Create the main node VMs for a deployment.
 
-    Requires bootstrap state to already exist — run ``infra-bootstraps``
+    Requires bootstrap state to already exist — run ``bootstraps infra``
     first. Owns the ``regions``, ``terraform_variables``, ``vm_ips``, and
     ``vm_ids`` slices of the deployment state.
     """
@@ -101,7 +101,7 @@ def cmd_infra_nodes(args):
     except RuntimeError:
         console.print(
             f"[bold red]Error:[/bold red] No deployment state found for "
-            f"'{args.name}'. Run `saorsa-deploy infra-bootstraps --name "
+            f"'{args.name}'. Run `saorsa-deploy bootstraps infra --name "
             f"{args.name} ...` first."
         )
         sys.exit(1)
@@ -110,7 +110,7 @@ def cmd_infra_nodes(args):
     if not bootstrap_nodes:
         console.print(
             f"[bold red]Error:[/bold red] Deployment '{args.name}' has no "
-            "bootstrap nodes in state. Run `saorsa-deploy infra-bootstraps "
+            "bootstrap nodes in state. Run `saorsa-deploy bootstraps infra "
             f"--name {args.name} ...` first."
         )
         sys.exit(1)
@@ -237,7 +237,7 @@ def cmd_infra_nodes(args):
                 except Exception:
                     pass
 
-    # Persist the planned regions BEFORE terraform apply so destroy-nodes
+    # Persist the planned regions BEFORE terraform apply so nodes destroy
     # can tear down anything terraform may have started, even on partial or
     # total failure. Previously we saved regions only after a successful
     # apply, which left orphans invisible to destroy.

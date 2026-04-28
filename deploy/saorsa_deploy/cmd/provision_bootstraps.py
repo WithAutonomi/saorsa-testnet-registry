@@ -37,7 +37,7 @@ def cmd_provision_bootstraps(args):
     if not bootstrap_port:
         console.print(
             "[bold red]Error:[/bold red] No bootstrap port found in deployment state. "
-            "Has the provision-genesis command been run?"
+            "Has the nodes provision-genesis command been run?"
         )
         sys.exit(1)
 

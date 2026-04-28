@@ -589,7 +589,7 @@ class TestBuildDevnetManifest:
         ]
 
     def test_bootstrap_multiaddrs_use_per_node_port_when_set(self):
-        # provision-bootstraps stamps `port` on each entry; should take precedence.
+        # `bootstraps provision` stamps `port` on each entry; should take precedence.
         state = _state(
             bootstrap_nodes=[
                 {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1, "port": 22000},

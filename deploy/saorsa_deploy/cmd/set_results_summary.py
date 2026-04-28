@@ -30,7 +30,7 @@ def cmd_set_results_summary(args):
     except ValueError:
         console.print(
             f"[bold red]Error:[/bold red] No host results recorded for deployment "
-            f"'{args.name}' yet. Run `saorsa-deploy record-results --name {args.name}` "
+            f"'{args.name}' yet. Run `saorsa-deploy deployments record-results --name {args.name}` "
             f"first."
         )
         sys.exit(1)

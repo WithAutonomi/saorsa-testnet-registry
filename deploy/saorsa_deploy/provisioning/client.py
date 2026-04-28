@@ -441,7 +441,7 @@ fi"""
         )
         self.console.print(
             "  Services created but NOT started. "
-            "Use 'start-clients' to begin upload/download."
+            "Use 'clients start' to begin upload/download."
         )
         if failed:
             for host in failed:

@@ -130,7 +130,7 @@ class TestRerun:
         patches.create_boot.assert_not_called()
 
     def test_state_exists_without_bootstraps_writes_them_via_update(self, patches):
-        """If infra-nodes ran somehow before infra-bootstraps (shouldn't happen
+        """If `nodes infra` ran somehow before `bootstraps infra` (shouldn't happen
         but shouldn't destroy existing state if it does), write via update
         instead of overwriting the whole file."""
         patches.load_state.return_value = {"bootstrap_nodes": [], "regions": []}

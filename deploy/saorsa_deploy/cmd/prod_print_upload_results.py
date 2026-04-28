@@ -47,7 +47,7 @@ def cmd_prod_print_upload_results(args):
         except RuntimeError:
             console.print(
                 f"[yellow]No monitoring stack found for '{stack_name}'. "
-                f"Run `monitoring-infra` + `provision-monitoring` first if "
+                f"Run `monitoring infra` + `monitoring provision` first if "
                 f"you expected to query Influx.[/yellow]"
             )
             return
@@ -61,7 +61,7 @@ def cmd_prod_print_upload_results(args):
     if not (influx_url and influx_token):
         console.print(
             f"[yellow]Monitoring state exists for '{args.name}' but InfluxDB "
-            f"isn't provisioned yet. Run `provision-monitoring` first.[/yellow]"
+            f"isn't provisioned yet. Run `monitoring provision` first.[/yellow]"
         )
         return
 

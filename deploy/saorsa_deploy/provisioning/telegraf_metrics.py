@@ -234,6 +234,6 @@ def build_telegraf_metrics_config() -> str:
     """Read the Telegraf metrics config from the resources directory.
 
     Uses environment variables for connection details, making the config
-    portable across hosts. Can also be used standalone with monitoring-info --telegraf-config.
+    portable across hosts. Can also be used standalone with monitoring info --telegraf-config.
     """
     return _read_resource("telegraf_metrics.conf")

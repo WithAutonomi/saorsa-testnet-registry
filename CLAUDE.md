@@ -66,7 +66,7 @@ deploy/
     ssh.py                      # SSH operations
     state.py                    # Deployment state management (S3)
     terraform.py                # Terraform orchestration
-    cmd/                        # CLI subcommands (infra-bootstraps, infra-nodes, provision-nodes, destroy-nodes, monitoring, etc.)
+    cmd/                        # CLI subcommands (bootstraps infra, nodes infra, nodes provision, nodes destroy, monitoring, etc.)
     provisioning/               # Pyinfra provisioning logic (genesis, node, build, monitoring)
     resources/                  # Terraform manifests (digitalocean/, digitalocean-monitoring/, aws-build-infra/)
   tests/                        # pytest test suite
@@ -135,12 +135,12 @@ The data flow is: **Claude → MCP → saorsa-deploy (subprocess) → infrastruc
 
 When asked to deploy, launch, create, or destroy a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
 
-- `create_deployment` — runs the full deployment sequence (infra-bootstraps → infra-nodes → provision-genesis → provision-bootstraps → provision-nodes → start-nodes)
-- `destroy_deployment` — runs saorsa-deploy destroy-nodes then destroy-bootstraps to tear down infrastructure
+- `create_deployment` — runs the full deployment sequence (bootstraps infra → nodes infra → nodes provision-genesis → bootstraps provision → nodes provision → nodes start)
+- `destroy_deployment` — runs saorsa-deploy nodes destroy then bootstraps destroy to tear down infrastructure
 
 NOTE: the MCP server currently still shells out to the pre-split `infra`/`destroy` commands and needs an update before Claude can use these tools end-to-end. Until then, run the saorsa-deploy CLI directly.
 
-`provision-nodes` installs the ant-node binary, writes systemd unit files, and **enables** the services; it does not start them. `start-nodes` is a separate step that runs `systemctl start ant-node-{1..N}` in parallel across every node VM. The split exists so that optional setup (notably port-restricted NAT simulation configured via `--nat-percent`) can run between unit-write and service-start.
+`nodes provision` installs the ant-node binary, writes systemd unit files, and **enables** the services; it does not start them. `nodes start` is a separate step that runs `systemctl start ant-node-{1..N}` in parallel across every node VM. The split exists so that optional setup (notably port-restricted NAT simulation configured via `--nat-percent`) can run between unit-write and service-start.
 - `list_deployments` — lists all deployments from the database
 - `get_deployment` — gets deployment details, events, and status
 - `testnet://docs/deployment-config` — resource with full parameter documentation
@@ -149,20 +149,20 @@ NOTE: the MCP server currently still shells out to the pre-split `infra`/`destro
 
 A testnet can be deployed as an **extension** of another — it reuses the source testnet's bootstrap VMs and peers with them, but has its own fresh node VMs (typically running a different `ant-node` binary for compatibility testing). Commands:
 
-- `extend --name DEV-02 --source DEV-01` — seeds DEV-02's state with a copy of DEV-01's `bootstrap_nodes` / `bootstrap_ip` / `bootstrap_port` and records `shared_bootstrap_from: "DEV-01"`. No infrastructure is created. Idempotent: re-running refreshes the bootstrap fields from the source.
-- `unextend --name DEV-02 --force` — inverse: deletes DEV-02's deployment state. Never touches the source. Refuses if DEV-02 still has nodes (run `destroy-nodes` first).
+- `deployments extend --name DEV-02 --source DEV-01` — seeds DEV-02's state with a copy of DEV-01's `bootstrap_nodes` / `bootstrap_ip` / `bootstrap_port` and records `shared_bootstrap_from: "DEV-01"`. No infrastructure is created. Idempotent: re-running refreshes the bootstrap fields from the source.
+- `deployments unextend --name DEV-02 --force` — inverse: deletes DEV-02's deployment state. Never touches the source. Refuses if DEV-02 still has nodes (run `nodes destroy` first).
 
-The pipeline for an extension skips the bootstrap/genesis stages entirely: `extend` → `infra-nodes` → `provision-nodes` → `start-nodes`. Destroy: `destroy-nodes` → `unextend`.
+The pipeline for an extension skips the bootstrap/genesis stages entirely: `deployments extend` → `nodes infra` → `nodes provision` → `nodes start`. Destroy: `nodes destroy` → `deployments unextend`.
 
-`destroy-bootstraps` now scans for any deployment whose `shared_bootstrap_from` matches the name being destroyed and refuses if dependents exist. `--force` does not override this — the user must `unextend` each dependent first.
+`bootstraps destroy` now scans for any deployment whose `shared_bootstrap_from` matches the name being destroyed and refuses if dependents exist. `--force` does not override this — the user must `deployments unextend` each dependent first.
 
 ### Running a prod continuous-downloader
 
 `prod continuous-downloader deploy` is a higher-level saorsa-deploy command that stands up a single-VM client deployment running `ant-downloader` continuously against the **production** Autonomi network, with a paired InfluxDB monitoring VM (always in `lon1`). The bootstrap peers list is fetched at runtime from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml); a curated list of public file addresses ships at `deploy/saorsa_deploy/resources/prod_addresses.txt` and can be overridden with `--addresses-file`.
 
 - Single VM per deployment; takes one `--spec region[:vm_size]` (download-only — uploaders are rejected).
-- Monitoring is mandatory and created inside the same command (reuses `monitoring-infra` + `provision-monitoring`).
-- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` so `record-file-results --name ... --monitoring-name ... --window -1h` works unchanged against it.
+- Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
+- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` so `deployments record-file-results --name ... --monitoring-name ... --window -1h` works unchanged against it.
 - `prod continuous-downloader destroy` tears down the monitoring VM alongside the client by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack for after-the-fact analysis.
 
 See `deploy/README.md` §"Running continuous downloaders against production" for the full argument table and sequencing.
@@ -173,7 +173,7 @@ See `deploy/README.md` §"Running continuous downloaders against production" for
 
 - Multi-VM. Repeatable `--uploader REGION:VM_SIZE:concurrency=N:urls=PATH` (all four parts required); each uploader VM downloads its assigned URL list at runtime, uploads each file with `--public`, deletes the local copy, exits.
 - Single shared `--secret-key` across all uploaders (or `ARBITRUM_ONE_SECRET_KEY` env var — deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` because prod uploads need a funded Arbitrum One mainnet wallet and cost real ETH).
-- Monitoring is mandatory and created inside the same command (reuses `monitoring-infra` + `provision-monitoring`).
+- Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
 - Service is implemented in Python (`deploy/saorsa_deploy/resources/scripts/prod_uploader.py`) — not bash — because per-upload JSON parsing and metric emission was easier that way. The systemd unit is `Type=simple, Restart=no` so the service stops on its own.
 - Registers a `Deployment` row with `deploy_args.kind = "prod-uploaders"`.
 - Companion commands: `prod print-upload-results --name <name>` (per-host Rich tables of every recorded upload) and `prod record-upload-results --name <name>` (upserts every Influx record into the `deployment_prod_upload_results` Postgres table — bounded run, so no `--window` flag).
@@ -201,11 +201,11 @@ Optional per-testnet monitoring stack (InfluxDB 2.x + Grafana) on a single VM. S
 
 ### Commands
 
-- `monitoring-infra` — create monitoring VM via Terraform
-- `provision-monitoring` — install InfluxDB + Grafana, prints connection details
-- `provision-telegraf-metrics` — install Telegraf on nodes for host metrics (CPU, mem, disk, net) → InfluxDB
-- `monitoring-info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
-- `destroy-monitoring` — tear down monitoring infrastructure
+- `monitoring infra` — create monitoring VM via Terraform
+- `monitoring provision` — install InfluxDB + Grafana, prints connection details
+- `monitoring provision-telegraf` — install Telegraf on nodes for host metrics (CPU, mem, disk, net) → InfluxDB
+- `monitoring info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
+- `monitoring destroy` — tear down monitoring infrastructure
 
 ### Architecture
 
@@ -217,8 +217,8 @@ Optional per-testnet monitoring stack (InfluxDB 2.x + Grafana) on a single VM. S
 
 ### Telegraf naming
 
-- `provision-telegraf-logs` — Elasticsearch log forwarding (formerly `provision-telegraf`)
-- `provision-telegraf-metrics` — InfluxDB host metrics
+- `elastic provision-telegraf` — Elasticsearch log forwarding
+- `monitoring provision-telegraf` — InfluxDB host metrics
 
 ## Elasticsearch (Log Forwarding)
 
@@ -226,11 +226,11 @@ Optional per-testnet Elasticsearch instance on a dedicated VM. Enabled via `enab
 
 ### Commands
 
-- `elastic-infra` — create Elasticsearch VM via Terraform; `--droplet-size` for large testnets
-- `provision-elastic` — install Elasticsearch 8.x, create index template, user + API key
-- `elastic-info` — print connection details (URL, user, password, API key)
-- `destroy-elastic` — tear down Elasticsearch infrastructure
-- `provision-telegraf-logs` — install Telegraf on nodes for log forwarding → Elasticsearch (auto-loads ES credentials from state)
+- `elastic infra` — create Elasticsearch VM via Terraform; `--droplet-size` for large testnets
+- `elastic provision` — install Elasticsearch 8.x, create index template, user + API key
+- `elastic info` — print connection details (URL, user, password, API key)
+- `elastic destroy` — tear down Elasticsearch infrastructure
+- `elastic provision-telegraf` — install Telegraf on nodes for log forwarding → Elasticsearch (auto-loads ES credentials from state)
 
 ### Architecture
 

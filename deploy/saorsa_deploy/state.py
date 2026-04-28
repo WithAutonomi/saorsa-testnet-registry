@@ -183,7 +183,7 @@ def load_monitoring_state(name: str) -> dict:
     except client.exceptions.NoSuchKey:
         raise RuntimeError(
             f"No monitoring state found for '{name}'. "
-            "Was this monitoring stack created with the monitoring-infra command?"
+            "Was this monitoring stack created with the monitoring infra command?"
         )
 
 
@@ -257,7 +257,7 @@ def load_elastic_state(name: str) -> dict:
     except client.exceptions.NoSuchKey:
         raise RuntimeError(
             f"No Elasticsearch state found for '{name}'. "
-            "Was this Elasticsearch stack created with the elastic-infra command?"
+            "Was this Elasticsearch stack created with the elastic infra command?"
         )
 
 
@@ -387,7 +387,7 @@ def list_extensions_of(source_name: str) -> list[str]:
 
     Scans every deployment state file under ``saorsa-deploy/deployments/`` and
     returns the names whose ``shared_bootstrap_from`` equals ``source_name``.
-    Used by ``destroy-bootstraps`` to refuse when extensions would be silently
+    Used by ``bootstraps destroy`` to refuse when extensions would be silently
     broken.
     """
     client = _get_s3_client()

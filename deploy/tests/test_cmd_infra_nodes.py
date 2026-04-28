@@ -103,7 +103,7 @@ class TestRefusesWithoutBootstraps:
 class TestPartialStateBugFix:
     """The bug this whole split exists to fix: destroy couldn't clean up
     main-VM orphans because infra used to save regions=[] upfront. The new
-    infra-nodes must write regions BEFORE terraform apply."""
+    `nodes infra` must write regions BEFORE terraform apply."""
 
     def test_writes_regions_before_running_terraform(self, patches):
         patches.load_state.return_value = _state_with_bootstraps()

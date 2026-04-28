@@ -44,7 +44,7 @@ def _run(args, op_type: str) -> None:
             console.print(
                 f"[yellow]No monitoring stack found for '{stack_name}'. "
                 f"{op_type.capitalize()}s are not being recorded for this "
-                f"testnet — run `monitoring-infra` + `provision-monitoring` "
+                f"testnet — run `monitoring infra` + `monitoring provision` "
                 f"first if you want them.[/yellow]"
             )
             return
@@ -58,7 +58,7 @@ def _run(args, op_type: str) -> None:
     if not (influx_url and influx_token):
         console.print(
             f"[yellow]Monitoring state exists for '{args.name}' but InfluxDB "
-            f"isn't provisioned yet. Run `provision-monitoring` first.[/yellow]"
+            f"isn't provisioned yet. Run `monitoring provision` first.[/yellow]"
         )
         return
 

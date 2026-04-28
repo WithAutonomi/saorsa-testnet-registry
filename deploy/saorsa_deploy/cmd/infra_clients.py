@@ -83,7 +83,7 @@ def parse_downloader_spec(spec: str) -> dict:
 
 
 def cmd_infra_clients(args):
-    """Execute the infra-clients command: create client VMs via Terraform."""
+    """Execute the clients infra command: create client VMs via Terraform."""
     console = Console()
 
     uploader_specs_raw = args.uploader or []
@@ -169,7 +169,7 @@ def cmd_infra_clients(args):
             console.print(f"[yellow]Warning: Deleting stale Terraform state: {key}[/yellow]")
             delete_terraform_state(key)
 
-    # Save client state UPFRONT (with empty IPs) so that destroy-clients can
+    # Save client state UPFRONT (with empty IPs) so that clients destroy can
     # always tear down whatever terraform may have started, even on partial
     # or total failure. IPs get merged in after the apply completes.
     upfront_specs = [{**spec, "ip": ""} for spec in client_specs]
@@ -180,7 +180,7 @@ def cmd_infra_clients(args):
             f"[bold red]Failed to save initial client state:[/bold red] {e}"
         )
         console.print(
-            "[bold red]Aborting — without saved state, destroy-clients "
+            "[bold red]Aborting — without saved state, clients destroy "
             "couldn't clean up a partial apply.[/bold red]"
         )
         sys.exit(1)

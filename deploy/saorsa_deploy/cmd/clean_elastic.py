@@ -1,6 +1,6 @@
 """Remove the telegraf-ant-elasticsearch log-forwarder from node VMs.
 
-Mirrors the input modes of provision-telegraf-logs:
+Mirrors the input modes of elastic provision-telegraf:
   --inventory-path   read node_vms from inventory JSON
   --host-ips-file    read IPs from a text file (one per line)
   --name             load IPs from deployment state (bootstrap + regulars)

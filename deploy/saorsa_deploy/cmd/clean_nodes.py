@@ -1,7 +1,7 @@
 """Remove ant-node-* services from node VMs without destroying the VMs.
 
 Leaves the mounted volume + fstab entry intact so the VM can be re-used by a
-subsequent provision-nodes run.
+subsequent nodes provision run.
 
 Input modes:
   --name             load IPs from deployment state vm_ips (optionally --region)

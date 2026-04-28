@@ -3,7 +3,7 @@ client VMs.
 
 Idempotent: safe to re-run on hosts where services have already been removed or
 were never provisioned. Removes the uploader/downloader units, scripts dir,
-environment file, data dir, and the ant binary so a subsequent provision-clients
+environment file, data dir, and the ant binary so a subsequent clients provision
 run starts from a clean slate.
 """
 

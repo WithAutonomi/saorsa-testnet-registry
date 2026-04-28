@@ -36,7 +36,7 @@ def _derive_raw_kind(deploy_args: dict) -> str:
     explicit = deploy_args.get("kind")
     if explicit:
         return explicit
-    # Regular testnets recorded by infra-bootstraps don't carry an explicit
+    # Regular testnets recorded by bootstraps infra don't carry an explicit
     # kind. Recognise them by the presence of bootstrap_count.
     if "bootstrap_count" in deploy_args:
         return _TESTNET_KIND

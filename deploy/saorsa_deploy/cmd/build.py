@@ -9,7 +9,7 @@ from saorsa_deploy.ssh import clear_known_hosts
 
 
 def cmd_build(args):
-    """Execute the build-ant-node-binary command: build from source and upload to S3."""
+    """Execute the build ant-node command: build from source and upload to S3."""
     console = Console()
 
     for var in ("ANT_BUILD_AWS_ACCESS_KEY_ID", "ANT_BUILD_AWS_SECRET_ACCESS_KEY"):

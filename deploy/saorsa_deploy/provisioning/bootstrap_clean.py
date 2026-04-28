@@ -3,8 +3,8 @@
 Idempotent: safe to re-run on hosts where services have already been removed or
 were never provisioned. Covers all ant-bootstrap-N services on the VM (including
 the genesis node, bootstrap_index=1). Leaves the mounted volume + fstab entry
-intact so the VM can be re-used by a subsequent provision-genesis /
-provision-bootstraps run.
+intact so the VM can be re-used by a subsequent nodes provision-genesis /
+bootstraps provision run.
 """
 
 from pyinfra.api import Config, Inventory, State

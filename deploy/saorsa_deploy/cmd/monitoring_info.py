@@ -27,7 +27,7 @@ def cmd_monitoring_info(args):
     if not influxdb_url:
         console.print(
             "[bold red]Error:[/bold red] Monitoring stack not yet provisioned. "
-            "Run provision-monitoring first."
+            "Run monitoring provision first."
         )
         sys.exit(1)
 

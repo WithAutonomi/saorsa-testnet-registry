@@ -68,7 +68,7 @@ def _resolve_ant_binary(args, console):
             console.print(
                 f"[bold red]Error:[/bold red] No custom ant build found for "
                 f"{repo_owner}/{args.branch_name}. "
-                f"Run 'build-ant-binary' first."
+                f"Run 'build ant' first."
             )
             sys.exit(1)
         url = get_ant_custom_build_url(args.name, repo_owner, args.branch_name)
@@ -169,7 +169,7 @@ def _resolve_addresses_file_content(args, console) -> str | None:
 
 
 def cmd_provision_clients(args):
-    """Execute the provision-clients command: provision client VMs with uploader/downloader."""
+    """Execute the clients provision command: provision client VMs with uploader/downloader."""
     console = Console()
     prod_mode = getattr(args, "prod", False)
 
@@ -190,7 +190,7 @@ def cmd_provision_clients(args):
     if prod_mode and has_uploaders:
         console.print(
             "[bold red]Error:[/bold red] --prod mode does not support upload-role clients. "
-            "Re-run infra-clients with --downloader specs only."
+            "Re-run clients infra with --downloader specs only."
         )
         sys.exit(1)
 
@@ -225,7 +225,7 @@ def cmd_provision_clients(args):
         if not bootstrap_port:
             console.print(
                 "[bold red]Error:[/bold red] No bootstrap port found in deployment state. "
-                "Has the provision-genesis command been run?"
+                "Has the nodes provision-genesis command been run?"
             )
             sys.exit(1)
 

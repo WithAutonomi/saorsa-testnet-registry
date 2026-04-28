@@ -263,7 +263,7 @@ class TestDestroy:
     def test_destroy_tolerates_stop_clients_runtime_error(self, destroy_patches):
         # Regression: Pyinfra raises RuntimeError("No hosts remaining!") when a
         # half-provisioned VM has no ant-downloader.service yet. That must NOT
-        # block destroy-clients from tearing the Terraform VMs down.
+        # block `clients destroy` from tearing the Terraform VMs down.
         destroy_patches.stop.side_effect = RuntimeError("No hosts remaining!")
 
         cmd_prod_continuous_downloader_destroy(_destroy_args())

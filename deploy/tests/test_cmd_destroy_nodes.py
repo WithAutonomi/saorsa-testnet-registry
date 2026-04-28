@@ -131,7 +131,7 @@ class TestMissingStateFallback:
 class TestBeltAndBraces:
     def test_destroys_orphan_tfstate_not_in_state_regions(self, patches):
         """If state.regions lists lon1 but an extra orphan tfstate exists for
-        nyc1 (e.g. partial save somewhere), destroy-nodes should still tear it
+        nyc1 (e.g. partial save somewhere), `nodes destroy` should still tear it
         down."""
         patches.load_state.return_value = {
             "name": "DEV-02",

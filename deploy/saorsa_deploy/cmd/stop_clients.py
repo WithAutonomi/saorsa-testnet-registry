@@ -12,7 +12,7 @@ from saorsa_deploy.state import load_client_state
 
 
 def cmd_stop_clients(args):
-    """Execute the stop-clients command: stop uploader/downloader services."""
+    """Execute the clients stop command: stop uploader/downloader services."""
     console = Console()
 
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")

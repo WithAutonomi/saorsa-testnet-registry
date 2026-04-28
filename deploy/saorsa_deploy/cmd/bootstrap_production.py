@@ -467,7 +467,7 @@ def _resolve_hetzner_availability(nodes: list[dict], console: Console) -> None:
 
 
 def cmd_bootstrap_production(args):
-    """Execute the bootstrap-production command."""
+    """Execute the prod bootstrap deploy command."""
     console = Console()
     name = args.name
 
@@ -595,7 +595,7 @@ def cmd_bootstrap_production(args):
             console.print(f"  stderr: {f.stderr[:500]}")
         console.print(f"[bold red]{len(failures)} region(s) failed. Aborting.[/bold red]")
         console.print(
-            "[dim]Run 'destroy-bootstrap-production' to clean up created resources.[/dim]"
+            "[dim]Run 'prod bootstrap destroy' to clean up created resources.[/dim]"
         )
         sys.exit(1)
 

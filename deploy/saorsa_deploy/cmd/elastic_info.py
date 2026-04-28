@@ -25,7 +25,7 @@ def cmd_elastic_info(args):
     if not es_url:
         console.print(
             "[bold red]Error:[/bold red] Elasticsearch stack not yet provisioned. "
-            "Run provision-elastic first."
+            "Run elastic provision first."
         )
         sys.exit(1)
 

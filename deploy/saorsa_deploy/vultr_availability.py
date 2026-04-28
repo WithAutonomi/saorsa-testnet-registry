@@ -113,7 +113,7 @@ def resolve_vultr_regions(
         hint = ""
         if known_plans:
             hint = (
-                " Check `saorsa-deploy vultr-availability` for the full "
+                " Check `saorsa-deploy utils vultr-availability` for the full "
                 "plan/region matrix."
             )
         raise RuntimeError(

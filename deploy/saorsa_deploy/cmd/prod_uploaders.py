@@ -8,9 +8,9 @@ and exits when its list is exhausted. Teardown is explicit via
 ``prod uploaders destroy``.
 
 Like the prod continuous-downloader command, this is a thin orchestrator:
-it shells out to existing primitive commands (``infra-clients``,
-``monitoring-infra``, ``provision-monitoring``, ``destroy-clients``,
-``destroy-monitoring``) and uses a custom prod-uploader Pyinfra provisioner
+it shells out to existing primitive commands (``clients infra``,
+``monitoring infra``, ``monitoring provision``, ``clients destroy``,
+``monitoring destroy``) and uses a custom prod-uploader Pyinfra provisioner
 for the per-host service.
 """
 
@@ -220,7 +220,7 @@ def _ensure_monitoring(args, console: Console) -> None:
     if _monitoring_stack_exists(args.name):
         console.print(
             f"[dim]Monitoring stack '{args.name}' already exists — skipping "
-            "monitoring-infra / provision-monitoring.[/dim]"
+            "monitoring infra / monitoring provision.[/dim]"
         )
         return
 
@@ -240,9 +240,9 @@ def _ensure_monitoring(args, console: Console) -> None:
 
 
 def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> None:
-    """Create the uploader VMs via infra-clients.
+    """Create the uploader VMs via clients infra.
 
-    The existing infra-clients parser expects testnet uploader specs of the
+    The existing clients infra parser expects testnet uploader specs of the
     form ``region:file_size_mb[:vm_size[:store_concurrency]]``. We synthesise
     those with file_size_mb=0 because that field is only consumed by the
     legacy testnet uploader.sh and is unused for prod uploads. The store
@@ -253,7 +253,7 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
     if _client_stack_exists(args.name):
         console.print(
             f"[dim]Client stack '{args.name}' already exists — skipping "
-            "infra-clients.[/dim]"
+            "clients infra.[/dim]"
         )
         return
 
@@ -293,7 +293,7 @@ def _provision_uploaders(
         )
         sys.exit(1)
 
-    # Pair by ascending client_index — infra-clients assigns 1..N in the
+    # Pair by ascending client_index — clients infra assigns 1..N in the
     # order specs were supplied.
     upload_clients_sorted = sorted(
         upload_clients, key=lambda c: c["client_index"]
@@ -335,7 +335,7 @@ def _provision_uploaders(
     if not (influx_url and influx_token):
         console.print(
             "[bold red]Error:[/bold red] monitoring state has no Influx URL/token "
-            "— run provision-monitoring first."
+            "— run monitoring provision first."
         )
         sys.exit(1)
 
@@ -510,7 +510,7 @@ def cmd_prod_uploaders_destroy(args):
             except (SystemExit, Exception) as e:
                 # Stopping is best-effort: a half-provisioned VM may have no
                 # systemd unit yet, and a dead/unreachable VM will never stop
-                # cleanly. Either way we must still proceed to destroy-clients
+                # cleanly. Either way we must still proceed to clients destroy
                 # so the Terraform-managed VMs get torn down.
                 console.print(
                     f"[yellow]stop reported a failure ({e!s}); continuing "

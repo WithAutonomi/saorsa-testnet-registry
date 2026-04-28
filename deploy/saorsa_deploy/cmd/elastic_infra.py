@@ -87,6 +87,6 @@ def cmd_elastic_infra(args):
 
     console.print()
     console.print(
-        f"[dim]Next step: saorsa-deploy provision-elastic "
+        f"[dim]Next step: saorsa-deploy elastic provision "
         f"--name {args.name} --ssh-key-path ~/.ssh/id_rsa[/dim]"
     )

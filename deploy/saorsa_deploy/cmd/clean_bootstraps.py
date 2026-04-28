@@ -1,7 +1,7 @@
 """Remove ant-bootstrap-* services from bootstrap VMs without destroying the VMs.
 
 Leaves the mounted volume + fstab entry intact so the VM can be re-used by a
-subsequent provision-genesis / provision-bootstraps run. Targets all bootstrap
+subsequent nodes provision-genesis / bootstraps provision run. Targets all bootstrap
 services on the VM, including the genesis node (bootstrap_index=1).
 
 Input modes:

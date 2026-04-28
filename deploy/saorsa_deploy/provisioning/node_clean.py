@@ -2,7 +2,7 @@
 
 Idempotent: safe to re-run on hosts where services have already been removed or
 were never provisioned. Leaves the mounted volume + fstab entry intact so the
-VM can be re-used by a subsequent provision-nodes run.
+VM can be re-used by a subsequent nodes provision run.
 """
 
 from pyinfra.api import Config, Inventory, State

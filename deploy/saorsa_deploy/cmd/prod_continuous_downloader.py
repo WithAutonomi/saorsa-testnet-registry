@@ -56,7 +56,7 @@ def _ensure_monitoring(args, console: Console) -> None:
     if _monitoring_stack_exists(args.name):
         console.print(
             f"[dim]Monitoring stack '{args.name}' already exists — "
-            "skipping monitoring-infra / provision-monitoring.[/dim]"
+            "skipping monitoring infra / monitoring provision.[/dim]"
         )
         return
 
@@ -78,13 +78,13 @@ def _ensure_monitoring(args, console: Console) -> None:
 
 
 def _ensure_client_infra(args, console: Console) -> None:
-    """Ensure the single client VM exists via infra-clients."""
+    """Ensure the single client VM exists via clients infra."""
     from saorsa_deploy.cmd.infra_clients import cmd_infra_clients
 
     if _client_stack_exists(args.name):
         console.print(
             f"[dim]Client stack '{args.name}' already exists — "
-            "skipping infra-clients.[/dim]"
+            "skipping clients infra.[/dim]"
         )
         return
 
@@ -176,7 +176,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         f"[bold green]prod continuous-downloader '{args.name}' is running.[/bold green]"
     )
     console.print(
-        f"[dim]Record download metrics with: saorsa-deploy record-file-results "
+        f"[dim]Record download metrics with: saorsa-deploy deployments record-file-results "
         f"--name {args.name} --monitoring-name {args.name} --window -1h[/dim]"
     )
 
@@ -202,12 +202,12 @@ def cmd_prod_continuous_downloader_destroy(args):
                     ssh_key_path=args.ssh_key_path,
                 ))
             except (SystemExit, Exception) as e:
-                # stop-clients is best-effort: a half-provisioned VM may have no
+                # clients stop is best-effort: a half-provisioned VM may have no
                 # systemd unit yet, and a dead/unreachable VM will never stop
-                # cleanly. Either way we must still proceed to destroy-clients
+                # cleanly. Either way we must still proceed to clients destroy
                 # so the Terraform-managed VMs get torn down.
                 console.print(
-                    f"[yellow]stop-clients reported a failure ({e!s}); "
+                    f"[yellow]clients stop reported a failure ({e!s}); "
                     "continuing with destroy.[/yellow]"
                 )
 

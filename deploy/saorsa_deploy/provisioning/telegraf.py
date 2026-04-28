@@ -24,7 +24,7 @@ TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 #: from peer X", "registered peer ID Y", etc.) — dropping it makes it
 #: impossible to reconstruct what a node was doing at a given moment.
 #:
-#: Override via ``--drop-log-levels`` on the ``provision-telegraf-logs``
+#: Override via ``--drop-log-levels`` on the ``elastic provision-telegraf``
 #: command. Use ``--drop-log-levels ""`` to keep every line.
 DEFAULT_DROP_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "TRACE")
 

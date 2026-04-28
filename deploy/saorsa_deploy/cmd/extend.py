@@ -22,7 +22,7 @@ def cmd_extend(args):
     """Seed an extension testnet's deployment state from a source testnet.
 
     The extension shares the source's bootstrap VMs. It gets its own node
-    VMs (provisioned later via the normal ``infra-nodes`` / ``provision-nodes``
+    VMs (provisioned later via the normal ``nodes infra`` / ``nodes provision``
     pipeline) and records ``shared_bootstrap_from`` in state so destroys can
     refuse to yank the bootstraps out from under it.
     """
@@ -155,9 +155,9 @@ def cmd_extend(args):
         console.print(f"[dim]  Bootstrap port: {source_port}[/dim]")
     console.print()
     console.print(
-        f"[dim]Next: `saorsa-deploy infra-nodes --name {name} ...` "
-        f"(do NOT run infra-bootstraps / provision-genesis / "
-        "provision-bootstraps for an extension).[/dim]"
+        f"[dim]Next: `saorsa-deploy nodes infra --name {name} ...` "
+        f"(do NOT run bootstraps infra / nodes provision-genesis / "
+        "bootstraps provision for an extension).[/dim]"
     )
 
     record_event(

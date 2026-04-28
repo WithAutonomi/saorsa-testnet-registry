@@ -33,7 +33,7 @@ def cmd_provision_telegraf_metrics(args):
             console.print(f"[bold red]Error:[/bold red] {e}")
             console.print(
                 "[dim]Provide --influxdb-url and --influxdb-token explicitly, "
-                "or create a monitoring stack with monitoring-infra first.[/dim]"
+                "or create a monitoring stack with monitoring infra first.[/dim]"
             )
             sys.exit(1)
         influxdb_url = monitoring.get("influxdb_url", "")

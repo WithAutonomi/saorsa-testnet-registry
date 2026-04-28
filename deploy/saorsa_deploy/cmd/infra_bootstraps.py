@@ -33,7 +33,7 @@ def cmd_infra_bootstraps(args):
     """Create the bootstrap VMs for a deployment.
 
     Owns the ``bootstrap_nodes`` slice of the deployment state. Does not
-    create or touch node/main-VM infrastructure — run ``infra-nodes`` for
+    create or touch node/main-VM infrastructure — run ``nodes infra`` for
     that step.
     """
     console = Console()
@@ -148,7 +148,7 @@ def cmd_infra_bootstraps(args):
         sys.exit(1)
 
     # Persist state. If any pre-existing state slice (e.g. leftover regions
-    # from a previous infra-nodes run) is present it's preserved via
+    # from a previous nodes infra run) is present it's preserved via
     # update_deployment_state; otherwise we write a fresh file.
     try:
         if existing_state is None:
@@ -177,7 +177,7 @@ def cmd_infra_bootstraps(args):
             f"[bold red]Failed to save deployment state after bootstraps:[/bold red] {e}"
         )
         console.print(
-            "[bold red]Aborting — without saved state, destroy-bootstraps "
+            "[bold red]Aborting — without saved state, bootstraps destroy "
             "cannot clean these up.[/bold red]"
         )
         sys.exit(1)
