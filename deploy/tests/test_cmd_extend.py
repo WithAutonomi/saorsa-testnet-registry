@@ -7,7 +7,7 @@ from saorsa_deploy.cmd.extend import cmd_extend
 
 
 def _args(**overrides):
-    defaults = {"name": "DEV-02", "source": "DEV-01", "force": False}
+    defaults = {"name": "DEV-02", "source": "DEV-01", "force": False, "purpose": "test"}
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 

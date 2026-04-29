@@ -3,7 +3,11 @@ import sys
 
 from rich.console import Console
 
-from saorsa_deploy.registry import record_deployment_created, record_event
+from saorsa_deploy.registry import (
+    record_deploy_args_update,
+    record_deployment_created,
+    record_event,
+)
 from saorsa_deploy.state import (
     load_deployment_state,
     save_deployment_state,
@@ -92,6 +96,7 @@ def cmd_extend(args):
                 f"[bold red]Failed to update deployment state:[/bold red] {e}"
             )
             sys.exit(1)
+        record_deploy_args_update(name, {"purpose": args.purpose})
         record_event(
             name,
             "extend_refreshed",
@@ -111,6 +116,7 @@ def cmd_extend(args):
         "name": name,
         "shared_bootstrap_from": source,
         "bootstrap_count": len(copied_bootstraps),
+        "purpose": args.purpose,
     }
     record_deployment_created(name, deploy_args)
     record_event(

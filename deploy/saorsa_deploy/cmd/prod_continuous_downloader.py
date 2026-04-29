@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from rich.console import Console
 from saorsa_db.models import DeploymentStatus
 
+from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.prod_addresses import get_default_prod_addresses_path
 from saorsa_deploy.prod_bootstraps import PROD_BOOTSTRAPS_URL
 from saorsa_deploy.registry import (
@@ -150,6 +151,10 @@ def cmd_prod_continuous_downloader_deploy(args):
         "addresses_file": addresses_file,
         "monitoring_name": args.name,
         "spec": args.spec,
+        "purpose": args.purpose,
+        "ant_binary": build_binary_descriptor(
+            args.branch_name, args.repo_owner, args.ant_version
+        ),
     }
     record_deployment_created(args.name, deploy_args_payload)
     record_event(args.name, "prod_downloader_deploy_started", deploy_args_payload)

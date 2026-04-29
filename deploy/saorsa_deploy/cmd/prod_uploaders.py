@@ -27,6 +27,7 @@ from pyinfra.operations import server
 from rich.console import Console
 from saorsa_db.models import DeploymentStatus
 
+from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.prod_bootstraps import (
     PROD_BOOTSTRAPS_URL,
     ProdBootstrapsError,
@@ -128,6 +129,25 @@ def _read_urls_file(path: str) -> str:
     if not has_urls:
         raise ValueError(f"--uploader urls={path} contains no URLs.")
     return content
+
+
+def _extract_file_names(urls_content: str) -> list[str]:
+    """Parse a URL-list file into the bare filename of each upload target.
+
+    Strips comments/blank lines, then takes the last path segment of each URL.
+    Falls back to the raw URL if parsing yields an empty name.
+    """
+    from urllib.parse import urlparse
+
+    names: list[str] = []
+    for line in urls_content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parsed = urlparse(line)
+        candidate = Path(parsed.path).name if parsed.path else ""
+        names.append(candidate or line)
+    return names
 
 
 def _resolve_secret_key(args, console: Console) -> str:
@@ -439,9 +459,14 @@ def cmd_prod_uploaders_deploy(args):
                 "region": s["region"],
                 "vm_size": s["vm_size"],
                 "urls_file": s["urls_file"],
+                "file_names": _extract_file_names(s["_urls_file_content"]),
             }
             for s in parsed_specs
         ],
+        "purpose": args.purpose,
+        "ant_binary": build_binary_descriptor(
+            args.branch_name, args.repo_owner, args.ant_version
+        ),
     }
     record_deployment_created(args.name, deploy_args_payload)
     record_event(args.name, "prod_uploaders_deploy_started", deploy_args_payload)

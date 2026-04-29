@@ -4,11 +4,33 @@ from unittest.mock import patch
 import pytest
 
 from saorsa_deploy.cmd.prod_uploaders import (
+    _extract_file_names,
     _read_urls_file,
     cmd_prod_uploaders_deploy,
     cmd_prod_uploaders_destroy,
     parse_prod_uploader_spec,
 )
+
+
+class TestExtractFileNames:
+    def test_extracts_basenames_and_skips_comments_and_blanks(self):
+        content = (
+            "# header comment\n"
+            "\n"
+            "https://example.com/foo/bar/file1.bin\n"
+            "https://example.com/file2.zip?token=abc\n"
+            "  https://example.com/dir/movie.mp4  \n"
+        )
+        assert _extract_file_names(content) == [
+            "file1.bin",
+            "file2.zip",
+            "movie.mp4",
+        ]
+
+    def test_falls_back_to_raw_url_when_no_basename(self):
+        # A URL with no path segment yields an empty Path.name; keep the line.
+        content = "https://example.com\n"
+        assert _extract_file_names(content) == ["https://example.com"]
 
 
 @pytest.fixture
@@ -92,6 +114,7 @@ def _deploy_args(uploader_specs, **overrides):
         "ant_version": None,
         "monitoring_volume_size": 50,
         "ssh_key_path": "~/.ssh/id_rsa",
+        "purpose": "test",
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

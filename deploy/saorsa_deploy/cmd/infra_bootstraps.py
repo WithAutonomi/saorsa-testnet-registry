@@ -57,6 +57,7 @@ def cmd_infra_bootstraps(args):
         "name": args.name,
         "attached_volume_size": args.attached_volume_size,
         "bootstrap_count": bootstrap_count,
+        "purpose": args.purpose,
     }
     record_deployment_created(args.name, deploy_args)
     record_event(args.name, "infra_bootstraps_started")
