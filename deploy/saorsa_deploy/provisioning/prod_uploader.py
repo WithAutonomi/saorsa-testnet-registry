@@ -96,6 +96,7 @@ class ProdUploaderProvisioner:
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
         evm_network: str = "arbitrum-one",
+        payment_type: str | None = None,
         console: Console | None = None,
     ):
         self.uploaders = uploaders
@@ -109,6 +110,7 @@ class ProdUploaderProvisioner:
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
         self.evm_network = evm_network
+        self.payment_type = payment_type
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -273,6 +275,10 @@ class ProdUploaderProvisioner:
                 f"INFLUX_BUCKET={self.influx_bucket}\n"
             )
 
+        payment_line = ""
+        if self.payment_type:
+            payment_line = f"PAYMENT_TYPE={self.payment_type}\n"
+
         env_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
@@ -291,7 +297,7 @@ ANT={ANT_INSTALL_PATH}
 URLS_FILE={URLS_PATH}
 WORK_DIR={DATA_DIR}/files
 EVM_NETWORK={self.evm_network}
-{influx_lines}ENV_EOF"""
+{payment_line}{influx_lines}ENV_EOF"""
 
         add_op(
             state,

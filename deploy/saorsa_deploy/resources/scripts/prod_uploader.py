@@ -27,6 +27,8 @@ Optional env:
     INFLUX_ORG         InfluxDB org (default ant).
     INFLUX_BUCKET      InfluxDB bucket (default testnet-metrics).
     DOWNLOAD_TIMEOUT   urllib HTTP timeout in seconds (default 600).
+    PAYMENT_TYPE       Force ant payment mode: `merkle` adds --merkle, `no-merkle`
+                       adds --no-merkle. Unset → no flag, ant picks its default.
 """
 from __future__ import annotations
 
@@ -179,9 +181,22 @@ def _download(url: str, dest: Path, timeout: int) -> int:
     return size
 
 
+def _payment_flag(payment_type: str | None) -> list[str]:
+    """Translate the env-derived payment-type into the ant flag list.
+
+    Empty string and unrecognised values produce no flag — the script
+    silently keeps ant's default behaviour rather than failing the upload.
+    """
+    if payment_type == "merkle":
+        return ["--merkle"]
+    if payment_type == "no-merkle":
+        return ["--no-merkle"]
+    return []
+
+
 def _run_ant(
     *, ant_path: str, bootstrap_args: list[str], evm_network: str,
-    secret_key: str, file_path: Path,
+    secret_key: str, file_path: Path, payment_type: str | None = None,
 ) -> tuple[int, str, str]:
     """Run ant with --json and -v; return ``(exit_code, stdout, stderr)``.
 
@@ -197,7 +212,8 @@ def _run_ant(
         "--evm-network", evm_network,
         "--json",
         "-v",
-        "file", "upload", "--public", str(file_path),
+        "file", "upload", "--public", *_payment_flag(payment_type),
+        str(file_path),
     ]
     env = dict(os.environ)
     env["SECRET_KEY"] = secret_key
@@ -296,6 +312,7 @@ def main() -> int:
     influx_org = os.environ.get("INFLUX_ORG", "ant")
     influx_bucket = os.environ.get("INFLUX_BUCKET", "testnet-metrics")
     download_timeout = int(os.environ.get("DOWNLOAD_TIMEOUT", "600"))
+    payment_type = os.environ.get("PAYMENT_TYPE") or None
 
     if not secret_key.startswith("0x"):
         secret_key = "0x" + secret_key
@@ -367,6 +384,7 @@ def main() -> int:
             evm_network=evm_network,
             secret_key=secret_key,
             file_path=local_path,
+            payment_type=payment_type,
         )
         end_ns = time.time_ns()
         total_ms = (end_ns - upload_start_ns) // 1_000_000

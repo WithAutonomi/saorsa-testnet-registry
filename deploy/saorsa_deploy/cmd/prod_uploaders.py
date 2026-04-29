@@ -371,6 +371,7 @@ def _provision_uploaders(
         influx_token=influx_token,
         influx_org=influx_org,
         influx_bucket=influx_bucket,
+        payment_type=args.payment_type,
         console=console,
     )
     provisioner.execute()
@@ -464,6 +465,7 @@ def cmd_prod_uploaders_deploy(args):
             for s in parsed_specs
         ],
         "purpose": args.purpose,
+        "payment_type": args.payment_type,
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version
         ),

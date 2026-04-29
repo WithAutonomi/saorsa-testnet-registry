@@ -115,6 +115,7 @@ def _deploy_args(uploader_specs, **overrides):
         "monitoring_volume_size": 50,
         "ssh_key_path": "~/.ssh/id_rsa",
         "purpose": "test",
+        "payment_type": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -215,6 +216,26 @@ class TestDeployHappyPath:
     def test_deploy_rejects_when_no_uploaders(self, deploy_patches):
         with pytest.raises(SystemExit):
             cmd_prod_uploaders_deploy(_deploy_args([]))
+
+    def test_deploy_records_payment_type_none_by_default(
+        self, deploy_patches, urls_file
+    ):
+        args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
+        cmd_prod_uploaders_deploy(args)
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["payment_type"] is None
+
+    @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
+    def test_deploy_records_payment_type_when_set(
+        self, deploy_patches, urls_file, payment_type
+    ):
+        args = _deploy_args(
+            [f"lon1:s-2vcpu-4gb:urls={urls_file}"],
+            payment_type=payment_type,
+        )
+        cmd_prod_uploaders_deploy(args)
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["payment_type"] == payment_type
 
 
 class TestDeployFailure:

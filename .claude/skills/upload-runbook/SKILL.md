@@ -77,6 +77,19 @@ The runbook must preflight-check `ARBITRUM_ONE_SECRET_KEY`. Fail fast if missing
 
 Tell the user, in your interview recap, that the runbook expects this env var. If they don't already have a funded wallet, **stop here and flag it** — do not generate a runbook against an empty wallet.
 
+### 4b. Payment type
+
+`prod uploaders deploy` accepts an optional `--payment-type` that forces the payment mode on `ant file upload`:
+
+- **`merkle`** → adds `--merkle` to every `ant file upload` (single-tx batch payment; cheaper gas for batches of 2+ chunks).
+- **`no-merkle`** → adds `--no-merkle` (per-chunk payments).
+- **default** → omit the flag entirely; ant picks its own default per upload.
+
+Ask once: "Force a payment mode (merkle / no-merkle) or leave at ant's default?"
+
+- Only emit `--payment-type X` when the user picks `merkle` or `no-merkle`.
+- The chosen mode applies to **every** uploader VM in the run — there is no per-uploader override.
+
 ### 5. Monitoring volume size
 
 `prod uploaders deploy` always provisions a paired monitoring VM (InfluxDB + Grafana, always in `lon1`). The default attached volume is **50 GB**, which suffices for short runs.
@@ -119,6 +132,7 @@ Once the interview is done, before writing the files:
 - Each uploader spec must include `urls=PATH`; refuse to generate without it.
 - Only emit `--monitoring-volume-size N` when the user picked a non-default value.
 - Only emit `--keep-monitoring` on destroy when the user explicitly asked for it.
+- Only emit `--payment-type X` when the user picked `merkle` or `no-merkle`; omit entirely for ant's default.
 - **Never emit `--secret-key`**; the env var fallback handles it.
 
 ## Deploy runbook template
@@ -136,6 +150,7 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 #     - {{region}} / {{vm_size}} / urls={{urls_path}}
 {{/each}}
 #   ant binary:  {{VERSION_OR_BRANCH_DESC}}
+#   Payment:     {{PAYMENT_TYPE_OR_DEFAULT}}
 #   Monitoring:  always on (paired); volume={{MONITORING_VOLUME_SIZE_OR_DEFAULT}}GB
 #   SSH key:     {{SSH_KEY_PATH}}
 
@@ -173,7 +188,8 @@ uv run saorsa-deploy prod uploaders deploy \
   --purpose "{{PURPOSE}}" \
   {{#each uploader}}--uploader '{{region}}:{{vm_size}}:urls={{urls_path}}' \
   {{/each}}{{BINARY_FLAGS_ANT}} \
-  {{#if monitoring_volume_override}}--monitoring-volume-size {{MONITORING_VOLUME_SIZE}} \
+  {{#if payment_type_override}}--payment-type {{PAYMENT_TYPE}} \
+  {{/if}}{{#if monitoring_volume_override}}--monitoring-volume-size {{MONITORING_VOLUME_SIZE}} \
   {{/if}}--ssh-key-path "$SSH_KEY"
 
 echo ""
