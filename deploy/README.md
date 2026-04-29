@@ -215,6 +215,33 @@ touches the source's bootstrap VMs.
 any extension references them — `deployments unextend` each dependent first.
 `--force` does not override this check.
 
+### `deployments slack-post`
+
+Post a formatted summary of a deployment to a Slack incoming webhook.
+Reads the webhook URL from the `ANT_DEPLOY_SLACK_WEBHOOK_URL` env var (no flag — keeps
+the URL out of shell history).
+
+```bash
+export ANT_DEPLOY_SLACK_WEBHOOK_URL='https://hooks.slack.com/services/T.../B.../...'
+uv run saorsa-deploy deployments slack-post --name DEV-01
+
+# Preview the payload without posting:
+uv run saorsa-deploy deployments slack-post --name DEV-01 --dry-run
+```
+
+The post includes the deployment name, kind, purpose, status, total node
+count (= `vm_count` × `nodes_per_vm`), NAT-simulated node count, the
+provider/region distribution, and any uploader/downloader client VMs
+recorded for the deployment. For `prod-uploaders` and
+`prod-continuous-downloader` deployments the testnet-specific fields are
+replaced with the relevant prod-side details.
+
+Purpose is captured at deploy time, not at post time: pass `--purpose
+"<text>"` to `bootstraps infra`, `deployments extend`, `prod
+continuous-downloader deploy`, or `prod uploaders deploy`. The Slack
+post renders `_(none recorded)_` if a deployment was created without the
+flag.
+
 ### Client VMs (uploaders / downloaders)
 
 Client VMs run the ant binary as long-running upload-or-download workers against a testnet. Each VM runs *either* an uploader *or* a downloader — not both — and the downloader VMs pull addresses produced by uploaders through a per-testnet S3 folder.

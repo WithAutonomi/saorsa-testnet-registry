@@ -149,10 +149,10 @@ def test_ls_nodes_column_is_na_for_prod_kinds(capsys, repo):
     assert " 3 │" not in out
 
 
-def test_ls_nodes_column_uses_recorded_node_count_for_testnets(capsys, repo):
+def test_ls_nodes_column_uses_vm_count_times_nodes_per_vm_for_testnets(capsys, repo):
     repo.create(
         name="DEV-RECORDED",
-        deploy_args={"bootstrap_count": 3, "node_count": 18},
+        deploy_args={"bootstrap_count": 3, "vm_count": 6, "nodes_per_vm": 25},
     )
 
     with patch("saorsa_deploy.cmd.ls.get_repository", return_value=repo):
@@ -160,7 +160,17 @@ def test_ls_nodes_column_uses_recorded_node_count_for_testnets(capsys, repo):
 
     out = capsys.readouterr().out
     assert "DEV-RECORDED" in out
-    assert "18" in out
+    # 6 VMs × 25 services each = 150 total node services.
+    assert "150" in out
+
+
+def test_ls_nodes_column_is_na_when_legacy_row_lacks_new_fields(capsys, repo):
+    """Pre-fix rows with only the legacy `node_count` field render N/A."""
+    from saorsa_deploy.cmd.ls import _derive_node_count
+
+    assert _derive_node_count({"bootstrap_count": 3, "node_count": 18}) == "N/A"
+    assert _derive_node_count({"bootstrap_count": 3, "vm_count": 6}) == "N/A"
+    assert _derive_node_count({"bootstrap_count": 3, "nodes_per_vm": 25}) == "N/A"
 
 
 def test_ls_filter_status_keeps_only_matching_rows(capsys, repo):

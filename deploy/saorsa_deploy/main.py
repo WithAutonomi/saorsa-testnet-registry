@@ -228,6 +228,13 @@ def main():
         "and the default ordering; no fallback substitution. List length "
         "becomes the bootstrap count (1-7).",
     )
+    bootstraps_infra_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this testnet is for. "
+        "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
 
     # bootstraps provision
     bootstraps_provision_parser = bootstraps_subparsers.add_parser(
@@ -639,6 +646,13 @@ def main():
         action="store_true",
         help="Repoint an existing extension at a different source",
     )
+    deployments_extend_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this testnet is for. "
+        "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
 
     # deployments generate-inventory
     deployments_generate_inventory_parser = deployments_subparsers.add_parser(
@@ -855,6 +869,26 @@ def main():
             "Freeform summary text describing the testnet run outcome. "
             "If omitted, any existing summary on the row is preserved."
         ),
+    )
+
+    # deployments slack-post
+    deployments_slack_post_parser = deployments_subparsers.add_parser(
+        "slack-post",
+        help=(
+            "Post a formatted summary of a deployment to a Slack incoming "
+            "webhook (URL read from ANT_DEPLOY_SLACK_WEBHOOK_URL)."
+        ),
+    )
+    deployments_slack_post_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must exist in the registry).",
+    )
+    deployments_slack_post_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the Slack payload as JSON instead of posting.",
     )
 
     # deployments set-results-summary
@@ -1905,6 +1939,13 @@ def main():
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa).",
     )
+    prod_cd_deploy_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this deployment is for. "
+        "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
 
     prod_cd_destroy_parser = prod_cd_subparsers.add_parser(
         "destroy",
@@ -2000,6 +2041,13 @@ def main():
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this deployment is for. "
+        "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
 
     prod_up_destroy_parser = prod_up_subparsers.add_parser(
@@ -2366,6 +2414,10 @@ def main():
             from saorsa_deploy.cmd.set_results_summary import cmd_set_results_summary
 
             cmd_set_results_summary(args)
+        elif args.deployments_subcommand == "slack-post":
+            from saorsa_deploy.cmd.slack_post import cmd_slack_post
+
+            cmd_slack_post(args)
         elif args.deployments_subcommand == "unextend":
             from saorsa_deploy.cmd.unextend import cmd_unextend
 

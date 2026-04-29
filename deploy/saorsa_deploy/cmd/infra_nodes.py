@@ -149,13 +149,16 @@ def cmd_infra_nodes(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
-    # Record planned node count + per-provider breakdown back into the
+    # Record planned VM count + per-provider breakdown back into the
     # deployment row so `saorsa-deploy ls` (and other DB consumers) can see it.
-    node_count = sum(spec.vm_count * spec.region_count for spec in provider_specs)
+    # Note: vm_count is total VMs (sum of vm_count * region_count); the count
+    # of node *services* per VM is recorded later by `nodes provision` as
+    # `nodes_per_vm`. Total node services = vm_count * nodes_per_vm.
+    vm_count = sum(spec.vm_count * spec.region_count for spec in provider_specs)
     record_deploy_args_update(
         args.name,
         {
-            "node_count": node_count,
+            "vm_count": vm_count,
             "node_specs": [
                 {
                     "provider": spec.name,

@@ -19,6 +19,7 @@ def _deploy_args(**overrides):
         "ant_version": None,
         "monitoring_volume_size": 50,
         "ssh_key_path": "~/.ssh/id_rsa",
+        "purpose": "test",
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

@@ -54,14 +54,19 @@ def _derive_node_count(deploy_args: dict) -> str:
     # Node count only applies to testnet deployments. Anything else
     # (prod runs, unknown kind) renders as ``N/A`` so the column is never
     # ambiguous about whether the value is missing or non-applicable.
+    #
+    # Total node services = vm_count * nodes_per_vm. ``vm_count`` is written
+    # by `nodes infra`; ``nodes_per_vm`` is written by `nodes provision`.
+    # Pre-fix legacy rows lack one or both fields and render as N/A.
     if _derive_raw_kind(deploy_args) != _TESTNET_KIND:
         return "N/A"
     if not isinstance(deploy_args, dict):
-        return ""
-    node_count = deploy_args.get("node_count")
-    if node_count is not None:
-        return str(node_count)
-    return ""
+        return "N/A"
+    vm_count = deploy_args.get("vm_count")
+    nodes_per_vm = deploy_args.get("nodes_per_vm")
+    if vm_count is None or nodes_per_vm is None:
+        return "N/A"
+    return str(vm_count * nodes_per_vm)
 
 
 def _filter_by_name(deployments: list, substring: str) -> list:

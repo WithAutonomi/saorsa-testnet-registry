@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -54,7 +55,7 @@ class DeploymentProdUploadResult(Base):
     total_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     upload_secs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

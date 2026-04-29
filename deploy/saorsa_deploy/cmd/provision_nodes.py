@@ -2,10 +2,15 @@ import sys
 
 from rich.console import Console
 
+from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
 from saorsa_deploy.provisioning.nat import select_nat_ips
 from saorsa_deploy.provisioning.node import AntNodeProvisioner
-from saorsa_deploy.registry import record_event, record_status
+from saorsa_deploy.registry import (
+    record_deploy_args_update,
+    record_event,
+    record_status,
+)
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
 
@@ -147,6 +152,31 @@ def cmd_provision_nodes(args):
         console.print("[dim]Node count and binary info saved to deployment state.[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to save node count to state: {e}[/yellow]")
+
+    # Persist nodes_per_vm, nat_percent, and the resolved node binary
+    # descriptor into deploy_args so DB consumers (e.g. `deployments ls`,
+    # `deployments slack-post`) can render the deployment without reading
+    # S3 state.
+    try:
+        nat_percent_value = getattr(args, "nat_percent", 0) or 0
+        node_binary = build_binary_descriptor(
+            getattr(args, "branch_name", None),
+            getattr(args, "repo_owner", None),
+            getattr(args, "node_version", None),
+        )
+        record_deploy_args_update(
+            args.name,
+            {
+                "nodes_per_vm": args.node_count,
+                "nat_percent": nat_percent_value,
+                "node_binary": node_binary,
+            },
+        )
+    except Exception as e:
+        console.print(
+            "[yellow]Warning: Failed to record nodes_per_vm/nat_percent in "
+            f"deploy_args: {e}[/yellow]"
+        )
 
 
 def _resolve_nat_ips(args, state, vm_ips_by_region, console) -> set[str]:

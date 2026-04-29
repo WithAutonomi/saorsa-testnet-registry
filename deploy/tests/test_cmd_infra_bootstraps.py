@@ -13,6 +13,7 @@ def _args(**overrides):
         "bootstrap_count": 3,
         "force": False,
         "do_regions_list": None,
+        "purpose": "test",
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
