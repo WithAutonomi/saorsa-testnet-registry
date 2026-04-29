@@ -203,7 +203,6 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
         }
         if role == ROLE_UPLOAD:
             entry["file_size_mb"] = 0
-            entry["store_concurrency"] = 0
         recovered.append(entry)
 
     recovered.sort(key=lambda c: (c["role"], c["region"], c["client_index"]))

@@ -280,7 +280,7 @@ def save_client_state(name: str, clients: list[dict]) -> None:
         name: Deployment name.
         clients: List of client specs, each a dict with keys:
             role ('upload' or 'download'), region, vm_size, ip, client_index.
-            Uploader specs additionally carry file_size_mb and store_concurrency.
+            Uploader specs additionally carry file_size_mb.
     """
     state = {
         "name": name,

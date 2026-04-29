@@ -135,7 +135,6 @@ def _print_details(by_host: dict[str, list[dict]], console: Console) -> None:
                 f"{op.get('total_chunks') or 0}"
             )
             console.print(f"  Chunks failed:     {op.get('chunks_failed') or 0}")
-            console.print(f"  Store concurrency: {op.get('store_concurrency') or '-'}")
             console.print(f"  Address:           {op.get('address') or '-'}")
             console.print(f"  Duration (ms):     {op.get('total_ms') or 0}")
             console.print(f"  Upload secs:       {op.get('upload_secs') or 0}")
@@ -144,26 +143,8 @@ def _print_details(by_host: dict[str, list[dict]], console: Console) -> None:
 
 
 def _fmt_host_summary(ops: list[dict]) -> str:
-    """Build the parenthetical summary shown after the host name in headers.
-
-    Always carries the record count and, when present, the distinct
-    store_concurrency value(s) seen across this host's uploads. A single
-    uploader VM normally has one concurrency throughout, but if it ever
-    drifts (e.g. a mid-run reprovision) the set is shown so the operator
-    notices.
-    """
-    record_part = f"{len(ops)} record(s)"
-    concurrencies = sorted({
-        op.get("store_concurrency")
-        for op in ops
-        if op.get("store_concurrency") is not None
-    })
-    if not concurrencies:
-        return record_part
-    if len(concurrencies) == 1:
-        return f"concurrency={concurrencies[0]}, {record_part}"
-    joined = ",".join(str(v) for v in concurrencies)
-    return f"concurrency={{{joined}}}, {record_part}"
+    """Build the parenthetical summary shown after the host name in headers."""
+    return f"{len(ops)} record(s)"
 
 
 def _fmt_size(num_bytes) -> str:

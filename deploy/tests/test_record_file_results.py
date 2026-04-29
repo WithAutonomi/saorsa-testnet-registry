@@ -13,15 +13,15 @@ from saorsa_deploy.influx import (
 )
 
 CSV_SAMPLE = (
-    ",result,table,_start,_stop,_time,host,region,_measurement,file_size,start_ns,status,store_concurrency,total_ms\n"
+    ",result,table,_start,_stop,_time,host,region,_measurement,file_size,start_ns,status,total_ms\n"
     ",_result,0,2026-03-21T19:14:29Z,2026-04-20T19:14:29Z,2026-04-19T16:19:36.708970856Z,"
-    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,upload,52428800,1776615435704524798,0,16,141004\n"
+    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,upload,52428800,1776615435704524798,0,141004\n"
     ",_result,0,2026-03-21T19:14:29Z,2026-04-20T19:14:29Z,2026-04-19T16:23:30.514719517Z,"
-    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,upload,52428800,1776615578106728129,0,16,232407\n"
+    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,upload,52428800,1776615578106728129,0,232407\n"
     ",_result,0,2026-03-21T19:14:29Z,2026-04-20T19:14:29Z,2026-04-19T16:28:16.369498974Z,"
-    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,upload,52428800,1776615972840960725,1,16,123528\n"
+    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,upload,52428800,1776615972840960725,1,123528\n"
     ",_result,0,2026-03-21T19:14:29Z,2026-04-20T19:14:29Z,2026-04-19T16:22:43.741025023Z,"
-    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,download,52428800,1776615585480357833,0,,178260\n"
+    "DEV-03-ant-client-lon1-1,DEV-03-ant-client-lon1-1,download,52428800,1776615585480357833,0,178260\n"
 )
 
 
@@ -34,7 +34,6 @@ def test_parse_pivoted_csv_extracts_operation_points():
     assert p["file_size"] == 52428800
     assert p["status"] == 0
     assert p["total_ms"] == 141004
-    assert p["store_concurrency"] == 16
     assert p["_time"].tzinfo is not None
 
 

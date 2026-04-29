@@ -127,7 +127,6 @@ def cmd_prod_record_upload_results(args):
             chunks_stored=p.get("chunks_stored") or 0,
             chunks_failed=p.get("chunks_failed") or 0,
             total_chunks=p.get("total_chunks") or 0,
-            store_concurrency=p.get("store_concurrency"),
             duration_ms=p.get("total_ms"),
             upload_secs=p.get("upload_secs"),
             started_at=_started_at(p),

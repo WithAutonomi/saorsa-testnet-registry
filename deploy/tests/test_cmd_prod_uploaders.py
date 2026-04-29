@@ -26,31 +26,17 @@ def urls_file(tmp_path):
 class TestParseSpec:
     def test_full_spec(self, urls_file):
         spec = parse_prod_uploader_spec(
-            f"lon1:s-2vcpu-4gb:concurrency=8:urls={urls_file}"
+            f"lon1:s-2vcpu-4gb:urls={urls_file}"
         )
         assert spec == {
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
-            "store_concurrency": 8,
             "urls_file": str(urls_file),
         }
 
-    def test_options_in_either_order(self, urls_file):
-        a = parse_prod_uploader_spec(
-            f"nyc1:s-4vcpu-8gb:concurrency=16:urls={urls_file}"
-        )
-        b = parse_prod_uploader_spec(
-            f"nyc1:s-4vcpu-8gb:urls={urls_file}:concurrency=16"
-        )
-        assert a == b
-
-    def test_missing_concurrency_rejected(self, urls_file):
-        with pytest.raises(ValueError):
-            parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}")
-
     def test_missing_urls_rejected(self):
         with pytest.raises(ValueError):
-            parse_prod_uploader_spec("lon1:s-2vcpu-4gb:concurrency=8")
+            parse_prod_uploader_spec("lon1:s-2vcpu-4gb")
 
     def test_too_few_parts_rejected(self):
         with pytest.raises(ValueError):
@@ -59,29 +45,17 @@ class TestParseSpec:
     def test_empty_region_rejected(self, urls_file):
         with pytest.raises(ValueError):
             parse_prod_uploader_spec(
-                f":s-2vcpu-4gb:concurrency=8:urls={urls_file}"
+                f":s-2vcpu-4gb:urls={urls_file}"
             )
 
     def test_empty_vm_size_rejected(self, urls_file):
         with pytest.raises(ValueError):
-            parse_prod_uploader_spec(f"lon1::concurrency=8:urls={urls_file}")
-
-    def test_non_integer_concurrency_rejected(self, urls_file):
-        with pytest.raises(ValueError):
-            parse_prod_uploader_spec(
-                f"lon1:s-2vcpu-4gb:concurrency=eight:urls={urls_file}"
-            )
-
-    def test_non_positive_concurrency_rejected(self, urls_file):
-        with pytest.raises(ValueError):
-            parse_prod_uploader_spec(
-                f"lon1:s-2vcpu-4gb:concurrency=0:urls={urls_file}"
-            )
+            parse_prod_uploader_spec(f"lon1::urls={urls_file}")
 
     def test_unknown_key_rejected(self, urls_file):
         with pytest.raises(ValueError):
             parse_prod_uploader_spec(
-                f"lon1:s-2vcpu-4gb:concurrency=8:bogus=x:urls={urls_file}"
+                f"lon1:s-2vcpu-4gb:bogus=x:urls={urls_file}"
             )
 
 
@@ -182,7 +156,7 @@ class TestDeployHappyPath:
         self, deploy_patches, urls_file
     ):
         args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:concurrency=8:urls={urls_file}",
+            f"lon1:s-2vcpu-4gb:urls={urls_file}",
         ])
         cmd_prod_uploaders_deploy(args)
 
@@ -196,7 +170,7 @@ class TestDeployHappyPath:
         self, deploy_patches, urls_file
     ):
         args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:concurrency=8:urls={urls_file}",
+            f"lon1:s-2vcpu-4gb:urls={urls_file}",
         ])
         cmd_prod_uploaders_deploy(args)
         final_status = deploy_patches.record_status.call_args_list[-1].args[1]
@@ -204,8 +178,8 @@ class TestDeployHappyPath:
 
     def test_deploy_records_kind_in_deploy_args(self, deploy_patches, urls_file):
         args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:concurrency=8:urls={urls_file}",
-            f"nyc1:s-4vcpu-8gb:concurrency=16:urls={urls_file}",
+            f"lon1:s-2vcpu-4gb:urls={urls_file}",
+            f"nyc1:s-4vcpu-8gb:urls={urls_file}",
         ])
         cmd_prod_uploaders_deploy(args)
 
@@ -226,7 +200,7 @@ class TestDeployFailure:
     ):
         deploy_patches.provision.side_effect = SystemExit(1)
         args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:concurrency=8:urls={urls_file}",
+            f"lon1:s-2vcpu-4gb:urls={urls_file}",
         ])
 
         with pytest.raises(SystemExit):
