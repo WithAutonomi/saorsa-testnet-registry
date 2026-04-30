@@ -112,7 +112,7 @@ def test_testnet_renders_ant_binary_when_recorded():
     text = _all_text(build_slack_blocks(deployment, {}, None))
     assert "Node binary:" in text
     assert "release v0.11.1-rc.2" in text
-    assert "Ant binary:" in text
+    assert "Client binary:" in text
     assert "release v0.5.0" in text
 
 
@@ -126,7 +126,7 @@ def test_testnet_renders_ant_binary_unknown_when_missing():
         },
     )
     text = _all_text(build_slack_blocks(deployment, {}, None))
-    assert "Ant binary:" in text
+    assert "Client binary:" in text
 
 
 def test_testnet_clients_render_per_uploader_payment():
@@ -229,7 +229,7 @@ def test_prod_uploaders_renders_ant_binary_release_version():
         },
     )
     text = _all_text(build_slack_blocks(deployment, None, None))
-    assert "Ant binary:" in text
+    assert "Client binary:" in text
     assert "release v0.3.0" in text
 
 
@@ -368,7 +368,7 @@ def test_prod_continuous_downloader_renders_spec_and_addresses():
     assert "Prod Continuous Downloader" in text
     assert "lon1:s-2vcpu-4gb" in text
     assert "/path/to/addrs.txt" in text
-    assert "Ant binary:" in text
+    assert "Client binary:" in text
     assert "release v0.3.0" in text
 
 

@@ -77,7 +77,7 @@ def _testnet_blocks(deploy_args: dict, state: dict) -> list[dict]:
             f"*Node binary:* {_format_binary(deploy_args.get('node_binary'))}"
         ),
         _section(
-            f"*Ant binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
     ]
 
@@ -148,7 +148,7 @@ def _format_binary(descriptor: dict | None) -> str:
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     blocks: list[dict] = [
         _section(
-            f"*Ant binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
     ]
     uploaders = deploy_args.get("uploaders") or []
@@ -174,7 +174,7 @@ def _prod_cd_blocks(deploy_args: dict) -> list[dict]:
     addresses_file = deploy_args.get("addresses_file", "_default_")
     return [
         _section(
-            f"*Ant binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
         _fields_section(
             [
