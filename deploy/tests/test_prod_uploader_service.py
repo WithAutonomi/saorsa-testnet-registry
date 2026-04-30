@@ -179,6 +179,23 @@ class TestWriteFailureLog:
         assert "/" not in Path(path).name
 
 
+class TestPaymentFlag:
+    def test_merkle_returns_merkle_flag(self, service):
+        assert service._payment_flag("merkle") == ["--merkle"]
+
+    def test_no_merkle_returns_no_merkle_flag(self, service):
+        assert service._payment_flag("no-merkle") == ["--no-merkle"]
+
+    def test_none_returns_empty(self, service):
+        assert service._payment_flag(None) == []
+
+    def test_empty_string_returns_empty(self, service):
+        assert service._payment_flag("") == []
+
+    def test_unknown_value_returns_empty(self, service):
+        assert service._payment_flag("garbage") == []
+
+
 class TestInfluxLineReason:
     def test_reason_field_appears_in_line(self, service):
         line = TestInfluxLine()._line(

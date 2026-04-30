@@ -2049,6 +2049,18 @@ def main():
         help="Free-text description of what this deployment is for. "
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
+    prod_up_deploy_parser.add_argument(
+        "--payment-type",
+        type=str,
+        choices=["merkle", "no-merkle"],
+        default=None,
+        help=(
+            "Force a payment mode on `ant file upload`. "
+            "`merkle` adds --merkle (single-tx batch payment); "
+            "`no-merkle` adds --no-merkle (per-chunk payments). "
+            "Omit to let ant pick its default."
+        ),
+    )
 
     prod_up_destroy_parser = prod_up_subparsers.add_parser(
         "destroy",

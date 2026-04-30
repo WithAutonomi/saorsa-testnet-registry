@@ -239,6 +239,37 @@ def test_prod_uploaders_renders_uploader_specs():
     assert "NAT-simulated" not in text
 
 
+def test_prod_uploaders_renders_payment_type_default_when_unset():
+    deployment = _deployment(
+        name="PROD-UP-PT-D",
+        deploy_args={
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ant_binary": {"kind": "release", "version": "0.3.0"},
+            "uploaders": [],
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "Payment type:" in text
+    assert "default" in text
+
+
+@pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
+def test_prod_uploaders_renders_payment_type_when_set(payment_type):
+    deployment = _deployment(
+        name="PROD-UP-PT",
+        deploy_args={
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ant_binary": {"kind": "release", "version": "0.3.0"},
+            "uploaders": [],
+            "payment_type": payment_type,
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert f"Payment type:* {payment_type}" in text or f"Payment type: {payment_type}" in text
+
+
 def test_prod_continuous_downloader_renders_spec_and_addresses():
     deployment = _deployment(
         name="PROD-CD-01",

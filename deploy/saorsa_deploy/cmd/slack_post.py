@@ -144,10 +144,12 @@ def _format_binary(descriptor: dict | None) -> str:
 
 
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
+    payment_type = deploy_args.get("payment_type") or "default"
     blocks: list[dict] = [
         _section(
             f"*Ant binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-        )
+        ),
+        _section(f"*Payment type:* {payment_type}"),
     ]
     uploaders = deploy_args.get("uploaders") or []
     if not uploaders:

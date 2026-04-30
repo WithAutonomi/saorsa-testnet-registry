@@ -48,10 +48,20 @@ A short free-text description of *why* this run exists — e.g. "smoke-test 0.2.
 
 Pick one of:
 
-- **Version** (GitHub release, e.g. `0.3.0`) → emits `--ant-version X`, or
-- **Branch + repo owner** → emits `--branch-name X --repo-owner Y`. This builds from source on the uploader VMs at provisioning time.
+- **Version** (GitHub release, e.g. `0.3.0`) → emits `--ant-version X` on `prod uploaders deploy`. No build step needed — the release tarball is fetched from GitHub.
+- **Branch + repo owner** → emits `--branch-name X --repo-owner Y` on `prod uploaders deploy`, **and requires a separate `saorsa-deploy build ant` step up front** (see §2b). `prod uploaders deploy` looks up the pre-built artifact in S3 keyed by `name + repo_owner + branch`, and refuses to start if it isn't there ("Run 'build-ant' first.").
 
-These are mutually exclusive. Branch and version flags must not both be set. There is no separate `build ant` step for prod uploads — the binary is fetched / built directly during `prod uploaders deploy`.
+These two binary-source modes are mutually exclusive. Branch and version flags must not both be set.
+
+### 2b. Validation string (branch path only)
+
+When the user picked the branch path in §2, also collect a **validation string**: a substring expected in the compiled binary's `strings` output. `saorsa-deploy build ant` runs `strings` on the build artifact and refuses to upload it unless this string is present — it's the cheap "did my patch actually make it into the binary" check.
+
+- Always ask for it when the branch path is chosen. Don't invent one.
+- Emit it as `--validation-string "..."` on the `build ant` command.
+- If the user can't supply one, flag it: the build will succeed, but they lose the safety check. Only proceed if they explicitly accept that.
+
+Skip §2b entirely on the version path — `build ant` does not run.
 
 ### 3. Per-uploader specs
 
@@ -76,6 +86,19 @@ The runbook must preflight-check `ARBITRUM_ONE_SECRET_KEY`. Fail fast if missing
 - The preflight in the runbook is just `[[ -n "${ARBITRUM_ONE_SECRET_KEY:-}" ]]`.
 
 Tell the user, in your interview recap, that the runbook expects this env var. If they don't already have a funded wallet, **stop here and flag it** — do not generate a runbook against an empty wallet.
+
+### 4b. Payment type
+
+`prod uploaders deploy` accepts an optional `--payment-type` that forces the payment mode on `ant file upload`:
+
+- **`merkle`** → adds `--merkle` to every `ant file upload` (single-tx batch payment; cheaper gas for batches of 2+ chunks).
+- **`no-merkle`** → adds `--no-merkle` (per-chunk payments).
+- **default** → omit the flag entirely; ant picks its own default per upload.
+
+Ask once: "Force a payment mode (merkle / no-merkle) or leave at ant's default?"
+
+- Only emit `--payment-type X` when the user picks `merkle` or `no-merkle`.
+- The chosen mode applies to **every** uploader VM in the run — there is no per-uploader override.
 
 ### 5. Monitoring volume size
 
@@ -116,9 +139,11 @@ Once the interview is done, before writing the files:
 
 - Always include `--name "$NAME"` on every command.
 - Binary selection is mutually exclusive: either `--ant-version X` or `--branch-name Y --repo-owner Z`. Never both.
+- On the branch path, emit a `saorsa-deploy build ant` step before `prod uploaders deploy`. It must use the same `--name`, `--branch-name`, `--repo-owner`, and `--ssh-key-path`. If the user supplied a validation string, pass it as `--validation-string "..."`.
 - Each uploader spec must include `urls=PATH`; refuse to generate without it.
 - Only emit `--monitoring-volume-size N` when the user picked a non-default value.
 - Only emit `--keep-monitoring` on destroy when the user explicitly asked for it.
+- Only emit `--payment-type X` when the user picked `merkle` or `no-merkle`; omit entirely for ant's default.
 - **Never emit `--secret-key`**; the env var fallback handles it.
 
 ## Deploy runbook template
@@ -136,6 +161,7 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 #     - {{region}} / {{vm_size}} / urls={{urls_path}}
 {{/each}}
 #   ant binary:  {{VERSION_OR_BRANCH_DESC}}
+#   Payment:     {{PAYMENT_TYPE_OR_DEFAULT}}
 #   Monitoring:  always on (paired); volume={{MONITORING_VOLUME_SIZE_OR_DEFAULT}}GB
 #   SSH key:     {{SSH_KEY_PATH}}
 
@@ -167,13 +193,25 @@ if [[ ! -r "{{urls_path}}" ]]; then
 fi
 {{/each}}
 
-# --- Deploy uploaders + paired monitoring ---
+{{#if branch_path}}
+# --- Build ant binary from source ---
+# Required because we're using --branch-name; prod uploaders deploy will
+# refuse to start without an existing custom build for this name + branch.
+uv run saorsa-deploy build ant \
+  --name "$NAME" \
+  --branch-name {{ANT_BRANCH}} \
+  --repo-owner {{ANT_REPO_OWNER}} \
+  {{#if validation_string}}--validation-string "{{VALIDATION_STRING}}" \
+  {{/if}}--ssh-key-path "$SSH_KEY"
+
+{{/if}}# --- Deploy uploaders + paired monitoring ---
 uv run saorsa-deploy prod uploaders deploy \
   --name "$NAME" \
   --purpose "{{PURPOSE}}" \
   {{#each uploader}}--uploader '{{region}}:{{vm_size}}:urls={{urls_path}}' \
   {{/each}}{{BINARY_FLAGS_ANT}} \
-  {{#if monitoring_volume_override}}--monitoring-volume-size {{MONITORING_VOLUME_SIZE}} \
+  {{#if payment_type_override}}--payment-type {{PAYMENT_TYPE}} \
+  {{/if}}{{#if monitoring_volume_override}}--monitoring-volume-size {{MONITORING_VOLUME_SIZE}} \
   {{/if}}--ssh-key-path "$SSH_KEY"
 
 echo ""
@@ -219,6 +257,7 @@ echo "Monitoring VM was kept; remember to tear it down separately when you're do
 - **URL list paths are read at deploy time, not runtime.** They must be readable on the host that runs the runbook. A common slip is putting them under a path that only exists on a target VM.
 - **Don't confuse this with the testnet uploader.** Testnet `clients infra --uploader region:file_size_mb[:vm_size]` uses a synthetic file size; prod `--uploader REGION:VM_SIZE:urls=PATH` uploads real files from the URL list. Don't conflate the spec formats.
 - **`--ant-version` and `--branch-name` are mutually exclusive.** They're separate flags in saorsa-deploy.
+- **The branch path needs a `build ant` step first.** `prod uploaders deploy --branch-name X` does *not* build on the uploader VMs — it pulls a pre-built artifact from S3 keyed by `name + repo_owner + branch`, and refuses to start if the artifact is missing. Always emit a `saorsa-deploy build ant` step before the deploy when the user picked the branch path. The version path (`--ant-version`) needs no build step.
 - **Monitoring is implicit.** Don't emit a separate `monitoring infra` / `monitoring provision` chain — `prod uploaders deploy` does it in one shot. The only knob exposed at this level is `--monitoring-volume-size`.
 - **Destroy takes `--ssh-key-path`.** Unlike testnet destroy commands, the prod destroy commands SSH into the monitoring VM (and others) for clean teardown, so the key is required.
 - **Companion commands aren't in the runbook.** `prod print-upload-results` and `prod record-upload-results` run after uploads finish, at a time the runbook can't predict. Mention them in the closing message instead of baking them into the script.
