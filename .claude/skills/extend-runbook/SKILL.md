@@ -80,7 +80,7 @@ Same as deploy-runbook: boolean + percent. If yes, `--nat-percent N` goes on `no
 
 Ask: "Do you want clients for the extension?" If no, skip.
 
-If yes: same per-client spec as deploy-runbook (region, file size; DO-only; `ANT_DEPLOY_SECRET_KEY` preflight). Clients are independent per extension — they don't share anything with the source's clients.
+If yes: same per-client spec as deploy-runbook (region, file size, optional per-uploader `:payment=merkle|no-merkle`; DO-only; `ANT_DEPLOY_SECRET_KEY` preflight). Clients are independent per extension — they don't share anything with the source's clients.
 
 If clients are enabled, you must also ask about the `ant` client binary (same version-or-branch choice as the node binary); emit a `build ant` step if the user picks a branch.
 
@@ -249,7 +249,7 @@ uv run saorsa-deploy monitoring infra --name "$NAME"
 {{#if clients}}
 uv run saorsa-deploy clients infra \
   --name "$NAME" \
-  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
+  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}{{#if payment_override}}:payment={{payment}}{{/if}}' \
   {{/each}}{{#each downloader}}--downloader '{{region}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
   {{/each}}
 {{/if}}

@@ -115,8 +115,9 @@ Ask how many of each, then for each:
 - **Region** — a DigitalOcean region slug (`lon1`, `nyc1`, `ams3`, `sfo3`, `sgp1`, `blr1`, `fra1`, `tor1`).
 - **File size** — in MB, integer. This is the upload size.
 - **VM size** — defaults to `s-2vcpu-4gb`.
+- **Payment mode** (optional) — `merkle`, `no-merkle`, or default. Ask per uploader: "Force a payment mode (merkle / no-merkle) on this uploader's `ant file upload`, or leave at ant's default?" `merkle` adds `--merkle` (single-tx batch payment), `no-merkle` adds `--no-merkle` (per-chunk payments). Different uploaders in the same testnet may use different modes — back-to-back A/B comparisons of merkle vs no-merkle are a primary use case.
 
-Emit each uploader as a separate `--uploader` flag to `clients infra`. Spec format (positional): `region:file_size_mb[:vm_size]`.
+Emit each uploader as a separate `--uploader` flag to `clients infra`. Spec format: `region:file_size_mb[:vm_size][:payment=MODE]` — region and file_size_mb are required; vm_size and `payment=` are optional. Only emit `:payment=X` when the user picked `merkle` or `no-merkle`.
 
 **Downloaders** — collect:
 - **Region** — same slug list.
@@ -327,7 +328,7 @@ uv run saorsa-deploy monitoring infra --name "$NAME"
 {{#if clients}}
 uv run saorsa-deploy clients infra \
   --name "$NAME" \
-  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
+  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}{{#if payment_override}}:payment={{payment}}{{/if}}' \
   {{/each}}{{#each downloader}}--downloader '{{region}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
   {{/each}}
 {{/if}}
@@ -465,6 +466,7 @@ Do **not** emit `clients stop` in the destroy script. The VMs are about to be to
 - **Do pass `--monitoring-name "$NAME"` to `clients provision` when monitoring is enabled.** Without it, client upload/download metrics never reach the testnet's InfluxDB, which defeats the point of running both stacks.
 - **Always emit at least one `--uploader` AND one `--downloader` when clients are enabled.** Downloaders fetch addresses from S3 that uploaders publish — downloaders on their own have nothing to pull, and uploaders with no downloaders are pointless. Refuse to generate a clients section unless the user has confirmed both.
 - **Never emit the old `--client` flag.** It was removed. Only `--uploader` / `--downloader` are valid on `clients infra`.
+- **Each uploader spec optionally appends `:payment=merkle|no-merkle`.** Only emit when the user explicitly picked a mode for that uploader; omit for ant's default. There is no global payment flag — payment is per-uploader. Different uploaders in the same testnet may use different modes.
 - **Don't parameterize the timestamp.** It's baked into the filename at generation and the header comment for traceability; runtime regeneration defeats the point.
 - **Don't add retry loops or sleeps.** If a command fails, the user wants to see it and decide what to do — `set -e` is the contract.
 - **Don't skip the large-testnet ES warning.** For any testnet with ≥ 500 nodes, emit the reminder in section 7a verbatim *before* collecting ES sizing answers — don't let the user slide into the default 100 GB / 4-shard / 4-vCPU sizing without seeing the sizing table. The defaults are designed for small runs; a 1000-node testnet will silently lose logs on them.
