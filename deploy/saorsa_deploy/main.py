@@ -1998,10 +1998,12 @@ def main():
         "--uploader",
         action="append",
         default=[],
-        metavar="REGION:VM_SIZE:urls=PATH",
+        metavar="REGION:VM_SIZE:urls=PATH[:payment=MODE]",
         help=(
             "Uploader spec, repeatable. Example: "
-            "lon1:s-2vcpu-4gb:urls=/path/to/list.txt"
+            "lon1:s-2vcpu-4gb:urls=/path/to/list.txt:payment=merkle. "
+            "payment=merkle|no-merkle is optional and applies per-uploader; "
+            "omit to let ant pick its default."
         ),
     )
     prod_up_deploy_parser.add_argument(
@@ -2049,19 +2051,6 @@ def main():
         help="Free-text description of what this deployment is for. "
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
-    prod_up_deploy_parser.add_argument(
-        "--payment-type",
-        type=str,
-        choices=["merkle", "no-merkle"],
-        default=None,
-        help=(
-            "Force a payment mode on `ant file upload`. "
-            "`merkle` adds --merkle (single-tx batch payment); "
-            "`no-merkle` adds --no-merkle (per-chunk payments). "
-            "Omit to let ant pick its default."
-        ),
-    )
-
     prod_up_destroy_parser = prod_up_subparsers.add_parser(
         "destroy",
         help=(

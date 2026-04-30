@@ -239,35 +239,52 @@ def test_prod_uploaders_renders_uploader_specs():
     assert "NAT-simulated" not in text
 
 
-def test_prod_uploaders_renders_payment_type_default_when_unset():
+def test_prod_uploaders_renders_payment_default_per_uploader():
     deployment = _deployment(
         name="PROD-UP-PT-D",
         deploy_args={
             "kind": "prod-uploaders",
             "purpose": "p",
             "ant_binary": {"kind": "release", "version": "0.3.0"},
-            "uploaders": [],
+            "uploaders": [
+                {"region": "lon1", "vm_size": "s-2vcpu-4gb", "file_names": []},
+            ],
         },
     )
     text = _all_text(build_slack_blocks(deployment, None, None))
-    assert "Payment type:" in text
-    assert "default" in text
+    assert "lon1 (s-2vcpu-4gb)" in text
+    assert "payment: default" in text
+    # Top-level "Payment type:" line is removed.
+    assert "Payment type:" not in text
 
 
-@pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
-def test_prod_uploaders_renders_payment_type_when_set(payment_type):
+def test_prod_uploaders_renders_per_uploader_payment_modes():
     deployment = _deployment(
-        name="PROD-UP-PT",
+        name="PROD-UP-PT-MIX",
         deploy_args={
             "kind": "prod-uploaders",
             "purpose": "p",
             "ant_binary": {"kind": "release", "version": "0.3.0"},
-            "uploaders": [],
-            "payment_type": payment_type,
+            "uploaders": [
+                {
+                    "region": "lon1", "vm_size": "s-2vcpu-4gb",
+                    "file_names": [], "payment_type": "merkle",
+                },
+                {
+                    "region": "nyc1", "vm_size": "s-4vcpu-8gb",
+                    "file_names": [], "payment_type": "no-merkle",
+                },
+                {
+                    "region": "fra1", "vm_size": "s-2vcpu-4gb",
+                    "file_names": [],
+                },
+            ],
         },
     )
     text = _all_text(build_slack_blocks(deployment, None, None))
-    assert f"Payment type:* {payment_type}" in text or f"Payment type: {payment_type}" in text
+    assert "lon1 (s-2vcpu-4gb) — payment: merkle" in text
+    assert "nyc1 (s-4vcpu-8gb) — payment: no-merkle" in text
+    assert "fra1 (s-2vcpu-4gb) — payment: default" in text
 
 
 def test_prod_continuous_downloader_renders_spec_and_addresses():

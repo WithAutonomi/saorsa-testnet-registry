@@ -65,17 +65,31 @@ Skip §2b entirely on the version path — `build ant` does not run.
 
 ### 3. Per-uploader specs
 
-`prod uploaders deploy` is multi-VM. Each `--uploader` flag describes one VM, with the format `REGION:VM_SIZE:urls=PATH` — **all three parts are required**.
+`prod uploaders deploy` is multi-VM. Each `--uploader` flag describes one VM, with the format `REGION:VM_SIZE:urls=PATH[:payment=MODE]` — region, vm_size, and urls are required; payment is optional and per-uploader.
 
 For each uploader, collect:
 
 - **Region** — a DigitalOcean region slug (`lon1`, `nyc1`, `ams3`, `sfo3`, `sgp1`, `blr1`, `fra1`, `tor1`). Uploader VMs are DO-only.
 - **VM size** — DO droplet slug. Sensible defaults: `s-2vcpu-4gb` for light loads, `s-4vcpu-8gb` for heavier file sizes / higher concurrency.
 - **URLs file path** — a local path to a newline-separated file of public source URLs that this VM should download then re-upload to mainnet. The path must be readable on the host running the runbook because `saorsa-deploy` slurps the file contents at deploy time and embeds them into provisioning.
+- **Payment mode** (optional) — `merkle`, `no-merkle`, or default. See §3b below; ask per uploader, not globally.
 
-Ask first: "How many uploader VMs?" then collect the three fields per VM.
+Ask first: "How many uploader VMs?" then collect the four fields per VM.
 
 Then **confirm the full spec list** back to the user before moving on. A typo in a region slug or URL path won't be caught until provisioning is well underway.
+
+### 3b. Payment mode (per uploader)
+
+Each uploader spec optionally takes `:payment=merkle|no-merkle`, which forces the payment mode on `ant file upload` for that VM only:
+
+- **`merkle`** → adds `--merkle` to every `ant file upload` (single-tx batch payment; cheaper gas for batches of 2+ chunks).
+- **`no-merkle`** → adds `--no-merkle` (per-chunk payments).
+- **default** (omit `payment=`) → ant picks its own default per upload.
+
+Ask per uploader: "Force a payment mode (merkle / no-merkle) or leave at ant's default?" Different uploaders in the same run can have different modes, which is the point — back-to-back A/B comparisons of merkle vs no-merkle on the same dataset across regions are a primary use case.
+
+- Only emit `payment=X` in the spec when the user picks `merkle` or `no-merkle`. Omit the token entirely for ant's default.
+- There is no global `--payment-type` flag; payment is per-uploader.
 
 ### 4. Wallet (Arbitrum One mainnet)
 
@@ -86,19 +100,6 @@ The runbook must preflight-check `ARBITRUM_ONE_SECRET_KEY`. Fail fast if missing
 - The preflight in the runbook is just `[[ -n "${ARBITRUM_ONE_SECRET_KEY:-}" ]]`.
 
 Tell the user, in your interview recap, that the runbook expects this env var. If they don't already have a funded wallet, **stop here and flag it** — do not generate a runbook against an empty wallet.
-
-### 4b. Payment type
-
-`prod uploaders deploy` accepts an optional `--payment-type` that forces the payment mode on `ant file upload`:
-
-- **`merkle`** → adds `--merkle` to every `ant file upload` (single-tx batch payment; cheaper gas for batches of 2+ chunks).
-- **`no-merkle`** → adds `--no-merkle` (per-chunk payments).
-- **default** → omit the flag entirely; ant picks its own default per upload.
-
-Ask once: "Force a payment mode (merkle / no-merkle) or leave at ant's default?"
-
-- Only emit `--payment-type X` when the user picks `merkle` or `no-merkle`.
-- The chosen mode applies to **every** uploader VM in the run — there is no per-uploader override.
 
 ### 5. Monitoring volume size
 
@@ -141,10 +142,11 @@ Once the interview is done, before writing the files:
 - Binary selection is mutually exclusive: either `--ant-version X` or `--branch-name Y --repo-owner Z`. Never both.
 - On the branch path, emit a `saorsa-deploy build ant` step before `prod uploaders deploy`. It must use the same `--name`, `--branch-name`, `--repo-owner`, and `--ssh-key-path`. If the user supplied a validation string, pass it as `--validation-string "..."`.
 - Each uploader spec must include `urls=PATH`; refuse to generate without it.
+- Each uploader spec optionally appends `:payment=merkle|no-merkle`; only emit when the user explicitly picked one — omit for ant's default. Different uploaders in the same run may use different payment modes.
 - Only emit `--monitoring-volume-size N` when the user picked a non-default value.
 - Only emit `--keep-monitoring` on destroy when the user explicitly asked for it.
-- Only emit `--payment-type X` when the user picked `merkle` or `no-merkle`; omit entirely for ant's default.
 - **Never emit `--secret-key`**; the env var fallback handles it.
+- There is no global `--payment-type` flag — payment is per-uploader via `:payment=` in the spec.
 
 ## Deploy runbook template
 
@@ -158,10 +160,9 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 # Spec:
 #   Uploader VMs: {{UPLOADER_COUNT}}
 {{#each uploader}}
-#     - {{region}} / {{vm_size}} / urls={{urls_path}}
+#     - {{region}} / {{vm_size}} / urls={{urls_path}} / payment={{payment_or_default}}
 {{/each}}
 #   ant binary:  {{VERSION_OR_BRANCH_DESC}}
-#   Payment:     {{PAYMENT_TYPE_OR_DEFAULT}}
 #   Monitoring:  always on (paired); volume={{MONITORING_VOLUME_SIZE_OR_DEFAULT}}GB
 #   SSH key:     {{SSH_KEY_PATH}}
 
@@ -208,10 +209,9 @@ uv run saorsa-deploy build ant \
 uv run saorsa-deploy prod uploaders deploy \
   --name "$NAME" \
   --purpose "{{PURPOSE}}" \
-  {{#each uploader}}--uploader '{{region}}:{{vm_size}}:urls={{urls_path}}' \
+  {{#each uploader}}--uploader '{{region}}:{{vm_size}}:urls={{urls_path}}{{#if payment_override}}:payment={{payment}}{{/if}}' \
   {{/each}}{{BINARY_FLAGS_ANT}} \
-  {{#if payment_type_override}}--payment-type {{PAYMENT_TYPE}} \
-  {{/if}}{{#if monitoring_volume_override}}--monitoring-volume-size {{MONITORING_VOLUME_SIZE}} \
+  {{#if monitoring_volume_override}}--monitoring-volume-size {{MONITORING_VOLUME_SIZE}} \
   {{/if}}--ssh-key-path "$SSH_KEY"
 
 echo ""

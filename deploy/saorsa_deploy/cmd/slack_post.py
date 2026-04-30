@@ -144,12 +144,10 @@ def _format_binary(descriptor: dict | None) -> str:
 
 
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
-    payment_type = deploy_args.get("payment_type") or "default"
     blocks: list[dict] = [
         _section(
             f"*Ant binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
-        _section(f"*Payment type:* {payment_type}"),
     ]
     uploaders = deploy_args.get("uploaders") or []
     if not uploaders:
@@ -159,8 +157,9 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     for u in uploaders:
         region = u.get("region", "?")
         vm_size = u.get("vm_size", "?")
+        payment = u.get("payment_type") or "default"
         file_names = u.get("file_names") or []
-        lines.append(f"• {region} ({vm_size})")
+        lines.append(f"• {region} ({vm_size}) — payment: {payment}")
         if file_names:
             for name in file_names:
                 lines.append(f"    • `{name}`")

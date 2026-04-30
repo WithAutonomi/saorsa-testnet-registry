@@ -54,6 +54,7 @@ class TestParseSpec:
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
             "urls_file": str(urls_file),
+            "payment_type": None,
         }
 
     def test_missing_urls_rejected(self):
@@ -78,6 +79,31 @@ class TestParseSpec:
         with pytest.raises(ValueError):
             parse_prod_uploader_spec(
                 f"lon1:s-2vcpu-4gb:bogus=x:urls={urls_file}"
+            )
+
+    @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
+    def test_payment_key_accepted(self, urls_file, payment_type):
+        spec = parse_prod_uploader_spec(
+            f"lon1:s-2vcpu-4gb:urls={urls_file}:payment={payment_type}"
+        )
+        assert spec["payment_type"] == payment_type
+
+    def test_payment_key_invalid_value_rejected(self, urls_file):
+        with pytest.raises(ValueError):
+            parse_prod_uploader_spec(
+                f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=bogus"
+            )
+
+    def test_payment_key_optional(self, urls_file):
+        spec = parse_prod_uploader_spec(
+            f"lon1:s-2vcpu-4gb:urls={urls_file}"
+        )
+        assert spec["payment_type"] is None
+
+    def test_duplicate_payment_rejected(self, urls_file):
+        with pytest.raises(ValueError):
+            parse_prod_uploader_spec(
+                f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=merkle:payment=no-merkle"
             )
 
 
@@ -115,7 +141,6 @@ def _deploy_args(uploader_specs, **overrides):
         "monitoring_volume_size": 50,
         "ssh_key_path": "~/.ssh/id_rsa",
         "purpose": "test",
-        "payment_type": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -223,19 +248,33 @@ class TestDeployHappyPath:
         args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
         cmd_prod_uploaders_deploy(args)
         payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["payment_type"] is None
+        assert payload["uploaders"][0]["payment_type"] is None
+        assert "payment_type" not in payload
 
     @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
-    def test_deploy_records_payment_type_when_set(
+    def test_deploy_records_per_uploader_payment_type(
         self, deploy_patches, urls_file, payment_type
     ):
         args = _deploy_args(
-            [f"lon1:s-2vcpu-4gb:urls={urls_file}"],
-            payment_type=payment_type,
+            [f"lon1:s-2vcpu-4gb:urls={urls_file}:payment={payment_type}"],
         )
         cmd_prod_uploaders_deploy(args)
         payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["payment_type"] == payment_type
+        assert payload["uploaders"][0]["payment_type"] == payment_type
+
+    def test_deploy_records_mixed_payment_types(
+        self, deploy_patches, urls_file
+    ):
+        args = _deploy_args([
+            f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=merkle",
+            f"nyc1:s-4vcpu-8gb:urls={urls_file}",
+            f"fra1:s-4vcpu-8gb:urls={urls_file}:payment=no-merkle",
+        ])
+        cmd_prod_uploaders_deploy(args)
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert [u["payment_type"] for u in payload["uploaders"]] == [
+            "merkle", None, "no-merkle",
+        ]
 
 
 class TestDeployFailure:
