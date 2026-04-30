@@ -38,6 +38,7 @@ class TestParseUploaderSpec:
             "region": "lon1",
             "file_size_mb": 50,
             "vm_size": "s-2vcpu-4gb",
+            "payment_type": None,
         }
 
     def test_region_file_size_and_vm_size(self):
@@ -47,6 +48,7 @@ class TestParseUploaderSpec:
             "region": "nyc1",
             "file_size_mb": 100,
             "vm_size": "s-4vcpu-8gb",
+            "payment_type": None,
         }
 
     def test_invalid_too_few_parts(self):
@@ -64,6 +66,29 @@ class TestParseUploaderSpec:
     def test_zero_file_size(self):
         result = parse_uploader_spec("lon1:0")
         assert result["file_size_mb"] == 0
+
+    @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
+    def test_payment_with_default_vm_size(self, payment_type):
+        result = parse_uploader_spec(f"lon1:50:payment={payment_type}")
+        assert result["payment_type"] == payment_type
+        assert result["vm_size"] == "s-2vcpu-4gb"
+
+    def test_payment_with_explicit_vm_size(self):
+        result = parse_uploader_spec("nyc1:100:s-4vcpu-8gb:payment=no-merkle")
+        assert result["payment_type"] == "no-merkle"
+        assert result["vm_size"] == "s-4vcpu-8gb"
+
+    def test_payment_invalid_value_rejected(self):
+        with pytest.raises(ValueError, match="payment must be one of"):
+            parse_uploader_spec("lon1:50:payment=bogus")
+
+    def test_payment_unknown_key_rejected(self):
+        with pytest.raises(ValueError, match="unknown key"):
+            parse_uploader_spec("lon1:50:bogus=x")
+
+    def test_payment_duplicate_rejected(self):
+        with pytest.raises(ValueError, match="duplicate key"):
+            parse_uploader_spec("lon1:50:payment=merkle:payment=no-merkle")
 
 
 class TestParseDownloaderSpec:

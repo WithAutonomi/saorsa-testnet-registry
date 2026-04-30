@@ -94,6 +94,36 @@ def test_testnet_with_clients_renders_full_summary():
     assert "download — fra1" in text
 
 
+def test_testnet_clients_render_per_uploader_payment():
+    deployment = _deployment(
+        deploy_args={"bootstrap_count": 1, "vm_count": 1, "nodes_per_vm": 5, "purpose": "p"},
+    )
+    client_state = {
+        "clients": [
+            {
+                "role": "upload", "region": "lon1", "vm_size": "s-2vcpu-4gb",
+                "file_size_mb": 50, "payment_type": "merkle",
+            },
+            {
+                "role": "upload", "region": "nyc1", "vm_size": "s-4vcpu-8gb",
+                "file_size_mb": 100, "payment_type": "no-merkle",
+            },
+            {
+                "role": "upload", "region": "fra1", "vm_size": "s-2vcpu-4gb",
+                "file_size_mb": 50,
+            },
+            {"role": "download", "region": "ams3", "vm_size": "s-2vcpu-4gb"},
+        ]
+    }
+    text = _all_text(build_slack_blocks(deployment, {}, client_state))
+    assert "upload — lon1 (s-2vcpu-4gb, 50MB files) — payment: merkle" in text
+    assert "upload — nyc1 (s-4vcpu-8gb, 100MB files) — payment: no-merkle" in text
+    assert "upload — fra1 (s-2vcpu-4gb, 50MB files) — payment: default" in text
+    # Downloaders have no payment field.
+    assert "download — ams3" in text
+    assert "download — ams3 (s-2vcpu-4gb) — payment" not in text
+
+
 def test_prod_upload_client_omits_zero_file_size():
     """For prod uploads file_size_mb is 0 (real arbitrary-size files); don't render it."""
     deployment = _deployment(

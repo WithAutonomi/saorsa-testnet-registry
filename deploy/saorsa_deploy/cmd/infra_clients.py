@@ -19,31 +19,61 @@ ROLE_UPLOAD = "upload"
 ROLE_DOWNLOAD = "download"
 
 
-def parse_uploader_spec(spec: str) -> dict:
-    """Parse an uploader spec: 'region:file_size_mb[:vm_size]'.
+_VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
 
-    Returns a dict with keys: role=upload, region, file_size_mb, vm_size.
+
+def parse_uploader_spec(spec: str) -> dict:
+    """Parse an uploader spec: 'region:file_size_mb[:vm_size][:payment=MODE]'.
+
+    Returns a dict with keys: role=upload, region, file_size_mb, vm_size,
+    payment_type (None unless ``payment=merkle`` or ``payment=no-merkle``).
     """
-    parts = spec.split(":")
-    if len(parts) < 2 or len(parts) > 3:
+    raw_parts = spec.split(":")
+    positional: list[str] = []
+    options: dict[str, str] = {}
+    for part in raw_parts:
+        if "=" in part:
+            key, value = part.split("=", 1)
+            if key not in ("payment",):
+                raise ValueError(
+                    f"Invalid uploader spec '{spec}': unknown key '{key}'."
+                )
+            if key in options:
+                raise ValueError(
+                    f"Invalid uploader spec '{spec}': duplicate key '{key}'."
+                )
+            options[key] = value
+        else:
+            positional.append(part)
+
+    if len(positional) < 2 or len(positional) > 3:
         raise ValueError(
             f"Invalid uploader spec '{spec}'. "
-            f"Expected format: region:file_size_mb[:vm_size]"
+            f"Expected format: region:file_size_mb[:vm_size][:payment=MODE]"
         )
-    region = parts[0]
+    region = positional[0]
     try:
-        file_size_mb = int(parts[1])
+        file_size_mb = int(positional[1])
     except ValueError:
         raise ValueError(
-            f"Invalid file size '{parts[1]}' in uploader spec '{spec}'. "
+            f"Invalid file size '{positional[1]}' in uploader spec '{spec}'. "
             f"Must be an integer (MB)."
         )
-    vm_size = parts[2] if len(parts) == 3 else DEFAULT_VM_SIZE
+    vm_size = positional[2] if len(positional) == 3 else DEFAULT_VM_SIZE
+
+    payment_type: str | None = options.get("payment")
+    if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
+        raise ValueError(
+            f"Invalid uploader spec '{spec}': payment must be one of "
+            f"{', '.join(_VALID_PAYMENT_VALUES)}."
+        )
+
     return {
         "role": ROLE_UPLOAD,
         "region": region,
         "file_size_mb": file_size_mb,
         "vm_size": vm_size,
+        "payment_type": payment_type,
     }
 
 
@@ -100,9 +130,12 @@ def cmd_infra_clients(args):
     console.print(f"[bold]Creating {len(client_specs)} client VM(s) for {args.name}...[/bold]")
     for spec in client_specs:
         if spec["role"] == ROLE_UPLOAD:
+            payment = spec.get("payment_type")
+            payment_str = f", payment={payment}" if payment else ""
             console.print(
                 f"  Uploader #{spec['client_index']}: {spec['region']} "
-                f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads)"
+                f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads"
+                f"{payment_str})"
             )
         else:
             console.print(

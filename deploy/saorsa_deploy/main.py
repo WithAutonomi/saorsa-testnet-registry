@@ -469,9 +469,12 @@ def main():
         type=str,
         action="append",
         default=[],
-        help="Uploader VM spec: 'region:file_size_mb[:vm_size]'. "
+        help="Uploader VM spec: 'region:file_size_mb[:vm_size][:payment=MODE]'. "
         "Repeat for multiple uploaders. Default vm_size=s-2vcpu-4gb. "
-        "Example: --uploader 'lon1:50' --uploader 'nyc1:100:s-4vcpu-8gb'",
+        "Optional payment=merkle|no-merkle forces the payment mode for that "
+        "uploader's `ant file upload` calls; omit for ant's default. "
+        "Example: --uploader 'lon1:50' "
+        "--uploader 'nyc1:100:s-4vcpu-8gb:payment=merkle'",
     )
     clients_infra_parser.add_argument(
         "--downloader",

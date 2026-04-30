@@ -195,7 +195,10 @@ def _clients_block(clients: list[dict]) -> dict:
             # size) — only render the size for testnet uploaders, where it
             # is the configured upload size.
             size_str = f", {file_size}MB files" if file_size else ""
-            lines.append(f"• upload — {region} ({vm_size}{size_str})")
+            payment = c.get("payment_type") or "default"
+            lines.append(
+                f"• upload — {region} ({vm_size}{size_str}) — payment: {payment}"
+            )
         else:
             lines.append(f"• download — {region} ({vm_size})")
     return _section("*Clients:*\n" + "\n".join(lines))
