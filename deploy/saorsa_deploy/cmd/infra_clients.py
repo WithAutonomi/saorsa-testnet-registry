@@ -8,6 +8,7 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
     delete_terraform_state,
+    load_client_state,
     save_client_state,
     update_client_state,
 )
@@ -99,6 +100,26 @@ def parse_downloader_spec(spec: str) -> dict:
     }
 
 
+def _spec_signature(spec: dict) -> tuple:
+    """Identity tuple for matching requested vs. recorded client specs."""
+    return (
+        spec.get("role"),
+        spec.get("region"),
+        spec.get("client_index"),
+        spec.get("vm_size"),
+        spec.get("file_size_mb"),
+        spec.get("payment_type"),
+    )
+
+
+def _client_specs_match(existing: list[dict], requested: list[dict]) -> bool:
+    if len(existing) != len(requested):
+        return False
+    return sorted(_spec_signature(s) for s in existing) == sorted(
+        _spec_signature(s) for s in requested
+    )
+
+
 def cmd_infra_clients(args):
     """Execute the clients infra command: create client VMs via Terraform."""
     console = Console()
@@ -143,6 +164,39 @@ def cmd_infra_clients(args):
                 f"({spec['vm_size']})"
             )
     console.print()
+
+    # Idempotent reuse: if our saorsa-side client state already records every
+    # VM in this request (with a populated IP), skip the terraform apply.
+    # Mirrors `bootstraps infra` so re-running a deploy runbook after a
+    # mid-pipeline failure doesn't trip on its own previously-provisioned VMs.
+    try:
+        existing_state = load_client_state(args.name)
+    except RuntimeError:
+        existing_state = None
+
+    if existing_state and existing_state.get("clients"):
+        existing_clients = existing_state["clients"]
+        if _client_specs_match(existing_clients, client_specs) and all(
+            c.get("ip") for c in existing_clients
+        ):
+            console.print(
+                f"[bold]Reusing {len(existing_clients)} existing client VM(s) "
+                f"for '{args.name}'.[/bold]"
+            )
+            for spec in existing_clients:
+                label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
+                console.print(
+                    f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
+                    f"({spec['region']}, {spec['vm_size']})"
+                )
+            return
+        console.print(
+            f"[bold red]Error:[/bold red] Client state for '{args.name}' "
+            f"already exists but does not match the requested spec. "
+            f"Run `clients destroy --name {args.name} --force` first if you "
+            f"want to recreate with a different layout."
+        )
+        sys.exit(1)
 
     resources_dir = get_resources_dir()
     tf_source = resources_dir / "digitalocean-client"
