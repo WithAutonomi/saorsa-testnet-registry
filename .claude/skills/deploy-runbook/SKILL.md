@@ -36,6 +36,10 @@ The user will sometimes give you a partial spec upfront ("deploy DEV-01 with 15 
 
 Required on every command. Used to name both output files. Conventional form is `UPPERCASE-NN` (e.g. `DEV-01`, `STAGING-03`).
 
+### 1a. Purpose
+
+Free-text description of what this testnet is for (e.g. "Soak-test rc-2026.4.4 ant-node release candidate", "Reproduce PROD-UL-01 merkle rejection"). Required by `bootstraps infra --purpose` — it's persisted into `deploy_args` and surfaced by `deployments slack-post`. Pass through verbatim, single-quoted, on `bootstraps infra` only (no other infra command takes it).
+
 ### 2. Binaries: `ant-node` and `ant` (client)
 
 Ask about each binary separately. For each:
@@ -242,6 +246,7 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 # Runbook: deploy {{NAME}}
 # Generated: {{TIMESTAMP_HUMAN}}
 # Spec:
+#   Purpose:     {{PURPOSE}}
 #   Bootstraps:  {{BOOTSTRAP_COUNT}}
 #   Nodes:       {{TOTAL_NODES}} total
 #                  DO      = {{DO_PER_REGION}} × {{DO_REGIONS}} region(s) = {{DO_TOTAL}}
@@ -308,7 +313,8 @@ uv run saorsa-deploy build ant \
 # --- Phase 2: Infrastructure ---
 uv run saorsa-deploy bootstraps infra \
   --name "$NAME" \
-  --bootstrap-count {{BOOTSTRAP_COUNT}}
+  --bootstrap-count {{BOOTSTRAP_COUNT}} \
+  --purpose '{{PURPOSE}}'
 
 uv run saorsa-deploy nodes infra \
   --name "$NAME" \
