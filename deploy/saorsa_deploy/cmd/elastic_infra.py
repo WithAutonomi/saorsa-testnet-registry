@@ -8,6 +8,7 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
     delete_terraform_state,
+    load_elastic_state,
     save_elastic_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
@@ -27,7 +28,36 @@ def cmd_elastic_infra(args):
     workspace_dir = workspace_base / f"digitalocean-elastic-{args.name}-{region}"
     state_key = f"saorsa-deploy/do-elastic-{args.name}-{region}.tfstate"
 
-    # Check for stale state
+    # Idempotent reuse: if we already have an elastic VM recorded for this
+    # deployment in the same region, skip the terraform apply and treat the
+    # existing infrastructure as the result. Mirrors the behaviour of
+    # `bootstraps infra` so re-running a deploy runbook after a mid-pipeline
+    # failure doesn't trip on its own previously-provisioned VM.
+    try:
+        existing = load_elastic_state(args.name)
+    except RuntimeError:
+        existing = None
+
+    if existing and existing.get("vm_ip"):
+        existing_region = existing.get("region", region)
+        if existing_region != region:
+            console.print(
+                f"[bold red]Error:[/bold red] Elasticsearch VM for '{args.name}' "
+                f"already exists in region '{existing_region}', but the request "
+                f"is for '{region}'. Run `elastic destroy --name {args.name} "
+                f"--force` first if you want to recreate in a different region."
+            )
+            sys.exit(1)
+        console.print(
+            f"[bold]Reusing existing Elasticsearch VM for '{args.name}' "
+            f"({existing['vm_ip']}, {existing_region}).[/bold]"
+        )
+        return
+
+    # Stale tfstate without matching deployment state == orphan from a prior
+    # failed/destroyed run. Refuse and tell the user to clean it up explicitly
+    # — `--force` is intentionally not offered here because deleting the
+    # tfstate without destroying the cloud resources leaks droplets/volumes.
     if check_terraform_state_exists(state_key):
         if not getattr(args, "force", False):
             console.print("[bold red]Error:[/bold red] Stale Terraform state found:")

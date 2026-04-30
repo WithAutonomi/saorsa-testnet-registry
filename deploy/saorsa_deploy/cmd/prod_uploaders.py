@@ -49,18 +49,23 @@ MONITORING_REGION = "lon1"
 DEFAULT_MONITORING_VOLUME_SIZE = 50
 
 
+_KNOWN_SPEC_KEYS = ("urls", "payment")
+_VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
+
+
 def parse_prod_uploader_spec(spec: str) -> dict:
     """Parse a ``--uploader`` spec.
 
-    Format: ``REGION:VM_SIZE:urls=PATH``. The trailing ``urls=PATH`` is
-    key=value form for symmetry with future extensions. Returns a dict with
-    keys ``region``, ``vm_size``, and ``urls_file`` (str).
+    Format: ``REGION:VM_SIZE:urls=PATH[:payment=MODE]``. Tail tokens are
+    key=value; ``urls`` is required, ``payment`` is optional and must be
+    ``merkle`` or ``no-merkle``. Returns a dict with keys ``region``,
+    ``vm_size``, ``urls_file`` (str), and ``payment_type`` (str | None).
     """
     parts = spec.split(":")
     if len(parts) < 3:
         raise ValueError(
             f"Invalid uploader spec '{spec}'. "
-            f"Expected format: region:vm_size:urls=PATH"
+            f"Expected format: region:vm_size:urls=PATH[:payment=MODE]"
         )
 
     region = parts[0]
@@ -76,7 +81,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     tail_tokens: list[str] = []
     buf = parts[2]
     for next_part in parts[3:]:
-        if "=" in next_part and next_part.split("=", 1)[0] in ("urls",):
+        if "=" in next_part and next_part.split("=", 1)[0] in _KNOWN_SPEC_KEYS:
             tail_tokens.append(buf)
             buf = next_part
         else:
@@ -90,7 +95,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
                 f"Invalid uploader spec '{spec}': '{token}' is not key=value."
             )
         key, value = token.split("=", 1)
-        if key not in ("urls",):
+        if key not in _KNOWN_SPEC_KEYS:
             raise ValueError(
                 f"Invalid uploader spec '{spec}': unknown key '{key}'."
             )
@@ -111,10 +116,18 @@ def parse_prod_uploader_spec(spec: str) -> dict:
             f"Invalid uploader spec '{spec}': urls path cannot be empty."
         )
 
+    payment_type: str | None = options.get("payment")
+    if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
+        raise ValueError(
+            f"Invalid uploader spec '{spec}': payment must be one of "
+            f"{', '.join(_VALID_PAYMENT_VALUES)}."
+        )
+
     return {
         "region": region,
         "vm_size": vm_size,
         "urls_file": urls_file,
+        "payment_type": payment_type,
     }
 
 
@@ -318,6 +331,7 @@ def _provision_uploaders(
             "region": spec["region"],
             "client_index": client["client_index"],
             "urls_file_content": spec["_urls_file_content"],
+            "payment_type": spec.get("payment_type"),
         })
 
     secret_key = _resolve_secret_key(args, console)
@@ -371,7 +385,6 @@ def _provision_uploaders(
         influx_token=influx_token,
         influx_org=influx_org,
         influx_bucket=influx_bucket,
-        payment_type=args.payment_type,
         console=console,
     )
     provisioner.execute()
@@ -461,11 +474,11 @@ def cmd_prod_uploaders_deploy(args):
                 "vm_size": s["vm_size"],
                 "urls_file": s["urls_file"],
                 "file_names": _extract_file_names(s["_urls_file_content"]),
+                "payment_type": s.get("payment_type"),
             }
             for s in parsed_specs
         ],
         "purpose": args.purpose,
-        "payment_type": args.payment_type,
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version
         ),

@@ -21,6 +21,14 @@ set -euo pipefail
 : "${ADDRESSES_TAIL_SIZE:=10000}"
 : "${S3_FLUSH_INTERVAL_SECS:=30}"
 : "${S3_FLUSH_EVERY_N:=50}"
+: "${PAYMENT_TYPE:=}"
+
+# Translate PAYMENT_TYPE into the matching ant flag (or nothing).
+PAYMENT_FLAG=()
+case "$PAYMENT_TYPE" in
+    merkle)    PAYMENT_FLAG=(--merkle) ;;
+    no-merkle) PAYMENT_FLAG=(--no-merkle) ;;
+esac
 
 CLIENT_HOST=$(hostname)
 S3_KEY="${ADDRESSES_S3_PREFIX}/upload-${REGION}-${CLIENT_INDEX}.txt"
@@ -79,7 +87,7 @@ while true; do
 
     # shellcheck disable=SC2086
     set +e
-    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file upload --public "$file_path" \
+    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file upload --public "${PAYMENT_FLAG[@]}" "$file_path" \
         2>&1 | tee "$output_file"
     exit_code=${PIPESTATUS[0]}
     set -e

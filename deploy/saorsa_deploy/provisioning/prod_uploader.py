@@ -96,7 +96,6 @@ class ProdUploaderProvisioner:
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
         evm_network: str = "arbitrum-one",
-        payment_type: str | None = None,
         console: Console | None = None,
     ):
         self.uploaders = uploaders
@@ -110,7 +109,6 @@ class ProdUploaderProvisioner:
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
         self.evm_network = evm_network
-        self.payment_type = payment_type
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -258,11 +256,13 @@ class ProdUploaderProvisioner:
             urls_b64 = base64.b64encode(
                 u["urls_file_content"].encode("utf-8")
             ).decode("ascii")
+            payment_type = u.get("payment_type") or ""
             case_entries.append(
                 f'    "{u["ip"]}") '
                 f'REGION={u["region"]}; '
                 f'CLIENT_INDEX={u["client_index"]}; '
-                f'URLS_B64="{urls_b64}" ;;'
+                f'URLS_B64="{urls_b64}"; '
+                f'PAYMENT_TYPE="{payment_type}" ;;'
             )
         case_block = "\n".join(case_entries)
 
@@ -275,15 +275,11 @@ class ProdUploaderProvisioner:
                 f"INFLUX_BUCKET={self.influx_bucket}\n"
             )
 
-        payment_line = ""
-        if self.payment_type:
-            payment_line = f"PAYMENT_TYPE={self.payment_type}\n"
-
         env_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) REGION=unknown; CLIENT_INDEX=0; URLS_B64="" ;;
+    *) REGION=unknown; CLIENT_INDEX=0; URLS_B64=""; PAYMENT_TYPE="" ;;
 esac
 mkdir -p {DATA_DIR}
 echo "$URLS_B64" | base64 -d > {URLS_PATH}
@@ -297,7 +293,8 @@ ANT={ANT_INSTALL_PATH}
 URLS_FILE={URLS_PATH}
 WORK_DIR={DATA_DIR}/files
 EVM_NETWORK={self.evm_network}
-{payment_line}{influx_lines}ENV_EOF"""
+PAYMENT_TYPE=$PAYMENT_TYPE
+{influx_lines}ENV_EOF"""
 
         add_op(
             state,

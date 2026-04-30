@@ -2,8 +2,10 @@ import sys
 
 from rich.console import Console
 
+from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
+from saorsa_deploy.registry import record_deploy_args_update
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_client_state, load_deployment_state
 
@@ -244,6 +246,16 @@ def cmd_provision_clients(args):
             bootstrap_peers = [f"{bootstrap_ip}:{bootstrap_port}"]
 
     binary_url, binary_is_archive = _resolve_ant_binary(args, console)
+    record_deploy_args_update(
+        args.name,
+        {
+            "ant_binary": build_binary_descriptor(
+                getattr(args, "branch_name", None),
+                getattr(args, "repo_owner", None),
+                getattr(args, "ant_version", None),
+            )
+        },
+    )
     influx_url, influx_token, influx_org, influx_bucket = _resolve_influx_config(args, console)
 
     host_ips = [c["ip"] for c in clients if c.get("ip")]

@@ -285,6 +285,7 @@ class AntClientProvisioner:
                         "file_size_kb": c["file_size_mb"] * 1024,
                         "region": c["region"],
                         "client_index": c["client_index"],
+                        "payment_type": c.get("payment_type") or "",
                     }
                 else:
                     ip_to_env[c["ip"]] = {
@@ -292,6 +293,7 @@ class AntClientProvisioner:
                         "file_size_kb": 0,
                         "region": c["region"],
                         "client_index": c["client_index"],
+                        "payment_type": "",
                     }
 
             case_entries = []
@@ -300,7 +302,8 @@ class AntClientProvisioner:
                     f'    "{ip}") ROLE={env["role"]}; '
                     f'FILE_SIZE_KB={env["file_size_kb"]}; '
                     f'REGION={env["region"]}; '
-                    f'CLIENT_INDEX={env["client_index"]} ;;'
+                    f'CLIENT_INDEX={env["client_index"]}; '
+                    f'PAYMENT_TYPE="{env["payment_type"]}" ;;'
                 )
             case_block = "\n".join(case_entries)
 
@@ -312,7 +315,7 @@ class AntClientProvisioner:
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0 ;;
+    *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; PAYMENT_TYPE="" ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -321,6 +324,7 @@ REGION=$REGION
 CLIENT_INDEX=$CLIENT_INDEX
 BOOTSTRAP_ARGS="{bootstrap_args}"
 FILE_SIZE_KB=$FILE_SIZE_KB
+PAYMENT_TYPE=$PAYMENT_TYPE
 SECRET_KEY={secret_key}
 ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt

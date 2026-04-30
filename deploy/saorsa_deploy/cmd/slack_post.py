@@ -8,7 +8,6 @@ errors out if it is not set.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from datetime import timezone
@@ -76,7 +75,10 @@ def _testnet_blocks(deploy_args: dict, state: dict) -> list[dict]:
     blocks: list[dict] = [
         _section(
             f"*Node binary:* {_format_binary(deploy_args.get('node_binary'))}"
-        )
+        ),
+        _section(
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+        ),
     ]
 
     vm_count = deploy_args.get("vm_count")
@@ -144,12 +146,10 @@ def _format_binary(descriptor: dict | None) -> str:
 
 
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
-    payment_type = deploy_args.get("payment_type") or "default"
     blocks: list[dict] = [
         _section(
-            f"*Ant binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
-        _section(f"*Payment type:* {payment_type}"),
     ]
     uploaders = deploy_args.get("uploaders") or []
     if not uploaders:
@@ -159,8 +159,9 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     for u in uploaders:
         region = u.get("region", "?")
         vm_size = u.get("vm_size", "?")
+        payment = u.get("payment_type") or "default"
         file_names = u.get("file_names") or []
-        lines.append(f"• {region} ({vm_size})")
+        lines.append(f"• {region} ({vm_size}) — payment: {payment}")
         if file_names:
             for name in file_names:
                 lines.append(f"    • `{name}`")
@@ -173,7 +174,7 @@ def _prod_cd_blocks(deploy_args: dict) -> list[dict]:
     addresses_file = deploy_args.get("addresses_file", "_default_")
     return [
         _section(
-            f"*Ant binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
         _fields_section(
             [
@@ -196,7 +197,10 @@ def _clients_block(clients: list[dict]) -> dict:
             # size) — only render the size for testnet uploaders, where it
             # is the configured upload size.
             size_str = f", {file_size}MB files" if file_size else ""
-            lines.append(f"• upload — {region} ({vm_size}{size_str})")
+            payment = c.get("payment_type") or "default"
+            lines.append(
+                f"• upload — {region} ({vm_size}{size_str}) — payment: {payment}"
+            )
         else:
             lines.append(f"• download — {region} ({vm_size})")
     return _section("*Clients:*\n" + "\n".join(lines))
@@ -249,6 +253,32 @@ def build_slack_blocks(deployment, state: dict | None, client_state: dict | None
     }
 
 
+def render_payload_text(payload: dict) -> str:
+    """Flatten a Slack Block-Kit payload to plain text for previewing.
+
+    Used by ``--dry-run``: the JSON payload is hard to read, but the team
+    just wants to see what the post will *look like*. Headers become a
+    rule-bracketed line; sections render as their mrkdwn body; field
+    sections render as ``Label: value`` lines.
+    """
+    lines: list[str] = []
+    for block in payload.get("blocks") or []:
+        btype = block.get("type")
+        if btype == "header":
+            text = (block.get("text") or {}).get("text", "")
+            lines.append("")
+            lines.append(f"=== {text} ===")
+        elif btype == "section":
+            text_obj = block.get("text")
+            if text_obj and text_obj.get("text"):
+                lines.append(text_obj["text"])
+            for field in block.get("fields") or []:
+                lines.append(field.get("text", ""))
+        elif btype == "divider":
+            lines.append("---")
+    return "\n".join(lines).lstrip("\n") + "\n"
+
+
 def _try_load_state(name: str) -> dict | None:
     try:
         return load_deployment_state(name)
@@ -268,7 +298,7 @@ def cmd_slack_post(args):
     """Post a deployment summary to a Slack incoming webhook.
 
     Reads ``ANT_DEPLOY_SLACK_WEBHOOK_URL`` from the environment. With ``--dry-run``,
-    prints the payload as JSON instead of POSTing.
+    prints a human-readable preview of the post instead of POSTing.
     """
     console = Console()
 
@@ -294,8 +324,8 @@ def cmd_slack_post(args):
     payload = build_slack_blocks(deployment, state, client_state)
 
     if getattr(args, "dry_run", False):
-        # Use stdlib print so Rich's word-wrapping doesn't mangle the JSON.
-        print(json.dumps(payload, indent=2))
+        # Plain stdout so Rich doesn't reflow or interpret the mrkdwn markers.
+        print(render_payload_text(payload), end="")
         return
 
     webhook_url = os.environ.get("ANT_DEPLOY_SLACK_WEBHOOK_URL")

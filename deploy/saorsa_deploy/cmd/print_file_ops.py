@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from saorsa_deploy.influx import fetch_operation_points
-from saorsa_deploy.state import load_monitoring_state
+from saorsa_deploy.state import load_client_state, load_monitoring_state
 
 
 def cmd_print_uploads(args):
@@ -93,6 +93,10 @@ def _run(args, op_type: str) -> None:
         _print_summary(op_type, by_host, console)
         return
 
+    payment_by_host = (
+        _build_payment_map(args.name) if op_type == "upload" else {}
+    )
+
     for host in sorted(by_host.keys()):
         ops = sorted(
             by_host[host], key=lambda p: p.get("start_ns") or 0
@@ -105,8 +109,13 @@ def _run(args, op_type: str) -> None:
             if args.recent and total > len(ops)
             else f"{len(ops)} op(s)"
         )
+        if op_type == "upload":
+            payment = payment_by_host.get(host, "default")
+            title = f"{host} — payment={payment} ({title_count})"
+        else:
+            title = f"{host} ({title_count})"
         table = Table(
-            title=f"{op_type.capitalize()}s — {host} ({title_count})",
+            title=title,
             title_style="bold",
         )
         table.add_column("#", justify="right")
@@ -125,6 +134,29 @@ def _run(args, op_type: str) -> None:
                 _fmt_duration(op.get("total_ms")),
             )
         console.print(table)
+
+
+def _build_payment_map(name: str) -> dict[str, str]:
+    """Map hostname → payment_type label for the deployment's upload clients.
+
+    Hostname matches the client VM's actual hostname (set by the digitalocean-
+    client terraform module): ``{name}-ant-client-{role}-{region}-{client_index}``.
+    Missing client state returns an empty map — the caller falls back to
+    rendering "default" for every host rather than blocking the print.
+    """
+    try:
+        state = load_client_state(name)
+    except RuntimeError:
+        return {}
+    out: dict[str, str] = {}
+    for c in state.get("clients", []):
+        if c.get("role") != "upload":
+            continue
+        host = (
+            f"{name}-ant-client-{c['role']}-{c['region']}-{c['client_index']}"
+        )
+        out[host] = c.get("payment_type") or "default"
+    return out
 
 
 def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:

@@ -8,6 +8,7 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
     delete_terraform_state,
+    load_monitoring_state,
     save_monitoring_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
@@ -27,7 +28,31 @@ def cmd_monitoring_infra(args):
     workspace_dir = workspace_base / f"digitalocean-monitoring-{args.name}-{region}"
     state_key = f"saorsa-deploy/do-monitoring-{args.name}-{region}.tfstate"
 
-    # Check for stale state
+    # Idempotent reuse: skip the apply if we already have a monitoring VM
+    # recorded for this deployment. Mirrors `bootstraps infra` so re-running
+    # a deploy runbook after a mid-pipeline failure doesn't trip on its own
+    # previously-provisioned VM.
+    try:
+        existing = load_monitoring_state(args.name)
+    except RuntimeError:
+        existing = None
+
+    if existing and existing.get("vm_ip"):
+        existing_region = existing.get("region", region)
+        if existing_region != region:
+            console.print(
+                f"[bold red]Error:[/bold red] Monitoring VM for '{args.name}' "
+                f"already exists in region '{existing_region}', but the request "
+                f"is for '{region}'. Run `monitoring destroy --name {args.name} "
+                f"--force` first if you want to recreate in a different region."
+            )
+            sys.exit(1)
+        console.print(
+            f"[bold]Reusing existing monitoring VM for '{args.name}' "
+            f"({existing['vm_ip']}, {existing_region}).[/bold]"
+        )
+        return
+
     if check_terraform_state_exists(state_key):
         if not getattr(args, "force", False):
             console.print("[bold red]Error:[/bold red] Stale Terraform state found:")

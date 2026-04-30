@@ -99,7 +99,11 @@ def execute_terraform_runs(
     console = Console()
     statuses: dict[str, str] = {}
     start_times: dict[str, float] = {}
-    results: list[TerraformResult] = []
+    # Pre-allocate so we can assign by submission index — futures complete
+    # out of order, but callers (e.g. clients infra) zip results back against
+    # configs by position to attach IPs to the right spec. Same-region runs
+    # share provider/region so we can't disambiguate from the result alone.
+    results: list[TerraformResult] = [None] * len(configs)  # type: ignore[list-item]
     spinner_tick = 0
 
     for config in configs:
@@ -111,35 +115,35 @@ def execute_terraform_runs(
         refresh_per_second=4,
     ) as live:
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
-            future_to_key = {}
-            for config in configs:
+            future_to_meta: dict = {}
+            for idx, config in enumerate(configs):
                 key = f"{config.provider}/{config.region}"
                 statuses[key] = "running"
                 start_times[key] = time.monotonic()
                 future = pool.submit(run_fn, config)
-                future_to_key[future] = key
+                future_to_meta[future] = (idx, key)
 
-            while future_to_key:
+            while future_to_meta:
                 # Update display with spinner animation
                 spinner_tick += 1
                 live.update(_build_status_table(statuses, start_times, spinner_tick, action_label))
 
                 # Check for completed futures (non-blocking)
                 done = set()
-                for future in future_to_key:
+                for future in future_to_meta:
                     if future.done():
                         done.add(future)
 
                 for future in done:
-                    key = future_to_key.pop(future)
+                    idx, key = future_to_meta.pop(future)
                     result = future.result()
-                    results.append(result)
+                    results[idx] = result
                     statuses[key] = "done" if result.success else "failed"
                     live.update(
                         _build_status_table(statuses, start_times, spinner_tick, action_label)
                     )
 
-                if future_to_key:
+                if future_to_meta:
                     time.sleep(0.25)
 
     # Print resource summary

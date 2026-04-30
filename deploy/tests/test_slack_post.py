@@ -10,7 +10,11 @@ from saorsa_db.repositories import SqlAlchemyDeploymentRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from saorsa_deploy.cmd.slack_post import build_slack_blocks, cmd_slack_post
+from saorsa_deploy.cmd.slack_post import (
+    build_slack_blocks,
+    cmd_slack_post,
+    render_payload_text,
+)
 
 
 @pytest.fixture()
@@ -94,6 +98,67 @@ def test_testnet_with_clients_renders_full_summary():
     assert "download — fra1" in text
 
 
+def test_testnet_renders_ant_binary_when_recorded():
+    deployment = _deployment(
+        deploy_args={
+            "bootstrap_count": 1,
+            "vm_count": 1,
+            "nodes_per_vm": 5,
+            "purpose": "p",
+            "node_binary": {"kind": "release", "version": "0.11.1-rc.2"},
+            "ant_binary": {"kind": "release", "version": "0.5.0"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "Node binary:" in text
+    assert "release v0.11.1-rc.2" in text
+    assert "Client binary:" in text
+    assert "release v0.5.0" in text
+
+
+def test_testnet_renders_ant_binary_unknown_when_missing():
+    deployment = _deployment(
+        deploy_args={
+            "bootstrap_count": 1,
+            "vm_count": 1,
+            "nodes_per_vm": 5,
+            "purpose": "p",
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "Client binary:" in text
+
+
+def test_testnet_clients_render_per_uploader_payment():
+    deployment = _deployment(
+        deploy_args={"bootstrap_count": 1, "vm_count": 1, "nodes_per_vm": 5, "purpose": "p"},
+    )
+    client_state = {
+        "clients": [
+            {
+                "role": "upload", "region": "lon1", "vm_size": "s-2vcpu-4gb",
+                "file_size_mb": 50, "payment_type": "merkle",
+            },
+            {
+                "role": "upload", "region": "nyc1", "vm_size": "s-4vcpu-8gb",
+                "file_size_mb": 100, "payment_type": "no-merkle",
+            },
+            {
+                "role": "upload", "region": "fra1", "vm_size": "s-2vcpu-4gb",
+                "file_size_mb": 50,
+            },
+            {"role": "download", "region": "ams3", "vm_size": "s-2vcpu-4gb"},
+        ]
+    }
+    text = _all_text(build_slack_blocks(deployment, {}, client_state))
+    assert "upload — lon1 (s-2vcpu-4gb, 50MB files) — payment: merkle" in text
+    assert "upload — nyc1 (s-4vcpu-8gb, 100MB files) — payment: no-merkle" in text
+    assert "upload — fra1 (s-2vcpu-4gb, 50MB files) — payment: default" in text
+    # Downloaders have no payment field.
+    assert "download — ams3" in text
+    assert "download — ams3 (s-2vcpu-4gb) — payment" not in text
+
+
 def test_prod_upload_client_omits_zero_file_size():
     """For prod uploads file_size_mb is 0 (real arbitrary-size files); don't render it."""
     deployment = _deployment(
@@ -164,7 +229,7 @@ def test_prod_uploaders_renders_ant_binary_release_version():
         },
     )
     text = _all_text(build_slack_blocks(deployment, None, None))
-    assert "Ant binary:" in text
+    assert "Client binary:" in text
     assert "release v0.3.0" in text
 
 
@@ -239,35 +304,52 @@ def test_prod_uploaders_renders_uploader_specs():
     assert "NAT-simulated" not in text
 
 
-def test_prod_uploaders_renders_payment_type_default_when_unset():
+def test_prod_uploaders_renders_payment_default_per_uploader():
     deployment = _deployment(
         name="PROD-UP-PT-D",
         deploy_args={
             "kind": "prod-uploaders",
             "purpose": "p",
             "ant_binary": {"kind": "release", "version": "0.3.0"},
-            "uploaders": [],
+            "uploaders": [
+                {"region": "lon1", "vm_size": "s-2vcpu-4gb", "file_names": []},
+            ],
         },
     )
     text = _all_text(build_slack_blocks(deployment, None, None))
-    assert "Payment type:" in text
-    assert "default" in text
+    assert "lon1 (s-2vcpu-4gb)" in text
+    assert "payment: default" in text
+    # Top-level "Payment type:" line is removed.
+    assert "Payment type:" not in text
 
 
-@pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
-def test_prod_uploaders_renders_payment_type_when_set(payment_type):
+def test_prod_uploaders_renders_per_uploader_payment_modes():
     deployment = _deployment(
-        name="PROD-UP-PT",
+        name="PROD-UP-PT-MIX",
         deploy_args={
             "kind": "prod-uploaders",
             "purpose": "p",
             "ant_binary": {"kind": "release", "version": "0.3.0"},
-            "uploaders": [],
-            "payment_type": payment_type,
+            "uploaders": [
+                {
+                    "region": "lon1", "vm_size": "s-2vcpu-4gb",
+                    "file_names": [], "payment_type": "merkle",
+                },
+                {
+                    "region": "nyc1", "vm_size": "s-4vcpu-8gb",
+                    "file_names": [], "payment_type": "no-merkle",
+                },
+                {
+                    "region": "fra1", "vm_size": "s-2vcpu-4gb",
+                    "file_names": [],
+                },
+            ],
         },
     )
     text = _all_text(build_slack_blocks(deployment, None, None))
-    assert f"Payment type:* {payment_type}" in text or f"Payment type: {payment_type}" in text
+    assert "lon1 (s-2vcpu-4gb) — payment: merkle" in text
+    assert "nyc1 (s-4vcpu-8gb) — payment: no-merkle" in text
+    assert "fra1 (s-2vcpu-4gb) — payment: default" in text
 
 
 def test_prod_continuous_downloader_renders_spec_and_addresses():
@@ -286,7 +368,7 @@ def test_prod_continuous_downloader_renders_spec_and_addresses():
     assert "Prod Continuous Downloader" in text
     assert "lon1:s-2vcpu-4gb" in text
     assert "/path/to/addrs.txt" in text
-    assert "Ant binary:" in text
+    assert "Client binary:" in text
     assert "release v0.3.0" in text
 
 
@@ -311,8 +393,10 @@ def test_dry_run_prints_payload_and_does_not_post(repo, capsys):
 
     mock_post.assert_not_called()
     out = capsys.readouterr().out
-    payload = json.loads(out)
-    assert payload["text"].startswith("Deployment DEV-DRY")
+    # Dry-run prints a human-readable preview, not JSON. Just assert the
+    # deployment name appears in the rendered text.
+    assert "DEV-DRY" in out
+    assert "{" not in out
 
 
 def test_missing_webhook_url_errors_when_not_dry_run(repo, monkeypatch):
@@ -370,3 +454,39 @@ def test_post_includes_recorded_purpose_from_deploy_args(repo, monkeypatch):
     mock_post.assert_called_once()
     posted_payload = mock_post.call_args.kwargs["json"]
     assert "Recorded at deploy time" in json.dumps(posted_payload)
+
+def test_render_payload_text_includes_header_and_section_text():
+    payload = {
+        "text": "fallback",
+        "blocks": [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "DEV-01 — Testnet"},
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Deployed:* 2026-04-30 18:24 UTC",
+                },
+            },
+            {"type": "section", "fields": [
+                {"type": "mrkdwn", "text": "*Region:*\nlon1"},
+                {"type": "mrkdwn", "text": "*VMs:*\n3"},
+            ]},
+        ],
+    }
+    text = render_payload_text(payload)
+
+    assert "=== DEV-01 — Testnet ===" in text
+    assert "*Deployed:* 2026-04-30 18:24 UTC" in text
+    assert "*Region:*\nlon1" in text
+    assert "*VMs:*\n3" in text
+    # The wire-format JSON keys must not leak into the preview.
+    assert "mrkdwn" not in text
+    assert "plain_text" not in text
+
+
+def test_render_payload_text_handles_empty_blocks():
+    assert render_payload_text({"text": "x", "blocks": []}) == "\n"
+
