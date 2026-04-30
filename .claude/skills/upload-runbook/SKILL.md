@@ -48,10 +48,20 @@ A short free-text description of *why* this run exists — e.g. "smoke-test 0.2.
 
 Pick one of:
 
-- **Version** (GitHub release, e.g. `0.3.0`) → emits `--ant-version X`, or
-- **Branch + repo owner** → emits `--branch-name X --repo-owner Y`. This builds from source on the uploader VMs at provisioning time.
+- **Version** (GitHub release, e.g. `0.3.0`) → emits `--ant-version X` on `prod uploaders deploy`. No build step needed — the release tarball is fetched from GitHub.
+- **Branch + repo owner** → emits `--branch-name X --repo-owner Y` on `prod uploaders deploy`, **and requires a separate `saorsa-deploy build ant` step up front** (see §2b). `prod uploaders deploy` looks up the pre-built artifact in S3 keyed by `name + repo_owner + branch`, and refuses to start if it isn't there ("Run 'build-ant' first.").
 
-These are mutually exclusive. Branch and version flags must not both be set. There is no separate `build ant` step for prod uploads — the binary is fetched / built directly during `prod uploaders deploy`.
+These two binary-source modes are mutually exclusive. Branch and version flags must not both be set.
+
+### 2b. Validation string (branch path only)
+
+When the user picked the branch path in §2, also collect a **validation string**: a substring expected in the compiled binary's `strings` output. `saorsa-deploy build ant` runs `strings` on the build artifact and refuses to upload it unless this string is present — it's the cheap "did my patch actually make it into the binary" check.
+
+- Always ask for it when the branch path is chosen. Don't invent one.
+- Emit it as `--validation-string "..."` on the `build ant` command.
+- If the user can't supply one, flag it: the build will succeed, but they lose the safety check. Only proceed if they explicitly accept that.
+
+Skip §2b entirely on the version path — `build ant` does not run.
 
 ### 3. Per-uploader specs
 
@@ -129,6 +139,7 @@ Once the interview is done, before writing the files:
 
 - Always include `--name "$NAME"` on every command.
 - Binary selection is mutually exclusive: either `--ant-version X` or `--branch-name Y --repo-owner Z`. Never both.
+- On the branch path, emit a `saorsa-deploy build ant` step before `prod uploaders deploy`. It must use the same `--name`, `--branch-name`, `--repo-owner`, and `--ssh-key-path`. If the user supplied a validation string, pass it as `--validation-string "..."`.
 - Each uploader spec must include `urls=PATH`; refuse to generate without it.
 - Only emit `--monitoring-volume-size N` when the user picked a non-default value.
 - Only emit `--keep-monitoring` on destroy when the user explicitly asked for it.
@@ -182,7 +193,18 @@ if [[ ! -r "{{urls_path}}" ]]; then
 fi
 {{/each}}
 
-# --- Deploy uploaders + paired monitoring ---
+{{#if branch_path}}
+# --- Build ant binary from source ---
+# Required because we're using --branch-name; prod uploaders deploy will
+# refuse to start without an existing custom build for this name + branch.
+uv run saorsa-deploy build ant \
+  --name "$NAME" \
+  --branch-name {{ANT_BRANCH}} \
+  --repo-owner {{ANT_REPO_OWNER}} \
+  {{#if validation_string}}--validation-string "{{VALIDATION_STRING}}" \
+  {{/if}}--ssh-key-path "$SSH_KEY"
+
+{{/if}}# --- Deploy uploaders + paired monitoring ---
 uv run saorsa-deploy prod uploaders deploy \
   --name "$NAME" \
   --purpose "{{PURPOSE}}" \
@@ -235,6 +257,7 @@ echo "Monitoring VM was kept; remember to tear it down separately when you're do
 - **URL list paths are read at deploy time, not runtime.** They must be readable on the host that runs the runbook. A common slip is putting them under a path that only exists on a target VM.
 - **Don't confuse this with the testnet uploader.** Testnet `clients infra --uploader region:file_size_mb[:vm_size]` uses a synthetic file size; prod `--uploader REGION:VM_SIZE:urls=PATH` uploads real files from the URL list. Don't conflate the spec formats.
 - **`--ant-version` and `--branch-name` are mutually exclusive.** They're separate flags in saorsa-deploy.
+- **The branch path needs a `build ant` step first.** `prod uploaders deploy --branch-name X` does *not* build on the uploader VMs — it pulls a pre-built artifact from S3 keyed by `name + repo_owner + branch`, and refuses to start if the artifact is missing. Always emit a `saorsa-deploy build ant` step before the deploy when the user picked the branch path. The version path (`--ant-version`) needs no build step.
 - **Monitoring is implicit.** Don't emit a separate `monitoring infra` / `monitoring provision` chain — `prod uploaders deploy` does it in one shot. The only knob exposed at this level is `--monitoring-volume-size`.
 - **Destroy takes `--ssh-key-path`.** Unlike testnet destroy commands, the prod destroy commands SSH into the monitoring VM (and others) for clean teardown, so the key is required.
 - **Companion commands aren't in the runbook.** `prod print-upload-results` and `prod record-upload-results` run after uploads finish, at a time the runbook can't predict. Mention them in the closing message instead of baking them into the script.
