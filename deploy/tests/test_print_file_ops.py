@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
+from unittest.mock import patch
 
-from saorsa_deploy.cmd.print_file_ops import _summarise_host
+from saorsa_deploy.cmd.print_file_ops import _build_payment_map, _summarise_host
 
 # A fixed "now" so elapsed-second assertions stay deterministic.
 NOW = datetime(2026, 4, 23, 12, 0, 0, tzinfo=timezone.utc)
@@ -90,6 +91,43 @@ def test_summarise_reports_none_avg_when_no_successful_ops():
     assert summary["successes"] == 0
     assert summary["failures"] == 2
     assert summary["overall_avg_ms"] is None
+
+
+def test_build_payment_map_returns_label_per_upload_host():
+    state = {
+        "clients": [
+            {
+                "role": "upload", "region": "tor1", "client_index": 9,
+                "payment_type": "merkle",
+            },
+            {
+                "role": "upload", "region": "lon1", "client_index": 1,
+                "payment_type": None,
+            },
+            {
+                "role": "download", "region": "fra1", "client_index": 2,
+                "payment_type": None,
+            },
+        ]
+    }
+    with patch(
+        "saorsa_deploy.cmd.print_file_ops.load_client_state",
+        return_value=state,
+    ):
+        m = _build_payment_map("STG-01")
+
+    assert m == {
+        "STG-01-ant-client-upload-tor1-9": "merkle",
+        "STG-01-ant-client-upload-lon1-1": "default",
+    }
+
+
+def test_build_payment_map_returns_empty_when_state_missing():
+    with patch(
+        "saorsa_deploy.cmd.print_file_ops.load_client_state",
+        side_effect=RuntimeError("no state"),
+    ):
+        assert _build_payment_map("MISSING-01") == {}
 
 
 def test_summarise_reports_none_times_when_no_start_ns():
