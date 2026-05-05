@@ -65,7 +65,14 @@ def _build_node_exec_start(
     return " ".join(parts)
 
 
-def _build_node_unit_file(service_name, exec_start, is_nat=False):
+def _build_node_unit_file(
+    service_name,
+    exec_start,
+    is_nat=False,
+    restart_policy="on-success",
+    restart_sec=5,
+    limit_nofile=None,
+):
     """Build the systemd unit file content for a node service.
 
     When ``is_nat=True``, wrap ExecStart with ``ip netns exec ant_nat`` so the
@@ -74,11 +81,16 @@ def _build_node_unit_file(service_name, exec_start, is_nat=False):
     other unit settings and the ant-node CLI flags are identical to the
     non-NAT unit by design — the reference SKILL.md only dictates the NAT
     mechanism, not the rest of the unit file.
+
+    ``restart_policy``, ``restart_sec`` and ``limit_nofile`` are knobs the
+    prod-migration command needs to match the existing prod fleet's units
+    (``always`` / ``10`` / ``65536``); defaults preserve testnet behaviour.
     """
     description_suffix = " (port-restricted NAT)" if is_nat else ""
     wrapped_exec_start = (
         f"{NAT_IP_EXEC_PREFIX}{exec_start}" if is_nat else exec_start
     )
+    limit_line = f"\nLimitNOFILE={limit_nofile}" if limit_nofile else ""
     return f"""\
 [Unit]
 Description=Ant Node ({service_name}){description_suffix}
@@ -88,8 +100,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={wrapped_exec_start}
-Restart=on-success
-RestartSec=5
+Restart={restart_policy}
+RestartSec={restart_sec}{limit_line}
 
 [Install]
 WantedBy=multi-user.target
@@ -120,6 +132,10 @@ class AntNodeProvisioner:
         upgrade_channel: str | None = None,
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         nat_ips: set[str] | None = None,
+        evm_network: str | None = "arbitrum-sepolia",
+        restart_policy: str = "on-success",
+        restart_sec: int = 5,
+        limit_nofile: int | None = None,
     ):
         self.host_ips = host_ips
         self.bootstrap_peers = bootstrap_peers
@@ -134,6 +150,10 @@ class AntNodeProvisioner:
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
         self.nat_ips = set(nat_ips) if nat_ips else set()
+        self.evm_network = evm_network
+        self.restart_policy = restart_policy
+        self.restart_sec = restart_sec
+        self.limit_nofile = limit_nofile
 
     def _build_unit_commands(self, is_nat: bool) -> list[str]:
         """Build the list of `cat > unit-file` commands for one host variant."""
@@ -154,8 +174,16 @@ class AntNodeProvisioner:
                 upgrade_channel=self.upgrade_channel,
                 metrics_port=metrics_port,
                 rewards_address=self.rewards_address,
+                evm_network=self.evm_network,
             )
-            unit_content = _build_node_unit_file(service_name, exec_start, is_nat=is_nat)
+            unit_content = _build_node_unit_file(
+                service_name,
+                exec_start,
+                is_nat=is_nat,
+                restart_policy=self.restart_policy,
+                restart_sec=self.restart_sec,
+                limit_nofile=self.limit_nofile,
+            )
             unit_path = f"/etc/systemd/system/{service_name}.service"
             commands.append(f"cat > {unit_path} << 'UNIT_EOF'\n{unit_content}UNIT_EOF")
         return commands

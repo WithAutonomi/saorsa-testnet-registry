@@ -88,6 +88,14 @@ def cmd_migration_provision(args):
         "console": console,
         "rewards_address": args.rewards_address,
         "nat_ips": None,
+        # Match the existing prod fleet's units exactly (see prod fsn1
+        # ant-node-1.service): no --evm-network (ant-node defaults to
+        # arbitrum-one for prod), Restart=always with 10s back-off, and
+        # LimitNOFILE=65536 to avoid fd exhaustion on a busy DHT node.
+        "evm_network": None,
+        "restart_policy": "always",
+        "restart_sec": 10,
+        "limit_nofile": 65536,
     }
     if binary_url:
         kwargs["binary_url"] = binary_url

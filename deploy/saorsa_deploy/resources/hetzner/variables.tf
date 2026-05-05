@@ -37,6 +37,17 @@ Migration of existing prod fleets uses "hz" (e.g. ant-prod-01-hz-fsn1-1).
 EOT
 }
 
+variable "name_index_offset" {
+  type        = number
+  default     = 0
+  description = <<EOT
+Added to the per-VM count.index when generating names. Use this when a
+location already has VMs with the same naming convention so new VMs are
+numbered after the existing ones (e.g. existing prod has ant-prod-01-hz-fsn1-1;
+set name_index_offset = 1 so a new vm_count of 3 produces -fsn1-2, -3, -4).
+EOT
+}
+
 variable "ssh_key_ids" {
   type        = list(string)
   description = "IDs of pre-registered SSH keys in Hetzner"

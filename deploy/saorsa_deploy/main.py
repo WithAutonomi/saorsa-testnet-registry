@@ -1548,6 +1548,48 @@ def main():
             "in 'planned' status."
         ),
     )
+    migration_infra_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to inventory.json — used to compute name index offsets so "
+            "new VMs don't collide with existing prod names. Defaults to "
+            "~/.autonomi/testnets/<deployment-name>/inventory.json."
+        ),
+    )
+
+    # migration destroy-infra
+    migration_destroy_infra_parser = migration_subparsers.add_parser(
+        "destroy-infra",
+        help=(
+            "Tear down a migration's Hetzner target VMs (Terraform destroy + "
+            "DB reset). Used to recover from a failed `migration infra`."
+        ),
+    )
+    migration_destroy_infra_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+    migration_destroy_infra_parser.add_argument(
+        "--locations",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of locations to destroy. Defaults to every "
+            "location with a Terraform state file for this migration."
+        ),
+    )
+    migration_destroy_infra_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help="Inventory path (used to compute name_index_offset for destroy).",
+    )
+    migration_destroy_infra_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Destroy even if some VMs are past 'nodes_started'.",
+    )
 
     # migration provision
     migration_provision_parser = migration_subparsers.add_parser(
@@ -2771,6 +2813,12 @@ def main():
             from saorsa_deploy.cmd.migration_infra import cmd_migration_infra
 
             cmd_migration_infra(args)
+        elif args.migration_subcommand == "destroy-infra":
+            from saorsa_deploy.cmd.migration_destroy_infra import (
+                cmd_migration_destroy_infra,
+            )
+
+            cmd_migration_destroy_infra(args)
         elif args.migration_subcommand == "provision":
             from saorsa_deploy.cmd.migration_provision import (
                 cmd_migration_provision,

@@ -8,7 +8,9 @@ are mapped onto the migration's ``planned`` VMs in id-order, transitioning them
 to ``infra_provisioned``.
 """
 
+import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,46 @@ from saorsa_deploy.state import check_terraform_state_exists
 from saorsa_deploy.terraform import TerraformRunConfig
 
 NAME_TEMPLATE = "hz"
+
+
+def _default_inventory_path(deployment_name: str) -> Path:
+    return (
+        Path("~/.autonomi/testnets").expanduser()
+        / deployment_name
+        / "inventory.json"
+    )
+
+
+def _max_existing_index(
+    inventory_path: Path,
+    deployment_name: str,
+    name_template: str,
+    location: str,
+) -> int:
+    """Return the highest <N> already used in ``{deployment}-{template}-{location}-<N>``.
+
+    Returns 0 when no matching VM exists, so the caller can pass that as a
+    ``name_index_offset`` to start counting at <N> + 1. Reads inventory plus
+    any other VM names ``ls`` would surface from the inventory ``node_vms``
+    array. If the inventory doesn't exist, returns 0.
+    """
+    if not inventory_path.exists():
+        return 0
+    raw = json.loads(inventory_path.read_text())
+    node_vms = raw.get("node_vms") or []
+    pattern = re.compile(
+        rf"^{re.escape(deployment_name)}-{re.escape(name_template)}-"
+        rf"{re.escape(location)}-(\d+)$"
+    )
+    max_idx = 0
+    for entry in node_vms:
+        name = entry.get("name") or ""
+        match = pattern.match(name)
+        if match:
+            idx = int(match.group(1))
+            if idx > max_idx:
+                max_idx = idx
+    return max_idx
 
 
 def _parse_locations(raw: str) -> list[tuple[str, int]]:
@@ -165,6 +207,20 @@ def cmd_migration_infra(args):
         migration.id, {loc: n for loc, n in parsed}
     )
 
+    inventory_path = (
+        Path(args.inventory_path).expanduser()
+        if getattr(args, "inventory_path", None)
+        else _default_inventory_path(migration.deployment_name)
+    )
+    offsets: dict[str, int] = {}
+    for loc, _ in parsed:
+        offsets[loc] = _max_existing_index(
+            inventory_path,
+            migration.deployment_name,
+            NAME_TEMPLATE,
+            loc,
+        )
+
     resources_dir = get_resources_dir()
     tf_source = resources_dir / "hetzner"
 
@@ -180,6 +236,7 @@ def cmd_migration_infra(args):
                 variables={
                     "name": migration.deployment_name,
                     "name_template": NAME_TEMPLATE,
+                    "name_index_offset": str(offsets[loc]),
                     "region": loc,
                     "vm_count": str(count),
                     "server_type": migration.target_server_type,
@@ -193,7 +250,17 @@ def cmd_migration_infra(args):
         f"{migration.name}...[/bold]"
     )
     for loc, count in parsed:
-        console.print(f"  {loc}: {count} × {migration.target_server_type}")
+        offset = offsets[loc]
+        first = offset + 1
+        last = offset + count
+        suffix = (
+            f" (existing prod max index {offset} → naming -{loc}-{first}..-{last})"
+            if offset > 0
+            else f" (-{loc}-{first}..-{last})"
+        )
+        console.print(
+            f"  {loc}: {count} × {migration.target_server_type}{suffix}"
+        )
     console.print()
 
     results = execute_terraform_runs(configs)
@@ -225,9 +292,11 @@ def cmd_migration_infra(args):
             continue
 
         now = datetime.now(timezone.utc)
+        loc_offset = offsets[loc]
         for i, vm in enumerate(slice_vms):
             target_name = (
-                f"{migration.deployment_name}-{NAME_TEMPLATE}-{loc}-{i + 1}"
+                f"{migration.deployment_name}-{NAME_TEMPLATE}-{loc}-"
+                f"{i + 1 + loc_offset}"
             )
             target_volume_id = (
                 str(vol_ids[i]) if i < len(vol_ids) else None
