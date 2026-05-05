@@ -41,9 +41,12 @@ def _stop_wave(
     ips = [vm.source_ip for vm in wave_vms]
     clear_known_hosts(ips, console)
 
+    # AWS prod VMs SSH in as 'ubuntu' (passwordless sudo); Hetzner is root.
+    # `sudo -n` is a harmless no-op for root and uses passwordless sudo for
+    # ubuntu, so it's safe to use unconditionally.
     service_list = " ".join(f"ant-node-{i + 1}" for i in range(node_count))
     stop_command = (
-        f"systemctl stop {service_list} && echo 'ANT_NODES:STOPPED'"
+        f"sudo -n systemctl stop {service_list} && echo 'ANT_NODES:STOPPED'"
     )
 
     hosts_data = [
