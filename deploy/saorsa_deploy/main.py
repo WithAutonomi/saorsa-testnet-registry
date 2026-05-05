@@ -1678,16 +1678,15 @@ def main():
         "--name", type=str, required=True, help="Migration name."
     )
     migration_drain_parser.add_argument(
-        "--wave-size",
+        "--interval-secs",
         type=int,
-        default=1,
-        help="Source VMs to stop per wave (default: 1).",
-    )
-    migration_drain_parser.add_argument(
-        "--interval-mins",
-        type=int,
-        default=20,
-        help="Minutes between waves (default: 20).",
+        default=60,
+        help=(
+            "Seconds between each per-service stop (default: 60). "
+            "Each VM's 15 ant-node services are stopped one at a time at "
+            "this cadence; the same interval applies across the VM "
+            "boundary, so there is no extra wait between VMs."
+        ),
     )
     migration_drain_parser.add_argument(
         "--limit",

@@ -1,26 +1,25 @@
-"""``saorsa-deploy migration drain`` — stop ant-node services on AWS source VMs in waves.
+"""``saorsa-deploy migration drain`` — stop ant-node services on AWS source VMs gradually.
 
-Walks ``nodes_started`` VMs in waves of ``--wave-size`` (default 1), with
-``--interval-mins`` (default 20) between waves to give the network's lazy
-neighbour-sync healing one full cycle. Refuses to start until at least
-``--soak-mins`` (default 120) have elapsed since the *most recent* VM was
-started; ``--force`` overrides the soak check.
+Walks every ``nodes_started`` VM in turn and stops its 15 ant-node services
+**one at a time**, with ``--interval-secs`` (default 60) between each stop.
+The same interval applies across the VM boundary — there is no extra pause
+between VMs because the per-service spacing already keeps the network's
+neighbour-sync healing ahead of the loss rate.
 
-Each wave SSHes to the source VM(s) and runs ``systemctl stop ant-node-{1..N}``
-in parallel via Pyinfra. Drained VMs transition to ``source_drained``. The
-migration row goes to ``draining`` on the first wave and ``drained`` once
-every VM has been drained.
+Refuses to start until at least ``--soak-mins`` (default 120) have elapsed
+since the *most recent* VM was started; ``--force`` overrides the soak check.
+
+Each service stop SSHes to the source VM and runs
+``sudo -n systemctl stop ant-node-N`` (passwordless sudo on Ubuntu / no-op as
+root). A VM transitions to ``source_drained`` only once all 15 of its
+services have been stopped successfully.
 """
 
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from pyinfra.api import Config, Inventory, State
-from pyinfra.api.connect import connect_all, disconnect_all
-from pyinfra.api.operation import add_op
-from pyinfra.api.operations import run_ops
-from pyinfra.operations import server
 from rich.console import Console
 from saorsa_db.models import MigrationStatus, MigrationVmStatus
 
@@ -28,52 +27,37 @@ from saorsa_deploy.migration_registry import (
     MigrationRegistryError,
     get_migration_repository,
 )
-from saorsa_deploy.ssh import clear_known_hosts
 
 
-def _stop_wave(
-    wave_vms: list,
-    node_count: int,
+def _stop_one_service(
+    vm,
+    service_index: int,
     ssh_key_path: str,
     console: Console,
-) -> set[str]:
-    """Stop ant-node services on the wave's source VMs. Returns failed IPs."""
-    ips = [vm.source_ip for vm in wave_vms]
-    clear_known_hosts(ips, console)
-
-    # AWS prod VMs SSH in as 'ubuntu' (passwordless sudo); Hetzner is root.
-    # `sudo -n` is a harmless no-op for root and uses passwordless sudo for
-    # ubuntu, so it's safe to use unconditionally.
-    service_list = " ".join(f"ant-node-{i + 1}" for i in range(node_count))
-    stop_command = (
-        f"sudo -n systemctl stop {service_list} && echo 'ANT_NODES:STOPPED'"
-    )
-
-    hosts_data = [
-        (
-            vm.source_ip,
-            {
-                "ssh_user": vm.source_ssh_user,
-                "ssh_key": ssh_key_path or vm.source_ssh_key,
-            },
-        )
-        for vm in wave_vms
+) -> bool:
+    """Stop ``ant-node-{service_index}`` on the VM via SSH. Returns True on success."""
+    service = f"ant-node-{service_index}"
+    ssh_key = ssh_key_path or vm.source_ssh_key
+    cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=15",
+        "-o", "LogLevel=ERROR",
+        "-i", ssh_key,
+        f"{vm.source_ssh_user}@{vm.source_ip}",
+        f"sudo -n systemctl stop {service}",
     ]
-    inventory = Inventory((hosts_data, {}))
-    pyinfra_state = State(inventory=inventory, config=Config())
-    connect_all(pyinfra_state)
-    try:
-        add_op(
-            pyinfra_state,
-            server.shell,
-            name=f"Stop ant-node-1..{node_count}",
-            commands=[stop_command],
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        console.print(
+            f"  [red]{vm.source_name} {service}: stop failed "
+            f"(rc={result.returncode})[/red]"
         )
-        run_ops(pyinfra_state)
-    finally:
-        disconnect_all(pyinfra_state)
-
-    return {host.name for host in pyinfra_state.failed_hosts}
+        if result.stderr.strip():
+            console.print(f"    [dim]{result.stderr.strip()}[/dim]")
+        return False
+    return True
 
 
 def cmd_migration_drain(args):
@@ -128,73 +112,72 @@ def cmd_migration_drain(args):
             sys.exit(1)
 
     if args.limit is not None and args.limit > 0:
-        wave_pool = nodes_started[: args.limit]
+        vms_to_drain = nodes_started[: args.limit]
     else:
-        wave_pool = nodes_started
+        vms_to_drain = nodes_started
 
-    if args.wave_size <= 0:
-        console.print("[bold red]Error:[/bold red] --wave-size must be >= 1")
+    if args.interval_secs <= 0:
+        console.print("[bold red]Error:[/bold red] --interval-secs must be > 0")
         sys.exit(1)
 
-    waves = [
-        wave_pool[i : i + args.wave_size]
-        for i in range(0, len(wave_pool), args.wave_size)
-    ]
-
+    node_count = migration.node_count_per_vm
+    total_services = len(vms_to_drain) * node_count
+    total_minutes = (total_services * args.interval_secs) / 60.0
     console.print(
-        f"[bold]Draining {len(wave_pool)} source VM(s) in {len(waves)} "
-        f"wave(s) of {args.wave_size}, "
-        f"{args.interval_mins} min between waves...[/bold]"
-    )
-    console.print(
-        f"  {migration.node_count_per_vm} services per VM"
+        f"[bold]Draining {len(vms_to_drain)} VM(s) "
+        f"({total_services} services total) at {args.interval_secs}s "
+        f"between each service stop — ~{total_minutes:.0f} min total.[/bold]"
     )
     console.print()
 
     repo.update_migration_status(migration.id, MigrationStatus.DRAINING)
 
-    total_failures: list[str] = []
-    for i, wave in enumerate(waves):
+    failed_vms: list[str] = []
+    services_stopped = 0
+    for vm in vms_to_drain:
         console.print(
-            f"[bold]Wave {i + 1}/{len(waves)}:[/bold] "
-            f"{', '.join(vm.source_name for vm in wave)}"
+            f"[bold]Draining {vm.source_name}[/bold] "
+            f"([dim]{vm.source_ip}[/dim])..."
         )
+        vm_failures = 0
+        for i in range(1, node_count + 1):
+            ok = _stop_one_service(vm, i, args.ssh_key_path, console)
+            if ok:
+                console.print(
+                    f"  [green]{vm.source_name} ant-node-{i}: stopped[/green]"
+                )
+                services_stopped += 1
+            else:
+                vm_failures += 1
+            # Sleep after every stop, including the last service of the last
+            # VM — a small trailing wait does no harm and keeps the cadence
+            # uniform if the operator pipes another command behind drain.
+            if not (vm is vms_to_drain[-1] and i == node_count):
+                time.sleep(args.interval_secs)
 
-        failed_ips = _stop_wave(
-            wave,
-            node_count=migration.node_count_per_vm,
-            ssh_key_path=args.ssh_key_path,
-            console=console,
-        )
-
-        now = datetime.now(timezone.utc)
-        for vm in wave:
-            if vm.source_ip in failed_ips:
-                total_failures.append(vm.source_name)
-                continue
+        if vm_failures == 0:
+            now = datetime.now(timezone.utc)
             repo.update_vm(
                 vm.id,
                 status=MigrationVmStatus.SOURCE_DRAINED,
                 source_drained_at=now,
             )
-
-        if failed_ips:
             console.print(
-                f"[red]Wave {i + 1} had {len(failed_ips)} failure(s).[/red]"
+                f"[green]{vm.source_name}: all {node_count} services "
+                "stopped → source_drained[/green]"
             )
-
-        # Sleep between waves, except after the last one.
-        if i < len(waves) - 1:
+        else:
+            failed_vms.append(vm.source_name)
             console.print(
-                f"[dim]Waiting {args.interval_mins} min before next wave...[/dim]"
+                f"[red]{vm.source_name}: {vm_failures}/{node_count} "
+                "services failed to stop; VM left in 'nodes_started'[/red]"
             )
-            time.sleep(args.interval_mins * 60)
-
-    if total_failures:
         console.print()
+
+    if failed_vms:
         console.print(
-            f"[bold red]{len(total_failures)} VM(s) failed to drain:[/bold red] "
-            f"{', '.join(total_failures)}"
+            f"[bold red]{len(failed_vms)} VM(s) had partial drain failures: "
+            f"{', '.join(failed_vms)}[/bold red]"
         )
         sys.exit(1)
 
@@ -204,14 +187,15 @@ def cmd_migration_drain(args):
     )
     if not remaining:
         repo.update_migration_status(migration.id, MigrationStatus.DRAINED)
-        console.print()
-        console.print("[bold green]All source VMs drained.[/bold green]")
+        console.print(
+            f"[bold green]All source VMs drained "
+            f"({services_stopped} services stopped).[/bold green]"
+        )
         console.print(
             "[dim]Next: run `saorsa-deploy migration destroy-source --name "
             f"{args.name}` to terminate the AWS instances.[/dim]"
         )
     else:
-        console.print()
         console.print(
             f"[bold yellow]Drain partial: {len(remaining)} VM(s) still in "
             "'nodes_started'. Re-run drain (without --limit) to finish.[/bold yellow]"
