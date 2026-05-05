@@ -27,6 +27,16 @@ variable "server_type" {
   description = "Hetzner server type (e.g. cx22, cax21, cpx22)"
 }
 
+variable "name_template" {
+  type        = string
+  default     = "ant-node"
+  description = <<EOT
+Infix used between the deployment name and the region in resource names.
+Defaults to "ant-node" (testnet style: <name>-ant-node-<region>-<i>).
+Migration of existing prod fleets uses "hz" (e.g. ant-prod-01-hz-fsn1-1).
+EOT
+}
+
 variable "ssh_key_ids" {
   type        = list(string)
   description = "IDs of pre-registered SSH keys in Hetzner"

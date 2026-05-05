@@ -1,6 +1,6 @@
 resource "hcloud_server" "node_vm" {
   count       = var.vm_count
-  name        = "${var.name}-ant-node-${var.region}-${count.index + 1}"
+  name        = "${var.name}-${var.name_template}-${var.region}-${count.index + 1}"
   server_type = var.server_type
   location    = var.region
   image       = "ubuntu-24.04"
@@ -9,7 +9,7 @@ resource "hcloud_server" "node_vm" {
 
 resource "hcloud_volume" "node_storage" {
   count    = var.vm_count
-  name     = "${lower(var.name)}-ant-storage-${var.region}-${count.index + 1}"
+  name     = "${lower(var.name)}-${var.name_template}-storage-${var.region}-${count.index + 1}"
   size     = var.attached_volume_size
   location = var.region
   format   = "ext4"

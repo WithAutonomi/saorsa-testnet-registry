@@ -1449,6 +1449,290 @@ def main():
     )
 
     # =========================================================================
+    # === migration group (plan, infra, provision, start-nodes, status,     ===
+    # === drain, destroy-source, complete, list)                            ===
+    # =========================================================================
+    migration_parser = subparsers.add_parser(
+        "migration",
+        help=(
+            "Migrate the node VMs of an existing prod deployment to a "
+            "different cloud provider."
+        ),
+    )
+    migration_subparsers = migration_parser.add_subparsers(
+        dest="migration_subcommand", required=True
+    )
+
+    # migration plan
+    migration_plan_parser = migration_subparsers.add_parser(
+        "plan",
+        help=(
+            "Record a migration's source VMs in the DB. Reads the prod "
+            "inventory; does not touch infrastructure."
+        ),
+    )
+    migration_plan_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name (unique)."
+    )
+    migration_plan_parser.add_argument(
+        "--deployment-name",
+        type=str,
+        required=True,
+        help="Existing deployment whose VMs are being migrated (e.g. ant-prod-01).",
+    )
+    migration_plan_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to the prod inventory JSON. "
+            "Defaults to ~/.autonomi/testnets/<deployment-name>/inventory.json."
+        ),
+    )
+    migration_plan_parser.add_argument(
+        "--source-provider",
+        type=str,
+        required=True,
+        choices=["aws", "digitalocean", "hetzner", "vultr"],
+        help="Provider of the source VMs to migrate.",
+    )
+    migration_plan_parser.add_argument(
+        "--source-region",
+        type=str,
+        required=True,
+        help="Region of the source VMs (e.g. eu-central-1).",
+    )
+    migration_plan_parser.add_argument(
+        "--target-provider",
+        type=str,
+        required=True,
+        choices=["hetzner"],
+        help="Destination provider (only 'hetzner' supported initially).",
+    )
+    migration_plan_parser.add_argument(
+        "--target-server-type",
+        type=str,
+        required=True,
+        help="Destination VM type (e.g. cpx42).",
+    )
+    migration_plan_parser.add_argument(
+        "--target-volume-size",
+        type=int,
+        required=True,
+        help="Attached data volume size in GB (e.g. 50).",
+    )
+    migration_plan_parser.add_argument(
+        "--node-count-per-vm",
+        type=int,
+        default=15,
+        help="Nodes per VM (default 15).",
+    )
+
+    # migration infra
+    migration_infra_parser = migration_subparsers.add_parser(
+        "infra",
+        help=(
+            "Provision destination Hetzner VMs for a migration via Terraform."
+        ),
+    )
+    migration_infra_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+    migration_infra_parser.add_argument(
+        "--locations",
+        type=str,
+        required=True,
+        help=(
+            "Comma-separated <location>=<count> map (e.g. "
+            "fsn1=3,hel1=3,nbg1=3). Sum must equal the number of VMs still "
+            "in 'planned' status."
+        ),
+    )
+
+    # migration provision
+    migration_provision_parser = migration_subparsers.add_parser(
+        "provision",
+        help=(
+            "Install ant-node + write systemd units on the migration's "
+            "target VMs. Services are enabled but not started."
+        ),
+    )
+    migration_provision_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+    migration_provision_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH private key (default: ~/.ssh/id_rsa).",
+    )
+    migration_provision_parser.add_argument(
+        "--rewards-address",
+        type=str,
+        required=True,
+        help="EVM rewards address for the new ant-node services.",
+    )
+    migration_provision_parser.add_argument(
+        "--bootstrap-peers-file",
+        type=str,
+        default=None,
+        help=(
+            "Path to bootstrap_peers.toml (default: "
+            "~/.config/ant/bootstrap_peers.toml)."
+        ),
+    )
+    migration_provision_parser.add_argument(
+        "--port",
+        type=int,
+        default=10000,
+        help="Initial port for ant-node services (default: 10000).",
+    )
+    migration_provision_parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        help="ant-node --log-level (default: leave unset).",
+    )
+    migration_provision_parser.add_argument(
+        "--node-version",
+        type=str,
+        default=None,
+        help="Released ant-node version to install (e.g. 0.10.0).",
+    )
+    migration_provision_parser.add_argument(
+        "--branch-name",
+        type=str,
+        default=None,
+        help="Build from this branch (use with --repo-owner).",
+    )
+    migration_provision_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        default=None,
+        help="GitHub owner for branch builds (use with --branch-name).",
+    )
+
+    # migration start-nodes
+    migration_start_nodes_parser = migration_subparsers.add_parser(
+        "start-nodes",
+        help="systemctl start ant-node services on the migration's target VMs.",
+    )
+    migration_start_nodes_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+    migration_start_nodes_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH private key (default: ~/.ssh/id_rsa).",
+    )
+
+    # migration drain
+    migration_drain_parser = migration_subparsers.add_parser(
+        "drain",
+        help="systemctl stop ant-node services on the migration's source VMs in waves.",
+    )
+    migration_drain_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+    migration_drain_parser.add_argument(
+        "--wave-size",
+        type=int,
+        default=1,
+        help="Source VMs to stop per wave (default: 1).",
+    )
+    migration_drain_parser.add_argument(
+        "--interval-mins",
+        type=int,
+        default=20,
+        help="Minutes between waves (default: 20).",
+    )
+    migration_drain_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Stop after this many VMs in the current invocation.",
+    )
+    migration_drain_parser.add_argument(
+        "--soak-mins",
+        type=int,
+        default=120,
+        help=(
+            "Minimum minutes since the most-recently-started VM before "
+            "draining is allowed (default: 120)."
+        ),
+    )
+    migration_drain_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to SSH private key (default: per-VM source_ssh_key from "
+            "the inventory at plan time)."
+        ),
+    )
+    migration_drain_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the soak window check.",
+    )
+
+    # migration destroy-source
+    migration_destroy_source_parser = migration_subparsers.add_parser(
+        "destroy-source",
+        help="Terminate the AWS source VMs of a fully-drained migration.",
+    )
+    migration_destroy_source_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+    migration_destroy_source_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Destroy even if some VMs are not yet drained (skips the safety check)."
+        ),
+    )
+
+    # migration complete
+    migration_complete_parser = migration_subparsers.add_parser(
+        "complete",
+        help="Splice the migration's target VMs into the prod inventory.json.",
+    )
+    migration_complete_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+    migration_complete_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to inventory.json (default: "
+            "~/.autonomi/testnets/<deployment-name>/inventory.json)."
+        ),
+    )
+    migration_complete_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if some VMs are not in 'source_destroyed' state.",
+    )
+
+    # migration status
+    migration_status_parser = migration_subparsers.add_parser(
+        "status",
+        help="Print per-VM status for a migration.",
+    )
+    migration_status_parser.add_argument(
+        "--name", type=str, required=True, help="Migration name."
+    )
+
+    # migration list
+    migration_list_parser = migration_subparsers.add_parser(
+        "list",
+        help="List all migrations recorded in the DB.",
+    )
+    del migration_list_parser  # silence unused-name warning; parser is registered
+
+    # =========================================================================
     # === nodes group (clean, destroy, infra, provision, provision-genesis, start) ===
     # =========================================================================
     nodes_parser = subparsers.add_parser(
@@ -2478,6 +2762,51 @@ def main():
             )
 
             cmd_provision_telegraf_metrics(args)
+    elif args.command == "migration":
+        if args.migration_subcommand == "plan":
+            from saorsa_deploy.cmd.migration_plan import cmd_migration_plan
+
+            cmd_migration_plan(args)
+        elif args.migration_subcommand == "infra":
+            from saorsa_deploy.cmd.migration_infra import cmd_migration_infra
+
+            cmd_migration_infra(args)
+        elif args.migration_subcommand == "provision":
+            from saorsa_deploy.cmd.migration_provision import (
+                cmd_migration_provision,
+            )
+
+            cmd_migration_provision(args)
+        elif args.migration_subcommand == "start-nodes":
+            from saorsa_deploy.cmd.migration_start_nodes import (
+                cmd_migration_start_nodes,
+            )
+
+            cmd_migration_start_nodes(args)
+        elif args.migration_subcommand == "drain":
+            from saorsa_deploy.cmd.migration_drain import cmd_migration_drain
+
+            cmd_migration_drain(args)
+        elif args.migration_subcommand == "destroy-source":
+            from saorsa_deploy.cmd.migration_destroy_source import (
+                cmd_migration_destroy_source,
+            )
+
+            cmd_migration_destroy_source(args)
+        elif args.migration_subcommand == "complete":
+            from saorsa_deploy.cmd.migration_complete import (
+                cmd_migration_complete,
+            )
+
+            cmd_migration_complete(args)
+        elif args.migration_subcommand == "status":
+            from saorsa_deploy.cmd.migration_status import cmd_migration_status
+
+            cmd_migration_status(args)
+        elif args.migration_subcommand == "list":
+            from saorsa_deploy.cmd.migration_list import cmd_migration_list
+
+            cmd_migration_list(args)
     elif args.command == "nodes":
         if args.nodes_subcommand == "clean":
             from saorsa_deploy.cmd.clean_nodes import cmd_clean_nodes

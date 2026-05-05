@@ -4,6 +4,12 @@ from datetime import datetime, timezone
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
 from saorsa_db.models.host_result import DeploymentHostResult
+from saorsa_db.models.migration import (
+    Migration,
+    MigrationStatus,
+    MigrationVm,
+    MigrationVmStatus,
+)
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
@@ -464,3 +470,207 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+
+class MigrationRepository(ABC):
+    @abstractmethod
+    def create_migration(
+        self,
+        name: str,
+        deployment_name: str,
+        source_provider: str,
+        source_region: str,
+        target_provider: str,
+        target_server_type: str,
+        target_volume_size_gb: int,
+        node_count_per_vm: int = 15,
+    ) -> Migration:
+        ...
+
+    @abstractmethod
+    def get_migration(self, migration_id: int) -> Migration | None:
+        ...
+
+    @abstractmethod
+    def get_migration_by_name(self, name: str) -> Migration | None:
+        ...
+
+    @abstractmethod
+    def list_migrations(self) -> list[Migration]:
+        ...
+
+    @abstractmethod
+    def add_vms(
+        self, migration_id: int, vm_records: list[dict]
+    ) -> list[MigrationVm]:
+        """Append MigrationVm rows to a migration. Each record dict supplies
+        the source_* columns; target_* columns stay null until infra runs."""
+        ...
+
+    @abstractmethod
+    def list_vms(
+        self,
+        migration_id: int,
+        *,
+        status: MigrationVmStatus | None = None,
+    ) -> list[MigrationVm]:
+        ...
+
+    @abstractmethod
+    def update_vm(self, vm_id: int, **fields) -> MigrationVm:
+        """Update arbitrary columns on a MigrationVm. Status transitions
+        should set the matching ``*_at`` timestamp via the caller."""
+        ...
+
+    @abstractmethod
+    def update_migration_status(
+        self, migration_id: int, status: MigrationStatus
+    ) -> Migration:
+        ...
+
+    @abstractmethod
+    def set_target_locations(
+        self, migration_id: int, locations: dict[str, int]
+    ) -> Migration:
+        ...
+
+    @abstractmethod
+    def set_soak_completed(
+        self, migration_id: int, completed_at: datetime
+    ) -> Migration:
+        ...
+
+    @abstractmethod
+    def delete_migration(self, migration_id: int) -> None:
+        ...
+
+
+class SqlAlchemyMigrationRepository(MigrationRepository):
+    def __init__(self, session):
+        self.session = session
+
+    def create_migration(
+        self,
+        name: str,
+        deployment_name: str,
+        source_provider: str,
+        source_region: str,
+        target_provider: str,
+        target_server_type: str,
+        target_volume_size_gb: int,
+        node_count_per_vm: int = 15,
+    ) -> Migration:
+        migration = Migration(
+            name=name,
+            deployment_name=deployment_name,
+            source_provider=source_provider,
+            source_region=source_region,
+            target_provider=target_provider,
+            target_server_type=target_server_type,
+            target_volume_size_gb=target_volume_size_gb,
+            node_count_per_vm=node_count_per_vm,
+            status=MigrationStatus.PLANNING,
+        )
+        self.session.add(migration)
+        self.session.commit()
+        return migration
+
+    def get_migration(self, migration_id: int) -> Migration | None:
+        return self.session.get(Migration, migration_id)
+
+    def get_migration_by_name(self, name: str) -> Migration | None:
+        return (
+            self.session.query(Migration)
+            .filter(Migration.name == name)
+            .one_or_none()
+        )
+
+    def list_migrations(self) -> list[Migration]:
+        return (
+            self.session.query(Migration)
+            .order_by(Migration.created_at.desc())
+            .all()
+        )
+
+    def add_vms(
+        self, migration_id: int, vm_records: list[dict]
+    ) -> list[MigrationVm]:
+        migration = self.session.get(Migration, migration_id)
+        if migration is None:
+            raise ValueError(f"Migration {migration_id} not found")
+        vms = []
+        for record in vm_records:
+            vm = MigrationVm(
+                migration_id=migration_id,
+                status=MigrationVmStatus.PLANNED,
+                **record,
+            )
+            self.session.add(vm)
+            vms.append(vm)
+        self.session.commit()
+        return vms
+
+    def list_vms(
+        self,
+        migration_id: int,
+        *,
+        status: MigrationVmStatus | None = None,
+    ) -> list[MigrationVm]:
+        query = (
+            self.session.query(MigrationVm)
+            .filter(MigrationVm.migration_id == migration_id)
+        )
+        if status is not None:
+            query = query.filter(MigrationVm.status == status)
+        return query.order_by(MigrationVm.id).all()
+
+    def update_vm(self, vm_id: int, **fields) -> MigrationVm:
+        vm = self.session.get(MigrationVm, vm_id)
+        if vm is None:
+            raise ValueError(f"MigrationVm {vm_id} not found")
+        for key, value in fields.items():
+            if not hasattr(vm, key):
+                raise ValueError(f"MigrationVm has no field {key!r}")
+            setattr(vm, key, value)
+        self.session.commit()
+        return vm
+
+    def update_migration_status(
+        self, migration_id: int, status: MigrationStatus
+    ) -> Migration:
+        migration = self.session.get(Migration, migration_id)
+        if migration is None:
+            raise ValueError(f"Migration {migration_id} not found")
+        migration.status = status
+        migration.updated_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return migration
+
+    def set_target_locations(
+        self, migration_id: int, locations: dict[str, int]
+    ) -> Migration:
+        migration = self.session.get(Migration, migration_id)
+        if migration is None:
+            raise ValueError(f"Migration {migration_id} not found")
+        migration.target_locations = dict(locations)
+        migration.updated_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return migration
+
+    def set_soak_completed(
+        self, migration_id: int, completed_at: datetime
+    ) -> Migration:
+        migration = self.session.get(Migration, migration_id)
+        if migration is None:
+            raise ValueError(f"Migration {migration_id} not found")
+        migration.soak_completed_at = completed_at
+        migration.updated_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return migration
+
+    def delete_migration(self, migration_id: int) -> None:
+        migration = self.session.get(Migration, migration_id)
+        if migration is None:
+            raise ValueError(f"Migration {migration_id} not found")
+        self.session.delete(migration)
+        self.session.commit()
