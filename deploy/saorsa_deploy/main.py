@@ -2410,6 +2410,90 @@ def main():
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
+    # --- prod local-uploads ---
+    prod_lu_parser = prod_subparsers.add_parser(
+        "local-uploads",
+        help=(
+            "Run prod-network uploads from the local machine. Records "
+            "per-file results directly into Postgres; no remote infra."
+        ),
+    )
+    prod_lu_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name. Registered in the database; used to scope "
+        "per-file results in deployment_prod_upload_results.",
+    )
+    prod_lu_input_group = prod_lu_parser.add_mutually_exclusive_group(required=True)
+    prod_lu_input_group.add_argument(
+        "--urls",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Path to a newline-separated list of source URLs. Each URL is "
+        "downloaded to a temp file, uploaded with `ant file upload --public`, "
+        "then the temp file is deleted. Original URL targets are not touched.",
+    )
+    prod_lu_input_group.add_argument(
+        "--local-dir-path",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Path to a local directory whose files (non-recursive) will each "
+        "be uploaded with `ant file upload --public`. Source files are "
+        "never modified or deleted.",
+    )
+    prod_lu_parser.add_argument(
+        "--secret-key",
+        type=str,
+        default=None,
+        help=(
+            "Arbitrum One wallet secret key for prod uploads (with or without "
+            "0x prefix). Falls back to ARBITRUM_ONE_SECRET_KEY env var. "
+            "Must be a funded mainnet wallet — uploads cost real ETH; this is "
+            "deliberately distinct from the testnet ANT_DEPLOY_SECRET_KEY."
+        ),
+    )
+    prod_lu_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner).",
+    )
+    prod_lu_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name).",
+    )
+    prod_lu_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_lu_parser.add_argument(
+        "--payment",
+        type=str,
+        default=None,
+        metavar="MODE",
+        help="Payment mode passed through to the ant CLI (e.g. 'merkle', "
+        "'no-merkle'). Omit to let ant pick its default.",
+    )
+    prod_lu_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Verbosity for the ant subprocess. Default and minimum: -v. "
+        "Pass -vv or -vvv for more detail.",
+    )
+    prod_lu_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this deployment is for. "
+        "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
+
     # --- prod print-upload-results ---
     prod_pur_parser = prod_subparsers.add_parser(
         "print-upload-results",
@@ -2927,6 +3011,12 @@ def main():
             from saorsa_deploy.cmd.prod_uploaders import cmd_prod_uploaders_destroy
 
             cmd_prod_uploaders_destroy(args)
+        elif args.prod_subcommand == "local-uploads":
+            from saorsa_deploy.cmd.prod_local_uploads import (
+                cmd_prod_local_uploads,
+            )
+
+            cmd_prod_local_uploads(args)
         elif args.prod_subcommand == "print-upload-results":
             from saorsa_deploy.cmd.prod_print_upload_results import (
                 cmd_prod_print_upload_results,

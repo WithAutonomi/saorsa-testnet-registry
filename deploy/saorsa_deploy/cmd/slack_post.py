@@ -25,6 +25,7 @@ _KIND_LABELS = {
     "testnet": "Testnet",
     "prod-uploaders": "Prod Uploaders",
     "prod-continuous-downloader": "Prod Continuous Downloader",
+    "prod-local-uploads": "Prod Local Uploads",
 }
 
 
@@ -169,6 +170,31 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     return blocks
 
 
+def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
+    input_mode = deploy_args.get("input_mode", "_unknown_")
+    input_path = deploy_args.get("input_path", "_unknown_")
+    file_count = deploy_args.get("file_count")
+    payment = deploy_args.get("payment_type") or "default"
+    host = deploy_args.get("host") or "_unknown_"
+    log_dir = deploy_args.get("log_dir") or "_unknown_"
+    file_count_str = str(file_count) if file_count is not None else "_unknown_"
+    return [
+        _section(
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+        ),
+        _fields_section(
+            [
+                ("Host", host),
+                ("Input mode", input_mode),
+                ("Input path", input_path),
+                ("File count", file_count_str),
+                ("Payment", payment),
+                ("Log dir", log_dir),
+            ]
+        ),
+    ]
+
+
 def _prod_cd_blocks(deploy_args: dict) -> list[dict]:
     spec = deploy_args.get("spec", "_unknown_")
     addresses_file = deploy_args.get("addresses_file", "_default_")
@@ -241,6 +267,8 @@ def build_slack_blocks(deployment, state: dict | None, client_state: dict | None
         blocks.extend(_prod_uploaders_blocks(deploy_args))
     elif kind_raw == "prod-continuous-downloader":
         blocks.extend(_prod_cd_blocks(deploy_args))
+    elif kind_raw == "prod-local-uploads":
+        blocks.extend(_prod_local_uploads_blocks(deploy_args))
 
     if client_state:
         clients = client_state.get("clients") or []
