@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-SUPPORTED_PROVIDERS = {"aws", "digitalocean", "hetzner", "vultr"}
+SUPPORTED_PROVIDERS = {"aws", "digitalocean", "hetzner", "ovh", "vultr"}
 SUPPORTED_SCHEMA_VERSION = 3
 
 

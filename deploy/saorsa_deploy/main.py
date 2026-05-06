@@ -1506,14 +1506,16 @@ def main():
         "--target-provider",
         type=str,
         required=True,
-        choices=["hetzner"],
-        help="Destination provider (only 'hetzner' supported initially).",
+        choices=["hetzner", "ovh"],
+        help="Destination provider.",
     )
     migration_plan_parser.add_argument(
         "--target-server-type",
         type=str,
         required=True,
-        help="Destination VM type (e.g. cpx42).",
+        help=(
+            "Destination VM type/flavor (e.g. cpx42 for hetzner, b3-16 for ovh)."
+        ),
     )
     migration_plan_parser.add_argument(
         "--target-volume-size",

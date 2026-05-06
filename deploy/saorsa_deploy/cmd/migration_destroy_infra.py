@@ -18,7 +18,7 @@ from rich.console import Console
 from saorsa_db.models import MigrationStatus, MigrationVmStatus
 
 from saorsa_deploy.cmd.migration_infra import (
-    NAME_TEMPLATE,
+    _PROFILES,
     _default_inventory_path,
     _max_existing_index,
     _state_key,
@@ -93,6 +93,15 @@ def cmd_migration_destroy_infra(args):
                 )
                 sys.exit(1)
 
+    profile = _PROFILES.get(migration.target_provider)
+    if profile is None:
+        supported = ", ".join(sorted(_PROFILES))
+        console.print(
+            f"[bold red]Error:[/bold red] migration target_provider is "
+            f"{migration.target_provider!r}; supported: {supported}."
+        )
+        sys.exit(1)
+
     parsed_filter = None
     if args.locations:
         parsed_filter = [
@@ -112,8 +121,14 @@ def cmd_migration_destroy_infra(args):
         else _default_inventory_path(migration.deployment_name)
     )
 
+    try:
+        extra_vars = profile.extra_tf_vars()
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
     resources_dir = get_resources_dir()
-    tf_source = resources_dir / "hetzner"
+    tf_source = resources_dir / profile.tf_dir
 
     configs: list[TerraformRunConfig] = []
     for loc in targets:
@@ -122,7 +137,7 @@ def cmd_migration_destroy_infra(args):
         offset = _max_existing_index(
             inventory_path,
             migration.deployment_name,
-            NAME_TEMPLATE,
+            profile.name_template,
             loc,
         )
         # Use planned-vm-count for this location from target_locations,
@@ -140,26 +155,27 @@ def cmd_migration_destroy_infra(args):
 
         configs.append(
             TerraformRunConfig(
-                provider="hetzner",
+                provider=migration.target_provider,
                 region=loc,
                 tf_source_dir=tf_source,
                 workspace_dir=_workspace_dir(migration.name, loc),
                 state_key=_state_key(migration.name, loc),
                 variables={
                     "name": migration.deployment_name,
-                    "name_template": NAME_TEMPLATE,
+                    "name_template": profile.name_template,
                     "name_index_offset": str(offset),
                     "region": loc,
                     "vm_count": str(count),
-                    "server_type": migration.target_server_type,
+                    profile.server_type_var: migration.target_server_type,
                     "attached_volume_size": str(migration.target_volume_size_gb),
+                    **extra_vars,
                 },
             )
         )
 
     console.print(
-        f"[bold]Destroying Hetzner infrastructure for migration "
-        f"'{migration.name}' in {len(configs)} location(s)...[/bold]"
+        f"[bold]Destroying {migration.target_provider} infrastructure for "
+        f"migration '{migration.name}' in {len(configs)} location(s)...[/bold]"
     )
     for loc in targets:
         console.print(f"  {loc}")
