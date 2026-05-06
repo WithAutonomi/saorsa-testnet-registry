@@ -21,7 +21,6 @@ visible in the per-row Postgres records.
 
 from __future__ import annotations
 
-import gzip
 import json
 import os
 import re
@@ -234,7 +233,7 @@ def _run_ant(
     stderr_log_path: Path,
     stdout_log_path: Path,
 ) -> tuple[int, str]:
-    """Run ant and tee its streams to gzipped log files in real time.
+    """Run ant and tee its streams to plain-text log files in real time.
 
     stderr is also echoed to ``sys.stderr`` line-by-line so a slow run is
     visible in the operator's terminal as it happens. stdout is captured
@@ -271,8 +270,8 @@ def _run_ant(
 
     def _pump_stderr() -> None:
         try:
-            with gzip.open(
-                stderr_log_path, "wt", encoding="utf-8", errors="replace"
+            with open(
+                stderr_log_path, "w", encoding="utf-8", errors="replace"
             ) as fh:
                 assert proc.stderr is not None
                 for line in proc.stderr:
@@ -284,8 +283,8 @@ def _run_ant(
 
     def _pump_stdout() -> None:
         try:
-            with gzip.open(
-                stdout_log_path, "wt", encoding="utf-8", errors="replace"
+            with open(
+                stdout_log_path, "w", encoding="utf-8", errors="replace"
             ) as fh:
                 assert proc.stdout is not None
                 for line in proc.stdout:
@@ -633,8 +632,8 @@ def _process_one_upload(
 ) -> bool:
     """Run ant on a single file and upsert the result. Returns True on SUCCESS."""
     log_basename = f"{idx:04d}-{_safe_log_basename(file_name)}"
-    stderr_log_path = log_dir / f"{log_basename}.stderr.gz"
-    stdout_log_path = log_dir / f"{log_basename}.stdout.gz"
+    stderr_log_path = log_dir / f"{log_basename}.stderr"
+    stdout_log_path = log_dir / f"{log_basename}.stdout"
 
     exit_code, stdout = _run_ant(
         ant_path=ant_path,
@@ -667,7 +666,7 @@ def _process_one_upload(
         )
     else:
         # Per-upload stderr was already streamed live to the operator's
-        # terminal (and to the gzipped log) by ``_run_ant``; no need to
+        # terminal (and to the on-disk log) by ``_run_ant``; no need to
         # reprint a tail here.
         console.print(
             f"  [red]FAILED[/red]: chunks={chunks_stored}/{total_chunks} "
