@@ -2494,6 +2494,30 @@ def main():
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
 
+    # --- prod print-local-upload-results ---
+    prod_plur_parser = prod_subparsers.add_parser(
+        "print-local-upload-results",
+        help=(
+            "Print every per-file row stored in the registry database for a "
+            "`prod local-uploads` deployment."
+        ),
+    )
+    prod_plur_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name to query.",
+    )
+    prod_plur_parser.add_argument(
+        "--details",
+        action="store_true",
+        help=(
+            "Print one full record per upload with no truncation — full "
+            "addresses, full file names, source path, raw byte counts, "
+            "reason text. Use when you need to grab values verbatim."
+        ),
+    )
+
     # --- prod print-upload-results ---
     prod_pur_parser = prod_subparsers.add_parser(
         "print-upload-results",
@@ -3017,6 +3041,12 @@ def main():
             )
 
             cmd_prod_local_uploads(args)
+        elif args.prod_subcommand == "print-local-upload-results":
+            from saorsa_deploy.cmd.prod_print_local_upload_results import (
+                cmd_prod_print_local_upload_results,
+            )
+
+            cmd_prod_print_local_upload_results(args)
         elif args.prod_subcommand == "print-upload-results":
             from saorsa_deploy.cmd.prod_print_upload_results import (
                 cmd_prod_print_upload_results,

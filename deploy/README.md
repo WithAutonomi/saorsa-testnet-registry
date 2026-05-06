@@ -730,6 +730,15 @@ The command resolves the live prod bootstrap peers from upstream at startup, dow
 
 There is no paired destroy command; nothing was provisioned.
 
+To view the per-file results recorded for a local-uploads deployment, use:
+
+```bash
+uv run saorsa-deploy prod print-local-upload-results --name LOCAL-UP-01
+# add --details to print one full record per upload with no truncation
+```
+
+This reads straight from the `deployment_prod_upload_results` Postgres table — it's the equivalent of `prod print-upload-results` for runs that wrote to Postgres directly instead of via Influx.
+
 ### Static IP Management
 
 Static IPs are allocated outside Terraform and stored in `deploy/production-ips.json`. This ensures IPs survive VM teardown and recreation. The IPs were allocated using provider CLIs:
