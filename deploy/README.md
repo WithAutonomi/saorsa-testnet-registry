@@ -700,6 +700,45 @@ uv run saorsa-deploy prod uploaders destroy --name PROD-UP-01
 
 The deployment registers a row in the `deployments` table with `deploy_args.kind = "prod-uploaders"`.
 
+### Running uploads from the local machine (`prod local-uploads`)
+
+`prod local-uploads` is the local-machine variant of `prod uploaders deploy`. It runs `ant --json file upload --public` sequentially against the production Autonomi network from whichever host the command is invoked on, instead of provisioning remote uploader VMs. Per-file results are written directly into the `deployment_prod_upload_results` Postgres table — there is no Influx or monitoring VM, and no infrastructure to tear down. The intended use case is testing prod uploads from a real home internet connection.
+
+```bash
+uv run saorsa-deploy prod local-uploads \
+    --name LOCAL-UP-01 \
+    --purpose "Smoke test prod uploads from home connection" \
+    --secret-key 0xabc... \
+    --local-dir-path /path/to/files \
+    --payment merkle
+```
+
+Arguments (for `prod local-uploads`):
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--name NAME` | yes | Deployment name; used to scope per-file rows in `deployment_prod_upload_results`. |
+| `--purpose TEXT` | yes | Free-text description, persisted to `deploy_args` and surfaced by `deployments slack-post`. |
+| `--urls FILE` / `--local-dir-path DIR` | one of | `--urls` reads a newline-separated URL list (each URL is downloaded to a temp file, uploaded, then the temp file is deleted; original URL targets are not touched). `--local-dir-path` iterates regular files in the given directory non-recursively and uploads each one — source files are never modified or deleted. |
+| `--secret-key KEY` | yes (or env) | Funded Arbitrum One mainnet wallet key. Falls back to `ARBITRUM_ONE_SECRET_KEY`. Uploads cost real ETH. |
+| `--branch-name BRANCH` + `--repo-owner OWNER` | no | Pull a custom-built `ant` binary from S3 (must be paired). |
+| `--ant-version VERSION` | no | Pin a specific released `ant` version. Mutually exclusive with `--branch-name`. |
+| `--payment MODE` | no | `merkle` or `no-merkle`. Omit to let `ant` choose. |
+| `-v` / `-vv` | no | Verbosity passed to the `ant` subprocess. Default `-v`. |
+
+The command resolves the live prod bootstrap peers from upstream at startup, downloads the resolved `ant` binary into `~/.cache/saorsa-deploy/ant-binaries/<key>/ant` (pinned releases are cached across runs; `latest` and branch builds are re-fetched), and registers a row in the `deployments` table with `deploy_args.kind = "prod-local-uploads"`. On completion the deployment is marked `stopped` regardless of per-file failures — failures live in the per-row Postgres records.
+
+There is no paired destroy command; nothing was provisioned.
+
+To view the per-file results recorded for a local-uploads deployment, use:
+
+```bash
+uv run saorsa-deploy prod print-local-upload-results --name LOCAL-UP-01
+# add --details to print one full record per upload with no truncation
+```
+
+This reads straight from the `deployment_prod_upload_results` Postgres table — it's the equivalent of `prod print-upload-results` for runs that wrote to Postgres directly instead of via Influx.
+
 ### Static IP Management
 
 Static IPs are allocated outside Terraform and stored in `deploy/production-ips.json`. This ensures IPs survive VM teardown and recreation. The IPs were allocated using provider CLIs:

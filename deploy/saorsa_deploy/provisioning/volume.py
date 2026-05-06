@@ -5,9 +5,14 @@ from pyinfra.operations import server
 MOUNT_POINT = "/mnt/ant-node-storage"
 LOG_DIR = f"{MOUNT_POINT}/log"
 VOLUME_DEVICE_GLOBS = [
-    "/dev/disk/by-id/scsi-0DO_Volume_*",   # Digital Ocean
-    "/dev/disk/by-id/scsi-0HC_Volume_*",   # Hetzner
-    "/dev/disk/by-id/virtio-*",            # Vultr
+    "/dev/disk/by-id/scsi-0DO_Volume_*",          # Digital Ocean
+    "/dev/disk/by-id/scsi-0HC_Volume_*",          # Hetzner
+    "/dev/disk/by-id/virtio-*",                   # Vultr
+    # OVH (OpenStack/QEMU): attached Cinder volumes get a UUID-suffixed
+    # SCSI VPD-83 by-id symlink with an `S` prefix; the boot disk has only
+    # the `0`-prefixed alias for `drive-scsi0-0-0-0`, so this glob is
+    # unambiguous for data volumes.
+    "/dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_*",
 ]
 # DO-only alias used by monitoring/elastic (which remain DO-only)
 VOLUME_DEVICE_GLOB = VOLUME_DEVICE_GLOBS[0]

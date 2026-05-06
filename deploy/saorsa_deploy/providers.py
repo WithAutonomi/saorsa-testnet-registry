@@ -40,6 +40,20 @@ PROVIDERS = {
         tf_dir="vultr",
         state_key_prefix="saorsa-deploy/vl",
     ),
+    "ovh": ProviderConfig(
+        name="ovh",
+        # Instance-capable OVH regions today: 8 EU + 1 NA. APAC regions
+        # (BOM/SGP/SYD) require per-account activation; add them here once
+        # the project has them enabled.
+        regions=[
+            "GRA9", "SBG5", "DE1", "UK1", "WAW1",
+            "EU-WEST-PAR", "EU-SOUTH-MIL", "RBX-A",
+            "BHS5",
+        ],
+        default_region="GRA9",
+        tf_dir="ovh",
+        state_key_prefix="saorsa-deploy/ovh",
+    ),
 }
 
 DEFAULT_PROVIDER = "digitalocean"

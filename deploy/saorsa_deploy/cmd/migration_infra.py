@@ -1,19 +1,24 @@
-"""``saorsa-deploy migration infra`` — Terraform-up the destination Hetzner VMs.
+"""``saorsa-deploy migration infra`` — Terraform-up the destination VMs.
 
-Creates one Terraform run per ``--locations`` entry (fsn1=N,hel1=N,...). Each
-location gets its own state key (``saorsa-deploy/migrations/{migration}-{loc}.tfstate``)
-so partial failures can be recovered location-by-location. After a successful
-run, the per-location Terraform outputs (``vm_ips``, ``vm_ids``, ``volume_ids``)
-are mapped onto the migration's ``planned`` VMs in id-order, transitioning them
-to ``infra_provisioned``.
+Creates one Terraform run per ``--locations`` entry. Each location gets its
+own state key (``saorsa-deploy/migrations/{migration}-{loc}.tfstate``) so
+partial failures can be recovered location-by-location. After a successful
+run, the per-location Terraform outputs (``vm_ips``, ``vm_ids``,
+``volume_ids``) are mapped onto the migration's ``planned`` VMs in id-order,
+transitioning them to ``infra_provisioned``.
+
+Dispatches to a provider-specific profile based on ``migration.target_provider``.
+Hetzner and OVH are supported today.
 """
 
 import json
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from rich.console import Console
 from saorsa_db.models import MigrationStatus, MigrationVmStatus
@@ -28,7 +33,82 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import check_terraform_state_exists
 from saorsa_deploy.terraform import TerraformRunConfig
 
-NAME_TEMPLATE = "hz"
+
+@dataclass(frozen=True)
+class _ProviderProfile:
+    """Per-target-provider configuration for migration infra/destroy.
+
+    ``server_type_var`` is the Terraform variable that receives the
+    ``migration.target_server_type`` value (Hetzner calls this ``server_type``,
+    OVH calls it ``flavor_name``).
+
+    ``required_env_vars`` are checked before any work — the command exits if
+    any are unset. ``extra_tf_vars`` returns provider-specific Terraform
+    variables to merge on top of the shared set; it's called once per command
+    invocation, after the env-var check.
+
+    ``preflight`` is an optional capacity-check callback returning
+    ``(resolved_locations, notes)``; ``None`` means no preflight (OVH).
+    """
+
+    name_template: str
+    tf_dir: str
+    server_type_var: str
+    required_env_vars: tuple[str, ...]
+    extra_tf_vars: Callable[[], dict[str, str]]
+    preflight: Callable[[list[str], str], tuple[list[str], list[str]]] | None
+
+
+def _hetzner_preflight(
+    requested_locations: list[str], server_type: str
+) -> tuple[list[str], list[str]]:
+    token = os.environ["HCLOUD_TOKEN"]
+    return resolve_hetzner_regions(
+        preferred=requested_locations,
+        server_type=server_type,
+        count=len(requested_locations),
+        token=token,
+        fallback_pool=None,
+    )
+
+
+def _ovh_extra_tf_vars() -> dict[str, str]:
+    project = os.environ.get("OVH_CLOUD_PROJECT_SERVICE")
+    if not project:
+        raise RuntimeError(
+            "OVH_CLOUD_PROJECT_SERVICE is not set. Export it in your "
+            ".env so the OVH Terraform manifest can target the right project."
+        )
+    return {"service_name": project}
+
+
+_PROFILES: dict[str, _ProviderProfile] = {
+    "hetzner": _ProviderProfile(
+        name_template="hz",
+        tf_dir="hetzner",
+        server_type_var="server_type",
+        required_env_vars=("HCLOUD_TOKEN",),
+        extra_tf_vars=lambda: {},
+        preflight=_hetzner_preflight,
+    ),
+    "ovh": _ProviderProfile(
+        name_template="ovh",
+        tf_dir="ovh",
+        server_type_var="flavor_name",
+        required_env_vars=(
+            "OVH_APPLICATION_KEY",
+            "OVH_APPLICATION_SECRET",
+            "OVH_CONSUMER_KEY",
+            "OVH_CLOUD_PROJECT_SERVICE",
+        ),
+        extra_tf_vars=_ovh_extra_tf_vars,
+        # The OVH project's available regions are visible via the API but we
+        # don't have a flavor-availability preflight to mirror Hetzner's; OVH
+        # just returns a clear error from terraform apply if the flavor isn't
+        # offered in a region.
+        preflight=None,
+    ),
+}
 
 
 def _default_inventory_path(deployment_name: str) -> Path:
@@ -129,11 +209,20 @@ def cmd_migration_infra(args):
         )
         sys.exit(1)
 
-    if migration.target_provider != "hetzner":
+    profile = _PROFILES.get(migration.target_provider)
+    if profile is None:
+        supported = ", ".join(sorted(_PROFILES))
         console.print(
             f"[bold red]Error:[/bold red] migration target_provider is "
-            f"{migration.target_provider!r}; only 'hetzner' is supported by "
-            "this command."
+            f"{migration.target_provider!r}; supported: {supported}."
+        )
+        sys.exit(1)
+
+    missing = [v for v in profile.required_env_vars if not os.environ.get(v)]
+    if missing:
+        console.print(
+            f"[bold red]Error:[/bold red] required env var(s) not set for "
+            f"{migration.target_provider!r}: {', '.join(missing)}"
         )
         sys.exit(1)
 
@@ -165,43 +254,35 @@ def cmd_migration_infra(args):
             )
             sys.exit(1)
 
-    token = os.environ.get("HCLOUD_TOKEN")
-    if not token:
-        console.print(
-            "[bold red]Error:[/bold red] HCLOUD_TOKEN is not set; required "
-            "for Hetzner availability preflight."
-        )
-        sys.exit(1)
-
     requested_locations = [loc for loc, _ in parsed]
-    console.print(
-        f"[bold]Preflight: Hetzner capacity for {migration.target_server_type} "
-        f"in {', '.join(requested_locations)}...[/bold]"
-    )
-    try:
-        resolved, notes = resolve_hetzner_regions(
-            preferred=requested_locations,
-            server_type=migration.target_server_type,
-            count=len(requested_locations),
-            token=token,
-            fallback_pool=None,
-        )
-    except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
 
-    for note in notes:
-        console.print(f"[yellow]{note}[/yellow]")
-    if set(resolved) != set(requested_locations):
+    if profile.preflight is not None:
         console.print(
-            "[bold red]Error:[/bold red] Hetzner availability resolved to "
-            f"{resolved}, which differs from requested {requested_locations}. "
-            "Re-run with --locations matching available capacity."
+            f"[bold]Preflight: {migration.target_provider} capacity for "
+            f"{migration.target_server_type} in "
+            f"{', '.join(requested_locations)}...[/bold]"
         )
-        sys.exit(1)
-    console.print(
-        f"[green]Hetzner preflight ok: {', '.join(resolved)}[/green]"
-    )
+        try:
+            resolved, notes = profile.preflight(
+                requested_locations, migration.target_server_type
+            )
+        except RuntimeError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
+        for note in notes:
+            console.print(f"[yellow]{note}[/yellow]")
+        if set(resolved) != set(requested_locations):
+            console.print(
+                f"[bold red]Error:[/bold red] {migration.target_provider} "
+                f"availability resolved to {resolved}, which differs from "
+                f"requested {requested_locations}. Re-run with --locations "
+                "matching available capacity."
+            )
+            sys.exit(1)
+        console.print(
+            f"[green]{migration.target_provider} preflight ok: "
+            f"{', '.join(resolved)}[/green]"
+        )
 
     repo.set_target_locations(
         migration.id, {loc: n for loc, n in parsed}
@@ -217,37 +298,45 @@ def cmd_migration_infra(args):
         offsets[loc] = _max_existing_index(
             inventory_path,
             migration.deployment_name,
-            NAME_TEMPLATE,
+            profile.name_template,
             loc,
         )
 
+    try:
+        extra_vars = profile.extra_tf_vars()
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
     resources_dir = get_resources_dir()
-    tf_source = resources_dir / "hetzner"
+    tf_source = resources_dir / profile.tf_dir
 
     configs = []
     for loc, count in parsed:
+        variables = {
+            "name": migration.deployment_name,
+            "name_template": profile.name_template,
+            "name_index_offset": str(offsets[loc]),
+            "region": loc,
+            "vm_count": str(count),
+            profile.server_type_var: migration.target_server_type,
+            "attached_volume_size": str(migration.target_volume_size_gb),
+            **extra_vars,
+        }
         configs.append(
             TerraformRunConfig(
-                provider="hetzner",
+                provider=migration.target_provider,
                 region=loc,
                 tf_source_dir=tf_source,
                 workspace_dir=_workspace_dir(migration.name, loc),
                 state_key=_state_key(migration.name, loc),
-                variables={
-                    "name": migration.deployment_name,
-                    "name_template": NAME_TEMPLATE,
-                    "name_index_offset": str(offsets[loc]),
-                    "region": loc,
-                    "vm_count": str(count),
-                    "server_type": migration.target_server_type,
-                    "attached_volume_size": str(migration.target_volume_size_gb),
-                },
+                variables=variables,
             )
         )
 
     console.print(
-        f"[bold]Provisioning {len(configs)} Hetzner location(s) for migration "
-        f"{migration.name}...[/bold]"
+        f"[bold]Provisioning {len(configs)} {migration.target_provider} "
+        f"location(s) for migration {migration.name}...[/bold]"
     )
     for loc, count in parsed:
         offset = offsets[loc]
@@ -295,7 +384,7 @@ def cmd_migration_infra(args):
         loc_offset = offsets[loc]
         for i, vm in enumerate(slice_vms):
             target_name = (
-                f"{migration.deployment_name}-{NAME_TEMPLATE}-{loc}-"
+                f"{migration.deployment_name}-{profile.name_template}-{loc}-"
                 f"{i + 1 + loc_offset}"
             )
             target_volume_id = (
@@ -304,7 +393,7 @@ def cmd_migration_infra(args):
             repo.update_vm(
                 vm.id,
                 target_name=target_name,
-                target_provider="hetzner",
+                target_provider=migration.target_provider,
                 target_provider_id=str(vm_ids[i]),
                 target_location=loc,
                 target_ip=str(ips[i]),

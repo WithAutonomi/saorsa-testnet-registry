@@ -181,6 +181,19 @@ See `deploy/README.md` §"Running continuous downloaders against production" for
 
 See `deploy/README.md` §"Running uploaders against production" for the full argument table and sequencing.
 
+### Running prod uploads from the local machine
+
+`prod local-uploads` is the local-machine variant of `prod uploaders deploy`: it runs `ant --json file upload --public` sequentially against the production Autonomi network from the host the command is invoked on, instead of provisioning remote VMs. Per-file results are written directly into the `deployment_prod_upload_results` Postgres table — there is no Influx, no monitoring VM, and no destroy command. The intended use case is testing uploads from a real home internet connection.
+
+- Two input modes: `--urls FILE` (download each URL to a temp file, upload, delete only the temp copy) and `--local-dir-path DIR` (upload each regular file in the directory; source files are never modified or deleted).
+- Sequential, single-file-at-a-time. No `--concurrency` flag.
+- Same `--branch-name`/`--repo-owner`/`--ant-version` resolution as the other prod commands; the resolved binary is cached at `~/.cache/saorsa-deploy/ant-binaries/<key>/ant` (pinned releases are reused; `latest` and branch builds are re-fetched).
+- Single `--secret-key` (or `ARBITRUM_ONE_SECRET_KEY`) — funded Arbitrum One wallet, real ETH.
+- Registers a `Deployment` row with `deploy_args.kind = "prod-local-uploads"`. `deployments slack-post` has a dedicated branch for this kind that surfaces hostname, input mode + path, file count, and payment mode.
+- On completion the deployment is marked `stopped` regardless of per-file failures; failure detail lives in the per-row Postgres records.
+
+See `deploy/README.md` §"Running uploads from the local machine" for the full argument table.
+
 ### Deployment Statuses
 
 `pending` → `running` → `stopped` (success) or `failed`
