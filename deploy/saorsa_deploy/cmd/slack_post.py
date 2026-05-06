@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import timezone
+from pathlib import Path
 
 import requests
 from rich.console import Console
@@ -25,7 +26,7 @@ _KIND_LABELS = {
     "testnet": "Testnet",
     "prod-uploaders": "Prod Uploaders",
     "prod-continuous-downloader": "Prod Continuous Downloader",
-    "prod-local-uploads": "Prod Local Uploads",
+    "prod-local-uploads": "Prod Uploads [Home]",
 }
 
 
@@ -170,29 +171,56 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     return blocks
 
 
+def _format_size(num_bytes: int | None) -> str:
+    """Render a byte count as a short human-readable string (e.g. '4.2 MB')."""
+    if num_bytes is None:
+        return "_unknown_"
+    val = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if val < 1024:
+            return f"{int(val)} {unit}" if unit == "B" else f"{val:.1f} {unit}"
+        val /= 1024
+    return f"{val:.1f} TB"
+
+
 def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
-    input_mode = deploy_args.get("input_mode", "_unknown_")
     input_path = deploy_args.get("input_path", "_unknown_")
     file_count = deploy_args.get("file_count")
     payment = deploy_args.get("payment_type") or "default"
-    host = deploy_args.get("host") or "_unknown_"
-    log_dir = deploy_args.get("log_dir") or "_unknown_"
     file_count_str = str(file_count) if file_count is not None else "_unknown_"
-    return [
+    blocks: list[dict] = [
         _section(
             f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
-        _fields_section(
-            [
-                ("Host", host),
-                ("Input mode", input_mode),
-                ("Input path", input_path),
-                ("File count", file_count_str),
-                ("Payment", payment),
-                ("Log dir", log_dir),
-            ]
-        ),
+        _section(f"*Input path:* {input_path}"),
+        _section(f"*File count:* {file_count_str}"),
+        _section(f"*Payment:* {payment}"),
     ]
+    files = deploy_args.get("files") or []
+    if not files and deploy_args.get("input_mode") == "local-dir":
+        # The deployment was recorded by an older version of the command
+        # that didn't snapshot the file list, or the field was lost.
+        # Fall back to scanning the local directory now — for a local-dir
+        # run the source files should still be on this machine.
+        raw_path = deploy_args.get("input_path")
+        if raw_path:
+            try:
+                directory = Path(raw_path)
+                if directory.is_dir():
+                    files = [
+                        {"name": p.name, "size_bytes": p.stat().st_size}
+                        for p in sorted(directory.iterdir())
+                        if p.is_file()
+                    ]
+            except OSError:
+                files = []
+    if files:
+        lines = [
+            f"• `{f.get('name', '?')}` ({_format_size(f.get('size_bytes'))})"
+            for f in files
+        ]
+        blocks.append(_section("*Files:*\n" + "\n".join(lines)))
+    return blocks
 
 
 def _prod_cd_blocks(deploy_args: dict) -> list[dict]:

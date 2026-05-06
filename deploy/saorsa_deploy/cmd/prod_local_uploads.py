@@ -123,22 +123,34 @@ def _resolve_ant_binary(
     version: str | None,
     deployment_name: str,
     console: Console,
-) -> Path:
-    """Resolve, download (if needed), and cache the local ant binary path."""
+) -> tuple[Path, str | None]:
+    """Resolve, download (if needed), and cache the local ant binary path.
+
+    Returns ``(path, resolved_version)``. ``resolved_version`` is the
+    concrete release version when one is known — i.e. either ``--ant-version``
+    was set, or we resolved ``/releases/latest`` and parsed the version out
+    of the asset URL. ``None`` for branch builds.
+    """
     key = _cache_key(branch_name, repo_owner, version)
     target = _BINARY_CACHE_ROOT / key / "ant"
-
-    if target.exists() and _is_immutable_cache_key(key):
-        console.print(f"[dim]Using cached ant binary at {target}.[/dim]")
-        return target
 
     if branch_name:
         owner = repo_owner or "maidsafe"
         url = get_ant_custom_build_url(deployment_name, owner, branch_name)
         is_tarball = False
+        resolved_version: str | None = None
     else:
         url = get_ant_release_url(version)
         is_tarball = url.endswith(".tar.gz")
+        if version:
+            resolved_version = version
+        else:
+            match = re.search(r"ant-cli-v(\d+\.\d+\.\d+)", url)
+            resolved_version = match.group(1) if match else None
+
+    if target.exists() and _is_immutable_cache_key(key):
+        console.print(f"[dim]Using cached ant binary at {target}.[/dim]")
+        return target, resolved_version
 
     console.print(f"[bold]Fetching ant binary:[/bold] {url}")
 
@@ -159,7 +171,7 @@ def _resolve_ant_binary(
 
     target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     console.print(f"[green]ant binary ready at {target}[/green]")
-    return target
+    return target, resolved_version
 
 
 # ---------- ant invocation + parsing -----------------------------------------
@@ -426,7 +438,7 @@ def cmd_prod_local_uploads(args) -> None:
     for peer in peers:
         bootstrap_args.extend(["--bootstrap", peer])
 
-    ant_path = _resolve_ant_binary(
+    ant_path, resolved_version = _resolve_ant_binary(
         branch_name=args.branch_name,
         repo_owner=args.repo_owner,
         version=args.ant_version,
@@ -441,6 +453,21 @@ def cmd_prod_local_uploads(args) -> None:
     binary_descriptor = build_binary_descriptor(
         args.branch_name, args.repo_owner, args.ant_version
     )
+    if binary_descriptor.get("kind") == "latest" and resolved_version:
+        # Pin the descriptor to the version we actually downloaded so the
+        # deployment record states what was run, not "whatever was latest".
+        binary_descriptor = {"kind": "release", "version": resolved_version}
+
+    files_payload: list[dict] = []
+    if input_mode == "local-dir":
+        for path in local_files:
+            try:
+                files_payload.append(
+                    {"name": path.name, "size_bytes": path.stat().st_size}
+                )
+            except OSError:
+                files_payload.append({"name": path.name, "size_bytes": None})
+
     deploy_args_payload = {
         "kind": "prod-local-uploads",
         "purpose": args.purpose,
@@ -448,6 +475,7 @@ def cmd_prod_local_uploads(args) -> None:
         "input_mode": input_mode,
         "input_path": input_path,
         "file_count": file_count,
+        "files": files_payload,
         "payment_type": args.payment,
         "host": host,
         "log_dir": str(log_dir),
