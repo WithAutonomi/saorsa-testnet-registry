@@ -34,12 +34,32 @@ resource "ovh_cloud_project_user" "attach_user" {
   role_names   = ["compute_operator", "volume_operator"]
 }
 
+# Cloud-init payload: OVH's Ubuntu image disables root SSH and uses 'ubuntu'
+# as the cloud-init user. The other providers we use (Hetzner, DO, Vultr) all
+# allow root SSH on their cloud images, so AntNodeProvisioner connects as
+# root uniformly. To keep that uniform on OVH we enable root SSH on first
+# boot by copying the ubuntu user's authorized_keys into root's.
+locals {
+  enable_root_ssh_user_data = <<-EOT
+    #cloud-config
+    disable_root: false
+    runcmd:
+      - install -d -m 700 -o root -g root /root/.ssh
+      - cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys
+      - chown root:root /root/.ssh/authorized_keys
+      - chmod 600 /root/.ssh/authorized_keys
+      - sed -i 's|^#\?PermitRootLogin .*|PermitRootLogin prohibit-password|' /etc/ssh/sshd_config
+      - systemctl reload sshd
+  EOT
+}
+
 resource "ovh_cloud_project_instance" "node_vm" {
   count          = var.vm_count
   service_name   = var.service_name
   region         = var.region
   billing_period = "hourly"
   name           = "${var.name}-${var.name_template}-${var.region}-${count.index + 1 + var.name_index_offset}"
+  user_data      = local.enable_root_ssh_user_data
 
   boot_from {
     image_id = local.ubuntu_image_id
