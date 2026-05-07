@@ -21,13 +21,39 @@ ROLE_DOWNLOAD = "download"
 
 
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
+_VALID_UPLOADER_KEYS = ("payment", "ant", "eth")
+DEFAULT_ANT_FUNDING = "100"
+DEFAULT_ETH_FUNDING = "0.5"
+
+
+def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
+    """Validate a numeric uploader-spec option and return it as a normalized string."""
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        amount = Decimal(value)
+    except InvalidOperation:
+        raise ValueError(
+            f"Invalid uploader spec '{spec}': '{key}' must be a number, got '{value}'."
+        )
+    if amount <= 0:
+        raise ValueError(
+            f"Invalid uploader spec '{spec}': '{key}' must be > 0, got '{value}'."
+        )
+    if amount == amount.to_integral_value():
+        return str(int(amount))
+    return format(amount, "f").rstrip("0").rstrip(".") or "0"
 
 
 def parse_uploader_spec(spec: str) -> dict:
-    """Parse an uploader spec: 'region:file_size_mb[:vm_size][:payment=MODE]'.
+    """Parse an uploader spec.
+
+    Format: ``region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]``
 
     Returns a dict with keys: role=upload, region, file_size_mb, vm_size,
-    payment_type (None unless ``payment=merkle`` or ``payment=no-merkle``).
+    payment_type (None unless ``payment=merkle`` or ``payment=no-merkle``),
+    ant_funding (str numeric, default "100"), eth_funding (str numeric,
+    default "0.5").
     """
     raw_parts = spec.split(":")
     positional: list[str] = []
@@ -35,7 +61,7 @@ def parse_uploader_spec(spec: str) -> dict:
     for part in raw_parts:
         if "=" in part:
             key, value = part.split("=", 1)
-            if key not in ("payment",):
+            if key not in _VALID_UPLOADER_KEYS:
                 raise ValueError(
                     f"Invalid uploader spec '{spec}': unknown key '{key}'."
                 )
@@ -50,7 +76,8 @@ def parse_uploader_spec(spec: str) -> dict:
     if len(positional) < 2 or len(positional) > 3:
         raise ValueError(
             f"Invalid uploader spec '{spec}'. "
-            f"Expected format: region:file_size_mb[:vm_size][:payment=MODE]"
+            f"Expected format: region:file_size_mb[:vm_size]"
+            f"[:payment=MODE][:ant=N][:eth=N]"
         )
     region = positional[0]
     try:
@@ -69,12 +96,25 @@ def parse_uploader_spec(spec: str) -> dict:
             f"{', '.join(_VALID_PAYMENT_VALUES)}."
         )
 
+    ant_funding = (
+        _parse_positive_decimal(spec, "ant", options["ant"])
+        if "ant" in options
+        else DEFAULT_ANT_FUNDING
+    )
+    eth_funding = (
+        _parse_positive_decimal(spec, "eth", options["eth"])
+        if "eth" in options
+        else DEFAULT_ETH_FUNDING
+    )
+
     return {
         "role": ROLE_UPLOAD,
         "region": region,
         "file_size_mb": file_size_mb,
         "vm_size": vm_size,
         "payment_type": payment_type,
+        "ant_funding": ant_funding,
+        "eth_funding": eth_funding,
     }
 
 
@@ -109,6 +149,8 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("vm_size"),
         spec.get("file_size_mb"),
         spec.get("payment_type"),
+        spec.get("ant_funding"),
+        spec.get("eth_funding"),
     )
 
 
@@ -153,10 +195,12 @@ def cmd_infra_clients(args):
         if spec["role"] == ROLE_UPLOAD:
             payment = spec.get("payment_type")
             payment_str = f", payment={payment}" if payment else ""
+            ant = spec.get("ant_funding", DEFAULT_ANT_FUNDING)
+            eth = spec.get("eth_funding", DEFAULT_ETH_FUNDING)
             console.print(
                 f"  Uploader #{spec['client_index']}: {spec['region']} "
                 f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads"
-                f"{payment_str})"
+                f"{payment_str}, fund {ant} ANT + {eth} ETH)"
             )
         else:
             console.print(

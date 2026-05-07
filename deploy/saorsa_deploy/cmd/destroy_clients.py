@@ -1,9 +1,11 @@
+import os
 import shutil
 import sys
 from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     delete_client_addresses_prefix,
@@ -15,6 +17,13 @@ from saorsa_deploy.state import (
     terraform_state_attributes,
 )
 from saorsa_deploy.terraform import TerraformRunConfig, run_terraform_destroy
+from saorsa_deploy.wallet import (
+    address_for_secret_key,
+    drain_wallet,
+    get_eth_balance,
+    get_token_balance,
+    get_web3,
+)
 
 CLIENT_STATE_KEY_PREFIX = "saorsa-deploy/do-client"
 ROLE_UPLOAD = "upload"
@@ -62,6 +71,32 @@ def cmd_destroy_clients(args):
             console.print("[yellow]Aborted.[/yellow]")
             sys.exit(0)
         console.print()
+
+    # Drain per-uploader wallets back to the funding wallet *before* tearing
+    # down infra. We do this even if VMs are gone — wallet keys live in S3
+    # client state, and the on-chain funds are independent of the VMs. If the
+    # drain fails we abort, leaving the VMs and state intact so the operator
+    # can fix the issue and retry.
+    uploaders_with_wallet = [
+        c for c in clients
+        if c.get("role", ROLE_UPLOAD) == ROLE_UPLOAD and c.get("wallet_secret_key")
+    ]
+    if uploaders_with_wallet:
+        funding_secret_key = (
+            getattr(args, "wallet_secret_key", None)
+            or os.environ.get("ANT_DEPLOY_SECRET_KEY")
+        )
+        if not funding_secret_key:
+            console.print(
+                "[bold red]Error:[/bold red] Per-uploader wallets are present "
+                "but no funding wallet secret key was provided. Use "
+                "--wallet-secret-key or set ANT_DEPLOY_SECRET_KEY so funds "
+                "can be drained back."
+            )
+            sys.exit(1)
+        _drain_uploader_wallets(
+            uploaders_with_wallet, funding_secret_key, console
+        )
 
     resources_dir = get_resources_dir()
     tf_source = resources_dir / "digitalocean-client"
@@ -154,6 +189,51 @@ def cmd_destroy_clients(args):
     console.print(
         f"[bold green]All {len(clients)} client VM(s) destroyed successfully.[/bold green]"
     )
+
+
+def _drain_uploader_wallets(
+    uploaders: list[dict], funding_secret_key: str, console: Console
+) -> None:
+    """Sweep ANT and ETH from every per-uploader wallet back to the funding
+    wallet on Arbitrum Sepolia. Raises SystemExit on any failure so the destroy
+    aborts before terraform tears down the VMs.
+    """
+    funding_address = address_for_secret_key(funding_secret_key)
+    rpc_url = ARBITRUM_SEPOLIA["rpc_url"]
+    token_address = ARBITRUM_SEPOLIA["payment_token_address"]
+    console.print(
+        f"[bold]Draining {len(uploaders)} per-uploader wallet(s) "
+        f"→ {funding_address} on Arbitrum Sepolia...[/bold]"
+    )
+    w3 = get_web3(rpc_url)
+    failures: list[tuple[int, str]] = []
+    for client in uploaders:
+        secret = client["wallet_secret_key"]
+        addr = client.get("wallet_address") or address_for_secret_key(secret)
+        try:
+            ant_units = get_token_balance(w3, token_address, addr)
+            eth_wei = get_eth_balance(w3, addr)
+            console.print(
+                f"  Uploader #{client['client_index']} {addr}: "
+                f"{ant_units} ANT-units / {eth_wei} wei"
+            )
+            if ant_units == 0 and eth_wei == 0:
+                continue
+            txs = drain_wallet(w3, secret, token_address, funding_address)
+            console.print(
+                f"    drained ant_tx={txs['ant_tx']} eth_tx={txs['eth_tx']}"
+            )
+        except Exception as e:
+            console.print(f"    [red]drain failed: {e}[/red]")
+            failures.append((client["client_index"], str(e)))
+    if failures:
+        console.print(
+            f"[bold red]Drain failed for {len(failures)} uploader(s). "
+            f"Aborting destroy so funds aren't lost — fix and retry.[/bold red]"
+        )
+        sys.exit(1)
+    console.print("[green]All wallets drained.[/green]")
+    console.print()
 
 
 def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:

@@ -3,11 +3,27 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
 from saorsa_deploy.registry import record_deploy_args_update
 from saorsa_deploy.ssh import clear_known_hosts
-from saorsa_deploy.state import load_client_state, load_deployment_state
+from saorsa_deploy.state import (
+    load_client_state,
+    load_deployment_state,
+    update_client_wallet,
+)
+from saorsa_deploy.wallet import (
+    address_for_secret_key,
+    create_wallet,
+    get_eth_balance,
+    get_token_balance,
+    get_token_decimals,
+    get_web3,
+    to_token_units,
+    transfer_eth,
+    transfer_token,
+)
 
 
 def _resolve_influx_config(args, console):
@@ -170,6 +186,104 @@ def _resolve_addresses_file_content(args, console) -> str | None:
     return stripped + "\n"
 
 
+def _ensure_uploader_wallets(
+    name: str, clients: list[dict], funding_secret_key: str, console
+) -> list[dict]:
+    """Make sure every uploader has a per-VM Sepolia wallet at its target
+    funding level, creating wallets and topping up balances as needed.
+
+    Two phases, both idempotent so the command can be re-run safely after
+    transient RPC errors mid-funding:
+
+    1. **Wallet creation**: any uploader without ``wallet_secret_key`` gets a
+       fresh EOA, persisted to S3 client state immediately (before funding).
+       This ensures funds aren't lost if a transfer fails after an address is
+       generated.
+    2. **Top-up**: every uploader is funded to its target ANT/ETH amounts.
+       The on-chain balance is queried first; only the deficit is transferred.
+       Re-runs skip wallets that are already at target.
+    """
+    from decimal import Decimal
+
+    from web3 import Web3
+
+    uploaders = [
+        c for c in clients if c.get("role", "upload") == "upload"
+    ]
+    if not uploaders:
+        return clients
+
+    funding_address = address_for_secret_key(funding_secret_key)
+    rpc_url = ARBITRUM_SEPOLIA["rpc_url"]
+    token_address = ARBITRUM_SEPOLIA["payment_token_address"]
+    w3 = get_web3(rpc_url)
+    decimals = get_token_decimals(w3, token_address)
+
+    # Phase 1: ensure every uploader has a wallet recorded in state.
+    needs_wallet = [c for c in uploaders if not c.get("wallet_secret_key")]
+    if needs_wallet:
+        console.print(
+            f"  Per-uploader wallets: creating {len(needs_wallet)} new "
+            f"wallet(s)"
+        )
+        for client in needs_wallet:
+            wallet_obj = create_wallet()
+            console.print(
+                f"    Uploader #{client['client_index']} ({client['region']}): "
+                f"{wallet_obj.address}"
+            )
+            update_client_wallet(
+                name=name,
+                client_index=client["client_index"],
+                wallet_address=wallet_obj.address,
+                wallet_secret_key=wallet_obj.secret_key,
+            )
+            client["wallet_address"] = wallet_obj.address
+            client["wallet_secret_key"] = wallet_obj.secret_key
+
+    # Phase 2: top each wallet up to its target ANT/ETH.
+    console.print(
+        f"  Per-uploader wallets: topping up {len(uploaders)} wallet(s) "
+        f"from {funding_address} on Arbitrum Sepolia"
+    )
+    for client in uploaders:
+        addr = client["wallet_address"]
+        target_ant_units = to_token_units(
+            client.get("ant_funding", "100"), decimals
+        )
+        target_eth_wei = Web3.to_wei(
+            Decimal(str(client.get("eth_funding", "0.5"))), "ether"
+        )
+        cur_ant = get_token_balance(w3, token_address, addr)
+        cur_eth = get_eth_balance(w3, addr)
+        deficit_ant = max(target_ant_units - cur_ant, 0)
+        deficit_eth = max(target_eth_wei - cur_eth, 0)
+
+        if deficit_ant == 0 and deficit_eth == 0:
+            console.print(
+                f"    Uploader #{client['client_index']} ({addr}): "
+                f"already funded, skipping"
+            )
+            continue
+
+        console.print(
+            f"    Uploader #{client['client_index']} ({addr}): "
+            f"sending {deficit_ant} ANT-units + {deficit_eth} wei ETH"
+        )
+        # ETH first so the new wallet has gas. Skip whichever leg already has
+        # enough on chain — re-runs after a partial-failure resume cleanly.
+        if deficit_eth > 0:
+            tx = transfer_eth(w3, funding_secret_key, addr, deficit_eth)
+            console.print(f"      eth_tx={tx}")
+        if deficit_ant > 0:
+            tx = transfer_token(
+                w3, token_address, funding_secret_key, addr, deficit_ant
+            )
+            console.print(f"      ant_tx={tx}")
+
+    return clients
+
+
 def cmd_provision_clients(args):
     """Execute the clients provision command: provision client VMs with uploader/downloader."""
     console = Console()
@@ -204,6 +318,21 @@ def cmd_provision_clients(args):
         aws_access_key_id, aws_secret_access_key = "", ""
         console.print("  Wallet key: skipped (download-only deployment)")
         console.print("  Client AWS creds: skipped (download-only deployment)")
+
+    # Per-uploader wallet creation and funding. Testnet only — prod uses a
+    # real funded Arbitrum One wallet supplied by the operator and skips
+    # synthesis entirely.
+    if has_uploaders and not prod_mode:
+        try:
+            clients = _ensure_uploader_wallets(
+                args.name, clients, wallet_secret_key, console
+            )
+        except Exception as e:
+            console.print(
+                f"[bold red]Error:[/bold red] Failed to create or fund "
+                f"per-uploader wallets: {e}"
+            )
+            sys.exit(1)
     addresses_file_content = _resolve_addresses_file_content(args, console)
 
     if prod_mode:

@@ -274,18 +274,30 @@ class AntClientProvisioner:
 
             # Build a case statement that maps IP to role-specific values.
             # Emits ROLE / FILE_SIZE_KB / REGION / CLIENT_INDEX.
+            def _normalize_secret(k: str) -> str:
+                k = (k or "").strip()
+                if not k:
+                    return ""
+                if not k.startswith("0x"):
+                    k = "0x" + k
+                return k
+
+            fallback_secret = _normalize_secret(self.wallet_secret_key)
+
             ip_to_env = {}
             for c in self.clients:
                 if not c.get("ip"):
                     continue
                 role = c.get("role", "upload")
                 if role == "upload":
+                    per_uploader_key = _normalize_secret(c.get("wallet_secret_key", ""))
                     ip_to_env[c["ip"]] = {
                         "role": "upload",
                         "file_size_kb": c["file_size_mb"] * 1024,
                         "region": c["region"],
                         "client_index": c["client_index"],
                         "payment_type": c.get("payment_type") or "",
+                        "secret_key": per_uploader_key or fallback_secret,
                     }
                 else:
                     ip_to_env[c["ip"]] = {
@@ -294,6 +306,7 @@ class AntClientProvisioner:
                         "region": c["region"],
                         "client_index": c["client_index"],
                         "payment_type": "",
+                        "secret_key": fallback_secret,
                     }
 
             case_entries = []
@@ -303,19 +316,18 @@ class AntClientProvisioner:
                     f'FILE_SIZE_KB={env["file_size_kb"]}; '
                     f'REGION={env["region"]}; '
                     f'CLIENT_INDEX={env["client_index"]}; '
-                    f'PAYMENT_TYPE="{env["payment_type"]}" ;;'
+                    f'PAYMENT_TYPE="{env["payment_type"]}"; '
+                    f'SECRET_KEY="{env["secret_key"]}" ;;'
                 )
             case_block = "\n".join(case_entries)
 
             bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
-            secret_key = self.wallet_secret_key
-            if not secret_key.startswith("0x"):
-                secret_key = "0x" + secret_key
             env_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; PAYMENT_TYPE="" ;;
+    *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
+PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}" ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -325,7 +337,7 @@ CLIENT_INDEX=$CLIENT_INDEX
 BOOTSTRAP_ARGS="{bootstrap_args}"
 FILE_SIZE_KB=$FILE_SIZE_KB
 PAYMENT_TYPE=$PAYMENT_TYPE
-SECRET_KEY={secret_key}
+SECRET_KEY=$SECRET_KEY
 ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt
 UPLOAD_DIR={CLIENT_DATA_DIR}/uploads
