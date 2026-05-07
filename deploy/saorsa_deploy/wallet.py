@@ -109,6 +109,30 @@ def _send_signed(w3: Web3, signed_tx) -> str:
     return tx_hash.hex()
 
 
+def _gas_fields(w3: Web3) -> dict:
+    """Compute gas fields with headroom against base-fee fluctuations.
+
+    Arbitrum's base fee can move between fee estimation and tx submission;
+    web3.py's defaults occasionally produce a `maxFeePerGas` below the
+    next-block base fee, which gets rejected with
+    "max fee per gas less than block base fee". We pre-compute fields with
+    a 2x base-fee buffer.
+    """
+    try:
+        latest = w3.eth.get_block("latest")
+        base_fee = latest.get("baseFeePerGas")
+    except Exception:
+        base_fee = None
+    if base_fee is not None:
+        priority_fee = Web3.to_wei("0.1", "gwei")
+        max_fee = base_fee * 2 + priority_fee
+        return {
+            "maxFeePerGas": max_fee,
+            "maxPriorityFeePerGas": priority_fee,
+        }
+    return {"gasPrice": int(w3.eth.gas_price * 2)}
+
+
 def transfer_eth(w3: Web3, from_secret_key: str, to_address: str, value_wei: int) -> str:
     """Send `value_wei` of native ETH from `from_secret_key` to `to_address`."""
     acct = Account.from_key(_normalize_secret_key(from_secret_key))
@@ -120,7 +144,7 @@ def transfer_eth(w3: Web3, from_secret_key: str, to_address: str, value_wei: int
         "nonce": nonce,
         "chainId": w3.eth.chain_id,
         "gas": 21_000,
-        "gasPrice": w3.eth.gas_price,
+        **_gas_fields(w3),
     }
     signed = acct.sign_transaction(tx)
     return _send_signed(w3, signed)
@@ -146,7 +170,7 @@ def transfer_token(
             "from": acct.address,
             "nonce": nonce,
             "chainId": w3.eth.chain_id,
-            "gasPrice": w3.eth.gas_price,
+            **_gas_fields(w3),
         }
     )
     signed = acct.sign_transaction(tx)
@@ -210,11 +234,13 @@ def drain_wallet(
         )
 
     eth_balance = get_eth_balance(w3, acct.address)
-    gas_price = w3.eth.gas_price
-    eth_tx_cost = gas_price * 21_000
+    gas = _gas_fields(w3)
+    # Worst-case gas price: maxFeePerGas under EIP-1559, gasPrice under legacy.
+    effective_gas_price = gas.get("maxFeePerGas", gas.get("gasPrice", 0))
+    eth_tx_cost = effective_gas_price * 21_000
     sweep_amount = eth_balance - eth_tx_cost - gas_reserve_wei
     if sweep_amount > 0:
-        # Send manually so we can control gasPrice/gas without re-querying.
+        # Send manually so we can control gas without re-querying.
         nonce = w3.eth.get_transaction_count(acct.address)
         tx = {
             "to": Web3.to_checksum_address(funding_address),
@@ -222,7 +248,7 @@ def drain_wallet(
             "nonce": nonce,
             "chainId": w3.eth.chain_id,
             "gas": 21_000,
-            "gasPrice": gas_price,
+            **gas,
         }
         signed = acct.sign_transaction(tx)
         result["eth_tx"] = _send_signed(w3, signed)

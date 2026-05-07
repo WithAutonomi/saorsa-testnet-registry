@@ -16,8 +16,13 @@ from saorsa_deploy.state import (
 from saorsa_deploy.wallet import (
     address_for_secret_key,
     create_wallet,
-    fund_wallet,
+    get_eth_balance,
+    get_token_balance,
+    get_token_decimals,
     get_web3,
+    to_token_units,
+    transfer_eth,
+    transfer_token,
 )
 
 
@@ -184,67 +189,97 @@ def _resolve_addresses_file_content(args, console) -> str | None:
 def _ensure_uploader_wallets(
     name: str, clients: list[dict], funding_secret_key: str, console
 ) -> list[dict]:
-    """Make sure every uploader has a per-VM Sepolia wallet, creating + funding
-    new ones from the funding wallet as needed. Persists each new wallet into
-    S3 client state so it survives across re-provisions and is available to
-    ``clients destroy`` for draining.
+    """Make sure every uploader has a per-VM Sepolia wallet at its target
+    funding level, creating wallets and topping up balances as needed.
 
-    Returns the (possibly updated) clients list. Idempotent: uploaders that
-    already have ``wallet_secret_key`` are reused as-is.
+    Two phases, both idempotent so the command can be re-run safely after
+    transient RPC errors mid-funding:
+
+    1. **Wallet creation**: any uploader without ``wallet_secret_key`` gets a
+       fresh EOA, persisted to S3 client state immediately (before funding).
+       This ensures funds aren't lost if a transfer fails after an address is
+       generated.
+    2. **Top-up**: every uploader is funded to its target ANT/ETH amounts.
+       The on-chain balance is queried first; only the deficit is transferred.
+       Re-runs skip wallets that are already at target.
     """
-    needs_wallet = [
-        c for c in clients
-        if c.get("role", "upload") == "upload" and not c.get("wallet_secret_key")
-    ]
-    reused = [
-        c for c in clients
-        if c.get("role", "upload") == "upload" and c.get("wallet_secret_key")
-    ]
+    from decimal import Decimal
 
-    if reused:
-        console.print(
-            f"  Per-uploader wallets: reusing {len(reused)} existing wallet(s) "
-            f"from client state"
-        )
-    if not needs_wallet:
+    from web3 import Web3
+
+    uploaders = [
+        c for c in clients if c.get("role", "upload") == "upload"
+    ]
+    if not uploaders:
         return clients
 
     funding_address = address_for_secret_key(funding_secret_key)
     rpc_url = ARBITRUM_SEPOLIA["rpc_url"]
     token_address = ARBITRUM_SEPOLIA["payment_token_address"]
-    console.print(
-        f"  Per-uploader wallets: creating + funding {len(needs_wallet)} new "
-        f"wallet(s) from {funding_address} on Arbitrum Sepolia"
-    )
     w3 = get_web3(rpc_url)
+    decimals = get_token_decimals(w3, token_address)
 
-    for client in needs_wallet:
-        ant_amount = client.get("ant_funding", "100")
-        eth_amount = client.get("eth_funding", "0.5")
-        wallet = create_wallet()
+    # Phase 1: ensure every uploader has a wallet recorded in state.
+    needs_wallet = [c for c in uploaders if not c.get("wallet_secret_key")]
+    if needs_wallet:
         console.print(
-            f"    Uploader #{client['client_index']} ({client['region']}): "
-            f"{wallet.address} ← {ant_amount} ANT + {eth_amount} ETH"
+            f"  Per-uploader wallets: creating {len(needs_wallet)} new "
+            f"wallet(s)"
         )
-        txs = fund_wallet(
-            w3,
-            funding_secret_key,
-            token_address,
-            wallet.address,
-            ant_amount,
-            eth_amount,
+        for client in needs_wallet:
+            wallet_obj = create_wallet()
+            console.print(
+                f"    Uploader #{client['client_index']} ({client['region']}): "
+                f"{wallet_obj.address}"
+            )
+            update_client_wallet(
+                name=name,
+                client_index=client["client_index"],
+                wallet_address=wallet_obj.address,
+                wallet_secret_key=wallet_obj.secret_key,
+            )
+            client["wallet_address"] = wallet_obj.address
+            client["wallet_secret_key"] = wallet_obj.secret_key
+
+    # Phase 2: top each wallet up to its target ANT/ETH.
+    console.print(
+        f"  Per-uploader wallets: topping up {len(uploaders)} wallet(s) "
+        f"from {funding_address} on Arbitrum Sepolia"
+    )
+    for client in uploaders:
+        addr = client["wallet_address"]
+        target_ant_units = to_token_units(
+            client.get("ant_funding", "100"), decimals
         )
+        target_eth_wei = Web3.to_wei(
+            Decimal(str(client.get("eth_funding", "0.5"))), "ether"
+        )
+        cur_ant = get_token_balance(w3, token_address, addr)
+        cur_eth = get_eth_balance(w3, addr)
+        deficit_ant = max(target_ant_units - cur_ant, 0)
+        deficit_eth = max(target_eth_wei - cur_eth, 0)
+
+        if deficit_ant == 0 and deficit_eth == 0:
+            console.print(
+                f"    Uploader #{client['client_index']} ({addr}): "
+                f"already funded, skipping"
+            )
+            continue
+
         console.print(
-            f"      eth_tx={txs['eth_tx']} ant_tx={txs['ant_tx']}"
+            f"    Uploader #{client['client_index']} ({addr}): "
+            f"sending {deficit_ant} ANT-units + {deficit_eth} wei ETH"
         )
-        update_client_wallet(
-            name=name,
-            client_index=client["client_index"],
-            wallet_address=wallet.address,
-            wallet_secret_key=wallet.secret_key,
-        )
-        client["wallet_address"] = wallet.address
-        client["wallet_secret_key"] = wallet.secret_key
+        # ETH first so the new wallet has gas. Skip whichever leg already has
+        # enough on chain — re-runs after a partial-failure resume cleanly.
+        if deficit_eth > 0:
+            tx = transfer_eth(w3, funding_secret_key, addr, deficit_eth)
+            console.print(f"      eth_tx={tx}")
+        if deficit_ant > 0:
+            tx = transfer_token(
+                w3, token_address, funding_secret_key, addr, deficit_ant
+            )
+            console.print(f"      ant_tx={tx}")
 
     return clients
 

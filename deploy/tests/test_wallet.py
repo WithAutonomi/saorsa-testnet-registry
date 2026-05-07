@@ -83,6 +83,8 @@ def _mock_w3(chain_id: int = 421614, gas_price: int = 100_000_000, decimals: int
     w3.eth.chain_id = chain_id
     w3.eth.gas_price = gas_price
     w3.eth.get_transaction_count.return_value = 0
+    # _gas_fields reads baseFeePerGas off the latest block.
+    w3.eth.get_block.return_value = {"baseFeePerGas": gas_price}
     # _send_signed: tx receipt status=1 success
     receipt = MagicMock()
     receipt.status = 1
@@ -195,13 +197,16 @@ def test_drain_wallet_skips_eth_when_balance_below_reserve_plus_gas():
 
 # --- _ensure_uploader_wallets (provision integration) --------------------
 
-def test_ensure_uploader_wallets_reuses_existing_and_creates_missing():
+def test_ensure_uploader_wallets_persists_before_funding_and_tops_up_deficit():
+    """Persist wallet first (so partial failures can be resumed), then top up
+    only the deficit. Pre-funded wallets are skipped on the funding leg.
+    """
     from saorsa_deploy.cmd.provision_clients import _ensure_uploader_wallets
 
     funding = wallet.create_wallet()
     pre_existing = wallet.create_wallet()
     clients = [
-        {  # already has wallet → reuse
+        {  # already has wallet, already at target → no transfers
             "role": "upload",
             "client_index": 1,
             "region": "lon1",
@@ -210,19 +215,31 @@ def test_ensure_uploader_wallets_reuses_existing_and_creates_missing():
             "wallet_address": pre_existing.address,
             "wallet_secret_key": pre_existing.secret_key,
         },
-        {  # no wallet → create
+        {  # no wallet → create + fund full target
             "role": "upload",
             "client_index": 2,
             "region": "nyc1",
             "ant_funding": "200",
             "eth_funding": "1",
         },
-        {  # downloader → skip
+        {  # downloader → ignored
             "role": "download",
             "client_index": 1,
             "region": "tor1",
         },
     ]
+
+    # Balance lookups: existing wallet is already topped up (skip transfer);
+    # newly-created wallet has zero balance (fund full target).
+    def fake_token_balance(_w3, _token, addr):
+        if addr == pre_existing.address:
+            return 100 * 10**18  # exactly target → no deficit
+        return 0
+
+    def fake_eth_balance(_w3, addr):
+        if addr == pre_existing.address:
+            return 5 * 10**17  # exactly 0.5 ETH → no deficit
+        return 0
 
     console = MagicMock()
     with (
@@ -230,9 +247,25 @@ def test_ensure_uploader_wallets_reuses_existing_and_creates_missing():
             "saorsa_deploy.cmd.provision_clients.get_web3", return_value=MagicMock()
         ),
         patch(
-            "saorsa_deploy.cmd.provision_clients.fund_wallet",
-            return_value={"eth_tx": "0xe", "ant_tx": "0xa"},
-        ) as p_fund,
+            "saorsa_deploy.cmd.provision_clients.get_token_decimals",
+            return_value=18,
+        ),
+        patch(
+            "saorsa_deploy.cmd.provision_clients.get_token_balance",
+            side_effect=fake_token_balance,
+        ),
+        patch(
+            "saorsa_deploy.cmd.provision_clients.get_eth_balance",
+            side_effect=fake_eth_balance,
+        ),
+        patch(
+            "saorsa_deploy.cmd.provision_clients.transfer_eth",
+            return_value="0xeth",
+        ) as p_eth,
+        patch(
+            "saorsa_deploy.cmd.provision_clients.transfer_token",
+            return_value="0xant",
+        ) as p_ant,
         patch(
             "saorsa_deploy.cmd.provision_clients.update_client_wallet"
         ) as p_persist,
@@ -243,15 +276,77 @@ def test_ensure_uploader_wallets_reuses_existing_and_creates_missing():
 
     # Existing wallet untouched.
     assert out[0]["wallet_secret_key"] == pre_existing.secret_key
-    # New wallet generated and persisted.
+    # New wallet generated and persisted before any transfer.
     assert "wallet_secret_key" in out[1]
     assert out[1]["wallet_address"].startswith("0x")
-    p_fund.assert_called_once()
-    # Funding amounts forwarded from spec.
-    assert p_fund.call_args.args[4] == "200"
-    assert p_fund.call_args.args[5] == "1"
     p_persist.assert_called_once()
-    persist_kwargs = p_persist.call_args.kwargs
-    assert persist_kwargs["client_index"] == 2
+    assert p_persist.call_args.kwargs["client_index"] == 2
+
+    # Pre-existing skipped on transfers; new wallet got full target deficit.
+    p_eth.assert_called_once()
+    p_ant.assert_called_once()
+    assert p_eth.call_args.args[2] == out[1]["wallet_address"]
+    assert p_eth.call_args.args[3] == 10**18  # 1 ETH
+    assert p_ant.call_args.args[3] == out[1]["wallet_address"]
+    assert p_ant.call_args.args[4] == 200 * 10**18  # 200 ANT
+
     # Downloader unchanged.
     assert "wallet_secret_key" not in out[2]
+
+
+def test_ensure_uploader_wallets_resumes_partial_funding():
+    """If the previous run created a wallet and sent ETH but failed before ANT,
+    re-running should detect ETH is funded and only send the missing ANT.
+    """
+    from saorsa_deploy.cmd.provision_clients import _ensure_uploader_wallets
+
+    funding = wallet.create_wallet()
+    partial = wallet.create_wallet()
+    clients = [
+        {
+            "role": "upload",
+            "client_index": 1,
+            "region": "lon1",
+            "ant_funding": "100",
+            "eth_funding": "0.5",
+            "wallet_address": partial.address,
+            "wallet_secret_key": partial.secret_key,
+        },
+    ]
+
+    console = MagicMock()
+    with (
+        patch(
+            "saorsa_deploy.cmd.provision_clients.get_web3", return_value=MagicMock()
+        ),
+        patch(
+            "saorsa_deploy.cmd.provision_clients.get_token_decimals",
+            return_value=18,
+        ),
+        patch(
+            "saorsa_deploy.cmd.provision_clients.get_token_balance",
+            return_value=0,
+        ),
+        # ETH already at target — only ANT should be transferred.
+        patch(
+            "saorsa_deploy.cmd.provision_clients.get_eth_balance",
+            return_value=5 * 10**17,
+        ),
+        patch(
+            "saorsa_deploy.cmd.provision_clients.transfer_eth",
+        ) as p_eth,
+        patch(
+            "saorsa_deploy.cmd.provision_clients.transfer_token",
+            return_value="0xant",
+        ) as p_ant,
+        patch(
+            "saorsa_deploy.cmd.provision_clients.update_client_wallet"
+        ),
+    ):
+        _ensure_uploader_wallets(
+            "DEV-01", clients, funding.secret_key, console
+        )
+
+    p_eth.assert_not_called()
+    p_ant.assert_called_once()
+    assert p_ant.call_args.args[4] == 100 * 10**18
