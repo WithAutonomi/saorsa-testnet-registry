@@ -23,9 +23,12 @@ def cmd_destroy_elastic(args):
     console.print(f"[bold]Loading Elasticsearch state for '{args.name}'...[/bold]")
     try:
         state = load_elastic_state(args.name)
-    except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
+    except RuntimeError:
+        console.print(
+            f"[yellow]No Elasticsearch infrastructure found for '{args.name}'. "
+            "Nothing to destroy.[/yellow]"
+        )
+        return
 
     region = state["region"]
     console.print(f"  Elasticsearch VM in: digitalocean/{region}")
