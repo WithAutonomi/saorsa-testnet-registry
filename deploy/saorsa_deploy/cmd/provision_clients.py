@@ -3,11 +3,22 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
 from saorsa_deploy.registry import record_deploy_args_update
 from saorsa_deploy.ssh import clear_known_hosts
-from saorsa_deploy.state import load_client_state, load_deployment_state
+from saorsa_deploy.state import (
+    load_client_state,
+    load_deployment_state,
+    update_client_wallet,
+)
+from saorsa_deploy.wallet import (
+    address_for_secret_key,
+    create_wallet,
+    fund_wallet,
+    get_web3,
+)
 
 
 def _resolve_influx_config(args, console):
@@ -170,6 +181,74 @@ def _resolve_addresses_file_content(args, console) -> str | None:
     return stripped + "\n"
 
 
+def _ensure_uploader_wallets(
+    name: str, clients: list[dict], funding_secret_key: str, console
+) -> list[dict]:
+    """Make sure every uploader has a per-VM Sepolia wallet, creating + funding
+    new ones from the funding wallet as needed. Persists each new wallet into
+    S3 client state so it survives across re-provisions and is available to
+    ``clients destroy`` for draining.
+
+    Returns the (possibly updated) clients list. Idempotent: uploaders that
+    already have ``wallet_secret_key`` are reused as-is.
+    """
+    needs_wallet = [
+        c for c in clients
+        if c.get("role", "upload") == "upload" and not c.get("wallet_secret_key")
+    ]
+    reused = [
+        c for c in clients
+        if c.get("role", "upload") == "upload" and c.get("wallet_secret_key")
+    ]
+
+    if reused:
+        console.print(
+            f"  Per-uploader wallets: reusing {len(reused)} existing wallet(s) "
+            f"from client state"
+        )
+    if not needs_wallet:
+        return clients
+
+    funding_address = address_for_secret_key(funding_secret_key)
+    rpc_url = ARBITRUM_SEPOLIA["rpc_url"]
+    token_address = ARBITRUM_SEPOLIA["payment_token_address"]
+    console.print(
+        f"  Per-uploader wallets: creating + funding {len(needs_wallet)} new "
+        f"wallet(s) from {funding_address} on Arbitrum Sepolia"
+    )
+    w3 = get_web3(rpc_url)
+
+    for client in needs_wallet:
+        ant_amount = client.get("ant_funding", "100")
+        eth_amount = client.get("eth_funding", "0.5")
+        wallet = create_wallet()
+        console.print(
+            f"    Uploader #{client['client_index']} ({client['region']}): "
+            f"{wallet.address} ← {ant_amount} ANT + {eth_amount} ETH"
+        )
+        txs = fund_wallet(
+            w3,
+            funding_secret_key,
+            token_address,
+            wallet.address,
+            ant_amount,
+            eth_amount,
+        )
+        console.print(
+            f"      eth_tx={txs['eth_tx']} ant_tx={txs['ant_tx']}"
+        )
+        update_client_wallet(
+            name=name,
+            client_index=client["client_index"],
+            wallet_address=wallet.address,
+            wallet_secret_key=wallet.secret_key,
+        )
+        client["wallet_address"] = wallet.address
+        client["wallet_secret_key"] = wallet.secret_key
+
+    return clients
+
+
 def cmd_provision_clients(args):
     """Execute the clients provision command: provision client VMs with uploader/downloader."""
     console = Console()
@@ -204,6 +283,21 @@ def cmd_provision_clients(args):
         aws_access_key_id, aws_secret_access_key = "", ""
         console.print("  Wallet key: skipped (download-only deployment)")
         console.print("  Client AWS creds: skipped (download-only deployment)")
+
+    # Per-uploader wallet creation and funding. Testnet only — prod uses a
+    # real funded Arbitrum One wallet supplied by the operator and skips
+    # synthesis entirely.
+    if has_uploaders and not prod_mode:
+        try:
+            clients = _ensure_uploader_wallets(
+                args.name, clients, wallet_secret_key, console
+            )
+        except Exception as e:
+            console.print(
+                f"[bold red]Error:[/bold red] Failed to create or fund "
+                f"per-uploader wallets: {e}"
+            )
+            sys.exit(1)
     addresses_file_content = _resolve_addresses_file_content(args, console)
 
     if prod_mode:

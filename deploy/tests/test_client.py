@@ -39,6 +39,8 @@ class TestParseUploaderSpec:
             "file_size_mb": 50,
             "vm_size": "s-2vcpu-4gb",
             "payment_type": None,
+            "ant_funding": "100",
+            "eth_funding": "0.5",
         }
 
     def test_region_file_size_and_vm_size(self):
@@ -49,6 +51,8 @@ class TestParseUploaderSpec:
             "file_size_mb": 100,
             "vm_size": "s-4vcpu-8gb",
             "payment_type": None,
+            "ant_funding": "100",
+            "eth_funding": "0.5",
         }
 
     def test_invalid_too_few_parts(self):

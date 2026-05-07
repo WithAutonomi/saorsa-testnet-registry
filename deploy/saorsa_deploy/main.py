@@ -453,6 +453,17 @@ def main():
         action="store_true",
         help="Skip confirmation prompt",
     )
+    clients_destroy_parser.add_argument(
+        "--wallet-secret-key",
+        type=str,
+        default=None,
+        help=(
+            "Funding wallet secret key (Arbitrum Sepolia EOA). Used to drain "
+            "per-uploader wallets before destruction. Falls back to "
+            "ANT_DEPLOY_SECRET_KEY env var. Required only if uploaders have "
+            "per-uploader wallets recorded in client state."
+        ),
+    )
 
     # clients infra
     clients_infra_parser = clients_subparsers.add_parser(

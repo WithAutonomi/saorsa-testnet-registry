@@ -280,7 +280,9 @@ def save_client_state(name: str, clients: list[dict]) -> None:
         name: Deployment name.
         clients: List of client specs, each a dict with keys:
             role ('upload' or 'download'), region, vm_size, ip, client_index.
-            Uploader specs additionally carry file_size_mb.
+            Uploader specs additionally carry file_size_mb, payment_type,
+            ant_funding, eth_funding, and (after provision) wallet_address +
+            wallet_secret_key for the per-uploader wallet.
     """
     state = {
         "name": name,
@@ -299,6 +301,39 @@ def update_client_state(name: str, updates: dict) -> None:
     """Merge updates into existing client state in S3."""
     state = load_client_state(name)
     state.update(updates)
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_CLIENT_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(state, indent=2),
+        ContentType="application/json",
+    )
+
+
+def update_client_wallet(
+    name: str, client_index: int, wallet_address: str, wallet_secret_key: str
+) -> None:
+    """Persist a generated per-uploader wallet onto its entry in client state.
+
+    Looks up the uploader by ``client_index`` (only uploaders carry wallets).
+    Raises RuntimeError if the deployment or matching uploader entry is missing.
+    """
+    state = load_client_state(name)
+    clients = state.get("clients", [])
+    matched = False
+    for entry in clients:
+        if entry.get("role") != "upload":
+            continue
+        if entry.get("client_index") == client_index:
+            entry["wallet_address"] = wallet_address
+            entry["wallet_secret_key"] = wallet_secret_key
+            matched = True
+            break
+    if not matched:
+        raise RuntimeError(
+            f"No uploader with client_index={client_index} found in client "
+            f"state for '{name}'."
+        )
     client = _get_s3_client()
     client.put_object(
         Bucket=S3_BUCKET,
