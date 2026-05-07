@@ -37,6 +37,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -56,9 +57,9 @@ STATUS_DOWNLOAD_FAILED = 2
 # goes to a per-file log file on disk regardless.
 STDERR_TAIL_LINES = 200
 
-# Per-file log directory on each uploader VM. Holds the full ant stderr
-# for every failed upload so diagnostics survive journal rotation and
-# rate limiting.
+# Per-file log directory on each uploader VM. Holds full ant stdout and
+# stderr for every upload — successes too, so slow-but-successful runs
+# can be analysed for performance after the fact.
 LOG_DIR = "/var/log/ant-prod-uploader"
 
 
@@ -196,15 +197,19 @@ def _payment_flag(payment_type: str | None) -> list[str]:
 
 def _run_ant(
     *, ant_path: str, bootstrap_args: list[str], evm_network: str,
-    secret_key: str, file_path: Path, payment_type: str | None = None,
+    secret_key: str, file_path: Path, payment_type: str | None,
+    stderr_log_path: Path, stdout_log_path: Path,
 ) -> tuple[int, str, str]:
-    """Run ant with --json and -v; return ``(exit_code, stdout, stderr)``.
+    """Run ant and tee its streams to plain-text log files in real time.
 
     ``--json`` makes the result a single JSON record on stdout.
     ``-v`` turns on info-level tracing on stderr — kept separate from the
-    JSON stream so it never breaks parsing. Caller decides whether to
-    surface stderr (we only forward it on failure to keep the journal
-    compact on the happy path).
+    JSON stream so it never breaks parsing. Both streams are written
+    line-by-line to per-upload log files so a slow run is observable on
+    the VM via ``tail -f`` and so the diagnostic survives even if systemd
+    kills the service mid-upload. Returns ``(exit_code, stdout, stderr)``;
+    the captured stderr is also kept in memory so the failure branch can
+    forward a tail to the journal without re-reading from disk.
     """
     cmd = [
         ant_path,
@@ -217,15 +222,61 @@ def _run_ant(
     ]
     env = dict(os.environ)
     env["SECRET_KEY"] = secret_key
-    proc = subprocess.run(
+
+    stderr_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stderr_err: list[BaseException] = []
+    stdout_err: list[BaseException] = []
+
+    proc = subprocess.Popen(
         cmd,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        check=False,
+        bufsize=1,
     )
-    return proc.returncode, proc.stdout, proc.stderr
+
+    def _pump_stderr() -> None:
+        try:
+            with open(
+                stderr_log_path, "w", encoding="utf-8", errors="replace"
+            ) as fh:
+                assert proc.stderr is not None
+                for line in proc.stderr:
+                    fh.write(line)
+                    stderr_chunks.append(line)
+        except BaseException as e:  # noqa: BLE001 — surface in main thread
+            stderr_err.append(e)
+
+    def _pump_stdout() -> None:
+        try:
+            with open(
+                stdout_log_path, "w", encoding="utf-8", errors="replace"
+            ) as fh:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    fh.write(line)
+                    stdout_chunks.append(line)
+        except BaseException as e:  # noqa: BLE001
+            stdout_err.append(e)
+
+    t_err = threading.Thread(target=_pump_stderr, daemon=True)
+    t_out = threading.Thread(target=_pump_stdout, daemon=True)
+    t_err.start()
+    t_out.start()
+    exit_code = proc.wait()
+    t_err.join()
+    t_out.join()
+
+    if stderr_err:
+        raise stderr_err[0]
+    if stdout_err:
+        raise stdout_err[0]
+
+    return exit_code, "".join(stdout_chunks), "".join(stderr_chunks)
 
 
 def _parse_ant_json(stdout: str) -> dict | None:
@@ -271,32 +322,6 @@ def _tail_lines(text: str, n: int) -> str:
     return out
 
 
-def _write_failure_log(idx: int, file_name: str, stderr_text: str) -> str | None:
-    """Persist the full ``ant`` stderr for a failed upload to disk.
-
-    Returns the absolute path written, or ``None`` if the write failed
-    (we never let logging trouble abort the upload loop).
-    """
-    if not stderr_text:
-        return None
-    try:
-        log_dir = Path(LOG_DIR)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        # Strip path separators / nulls just in case file_name slipped
-        # past _safe_filename — defence in depth only.
-        safe = file_name.replace("/", "_").replace("\x00", "_") or "unnamed"
-        path = log_dir / f"{idx:04d}-{safe}.stderr"
-        path.write_text(stderr_text, encoding="utf-8", errors="replace")
-        return str(path)
-    except OSError as e:
-        print(
-            f"WARN: could not write failure log for #{idx}: {e}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return None
-
-
 def main() -> int:
     bootstrap_arg_str = _require_env("BOOTSTRAP_ARGS")
     secret_key = _require_env("SECRET_KEY")
@@ -319,6 +344,8 @@ def main() -> int:
 
     bootstrap_args = bootstrap_arg_str.split()
     work_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
     host = socket.gethostname()
 
     urls = _read_urls(urls_file)
@@ -378,6 +405,10 @@ def main() -> int:
         # the source-file fetch happens out-of-band over HTTP and isn't
         # part of what we're measuring against the prod network.
         upload_start_ns = time.time_ns()
+        safe_log_name = file_name.replace("/", "_").replace("\x00", "_") or "unnamed"
+        log_basename = f"{idx:04d}-{safe_log_name}"
+        stderr_log_path = log_dir / f"{log_basename}.stderr"
+        stdout_log_path = log_dir / f"{log_basename}.stdout"
         exit_code, stdout, stderr_text = _run_ant(
             ant_path=ant_path,
             bootstrap_args=bootstrap_args,
@@ -385,6 +416,8 @@ def main() -> int:
             secret_key=secret_key,
             file_path=local_path,
             payment_type=payment_type,
+            stderr_log_path=stderr_log_path,
+            stdout_log_path=stdout_log_path,
         )
         end_ns = time.time_ns()
         total_ms = (end_ns - upload_start_ns) // 1_000_000
@@ -406,20 +439,16 @@ def main() -> int:
         if status == STATUS_SUCCESS:
             print(
                 f"  ok: address={address} chunks={chunks_stored}/{total_chunks} "
-                f"total={total_ms}ms",
+                f"total={total_ms}ms log={stderr_log_path}",
                 flush=True,
             )
         else:
             failures += 1
-            # Persist the FULL ant stderr to a per-file log file on disk so
-            # the diagnostic survives journald rotation and rate limiting.
-            log_path = _write_failure_log(idx, file_name, stderr_text)
-            log_pointer = f" stderr_log={log_path}" if log_path else ""
             reason_str = f" reason={reason!r}" if reason else ""
             print(
                 f"  FAILED: chunks={chunks_stored}/{total_chunks} "
                 f"failed={chunks_failed} exit={exit_code} "
-                f"total={total_ms}ms{reason_str}{log_pointer}",
+                f"total={total_ms}ms{reason_str} stderr_log={stderr_log_path}",
                 flush=True,
             )
             # Tail the trace to the journal: enough context to diagnose
@@ -430,7 +459,7 @@ def main() -> int:
             if tail:
                 sys.stderr.write(
                     f"--- last {STDERR_TAIL_LINES} lines of ant stderr "
-                    f"(full log: {log_path or '<not written>'}) ---\n"
+                    f"(full log: {stderr_log_path}) ---\n"
                 )
                 sys.stderr.write(tail)
                 if not tail.endswith("\n"):
