@@ -154,10 +154,10 @@ def _destroy_bootstraps_without_state(name: str, force: bool, console: Console) 
     stale_keys = list_stale_bootstrap_state_keys(name)
     if not stale_keys:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment state or bootstrap "
-            f"tfstate found for '{name}'."
+            f"[yellow]No bootstrap infrastructure found for '{name}'. "
+            "Nothing to destroy.[/yellow]"
         )
-        sys.exit(1)
+        return
 
     console.print(
         "[yellow]No deployment state in S3 — scanning for orphaned bootstrap "

@@ -255,10 +255,10 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
     orphans = _scan_orphan_main_vm_keys(name)
     if not orphans:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment state or main-VM "
-            f"tfstate found for '{name}'."
+            f"[yellow]No node infrastructure found for '{name}'. "
+            "Nothing to destroy.[/yellow]"
         )
-        sys.exit(1)
+        return
 
     console.print(
         "[yellow]No deployment state in S3 — scanning for orphaned main-VM "

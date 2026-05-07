@@ -141,11 +141,10 @@ class TestMissingStateFallback:
         patches.purge_stale.assert_called_once()
         assert patches.purge_stale.call_args.args[0] == "DEV-02"
 
-    def test_errors_when_no_state_and_no_orphans(self, patches):
+    def test_no_op_when_no_state_and_no_orphans(self, patches):
         patches.load_state.side_effect = RuntimeError("No deployment state found")
         patches.list_stale.return_value = []
 
-        with pytest.raises(SystemExit):
-            cmd_destroy_bootstraps(_args())
+        cmd_destroy_bootstraps(_args())
 
         patches.purge_stale.assert_not_called()

@@ -23,9 +23,12 @@ def cmd_destroy_monitoring(args):
     console.print(f"[bold]Loading monitoring state for '{args.name}'...[/bold]")
     try:
         state = load_monitoring_state(args.name)
-    except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
+    except RuntimeError:
+        console.print(
+            f"[yellow]No monitoring infrastructure found for '{args.name}'. "
+            "Nothing to destroy.[/yellow]"
+        )
+        return
 
     region = state["region"]
     console.print(f"  Monitoring VM in: digitalocean/{region}")

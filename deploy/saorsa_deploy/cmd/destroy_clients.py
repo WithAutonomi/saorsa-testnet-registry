@@ -40,10 +40,10 @@ def cmd_destroy_clients(args):
 
     if not clients:
         console.print(
-            f"[bold red]Error:[/bold red] No clients found for '{args.name}' "
-            "(neither client state nor tfstate)."
+            f"[yellow]No client infrastructure found for '{args.name}'. "
+            "Nothing to destroy.[/yellow]"
         )
-        sys.exit(1)
+        return
 
     console.print(f"[dim]Found {len(clients)} client VM(s) to destroy.[/dim]")
     for c in clients:

@@ -118,12 +118,11 @@ class TestMissingStateFallback:
         assert len(configs) == 1
         assert configs[0].region == "lon1"
 
-    def test_errors_when_no_state_and_no_orphans(self, patches):
+    def test_no_op_when_no_state_and_no_orphans(self, patches):
         patches.load_state.side_effect = RuntimeError("No deployment state found")
         patches.list_keys.return_value = []
 
-        with pytest.raises(SystemExit):
-            cmd_destroy_nodes(_args())
+        cmd_destroy_nodes(_args())
 
         patches.execute.assert_not_called()
 

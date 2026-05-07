@@ -79,12 +79,13 @@ class TestFallbackWhenNoClientState:
         )
         assert destroyed_regions == ["lon1", "nyc3"]
 
-    def test_errors_when_no_state_and_no_tfstate(self, patches):
+    def test_no_op_when_no_state_and_no_tfstate(self, patches):
         patches.load_client.side_effect = RuntimeError("no client state")
         patches.list_keys.return_value = []
 
-        with pytest.raises(SystemExit):
-            cmd_destroy_clients(_args())
+        # Should return cleanly, not raise SystemExit, so destroy runbooks
+        # using `set -e` proceed past partially-deployed testnets.
+        cmd_destroy_clients(_args())
 
         patches.destroy.assert_not_called()
 
