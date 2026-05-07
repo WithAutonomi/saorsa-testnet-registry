@@ -72,7 +72,17 @@ def cmd_migration_destroy_source(args):
         )
         sys.exit(1)
 
-    if not args.force:
+    if args.force:
+        # Force: terminate any source instance that hasn't been destroyed yet,
+        # regardless of where it is in the state machine. A VM still in
+        # NODES_STARTED gets killed alongside SOURCE_DRAINED siblings.
+        targets = [
+            vm
+            for vm in repo.list_vms(migration.id)
+            if vm.status != MigrationVmStatus.SOURCE_DESTROYED
+            and vm.source_provider_id
+        ]
+    else:
         leftover_states = [
             MigrationVmStatus.PLANNED,
             MigrationVmStatus.INFRA_PROVISIONED,
@@ -87,20 +97,19 @@ def cmd_migration_destroy_source(args):
                     f"'{state.value}'. Drain them first or pass --force."
                 )
                 sys.exit(1)
+        targets = repo.list_vms(
+            migration.id, status=MigrationVmStatus.SOURCE_DRAINED
+        )
 
-    drained = repo.list_vms(
-        migration.id, status=MigrationVmStatus.SOURCE_DRAINED
-    )
-    if not drained:
+    if not targets:
         console.print(
-            "[bold red]Error:[/bold red] No VMs in 'source_drained' state. "
-            "Nothing to destroy."
+            "[bold red]Error:[/bold red] No VMs left to destroy."
         )
         sys.exit(1)
 
     # Group by AWS region — boto3.ec2 is per-region.
     by_region: dict[str, list] = defaultdict(list)
-    for vm in drained:
+    for vm in targets:
         if vm.source_provider != "aws":
             console.print(
                 f"[bold red]Error:[/bold red] VM {vm.source_name} has "
@@ -185,10 +194,12 @@ def cmd_migration_destroy_source(args):
         )
         sys.exit(1)
 
-    # Migration is fully destroyed only when no SOURCE_DRAINED rows remain.
-    leftover = repo.list_vms(
-        migration.id, status=MigrationVmStatus.SOURCE_DRAINED
-    )
+    # Migration is fully destroyed only when every VM is SOURCE_DESTROYED.
+    leftover = [
+        vm
+        for vm in repo.list_vms(migration.id)
+        if vm.status != MigrationVmStatus.SOURCE_DESTROYED
+    ]
     if not leftover:
         repo.update_migration_status(migration.id, MigrationStatus.COMPLETE)
         console.print()
