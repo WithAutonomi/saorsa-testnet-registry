@@ -191,9 +191,12 @@ uv run saorsa-deploy track-upgrades init \
 # Pulls credentials from elastic state and queries ES directly. Failures
 # here usually mean: telegraf wedged on some/all hosts, wrong testnet_name
 # tag, or wrong index pattern.
-ES_INFO=$(uv run saorsa-deploy elastic info --name "$NAME" 2>&1)
-ES_URL=$(echo "$ES_INFO" | awk '/URL:/{print $2; exit}')
-ES_KEY=$(echo "$ES_INFO" | awk '/API Key:/{getline; print; exit}' | tr -d ' ')
+# `elastic info` prints a Rich box with │ borders, so strip those first.
+# URL: pick the http(s) token on the URL line.
+# API Key: value lives on the line *after* "API Key:".
+ES_INFO=$(uv run saorsa-deploy elastic info --name "$NAME" 2>&1 | sed 's/│//g')
+ES_URL=$(echo "$ES_INFO" | awk '/URL:/{for(i=1;i<=NF;i++) if($i ~ /^http/) {print $i; exit}}')
+ES_KEY=$(echo "$ES_INFO" | awk '/API Key:/{getline; gsub(/[[:space:]]/,""); print; exit}')
 NAME_LOWER=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
 INDEX="telegraf-ant-nodes-${NAME_LOWER}-*"
 
