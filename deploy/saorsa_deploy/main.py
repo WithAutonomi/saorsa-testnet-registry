@@ -749,10 +749,15 @@ def main():
         ),
     )
     deployments_print_recorded_parser.add_argument(
-        "--name",
-        type=str,
+        "--id",
+        dest="deployment_id",
+        type=int,
         required=True,
-        help="Deployment name (must match a row in the registry).",
+        help=(
+            "Deployment id from the registry. Names are not unique across "
+            "destroyed/recreated deployments — use the id from "
+            "`deployments ls` to point at a specific historical row."
+        ),
     )
     deployments_print_recorded_parser.add_argument(
         "--details",

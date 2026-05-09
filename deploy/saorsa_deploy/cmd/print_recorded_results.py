@@ -64,29 +64,29 @@ def cmd_print_recorded_results(args) -> None:
         )
         sys.exit(1)
 
-    deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
+    deployment = repo.get(args.deployment_id)
     if deployment is None:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
-            "in the registry."
+            f"[bold red]Error:[/bold red] No deployment with id="
+            f"{args.deployment_id} in the registry."
         )
         sys.exit(1)
 
     kind = _resolve_kind(deployment.deploy_args)
     console.rule(
-        f"[bold]Recorded results — {args.name} "
+        f"[bold]Recorded results — {deployment.name} "
         f"(id={deployment.id}, kind={kind or 'unknown'})[/bold]"
     )
 
     host_result = repo.get_host_result_for_deployment(deployment.id)
-    _print_analysis_section(host_result, args.name, console)
+    _print_analysis_section(host_result, deployment.name, console)
 
     if kind in _PROD_UPLOAD_KINDS:
         rows = repo.list_prod_upload_results_for_deployment(deployment.id)
-        _print_prod_upload_section(rows, args.name, args.details, console)
+        _print_prod_upload_section(rows, deployment.name, args.details, console)
     else:
         rows = repo.list_file_results_for_deployment(deployment.id)
-        _print_file_results_section(rows, args.name, console)
+        _print_file_results_section(rows, deployment.name, console)
 
 
 def _resolve_kind(deploy_args) -> str:
