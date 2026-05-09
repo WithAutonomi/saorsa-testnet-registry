@@ -701,10 +701,12 @@ def main():
     deployments_print_downloads_parser = deployments_subparsers.add_parser(
         "print-downloads",
         help=(
-            "Print every download operation recorded in the deployment's "
-            "InfluxDB, one table per client host. Works for testnet "
-            "deployments and prod-continuous-downloader; rejects "
-            "prod-uploaders and prod-local-uploads."
+            "Print every download operation from the deployment's live "
+            "InfluxDB feed, one table per client host. Reads live results "
+            "(monitoring stack must still be up); for the persisted "
+            "Postgres view use `deployments print-recorded-results`. Works "
+            "for testnet deployments and prod-continuous-downloader; "
+            "rejects prod-uploaders and prod-local-uploads."
         ),
     )
     _add_print_file_ops_args(deployments_print_downloads_parser)
@@ -713,11 +715,13 @@ def main():
     deployments_print_uploads_parser = deployments_subparsers.add_parser(
         "print-uploads",
         help=(
-            "Print every upload operation recorded in the deployment's "
-            "InfluxDB, one table per client host. Works for testnet "
-            "deployments (file_ops measurement) and prod-uploaders "
-            "(prod_upload measurement); rejects prod-continuous-downloader "
-            "and prod-local-uploads."
+            "Print every upload operation from the deployment's live "
+            "InfluxDB feed, one table per client host. Reads live results "
+            "(monitoring stack must still be up); for the persisted "
+            "Postgres view use `deployments print-recorded-results`. Works "
+            "for testnet deployments (file_ops measurement) and "
+            "prod-uploaders (prod_upload measurement); rejects "
+            "prod-continuous-downloader and prod-local-uploads."
         ),
     )
     _add_print_file_ops_args(deployments_print_uploads_parser)
@@ -728,6 +732,34 @@ def main():
             "For prod-uploaders only: print one full record per upload with "
             "no truncation — full addresses, full file names, source URL, "
             "raw byte counts. Ignored for other kinds."
+        ),
+    )
+
+    # deployments print-recorded-results
+    deployments_print_recorded_parser = deployments_subparsers.add_parser(
+        "print-recorded-results",
+        help=(
+            "Print every result that has been persisted to Postgres for a "
+            "deployment: the freeform analysis summary plus per-host "
+            "metrics from deployment_host_results, and the kind-appropriate "
+            "file results (deployment_file_results for testnet / "
+            "prod-continuous-downloader; deployment_prod_upload_results "
+            "for prod-uploaders / prod-local-uploads). Reads only Postgres, "
+            "so it works after monitoring infra has been torn down."
+        ),
+    )
+    deployments_print_recorded_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match a row in the registry).",
+    )
+    deployments_print_recorded_parser.add_argument(
+        "--details",
+        action="store_true",
+        help=(
+            "For prod-uploaders / prod-local-uploads: print one full row "
+            "per upload with no truncation. Ignored for other kinds."
         ),
     )
 
@@ -2775,6 +2807,12 @@ def main():
             from saorsa_deploy.cmd.print_file_ops import cmd_print_uploads
 
             cmd_print_uploads(args)
+        elif args.deployments_subcommand == "print-recorded-results":
+            from saorsa_deploy.cmd.print_recorded_results import (
+                cmd_print_recorded_results,
+            )
+
+            cmd_print_recorded_results(args)
         elif args.deployments_subcommand == "record-results":
             from saorsa_deploy.cmd.record_results import cmd_record_results
 
