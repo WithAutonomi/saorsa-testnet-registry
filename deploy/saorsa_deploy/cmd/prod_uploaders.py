@@ -508,7 +508,7 @@ def cmd_prod_uploaders_deploy(args):
         f"[bold green]prod uploaders '{args.name}' is running.[/bold green]"
     )
     console.print(
-        f"[dim]Tail upload progress: saorsa-deploy prod print-upload-results "
+        f"[dim]Tail upload progress: saorsa-deploy deployments print-uploads "
         f"--name {args.name}[/dim]"
     )
     console.print(

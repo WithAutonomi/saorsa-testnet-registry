@@ -678,10 +678,11 @@ The wallet secret key is shared across every uploader VM. Each uploader file is 
 After uploads have started, inspect them with:
 
 ```bash
-uv run saorsa-deploy prod print-upload-results --name PROD-UP-01
+uv run saorsa-deploy deployments print-uploads --name PROD-UP-01
+# add --details for one full record per upload with no truncation
 ```
 
-This prints one Rich table per uploader VM with file name, size, status (success / partial / dl-fail), chunks stored vs total, public address, and duration.
+`deployments print-uploads` dispatches on the deployment kind. For `prod-uploaders` it queries the `prod_upload` Influx measurement and prints one Rich table per uploader VM with file name, size, status (success / partial / dl-fail), chunks stored vs total, public address, and duration.
 
 When the run completes, persist every Influx record into the registry database for future comparison:
 
@@ -730,14 +731,7 @@ The command resolves the live prod bootstrap peers from upstream at startup, dow
 
 There is no paired destroy command; nothing was provisioned.
 
-To view the per-file results recorded for a local-uploads deployment, use:
-
-```bash
-uv run saorsa-deploy prod print-local-upload-results --name LOCAL-UP-01
-# add --details to print one full record per upload with no truncation
-```
-
-This reads straight from the `deployment_prod_upload_results` Postgres table — it's the equivalent of `prod print-upload-results` for runs that wrote to Postgres directly instead of via Influx.
+`prod local-uploads` deployments have no Influx backend, so `deployments print-uploads` rejects them and points at the forthcoming `deployments print-recorded-results` command (reads `deployment_prod_upload_results` from Postgres). Until that lands, query the table directly via `psql`.
 
 ### Static IP Management
 

@@ -745,8 +745,10 @@ def main():
     deployments_print_downloads_parser = deployments_subparsers.add_parser(
         "print-downloads",
         help=(
-            "Print every download operation recorded in the testnet's InfluxDB, "
-            "one table per client host."
+            "Print every download operation recorded in the deployment's "
+            "InfluxDB, one table per client host. Works for testnet "
+            "deployments and prod-continuous-downloader; rejects "
+            "prod-uploaders and prod-local-uploads."
         ),
     )
     _add_print_file_ops_args(deployments_print_downloads_parser)
@@ -755,11 +757,23 @@ def main():
     deployments_print_uploads_parser = deployments_subparsers.add_parser(
         "print-uploads",
         help=(
-            "Print every upload operation recorded in the testnet's InfluxDB, "
-            "one table per client host."
+            "Print every upload operation recorded in the deployment's "
+            "InfluxDB, one table per client host. Works for testnet "
+            "deployments (file_ops measurement) and prod-uploaders "
+            "(prod_upload measurement); rejects prod-continuous-downloader "
+            "and prod-local-uploads."
         ),
     )
     _add_print_file_ops_args(deployments_print_uploads_parser)
+    deployments_print_uploads_parser.add_argument(
+        "--details",
+        action="store_true",
+        help=(
+            "For prod-uploaders only: print one full record per upload with "
+            "no truncation — full addresses, full file names, source URL, "
+            "raw byte counts. Ignored for other kinds."
+        ),
+    )
 
     # deployments record-file-results
     deployments_record_file_results_parser = deployments_subparsers.add_parser(
@@ -2507,49 +2521,6 @@ def main():
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
 
-    # --- prod print-local-upload-results ---
-    prod_plur_parser = prod_subparsers.add_parser(
-        "print-local-upload-results",
-        help=(
-            "Print every per-file row stored in the registry database for a "
-            "`prod local-uploads` deployment."
-        ),
-    )
-    prod_plur_parser.add_argument(
-        "--name",
-        type=str,
-        required=True,
-        help="Deployment name to query.",
-    )
-    prod_plur_parser.add_argument(
-        "--details",
-        action="store_true",
-        help=(
-            "Print one full record per upload with no truncation — full "
-            "addresses, full file names, source path, raw byte counts, "
-            "reason text. Use when you need to grab values verbatim."
-        ),
-    )
-
-    # --- prod print-upload-results ---
-    prod_pur_parser = prod_subparsers.add_parser(
-        "print-upload-results",
-        help=(
-            "Print every prod_upload record stored in the deployment's "
-            "InfluxDB, one table per uploader VM."
-        ),
-    )
-    _add_prod_upload_query_args(prod_pur_parser)
-    prod_pur_parser.add_argument(
-        "--details",
-        action="store_true",
-        help=(
-            "Print one full record per upload with no truncation — full "
-            "addresses, full file names, source URL, raw byte counts. "
-            "Use when you need to grab values verbatim."
-        ),
-    )
-
     # --- prod record-upload-results ---
     prod_rur_parser = prod_subparsers.add_parser(
         "record-upload-results",
@@ -3054,18 +3025,6 @@ def main():
             )
 
             cmd_prod_local_uploads(args)
-        elif args.prod_subcommand == "print-local-upload-results":
-            from saorsa_deploy.cmd.prod_print_local_upload_results import (
-                cmd_prod_print_local_upload_results,
-            )
-
-            cmd_prod_print_local_upload_results(args)
-        elif args.prod_subcommand == "print-upload-results":
-            from saorsa_deploy.cmd.prod_print_upload_results import (
-                cmd_prod_print_upload_results,
-            )
-
-            cmd_prod_print_upload_results(args)
         elif args.prod_subcommand == "record-upload-results":
             from saorsa_deploy.cmd.prod_record_upload_results import (
                 cmd_prod_record_upload_results,
