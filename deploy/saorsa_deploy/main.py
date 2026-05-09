@@ -80,50 +80,6 @@ def main():
             ),
         )
 
-    def _add_prod_upload_query_args(p):
-        p.add_argument(
-            "--name",
-            type=str,
-            required=True,
-            help="Deployment name (used to locate the monitoring stack).",
-        )
-        p.add_argument(
-            "--monitoring-name",
-            type=str,
-            default=None,
-            help=(
-                "Monitoring stack name to load Influx credentials from "
-                "(defaults to --name)."
-            ),
-        )
-        p.add_argument(
-            "--influx-url",
-            type=str,
-            default=None,
-            help="InfluxDB URL (overrides monitoring state lookup).",
-        )
-        p.add_argument(
-            "--influx-token",
-            type=str,
-            default=None,
-            help="InfluxDB API token (overrides monitoring state lookup).",
-        )
-        p.add_argument(
-            "--influx-org",
-            type=str,
-            default=None,
-            help="InfluxDB organization (default: from monitoring state, else 'ant').",
-        )
-        p.add_argument(
-            "--influx-bucket",
-            type=str,
-            default=None,
-            help=(
-                "InfluxDB bucket (default: from monitoring state, else "
-                "'testnet-metrics')."
-            ),
-        )
-
     # =========================================================================
     # === bootstraps group (clean, destroy, infra, provision) ===
     # =========================================================================
@@ -779,8 +735,12 @@ def main():
     deployments_record_file_results_parser = deployments_subparsers.add_parser(
         "record-file-results",
         help=(
-            "Read per-client upload/download aggregates from the testnet's "
-            "InfluxDB and upsert them into the deployment_file_results table."
+            "Persist file-operation results from a deployment's InfluxDB into "
+            "Postgres. Dispatches on deploy_args.kind: testnet and "
+            "prod-continuous-downloader → per-host aggregates in "
+            "deployment_file_results; prod-uploaders → per-file rows in "
+            "deployment_prod_upload_results (--window ignored); "
+            "prod-local-uploads is rejected (already in Postgres)."
         ),
     )
     deployments_record_file_results_parser.add_argument(
@@ -2521,16 +2481,6 @@ def main():
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
 
-    # --- prod record-upload-results ---
-    prod_rur_parser = prod_subparsers.add_parser(
-        "record-upload-results",
-        help=(
-            "Read every prod_upload record from the deployment's InfluxDB and "
-            "upsert per-file rows into the deployment_prod_upload_results table."
-        ),
-    )
-    _add_prod_upload_query_args(prod_rur_parser)
-
     # --- prod extend-unmanaged-volumes ---
     prod_euv_parser = prod_subparsers.add_parser(
         "extend-unmanaged-volumes",
@@ -3025,12 +2975,6 @@ def main():
             )
 
             cmd_prod_local_uploads(args)
-        elif args.prod_subcommand == "record-upload-results":
-            from saorsa_deploy.cmd.prod_record_upload_results import (
-                cmd_prod_record_upload_results,
-            )
-
-            cmd_prod_record_upload_results(args)
         elif args.prod_subcommand == "extend-unmanaged-volumes":
             from saorsa_deploy.cmd.prod_extend_unmanaged_volumes import (
                 cmd_prod_extend_unmanaged_volumes,

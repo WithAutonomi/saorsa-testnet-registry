@@ -687,10 +687,10 @@ uv run saorsa-deploy deployments print-uploads --name PROD-UP-01
 When the run completes, persist every Influx record into the registry database for future comparison:
 
 ```bash
-uv run saorsa-deploy prod record-upload-results --name PROD-UP-01
+uv run saorsa-deploy deployments record-file-results --name PROD-UP-01
 ```
 
-Each record becomes one row in `deployment_prod_upload_results` keyed by `(deployment_id, client_hostname, source_url)`. Re-running the command updates rows in place, so it is safe to run repeatedly.
+`deployments record-file-results` is kind-dispatched. For `prod-uploaders` it upserts each `prod_upload` Influx point into `deployment_prod_upload_results`, keyed by `(deployment_id, client_hostname, source_url)`. The `--window` flag is ignored for this kind — uploads are bounded runs, so the command always pulls from epoch. Re-running the command updates rows in place, so it is safe to run repeatedly.
 
 To tear down:
 

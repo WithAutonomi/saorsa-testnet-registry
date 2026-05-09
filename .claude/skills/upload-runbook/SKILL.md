@@ -13,7 +13,7 @@ Generate an executable bash runbook that runs a production uploaders deployment 
 
 - A funded **Arbitrum One mainnet** wallet whose secret is in `ARBITRUM_ONE_SECRET_KEY` (deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` because uploads cost real ETH).
 - One **URL list file per uploader VM**, each readable on the box that runs the runbook (the file contents are slurped at deploy time and embedded into provisioning).
-- A name that matches the convention used by the companion analysis commands (`deployments print-uploads`, `prod record-upload-results`).
+- A name that matches the convention used by the companion analysis commands (`deployments print-uploads`, `deployments record-file-results`).
 
 Rather than re-deriving the spec every time, this skill interviews the user once and emits a runbook that bakes the whole plan in.
 
@@ -134,7 +134,7 @@ Once the interview is done, before writing the files:
 4. **Write both files**, then `chmod +x` them.
 5. **Do not run the generated script.** Just report the two paths and tell the user what to do next, including a reminder to set `ARBITRUM_ONE_SECRET_KEY`.
 6. **If `runbooks/` is not already in `.gitignore`**, tell the user — don't edit `.gitignore` yourself.
-7. **Mention the companion commands** in the closing message (not in the script): once uploads finish, `uv run saorsa-deploy deployments print-uploads --name $NAME` and `uv run saorsa-deploy prod record-upload-results --name $NAME` give per-file Rich tables and Postgres upserts respectively.
+7. **Mention the companion commands** in the closing message (not in the script): once uploads finish, `uv run saorsa-deploy deployments print-uploads --name $NAME` and `uv run saorsa-deploy deployments record-file-results --name $NAME` give per-file Rich tables and Postgres upserts respectively.
 
 ### Flag rules
 
@@ -260,6 +260,6 @@ echo "Monitoring VM was kept; remember to tear it down separately when you're do
 - **The branch path needs a `build ant` step first.** `prod uploaders deploy --branch-name X` does *not* build on the uploader VMs — it pulls a pre-built artifact from S3 keyed by `name + repo_owner + branch`, and refuses to start if the artifact is missing. Always emit a `saorsa-deploy build ant` step before the deploy when the user picked the branch path. The version path (`--ant-version`) needs no build step.
 - **Monitoring is implicit.** Don't emit a separate `monitoring infra` / `monitoring provision` chain — `prod uploaders deploy` does it in one shot. The only knob exposed at this level is `--monitoring-volume-size`.
 - **Destroy takes `--ssh-key-path`.** Unlike testnet destroy commands, the prod destroy commands SSH into the monitoring VM (and others) for clean teardown, so the key is required.
-- **Companion commands aren't in the runbook.** `deployments print-uploads` and `prod record-upload-results` run after uploads finish, at a time the runbook can't predict. Mention them in the closing message instead of baking them into the script.
+- **Companion commands aren't in the runbook.** `deployments print-uploads` and `deployments record-file-results` run after uploads finish, at a time the runbook can't predict. Mention them in the closing message instead of baking them into the script.
 - **Don't omit `--monitoring-volume-size` from preflight if user overrode it.** If the user picked a non-default value, emit the flag exactly once on the deploy command — the destroy command does not take this flag.
 - **Don't add retry loops or sleeps.** If a command fails, the user wants to see it and decide what to do — `set -e` is the contract.

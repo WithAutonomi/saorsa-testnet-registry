@@ -512,7 +512,7 @@ def cmd_prod_uploaders_deploy(args):
         f"--name {args.name}[/dim]"
     )
     console.print(
-        f"[dim]Persist uploads to DB:  saorsa-deploy prod record-upload-results "
+        f"[dim]Persist uploads to DB:  saorsa-deploy deployments record-file-results "
         f"--name {args.name}[/dim]"
     )
 
