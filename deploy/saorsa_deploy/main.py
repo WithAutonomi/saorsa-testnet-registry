@@ -2298,6 +2298,16 @@ def main():
         help="Free-text description of what this deployment is for. "
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
+    prod_cd_deploy_parser.add_argument(
+        "--sleep-interval-secs",
+        type=int,
+        default=900,
+        help=(
+            "Seconds to sleep at the end of each full pass through the address "
+            "list before starting the next cycle. Default: 900 (15 minutes). "
+            "Pass 0 to disable inter-cycle sleeping (back-to-back cycling)."
+        ),
+    )
 
     prod_cd_destroy_parser = prod_cd_subparsers.add_parser(
         "destroy",

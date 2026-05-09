@@ -587,7 +587,9 @@ uv run saorsa-deploy prod bootstrap destroy
 
 ### Running continuous downloaders against production (`prod continuous-downloader`)
 
-`prod continuous-downloader deploy` stands up a single client VM running `ant-downloader` continuously against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `deployments record-results` workflow can be used to upsert download aggregates into PostgreSQL.
+`prod continuous-downloader deploy` stands up a single client VM running a dedicated `prod_downloader.py` Python service against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `deployments record-results` workflow can be used to upsert download aggregates into PostgreSQL.
+
+The service writes a per-op stdout/stderr log under `/var/log/ant-prod-downloader/{idx:04d}-{addr_prefix}.{stdout,stderr}` for **every** download — successes too, so slow-but-successful downloads can be analysed for performance after the fact. Testnet downloaders deliberately stay on the legacy `downloader.sh` and keep no per-op logs (testnet runs want maximum pressure on the network, not diagnostic baggage).
 
 Unlike `prod bootstrap deploy`, this command does **not** provision any bootstrap/genesis/node infrastructure — it fetches the live peers list from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml) at runtime and points the downloader service at those peers via `--bootstrap ip:port`.
 
@@ -595,6 +597,7 @@ Unlike `prod bootstrap deploy`, this command does **not** provision any bootstra
 uv run saorsa-deploy prod continuous-downloader deploy \
   --name PROD-DL-01 \
   --spec lon1 \
+  --purpose "Soak-test 0.3.1 downloads from London" \
   --addresses-file my-addresses.txt   # optional, defaults to resources/prod_addresses.txt
 ```
 
@@ -602,11 +605,11 @@ Orchestrated sequence (each step is skipped when its state already exists, so th
 
 1. `monitoring infra` + `monitoring provision` for an InfluxDB VM in `lon1` named identically to `--name`.
 2. `clients infra` for the single `--spec` (passed internally as one `--downloader`; no uploaders — prod mode is download-only).
-3. `clients provision --prod --addresses-file <path> --monitoring-name <name>` which:
+3. The prod-specific provisioner (`provisioning/prod_downloader.py`) runs against the VM:
    - Fetches the prod peers list and writes `BOOTSTRAP_ARGS` against them.
-   - Writes the address list to `/var/lib/ant-client/addresses.txt` on the VM.
-   - Teaches `downloader.sh` to prefer that file over the usual S3 uploader-emitted feed.
-4. `clients start` to launch the `ant-downloader` systemd service.
+   - Writes the address list to `/var/lib/ant-prod-downloader/addresses.txt`.
+   - Deploys `prod_downloader.py` to `/root/ant-prod-downloader/` and writes the `ant-prod-downloader.service` systemd unit.
+4. The orchestrator SSHes in and `systemctl enable --now ant-prod-downloader` to launch the service.
 
 Arguments (for `prod continuous-downloader deploy`):
 
@@ -614,7 +617,9 @@ Arguments (for `prod continuous-downloader deploy`):
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
 | `--spec` | string | — | Downloader VM `region[:vm_size]` (single VM) |
+| `--purpose` | string | — | Free-text description; persisted into `deploy_args` and shown by `deployments slack-post` |
 | `--addresses-file` | path | shipped default | Local file of newline-separated addresses |
+| `--sleep-interval-secs` | int | `900` | Seconds to sleep at the **end of each full pass** through the address list before starting the next cycle. `0` disables the sleep (back-to-back cycling). Persisted in `deploy_args.sleep_interval_secs`. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
 | `--ant-version` | string | — | Optional explicit release version |
 | `--monitoring-volume-size` | int | `50` | Monitoring VM attached volume size (GB) |

@@ -233,6 +233,13 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
 def _prod_cd_blocks(deploy_args: dict) -> list[dict]:
     spec = deploy_args.get("spec", "_unknown_")
     addresses_file = deploy_args.get("addresses_file", "_default_")
+    sleep_interval_secs = deploy_args.get("sleep_interval_secs")
+    if sleep_interval_secs is None:
+        sleep_label = "_unset_"
+    elif sleep_interval_secs == 0:
+        sleep_label = "0s (back-to-back)"
+    else:
+        sleep_label = f"{sleep_interval_secs}s"
     return [
         _section(
             f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
@@ -241,6 +248,7 @@ def _prod_cd_blocks(deploy_args: dict) -> list[dict]:
             [
                 ("Downloader spec", spec),
                 ("Addresses file", addresses_file),
+                ("Sleep interval", sleep_label),
             ]
         ),
     ]
