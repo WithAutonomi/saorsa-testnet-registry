@@ -181,7 +181,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         f"[bold green]prod continuous-downloader '{args.name}' is running.[/bold green]"
     )
     console.print(
-        f"[dim]Record download metrics with: saorsa-deploy deployments record-file-results "
+        f"[dim]Record download metrics with: saorsa-deploy deployments record-results "
         f"--name {args.name} --monitoring-name {args.name} --window -1h[/dim]"
     )
 

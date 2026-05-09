@@ -1,8 +1,8 @@
-"""Verify `deployments record-file-results` works for prod-continuous-downloader deployment rows.
+"""Verify `deployments record-results` works for prod-continuous-downloader deployment rows.
 
 The existing testnet flow keys on ``deployment.name`` and the record command is
 generic over deployment kind — this test just pins that contract down so a
-future refactor can't accidentally couple `deployments record-file-results` to testnet rows.
+future refactor can't accidentally couple `deployments record-results` to testnet rows.
 """
 
 from datetime import datetime, timezone
@@ -15,7 +15,7 @@ from saorsa_db.repositories import SqlAlchemyDeploymentRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from saorsa_deploy.cmd.record_file_results import cmd_record_file_results
+from saorsa_deploy.cmd.record_results import cmd_record_results
 
 
 @pytest.fixture()
@@ -54,7 +54,7 @@ def _args(name: str):
     )
 
 
-def test_record_file_results_upserts_download_rows_for_prod_deployment(repo_and_session):
+def test_record_results_upserts_download_rows_for_prod_deployment(repo_and_session):
     repo, session = repo_and_session
     deployment = repo.create(
         name="PROD-DL-01",
@@ -75,14 +75,14 @@ def test_record_file_results_upserts_download_rows_for_prod_deployment(repo_and_
 
     with (
         patch(
-            "saorsa_deploy.cmd.record_file_results.get_repository", return_value=repo
+            "saorsa_deploy.cmd.record_results.get_repository", return_value=repo
         ),
         patch(
-            "saorsa_deploy.cmd.record_file_results.fetch_operation_points",
+            "saorsa_deploy.cmd.record_results.fetch_operation_points",
             return_value=canned_points,
         ),
     ):
-        cmd_record_file_results(_args("PROD-DL-01"))
+        cmd_record_results(_args("PROD-DL-01"))
 
     rows = repo.list_file_results_for_deployment(deployment.id)
     assert len(rows) == 2  # one per host, both download
@@ -101,7 +101,7 @@ def test_record_file_results_upserts_download_rows_for_prod_deployment(repo_and_
     assert nyc1.failure_count == 1
 
 
-def test_record_file_results_no_ops_no_rows_no_crash(repo_and_session):
+def test_record_results_no_ops_no_rows_no_crash(repo_and_session):
     repo, _ = repo_and_session
     deployment = repo.create(
         name="PROD-DL-EMPTY",
@@ -110,13 +110,13 @@ def test_record_file_results_no_ops_no_rows_no_crash(repo_and_session):
 
     with (
         patch(
-            "saorsa_deploy.cmd.record_file_results.get_repository", return_value=repo
+            "saorsa_deploy.cmd.record_results.get_repository", return_value=repo
         ),
         patch(
-            "saorsa_deploy.cmd.record_file_results.fetch_operation_points",
+            "saorsa_deploy.cmd.record_results.fetch_operation_points",
             return_value=[],
         ),
     ):
-        cmd_record_file_results(_args("PROD-DL-EMPTY"))
+        cmd_record_results(_args("PROD-DL-EMPTY"))
 
     assert repo.list_file_results_for_deployment(deployment.id) == []

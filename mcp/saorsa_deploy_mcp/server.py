@@ -609,7 +609,7 @@ def stop_client_services(name: str) -> str:
 
 
 @mcp.tool()
-def record_file_results(
+def record_results(
     name: str,
     monitoring_name: str | None = None,
     window: str | None = None,
@@ -618,12 +618,17 @@ def record_file_results(
     influx_org: str | None = None,
     influx_bucket: str | None = None,
 ) -> str:
-    """Record per-client upload/download aggregates from InfluxDB to Postgres.
+    """Record per-client upload/download results from InfluxDB to Postgres.
 
-    Queries the testnet's InfluxDB for upload and download operation points,
-    aggregates them per (client hostname, op type, file size), and upserts
-    the aggregates into the deployment_file_results table linked to the
-    named deployment.
+    Kind-dispatched on the deployment's deploy_args.kind:
+
+    * testnet and prod-continuous-downloader → per-host aggregates of the
+      file_ops measurement, written to the deployment_file_results table
+      (--window honoured).
+    * prod-uploaders → per-file rows of the prod_upload measurement,
+      written to the deployment_prod_upload_results table (--window
+      ignored; uploads are bounded runs).
+    * prod-local-uploads → rejected; results are already in Postgres.
 
     Args:
         name: Deployment name (e.g. "DEV-01")
@@ -635,7 +640,7 @@ def record_file_results(
         influx_org: Override InfluxDB organization
         influx_bucket: Override InfluxDB bucket
     """
-    cli_args = ["deployments", "record-file-results", "--name", name]
+    cli_args = ["deployments", "record-results", "--name", name]
     if monitoring_name:
         cli_args.extend(["--monitoring-name", monitoring_name])
     if window:
@@ -651,12 +656,12 @@ def record_file_results(
 
     rc, stdout, stderr = _run_deploy(cli_args)
     if rc != 0:
-        return f"deployments record-file-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return f"deployments record-results failed (exit code {rc}):\n{stderr}\n{stdout}"
     return stdout or f"File results recorded for '{name}'."
 
 
 @mcp.tool()
-def record_results(
+def record_analysis(
     name: str,
     summary: str | None = None,
     monitoring_name: str | None = None,
@@ -690,7 +695,7 @@ def record_results(
         influx_org: Override InfluxDB organization
         influx_bucket: Override InfluxDB bucket
     """
-    cli_args = ["deployments", "record-results", "--name", name]
+    cli_args = ["deployments", "record-analysis", "--name", name]
     if summary is not None:
         cli_args.extend(["--summary", summary])
     if monitoring_name:
@@ -708,16 +713,16 @@ def record_results(
 
     rc, stdout, stderr = _run_deploy(cli_args)
     if rc != 0:
-        return f"deployments record-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return f"deployments record-analysis failed (exit code {rc}):\n{stderr}\n{stdout}"
     return stdout or f"Host results recorded for '{name}'."
 
 
 @mcp.tool()
-def set_results_summary(name: str, summary: str) -> str:
-    """Update the freeform summary on a deployment's recorded host results.
+def edit_analysis_summary(name: str, summary: str) -> str:
+    """Update the freeform summary on a deployment's recorded host analysis.
 
     Use this to revise the AI-authored test-run summary without re-querying
-    InfluxDB. Requires `record_results` to have been run for this
+    InfluxDB. Requires `record_analysis` to have been run for this
     deployment at least once.
 
     Args:
@@ -725,10 +730,10 @@ def set_results_summary(name: str, summary: str) -> str:
         summary: New freeform summary text describing the testnet run outcome
     """
     rc, stdout, stderr = _run_deploy(
-        ["deployments", "set-results-summary", "--name", name, "--summary", summary]
+        ["deployments", "edit-analysis-summary", "--name", name, "--summary", summary]
     )
     if rc != 0:
-        return f"deployments set-results-summary failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return f"deployments edit-analysis-summary failed (exit code {rc}):\n{stderr}\n{stdout}"
     return stdout or f"Summary updated for '{name}'."
 
 

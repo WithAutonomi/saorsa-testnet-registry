@@ -587,7 +587,7 @@ uv run saorsa-deploy prod bootstrap destroy
 
 ### Running continuous downloaders against production (`prod continuous-downloader`)
 
-`prod continuous-downloader deploy` stands up a single client VM running `ant-downloader` continuously against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `deployments record-file-results` workflow can be used to upsert download aggregates into PostgreSQL.
+`prod continuous-downloader deploy` stands up a single client VM running `ant-downloader` continuously against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `deployments record-results` workflow can be used to upsert download aggregates into PostgreSQL.
 
 Unlike `prod bootstrap deploy`, this command does **not** provision any bootstrap/genesis/node infrastructure — it fetches the live peers list from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml) at runtime and points the downloader service at those peers via `--bootstrap ip:port`.
 
@@ -625,7 +625,7 @@ The monitoring VM always uses region `lon1`.
 After the command reports success, record download aggregates into Postgres on demand:
 
 ```bash
-uv run saorsa-deploy deployments record-file-results \
+uv run saorsa-deploy deployments record-results \
   --name PROD-DL-01 --monitoring-name PROD-DL-01 --window -1h
 ```
 
@@ -678,18 +678,19 @@ The wallet secret key is shared across every uploader VM. Each uploader file is 
 After uploads have started, inspect them with:
 
 ```bash
-uv run saorsa-deploy prod print-upload-results --name PROD-UP-01
+uv run saorsa-deploy deployments print-uploads --name PROD-UP-01
+# add --details for one full record per upload with no truncation
 ```
 
-This prints one Rich table per uploader VM with file name, size, status (success / partial / dl-fail), chunks stored vs total, public address, and duration.
+`deployments print-uploads` dispatches on the deployment kind. For `prod-uploaders` it queries the `prod_upload` Influx measurement and prints one Rich table per uploader VM with file name, size, status (success / partial / dl-fail), chunks stored vs total, public address, and duration.
 
 When the run completes, persist every Influx record into the registry database for future comparison:
 
 ```bash
-uv run saorsa-deploy prod record-upload-results --name PROD-UP-01
+uv run saorsa-deploy deployments record-results --name PROD-UP-01
 ```
 
-Each record becomes one row in `deployment_prod_upload_results` keyed by `(deployment_id, client_hostname, source_url)`. Re-running the command updates rows in place, so it is safe to run repeatedly.
+`deployments record-results` is kind-dispatched. For `prod-uploaders` it upserts each `prod_upload` Influx point into `deployment_prod_upload_results`, keyed by `(deployment_id, client_hostname, source_url)`. The `--window` flag is ignored for this kind — uploads are bounded runs, so the command always pulls from epoch. Re-running the command updates rows in place, so it is safe to run repeatedly.
 
 To tear down:
 
@@ -730,14 +731,7 @@ The command resolves the live prod bootstrap peers from upstream at startup, dow
 
 There is no paired destroy command; nothing was provisioned.
 
-To view the per-file results recorded for a local-uploads deployment, use:
-
-```bash
-uv run saorsa-deploy prod print-local-upload-results --name LOCAL-UP-01
-# add --details to print one full record per upload with no truncation
-```
-
-This reads straight from the `deployment_prod_upload_results` Postgres table — it's the equivalent of `prod print-upload-results` for runs that wrote to Postgres directly instead of via Influx.
+`prod local-uploads` deployments have no Influx backend, so `deployments print-uploads` rejects them and points at the forthcoming `deployments print-recorded-results` command (reads `deployment_prod_upload_results` from Postgres). Until that lands, query the table directly via `psql`.
 
 ### Static IP Management
 

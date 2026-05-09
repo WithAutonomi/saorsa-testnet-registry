@@ -1,13 +1,21 @@
-"""Print per-operation upload/download records from a testnet's InfluxDB.
+"""Print per-operation upload/download records for a deployment.
 
 Two CLI entry points — ``cmd_print_uploads`` and ``cmd_print_downloads`` —
-share all their logic except for the measurement name they filter on. Each
-renders one Rich table per client host with a row for every recorded
-operation in the requested time window.
+look up the deployment in the registry, derive its ``kind``, and dispatch
+to the right Influx measurement / renderer:
 
-With ``--summary``, the per-op tables are replaced by a per-host aggregate:
-start time, wall-clock elapsed since that start, total/success/failure
-counts, and the average duration of successful ops.
+* ``testnet`` uploaders → ``file_ops`` ``upload`` records, per-op tables
+* ``testnet`` downloaders → ``file_ops`` ``download`` records, per-op tables
+* ``prod-uploaders`` → ``prod_upload`` per-file detail tables (uploads only)
+* ``prod-continuous-downloader`` → ``file_ops`` ``download`` records
+  (downloads only)
+* ``prod-local-uploads`` → no Influx exists for this kind; the user is
+  pointed at the forthcoming ``deployments print-recorded-results``
+  command which reads from Postgres.
+
+Renderer behaviour (``--summary`` / ``--recent`` / ``--details``) varies
+per kind; flags that don't apply to the resolved kind are silently
+ignored.
 """
 import sys
 from datetime import datetime, timezone
@@ -15,21 +23,96 @@ from datetime import datetime, timezone
 from rich.console import Console
 from rich.table import Table
 
-from saorsa_deploy.influx import fetch_operation_points
+from saorsa_deploy.influx import (
+    fetch_operation_points,
+    fetch_prod_upload_points,
+)
+from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_client_state, load_monitoring_state
+
+_TESTNET_KIND = "testnet"
 
 
 def cmd_print_uploads(args):
-    _run(args, op_type="upload")
+    _dispatch(args, op_type="upload")
 
 
 def cmd_print_downloads(args):
-    _run(args, op_type="download")
+    _dispatch(args, op_type="download")
 
 
-def _run(args, op_type: str) -> None:
+def _dispatch(args, op_type: str) -> None:
     console = Console()
+    kind = _resolve_kind(args.name, console)
 
+    if kind == "prod-local-uploads":
+        console.print(
+            f"[yellow]'{args.name}' is a prod-local-uploads deployment — "
+            f"its results are written directly to Postgres, not Influx. "
+            f"Use `deployments print-recorded-results` to view them.[/yellow]"
+        )
+        return
+
+    if kind == "prod-uploaders":
+        if op_type == "download":
+            console.print(
+                f"[yellow]'{args.name}' is a prod-uploaders deployment "
+                f"and has no download records.[/yellow]"
+            )
+            return
+        _run_prod_uploads(args, console)
+        return
+
+    if kind == "prod-continuous-downloader":
+        if op_type == "upload":
+            console.print(
+                f"[yellow]'{args.name}' is a prod-continuous-downloader "
+                f"deployment and has no upload records.[/yellow]"
+            )
+            return
+        _run_file_ops(args, op_type, console)
+        return
+
+    # Testnet (explicit "testnet" or unrecognised/empty kind — fall through
+    # to the historical behaviour).
+    _run_file_ops(args, op_type, console)
+
+
+def _resolve_kind(name: str, console: Console) -> str:
+    """Look up the deployment's ``kind`` from the registry.
+
+    Returns an empty string if the deployment isn't recorded — callers
+    treat that as testnet for backwards compatibility with rows that
+    pre-date the ``kind`` field.
+    """
+    repo = get_repository()
+    if repo is None:
+        return ""
+    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+    if deployment is None:
+        return ""
+    deploy_args = deployment.deploy_args or {}
+    if not isinstance(deploy_args, dict):
+        return ""
+    explicit = deploy_args.get("kind")
+    if explicit:
+        return explicit
+    if "bootstrap_count" in deploy_args:
+        return _TESTNET_KIND
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Influx credential resolution (shared between testnet file_ops and prod_upload)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_influx(args, console: Console):
+    """Resolve (url, token, org, bucket) from CLI args + monitoring state.
+
+    Returns ``None`` if credentials can't be assembled (and prints the
+    appropriate yellow advisory itself).
+    """
     influx_url = args.influx_url
     influx_token = args.influx_token
     influx_org = args.influx_org
@@ -42,11 +125,10 @@ def _run(args, op_type: str) -> None:
         except RuntimeError:
             console.print(
                 f"[yellow]No monitoring stack found for '{stack_name}'. "
-                f"{op_type.capitalize()}s are not being recorded for this "
-                f"testnet — run `monitoring infra` + `monitoring provision` "
-                f"first if you want them.[/yellow]"
+                f"Run `monitoring infra` + `monitoring provision` first if "
+                f"you expected to query Influx.[/yellow]"
             )
-            return
+            return None
         influx_url = influx_url or state.get("influxdb_url")
         influx_token = influx_token or state.get("influxdb_token")
         influx_org = influx_org or state.get("influxdb_org") or "ant"
@@ -59,7 +141,26 @@ def _run(args, op_type: str) -> None:
             f"[yellow]Monitoring state exists for '{args.name}' but InfluxDB "
             f"isn't provisioned yet. Run `monitoring provision` first.[/yellow]"
         )
+        return None
+
+    return (
+        influx_url,
+        influx_token,
+        influx_org or "ant",
+        influx_bucket or "testnet-metrics",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Testnet / prod-continuous-downloader: per-op file_ops tables
+# ---------------------------------------------------------------------------
+
+
+def _run_file_ops(args, op_type: str, console: Console) -> None:
+    creds = _resolve_influx(args, console)
+    if creds is None:
         return
+    influx_url, influx_token, influx_org, influx_bucket = creds
 
     console.print(
         f"[bold]Querying {influx_url} "
@@ -69,8 +170,8 @@ def _run(args, op_type: str) -> None:
         points = fetch_operation_points(
             url=influx_url,
             token=influx_token,
-            org=influx_org or "ant",
-            bucket=influx_bucket or "testnet-metrics",
+            org=influx_org,
+            bucket=influx_bucket,
             start=args.window,
         )
     except Exception as e:
@@ -247,6 +348,114 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
         table.add_row("Failures", str(summary["failures"]))
         table.add_row("Avg duration", _fmt_duration(summary["overall_avg_ms"]))
         console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# prod-uploaders: per-file prod_upload tables
+# ---------------------------------------------------------------------------
+
+
+_PROD_STATUS_LABELS = {
+    0: "[green]ok[/green]",
+    1: "[red]partial[/red]",
+    2: "[red]dl-fail[/red]",
+}
+
+_PROD_STATUS_TEXT = {
+    0: "ok",
+    1: "partial",
+    2: "dl-fail",
+}
+
+
+def _run_prod_uploads(args, console: Console) -> None:
+    creds = _resolve_influx(args, console)
+    if creds is None:
+        return
+    influx_url, influx_token, influx_org, influx_bucket = creds
+
+    console.print(
+        f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]"
+    )
+    points = fetch_prod_upload_points(
+        url=influx_url,
+        token=influx_token,
+        org=influx_org,
+        bucket=influx_bucket,
+    )
+    if not points:
+        console.print(
+            f"[yellow]No prod_upload records yet for '{args.name}'.[/yellow]"
+        )
+        return
+
+    by_host: dict[str, list[dict]] = {}
+    for p in points:
+        by_host.setdefault(p["host"], []).append(p)
+
+    if getattr(args, "details", False):
+        _prod_print_details(by_host, console)
+    else:
+        _prod_print_table(by_host, console)
+
+
+def _prod_print_table(by_host: dict[str, list[dict]], console: Console) -> None:
+    for host in sorted(by_host.keys()):
+        ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
+        table = Table(
+            title=f"prod_upload — {host} ({len(ops)} record(s))",
+            title_style="bold",
+            show_lines=True,
+        )
+        table.add_column("#", justify="right")
+        table.add_column("File")
+        table.add_column("Size", justify="right")
+        table.add_column("Status")
+        table.add_column("Chunks Uploaded", justify="right")
+        table.add_column("Failed", justify="right")
+        table.add_column("Duration", justify="right")
+        for i, op in enumerate(ops, start=1):
+            table.add_row(
+                str(i),
+                op.get("file_name") or "-",
+                _fmt_size(op.get("file_size")),
+                _PROD_STATUS_LABELS.get(op.get("status"), "-"),
+                f"{op.get('chunks_stored') or 0}/{op.get('total_chunks') or 0}",
+                str(op.get("chunks_failed") or 0),
+                _fmt_duration(op.get("total_ms")),
+            )
+        console.print(table)
+
+
+def _prod_print_details(by_host: dict[str, list[dict]], console: Console) -> None:
+    for host in sorted(by_host.keys()):
+        ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
+        console.rule(f"[bold]{host} — {len(ops)} record(s)[/bold]")
+        for i, op in enumerate(ops, start=1):
+            console.print(f"[bold]#{i}[/bold]")
+            console.print(f"  Started (UTC):     {_fmt_start(op.get('start_ns'))}")
+            console.print(f"  Finished (UTC):    {_fmt_time(op.get('_time'))}")
+            console.print(f"  File:              {op.get('file_name') or '-'}")
+            console.print(f"  Source URL:        {op.get('source_url') or '-'}")
+            console.print(f"  Size (bytes):      {op.get('file_size') or 0}")
+            console.print(
+                f"  Status:            {_PROD_STATUS_TEXT.get(op.get('status'), '-')}"
+            )
+            console.print(
+                f"  Chunks uploaded:   {op.get('chunks_stored') or 0} / "
+                f"{op.get('total_chunks') or 0}"
+            )
+            console.print(f"  Chunks failed:     {op.get('chunks_failed') or 0}")
+            console.print(f"  Address:           {op.get('address') or '-'}")
+            console.print(f"  Duration (ms):     {op.get('total_ms') or 0}")
+            console.print(f"  Upload secs:       {op.get('upload_secs') or 0}")
+            console.print(f"  Reason:            {op.get('reason') or '-'}")
+            console.print()
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
 
 
 def _fmt_elapsed(seconds) -> str:

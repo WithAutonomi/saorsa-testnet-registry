@@ -1,3 +1,6 @@
+"""Verify `deployments record-results` dispatches prod-uploaders to the
+per-file ``deployment_prod_upload_results`` upsert path.
+"""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,9 +12,7 @@ from saorsa_db.repositories import SqlAlchemyDeploymentRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from saorsa_deploy.cmd.prod_record_upload_results import (
-    cmd_prod_record_upload_results,
-)
+from saorsa_deploy.cmd.record_results import cmd_record_results
 
 
 @pytest.fixture()
@@ -55,12 +56,30 @@ def _args(name="PROD-UP-01"):
         influx_token="tok",
         influx_org="ant",
         influx_bucket="testnet-metrics",
+        window="-30d",
     )
+
+
+def _run_cmd(repo, points, args=None):
+    """Patch repo + Influx fetch and invoke the unified record command."""
+    with (
+        patch(
+            "saorsa_deploy.cmd.record_results.get_repository",
+            return_value=repo,
+        ),
+        patch(
+            "saorsa_deploy.cmd.record_results.fetch_prod_upload_points",
+            return_value=points,
+        ),
+    ):
+        cmd_record_results(args or _args())
 
 
 def test_records_one_row_per_point(repo):
     r, _ = repo
-    deployment = r.create(name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"})
+    deployment = r.create(
+        name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"}
+    )
 
     points = [
         _influx_point(),
@@ -84,17 +103,7 @@ def test_records_one_row_per_point(repo):
         ),
     ]
 
-    with (
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.get_repository",
-            return_value=r,
-        ),
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.fetch_prod_upload_points",
-            return_value=points,
-        ),
-    ):
-        cmd_prod_record_upload_results(_args())
+    _run_cmd(r, points)
 
     rows = r.list_prod_upload_results_for_deployment(deployment.id)
     assert len(rows) == 3
@@ -118,37 +127,17 @@ def test_records_one_row_per_point(repo):
 
 def test_re_run_updates_existing_row(repo):
     r, _ = repo
-    deployment = r.create(name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"})
+    deployment = r.create(
+        name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"}
+    )
 
-    point = _influx_point(status=1, chunks_failed=2, chunks_stored=40)
-    with (
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.get_repository",
-            return_value=r,
-        ),
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.fetch_prod_upload_points",
-            return_value=[point],
-        ),
-    ):
-        cmd_prod_record_upload_results(_args())
+    _run_cmd(r, [_influx_point(status=1, chunks_failed=2, chunks_stored=40)])
 
     rows = r.list_prod_upload_results_for_deployment(deployment.id)
     assert len(rows) == 1
     assert rows[0].chunks_failed == 2
 
-    point_v2 = _influx_point(status=0, chunks_stored=42, chunks_failed=0)
-    with (
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.get_repository",
-            return_value=r,
-        ),
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.fetch_prod_upload_points",
-            return_value=[point_v2],
-        ),
-    ):
-        cmd_prod_record_upload_results(_args())
+    _run_cmd(r, [_influx_point(status=0, chunks_stored=42, chunks_failed=0)])
 
     rows = r.list_prod_upload_results_for_deployment(deployment.id)
     assert len(rows) == 1
@@ -161,18 +150,7 @@ def test_skips_points_without_source_url(repo):
     r, _ = repo
     r.create(name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"})
 
-    bad = _influx_point(source_url="")
-    with (
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.get_repository",
-            return_value=r,
-        ),
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.fetch_prod_upload_points",
-            return_value=[bad],
-        ),
-    ):
-        cmd_prod_record_upload_results(_args())
+    _run_cmd(r, [_influx_point(source_url="")])
 
     deployment = r.get_by_name("PROD-UP-01")
     rows = r.list_prod_upload_results_for_deployment(deployment.id)
@@ -183,18 +161,7 @@ def test_uses_start_ns_for_started_at(repo):
     r, _ = repo
     r.create(name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"})
 
-    pt = _influx_point(start_ns=1776700000000000000)
-    with (
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.get_repository",
-            return_value=r,
-        ),
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.fetch_prod_upload_points",
-            return_value=[pt],
-        ),
-    ):
-        cmd_prod_record_upload_results(_args())
+    _run_cmd(r, [_influx_point(start_ns=1776700000000000000)])
 
     deployment = r.get_by_name("PROD-UP-01")
     rows = r.list_prod_upload_results_for_deployment(deployment.id)
@@ -212,17 +179,7 @@ def test_falls_back_to_time_when_start_ns_missing(repo):
     r.create(name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"})
 
     pt = _influx_point(start_ns=None)
-    with (
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.get_repository",
-            return_value=r,
-        ),
-        patch(
-            "saorsa_deploy.cmd.prod_record_upload_results.fetch_prod_upload_points",
-            return_value=[pt],
-        ),
-    ):
-        cmd_prod_record_upload_results(_args())
+    _run_cmd(r, [pt])
 
     deployment = r.get_by_name("PROD-UP-01")
     rows = r.list_prod_upload_results_for_deployment(deployment.id)
@@ -230,3 +187,15 @@ def test_falls_back_to_time_when_start_ns_missing(repo):
     if actual.tzinfo is None:
         actual = actual.replace(tzinfo=timezone.utc)
     assert actual == pt["_time"]
+
+
+def test_rejects_prod_local_uploads(repo):
+    r, _ = repo
+    r.create(name="LOCAL-UP-01", deploy_args={"kind": "prod-local-uploads"})
+    with patch(
+        "saorsa_deploy.cmd.record_results.get_repository",
+        return_value=r,
+    ):
+        # Should return without raising or calling Influx — local-uploads
+        # writes its results directly to Postgres at run time.
+        cmd_record_results(_args(name="LOCAL-UP-01"))

@@ -162,7 +162,7 @@ The pipeline for an extension skips the bootstrap/genesis stages entirely: `depl
 
 - Single VM per deployment; takes one `--spec region[:vm_size]` (download-only — uploaders are rejected).
 - Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
-- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` so `deployments record-file-results --name ... --monitoring-name ... --window -1h` works unchanged against it.
+- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` so `deployments record-results --name ... --monitoring-name ... --window -1h` works unchanged against it.
 - `prod continuous-downloader destroy` tears down the monitoring VM alongside the client by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack for after-the-fact analysis.
 
 See `deploy/README.md` §"Running continuous downloaders against production" for the full argument table and sequencing.
@@ -176,7 +176,7 @@ See `deploy/README.md` §"Running continuous downloaders against production" for
 - Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
 - Service is implemented in Python (`deploy/saorsa_deploy/resources/scripts/prod_uploader.py`) — not bash — because per-upload JSON parsing and metric emission was easier that way. The systemd unit is `Type=simple, Restart=no` so the service stops on its own.
 - Registers a `Deployment` row with `deploy_args.kind = "prod-uploaders"`.
-- Companion commands: `prod print-upload-results --name <name>` (per-host Rich tables of every recorded upload) and `prod record-upload-results --name <name>` (upserts every Influx record into the `deployment_prod_upload_results` Postgres table — bounded run, so no `--window` flag).
+- Companion commands: `deployments print-uploads --name <name>` (dispatches on kind — for prod-uploaders it pulls the `prod_upload` Influx measurement and prints per-host Rich tables; pass `--details` for one full record per upload) and `deployments record-results --name <name>` (also kind-dispatched — for prod-uploaders it upserts every Influx record into the `deployment_prod_upload_results` Postgres table; `--window` is ignored for this kind because uploads are a bounded run).
 - `prod uploaders destroy` tears down the monitoring VM alongside the uploader VMs by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack.
 
 See `deploy/README.md` §"Running uploaders against production" for the full argument table and sequencing.

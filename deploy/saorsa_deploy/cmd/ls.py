@@ -89,7 +89,7 @@ def _filter_recent(deployments: list) -> list:
 
 def cmd_ls(args):
     """List deployments registered in the database."""
-    console = Console()
+    console = Console(width=140)
 
     repo = get_repository()
     if repo is None:
@@ -128,23 +128,30 @@ def cmd_ls(args):
         console.print("[dim]No deployments recorded.[/dim]")
         return
 
+    ids_with_results = repo.deployment_ids_with_results()
+
     table = Table(title=f"Deployments ({len(deployments)})")
     table.add_column("ID", justify="right")
     table.add_column("Name")
     table.add_column("Kind")
     table.add_column("Status")
     table.add_column("Nodes", justify="right")
+    table.add_column("Has Results")
     table.add_column("Created")
 
     for d in deployments:
         style = _STATUS_STYLES.get(d.status, "")
         status_cell = f"[{style}]{d.status.value}[/]" if style else d.status.value
+        has_results = (
+            "[green]yes[/green]" if d.id in ids_with_results else "[dim]no[/dim]"
+        )
         table.add_row(
             str(d.id),
             d.name,
             _derive_kind(d.deploy_args),
             status_cell,
             _derive_node_count(d.deploy_args),
+            has_results,
             d.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         )
 

@@ -148,6 +148,16 @@ class DeploymentRepository(ABC):
     ) -> list[DeploymentProdUploadResult]:
         ...
 
+    @abstractmethod
+    def deployment_ids_with_results(self) -> set[int]:
+        """Return the set of deployment ids that have any persisted result.
+
+        A deployment counts as having results if it has at least one row in
+        any of: ``deployment_file_results``, ``deployment_prod_upload_results``,
+        or ``deployment_host_results``.
+        """
+        ...
+
 
 class SqlAlchemyDeploymentRepository(DeploymentRepository):
     def __init__(self, session):
@@ -470,6 +480,19 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+    def deployment_ids_with_results(self) -> set[int]:
+        ids: set[int] = set()
+        for model in (
+            DeploymentFileResult,
+            DeploymentProdUploadResult,
+            DeploymentHostResult,
+        ):
+            ids.update(
+                row[0]
+                for row in self.session.query(model.deployment_id).distinct().all()
+            )
+        return ids
 
 
 class MigrationRepository(ABC):
