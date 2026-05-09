@@ -1,46 +1,36 @@
+"""Record per-file/per-host upload+download results into the registry DB.
+
+The CLI entry point ``cmd_record_results`` resolves the deployment's
+``kind`` and dispatches to the correct Influx → Postgres pipeline:
+
+* ``testnet`` and ``prod-continuous-downloader`` →
+  per-(host, op_type) aggregates of the ``file_ops`` measurement, written
+  to ``deployment_file_results``. Honours ``--window``.
+* ``prod-uploaders`` → per-file rows of the ``prod_upload`` measurement,
+  written to ``deployment_prod_upload_results``. ``--window`` is ignored
+  (uploads are bounded runs; we always pull from epoch).
+* ``prod-local-uploads`` → rejected. Local-uploads writes directly to
+  Postgres at run time; there is nothing to record.
+"""
 import sys
+from datetime import datetime, timezone
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
+from saorsa_db.models import FileOpType, ProdUploadStatus
 
-from saorsa_deploy.influx import aggregate_host_metrics, fetch_host_metric_points
+from saorsa_deploy.influx import (
+    aggregate_file_results,
+    fetch_operation_points,
+    fetch_prod_upload_points,
+)
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_monitoring_state
 
-
-def _fmt(value, suffix: str = "") -> str:
-    if value is None:
-        return "-"
-    if isinstance(value, float):
-        return f"{value:.1f}{suffix}"
-    return f"{value}{suffix}"
-
-
-def _fmt_bw(value) -> str:
-    if value is None:
-        return "-"
-    mb = value / (1024 * 1024)
-    if mb >= 1:
-        return f"{mb:.2f} MB/s"
-    kb = value / 1024
-    return f"{kb:.1f} KB/s"
-
-
-def _serialize_host_entry(entry: dict) -> dict:
-    return {
-        "host": entry["host"],
-        "metrics_started_at": entry["metrics_started_at"].isoformat(),
-        "metrics_ended_at": entry["metrics_ended_at"].isoformat(),
-        "cpu_percent": entry["cpu_percent"],
-        "mem_percent": entry["mem_percent"],
-        "bytes_in_per_sec": entry["bytes_in_per_sec"],
-        "bytes_out_per_sec": entry["bytes_out_per_sec"],
-    }
+_TESTNET_KIND = "testnet"
 
 
 def cmd_record_results(args):
-    """Pull per-host CPU/memory/bandwidth aggregates from InfluxDB and upsert them."""
     console = Console()
 
     repo = get_repository()
@@ -54,10 +44,58 @@ def cmd_record_results(args):
     deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
     if deployment is None:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment named '{args.name}' in the registry."
+            f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
+            "in the registry."
         )
         sys.exit(1)
 
+    kind = _resolve_kind(deployment.deploy_args)
+
+    if kind == "prod-local-uploads":
+        console.print(
+            f"[yellow]'{args.name}' is a prod-local-uploads deployment — "
+            f"its per-file results are written directly to Postgres at run "
+            f"time. There is nothing to record.[/yellow]"
+        )
+        return
+
+    creds = _resolve_influx(args, console)
+    if creds is None:
+        sys.exit(1)
+    influx_url, influx_token, influx_org, influx_bucket = creds
+
+    if kind == "prod-uploaders":
+        _record_prod_upload(
+            repo, deployment, args, console,
+            influx_url, influx_token, influx_org, influx_bucket,
+        )
+        return
+
+    # testnet, prod-continuous-downloader, and any unrecognised/empty kind
+    # fall through to the historical aggregate path.
+    _record_file_ops(
+        repo, deployment, args, console,
+        influx_url, influx_token, influx_org, influx_bucket,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_kind(deploy_args) -> str:
+    if not isinstance(deploy_args, dict):
+        return ""
+    explicit = deploy_args.get("kind")
+    if explicit:
+        return explicit
+    if "bootstrap_count" in deploy_args:
+        return _TESTNET_KIND
+    return ""
+
+
+def _resolve_influx(args, console: Console):
     influx_url = args.influx_url
     influx_token = args.influx_token
     influx_org = args.influx_org
@@ -66,17 +104,20 @@ def cmd_record_results(args):
     if not (influx_url and influx_token):
         stack_name = args.monitoring_name or args.name
         console.print(
-            f"[bold]Loading Influx credentials from monitoring state '{stack_name}'...[/bold]"
+            f"[bold]Loading Influx credentials from monitoring state "
+            f"'{stack_name}'...[/bold]"
         )
         try:
             state = load_monitoring_state(stack_name)
         except RuntimeError as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
-            sys.exit(1)
+            return None
         influx_url = influx_url or state.get("influxdb_url")
         influx_token = influx_token or state.get("influxdb_token")
         influx_org = influx_org or state.get("influxdb_org") or "ant"
-        influx_bucket = influx_bucket or state.get("influxdb_bucket") or "testnet-metrics"
+        influx_bucket = (
+            influx_bucket or state.get("influxdb_bucket") or "testnet-metrics"
+        )
 
     if not (influx_url and influx_token):
         console.print(
@@ -84,83 +125,182 @@ def cmd_record_results(args):
             "Provide --influx-url/--influx-token or --monitoring-name pointing "
             "to a provisioned monitoring stack."
         )
-        sys.exit(1)
+        return None
 
+    return (
+        influx_url,
+        influx_token,
+        influx_org or "ant",
+        influx_bucket or "testnet-metrics",
+    )
+
+
+# ---------------------------------------------------------------------------
+# testnet / prod-continuous-downloader: file_ops aggregate path
+# ---------------------------------------------------------------------------
+
+
+def _record_file_ops(
+    repo, deployment, args, console,
+    influx_url, influx_token, influx_org, influx_bucket,
+) -> None:
     console.print(
-        f"[bold]Querying {influx_url} (bucket={influx_bucket}, window={args.window})...[/bold]"
+        f"[bold]Querying {influx_url} "
+        f"(bucket={influx_bucket}, window={args.window})...[/bold]"
     )
     try:
-        points = fetch_host_metric_points(
+        points = fetch_operation_points(
             url=influx_url,
             token=influx_token,
-            org=influx_org or "ant",
-            bucket=influx_bucket or "testnet-metrics",
+            org=influx_org,
+            bucket=influx_bucket,
             start=args.window,
         )
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
         sys.exit(1)
 
-    aggregates = aggregate_host_metrics(points)
+    aggregates = aggregate_file_results(points)
     if not aggregates:
         console.print(
-            f"[yellow]No host metric points found for deployment '{args.name}' "
-            f"in window {args.window}. Nothing to record.[/yellow]"
+            f"[yellow]No upload/download points found for deployment "
+            f"'{args.name}' in window {args.window}. "
+            f"Nothing to record.[/yellow]"
         )
-        if args.summary:
-            console.print(
-                "[yellow]--summary was provided but there are no host metrics "
-                "to associate it with; summary not persisted.[/yellow]"
-            )
         return
 
-    overall_started = min(a["metrics_started_at"] for a in aggregates)
-    overall_ended = max(a["metrics_ended_at"] for a in aggregates)
-    serialized = [_serialize_host_entry(a) for a in aggregates]
-
-    repo.upsert_host_result(
-        deployment_id=deployment.id,
-        host_metrics=serialized,
-        metrics_started_at=overall_started,
-        metrics_ended_at=overall_ended,
-        summary=args.summary,
-    )
+    for agg in aggregates:
+        repo.upsert_file_result(
+            deployment_id=deployment.id,
+            client_hostname=agg["client_hostname"],
+            op_type=FileOpType(agg["op_type"]),
+            file_size_bytes=agg["file_size_bytes"],
+            first_started_at=agg["first_started_at"],
+            last_finished_at=agg["last_finished_at"],
+            success_count=agg["success_count"],
+            failure_count=agg["failure_count"],
+            avg_duration_ms=agg["avg_duration_ms"],
+            min_duration_ms=agg["min_duration_ms"],
+            max_duration_ms=agg["max_duration_ms"],
+        )
 
     table = Table(
-        title=f"Host metrics for deployment '{args.name}' (id={deployment.id})"
+        title=f"File results for deployment '{args.name}' (id={deployment.id})"
     )
     table.add_column("Host")
-    table.add_column("CPU avg/min/max %", justify="right")
-    table.add_column("Mem avg/min/max %", justify="right")
-    table.add_column("In avg/min/max", justify="right")
-    table.add_column("Out avg/min/max", justify="right")
-    table.add_column("Started (UTC)")
-    table.add_column("Ended (UTC)")
+    table.add_column("Op")
+    table.add_column("Size (MB)", justify="right")
+    table.add_column("OK", justify="right")
+    table.add_column("Fail", justify="right")
+    table.add_column("Avg ms", justify="right")
+    table.add_column("Min ms", justify="right")
+    table.add_column("Max ms", justify="right")
+    table.add_column("First start (UTC)")
+    table.add_column("Last end (UTC)")
     for agg in aggregates:
-        cpu = agg["cpu_percent"]
-        mem = agg["mem_percent"]
-        bin_ = agg["bytes_in_per_sec"]
-        bout = agg["bytes_out_per_sec"]
         table.add_row(
-            agg["host"],
-            f"{_fmt(cpu['avg'])} / {_fmt(cpu['min'])} / {_fmt(cpu['max'])}",
-            f"{_fmt(mem['avg'])} / {_fmt(mem['min'])} / {_fmt(mem['max'])}",
-            f"{_fmt_bw(bin_['avg'])} / {_fmt_bw(bin_['min'])} / {_fmt_bw(bin_['max'])}",
-            f"{_fmt_bw(bout['avg'])} / {_fmt_bw(bout['min'])} / {_fmt_bw(bout['max'])}",
-            agg["metrics_started_at"].strftime("%Y-%m-%d %H:%M:%S"),
-            agg["metrics_ended_at"].strftime("%Y-%m-%d %H:%M:%S"),
+            agg["client_hostname"],
+            agg["op_type"],
+            f"{agg['file_size_bytes'] / (1024 * 1024):.1f}",
+            str(agg["success_count"]),
+            str(agg["failure_count"]),
+            "-" if agg["avg_duration_ms"] is None else str(agg["avg_duration_ms"]),
+            "-" if agg["min_duration_ms"] is None else str(agg["min_duration_ms"]),
+            "-" if agg["max_duration_ms"] is None else str(agg["max_duration_ms"]),
+            agg["first_started_at"].strftime("%Y-%m-%d %H:%M:%S"),
+            agg["last_finished_at"].strftime("%Y-%m-%d %H:%M:%S"),
         )
     console.print(table)
     console.print(
-        f"[bold green]Recorded host metrics for {len(aggregates)} host(s) "
-        f"on deployment '{args.name}'.[/bold green]"
+        f"[bold green]Recorded {len(aggregates)} row(s) "
+        f"for deployment '{args.name}'.[/bold green]"
     )
 
-    if args.summary:
-        console.print(
-            Panel(
-                args.summary,
-                title=f"Summary for '{args.name}'",
-                border_style="cyan",
-            )
+
+# ---------------------------------------------------------------------------
+# prod-uploaders: prod_upload per-file path
+# ---------------------------------------------------------------------------
+
+
+def _status_from_int(code) -> ProdUploadStatus | None:
+    if code == 0:
+        return ProdUploadStatus.SUCCESS
+    if code == 1:
+        return ProdUploadStatus.PARTIAL_UPLOAD
+    if code == 2:
+        return ProdUploadStatus.DOWNLOAD_FAILED
+    return None
+
+
+def _started_at(point: dict) -> datetime:
+    start_ns = point.get("start_ns")
+    if start_ns is not None:
+        return datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
+    return point["_time"]
+
+
+def _record_prod_upload(
+    repo, deployment, args, console,
+    influx_url, influx_token, influx_org, influx_bucket,
+) -> None:
+    console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
+    try:
+        points = fetch_prod_upload_points(
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
         )
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
+        sys.exit(1)
+
+    if not points:
+        console.print(
+            f"[yellow]No prod_upload points found for deployment "
+            f"'{args.name}'. Nothing to record.[/yellow]"
+        )
+        return
+
+    recorded = 0
+    skipped = 0
+    for p in points:
+        status = _status_from_int(p.get("status"))
+        if status is None:
+            skipped += 1
+            continue
+        source_url = p.get("source_url") or ""
+        if not source_url:
+            skipped += 1
+            continue
+        repo.upsert_prod_upload_result(
+            deployment_id=deployment.id,
+            client_hostname=p["host"],
+            region=p.get("region") or "",
+            source_url=source_url,
+            file_name=p.get("file_name") or "",
+            file_size_bytes=p.get("file_size") or 0,
+            status=status,
+            address=p.get("address") or None,
+            chunks_stored=p.get("chunks_stored") or 0,
+            chunks_failed=p.get("chunks_failed") or 0,
+            total_chunks=p.get("total_chunks") or 0,
+            duration_ms=p.get("total_ms"),
+            upload_secs=p.get("upload_secs"),
+            started_at=_started_at(p),
+            finished_at=p["_time"],
+            reason=p.get("reason") or None,
+        )
+        recorded += 1
+
+    table = Table(
+        title=f"Prod uploads recorded for '{args.name}' (id={deployment.id})"
+    )
+    table.add_column("Recorded", justify="right")
+    table.add_column("Skipped", justify="right")
+    table.add_row(str(recorded), str(skipped))
+    console.print(table)
+    console.print(
+        f"[bold green]Persisted {recorded} prod_upload row(s) "
+        f"for deployment '{args.name}'.[/bold green]"
+    )

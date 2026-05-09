@@ -1,4 +1,4 @@
-"""Verify `deployments record-file-results` dispatches prod-uploaders to the
+"""Verify `deployments record-results` dispatches prod-uploaders to the
 per-file ``deployment_prod_upload_results`` upsert path.
 """
 from datetime import datetime, timezone
@@ -12,7 +12,7 @@ from saorsa_db.repositories import SqlAlchemyDeploymentRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from saorsa_deploy.cmd.record_file_results import cmd_record_file_results
+from saorsa_deploy.cmd.record_results import cmd_record_results
 
 
 @pytest.fixture()
@@ -64,15 +64,15 @@ def _run_cmd(repo, points, args=None):
     """Patch repo + Influx fetch and invoke the unified record command."""
     with (
         patch(
-            "saorsa_deploy.cmd.record_file_results.get_repository",
+            "saorsa_deploy.cmd.record_results.get_repository",
             return_value=repo,
         ),
         patch(
-            "saorsa_deploy.cmd.record_file_results.fetch_prod_upload_points",
+            "saorsa_deploy.cmd.record_results.fetch_prod_upload_points",
             return_value=points,
         ),
     ):
-        cmd_record_file_results(args or _args())
+        cmd_record_results(args or _args())
 
 
 def test_records_one_row_per_point(repo):
@@ -193,9 +193,9 @@ def test_rejects_prod_local_uploads(repo):
     r, _ = repo
     r.create(name="LOCAL-UP-01", deploy_args={"kind": "prod-local-uploads"})
     with patch(
-        "saorsa_deploy.cmd.record_file_results.get_repository",
+        "saorsa_deploy.cmd.record_results.get_repository",
         return_value=r,
     ):
         # Should return without raising or calling Influx — local-uploads
         # writes its results directly to Postgres at run time.
-        cmd_record_file_results(_args(name="LOCAL-UP-01"))
+        cmd_record_results(_args(name="LOCAL-UP-01"))

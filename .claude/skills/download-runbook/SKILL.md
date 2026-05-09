@@ -14,7 +14,7 @@ Generate an executable bash runbook that runs a production continuous-downloader
 - It's **single-VM by design** — exactly one `--spec region[:vm_size]`, no list, no provider mix. The download service then loops indefinitely against a fixed list of public mainnet addresses.
 - The address list defaults to a curated file shipped inside the deploy package; the user may want to override it with their own list (e.g. to test a specific corpus).
 - A paired monitoring stack is created in-flight; for runs longer than a day, the default 50 GB volume needs bumping.
-- The companion command `deployments record-file-results --name X --monitoring-name X --window -1h` is the standard way to roll the InfluxDB measurements into Postgres for after-the-fact analysis, but it runs on the user's own cadence, not from this runbook.
+- The companion command `deployments record-results --name X --monitoring-name X --window -1h` is the standard way to roll the InfluxDB measurements into Postgres for after-the-fact analysis, but it runs on the user's own cadence, not from this runbook.
 
 Rather than re-deriving the spec every time, this skill interviews the user once and emits a runbook that bakes the whole plan in.
 
@@ -103,7 +103,7 @@ Once the interview is done, before writing the files:
 4. **Write both files**, then `chmod +x` them.
 5. **Do not run the generated script.** Just report the two paths and tell the user what to do next.
 6. **If `runbooks/` is not already in `.gitignore`**, tell the user — don't edit `.gitignore` yourself.
-7. **Mention the companion command** in the closing message (not in the script): periodic `uv run saorsa-deploy deployments record-file-results --name $NAME --monitoring-name $NAME --window -1h` will upsert recent download aggregates into Postgres for after-the-fact analysis. The cadence is the user's call.
+7. **Mention the companion command** in the closing message (not in the script): periodic `uv run saorsa-deploy deployments record-results --name $NAME --monitoring-name $NAME --window -1h` will upsert recent download aggregates into Postgres for after-the-fact analysis. The cadence is the user's call.
 
 ### Flag rules
 
@@ -206,6 +206,6 @@ echo "Monitoring VM was kept; remember to tear it down separately when you're do
 - **`--ant-version` and `--branch-name` are mutually exclusive.** They're separate flags in saorsa-deploy.
 - **Monitoring is implicit.** Don't emit a separate `monitoring infra` / `monitoring provision` chain — `prod continuous-downloader deploy` does it in one shot. The only knob exposed at this level is `--monitoring-volume-size`.
 - **Destroy takes `--ssh-key-path`.** Unlike testnet destroy commands, the prod destroy commands SSH into VMs for clean teardown, so the key is required.
-- **The companion command isn't in the runbook.** `deployments record-file-results --name X --monitoring-name X --window -1h` runs at the user's chosen cadence (the `--window` slot maps neatly to a cron job). Mention it in the closing message; don't bake it into the script.
+- **The companion command isn't in the runbook.** `deployments record-results --name X --monitoring-name X --window -1h` runs at the user's chosen cadence (the `--window` slot maps neatly to a cron job). Mention it in the closing message; don't bake it into the script.
 - **Don't add retry loops or sleeps.** If a command fails, the user wants to see it and decide what to do — `set -e` is the contract.
 - **Don't confuse this with the testnet downloader.** Testnet `clients infra --downloader region[:vm_size]` is repeatable and pulls addresses uploaders just published. Prod `--spec region[:vm_size]` is single-VM and consumes a fixed mainnet address list. Different shapes; don't conflate them.

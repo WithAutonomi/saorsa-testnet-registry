@@ -583,7 +583,7 @@ def main():
     # =========================================================================
     # === deployments group ===
     # === extend, generate-inventory, ls, print-downloads, print-uploads, ===
-    # === record-file-results, record-results, set-results-summary, unextend ===
+    # === record-results, record-analysis, edit-analysis-summary, unextend ===
     # =========================================================================
     deployments_parser = subparsers.add_parser(
         "deployments",
@@ -731,9 +731,9 @@ def main():
         ),
     )
 
-    # deployments record-file-results
-    deployments_record_file_results_parser = deployments_subparsers.add_parser(
-        "record-file-results",
+    # deployments record-results
+    deployments_record_results_parser = deployments_subparsers.add_parser(
+        "record-results",
         help=(
             "Persist file-operation results from a deployment's InfluxDB into "
             "Postgres. Dispatches on deploy_args.kind: testnet and "
@@ -743,13 +743,13 @@ def main():
             "prod-local-uploads is rejected (already in Postgres)."
         ),
     )
-    deployments_record_file_results_parser.add_argument(
+    deployments_record_results_parser.add_argument(
         "--name",
         type=str,
         required=True,
         help="Deployment name (must match a row in the registry deployments table)",
     )
-    deployments_record_file_results_parser.add_argument(
+    deployments_record_results_parser.add_argument(
         "--monitoring-name",
         type=str,
         default=None,
@@ -758,25 +758,25 @@ def main():
             "(defaults to --name)."
         ),
     )
-    deployments_record_file_results_parser.add_argument(
+    deployments_record_results_parser.add_argument(
         "--influx-url",
         type=str,
         default=None,
         help="InfluxDB URL (overrides monitoring state lookup)",
     )
-    deployments_record_file_results_parser.add_argument(
+    deployments_record_results_parser.add_argument(
         "--influx-token",
         type=str,
         default=None,
         help="InfluxDB API token (overrides monitoring state lookup)",
     )
-    deployments_record_file_results_parser.add_argument(
+    deployments_record_results_parser.add_argument(
         "--influx-org",
         type=str,
         default=None,
         help="InfluxDB organization (default: from monitoring state, else 'ant')",
     )
-    deployments_record_file_results_parser.add_argument(
+    deployments_record_results_parser.add_argument(
         "--influx-bucket",
         type=str,
         default=None,
@@ -785,29 +785,29 @@ def main():
             "'testnet-metrics')"
         ),
     )
-    deployments_record_file_results_parser.add_argument(
+    deployments_record_results_parser.add_argument(
         "--window",
         type=str,
         default="-30d",
         help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
     )
 
-    # deployments record-results
-    deployments_record_results_parser = deployments_subparsers.add_parser(
-        "record-results",
+    # deployments record-analysis
+    deployments_record_analysis_parser = deployments_subparsers.add_parser(
+        "record-analysis",
         help=(
             "Read per-host CPU/memory/bandwidth aggregates from the testnet's "
             "InfluxDB and upsert them into the deployment_host_results table, "
             "optionally with a freeform summary of the test run."
         ),
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--name",
         type=str,
         required=True,
         help="Deployment name (must match a row in the registry deployments table)",
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--monitoring-name",
         type=str,
         default=None,
@@ -816,25 +816,25 @@ def main():
             "(defaults to --name)."
         ),
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--influx-url",
         type=str,
         default=None,
         help="InfluxDB URL (overrides monitoring state lookup)",
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--influx-token",
         type=str,
         default=None,
         help="InfluxDB API token (overrides monitoring state lookup)",
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--influx-org",
         type=str,
         default=None,
         help="InfluxDB organization (default: from monitoring state, else 'ant')",
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--influx-bucket",
         type=str,
         default=None,
@@ -843,13 +843,13 @@ def main():
             "'testnet-metrics')"
         ),
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--window",
         type=str,
         default="-6h",
         help="Flux range start (e.g. -6h, -24h, -7d). Default: -6h",
     )
-    deployments_record_results_parser.add_argument(
+    deployments_record_analysis_parser.add_argument(
         "--summary",
         type=str,
         default=None,
@@ -879,21 +879,21 @@ def main():
         help="Print the Slack payload as JSON instead of posting.",
     )
 
-    # deployments set-results-summary
-    deployments_set_results_summary_parser = deployments_subparsers.add_parser(
-        "set-results-summary",
+    # deployments edit-analysis-summary
+    deployments_edit_analysis_summary_parser = deployments_subparsers.add_parser(
+        "edit-analysis-summary",
         help=(
             "Update the freeform summary on an existing deployment_host_results "
             "row without re-querying InfluxDB."
         ),
     )
-    deployments_set_results_summary_parser.add_argument(
+    deployments_edit_analysis_summary_parser.add_argument(
         "--name",
         type=str,
         required=True,
         help="Deployment name (must match a row in the registry deployments table)",
     )
-    deployments_set_results_summary_parser.add_argument(
+    deployments_edit_analysis_summary_parser.add_argument(
         "--summary",
         type=str,
         required=True,
@@ -2775,18 +2775,20 @@ def main():
             from saorsa_deploy.cmd.print_file_ops import cmd_print_uploads
 
             cmd_print_uploads(args)
-        elif args.deployments_subcommand == "record-file-results":
-            from saorsa_deploy.cmd.record_file_results import cmd_record_file_results
-
-            cmd_record_file_results(args)
         elif args.deployments_subcommand == "record-results":
             from saorsa_deploy.cmd.record_results import cmd_record_results
 
             cmd_record_results(args)
-        elif args.deployments_subcommand == "set-results-summary":
-            from saorsa_deploy.cmd.set_results_summary import cmd_set_results_summary
+        elif args.deployments_subcommand == "record-analysis":
+            from saorsa_deploy.cmd.record_analysis import cmd_record_analysis
 
-            cmd_set_results_summary(args)
+            cmd_record_analysis(args)
+        elif args.deployments_subcommand == "edit-analysis-summary":
+            from saorsa_deploy.cmd.edit_analysis_summary import (
+                cmd_edit_analysis_summary,
+            )
+
+            cmd_edit_analysis_summary(args)
         elif args.deployments_subcommand == "slack-post":
             from saorsa_deploy.cmd.slack_post import cmd_slack_post
 

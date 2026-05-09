@@ -6,7 +6,7 @@ from rich.panel import Panel
 from saorsa_deploy.registry import get_repository
 
 
-def cmd_set_results_summary(args):
+def cmd_edit_analysis_summary(args):
     """Update the freeform summary on a deployment's recorded host results."""
     console = Console()
 
@@ -29,9 +29,9 @@ def cmd_set_results_summary(args):
         row = repo.set_host_result_summary(deployment.id, args.summary)
     except ValueError:
         console.print(
-            f"[bold red]Error:[/bold red] No host results recorded for deployment "
-            f"'{args.name}' yet. Run `saorsa-deploy deployments record-results --name {args.name}` "
-            f"first."
+            f"[bold red]Error:[/bold red] No host results recorded for "
+            f"deployment '{args.name}' yet. Run `saorsa-deploy deployments "
+            f"record-analysis --name {args.name}` first."
         )
         sys.exit(1)
 
