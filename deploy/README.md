@@ -719,7 +719,7 @@ Arguments (for `prod local-uploads`):
 |----------|----------|-------------|
 | `--name NAME` | yes | Deployment name; used to scope per-file rows in `deployment_prod_upload_results`. |
 | `--purpose TEXT` | yes | Free-text description, persisted to `deploy_args` and surfaced by `deployments slack-post`. |
-| `--urls FILE` / `--local-dir-path DIR` | one of | `--urls` reads a newline-separated URL list (each URL is downloaded to a temp file, uploaded, then the temp file is deleted; original URL targets are not touched). `--local-dir-path` iterates regular files in the given directory non-recursively and uploads each one — source files are never modified or deleted. |
+| `--urls FILE` / `--local-dir-path DIR` | one of | `--urls` reads a newline-separated URL list (each URL is downloaded to a temp file, uploaded, then the temp file is deleted; original URL targets are not touched). `--local-dir-path` recursively walks the given directory and uploads every regular file underneath; each file is identified by its path relative to the root (e.g. `sub/dir/foo.bin`). Source files are never modified or deleted. |
 | `--secret-key KEY` | yes (or env) | Funded Arbitrum One mainnet wallet key. Falls back to `ARBITRUM_ONE_SECRET_KEY`. Uploads cost real ETH. |
 | `--branch-name BRANCH` + `--repo-owner OWNER` | no | Pull a custom-built `ant` binary from S3 (must be paired). |
 | `--ant-version VERSION` | no | Pin a specific released `ant` version. Mutually exclusive with `--branch-name`. |

@@ -207,10 +207,17 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
             try:
                 directory = Path(raw_path)
                 if directory.is_dir():
+                    pairs = sorted(
+                        (
+                            (p, p.relative_to(directory).as_posix())
+                            for p in directory.rglob("*")
+                            if p.is_file()
+                        ),
+                        key=lambda item: item[1],
+                    )
                     files = [
-                        {"name": p.name, "size_bytes": p.stat().st_size}
-                        for p in sorted(directory.iterdir())
-                        if p.is_file()
+                        {"name": rel, "size_bytes": p.stat().st_size}
+                        for p, rel in pairs
                     ]
             except OSError:
                 files = []
