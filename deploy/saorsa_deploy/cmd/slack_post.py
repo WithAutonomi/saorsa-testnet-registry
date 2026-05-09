@@ -53,6 +53,48 @@ def _section(text: str) -> dict:
     return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
 
+# Slack Block Kit caps the mrkdwn text on a single section block at 3000
+# characters. Above that the API rejects the whole post with
+# ``invalid_blocks``. We pack chunks up to ~2800 chars to leave headroom
+# for the header line plus any per-page suffix Slack might apply.
+_SECTION_TEXT_LIMIT = 2800
+
+
+def _chunked_sections(header: str, lines: list[str]) -> list[dict]:
+    """Render ``lines`` under ``header`` as one or more section blocks.
+
+    A single block is used when everything fits inside the per-section
+    text cap. Otherwise the lines are split across multiple section
+    blocks; from the second block onwards the header is suffixed with
+    ``(i/N)`` so a reader can tell the list is paginated. Each line is
+    kept whole — splits never happen mid-line.
+    """
+    if not lines:
+        return [_section(header)]
+
+    pages: list[list[str]] = [[]]
+    page_len = len(header) + 1  # +1 for the newline after the header
+    for line in lines:
+        # +1 accounts for the joining newline before this line.
+        added = len(line) + 1
+        if pages[-1] and page_len + added > _SECTION_TEXT_LIMIT:
+            pages.append([])
+            page_len = len(header) + 1
+        pages[-1].append(line)
+        page_len += added
+
+    if len(pages) == 1:
+        return [_section(header + "\n" + "\n".join(pages[0]))]
+
+    blocks: list[dict] = []
+    total = len(pages)
+    base_header = header.rstrip(":").rstrip("*")
+    for i, page in enumerate(pages, start=1):
+        paged_header = f"{base_header} ({i}/{total}):*"
+        blocks.append(_section(paged_header + "\n" + "\n".join(page)))
+    return blocks
+
+
 def _fields_section(fields: list[tuple[str, str]]) -> dict:
     return {
         "type": "section",
@@ -226,7 +268,7 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
             f"• `{f.get('name', '?')}` ({_format_size(f.get('size_bytes'))})"
             for f in files
         ]
-        blocks.append(_section("*Files:*\n" + "\n".join(lines)))
+        blocks.extend(_chunked_sections("*Files:*", lines))
     return blocks
 
 

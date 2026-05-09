@@ -372,6 +372,84 @@ def test_prod_continuous_downloader_renders_spec_and_addresses():
     assert "release v0.3.0" in text
 
 
+def test_prod_local_uploads_chunks_long_file_lists_under_section_cap():
+    """Slack rejects sections longer than 3000 chars with `invalid_blocks`.
+
+    A real run with ~200 files easily exceeds that, so the file list must
+    be split across multiple section blocks. Verify (a) every section
+    stays under the cap, (b) every file still appears somewhere, and
+    (c) the chunked headers are paginated.
+    """
+    files = [
+        {"name": f"clip{i:03d}.avi", "size_bytes": 10_000_000 + i}
+        for i in range(184)
+    ]
+    deployment = _deployment(
+        name="PROD-LOCAL-UL-99",
+        deploy_args={
+            "kind": "prod-local-uploads",
+            "input_path": "/tmp/something",
+            "input_mode": "local-dir",
+            "file_count": len(files),
+            "files": files,
+            "ant_binary": {"kind": "release", "version": "0.2.2"},
+        },
+    )
+
+    payload = build_slack_blocks(deployment, None, None)
+
+    file_blocks = [
+        b for b in payload["blocks"]
+        if b.get("type") == "section"
+        and b.get("text")
+        and "*Files" in b["text"]["text"]
+    ]
+    assert len(file_blocks) >= 2, (
+        "Expected the long file list to be split into multiple section blocks"
+    )
+    for block in file_blocks:
+        assert len(block["text"]["text"]) < 3000, (
+            "Section text must stay under Slack's 3000-char cap"
+        )
+
+    rendered = "\n".join(b["text"]["text"] for b in file_blocks)
+    for f in files:
+        assert f["name"] in rendered, f"missing file {f['name']!r}"
+
+    assert f"(1/{len(file_blocks)})" in file_blocks[0]["text"]["text"]
+    assert (
+        f"({len(file_blocks)}/{len(file_blocks)})"
+        in file_blocks[-1]["text"]["text"]
+    )
+
+
+def test_prod_local_uploads_short_file_list_uses_single_unpaginated_section():
+    """When everything fits in one block we don't want a (1/1) suffix."""
+    files = [
+        {"name": f"f{i}.bin", "size_bytes": 1_000_000} for i in range(3)
+    ]
+    deployment = _deployment(
+        name="PROD-LOCAL-UL-100",
+        deploy_args={
+            "kind": "prod-local-uploads",
+            "input_path": "/tmp/something",
+            "input_mode": "local-dir",
+            "file_count": len(files),
+            "files": files,
+            "ant_binary": {"kind": "release", "version": "0.2.2"},
+        },
+    )
+    payload = build_slack_blocks(deployment, None, None)
+    file_blocks = [
+        b for b in payload["blocks"]
+        if b.get("type") == "section"
+        and b.get("text")
+        and "*Files" in b["text"]["text"]
+    ]
+    assert len(file_blocks) == 1
+    assert "(1/" not in file_blocks[0]["text"]["text"]
+
+
 def test_dry_run_prints_payload_and_does_not_post(repo, capsys):
     repo.create(
         name="DEV-DRY",
