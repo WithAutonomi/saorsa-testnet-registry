@@ -323,10 +323,22 @@ def _read_url_list(path: Path) -> list[str]:
     return urls
 
 
-def _list_local_files(directory: Path) -> list[Path]:
+def _list_local_files(directory: Path) -> list[tuple[Path, str]]:
+    """Recursively list regular files under ``directory``.
+
+    Returns a list of ``(absolute_path, relative_posix_path)`` pairs sorted
+    by the relative path so siblings group with their parents in a stable
+    order. The relative path is used as the file's identifier in DB records,
+    logs, and Slack output.
+    """
     if not directory.is_dir():
         raise RuntimeError(f"--local-dir-path {directory} is not a directory")
-    return sorted(p for p in directory.iterdir() if p.is_file())
+    pairs: list[tuple[Path, str]] = []
+    for p in directory.rglob("*"):
+        if p.is_file():
+            pairs.append((p, p.relative_to(directory).as_posix()))
+    pairs.sort(key=lambda item: item[1])
+    return pairs
 
 
 def _safe_filename(url: str, fallback_index: int) -> str:
@@ -411,7 +423,7 @@ def cmd_prod_local_uploads(args) -> None:
         input_mode = "urls"
         input_path = str(Path(args.urls).resolve())
         file_count = len(urls)
-        local_files: list[Path] = []
+        local_files: list[tuple[Path, str]] = []
     else:
         local_dir = Path(args.local_dir_path).resolve()
         local_files = _list_local_files(local_dir)
@@ -459,13 +471,13 @@ def cmd_prod_local_uploads(args) -> None:
 
     files_payload: list[dict] = []
     if input_mode == "local-dir":
-        for path in local_files:
+        for path, rel_name in local_files:
             try:
                 files_payload.append(
-                    {"name": path.name, "size_bytes": path.stat().st_size}
+                    {"name": rel_name, "size_bytes": path.stat().st_size}
                 )
             except OSError:
-                files_payload.append({"name": path.name, "size_bytes": None})
+                files_payload.append({"name": rel_name, "size_bytes": None})
 
     deploy_args_payload = {
         "kind": "prod-local-uploads",
@@ -568,8 +580,8 @@ def cmd_prod_local_uploads(args) -> None:
             except OSError:
                 pass
     else:
-        for idx, file_path in enumerate(local_files, start=1):
-            console.print(f"[{idx}/{file_count}] {file_path.name}")
+        for idx, (file_path, rel_name) in enumerate(local_files, start=1):
+            console.print(f"[{idx}/{file_count}] {rel_name}")
             started_at = datetime.now(timezone.utc)
             start_ns = time.time_ns()
             try:
@@ -584,7 +596,7 @@ def cmd_prod_local_uploads(args) -> None:
                 host=host,
                 region=region,
                 source_url=str(file_path),
-                file_name=file_path.name,
+                file_name=rel_name,
                 file_path=file_path,
                 file_size_bytes=file_size,
                 ant_path=ant_path,

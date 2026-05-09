@@ -2451,9 +2451,11 @@ def main():
         type=str,
         default=None,
         metavar="DIR",
-        help="Path to a local directory whose files (non-recursive) will each "
-        "be uploaded with `ant file upload --public`. Source files are "
-        "never modified or deleted.",
+        help="Path to a local directory whose files will each be uploaded "
+        "with `ant file upload --public`. Subdirectories are walked "
+        "recursively and every regular file is uploaded; each file is "
+        "identified by its path relative to the given root. Source files "
+        "are never modified or deleted.",
     )
     prod_lu_parser.add_argument(
         "--secret-key",
