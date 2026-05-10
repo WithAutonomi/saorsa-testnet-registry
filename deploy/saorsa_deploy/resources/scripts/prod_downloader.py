@@ -304,12 +304,14 @@ def main() -> int:
     )
 
     cycle = 0
+    op_counter = 0
     while True:
         cycle += 1
         print(f"--- cycle {cycle} ({len(addresses)} addresses) ---", flush=True)
         cycle_failures = 0
         for idx, address in enumerate(addresses, start=1):
-            log_basename = _safe_log_basename(address, idx)
+            op_counter += 1
+            log_basename = _safe_log_basename(address, op_counter)
             stderr_log_path = log_dir / f"{log_basename}.stderr"
             stdout_log_path = log_dir / f"{log_basename}.stdout"
             output_path = download_dir / address
