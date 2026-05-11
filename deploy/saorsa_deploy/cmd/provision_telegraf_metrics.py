@@ -10,7 +10,11 @@ from saorsa_deploy.cmd.provision_telegraf import (
 )
 from saorsa_deploy.provisioning.telegraf_metrics import TelegrafMetricsProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
-from saorsa_deploy.state import load_deployment_state, load_monitoring_state
+from saorsa_deploy.state import (
+    load_client_state,
+    load_deployment_state,
+    load_monitoring_state,
+)
 
 
 def cmd_provision_telegraf_metrics(args):
@@ -242,6 +246,38 @@ def cmd_provision_telegraf_metrics(args):
             except Exception as e:
                 console.print(
                     f"[bold red]Telegraf metrics provisioning failed:[/bold red] {e}"
+                )
+                sys.exit(1)
+
+        # Provision client VMs (uploaders + downloaders) — host stats only
+        # (node_count=0 → no Prometheus scrape block). Client state is
+        # optional: a testnet may have nodes but no clients yet.
+        client_ips: list[str] = []
+        try:
+            client_state = load_client_state(args.name)
+            client_ips = [
+                c["ip"] for c in client_state.get("clients", []) if c.get("ip")
+            ]
+        except RuntimeError:
+            pass
+
+        if client_ips:
+            console.print(
+                f"\n[bold]Provisioning Telegraf on {len(client_ips)}"
+                f" client VM(s) (host_role=CLIENT)...[/bold]"
+            )
+            clear_known_hosts(client_ips, console)
+            try:
+                TelegrafMetricsProvisioner(
+                    host_ips=client_ips,
+                    node_count=0,
+                    host_role="CLIENT",
+                    **common_kwargs,
+                ).execute()
+            except Exception as e:
+                console.print(
+                    f"[bold red]Telegraf metrics provisioning failed on "
+                    f"clients:[/bold red] {e}"
                 )
                 sys.exit(1)
     else:

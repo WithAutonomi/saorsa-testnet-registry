@@ -417,6 +417,8 @@ uv run saorsa-deploy monitoring provision-telegraf \
 
 Either `--name` or `--host-ips` must be provided. The `--host-ips` flag allows provisioning machines from external testnet setups without any deployment state in this repository.
 
+When `--name` is provided the command also enumerates client VMs from client state (if any exist) and provisions host-stat telegraf on them with `host_role="CLIENT"`. The existing Grafana **Host Statistics** dashboard's `host_role` template variable is populated from InfluxDB tag values, so `CLIENT` appears as a new selectable role alongside `WAN_NODE` / `BOOTSTRAP` / `GENESIS` — no dashboard changes are required.
+
 ### `monitoring info` command
 
 Print monitoring stack connection details from S3 state. Useful for retrieving credentials after provisioning, or for getting a ready-to-use Telegraf config for external setups.

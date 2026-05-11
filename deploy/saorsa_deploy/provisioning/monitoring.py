@@ -408,36 +408,6 @@ class MonitoringProvisioner:
                             'import "influxdata/influxdb/schema"\n'
                             'schema.tagValues(\n'
                             '  bucket: "testnet-metrics",\n'
-                            '  tag: "host"\n'
-                            ")"
-                        ),
-                        "allValue": ".*",
-                        "includeAll": True,
-                        "multi": True,
-                        "name": "host",
-                        "label": "Host",
-                        "query": (
-                            'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
-                            '  bucket: "testnet-metrics",\n'
-                            '  tag: "host"\n'
-                            ")"
-                        ),
-                        "refresh": 2,
-                        "regex": "",
-                        "type": "query",
-                    },
-                    {
-                        "current": {
-                            "selected": True,
-                            "text": "All",
-                            "value": "$__all",
-                        },
-                        "datasource": {"type": "influxdb", "uid": "influxdb"},
-                        "definition": (
-                            'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
-                            '  bucket: "testnet-metrics",\n'
                             '  tag: "host_role"\n'
                             ")"
                         ),
@@ -452,6 +422,40 @@ class MonitoringProvisioner:
                             '  bucket: "testnet-metrics",\n'
                             '  tag: "host_role"\n'
                             ")"
+                        ),
+                        "refresh": 2,
+                        "regex": "",
+                        "type": "query",
+                    },
+                    {
+                        "current": {
+                            "selected": True,
+                            "text": "All",
+                            "value": "$__all",
+                        },
+                        "datasource": {"type": "influxdb", "uid": "influxdb"},
+                        "definition": (
+                            'from(bucket: "testnet-metrics")\n'
+                            '  |> range(start: -1h)\n'
+                            '  |> filter(fn: (r) => '
+                            'r["host_role"] =~ /^${host_role}$/)\n'
+                            '  |> keep(columns: ["host"])\n'
+                            '  |> group()\n'
+                            '  |> distinct(column: "host")'
+                        ),
+                        "allValue": ".*",
+                        "includeAll": True,
+                        "multi": True,
+                        "name": "host",
+                        "label": "Host",
+                        "query": (
+                            'from(bucket: "testnet-metrics")\n'
+                            '  |> range(start: -1h)\n'
+                            '  |> filter(fn: (r) => '
+                            'r["host_role"] =~ /^${host_role}$/)\n'
+                            '  |> keep(columns: ["host"])\n'
+                            '  |> group()\n'
+                            '  |> distinct(column: "host")'
                         ),
                         "refresh": 2,
                         "regex": "",
@@ -718,6 +722,7 @@ class MonitoringProvisioner:
             f'  |> filter(fn: (r) => r["_measurement"] == "{measurement}")\n'
             f"  |> filter(fn: (r) => {field_filter})\n"
             f'  |> filter(fn: (r) => r["host"] =~ /^${{host}}$/)\n'
+            f'  |> filter(fn: (r) => r["host_role"] =~ /^${{host_role}}$/)\n'
         )
         if extra_filter:
             query += f"  |> filter(fn: (r) => {extra_filter})\n"
@@ -736,6 +741,7 @@ class MonitoringProvisioner:
             '  |> filter(fn: (r) => r["_field"] == "usage_idle")\n'
             '  |> filter(fn: (r) => r["cpu"] == "cpu-total")\n'
             '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
+            '  |> filter(fn: (r) => r["host_role"] =~ /^$host_role$/)\n'
             "  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n"
             "  |> map(fn: (r) => ({r with _value: 100.0 - r._value, "
             '_field: "usage"}))\n'
