@@ -22,6 +22,8 @@ set -euo pipefail
 : "${S3_FLUSH_INTERVAL_SECS:=30}"
 : "${S3_FLUSH_EVERY_N:=50}"
 : "${PAYMENT_TYPE:=}"
+: "${HEAPTRACK:=0}"
+: "${HEAPTRACK_DIR:=/var/log/ant-heaptrack}"
 
 # Translate PAYMENT_TYPE into the matching ant flag (or nothing).
 PAYMENT_FLAG=()
@@ -66,6 +68,11 @@ flush_to_s3() {
 mkdir -p "$UPLOAD_DIR"
 touch "$ADDRESSES_FILE"
 
+if [ "$HEAPTRACK" = "1" ]; then
+    mkdir -p "$HEAPTRACK_DIR"
+    echo "Heaptrack enabled: profiles will be written under ${HEAPTRACK_DIR}"
+fi
+
 echo "Uploader starting: host=${CLIENT_HOST} region=${REGION} index=${CLIENT_INDEX} file_size=${FILE_SIZE_KB}KB s3=${S3_URI}"
 
 addresses_since_flush=0
@@ -85,9 +92,14 @@ while true; do
     output_file="/tmp/ant-upload-${seq_num}.txt"
     start_ns=$(date +%s%N)
 
+    HEAPTRACK_PREFIX=()
+    if [ "$HEAPTRACK" = "1" ]; then
+        HEAPTRACK_PREFIX=(heaptrack -o "${HEAPTRACK_DIR}/upload-${seq_num}")
+    fi
+
     # shellcheck disable=SC2086
     set +e
-    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file upload --public "${PAYMENT_FLAG[@]}" "$file_path" \
+    "${HEAPTRACK_PREFIX[@]}" "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file upload --public "${PAYMENT_FLAG[@]}" "$file_path" \
         2>&1 | tee "$output_file"
     exit_code=${PIPESTATUS[0]}
     set -e

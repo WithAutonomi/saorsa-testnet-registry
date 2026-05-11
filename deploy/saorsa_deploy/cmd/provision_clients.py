@@ -375,6 +375,12 @@ def cmd_provision_clients(args):
             bootstrap_peers = [f"{bootstrap_ip}:{bootstrap_port}"]
 
     binary_url, binary_is_archive = _resolve_ant_binary(args, console)
+    heaptrack_targets = frozenset(getattr(args, "heaptrack", None) or [])
+    if heaptrack_targets:
+        console.print(
+            f"  Heaptrack: enabled for {', '.join(sorted(heaptrack_targets))} "
+            f"(profiles → /var/log/ant-heaptrack/ on each VM)"
+        )
     record_deploy_args_update(
         args.name,
         {
@@ -382,7 +388,8 @@ def cmd_provision_clients(args):
                 getattr(args, "branch_name", None),
                 getattr(args, "repo_owner", None),
                 getattr(args, "ant_version", None),
-            )
+            ),
+            "heaptrack": sorted(heaptrack_targets),
         },
     )
     influx_url, influx_token, influx_org, influx_bucket = _resolve_influx_config(args, console)
@@ -423,6 +430,7 @@ def cmd_provision_clients(args):
         influx_bucket=influx_bucket,
         wallet_secret_key=wallet_secret_key,
         addresses_file_content=addresses_file_content,
+        heaptrack_targets=heaptrack_targets,
     )
 
     try:

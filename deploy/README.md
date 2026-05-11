@@ -258,6 +258,19 @@ Uploader flow (`uploader.sh`): uploads a random file via `ant`, appends the retu
 
 Downloader flow (`downloader.sh`): lists the testnet's addresses prefix, picks a random uploader file, pulls it, shuffles one address, and runs `ant file download` against it.
 
+#### Heap profiling
+
+Pass `--heaptrack uploader` and/or `--heaptrack downloader` to `clients provision` to wrap every `ant` invocation with [`heaptrack`](https://github.com/KDE/heaptrack). The flag is repeatable. When set, the provisioner installs the `heaptrack` apt package on matching VMs and threads `HEAPTRACK=1` through `/etc/ant-client.env`, which causes the bash wrapper to prepend `heaptrack -o /var/log/ant-heaptrack/upload-<seq>` (or `download-<seq>`) to each `ant` call. The choice is persisted in `deploy_args.heaptrack` so the run is self-describing.
+
+Profiles stay on the client VM — fetch them with `scp` before destroying the VMs:
+
+```bash
+scp -i ~/.ssh/ant_deploy "root@<client-ip>:/var/log/ant-heaptrack/*.gz" ./
+heaptrack_gui ./upload-9.gz   # open in heaptrack_gui locally
+```
+
+Heaptrack adds significant runtime overhead (typically 2-5x slower) and the `.gz` files grow with allocation count — only enable it on the VMs you actually want to profile.
+
 #### AWS Client S3 Setup
 
 Client VMs need scoped AWS credentials for the shared addresses folder. The IAM user + policy + access key are managed by a small Terraform module:

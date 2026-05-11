@@ -15,6 +15,15 @@ set -euo pipefail
 : "${DOWNLOAD_DIR:=/var/lib/ant-client/downloads}"
 : "${ANT:=/root/.local/bin/ant}"
 : "${RUN_ONCE:=false}"
+: "${HEAPTRACK:=0}"
+: "${HEAPTRACK_DIR:=/var/log/ant-heaptrack}"
+
+if [ "$HEAPTRACK" = "1" ]; then
+    mkdir -p "$HEAPTRACK_DIR"
+    echo "Heaptrack enabled: profiles will be written under ${HEAPTRACK_DIR}"
+fi
+
+dl_seq=0
 
 CLIENT_HOST=$(hostname)
 if [ -n "$ADDRESSES_S3_BUCKET" ] && [ -n "$ADDRESSES_S3_PREFIX" ]; then
@@ -93,9 +102,15 @@ while true; do
     # Run ant download and capture wall-clock time + exit code + output
     start_ns=$(date +%s%N)
 
+    dl_seq=$((dl_seq + 1))
+    HEAPTRACK_PREFIX=()
+    if [ "$HEAPTRACK" = "1" ]; then
+        HEAPTRACK_PREFIX=(heaptrack -o "${HEAPTRACK_DIR}/download-${dl_seq}")
+    fi
+
     # shellcheck disable=SC2086
     set +e
-    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file download "$address" \
+    "${HEAPTRACK_PREFIX[@]}" "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file download "$address" \
         -o "$output_path" > "$output_file" 2>&1
     exit_code=$?
     set -e

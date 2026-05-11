@@ -124,6 +124,7 @@ class AntClientProvisioner:
         influx_bucket: str = "testnet-metrics",
         wallet_secret_key: str = "",
         addresses_file_content: str | None = None,
+        heaptrack_targets: frozenset[str] = frozenset(),
     ):
         self.clients = clients
         self.bootstrap_peers = bootstrap_peers
@@ -142,6 +143,7 @@ class AntClientProvisioner:
         self.influx_bucket = influx_bucket
         self.wallet_secret_key = wallet_secret_key
         self.addresses_file_content = addresses_file_content
+        self.heaptrack_targets = heaptrack_targets
 
     def execute(self) -> None:
         """Provision all client hosts with uploader/downloader services."""
@@ -250,6 +252,19 @@ class AntClientProvisioner:
                 ],
             )
 
+            if self.heaptrack_targets:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Install heaptrack",
+                    commands=[
+                        "command -v heaptrack >/dev/null && echo 'HEAPTRACK:SKIP' || "
+                        "(DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+                        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                        "heaptrack && echo 'HEAPTRACK:INSTALLED')",
+                    ],
+                )
+
             # Install AWS CLI v2 via the official installer — uploaders flush
             # to S3 and downloaders fetch from S3. We avoid the distro `awscli`
             # package (CLI v1, deprecated, and missing from Ubuntu 24.04
@@ -289,6 +304,12 @@ class AntClientProvisioner:
                 if not c.get("ip"):
                     continue
                 role = c.get("role", "upload")
+                heap = (
+                    "1"
+                    if (role == "upload" and "uploader" in self.heaptrack_targets)
+                    or (role == "download" and "downloader" in self.heaptrack_targets)
+                    else "0"
+                )
                 if role == "upload":
                     per_uploader_key = _normalize_secret(c.get("wallet_secret_key", ""))
                     ip_to_env[c["ip"]] = {
@@ -298,6 +319,7 @@ class AntClientProvisioner:
                         "client_index": c["client_index"],
                         "payment_type": c.get("payment_type") or "",
                         "secret_key": per_uploader_key or fallback_secret,
+                        "heaptrack": heap,
                     }
                 else:
                     ip_to_env[c["ip"]] = {
@@ -307,6 +329,7 @@ class AntClientProvisioner:
                         "client_index": c["client_index"],
                         "payment_type": "",
                         "secret_key": fallback_secret,
+                        "heaptrack": heap,
                     }
 
             case_entries = []
@@ -317,7 +340,8 @@ class AntClientProvisioner:
                     f'REGION={env["region"]}; '
                     f'CLIENT_INDEX={env["client_index"]}; '
                     f'PAYMENT_TYPE="{env["payment_type"]}"; '
-                    f'SECRET_KEY="{env["secret_key"]}" ;;'
+                    f'SECRET_KEY="{env["secret_key"]}"; '
+                    f'HEAPTRACK={env["heaptrack"]} ;;'
                 )
             case_block = "\n".join(case_entries)
 
@@ -327,7 +351,7 @@ MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
     *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
-PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}" ;;
+PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0 ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -338,6 +362,7 @@ BOOTSTRAP_ARGS="{bootstrap_args}"
 FILE_SIZE_KB=$FILE_SIZE_KB
 PAYMENT_TYPE=$PAYMENT_TYPE
 SECRET_KEY=$SECRET_KEY
+HEAPTRACK=$HEAPTRACK
 ANT={ANT_INSTALL_PATH}
 ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt
 UPLOAD_DIR={CLIENT_DATA_DIR}/uploads

@@ -545,6 +545,17 @@ def main():
         "at runtime, skips the usual testnet deployment-state bootstrap lookup, "
         "and relaxes wallet-secret-key / client-AWS-creds requirements (download-only).",
     )
+    clients_provision_parser.add_argument(
+        "--heaptrack",
+        action="append",
+        choices=["uploader", "downloader"],
+        default=[],
+        help="Wrap ant invocations with heaptrack for the named service. "
+        "Repeatable: --heaptrack uploader --heaptrack downloader. Installs the "
+        "heaptrack apt package and writes profiles to /var/log/ant-heaptrack/ "
+        "on each matching VM (named upload-<seq>.gz / download-<seq>.gz). "
+        "Fetch via scp before destroying the client VMs.",
+    )
 
     # clients start
     clients_start_parser = clients_subparsers.add_parser(
