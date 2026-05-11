@@ -20,6 +20,7 @@ def _deploy_args(**overrides):
         "monitoring_volume_size": 50,
         "ssh_key_path": "~/.ssh/id_rsa",
         "purpose": "test",
+        "sleep_interval_secs": 900,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -37,7 +38,15 @@ def _destroy_args(**overrides):
 
 @pytest.fixture
 def deploy_patches():
-    """Patch every orchestration dependency the deploy wrapper calls out to."""
+    """Patch every orchestration dependency the deploy wrapper calls out to.
+
+    The provisioner + service-start path was rewired off ``cmd_provision_clients``
+    / ``cmd_start_clients`` onto the prod-specific ``_provision_prod_downloader``
+    / ``_start_prod_downloader`` helpers when the dedicated ``prod_downloader.py``
+    service was introduced. The fixture now patches those helpers directly so
+    the test suite continues to assert orchestration order without touching
+    pyinfra / SSH.
+    """
     with (
         patch(
             "saorsa_deploy.cmd.prod_continuous_downloader.record_deployment_created"
@@ -66,10 +75,10 @@ def deploy_patches():
             "saorsa_deploy.cmd.infra_clients.cmd_infra_clients"
         ) as p_infra_clients,
         patch(
-            "saorsa_deploy.cmd.provision_clients.cmd_provision_clients"
+            "saorsa_deploy.cmd.prod_continuous_downloader._provision_prod_downloader"
         ) as p_prov_clients,
         patch(
-            "saorsa_deploy.cmd.start_clients.cmd_start_clients"
+            "saorsa_deploy.cmd.prod_continuous_downloader._start_prod_downloader"
         ) as p_start_clients,
     ):
         yield SimpleNamespace(
@@ -123,7 +132,7 @@ class TestDeployHappyPath:
         deploy_patches.prov_clients.assert_called_once()
         deploy_patches.start_clients.assert_called_once()
 
-    def test_deploy_passes_prod_true_and_addresses_to_provision_clients(
+    def test_deploy_passes_addresses_file_to_provisioner(
         self, deploy_patches, tmp_path
     ):
         custom_file = tmp_path / "my_addrs.txt"
@@ -133,16 +142,15 @@ class TestDeployHappyPath:
             _deploy_args(addresses_file=str(custom_file))
         )
 
-        pc_args = deploy_patches.prov_clients.call_args.args[0]
-        assert pc_args.prod is True
-        assert pc_args.addresses_file == str(custom_file)
-        assert pc_args.monitoring_name == "PROD-DL-01"
+        # _provision_prod_downloader(args, addresses_file, console)
+        addresses_file_arg = deploy_patches.prov_clients.call_args.args[1]
+        assert addresses_file_arg == str(custom_file)
 
     def test_deploy_uses_shipped_default_addresses_when_flag_absent(self, deploy_patches):
         cmd_prod_continuous_downloader_deploy(_deploy_args())
 
-        pc_args = deploy_patches.prov_clients.call_args.args[0]
-        assert pc_args.addresses_file.endswith("prod_addresses.txt")
+        addresses_file_arg = deploy_patches.prov_clients.call_args.args[1]
+        assert addresses_file_arg.endswith("prod_addresses.txt")
 
     def test_deploy_records_kind_in_deploy_args(self, deploy_patches):
         cmd_prod_continuous_downloader_deploy(_deploy_args())
@@ -196,7 +204,7 @@ def destroy_patches():
             return_value=True,
         ) as p_mon_exists,
         patch(
-            "saorsa_deploy.cmd.stop_clients.cmd_stop_clients"
+            "saorsa_deploy.cmd.prod_continuous_downloader._stop_prod_downloader"
         ) as p_stop,
         patch(
             "saorsa_deploy.cmd.destroy_clients.cmd_destroy_clients"

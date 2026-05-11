@@ -1,0 +1,313 @@
+"""Pyinfra provisioner for prod-continuous-downloader client VMs.
+
+Sister of :mod:`saorsa_deploy.provisioning.prod_uploader` but targets the
+download role: it runs a continuous loop over a per-host address list,
+keeps per-op stdout/stderr logs on disk, and sleeps a configurable
+interval between full cycles. None of the testnet ``downloader.sh`` /
+S3-rotating address feed / shared ``ant-client.service`` machinery is
+involved — production downloaders get their own service so changes here
+never leak into testnet runs.
+
+Per host the provisioner:
+
+* installs the ``ant`` binary (release archive or custom build)
+* writes ``/etc/ant-prod-downloader.env`` with bootstrap args, region,
+  sleep interval, addresses-file path, and Influx config
+* writes the per-host address list to
+  ``/var/lib/ant-prod-downloader/addresses.txt``
+* deploys ``prod_downloader.py`` to ``/root/ant-prod-downloader/``
+* writes the ``ant-prod-downloader.service`` systemd unit (Type=simple,
+  Restart=on-failure, RestartSec=30) and reloads systemd
+
+Services are NOT started here. Use the start helper in
+``cmd/prod_continuous_downloader.py`` after provisioning.
+"""
+
+import base64
+
+from pyinfra.api import Config, Inventory, State
+from pyinfra.api.connect import connect_all, disconnect_all
+from pyinfra.api.operation import add_op
+from pyinfra.api.operations import run_ops
+from pyinfra.operations import server
+from rich.console import Console
+
+from saorsa_deploy.provisioning.apt import (
+    DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    build_disable_unattended_upgrades_command,
+)
+from saorsa_deploy.provisioning.progress import (
+    RichLiveProgressHandler,
+    create_progress_handler,
+)
+from saorsa_deploy.resources import get_resources_dir
+
+ANT_INSTALL_PATH = "/root/.local/bin/ant"
+SERVICE_NAME = "ant-prod-downloader"
+DATA_DIR = "/var/lib/ant-prod-downloader"
+SCRIPTS_DIR = "/root/ant-prod-downloader"
+LOG_DIR = "/var/log/ant-prod-downloader"
+ADDRESSES_PATH = f"{DATA_DIR}/addresses.txt"
+DOWNLOAD_DIR = f"{DATA_DIR}/downloads"
+SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
+ENV_PATH = "/etc/ant-prod-downloader.env"
+
+
+def _build_systemd_unit() -> str:
+    # `Restart=on-failure` plus the long `RestartSec` keeps the service
+    # alive across transient errors (network blips, ant process crash)
+    # without busy-looping. The script itself runs forever — it only
+    # exits cleanly when the address list is empty, which we treat as
+    # an operator misconfiguration rather than a normal restart trigger.
+    return f"""\
+[Unit]
+Description=Ant Production Continuous Downloader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile={ENV_PATH}
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -u {SCRIPTS_DIR}/prod_downloader.py
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+class ProdDownloaderProvisioner:
+    """Provisions the prod continuous-downloader service across one or more
+    client VMs.
+
+    Each entry in ``downloaders`` must be a dict with keys ``ip``, ``region``,
+    and ``addresses_file_content`` (the literal text of the per-host address
+    list).
+    """
+
+    def __init__(
+        self,
+        downloaders: list[dict],
+        bootstrap_peers: list[str],
+        sleep_interval_secs: int,
+        ssh_key_path: str = "~/.ssh/id_rsa",
+        binary_url: str | None = None,
+        binary_is_archive: bool = True,
+        influx_url: str = "",
+        influx_token: str = "",
+        influx_org: str = "ant",
+        influx_bucket: str = "testnet-metrics",
+        evm_network: str = "arbitrum-one",
+        console: Console | None = None,
+    ):
+        self.downloaders = downloaders
+        self.bootstrap_peers = bootstrap_peers
+        self.sleep_interval_secs = sleep_interval_secs
+        self.ssh_key_path = ssh_key_path
+        self.binary_url = binary_url
+        self.binary_is_archive = binary_is_archive
+        self.influx_url = influx_url
+        self.influx_token = influx_token
+        self.influx_org = influx_org
+        self.influx_bucket = influx_bucket
+        self.evm_network = evm_network
+        self.console = console or Console()
+
+    def execute(self) -> None:
+        host_ips = [d["ip"] for d in self.downloaders if d.get("ip")]
+        if not host_ips:
+            raise RuntimeError("No downloader IPs available for provisioning")
+
+        hosts_data = [
+            (d["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path})
+            for d in self.downloaders
+            if d.get("ip")
+        ]
+        inventory = Inventory((hosts_data, {}))
+        config = Config()
+        state = State(inventory=inventory, config=config)
+
+        progress = create_progress_handler(self.console)
+        state.add_callback_handler(progress)
+        if isinstance(progress, RichLiveProgressHandler):
+            progress._live.start()
+
+        try:
+            self.console.print(
+                f"Connecting to {len(host_ips)} prod-downloader host(s) as root..."
+            )
+            connect_all(state)
+
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
+            )
+
+            add_op(
+                state,
+                server.shell,
+                name="Create prod-downloader directories",
+                commands=[
+                    f"mkdir -p {DATA_DIR} {DOWNLOAD_DIR} {SCRIPTS_DIR} "
+                    f"{LOG_DIR} /root/.local/bin",
+                ],
+            )
+
+            self._add_install_ant_op(state)
+            self._add_deploy_service_script_op(state)
+            self._add_env_and_addresses_op(state)
+            self._add_systemd_unit_op(state)
+
+            run_ops(state)
+
+            if isinstance(progress, RichLiveProgressHandler):
+                progress.mark_all_done()
+        finally:
+            disconnect_all(state)
+            if isinstance(progress, RichLiveProgressHandler):
+                progress._live.stop()
+
+        failed = state.failed_hosts
+        total = len(host_ips)
+        succeeded = total - len(failed)
+        self.console.print()
+        self.console.print(
+            f"[bold]Prod downloader provisioning complete: {succeeded}/{total} "
+            f"hosts succeeded[/bold]"
+        )
+        self.console.print(
+            "  Service installed but NOT started. Use the start helper to "
+            "begin downloading."
+        )
+        if failed:
+            for host in failed:
+                self.console.print(f"  [red]Failed: {host.name}[/red]")
+            raise RuntimeError(
+                f"{len(failed)} host(s) failed prod-downloader provisioning"
+            )
+
+    def _add_install_ant_op(self, state: State) -> None:
+        if self.binary_url:
+            download_url = self.binary_url
+            self.console.print(f"Using binary URL: {download_url}")
+        else:
+            from saorsa_deploy.binary_source import get_ant_release_url
+            self.console.print("Fetching latest ant release from GitHub...")
+            download_url = get_ant_release_url()
+            self.console.print(f"  Release URL: {download_url}")
+
+        if self.binary_is_archive:
+            install_cmd = (
+                f"test -f {ANT_INSTALL_PATH} "
+                f"&& echo 'ANT_BINARY:SKIP' || "
+                f"(wget -q {download_url} -O /tmp/ant-archive.tar.gz && "
+                f"tar -xzf /tmp/ant-archive.tar.gz -C /tmp/ && "
+                f"find /tmp -name ant -type f -path '*/ant-*/*' "
+                f"-exec mv {{}} {ANT_INSTALL_PATH} \\; && "
+                f"chmod +x {ANT_INSTALL_PATH} && "
+                f"rm -rf /tmp/ant-*/ /tmp/ant-archive.tar.gz && "
+                f"echo 'ANT_BINARY:INSTALLED')"
+            )
+        else:
+            install_cmd = (
+                f"test -f {ANT_INSTALL_PATH} "
+                f"&& echo 'ANT_BINARY:SKIP' || "
+                f"(wget -q {download_url} -O {ANT_INSTALL_PATH} && "
+                f"chmod +x {ANT_INSTALL_PATH} && "
+                f"echo 'ANT_BINARY:INSTALLED')"
+            )
+
+        add_op(
+            state,
+            server.shell,
+            name="Download and install ant binary",
+            commands=[install_cmd],
+        )
+
+    def _add_deploy_service_script_op(self, state: State) -> None:
+        scripts_dir = get_resources_dir() / "scripts"
+        service_script = (scripts_dir / "prod_downloader.py").read_text()
+        add_op(
+            state,
+            server.shell,
+            name="Deploy prod_downloader.py service script",
+            commands=[
+                f"cat > {SCRIPTS_DIR}/prod_downloader.py << 'SCRIPT_EOF'\n"
+                f"{service_script}SCRIPT_EOF",
+                f"chmod +x {SCRIPTS_DIR}/prod_downloader.py",
+            ],
+        )
+
+    def _add_env_and_addresses_op(self, state: State) -> None:
+        bootstrap_args = " ".join(
+            f"--bootstrap {peer}" for peer in self.bootstrap_peers
+        )
+
+        case_entries = []
+        for d in self.downloaders:
+            if not d.get("ip"):
+                continue
+            addrs_b64 = base64.b64encode(
+                d["addresses_file_content"].encode("utf-8")
+            ).decode("ascii")
+            case_entries.append(
+                f'    "{d["ip"]}") '
+                f'REGION={d["region"]}; '
+                f'ADDRS_B64="{addrs_b64}" ;;'
+            )
+        case_block = "\n".join(case_entries)
+
+        influx_lines = ""
+        if self.influx_url and self.influx_token:
+            influx_lines = (
+                f"INFLUX_URL={self.influx_url}\n"
+                f"INFLUX_TOKEN={self.influx_token}\n"
+                f"INFLUX_ORG={self.influx_org}\n"
+                f"INFLUX_BUCKET={self.influx_bucket}\n"
+            )
+
+        env_script = f"""\
+MY_IP=$(hostname -I | awk '{{print $1}}')
+case "$MY_IP" in
+{case_block}
+    *) REGION=unknown; ADDRS_B64="" ;;
+esac
+mkdir -p {DATA_DIR}
+echo "$ADDRS_B64" | base64 -d > {ADDRESSES_PATH}
+cat > {ENV_PATH} << ENV_EOF
+HOME=/root
+REGION=$REGION
+BOOTSTRAP_ARGS="{bootstrap_args}"
+ANT={ANT_INSTALL_PATH}
+ADDRESSES_FILE={ADDRESSES_PATH}
+DOWNLOAD_DIR={DOWNLOAD_DIR}
+EVM_NETWORK={self.evm_network}
+SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
+{influx_lines}ENV_EOF"""
+
+        add_op(
+            state,
+            server.shell,
+            name="Write environment file and per-host address list",
+            commands=[env_script],
+        )
+
+    def _add_systemd_unit_op(self, state: State) -> None:
+        unit = _build_systemd_unit()
+        cmd = (
+            f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n"
+            f"{unit}UNIT_EOF\n"
+            f"systemctl daemon-reload"
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Write ant-prod-downloader.service systemd unit",
+            commands=[cmd],
+        )

@@ -158,11 +158,13 @@ The pipeline for an extension skips the bootstrap/genesis stages entirely: `depl
 
 ### Running a prod continuous-downloader
 
-`prod continuous-downloader deploy` is a higher-level saorsa-deploy command that stands up a single-VM client deployment running `ant-downloader` continuously against the **production** Autonomi network, with a paired InfluxDB monitoring VM (always in `lon1`). The bootstrap peers list is fetched at runtime from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml); a curated list of public file addresses ships at `deploy/saorsa_deploy/resources/prod_addresses.txt` and can be overridden with `--addresses-file`.
+`prod continuous-downloader deploy` is a higher-level saorsa-deploy command that stands up a single-VM client deployment running a dedicated `prod_downloader.py` Python service against the **production** Autonomi network, with a paired InfluxDB monitoring VM (always in `lon1`). The bootstrap peers list is fetched at runtime from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml); a curated list of public file addresses ships at `deploy/saorsa_deploy/resources/prod_addresses.txt` and can be overridden with `--addresses-file`.
 
 - Single VM per deployment; takes one `--spec region[:vm_size]` (download-only — uploaders are rejected).
 - Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
-- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` so `deployments record-results --name ... --monitoring-name ... --window -1h` works unchanged against it.
+- The service is implemented in Python (`deploy/saorsa_deploy/resources/scripts/prod_downloader.py`) — not the shared `downloader.sh` — because every download (success or failure) keeps a per-op stdout/stderr log on disk under `/var/log/ant-prod-downloader/{idx:04d}-{addr_prefix}.{stdout,stderr}` for after-the-fact analysis. Testnet downloaders deliberately stay on `downloader.sh` so they keep no per-op logs.
+- `--sleep-interval-secs` configures a sleep at the **end of each full cycle** through the address list. Default 900 (15 minutes); pass `0` to disable and resume the back-to-back cycling of the legacy bash downloader. Persisted in `deploy_args.sleep_interval_secs` and surfaced by `deployments slack-post`.
+- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` so `deployments record-results --name ... --monitoring-name ... --window -1h` works unchanged against it (the new script keeps emitting to the existing `download` Influx measurement).
 - `prod continuous-downloader destroy` tears down the monitoring VM alongside the client by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack for after-the-fact analysis.
 
 See `deploy/README.md` §"Running continuous downloaders against production" for the full argument table and sequencing.
