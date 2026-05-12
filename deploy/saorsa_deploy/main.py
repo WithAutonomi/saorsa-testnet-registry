@@ -2453,6 +2453,143 @@ def main():
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
+    # --- prod canary ---
+    prod_canary_parser = prod_subparsers.add_parser(
+        "canary",
+        help=(
+            "Deploy a canary set: an upload VM walks a URL list once and "
+            "probe VMs continuously check the resulting public files for "
+            "loss. The Influx + Postgres dataset survives destroy by default."
+        ),
+    )
+    prod_canary_subparsers = prod_canary_parser.add_subparsers(
+        dest="prod_canary_action", required=True
+    )
+
+    prod_canary_deploy_parser = prod_canary_subparsers.add_parser(
+        "deploy",
+        help="Deploy canary upload + probe VMs and their paired monitoring stack.",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (also used for the paired monitoring stack).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--upload-spec",
+        type=str,
+        required=True,
+        metavar="REGION[:VM_SIZE]",
+        help="Spec for the single upload VM (default vm_size: s-1vcpu-2gb).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--probe-spec",
+        action="append",
+        default=[],
+        metavar="REGION[:VM_SIZE]:count=N",
+        help=(
+            "Probe spec, repeatable. Total probe VM count = sum of count=N "
+            "values; each probe VM is assigned a sequential shard index."
+        ),
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--secret-key",
+        type=str,
+        default=None,
+        help=(
+            "Arbitrum One wallet secret key for the upload VM. Falls back to "
+            "ARBITRUM_ONE_SECRET_KEY env var. Must be a funded mainnet wallet."
+        ),
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--urls-file",
+        type=str,
+        required=True,
+        help="Local path to a newline-separated list of public source URLs.",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--upload-sleep-secs",
+        type=int,
+        default=0,
+        help="Seconds to sleep between uploads (default: 0).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--probe-concurrency",
+        type=int,
+        default=4,
+        help="Concurrent ant download invocations per probe VM (default: 4).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--monitoring-volume-size",
+        type=int,
+        default=50,
+        help="Monitoring VM attached volume size in GB (default: 50).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help=(
+            "Free-text description of what this canary is for. "
+            "Persisted into deploy_args."
+        ),
+    )
+
+    prod_canary_destroy_parser = prod_canary_subparsers.add_parser(
+        "destroy",
+        help=(
+            "Destroy a canary deployment. Default: keep monitoring (the "
+            "dataset is the product); pass --no-keep-monitoring to also "
+            "destroy Influx + Grafana."
+        ),
+    )
+    prod_canary_destroy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name to tear down.",
+    )
+    prod_canary_destroy_parser.add_argument(
+        "--keep-monitoring",
+        action="store_true",
+        default=True,
+        help="Leave the paired monitoring VM running (default ON for canary).",
+    )
+    prod_canary_destroy_parser.add_argument(
+        "--no-keep-monitoring",
+        dest="keep_monitoring",
+        action="store_false",
+        help="Tear down the paired monitoring VM along with the canary VMs.",
+    )
+    prod_canary_destroy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
     # --- prod local-uploads ---
     prod_lu_parser = prod_subparsers.add_parser(
         "local-uploads",
@@ -3035,6 +3172,20 @@ def main():
             from saorsa_deploy.cmd.prod_uploaders import cmd_prod_uploaders_destroy
 
             cmd_prod_uploaders_destroy(args)
+        elif (
+            args.prod_subcommand == "canary"
+            and args.prod_canary_action == "deploy"
+        ):
+            from saorsa_deploy.cmd.prod_canary import cmd_prod_canary_deploy
+
+            cmd_prod_canary_deploy(args)
+        elif (
+            args.prod_subcommand == "canary"
+            and args.prod_canary_action == "destroy"
+        ):
+            from saorsa_deploy.cmd.prod_canary import cmd_prod_canary_destroy
+
+            cmd_prod_canary_destroy(args)
         elif args.prod_subcommand == "local-uploads":
             from saorsa_deploy.cmd.prod_local_uploads import (
                 cmd_prod_local_uploads,

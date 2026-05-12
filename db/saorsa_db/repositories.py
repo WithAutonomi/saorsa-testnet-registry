@@ -10,6 +10,15 @@ from saorsa_db.models.migration import (
     MigrationVm,
     MigrationVmStatus,
 )
+from saorsa_db.models.prod_canary import (
+    DeploymentProdCanaryChunk,
+    DeploymentProdCanaryLoss,
+    DeploymentProdCanaryProbe,
+    DeploymentProdCanaryUpload,
+    ProdCanaryChunkRole,
+    ProdCanaryInitialVerifyStatus,
+    ProdCanaryProbeStatus,
+)
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
@@ -146,6 +155,83 @@ class DeploymentRepository(ABC):
     def list_prod_upload_results_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentProdUploadResult]:
+        ...
+
+    @abstractmethod
+    def upsert_prod_canary_upload(
+        self,
+        canary_id,
+        deployment_id: int,
+        source_url: str,
+        file_name: str,
+        file_size_bytes: int,
+        top_address: str,
+        num_chunks: int,
+        uploaded_at: datetime,
+        initial_verify_status: ProdCanaryInitialVerifyStatus,
+    ) -> DeploymentProdCanaryUpload:
+        ...
+
+    @abstractmethod
+    def upsert_prod_canary_chunk(
+        self,
+        canary_id,
+        chunk_address: str,
+        chunk_role: ProdCanaryChunkRole,
+    ) -> DeploymentProdCanaryChunk:
+        ...
+
+    @abstractmethod
+    def upsert_prod_canary_probe(
+        self,
+        canary_id,
+        probed_at: datetime,
+        probed_by_host: str,
+        status: ProdCanaryProbeStatus,
+        missing_chunk_address: str | None,
+        terminal_peer_outcomes: dict | None,
+        duration_ms: int | None,
+    ) -> DeploymentProdCanaryProbe:
+        ...
+
+    @abstractmethod
+    def list_prod_canary_uploads_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryUpload]:
+        ...
+
+    @abstractmethod
+    def list_prod_canary_probes_for_canary(
+        self, canary_id
+    ) -> list[DeploymentProdCanaryProbe]:
+        ...
+
+    @abstractmethod
+    def list_prod_canary_probes_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryProbe]:
+        ...
+
+    @abstractmethod
+    def upsert_prod_canary_loss(
+        self,
+        canary_id,
+        first_failed_probe_at: datetime,
+        confirmed_lost_at: datetime,
+        missing_chunk_address: str,
+        hours_to_first_failure: float,
+        hours_to_confirmed_loss: float,
+    ) -> DeploymentProdCanaryLoss:
+        ...
+
+    @abstractmethod
+    def delete_prod_canary_loss(self, canary_id) -> None:
+        ...
+
+    @abstractmethod
+    def list_prod_canary_loss_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryLoss]:
         ...
 
     @abstractmethod
@@ -478,6 +564,193 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 DeploymentProdUploadResult.client_hostname,
                 DeploymentProdUploadResult.started_at,
             )
+            .all()
+        )
+
+    def upsert_prod_canary_upload(
+        self,
+        canary_id,
+        deployment_id: int,
+        source_url: str,
+        file_name: str,
+        file_size_bytes: int,
+        top_address: str,
+        num_chunks: int,
+        uploaded_at: datetime,
+        initial_verify_status: ProdCanaryInitialVerifyStatus,
+    ) -> DeploymentProdCanaryUpload:
+        existing = self.session.get(DeploymentProdCanaryUpload, canary_id)
+        if existing is None:
+            existing = DeploymentProdCanaryUpload(
+                canary_id=canary_id,
+                deployment_id=deployment_id,
+                source_url=source_url,
+                file_name=file_name,
+                file_size_bytes=file_size_bytes,
+                top_address=top_address,
+                num_chunks=num_chunks,
+                uploaded_at=uploaded_at,
+                initial_verify_status=initial_verify_status,
+            )
+            self.session.add(existing)
+        else:
+            existing.deployment_id = deployment_id
+            existing.source_url = source_url
+            existing.file_name = file_name
+            existing.file_size_bytes = file_size_bytes
+            existing.top_address = top_address
+            existing.num_chunks = num_chunks
+            existing.uploaded_at = uploaded_at
+            existing.initial_verify_status = initial_verify_status
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def upsert_prod_canary_chunk(
+        self,
+        canary_id,
+        chunk_address: str,
+        chunk_role: ProdCanaryChunkRole,
+    ) -> DeploymentProdCanaryChunk:
+        existing = self.session.get(
+            DeploymentProdCanaryChunk, (canary_id, chunk_address)
+        )
+        if existing is None:
+            existing = DeploymentProdCanaryChunk(
+                canary_id=canary_id,
+                chunk_address=chunk_address,
+                chunk_role=chunk_role,
+            )
+            self.session.add(existing)
+        else:
+            existing.chunk_role = chunk_role
+        self.session.commit()
+        return existing
+
+    def upsert_prod_canary_probe(
+        self,
+        canary_id,
+        probed_at: datetime,
+        probed_by_host: str,
+        status: ProdCanaryProbeStatus,
+        missing_chunk_address: str | None,
+        terminal_peer_outcomes: dict | None,
+        duration_ms: int | None,
+    ) -> DeploymentProdCanaryProbe:
+        existing = (
+            self.session.query(DeploymentProdCanaryProbe)
+            .filter(
+                DeploymentProdCanaryProbe.canary_id == canary_id,
+                DeploymentProdCanaryProbe.probed_at == probed_at,
+                DeploymentProdCanaryProbe.probed_by_host == probed_by_host,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = DeploymentProdCanaryProbe(
+                canary_id=canary_id,
+                probed_at=probed_at,
+                probed_by_host=probed_by_host,
+                status=status,
+                missing_chunk_address=missing_chunk_address,
+                terminal_peer_outcomes=terminal_peer_outcomes,
+                duration_ms=duration_ms,
+            )
+            self.session.add(existing)
+        else:
+            existing.status = status
+            existing.missing_chunk_address = missing_chunk_address
+            existing.terminal_peer_outcomes = terminal_peer_outcomes
+            existing.duration_ms = duration_ms
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def list_prod_canary_uploads_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryUpload]:
+        return (
+            self.session.query(DeploymentProdCanaryUpload)
+            .filter(DeploymentProdCanaryUpload.deployment_id == deployment_id)
+            .order_by(DeploymentProdCanaryUpload.uploaded_at)
+            .all()
+        )
+
+    def list_prod_canary_probes_for_canary(
+        self, canary_id
+    ) -> list[DeploymentProdCanaryProbe]:
+        return (
+            self.session.query(DeploymentProdCanaryProbe)
+            .filter(DeploymentProdCanaryProbe.canary_id == canary_id)
+            .order_by(DeploymentProdCanaryProbe.probed_at)
+            .all()
+        )
+
+    def list_prod_canary_probes_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryProbe]:
+        return (
+            self.session.query(DeploymentProdCanaryProbe)
+            .join(
+                DeploymentProdCanaryUpload,
+                DeploymentProdCanaryUpload.canary_id
+                == DeploymentProdCanaryProbe.canary_id,
+            )
+            .filter(DeploymentProdCanaryUpload.deployment_id == deployment_id)
+            .order_by(
+                DeploymentProdCanaryProbe.canary_id,
+                DeploymentProdCanaryProbe.probed_at,
+            )
+            .all()
+        )
+
+    def upsert_prod_canary_loss(
+        self,
+        canary_id,
+        first_failed_probe_at: datetime,
+        confirmed_lost_at: datetime,
+        missing_chunk_address: str,
+        hours_to_first_failure: float,
+        hours_to_confirmed_loss: float,
+    ) -> DeploymentProdCanaryLoss:
+        existing = self.session.get(DeploymentProdCanaryLoss, canary_id)
+        if existing is None:
+            existing = DeploymentProdCanaryLoss(
+                canary_id=canary_id,
+                first_failed_probe_at=first_failed_probe_at,
+                confirmed_lost_at=confirmed_lost_at,
+                missing_chunk_address=missing_chunk_address,
+                hours_to_first_failure=hours_to_first_failure,
+                hours_to_confirmed_loss=hours_to_confirmed_loss,
+            )
+            self.session.add(existing)
+        else:
+            existing.first_failed_probe_at = first_failed_probe_at
+            existing.confirmed_lost_at = confirmed_lost_at
+            existing.missing_chunk_address = missing_chunk_address
+            existing.hours_to_first_failure = hours_to_first_failure
+            existing.hours_to_confirmed_loss = hours_to_confirmed_loss
+        self.session.commit()
+        return existing
+
+    def delete_prod_canary_loss(self, canary_id) -> None:
+        existing = self.session.get(DeploymentProdCanaryLoss, canary_id)
+        if existing is not None:
+            self.session.delete(existing)
+            self.session.commit()
+
+    def list_prod_canary_loss_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryLoss]:
+        return (
+            self.session.query(DeploymentProdCanaryLoss)
+            .join(
+                DeploymentProdCanaryUpload,
+                DeploymentProdCanaryUpload.canary_id
+                == DeploymentProdCanaryLoss.canary_id,
+            )
+            .filter(DeploymentProdCanaryUpload.deployment_id == deployment_id)
+            .order_by(DeploymentProdCanaryLoss.confirmed_lost_at)
             .all()
         )
 

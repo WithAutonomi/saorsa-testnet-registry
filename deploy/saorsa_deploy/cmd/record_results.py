@@ -71,6 +71,16 @@ def cmd_record_results(args):
         )
         return
 
+    if kind == "prod-canary":
+        from saorsa_deploy.cmd.prod_canary_results import (
+            record_prod_canary_results,
+        )
+        record_prod_canary_results(
+            repo, deployment, args, console,
+            influx_url, influx_token, influx_org, influx_bucket,
+        )
+        return
+
     # testnet, prod-continuous-downloader, and any unrecognised/empty kind
     # fall through to the historical aggregate path.
     _record_file_ops(

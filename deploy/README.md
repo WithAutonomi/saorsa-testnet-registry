@@ -839,6 +839,89 @@ pvs
 df -h /mnt/ant-node-storage
 ```
 
+### Running canaries against production (`prod canary`)
+
+A *canary deployment* uploads a fixed list of public files to the production
+Autonomi network and then continuously probes them for the rest of its
+lifetime. The dataset (per-upload metadata + every probe outcome) is the
+**product**; teardown defaults to keeping monitoring intact so the data
+survives.
+
+A canary deployment is composed of:
+
+- **1 monitoring VM** (mandatory) — InfluxDB + Grafana, paired with the
+  deployment, lives in `lon1`.
+- **1 upload VM** — wallet-bearing, walks the URL list once and exits the
+  upload service. Per-file logs land at
+  `/var/log/ant-prod-canary/upload-{canary_id}.{stdout,stderr}`.
+- **N probe VMs** — wallet-free, statically partition the canary set with
+  `blake3(canary_id)[0] % N`, probe every alive canary on the hour and
+  emit one `prod_canary_probe` Influx point per probe.
+
+A canary is `lost` when **two consecutive failed probes from the same
+probe VM report the same `missing_chunk_address`** (the *two-strike rule*).
+Local SQLite on each probe VM applies the rule online; `record-results`
+re-derives it globally from Postgres and writes the authoritative
+`prod_canary_loss` rows.
+
+#### Deploy
+
+```bash
+saorsa-deploy prod canary deploy \
+  --name CANARY-01 \
+  --upload-spec lon1 \
+  --probe-spec lon1:count=1 \
+  --probe-spec nyc3:count=1 \
+  --urls-file ./urls.txt \
+  --secret-key 0x... \
+  --purpose "v1 canary"
+```
+
+| Flag | Required | Default | Notes |
+|------|----------|---------|-------|
+| `--name` | yes | — | Deployment name; also names the paired monitoring stack. |
+| `--upload-spec REGION[:VM_SIZE]` | yes | vm_size = `s-1vcpu-2gb` | Single upload VM. |
+| `--probe-spec REGION[:VM_SIZE]:count=N` | yes (≥1) | vm_size = `s-1vcpu-2gb` | Repeatable. Each VM gets a sequential `--probe-shard-index`; total shard count = sum of `count=N`. |
+| `--secret-key` | yes (or env) | falls back to `ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One mainnet wallet — uploads cost real ETH. |
+| `--urls-file` | yes | — | Local newline-separated list of public source URLs. Comments (`#`) and blank lines ignored. |
+| `--upload-sleep-secs` | no | `0` | Sleep between successive uploads. |
+| `--probe-concurrency` | no | `4` | Concurrent ant download invocations per probe VM. |
+| `--monitoring-volume-size` | no | `50` | Monitoring VM volume size in GB. |
+| `--branch-name`, `--repo-owner`, `--ant-version` | no | latest release | Same binary-resolution flags as `prod uploaders`. |
+| `--purpose` | yes | — | Free-text description, persisted in `deploy_args.purpose`. |
+
+Sequencing under one command: monitoring infra → monitoring provision →
+clients infra (1 uploader-role + N downloader-role VMs) → upload VM
+provision → probe VMs provision. The Deployment row is registered with
+`deploy_args.kind = "prod-canary"`.
+
+#### Persist + summarise
+
+```bash
+# Pull every Influx point into Postgres and re-derive the loss table.
+saorsa-deploy deployments record-results --name CANARY-01
+
+# Show alive / pending / confirmed-lost counts, hours-to-loss histogram,
+# per-vantage breakdown, per-chunk-role breakdown.
+saorsa-deploy deployments print-recorded-results --deployment-id <id>
+```
+
+Both commands branch on `deploy_args.kind` and route through dedicated
+canary handlers; existing testnet / prod-uploaders / prod-continuous-downloader
+behaviour is untouched.
+
+#### Destroy
+
+```bash
+# Default: keep monitoring (the canary dataset is the product).
+saorsa-deploy prod canary destroy --name CANARY-01
+
+# Tear down monitoring too:
+saorsa-deploy prod canary destroy --name CANARY-01 --no-keep-monitoring
+```
+
+Postgres rows are never touched by destroy.
+
 ### Running tests
 
 ```bash

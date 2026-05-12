@@ -7,6 +7,15 @@ from saorsa_db.models.migration import (
     MigrationVm,
     MigrationVmStatus,
 )
+from saorsa_db.models.prod_canary import (
+    DeploymentProdCanaryChunk,
+    DeploymentProdCanaryLoss,
+    DeploymentProdCanaryProbe,
+    DeploymentProdCanaryUpload,
+    ProdCanaryChunkRole,
+    ProdCanaryInitialVerifyStatus,
+    ProdCanaryProbeStatus,
+)
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
@@ -18,11 +27,18 @@ __all__ = [
     "DeploymentStatus",
     "DeploymentFileResult",
     "DeploymentHostResult",
+    "DeploymentProdCanaryChunk",
+    "DeploymentProdCanaryLoss",
+    "DeploymentProdCanaryProbe",
+    "DeploymentProdCanaryUpload",
     "DeploymentProdUploadResult",
     "FileOpType",
     "Migration",
     "MigrationStatus",
     "MigrationVm",
     "MigrationVmStatus",
+    "ProdCanaryChunkRole",
+    "ProdCanaryInitialVerifyStatus",
+    "ProdCanaryProbeStatus",
     "ProdUploadStatus",
 ]
