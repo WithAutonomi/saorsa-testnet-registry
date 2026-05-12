@@ -95,7 +95,10 @@ def cmd_destroy_clients(args):
             )
             sys.exit(1)
         _drain_uploader_wallets(
-            uploaders_with_wallet, funding_secret_key, console
+            uploaders_with_wallet,
+            funding_secret_key,
+            console,
+            skip_failures=getattr(args, "skip_drain_failures", False),
         )
 
     resources_dir = get_resources_dir()
@@ -192,11 +195,15 @@ def cmd_destroy_clients(args):
 
 
 def _drain_uploader_wallets(
-    uploaders: list[dict], funding_secret_key: str, console: Console
+    uploaders: list[dict],
+    funding_secret_key: str,
+    console: Console,
+    skip_failures: bool = False,
 ) -> None:
     """Sweep ANT and ETH from every per-uploader wallet back to the funding
     wallet on Arbitrum Sepolia. Raises SystemExit on any failure so the destroy
-    aborts before terraform tears down the VMs.
+    aborts before terraform tears down the VMs — unless ``skip_failures`` is
+    set, in which case abandoned balances are reported and teardown continues.
     """
     funding_address = address_for_secret_key(funding_secret_key)
     rpc_url = ARBITRUM_SEPOLIA["rpc_url"]
@@ -206,10 +213,12 @@ def _drain_uploader_wallets(
         f"→ {funding_address} on Arbitrum Sepolia...[/bold]"
     )
     w3 = get_web3(rpc_url)
-    failures: list[tuple[int, str]] = []
+    failures: list[tuple[int, str, str, int, int]] = []
     for client in uploaders:
         secret = client["wallet_secret_key"]
         addr = client.get("wallet_address") or address_for_secret_key(secret)
+        ant_units = 0
+        eth_wei = 0
         try:
             ant_units = get_token_balance(w3, token_address, addr)
             eth_wei = get_eth_balance(w3, addr)
@@ -225,14 +234,36 @@ def _drain_uploader_wallets(
             )
         except Exception as e:
             console.print(f"    [red]drain failed: {e}[/red]")
-            failures.append((client["client_index"], str(e)))
+            failures.append(
+                (client["client_index"], addr, str(e), ant_units, eth_wei)
+            )
     if failures:
-        console.print(
-            f"[bold red]Drain failed for {len(failures)} uploader(s). "
-            f"Aborting destroy so funds aren't lost — fix and retry.[/bold red]"
-        )
-        sys.exit(1)
-    console.print("[green]All wallets drained.[/green]")
+        if skip_failures:
+            abandoned_ant = sum(f[3] for f in failures)
+            abandoned_wei = sum(f[4] for f in failures)
+            console.print(
+                f"[bold yellow]Drain failed for {len(failures)} uploader(s); "
+                f"continuing because --skip-drain-failures is set.[/bold yellow]"
+            )
+            for idx, addr, err, ant_units, eth_wei in failures:
+                console.print(
+                    f"  [yellow]abandoned[/yellow] Uploader #{idx} {addr}: "
+                    f"{ant_units} ANT-units / {eth_wei} wei  ({err})"
+                )
+            console.print(
+                f"[yellow]Total abandoned: {abandoned_ant} ANT-units / "
+                f"{abandoned_wei} wei[/yellow]"
+            )
+        else:
+            console.print(
+                f"[bold red]Drain failed for {len(failures)} uploader(s). "
+                f"Aborting destroy so funds aren't lost — fix and retry, or "
+                f"pass --skip-drain-failures to abandon the affected dust and "
+                f"proceed.[/bold red]"
+            )
+            sys.exit(1)
+    else:
+        console.print("[green]All wallets drained.[/green]")
     console.print()
 
 
