@@ -145,6 +145,14 @@ def _build_line(
     chunks_stored: int,
     chunks_failed: int,
     total_chunks: int,
+    chunk_attempts_total: int,
+    retries_round_0: int,
+    retries_round_1: int,
+    retries_round_2: int,
+    retries_round_3: int,
+    store_duration_p50_ms: int,
+    store_duration_p95_ms: int,
+    store_duration_max_ms: int,
     address: str,
     file_name: str,
     source_url: str,
@@ -161,12 +169,33 @@ def _build_line(
         f"chunks_stored={chunks_stored}i,"
         f"chunks_failed={chunks_failed}i,"
         f"total_chunks={total_chunks}i,"
+        f"chunk_attempts_total={chunk_attempts_total}i,"
+        f"retries_round_0={retries_round_0}i,"
+        f"retries_round_1={retries_round_1}i,"
+        f"retries_round_2={retries_round_2}i,"
+        f"retries_round_3={retries_round_3}i,"
+        f"store_duration_p50_ms={store_duration_p50_ms}i,"
+        f"store_duration_p95_ms={store_duration_p95_ms}i,"
+        f"store_duration_max_ms={store_duration_max_ms}i,"
         f'address="{_escape_field_string(address)}",'
         f'file_name="{_escape_field_string(file_name)}",'
         f'source_url="{_escape_field_string(source_url)}",'
         f'reason="{_escape_field_string(reason)}"'
     )
     return f"{MEASUREMENT},{tag_set} {field_set} {timestamp_ns}"
+
+
+def _percentile(values: list[int], p: float) -> int:
+    """Return the integer percentile of a list. 0 on empty.
+
+    Uses nearest-rank (no interpolation) so the value emitted is always one of
+    the observed samples. ``p`` is a fraction in [0, 1].
+    """
+    if not values:
+        return 0
+    sorted_values = sorted(values)
+    idx = min(len(sorted_values) - 1, max(0, int(p * len(sorted_values))))
+    return int(sorted_values[idx])
 
 
 def _download(url: str, dest: Path, timeout: int) -> int:
@@ -384,6 +413,12 @@ def main() -> int:
                     total_ms=0, upload_secs=0.0,
                     file_size=0, start_ns=download_start_ns,
                     chunks_stored=0, chunks_failed=0, total_chunks=0,
+                    chunk_attempts_total=0,
+                    retries_round_0=0, retries_round_1=0,
+                    retries_round_2=0, retries_round_3=0,
+                    store_duration_p50_ms=0,
+                    store_duration_p95_ms=0,
+                    store_duration_max_ms=0,
                     address="", file_name=file_name, source_url=url,
                     reason=str(e),
                     timestamp_ns=download_end_ns,
@@ -436,6 +471,19 @@ def main() -> int:
         address = str((parsed or {}).get("address") or "")
         reason = str((parsed or {}).get("reason") or "")
 
+        # Fields added by ant-client PR #87 (WithAutonomi). Older `ant` binaries
+        # omit them — keep all zero so this script keeps working against them.
+        chunk_attempts_total = int((parsed or {}).get("chunk_attempts_total") or 0)
+        retries_histogram = (parsed or {}).get("retries_histogram") or [0, 0, 0, 0]
+        # Defensive: clamp/pad to length 4.
+        retries_histogram = (list(retries_histogram) + [0, 0, 0, 0])[:4]
+        store_durations_ms = (parsed or {}).get("store_durations_ms") or []
+        # Defensive: filter to ints.
+        store_durations_ms = [int(v) for v in store_durations_ms if isinstance(v, (int, float))]
+        store_duration_p50_ms = _percentile(store_durations_ms, 0.50)
+        store_duration_p95_ms = _percentile(store_durations_ms, 0.95)
+        store_duration_max_ms = max(store_durations_ms) if store_durations_ms else 0
+
         if status == STATUS_SUCCESS:
             print(
                 f"  ok: address={address} chunks={chunks_stored}/{total_chunks} "
@@ -474,6 +522,14 @@ def main() -> int:
                 file_size=file_size, start_ns=upload_start_ns,
                 chunks_stored=chunks_stored, chunks_failed=chunks_failed,
                 total_chunks=total_chunks,
+                chunk_attempts_total=chunk_attempts_total,
+                retries_round_0=retries_histogram[0],
+                retries_round_1=retries_histogram[1],
+                retries_round_2=retries_histogram[2],
+                retries_round_3=retries_histogram[3],
+                store_duration_p50_ms=store_duration_p50_ms,
+                store_duration_p95_ms=store_duration_p95_ms,
+                store_duration_max_ms=store_duration_max_ms,
                 address=address, file_name=file_name, source_url=url,
                 reason=reason,
                 timestamp_ns=end_ns,

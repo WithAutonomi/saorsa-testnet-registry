@@ -81,26 +81,68 @@ while true; do
 
     echo "[$(date -u +%H:%M:%S)] Upload #${seq_num}: generating ${FILE_SIZE_KB}KB file, starting ant..."
 
-    # Run ant and capture wall-clock time + exit code + output
-    output_file="/tmp/ant-upload-${seq_num}.txt"
+    # Run ant and capture wall-clock time + exit code + output.
+    # `--json` prints a single JSON object on stdout (success path) or no
+    # output on early failure; `-v` trace goes to stderr separately so it
+    # never interleaves into the JSON stream. Both are preserved on disk
+    # so a failed run remains diagnosable.
+    output_file="/tmp/ant-upload-${seq_num}.json"
+    stderr_file="/tmp/ant-upload-${seq_num}.err"
     start_ns=$(date +%s%N)
 
     # shellcheck disable=SC2086
     set +e
-    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file upload --public "${PAYMENT_FLAG[@]}" "$file_path" \
-        2>&1 | tee "$output_file"
-    exit_code=${PIPESTATUS[0]}
+    "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia --json \
+        file upload --public "${PAYMENT_FLAG[@]}" "$file_path" \
+        > "$output_file" 2> "$stderr_file"
+    exit_code=$?
     set -e
 
     end_ns=$(date +%s%N)
     total_ms=$(( (end_ns - start_ns) / 1000000 ))
 
-    # Parse the Time: field (upload-only time, excludes peer discovery)
-    upload_secs=$(grep -oP 'Time:\s+\K[0-9.]+' "$output_file" 2>/dev/null | head -1 || true)
-    upload_secs="${upload_secs:-0}"
+    # Parse the JSON record. Older `ant` binaries that don't carry the
+    # chunk_attempts_total / retries_histogram / store_durations_ms fields
+    # (added in WithAutonomi/ant-client PR #87) fall back to zeros so the
+    # script keeps working unchanged.
+    parsed_fields=$(python3 - "$output_file" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        text = fh.read().strip()
+    data = json.loads(text.splitlines()[-1]) if text else {}
+except Exception:
+    data = {}
 
-    # Parse address if upload succeeded
-    address=$(grep -oP 'Address:\s+\K\S+' "$output_file" 2>/dev/null | head -1 || true)
+def pct(xs, p):
+    if not xs:
+        return 0
+    xs = sorted(int(v) for v in xs)
+    return xs[min(len(xs) - 1, max(0, int(p * len(xs))))]
+
+hist = list(data.get("retries_histogram") or [0, 0, 0, 0])
+hist = (hist + [0, 0, 0, 0])[:4]
+durs = [int(v) for v in (data.get("store_durations_ms") or []) if isinstance(v, (int, float))]
+
+print(
+    data.get("elapsed_secs", 0),
+    data.get("address", "") or "",
+    int(data.get("chunks_stored", 0) or 0),
+    int(data.get("chunks_failed", 0) or 0),
+    int(data.get("total_chunks", 0) or 0),
+    int(data.get("chunk_attempts_total", 0) or 0),
+    hist[0], hist[1], hist[2], hist[3],
+    pct(durs, 0.50), pct(durs, 0.95),
+    max(durs) if durs else 0,
+)
+PY
+)
+    read -r upload_secs address chunks_stored chunks_failed total_chunks \
+        chunk_attempts_total retries_round_0 retries_round_1 retries_round_2 retries_round_3 \
+        store_duration_p50_ms store_duration_p95_ms store_duration_max_ms \
+        <<< "$parsed_fields"
+    upload_secs="${upload_secs:-0}"
     address="${address:-}"
 
     if [ "$exit_code" -eq 0 ] && [ -n "$address" ]; then
@@ -122,9 +164,12 @@ while true; do
         fi
     fi
 
-    # Submit to InfluxDB
+    # Submit to InfluxDB.
+    # chunk_attempts_total / retries_round_N / store_duration_*_ms come from
+    # the ant --json output and will be 0 against binaries that predate
+    # WithAutonomi/ant-client PR #87 (the chunk-retry instrumentation).
     timestamp_ns="$end_ns"
-    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i ${timestamp_ns}"
+    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,chunks_stored=${chunks_stored}i,chunks_failed=${chunks_failed}i,total_chunks=${total_chunks}i,chunk_attempts_total=${chunk_attempts_total}i,retries_round_0=${retries_round_0}i,retries_round_1=${retries_round_1}i,retries_round_2=${retries_round_2}i,retries_round_3=${retries_round_3}i,store_duration_p50_ms=${store_duration_p50_ms}i,store_duration_p95_ms=${store_duration_p95_ms}i,store_duration_max_ms=${store_duration_max_ms}i ${timestamp_ns}"
     submit_metric "$line"
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"
@@ -132,9 +177,9 @@ while true; do
 
     # Clean up (preserve output on failure for diagnosis)
     if [ "$exit_code" -ne 0 ]; then
-        echo "[$(date -u +%H:%M:%S)] Output preserved at $output_file for diagnosis"
+        echo "[$(date -u +%H:%M:%S)] Output preserved at $output_file (stderr: $stderr_file) for diagnosis"
     else
-        rm -f "$output_file"
+        rm -f "$output_file" "$stderr_file"
     fi
     rm -f "$file_path"
 
