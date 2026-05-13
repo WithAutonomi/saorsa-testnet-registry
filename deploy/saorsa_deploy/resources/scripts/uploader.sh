@@ -127,7 +127,7 @@ durs = [int(v) for v in (data.get("store_durations_ms") or []) if isinstance(v, 
 
 print(
     data.get("elapsed_secs", 0),
-    data.get("address", "") or "",
+    data.get("address") or "-",
     int(data.get("chunks_stored", 0) or 0),
     int(data.get("chunks_failed", 0) or 0),
     int(data.get("total_chunks", 0) or 0),
@@ -144,6 +144,18 @@ PY
         <<< "$parsed_fields"
     upload_secs="${upload_secs:-0}"
     address="${address:-}"
+    [ "$address" = "-" ] && address=""
+    chunks_stored="${chunks_stored:-0}"
+    chunks_failed="${chunks_failed:-0}"
+    total_chunks="${total_chunks:-0}"
+    chunk_attempts_total="${chunk_attempts_total:-0}"
+    retries_round_0="${retries_round_0:-0}"
+    retries_round_1="${retries_round_1:-0}"
+    retries_round_2="${retries_round_2:-0}"
+    retries_round_3="${retries_round_3:-0}"
+    store_duration_p50_ms="${store_duration_p50_ms:-0}"
+    store_duration_p95_ms="${store_duration_p95_ms:-0}"
+    store_duration_max_ms="${store_duration_max_ms:-0}"
 
     if [ "$exit_code" -eq 0 ] && [ -n "$address" ]; then
         echo "$address" >> "$ADDRESSES_FILE"
