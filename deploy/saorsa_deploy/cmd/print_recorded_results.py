@@ -81,7 +81,12 @@ def cmd_print_recorded_results(args) -> None:
     host_result = repo.get_host_result_for_deployment(deployment.id)
     _print_analysis_section(host_result, deployment.name, console)
 
-    if kind in _PROD_UPLOAD_KINDS:
+    if kind == "prod-canary":
+        from saorsa_deploy.cmd.prod_canary_results import (
+            print_prod_canary_status,
+        )
+        print_prod_canary_status(repo, deployment, args, console)
+    elif kind in _PROD_UPLOAD_KINDS:
         rows = repo.list_prod_upload_results_for_deployment(deployment.id)
         _print_prod_upload_section(rows, deployment.name, args.details, console)
     else:
