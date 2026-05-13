@@ -420,7 +420,7 @@ async def _probe_one(
             *bootstrap_args,
             "--json",
             "-v",
-            "file", "download", top_address, str(target),
+            "file", "download", top_address, "-o", str(target),
         ]
         started_ns = time.time_ns()
         try:

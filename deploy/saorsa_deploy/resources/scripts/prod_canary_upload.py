@@ -535,7 +535,7 @@ def main() -> int:
             *bootstrap_args,
             "--json",
             "-v",
-            "file", "download", top_address, str(verify_path),
+            "file", "download", top_address, "-o", str(verify_path),
         ]
         verify_stdout_log = log_dir / f"verify-{canary_id}.stdout"
         verify_stderr_log = log_dir / f"verify-{canary_id}.stderr"
