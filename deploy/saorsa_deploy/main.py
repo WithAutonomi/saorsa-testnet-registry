@@ -2590,6 +2590,91 @@ def main():
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
+    # --- prod canary provision-reporter ---
+    prod_canary_pr_parser = prod_canary_subparsers.add_parser(
+        "provision-reporter",
+        help=(
+            "Install a daily Slack reporter on the canary's monitoring VM. "
+            "The reporter reads Influx locally and posts a Block Kit digest "
+            "to the given incoming webhook."
+        ),
+    )
+    prod_canary_pr_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Canary deployment name (also the monitoring stack name).",
+    )
+    prod_canary_pr_parser.add_argument(
+        "--slack-webhook-url",
+        type=str,
+        default=None,
+        help=(
+            "Slack incoming webhook URL. Falls back to SLACK_WEBHOOK_URL "
+            "in the environment."
+        ),
+    )
+    prod_canary_pr_parser.add_argument(
+        "--on-calendar",
+        type=str,
+        default="*-*-* 09:00:00",
+        help=(
+            "Systemd OnCalendar expression for the timer "
+            "(default: '*-*-* 09:00:00' — daily at 09:00 UTC)."
+        ),
+    )
+    prod_canary_pr_parser.add_argument(
+        "--run-now",
+        dest="run_now",
+        action="store_true",
+        default=True,
+        help=(
+            "Trigger one immediate run after install so you see a "
+            "confirmation message in Slack (default)."
+        ),
+    )
+    prod_canary_pr_parser.add_argument(
+        "--no-run-now",
+        dest="run_now",
+        action="store_false",
+        help="Don't trigger an immediate run after install.",
+    )
+    prod_canary_pr_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
+    # --- prod canary unprovision-reporter ---
+    prod_canary_upr_parser = prod_canary_subparsers.add_parser(
+        "unprovision-reporter",
+        help=(
+            "Remove the reporter timer + script from the canary's "
+            "monitoring VM. Leaves Influx + Grafana untouched."
+        ),
+    )
+    prod_canary_upr_parser.add_argument(
+        "--name", type=str, required=True,
+        help="Canary deployment name.",
+    )
+    prod_canary_upr_parser.add_argument(
+        "--purge-state",
+        action="store_true",
+        default=False,
+        help=(
+            "Also delete the persisted last-report.json snapshot. By "
+            "default it is kept so a re-provision can resume delta "
+            "computation."
+        ),
+    )
+    prod_canary_upr_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
     # --- prod local-uploads ---
     prod_lu_parser = prod_subparsers.add_parser(
         "local-uploads",
@@ -3186,6 +3271,24 @@ def main():
             from saorsa_deploy.cmd.prod_canary import cmd_prod_canary_destroy
 
             cmd_prod_canary_destroy(args)
+        elif (
+            args.prod_subcommand == "canary"
+            and args.prod_canary_action == "provision-reporter"
+        ):
+            from saorsa_deploy.cmd.prod_canary_reporter import (
+                cmd_prod_canary_provision_reporter,
+            )
+
+            cmd_prod_canary_provision_reporter(args)
+        elif (
+            args.prod_subcommand == "canary"
+            and args.prod_canary_action == "unprovision-reporter"
+        ):
+            from saorsa_deploy.cmd.prod_canary_reporter import (
+                cmd_prod_canary_unprovision_reporter,
+            )
+
+            cmd_prod_canary_unprovision_reporter(args)
         elif args.prod_subcommand == "local-uploads":
             from saorsa_deploy.cmd.prod_local_uploads import (
                 cmd_prod_local_uploads,
