@@ -420,6 +420,16 @@ def main():
             "per-uploader wallets recorded in client state."
         ),
     )
+    clients_destroy_parser.add_argument(
+        "--skip-drain-failures",
+        action="store_true",
+        help=(
+            "Continue with infrastructure teardown even if one or more wallet "
+            "drains fail. Abandoned balances are reported on stdout. Use when "
+            "a wallet has too little ETH left to cover the drain transaction "
+            "and the abandoned dust is acceptable."
+        ),
+    )
 
     # clients infra
     clients_infra_parser = clients_subparsers.add_parser(
