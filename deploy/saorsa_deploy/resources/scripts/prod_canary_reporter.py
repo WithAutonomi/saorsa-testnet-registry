@@ -404,15 +404,22 @@ def build_blocks(
         }],
     })
 
-    # Probe-staleness warning: any host whose last probe is >6h old, or any
-    # canary deployment with zero probes in the last 6h.
+    # Probe-staleness warning: any *probe* host whose last record is >6h old.
+    # The upload VM also writes prod_canary_probe records (one per uploaded
+    # canary's immediate verification) but it stops emitting once the URL
+    # list is exhausted — that's by design, not a fault, so exclude it from
+    # the warning.
+    probe_last = {
+        h: t for h, t in last_probes.items()
+        if "-ant-client-upload-" not in h
+    }
     stale_hosts = [
-        h for h, t in last_probes.items()
+        h for h, t in probe_last.items()
         if (now - t).total_seconds() > 6 * 3600
     ]
     no_recent_probes = (
-        all((now - t).total_seconds() > 6 * 3600 for t in last_probes.values())
-        if last_probes else True
+        all((now - t).total_seconds() > 6 * 3600 for t in probe_last.values())
+        if probe_last else True
     )
     if not last_probes:
         blocks.append({
