@@ -423,6 +423,7 @@ async def _probe_one(
             "file", "download", top_address, "-o", str(target),
         ]
         started_ns = time.time_ns()
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -436,13 +437,24 @@ async def _probe_one(
                 exit_code = proc.returncode if proc.returncode is not None else -1
                 stderr_text = stderr.decode("utf-8", errors="replace")
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
                 exit_code = -1
                 stderr_text = f"TIMEOUT after {timeout_secs}s"
         except FileNotFoundError as e:
             exit_code = -1
             stderr_text = f"ant binary missing: {e}"
+        finally:
+            # Always reap the subprocess so a cancelled / timed-out / errored
+            # probe can never leak a zombie that would prevent the next gather
+            # from completing (the original hang we saw on lon1 on 2026-05-15).
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    pass
         finished_ns = time.time_ns()
         size = target.stat().st_size if target.exists() else 0
         target.unlink(missing_ok=True)
@@ -467,6 +479,7 @@ async def _run_cycle(
     influx_bucket: str,
     timeout_secs: int,
     concurrency: int,
+    cycle_budget_secs: int,
 ) -> None:
     alive = _alive_canaries(conn)
     if not alive:
@@ -512,7 +525,22 @@ async def _run_cycle(
                 flush=True,
             )
 
-    await asyncio.gather(*[_one(cid, addr) for cid, addr in alive])
+    # Wrap the gather in a cycle-wide budget. Without this a single hung
+    # subprocess (one whose .kill() doesn't reap cleanly) can block the cycle
+    # indefinitely — that's what froze probe-lon1 on 2026-05-15 and left
+    # the reporter silent for ~2.5 days.
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*[_one(cid, addr) for cid, addr in alive]),
+            timeout=cycle_budget_secs,
+        )
+    except asyncio.TimeoutError:
+        print(
+            f"WARN: cycle exceeded {cycle_budget_secs}s budget; outstanding "
+            "probes were cancelled and will be retried next cycle",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _ingest_uploads(
@@ -568,6 +596,11 @@ def main() -> int:
     concurrency = int(os.environ.get("PROBE_CONCURRENCY", "4"))
     timeout_secs = int(os.environ.get("PROBE_TIMEOUT_SECS", "300"))
     interval_secs = int(os.environ.get("CYCLE_INTERVAL_SECS", "3600"))
+    # Hard ceiling on a single cycle's wall clock. Default = interval - 60s so
+    # we always free up the loop before the next scheduled cycle starts.
+    cycle_budget_secs = int(
+        os.environ.get("CYCLE_BUDGET_SECS", str(max(timeout_secs * 2, interval_secs - 60)))
+    )
 
     bootstrap_args = bootstrap_arg_str.split()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -577,7 +610,7 @@ def main() -> int:
     print(
         f"prod canary probe starting: host={host} shard={shard_index}/{shard_count} "
         f"deployment={deployment_name} concurrency={concurrency} "
-        f"interval={interval_secs}s",
+        f"interval={interval_secs}s budget={cycle_budget_secs}s",
         flush=True,
     )
 
@@ -612,6 +645,7 @@ def main() -> int:
                     influx_bucket=influx_bucket,
                     timeout_secs=timeout_secs,
                     concurrency=concurrency,
+                    cycle_budget_secs=cycle_budget_secs,
                 )
             )
         except Exception as e:  # noqa: BLE001 - service is meant to keep running
