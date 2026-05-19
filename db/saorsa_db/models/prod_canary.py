@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from decimal import Decimal
+
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -11,6 +13,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Uuid,
     UniqueConstraint,
@@ -64,6 +67,15 @@ class DeploymentProdCanaryUpload(Base):
         ),
         nullable=False,
     )
+    storage_cost_atto: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(), nullable=True
+    )
+    gas_cost_wei: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(), nullable=True
+    )
+    chunk_attempts_total: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -99,6 +111,15 @@ class DeploymentProdCanaryUpload(Base):
             "num_chunks": self.num_chunks,
             "uploaded_at": self.uploaded_at.isoformat(),
             "initial_verify_status": self.initial_verify_status.value,
+            "storage_cost_atto": (
+                str(self.storage_cost_atto)
+                if self.storage_cost_atto is not None
+                else None
+            ),
+            "gas_cost_wei": (
+                str(self.gas_cost_wei) if self.gas_cost_wei is not None else None
+            ),
+            "chunk_attempts_total": self.chunk_attempts_total,
             "recorded_at": self.recorded_at.isoformat(),
         }
 
