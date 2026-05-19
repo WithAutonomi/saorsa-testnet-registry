@@ -13,6 +13,7 @@ import json
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from rich.console import Console
 from rich.table import Table
@@ -162,6 +163,16 @@ def record_prod_canary_results(
         f"probes={len(probe_points)}"
     )
 
+    def _to_decimal(v):
+        # Cost fields are string-encoded uint256 in Influx; convert to Decimal
+        # for the Postgres NUMERIC columns. Empty/missing stays NULL.
+        if v is None or v == "":
+            return None
+        try:
+            return Decimal(str(v))
+        except (InvalidOperation, ValueError):
+            return None
+
     upload_count = 0
     for u in upload_points:
         try:
@@ -178,6 +189,9 @@ def record_prod_canary_results(
             num_chunks=u["num_chunks"],
             uploaded_at=u["uploaded_at"],
             initial_verify_status=verify_status,
+            storage_cost_atto=_to_decimal(u.get("storage_cost_atto")),
+            gas_cost_wei=_to_decimal(u.get("gas_cost_wei")),
+            chunk_attempts_total=u.get("chunk_attempts_total"),
         )
         upload_count += 1
 
@@ -337,6 +351,36 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
         str(confirmed_lost),
     )
     console.print(summary)
+
+    # Cost telemetry. NULL for canaries uploaded before cost recording was
+    # wired up (e.g. all of PROD-CANARY-01) — show that fact rather than
+    # silently aggregating zero.
+    cost_rows = [u for u in uploads if u.storage_cost_atto is not None]
+    if cost_rows:
+        total_ant_atto = sum(
+            (u.storage_cost_atto or Decimal(0)) for u in cost_rows
+        )
+        total_gas_wei = sum(
+            (u.gas_cost_wei or Decimal(0)) for u in cost_rows
+        )
+        # atto = 10^-18; mainnet ANT and ETH both use 18 decimals.
+        ant_total = total_ant_atto / Decimal(10) ** 18
+        eth_total = total_gas_wei / Decimal(10) ** 18
+        cost_table = Table(title="Upload cost totals")
+        cost_table.add_column("Rows with cost recorded", justify="right")
+        cost_table.add_column("ANT spent", justify="right")
+        cost_table.add_column("Gas spent (ETH)", justify="right")
+        cost_table.add_row(
+            f"{len(cost_rows)}/{len(uploads)}",
+            f"{ant_total:.8f}",
+            f"{eth_total:.10f}",
+        )
+        console.print(cost_table)
+    else:
+        console.print(
+            "[dim]No upload cost data recorded for these uploads "
+            "(rows pre-date the cost-recording change).[/dim]"
+        )
 
     if losses:
         bucket_counts: dict[str, int] = {label: 0 for label, *_ in _BUCKETS}

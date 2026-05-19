@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Optional
 
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
@@ -169,6 +171,9 @@ class DeploymentRepository(ABC):
         num_chunks: int,
         uploaded_at: datetime,
         initial_verify_status: ProdCanaryInitialVerifyStatus,
+        storage_cost_atto: Optional[Decimal] = None,
+        gas_cost_wei: Optional[Decimal] = None,
+        chunk_attempts_total: Optional[int] = None,
     ) -> DeploymentProdCanaryUpload:
         ...
 
@@ -578,6 +583,9 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         num_chunks: int,
         uploaded_at: datetime,
         initial_verify_status: ProdCanaryInitialVerifyStatus,
+        storage_cost_atto: Optional[Decimal] = None,
+        gas_cost_wei: Optional[Decimal] = None,
+        chunk_attempts_total: Optional[int] = None,
     ) -> DeploymentProdCanaryUpload:
         existing = self.session.get(DeploymentProdCanaryUpload, canary_id)
         if existing is None:
@@ -591,6 +599,9 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 num_chunks=num_chunks,
                 uploaded_at=uploaded_at,
                 initial_verify_status=initial_verify_status,
+                storage_cost_atto=storage_cost_atto,
+                gas_cost_wei=gas_cost_wei,
+                chunk_attempts_total=chunk_attempts_total,
             )
             self.session.add(existing)
         else:
@@ -602,6 +613,15 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.num_chunks = num_chunks
             existing.uploaded_at = uploaded_at
             existing.initial_verify_status = initial_verify_status
+            # Only overwrite cost fields if the caller supplied a value; this
+            # preserves any historic data when re-running record-results on
+            # rows that had cost added later.
+            if storage_cost_atto is not None:
+                existing.storage_cost_atto = storage_cost_atto
+            if gas_cost_wei is not None:
+                existing.gas_cost_wei = gas_cost_wei
+            if chunk_attempts_total is not None:
+                existing.chunk_attempts_total = chunk_attempts_total
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing

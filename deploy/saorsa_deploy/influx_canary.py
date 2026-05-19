@@ -142,6 +142,16 @@ def fetch_canary_upload_points(
             "initial_verify_status": (
                 record.get("initial_verify_status", "") or "failed"
             ),
+            # Cost telemetry (added 2026-05-19). String-encoded uint256 to
+            # preserve precision; empty/missing for canaries uploaded
+            # before the upload script started emitting them.
+            "storage_cost_atto": (
+                record.get("storage_cost_atto", "") or ""
+            ),
+            "gas_cost_wei": record.get("gas_cost_wei", "") or "",
+            "chunk_attempts_total": _parse_int(
+                record.get("chunk_attempts_total", "")
+            ),
         })
     return points
 

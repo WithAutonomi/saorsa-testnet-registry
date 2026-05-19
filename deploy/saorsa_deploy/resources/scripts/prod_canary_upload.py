@@ -217,25 +217,39 @@ def _build_upload_line(
     finished_ns: int,
     duration_ms: int,
     timestamp_ns: int,
+    storage_cost_atto: str = "",
+    gas_cost_wei: str = "",
+    chunk_attempts_total: int | None = None,
 ) -> str:
     tag_set = (
         f"deployment_name={_escape_tag(deployment_name)},"
         f"region={_escape_tag(region)},"
         f"host={_escape_tag(host)}"
     )
-    field_set = (
-        f'canary_id="{_escape_field_string(canary_id)}",'
-        f'source_url="{_escape_field_string(source_url)}",'
-        f'file_name="{_escape_field_string(file_name)}",'
-        f"file_size_bytes={file_size}i,"
-        f'top_address="{_escape_field_string(top_address)}",'
-        f"num_chunks={num_chunks}i,"
-        f'initial_verify_status="{_escape_field_string(initial_verify_status)}",'
-        f"started_at={started_ns}i,"
-        f"finished_at={finished_ns}i,"
-        f"duration_ms={duration_ms}i"
-    )
-    return f"{UPLOAD_MEASUREMENT},{tag_set} {field_set} {timestamp_ns}"
+    fields = [
+        f'canary_id="{_escape_field_string(canary_id)}"',
+        f'source_url="{_escape_field_string(source_url)}"',
+        f'file_name="{_escape_field_string(file_name)}"',
+        f"file_size_bytes={file_size}i",
+        f'top_address="{_escape_field_string(top_address)}"',
+        f"num_chunks={num_chunks}i",
+        f'initial_verify_status="{_escape_field_string(initial_verify_status)}"',
+        f"started_at={started_ns}i",
+        f"finished_at={finished_ns}i",
+        f"duration_ms={duration_ms}i",
+    ]
+    # Cost fields are uint256-shaped in ant's JSON (string-encoded). Emit them
+    # as Influx string fields so they don't lose precision; downstream
+    # record-results parses them back as Decimal.
+    if storage_cost_atto:
+        fields.append(
+            f'storage_cost_atto="{_escape_field_string(storage_cost_atto)}"'
+        )
+    if gas_cost_wei:
+        fields.append(f'gas_cost_wei="{_escape_field_string(gas_cost_wei)}"')
+    if chunk_attempts_total is not None:
+        fields.append(f"chunk_attempts_total={chunk_attempts_total}i")
+    return f"{UPLOAD_MEASUREMENT},{tag_set} {','.join(fields)} {timestamp_ns}"
 
 
 def _build_chunk_line(
@@ -515,6 +529,14 @@ def main() -> int:
         chunks_stored = int(parsed.get("chunks_stored") or 0)
         total_chunks = int(parsed.get("total_chunks") or 0)
         num_chunks = total_chunks or chunks_stored
+        # uint256-shaped values in ant's JSON are string-encoded; keep them as
+        # strings on the way out so we don't lose precision via int() / float.
+        storage_cost_atto = str(parsed.get("storage_cost_atto") or "")
+        gas_cost_wei = str(parsed.get("gas_cost_wei") or "")
+        chunk_attempts_raw = parsed.get("chunk_attempts_total")
+        chunk_attempts_total = (
+            int(chunk_attempts_raw) if chunk_attempts_raw is not None else None
+        )
 
         if upload_exit != 0 or not top_address:
             print(
@@ -582,6 +604,9 @@ def main() -> int:
             finished_ns=upload_finished_ns,
             duration_ms=upload_duration_ms,
             timestamp_ns=upload_finished_ns,
+            storage_cost_atto=storage_cost_atto,
+            gas_cost_wei=gas_cost_wei,
+            chunk_attempts_total=chunk_attempts_total,
         )
         _post_influx(
             influx_url, influx_token, influx_org, influx_bucket, upload_line
