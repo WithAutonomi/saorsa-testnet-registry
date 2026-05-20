@@ -568,3 +568,174 @@ def test_render_payload_text_includes_header_and_section_text():
 def test_render_payload_text_handles_empty_blocks():
     assert render_payload_text({"text": "x", "blocks": []}) == "\n"
 
+
+def _testnet_deployment():
+    return _deployment(
+        deploy_args={
+            "bootstrap_count": 1,
+            "vm_count": 1,
+            "nodes_per_vm": 5,
+            "purpose": "p",
+            "node_binary": {"kind": "release", "version": "0.1.0"},
+        },
+    )
+
+
+def test_monitoring_block_included_when_state_present():
+    monitoring_state = {
+        "influxdb_url": "http://1.2.3.4:8086",
+        "influxdb_token": "tok-abc",
+        "influxdb_org": "org-x",
+        "influxdb_bucket": "bucket-y",
+        "grafana_url": "http://1.2.3.4:3000",
+        "grafana_password": "pw-z",
+    }
+    payload = build_slack_blocks(
+        _testnet_deployment(), {}, None, monitoring_state=monitoring_state
+    )
+    text = _all_text(payload)
+    assert "Monitoring (InfluxDB + Grafana)" in text
+    assert "http://1.2.3.4:8086" in text
+    assert "http://1.2.3.4:3000" in text
+    assert "admin / pw-z" in text
+    assert "org-x" in text
+    assert "bucket-y" in text
+    assert "tok-abc" in text
+
+
+def test_monitoring_block_skipped_when_url_missing():
+    payload = build_slack_blocks(
+        _testnet_deployment(),
+        {},
+        None,
+        monitoring_state={"influxdb_url": "", "influxdb_token": "t"},
+    )
+    assert "Monitoring (InfluxDB" not in _all_text(payload)
+
+
+def test_elastic_block_included_when_state_present():
+    elastic_state = {
+        "elasticsearch_url": "https://es.example:9200",
+        "elasticsearch_username": "ant-log-writer",
+        "elasticsearch_password": "es-pass",
+        "elasticsearch_api_key": "api-key-123",
+        "elasticsearch_index_pattern": "telegraf-ant-nodes-dev-01-%Y.%m.%d",
+    }
+    payload = build_slack_blocks(
+        _testnet_deployment(), {}, None, elastic_state=elastic_state
+    )
+    text = _all_text(payload)
+    assert "Elasticsearch" in text
+    assert "https://es.example:9200" in text
+    assert "ant-log-writer" in text
+    assert "es-pass" in text
+    assert "api-key-123" in text
+    assert "telegraf-ant-nodes-dev-01" in text
+
+
+def test_elastic_block_skipped_when_url_missing():
+    payload = build_slack_blocks(
+        _testnet_deployment(),
+        {},
+        None,
+        elastic_state={"elasticsearch_url": "", "elasticsearch_username": "u"},
+    )
+    assert "Elasticsearch" not in _all_text(payload)
+
+
+def test_both_monitoring_and_elastic_blocks_present():
+    monitoring_state = {
+        "influxdb_url": "http://mon.example:8086",
+        "influxdb_token": "t",
+        "influxdb_org": "o",
+        "influxdb_bucket": "b",
+        "grafana_url": "http://mon.example:3000",
+        "grafana_password": "gp",
+    }
+    elastic_state = {
+        "elasticsearch_url": "https://es.example:9200",
+        "elasticsearch_username": "u",
+        "elasticsearch_password": "p",
+        "elasticsearch_api_key": "k",
+        "elasticsearch_index_pattern": "ix",
+    }
+    payload = build_slack_blocks(
+        _testnet_deployment(),
+        {},
+        None,
+        monitoring_state=monitoring_state,
+        elastic_state=elastic_state,
+    )
+    text = _all_text(payload)
+    assert "Monitoring (InfluxDB + Grafana)" in text
+    assert "Elasticsearch" in text
+    # Monitoring section should appear before Elasticsearch.
+    assert text.index("Monitoring (InfluxDB") < text.index("Elasticsearch")
+
+
+def test_neither_monitoring_nor_elastic_blocks_when_states_none():
+    payload = build_slack_blocks(_testnet_deployment(), {}, None)
+    text = _all_text(payload)
+    assert "Monitoring (InfluxDB" not in text
+    assert "Elasticsearch" not in text
+
+
+def test_cmd_slack_post_loads_monitoring_and_elastic_state(repo):
+    repo.create(
+        name="DEV-ML",
+        deploy_args={
+            "bootstrap_count": 1,
+            "vm_count": 1,
+            "nodes_per_vm": 5,
+            "purpose": "p",
+            "node_binary": {"kind": "release", "version": "0.1.0"},
+        },
+    )
+
+    monitoring_state = {
+        "influxdb_url": "http://mon:8086",
+        "influxdb_token": "t",
+        "influxdb_org": "o",
+        "influxdb_bucket": "b",
+        "grafana_url": "http://mon:3000",
+        "grafana_password": "gp",
+    }
+    elastic_state = {
+        "elasticsearch_url": "https://es:9200",
+        "elasticsearch_username": "u",
+        "elasticsearch_password": "p",
+        "elasticsearch_api_key": "k",
+        "elasticsearch_index_pattern": "ix",
+    }
+
+    captured = {}
+
+    def fake_post(url, json, timeout):  # noqa: A002 - mirroring requests signature
+        captured["payload"] = json
+        return SimpleNamespace(ok=True, status_code=200, text="ok")
+
+    args = SimpleNamespace(name="DEV-ML", dry_run=False)
+
+    with (
+        patch("saorsa_deploy.cmd.slack_post.get_repository", return_value=repo),
+        patch("saorsa_deploy.cmd.slack_post._try_load_state", return_value={}),
+        patch("saorsa_deploy.cmd.slack_post._try_load_client_state", return_value=None),
+        patch(
+            "saorsa_deploy.cmd.slack_post._try_load_monitoring_state",
+            return_value=monitoring_state,
+        ),
+        patch(
+            "saorsa_deploy.cmd.slack_post._try_load_elastic_state",
+            return_value=elastic_state,
+        ),
+        patch.dict("os.environ", {"ANT_DEPLOY_SLACK_WEBHOOK_URL": "http://hook"}),
+        patch("saorsa_deploy.cmd.slack_post.requests.post", side_effect=fake_post),
+    ):
+        cmd_slack_post(args)
+
+    rendered = render_payload_text(captured["payload"])
+    assert "Monitoring (InfluxDB + Grafana)" in rendered
+    assert "Elasticsearch" in rendered
+    assert "http://mon:8086" in rendered
+    assert "https://es:9200" in rendered
+

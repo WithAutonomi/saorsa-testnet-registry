@@ -20,6 +20,8 @@ from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import (
     load_client_state,
     load_deployment_state,
+    load_elastic_state,
+    load_monitoring_state,
 )
 
 _KIND_LABELS = {
@@ -317,12 +319,56 @@ def _clients_block(clients: list[dict]) -> dict:
     return _section("*Clients:*\n" + "\n".join(lines))
 
 
-def build_slack_blocks(deployment, state: dict | None, client_state: dict | None) -> dict:
+def _monitoring_blocks(state: dict) -> list[dict]:
+    influxdb_url = state.get("influxdb_url", "")
+    if not influxdb_url:
+        return []
+    grafana_url = state.get("grafana_url", "")
+    grafana_password = state.get("grafana_password", "")
+    grafana_line = grafana_url
+    if grafana_url and grafana_password:
+        grafana_line = f"{grafana_url} (admin / {grafana_password})"
+    lines = [
+        "*Monitoring (InfluxDB + Grafana):*",
+        f"• *InfluxDB:* {influxdb_url}",
+        f"• *Grafana:* {grafana_line or '_unknown_'}",
+        f"• *Org:* {state.get('influxdb_org', '') or '_unknown_'}",
+        f"• *Bucket:* {state.get('influxdb_bucket', '') or '_unknown_'}",
+        f"• *API token:* `{state.get('influxdb_token', '') or '_unknown_'}`",
+    ]
+    return [_section("\n".join(lines))]
+
+
+def _elastic_blocks(state: dict) -> list[dict]:
+    es_url = state.get("elasticsearch_url", "")
+    if not es_url:
+        return []
+    lines = [
+        "*Elasticsearch:*",
+        f"• *URL:* {es_url}",
+        f"• *Username:* {state.get('elasticsearch_username', '') or '_unknown_'}",
+        f"• *Password:* `{state.get('elasticsearch_password', '') or '_unknown_'}`",
+        f"• *API key:* `{state.get('elasticsearch_api_key', '') or '_unknown_'}`",
+        f"• *Index pattern:* `{state.get('elasticsearch_index_pattern', '') or '_unknown_'}`",
+    ]
+    return [_section("\n".join(lines))]
+
+
+def build_slack_blocks(
+    deployment,
+    state: dict | None,
+    client_state: dict | None,
+    monitoring_state: dict | None = None,
+    elastic_state: dict | None = None,
+) -> dict:
     """Build a Slack Block-Kit payload for ``deployment``.
 
     ``state`` and ``client_state`` are the dicts returned by
-    ``load_deployment_state`` / ``load_client_state``. Either may be None or
-    empty if S3 state is unavailable; the renderer degrades gracefully.
+    ``load_deployment_state`` / ``load_client_state``. ``monitoring_state``
+    and ``elastic_state`` come from ``load_monitoring_state`` /
+    ``load_elastic_state`` when the deployment has those paired stacks. Any
+    may be None or empty if S3 state is unavailable; the renderer degrades
+    gracefully.
     """
     deploy_args = deployment.deploy_args or {}
     state = state or {}
@@ -359,6 +405,11 @@ def build_slack_blocks(deployment, state: dict | None, client_state: dict | None
         clients = client_state.get("clients") or []
         if clients:
             blocks.append(_clients_block(clients))
+
+    if monitoring_state:
+        blocks.extend(_monitoring_blocks(monitoring_state))
+    if elastic_state:
+        blocks.extend(_elastic_blocks(elastic_state))
 
     return {
         "text": f"Deployment {deployment.name} — {kind_label}",
@@ -407,6 +458,20 @@ def _try_load_client_state(name: str) -> dict | None:
     return result or None
 
 
+def _try_load_monitoring_state(name: str) -> dict | None:
+    try:
+        return load_monitoring_state(name)
+    except RuntimeError:
+        return None
+
+
+def _try_load_elastic_state(name: str) -> dict | None:
+    try:
+        return load_elastic_state(name)
+    except RuntimeError:
+        return None
+
+
 def cmd_slack_post(args):
     """Post a deployment summary to a Slack incoming webhook.
 
@@ -433,8 +498,16 @@ def cmd_slack_post(args):
 
     state = _try_load_state(args.name)
     client_state = _try_load_client_state(args.name)
+    monitoring_state = _try_load_monitoring_state(args.name)
+    elastic_state = _try_load_elastic_state(args.name)
 
-    payload = build_slack_blocks(deployment, state, client_state)
+    payload = build_slack_blocks(
+        deployment,
+        state,
+        client_state,
+        monitoring_state=monitoring_state,
+        elastic_state=elastic_state,
+    )
 
     if getattr(args, "dry_run", False):
         # Plain stdout so Rich doesn't reflow or interpret the mrkdwn markers.
