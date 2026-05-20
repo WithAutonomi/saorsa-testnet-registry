@@ -2820,6 +2820,18 @@ def main():
         help="Skip the interactive confirmation prompt.",
     )
 
+    # --- prod files ---
+    prod_files_parser = prod_subparsers.add_parser(
+        "files",
+        help="List every file uploaded to the production Autonomi network "
+        "(from recorded prod-uploaders / prod-local-uploads results).",
+    )
+    prod_files_parser.add_argument(
+        "--failed",
+        action="store_true",
+        help="Print only failed uploads instead of the default successful ones.",
+    )
+
     # =========================================================================
     # === track-upgrades (existing group, NO CHANGE) ===
     # =========================================================================
@@ -3372,6 +3384,10 @@ def main():
             )
 
             cmd_prod_extend_unmanaged_volumes(args)
+        elif args.prod_subcommand == "files":
+            from saorsa_deploy.cmd.prod_files import cmd_prod_files
+
+            cmd_prod_files(args)
     elif args.command == "track-upgrades":
         verb = args.track_upgrades_verb
         if verb == "init":

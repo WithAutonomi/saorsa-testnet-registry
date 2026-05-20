@@ -214,6 +214,12 @@ class DeploymentRepository(ABC):
         ...
 
     @abstractmethod
+    def list_all_prod_upload_results(
+        self, failed_only: bool = False
+    ) -> list[DeploymentProdUploadResult]:
+        ...
+
+    @abstractmethod
     def upsert_prod_canary_upload(
         self,
         canary_id,
@@ -754,6 +760,23 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+    def list_all_prod_upload_results(
+        self, failed_only: bool = False
+    ) -> list[DeploymentProdUploadResult]:
+        query = self.session.query(DeploymentProdUploadResult)
+        if failed_only:
+            query = query.filter(
+                DeploymentProdUploadResult.status != ProdUploadStatus.SUCCESS
+            )
+        else:
+            query = query.filter(
+                DeploymentProdUploadResult.status == ProdUploadStatus.SUCCESS
+            )
+        return query.order_by(
+            DeploymentProdUploadResult.file_name,
+            DeploymentProdUploadResult.started_at,
+        ).all()
 
     def upsert_prod_canary_upload(
         self,
