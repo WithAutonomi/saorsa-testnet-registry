@@ -10,6 +10,10 @@ from saorsa_db.db import Base
 if TYPE_CHECKING:
     from saorsa_db.models.file_result import DeploymentFileResult
     from saorsa_db.models.host_result import DeploymentHostResult
+    from saorsa_db.models.op_record import (
+        DeploymentDownloadRecord,
+        DeploymentUploadRecord,
+    )
     from saorsa_db.models.prod_canary import DeploymentProdCanaryUpload
     from saorsa_db.models.prod_upload_result import DeploymentProdUploadResult
 
@@ -58,6 +62,18 @@ class Deployment(Base):
     file_results: Mapped[list["DeploymentFileResult"]] = relationship(
         back_populates="deployment",
         order_by="DeploymentFileResult.client_hostname",
+        cascade="all, delete-orphan",
+    )
+
+    upload_records: Mapped[list["DeploymentUploadRecord"]] = relationship(
+        back_populates="deployment",
+        order_by="DeploymentUploadRecord.start_ns",
+        cascade="all, delete-orphan",
+    )
+
+    download_records: Mapped[list["DeploymentDownloadRecord"]] = relationship(
+        back_populates="deployment",
+        order_by="DeploymentDownloadRecord.start_ns",
         cascade="all, delete-orphan",
     )
 

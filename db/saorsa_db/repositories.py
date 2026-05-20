@@ -6,6 +6,11 @@ from typing import Optional
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
 from saorsa_db.models.host_result import DeploymentHostResult
+from saorsa_db.models.op_record import (
+    DeploymentDownloadRecord,
+    DeploymentUploadRecord,
+    OpRecordStatus,
+)
 from saorsa_db.models.migration import (
     Migration,
     MigrationStatus,
@@ -111,6 +116,50 @@ class DeploymentRepository(ABC):
     def list_file_results_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentFileResult]:
+        ...
+
+    @abstractmethod
+    def upsert_upload_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str | None,
+        file_size_bytes: int,
+        status: OpRecordStatus,
+        start_ns: int,
+        influx_time: datetime,
+        started_at: datetime,
+        finished_at: datetime | None,
+        duration_ms: int | None,
+    ) -> DeploymentUploadRecord:
+        ...
+
+    @abstractmethod
+    def upsert_download_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str | None,
+        file_size_bytes: int,
+        status: OpRecordStatus,
+        start_ns: int,
+        influx_time: datetime,
+        started_at: datetime,
+        finished_at: datetime | None,
+        duration_ms: int | None,
+    ) -> DeploymentDownloadRecord:
+        ...
+
+    @abstractmethod
+    def list_upload_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentUploadRecord]:
+        ...
+
+    @abstractmethod
+    def list_download_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentDownloadRecord]:
         ...
 
     @abstractmethod
@@ -436,6 +485,135 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 DeploymentFileResult.client_hostname,
                 DeploymentFileResult.op_type,
                 DeploymentFileResult.file_size_bytes,
+            )
+            .all()
+        )
+
+    def _upsert_op_record(
+        self,
+        model_cls,
+        deployment_id: int,
+        client_hostname: str,
+        region: str | None,
+        file_size_bytes: int,
+        status: OpRecordStatus,
+        start_ns: int,
+        influx_time: datetime,
+        started_at: datetime,
+        finished_at: datetime | None,
+        duration_ms: int | None,
+    ):
+        existing = (
+            self.session.query(model_cls)
+            .filter(
+                model_cls.deployment_id == deployment_id,
+                model_cls.client_hostname == client_hostname,
+                model_cls.start_ns == start_ns,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = model_cls(
+                deployment_id=deployment_id,
+                client_hostname=client_hostname,
+                region=region,
+                file_size_bytes=file_size_bytes,
+                status=status,
+                start_ns=start_ns,
+                influx_time=influx_time,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+            )
+            self.session.add(existing)
+        else:
+            existing.region = region
+            existing.file_size_bytes = file_size_bytes
+            existing.status = status
+            existing.influx_time = influx_time
+            existing.started_at = started_at
+            existing.finished_at = finished_at
+            existing.duration_ms = duration_ms
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def upsert_upload_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str | None,
+        file_size_bytes: int,
+        status: OpRecordStatus,
+        start_ns: int,
+        influx_time: datetime,
+        started_at: datetime,
+        finished_at: datetime | None,
+        duration_ms: int | None,
+    ) -> DeploymentUploadRecord:
+        return self._upsert_op_record(
+            DeploymentUploadRecord,
+            deployment_id=deployment_id,
+            client_hostname=client_hostname,
+            region=region,
+            file_size_bytes=file_size_bytes,
+            status=status,
+            start_ns=start_ns,
+            influx_time=influx_time,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+        )
+
+    def upsert_download_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str | None,
+        file_size_bytes: int,
+        status: OpRecordStatus,
+        start_ns: int,
+        influx_time: datetime,
+        started_at: datetime,
+        finished_at: datetime | None,
+        duration_ms: int | None,
+    ) -> DeploymentDownloadRecord:
+        return self._upsert_op_record(
+            DeploymentDownloadRecord,
+            deployment_id=deployment_id,
+            client_hostname=client_hostname,
+            region=region,
+            file_size_bytes=file_size_bytes,
+            status=status,
+            start_ns=start_ns,
+            influx_time=influx_time,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+        )
+
+    def list_upload_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentUploadRecord]:
+        return (
+            self.session.query(DeploymentUploadRecord)
+            .filter(DeploymentUploadRecord.deployment_id == deployment_id)
+            .order_by(
+                DeploymentUploadRecord.client_hostname,
+                DeploymentUploadRecord.start_ns,
+            )
+            .all()
+        )
+
+    def list_download_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentDownloadRecord]:
+        return (
+            self.session.query(DeploymentDownloadRecord)
+            .filter(DeploymentDownloadRecord.deployment_id == deployment_id)
+            .order_by(
+                DeploymentDownloadRecord.client_hostname,
+                DeploymentDownloadRecord.start_ns,
             )
             .all()
         )

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.table import Table
-from saorsa_db.models import FileOpType, ProdUploadStatus
+from saorsa_db.models import FileOpType, OpRecordStatus, ProdUploadStatus
 
 from saorsa_deploy.influx import (
     aggregate_file_results,
@@ -224,6 +224,90 @@ def _record_file_ops(
     console.print(
         f"[bold green]Recorded {len(aggregates)} row(s) "
         f"for deployment '{args.name}'.[/bold green]"
+    )
+
+    _record_file_op_records(
+        repo, deployment, args, console,
+        influx_url, influx_token, influx_org, influx_bucket,
+    )
+
+
+def _record_file_op_records(
+    repo, deployment, args, console,
+    influx_url, influx_token, influx_org, influx_bucket,
+) -> None:
+    """Persist every individual upload/download op as a row in
+    ``deployment_upload_records`` / ``deployment_download_records``.
+
+    Unlike the summary above, this always queries from epoch (``start="0"``);
+    ``--window`` is ignored so re-runs naturally backfill the full history.
+    Idempotent via the ``(deployment_id, host, start_ns)`` upsert key.
+    """
+    console.print(
+        "[bold]Fetching per-operation records (full range)...[/bold]"
+    )
+    try:
+        points = fetch_operation_points(
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            start="0",
+        )
+    except Exception as e:
+        console.print(
+            f"[bold red]Error:[/bold red] InfluxDB per-op query failed: {e}"
+        )
+        sys.exit(1)
+
+    upload_recorded = 0
+    download_recorded = 0
+    skipped = 0
+    for p in points:
+        start_ns = p.get("start_ns")
+        status_code = p.get("status")
+        file_size = p.get("file_size")
+        measurement = p.get("_measurement")
+        if start_ns is None or file_size is None or measurement not in (
+            "upload", "download"
+        ):
+            skipped += 1
+            continue
+        if status_code == 0:
+            status = OpRecordStatus.SUCCESS
+        elif status_code == 1:
+            status = OpRecordStatus.FAILURE
+        else:
+            skipped += 1
+            continue
+
+        started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
+        duration_ms = p.get("total_ms")
+        finished_at = p["_time"]
+
+        kwargs = dict(
+            deployment_id=deployment.id,
+            client_hostname=p["host"],
+            region=p.get("region"),
+            file_size_bytes=file_size,
+            status=status,
+            start_ns=start_ns,
+            influx_time=p["_time"],
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+        )
+        if measurement == "upload":
+            repo.upsert_upload_record(**kwargs)
+            upload_recorded += 1
+        else:
+            repo.upsert_download_record(**kwargs)
+            download_recorded += 1
+
+    console.print(
+        f"[bold green]Recorded {upload_recorded} upload record(s) and "
+        f"{download_recorded} download record(s) "
+        f"({skipped} skipped) for deployment '{args.name}'.[/bold green]"
     )
 
 
