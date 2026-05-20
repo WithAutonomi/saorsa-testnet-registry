@@ -260,6 +260,52 @@ def _build_payment_map(name: str) -> dict[str, str]:
     return out
 
 
+def _build_prod_payment_map(name: str) -> dict[str, str]:
+    """Map hostname → payment_type label for a prod-uploaders deployment.
+
+    Unlike testnet uploaders, the ``prod uploaders deploy`` flow does not
+    propagate ``payment_type`` into client state — it passes it straight
+    through to the provisioner. The authoritative source is therefore
+    ``deploy_args.uploaders`` on the registry row. Match those specs to
+    the client_state's upload VMs by sorted ``client_index`` (which
+    ``clients infra`` assigns 1..N in spec order).
+    """
+    repo = get_repository()
+    if repo is None:
+        return {}
+    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+    if deployment is None:
+        return {}
+    deploy_args = deployment.deploy_args or {}
+    uploader_specs = (
+        deploy_args.get("uploaders") if isinstance(deploy_args, dict) else None
+    )
+    if not uploader_specs:
+        return {}
+
+    try:
+        state = load_client_state(name)
+    except RuntimeError:
+        return {}
+    upload_clients = sorted(
+        (
+            c for c in state.get("clients", [])
+            if c.get("role", "upload") == "upload"
+        ),
+        key=lambda c: c.get("client_index") or 0,
+    )
+    if len(upload_clients) != len(uploader_specs):
+        return {}
+
+    out: dict[str, str] = {}
+    for spec, client in zip(uploader_specs, upload_clients):
+        host = (
+            f"{name}-ant-client-upload-{client['region']}-{client['client_index']}"
+        )
+        out[host] = spec.get("payment_type") or "default"
+    return out
+
+
 def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
     """Compute the per-host summary numbers for ``--summary``.
 
@@ -393,17 +439,24 @@ def _run_prod_uploads(args, console: Console) -> None:
     for p in points:
         by_host.setdefault(p["host"], []).append(p)
 
+    payment_by_host = _build_prod_payment_map(args.name)
+
     if getattr(args, "details", False):
-        _prod_print_details(by_host, console)
+        _prod_print_details(by_host, payment_by_host, console)
     else:
-        _prod_print_table(by_host, console)
+        _prod_print_table(by_host, payment_by_host, console)
 
 
-def _prod_print_table(by_host: dict[str, list[dict]], console: Console) -> None:
+def _prod_print_table(
+    by_host: dict[str, list[dict]],
+    payment_by_host: dict[str, str],
+    console: Console,
+) -> None:
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
+        payment = payment_by_host.get(host, "default")
         table = Table(
-            title=f"prod_upload — {host} ({len(ops)} record(s))",
+            title=f"prod_upload — {host} — payment={payment} ({len(ops)} record(s))",
             title_style="bold",
             show_lines=True,
         )
@@ -427,10 +480,17 @@ def _prod_print_table(by_host: dict[str, list[dict]], console: Console) -> None:
         console.print(table)
 
 
-def _prod_print_details(by_host: dict[str, list[dict]], console: Console) -> None:
+def _prod_print_details(
+    by_host: dict[str, list[dict]],
+    payment_by_host: dict[str, str],
+    console: Console,
+) -> None:
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
-        console.rule(f"[bold]{host} — {len(ops)} record(s)[/bold]")
+        payment = payment_by_host.get(host, "default")
+        console.rule(
+            f"[bold]{host} — payment={payment} — {len(ops)} record(s)[/bold]"
+        )
         for i, op in enumerate(ops, start=1):
             console.print(f"[bold]#{i}[/bold]")
             console.print(f"  Started (UTC):     {_fmt_start(op.get('start_ns'))}")
