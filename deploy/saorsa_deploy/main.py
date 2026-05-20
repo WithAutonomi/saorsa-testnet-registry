@@ -785,7 +785,10 @@ def main():
         action="store_true",
         help=(
             "For prod-uploaders / prod-local-uploads: print one full row "
-            "per upload with no truncation. Ignored for other kinds."
+            "per upload with no truncation. For testnet / "
+            "prod-continuous-downloader: also print per-op rows from "
+            "deployment_upload_records and deployment_download_records "
+            "after the per-host aggregate table."
         ),
     )
 

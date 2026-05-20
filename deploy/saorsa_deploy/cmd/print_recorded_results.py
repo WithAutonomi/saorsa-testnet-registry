@@ -28,9 +28,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from saorsa_db.models import (
+    DeploymentDownloadRecord,
     DeploymentFileResult,
     DeploymentHostResult,
     DeploymentProdUploadResult,
+    DeploymentUploadRecord,
+    OpRecordStatus,
     ProdUploadStatus,
 )
 
@@ -92,6 +95,14 @@ def cmd_print_recorded_results(args) -> None:
     else:
         rows = repo.list_file_results_for_deployment(deployment.id)
         _print_file_results_section(rows, deployment.name, console)
+        if args.details:
+            upload_records = repo.list_upload_records_for_deployment(deployment.id)
+            download_records = repo.list_download_records_for_deployment(
+                deployment.id
+            )
+            _print_op_records_section(
+                upload_records, download_records, deployment.name, console
+            )
 
 
 def _resolve_kind(deploy_args) -> str:
@@ -228,6 +239,81 @@ def _print_file_results_section(
             _fmt_dt(row.last_finished_at),
         )
     console.print(table)
+
+
+_OP_STATUS_LABELS = {
+    OpRecordStatus.SUCCESS: "[green]ok[/green]",
+    OpRecordStatus.FAILURE: "[red]fail[/red]",
+}
+
+
+def _print_op_records_section(
+    uploads: list[DeploymentUploadRecord],
+    downloads: list[DeploymentDownloadRecord],
+    name: str,
+    console: Console,
+) -> None:
+    """Render every per-op row from ``deployment_upload_records`` and
+    ``deployment_download_records``, grouped by (op_type, host)."""
+    console.print()
+    console.print("[bold]File results (per-operation rows)[/bold]")
+
+    if not uploads and not downloads:
+        console.print(
+            "[yellow]No per-op records for this deployment "
+            "(deployment_upload_records and deployment_download_records "
+            "are empty).[/yellow]"
+        )
+        return
+
+    if uploads:
+        _print_op_records_for_kind("upload", uploads, name, console)
+    if downloads:
+        _print_op_records_for_kind("download", downloads, name, console)
+
+
+def _print_op_records_for_kind(
+    op_label: str,
+    rows: list,
+    name: str,
+    console: Console,
+) -> None:
+    by_host: dict[str, list] = {}
+    for row in rows:
+        by_host.setdefault(row.client_hostname, []).append(row)
+
+    for host in sorted(by_host.keys()):
+        host_rows = sorted(by_host[host], key=lambda r: r.start_ns)
+        table = Table(
+            title=(
+                f"{op_label} — {host} ({len(host_rows)} record(s)) — '{name}'"
+            ),
+            title_style="bold",
+            show_lines=False,
+        )
+        table.add_column("#", justify="right")
+        table.add_column("Region")
+        table.add_column("Size (MB)", justify="right")
+        table.add_column("Status")
+        table.add_column("Duration", justify="right")
+        table.add_column("Started (UTC)")
+        table.add_column("Finished (UTC)")
+        for i, row in enumerate(host_rows, start=1):
+            size_mb = (
+                f"{row.file_size_bytes / (1024 * 1024):.1f}"
+                if row.file_size_bytes is not None
+                else "-"
+            )
+            table.add_row(
+                str(i),
+                row.region or "-",
+                size_mb,
+                _OP_STATUS_LABELS.get(row.status, "-"),
+                _fmt_duration(row.duration_ms),
+                _fmt_dt(row.started_at),
+                _fmt_dt(row.finished_at),
+            )
+        console.print(table)
 
 
 # ---------------------------------------------------------------------------
