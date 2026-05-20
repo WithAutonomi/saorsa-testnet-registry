@@ -117,6 +117,7 @@ def _parse_pivoted_csv(body: str) -> list[dict]:
                 {
                     "_time": _parse_ts(record["_time"]),
                     "host": record["host"],
+                    "region": record.get("region", "") or None,
                     "_measurement": record["_measurement"],
                     "file_size": _parse_int(record.get("file_size", "")),
                     "start_ns": _parse_int(record.get("start_ns", "")),

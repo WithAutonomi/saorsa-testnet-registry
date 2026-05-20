@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 from saorsa_db.db import Base
-from saorsa_db.models import FileOpType
+from saorsa_db.models import FileOpType, OpRecordStatus
 from saorsa_db.repositories import SqlAlchemyDeploymentRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -177,3 +177,116 @@ def test_upsert_file_result_distinct_rows_per_op_and_size(repo):
 
     rows = r.list_file_results_for_deployment(deployment.id)
     assert len(rows) == 3
+
+
+def _upload_kwargs(deployment_id, **overrides):
+    base = dict(
+        deployment_id=deployment_id,
+        client_hostname="hostA",
+        region="lon1",
+        file_size_bytes=1024,
+        status=OpRecordStatus.SUCCESS,
+        start_ns=1_000_000_000_000,
+        influx_time=datetime.fromisoformat("2026-04-19T10:00:00+00:00"),
+        started_at=datetime.fromisoformat("2026-04-19T10:00:00+00:00"),
+        finished_at=datetime.fromisoformat("2026-04-19T10:00:01+00:00"),
+        duration_ms=1000,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_upsert_upload_record_inserts_then_updates(repo):
+    r, _ = repo
+    d = r.create(name="DEV-TEST", deploy_args={})
+
+    r.upsert_upload_record(**_upload_kwargs(d.id))
+    rows = r.list_upload_records_for_deployment(d.id)
+    assert len(rows) == 1 and rows[0].status == OpRecordStatus.SUCCESS
+
+    r.upsert_upload_record(
+        **_upload_kwargs(
+            d.id, status=OpRecordStatus.FAILURE, duration_ms=42, finished_at=None,
+        )
+    )
+    rows = r.list_upload_records_for_deployment(d.id)
+    assert len(rows) == 1
+    assert rows[0].status == OpRecordStatus.FAILURE
+    assert rows[0].duration_ms == 42
+    assert rows[0].finished_at is None
+
+
+def test_upsert_upload_record_distinct_per_start_ns(repo):
+    r, _ = repo
+    d = r.create(name="DEV-TEST", deploy_args={})
+    r.upsert_upload_record(**_upload_kwargs(d.id, start_ns=1))
+    r.upsert_upload_record(**_upload_kwargs(d.id, start_ns=2))
+    r.upsert_upload_record(**_upload_kwargs(d.id, start_ns=3, client_hostname="hostB"))
+    assert len(r.list_upload_records_for_deployment(d.id)) == 3
+
+
+def test_upload_and_download_records_are_separate_tables(repo):
+    r, _ = repo
+    d = r.create(name="DEV-TEST", deploy_args={})
+    r.upsert_upload_record(**_upload_kwargs(d.id, start_ns=100))
+    r.upsert_download_record(**_upload_kwargs(d.id, start_ns=100))
+    assert len(r.list_upload_records_for_deployment(d.id)) == 1
+    assert len(r.list_download_records_for_deployment(d.id)) == 1
+
+
+def test_record_file_op_records_persists_each_op(repo, monkeypatch):
+    from saorsa_deploy.cmd import record_results as rr
+    r, _ = repo
+    d = r.create(name="DEV-TEST", deploy_args={})
+
+    points = [
+        {
+            "_time": datetime.fromisoformat("2026-04-19T10:00:01+00:00"),
+            "host": "hostA",
+            "region": "lon1",
+            "_measurement": "upload",
+            "file_size": 1024,
+            "start_ns": 1_000_000_000_000,
+            "status": 0,
+            "total_ms": 1000,
+        },
+        {
+            "_time": datetime.fromisoformat("2026-04-19T10:00:02+00:00"),
+            "host": "hostA",
+            "region": "lon1",
+            "_measurement": "download",
+            "file_size": 2048,
+            "start_ns": 2_000_000_000_000,
+            "status": 1,
+            "total_ms": 500,
+        },
+        # malformed: no start_ns — should be skipped
+        {
+            "_time": datetime.fromisoformat("2026-04-19T10:00:03+00:00"),
+            "host": "hostA",
+            "_measurement": "upload",
+            "file_size": 1024,
+            "start_ns": None,
+            "status": 0,
+            "total_ms": 100,
+        },
+    ]
+    monkeypatch.setattr(rr, "fetch_operation_points", lambda **kw: points)
+
+    class _Args:
+        name = "DEV-TEST"
+
+    from rich.console import Console
+    rr._record_file_op_records(
+        r, d, _Args(), Console(),
+        "http://influx", "tok", "ant", "testnet-metrics",
+    )
+
+    uploads = r.list_upload_records_for_deployment(d.id)
+    downloads = r.list_download_records_for_deployment(d.id)
+    assert len(uploads) == 1
+    assert uploads[0].status == OpRecordStatus.SUCCESS
+    assert uploads[0].region == "lon1"
+    assert len(downloads) == 1
+    assert downloads[0].status == OpRecordStatus.FAILURE
+    assert downloads[0].file_size_bytes == 2048

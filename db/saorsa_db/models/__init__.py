@@ -1,6 +1,11 @@
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
 from saorsa_db.models.host_result import DeploymentHostResult
+from saorsa_db.models.op_record import (
+    DeploymentDownloadRecord,
+    DeploymentUploadRecord,
+    OpRecordStatus,
+)
 from saorsa_db.models.migration import (
     Migration,
     MigrationStatus,
@@ -30,8 +35,10 @@ __all__ = [
     "Deployment",
     "DeploymentEvent",
     "DeploymentStatus",
+    "DeploymentDownloadRecord",
     "DeploymentFileResult",
     "DeploymentHostResult",
+    "DeploymentUploadRecord",
     "DeploymentProdCanaryChunk",
     "DeploymentProdCanaryLoss",
     "DeploymentProdCanaryProbe",
@@ -42,6 +49,7 @@ __all__ = [
     "MigrationStatus",
     "MigrationVm",
     "MigrationVmStatus",
+    "OpRecordStatus",
     "ProdCanaryChunkRole",
     "ProdCanaryInitialVerifyStatus",
     "ProdCanaryProbeStatus",
