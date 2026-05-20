@@ -1,6 +1,6 @@
 ---
 name: track-upgrades-setup
-description: Interview the user to gather what's needed to stand up auto-upgrade tracking against a production (or other long-running) testnet, and then generate a self-contained bash runbook that wires up Elasticsearch, Telegraf log forwarding, and the SQLite tracker DB so `track-upgrades sync`/`summary`/`details` can be run against the rollout. Use this skill whenever the user asks to "set up upgrade tracking", "track an upgrade", "monitor an auto-upgrade", "watch nodes upgrade", "create the tracker", "prep upgrade tracking", or otherwise wants the saorsa-deploy command sequence for instrumenting an auto-upgrade laid out as an executable script — even if they don't say the word "runbook" or "tracker". Prefer this skill over hand-rolling the command sequence yourself; the volume-filtering flag (`--drop-targets`) is mandatory at prod scale and was learned the painful way, the `--since` cursor must be back-dated *before* the rollout fires to avoid blinding the tracker, and the ordering between elastic infra → provision → telegraf → init is fragile.
+description: Interview the user to gather what's needed to stand up auto-upgrade tracking against a production (or other long-running) testnet, and then generate a self-contained bash runbook that wires up Elasticsearch, Telegraf log forwarding, and the SQLite tracker DB so `track-upgrades sync`/`summary`/`details` can be run against the rollout. Use this skill whenever the user asks to "set up upgrade tracking", "track an upgrade", "monitor an auto-upgrade", "watch nodes upgrade", "create the tracker", "prep upgrade tracking", or otherwise wants the saorsa-deploy command sequence for instrumenting an auto-upgrade laid out as an executable script — even if they don't say the word "runbook" or "tracker". Prefer this skill over hand-rolling the command sequence yourself; volume filtering relies on the `provision-telegraf --drop-log-levels` default (`DEBUG,TRACE`) which is mandatory at prod scale, the `--since` cursor must be back-dated *before* the rollout fires to avoid blinding the tracker, and the ordering between elastic infra → provision → telegraf → init is fragile.
 ---
 
 # track-upgrades-setup
@@ -13,7 +13,7 @@ Generate an executable bash runbook that stands up the upgrade-tracking pipeline
 
 The hard-won lessons this skill bakes in:
 
-- **`--drop-targets 'saorsa_core::*,saorsa_transport::*'` is non-optional for prod-scale runs.** Without it, ~98% of log volume is operational chatter (DHT iteration pings, transport channel sends, peer-registration notices). On a 990-node testnet that saturates a default `s-8vcpu-16gb` ES VM in well under an hour, Telegraf buffers fill, oldest lines are evicted, and the upgrade-detection events the tracker depends on get silently dropped. Seen and diagnosed in production; it is the single most important knob.
+- **`provision-telegraf --drop-log-levels DEBUG,TRACE` (the default) is non-optional for prod-scale runs.** Without log-level filtering, the bulk of log volume is operational chatter (DHT iteration pings, transport channel sends, peer-registration notices). On a 990-node testnet that saturates a default `s-8vcpu-16gb` ES VM in well under an hour, Telegraf buffers fill, oldest lines are evicted, and the upgrade-detection events the tracker depends on get silently dropped. The earlier `--drop-targets` flag was removed upstream; the level-based default replaces it and is strongly preferred over relaxing it. Seen and diagnosed in production.
 - **`track-upgrades init` writes the cursor at "now" by default.** If the rollout has already started, you've blinded the tracker — pass `--since <ISO timestamp before rollout>` to backdate. Init runs entirely offline against ES (just stores credentials in metadata), so it must run *before* you want sync to find anything.
 - **Telegraf restart drops in-memory offsets.** Re-provisioning telegraf with `--from-start` causes a full re-read of on-disk log files, which is exactly what you want when reseeding tracking against a rollout that's already partly happened. With `force_document_id = true` in the ES output, re-shipping is idempotent — no duplicates.
 - **Bootstrap nodes are tracked separately.** This skill only sets up tracking for the regular node VMs in `node_vms[]` of the inventory. Bootstrap nodes (in `bootstrap-inventory.json`) are checked via SSH directly — see the companion `bootstrap-upgrade-check` skill for that.
@@ -67,12 +67,12 @@ This is the most consequential question; ask it carefully.
 
 Always ask the user when the rollout fired (or will fire). If the rollout is in the past, derive a `--since` value 1–2 hours before that. If the rollout is in the future or just-now, omit `--since` entirely.
 
-### 5. Drop-targets filter
+### 5. Log-level filter
 
-The skill defaults to `--drop-targets 'saorsa_core::*,saorsa_transport::*'`. Confirm with the user but offer the override:
+`provision-telegraf` no longer accepts `--drop-targets` — it was removed upstream. The replacement is `--drop-log-levels`, which defaults to `DEBUG,TRACE`. That default is what keeps prod-scale ES alive; the tracker only reads INFO-level `ant_node` lifecycle events so dropping DEBUG/TRACE costs it nothing.
 
-- **Default** — drops the saorsa-stack INFO chatter (~98% of log volume). The upgrade tracker reads only `ant_node::*` targets, so this filter loses nothing the tracker needs. Strongly recommended for prod-scale tracking.
-- **Override** — only when the user has a specific reason (e.g. they're also using ES for ad-hoc forensic queries that need the saorsa traffic, AND they've right-sized ES for the unfiltered volume). If they pick this, flag the implication: ES sizing must be increased, or the pipeline will wedge within hours.
+- **Default** — do not pass the flag at all; let the binary apply its default (`DEBUG,TRACE`). Strongly recommended for prod-scale tracking.
+- **Override** — only when the user has a specific reason (e.g. ad-hoc forensic queries that need DEBUG, AND they've right-sized ES for the unfiltered volume). If they pick this, flag the implication: ES sizing must be increased, or the pipeline will wedge within hours. To pass an explicit value, use `--drop-log-levels '<comma-separated levels>'` or an empty string to disable filtering entirely.
 
 ### 6. ES sizing (offer defaults, take override)
 
@@ -84,7 +84,7 @@ The saorsa-testnet-registry repo currently codifies the working defaults in `Jus
 - Shards: `8`
 - Retention: `7` days
 
-These work *only when the drop-targets filter is in place*. Without filtering, even `s-16vcpu-32gb` won't keep up at prod scale — the bottleneck is per-shard merge work, not raw CPU.
+These work *only when the default `--drop-log-levels DEBUG,TRACE` filter is in place*. Without filtering, even `s-16vcpu-32gb` won't keep up at prod scale — the bottleneck is per-shard merge work, not raw CPU.
 
 Always show these defaults back to the user and ask if they want to override any. For non-prod or smaller testnets, `s-4vcpu-8gb` and `100` GB are usually fine.
 
@@ -98,7 +98,7 @@ The verification block uses the credentials stored in elastic state (loaded via 
 
 Once the interview is done, before writing the files:
 
-1. **Recap the plan** back to the user as a bullet list, including the inventory path, key path, version pair, `--since` (or "default-now"), drop-targets, and ES sizing. Let them correct anything. Do not generate files until they say go.
+1. **Recap the plan** back to the user as a bullet list, including the inventory path, key path, version pair, `--since` (or "default-now"), log-level filter, and ES sizing. Let them correct anything. Do not generate files until they say go.
 2. **Compute the timestamp once** (`date +%Y%m%d-%H%M%S`) and use it in both filenames.
 3. **Create `runbooks/` if it doesn't exist.**
 4. **Write both files**, then `chmod +x` them.
@@ -109,7 +109,7 @@ Once the interview is done, before writing the files:
 ### Flag rules
 
 - Always include `--name "$NAME"` on every saorsa-deploy command.
-- The `provision-telegraf` step must always include `--from-start` and `--drop-targets '...'`. The `--from-start` is safe even when not strictly needed; the `--drop-targets` is mandatory unless the user explicitly opted out in §5.
+- The `provision-telegraf` step must always include `--from-start`. Do NOT pass `--drop-targets` — it was removed from saorsa-deploy. Volume filtering relies on the binary's default `--drop-log-levels DEBUG,TRACE`; emit `--drop-log-levels '<value>'` only if the user supplied an explicit override in §5.
 - Only emit `--since "$SINCE"` on `track-upgrades init` when the user supplied a value in §4. Omit it (let the default be "now") otherwise.
 - Only emit non-default ES sizing flags. The defaults are spelled out in the template's `infra` and `provision` calls — override only the ones the user changed.
 - Never emit `--reset` on `track-upgrades init`; the post-fix init unconditionally wipes the tracker DB before reseeding.
@@ -129,7 +129,7 @@ Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit
 #   To version:     {{TO_VERSION}}
 #   SSH key:        {{SSH_KEY_PATH}}
 #   Cursor:         {{SINCE_OR_DEFAULT_NOW}}
-#   Drop-targets:   {{DROP_TARGETS_OR_NONE}}
+#   Log filter:     {{LOG_LEVEL_FILTER_OR_DEFAULT}}
 #   ES sizing:      {{ES_REGION}} / {{ES_DROPLET_SIZE}} / {{ES_VOLUME_GB}}GB / shards={{ES_SHARDS}} / retention={{ES_RETENTION_DAYS}}d
 
 set -euo pipefail
@@ -164,14 +164,16 @@ uv run saorsa-deploy elastic provision \
 # --- 2. Provision Telegraf log forwarders on every node VM ---
 # `--from-start` makes telegraf re-read each log file from byte 0, so the
 # tracker can pick up upgrade events that were already written before this
-# runbook ran. `--drop-targets` strips ~98% of log volume that the tracker
-# has no use for; without it, ES saturates at prod scale within an hour.
+# runbook ran. Volume filtering relies on the provision-telegraf default
+# (`--drop-log-levels DEBUG,TRACE`) — without it, ES saturates at prod scale
+# within an hour. Only emit an explicit --drop-log-levels here if the user
+# asked to override the default in §5.
 uv run saorsa-deploy elastic provision-telegraf \
   --name "$NAME" \
   --inventory-path "$INVENTORY" \
   --ssh-key-path "$SSH_KEY" \
   --from-start \
-  {{#if drop_targets}}--drop-targets '{{DROP_TARGETS}}' \
+  {{#if drop_log_levels_override}}--drop-log-levels '{{DROP_LOG_LEVELS}}' \
   {{/if}}--node-version "$FROM_VERSION"
 
 # --- 3. Seed the tracker SQLite DB ---
@@ -202,20 +204,35 @@ INDEX="telegraf-ant-nodes-${NAME_LOWER}-*"
 
 echo ""
 echo "=== Pipeline verification ==="
-sleep 30  # Give telegraf time to ship its first batch
+# Telegraf typically takes 60-120s after provisioning to install, start, and
+# ship its first batch. Until then the index doesn't exist and ES returns
+# 404 — handled below.
+sleep 90
+# `ignore_unavailable=true&allow_no_indices=true` makes ES return an empty
+# hits result instead of a 404 when the index pattern hasn't matched yet.
 curl -sS -H "Authorization: ApiKey $ES_KEY" \
-  "$ES_URL/$INDEX/_search?size=0&track_total_hits=true" \
+  "$ES_URL/$INDEX/_search?size=0&track_total_hits=true&ignore_unavailable=true&allow_no_indices=true" \
   -H 'Content-Type: application/json' \
   -d '{"aggs":{"hosts":{"cardinality":{"field":"tag.host.keyword"}},"latest":{"max":{"field":"@timestamp"}}}}' \
   | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-total = d['hits']['total']['value']
-hosts = d['aggregations']['hosts']['value']
-latest = d['aggregations']['latest'].get('value_as_string', '(none)')
+if 'error' in d:
+    print(f'  ES error: {d[\"error\"].get(\"type\", \"unknown\")}: {d[\"error\"].get(\"reason\", \"\")}')
+    print('  Telegraf may not have shipped yet — re-check in a few minutes with:')
+    print(f'  curl -sS -H \"Authorization: ApiKey \$ES_KEY\" \"\$ES_URL/$INDEX/_count\"')
+    sys.exit(0)
+hits = d.get('hits', {})
+total = hits.get('total', {}).get('value', 0)
+aggs = d.get('aggregations', {})
+hosts = aggs.get('hosts', {}).get('value', 0)
+latest = aggs.get('latest', {}).get('value_as_string', '(none)')
 print(f'  docs indexed:  {total:,}')
 print(f'  hosts seen:    {hosts}')
 print(f'  latest doc:    {latest}')
+if total == 0:
+    print('  NOTE: no docs yet. Telegraf often needs 2-3 minutes after provisioning')
+    print('  to install and start shipping. Re-run the curl above to recheck.')
 "
 {{/if}}
 
@@ -262,8 +279,9 @@ echo "Tracker DB at ~/.saorsa-deploy/upgrades/${NAME}.db is untouched; remove it
 ## Common pitfalls
 
 - **Cursor placed after the rollout fires.** This is the most common silent failure — sync looks like it's running fine but always finds zero events because `init` defaulted the cursor to a time after the upgrade-detection log lines were emitted. Always ask explicitly when the rollout fired and back-date `--since` if it's already in the past.
-- **Forgetting `--drop-targets` at prod scale.** ES looks fine for the first hour, then silently falls behind, telegraf buffers fill, the upgrade events get evicted, and `summary` shows everything stuck on `pending` despite the rollout being live. The default in this skill is the right thing; only deviate when the user has a concrete plan to right-size ES for unfiltered volume.
+- **Don't emit `--drop-targets`.** That flag was removed from `provision-telegraf` upstream. Calling it is an instant `unrecognized arguments` failure. Volume filtering now relies on `--drop-log-levels DEBUG,TRACE` (the default) — emit no flag at all, and only pass `--drop-log-levels '<value>'` if the user explicitly overrode the default in §5. Skipping log-level filtering at prod scale silently breaks tracking: ES looks fine for the first hour, then telegraf buffers fill, upgrade events get evicted, and `summary` shows everything stuck on `pending`.
+- **Verification index may not exist yet.** Telegraf typically needs 60–120s after provisioning to install, start, and ship its first batch. Until then, ES returns 404 for the index pattern and the verification JSON has no `hits` key. The runbook handles this by passing `ignore_unavailable=true&allow_no_indices=true` and defending the python parser; don't strip these.
 - **Wrong inventory file.** This skill targets `~/.autonomi/testnets/<name>/inventory.json` (the regular node inventory). The bootstrap inventory is a different file (`bootstrap-inventory.json`) and bootstrap nodes are tracked separately via SSH, not via the ES pipeline. Don't conflate them.
 - **`--node-version` is a static tag.** It gets stamped onto every log line as `tag.node_version` for ad-hoc queries; it has no effect on Telegraf or the tracker. The tracker reads the actual running version from `tail.version` on the `"ant-node starting"` log line, which the binary self-reports. Don't worry about updating it mid-rollout.
-- **Don't add retry loops or sleeps to the runbook.** If a command fails the user wants to see it and decide what to do — `set -e` is the contract. The verification block has one `sleep 30` to let telegraf flush its first batch; that's the only timing-related thing in the script.
+- **Don't add retry loops or sleeps to the runbook.** If a command fails the user wants to see it and decide what to do — `set -e` is the contract. The verification block has one `sleep 90` to let telegraf flush its first batch; that's the only timing-related thing in the script.
 - **Don't run the script for the user.** Generate, `chmod +x`, report the path. Running it is the user's call.
