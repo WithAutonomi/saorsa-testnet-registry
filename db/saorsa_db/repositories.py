@@ -25,6 +25,11 @@ from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
 )
+from saorsa_db.models.release_candidate import (
+    ReleaseCandidate,
+    ReleaseCandidateCrate,
+    ReleaseCandidatePR,
+)
 
 
 class DeploymentRepository(ABC):
@@ -989,4 +994,215 @@ class SqlAlchemyMigrationRepository(MigrationRepository):
         if migration is None:
             raise ValueError(f"Migration {migration_id} not found")
         self.session.delete(migration)
+        self.session.commit()
+
+
+
+class ReleaseCandidateRepository(ABC):
+    @abstractmethod
+    def create(
+        self,
+        *,
+        binary_target: str,
+        binary_version: str,
+        rc_branch: str,
+        notes: Optional[str] = None,
+    ) -> ReleaseCandidate:
+        ...
+
+    @abstractmethod
+    def add_crate(
+        self,
+        release_candidate_id: int,
+        *,
+        crate_name: str,
+        version: str,
+        repo_slug: str,
+        tag: Optional[str] = None,
+        tag_sha: Optional[str] = None,
+        since_tag: Optional[str] = None,
+        since_sha: Optional[str] = None,
+        head_sha: Optional[str] = None,
+    ) -> ReleaseCandidateCrate:
+        ...
+
+    @abstractmethod
+    def add_prs(
+        self, release_candidate_crate_id: int, prs: list[dict]
+    ) -> list[ReleaseCandidatePR]:
+        """Append PR rows under a crate. Each dict must include ``pr_number``
+        (or ``number``); ``title``, ``author``, ``merged_at``, ``url`` are
+        optional. Duplicate (crate_id, pr_number) pairs are skipped silently."""
+        ...
+
+    @abstractmethod
+    def get(self, release_candidate_id: int) -> Optional[ReleaseCandidate]:
+        ...
+
+    @abstractmethod
+    def get_by_binary_version(
+        self, binary_target: str, binary_version: str
+    ) -> Optional[ReleaseCandidate]:
+        ...
+
+    @abstractmethod
+    def get_crate(
+        self, release_candidate_id: int, crate_name: str
+    ) -> Optional[ReleaseCandidateCrate]:
+        ...
+
+    @abstractmethod
+    def list(
+        self,
+        *,
+        binary_target: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[ReleaseCandidate]:
+        ...
+
+    @abstractmethod
+    def delete(self, release_candidate_id: int) -> None:
+        ...
+
+
+class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
+    def __init__(self, session):
+        self.session = session
+
+    def create(
+        self,
+        *,
+        binary_target: str,
+        binary_version: str,
+        rc_branch: str,
+        notes: Optional[str] = None,
+    ) -> ReleaseCandidate:
+        rc = ReleaseCandidate(
+            binary_target=binary_target,
+            binary_version=binary_version,
+            rc_branch=rc_branch,
+            notes=notes,
+        )
+        self.session.add(rc)
+        self.session.commit()
+        return rc
+
+    def add_crate(
+        self,
+        release_candidate_id: int,
+        *,
+        crate_name: str,
+        version: str,
+        repo_slug: str,
+        tag: Optional[str] = None,
+        tag_sha: Optional[str] = None,
+        since_tag: Optional[str] = None,
+        since_sha: Optional[str] = None,
+        head_sha: Optional[str] = None,
+    ) -> ReleaseCandidateCrate:
+        rc = self.session.get(ReleaseCandidate, release_candidate_id)
+        if rc is None:
+            raise ValueError(
+                f"ReleaseCandidate {release_candidate_id} not found"
+            )
+        crate = ReleaseCandidateCrate(
+            release_candidate_id=release_candidate_id,
+            crate_name=crate_name,
+            version=version,
+            repo_slug=repo_slug,
+            tag=tag,
+            tag_sha=tag_sha,
+            since_tag=since_tag,
+            since_sha=since_sha,
+            head_sha=head_sha,
+        )
+        self.session.add(crate)
+        self.session.commit()
+        return crate
+
+    def add_prs(
+        self, release_candidate_crate_id: int, prs: list[dict]
+    ) -> list[ReleaseCandidatePR]:
+        crate = self.session.get(
+            ReleaseCandidateCrate, release_candidate_crate_id
+        )
+        if crate is None:
+            raise ValueError(
+                f"ReleaseCandidateCrate {release_candidate_crate_id} not found"
+            )
+        existing = {pr.pr_number for pr in crate.prs}
+        created: list[ReleaseCandidatePR] = []
+        for record in prs:
+            number = record.get("pr_number") or record.get("number")
+            if number is None:
+                raise ValueError("PR record missing 'pr_number'")
+            number = int(number)
+            if number in existing:
+                continue
+            merged_at = record.get("merged_at")
+            if isinstance(merged_at, str):
+                merged_at = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+            row = ReleaseCandidatePR(
+                release_candidate_crate_id=release_candidate_crate_id,
+                pr_number=number,
+                title=record.get("title"),
+                author=record.get("author"),
+                merged_at=merged_at,
+                url=record.get("url"),
+            )
+            self.session.add(row)
+            created.append(row)
+            existing.add(number)
+        self.session.commit()
+        return created
+
+    def get(self, release_candidate_id: int) -> Optional[ReleaseCandidate]:
+        return self.session.get(ReleaseCandidate, release_candidate_id)
+
+    def get_by_binary_version(
+        self, binary_target: str, binary_version: str
+    ) -> Optional[ReleaseCandidate]:
+        return (
+            self.session.query(ReleaseCandidate)
+            .filter(
+                ReleaseCandidate.binary_target == binary_target,
+                ReleaseCandidate.binary_version == binary_version,
+            )
+            .one_or_none()
+        )
+
+    def get_crate(
+        self, release_candidate_id: int, crate_name: str
+    ) -> Optional[ReleaseCandidateCrate]:
+        return (
+            self.session.query(ReleaseCandidateCrate)
+            .filter(
+                ReleaseCandidateCrate.release_candidate_id
+                == release_candidate_id,
+                ReleaseCandidateCrate.crate_name == crate_name,
+            )
+            .one_or_none()
+        )
+
+    def list(
+        self,
+        *,
+        binary_target: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[ReleaseCandidate]:
+        query = self.session.query(ReleaseCandidate)
+        if binary_target is not None:
+            query = query.filter(ReleaseCandidate.binary_target == binary_target)
+        query = query.order_by(ReleaseCandidate.recorded_at.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
+
+    def delete(self, release_candidate_id: int) -> None:
+        rc = self.session.get(ReleaseCandidate, release_candidate_id)
+        if rc is None:
+            raise ValueError(
+                f"ReleaseCandidate {release_candidate_id} not found"
+            )
+        self.session.delete(rc)
         self.session.commit()

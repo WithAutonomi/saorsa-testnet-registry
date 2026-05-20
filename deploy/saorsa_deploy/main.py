@@ -2935,6 +2935,67 @@ def main():
     ti_details.add_argument("--db", type=str, required=True)
 
     # =========================================================================
+    # === release-candidates group (new, ls, show) ===
+    # =========================================================================
+    rc_parser = subparsers.add_parser(
+        "release-candidates",
+        help=(
+            "Record and inspect release candidates cut by the release-candidate "
+            "skill (per-crate PR history)."
+        ),
+    )
+    rc_sub = rc_parser.add_subparsers(
+        dest="release_candidates_verb", required=True
+    )
+
+    rc_new = rc_sub.add_parser(
+        "new",
+        help=(
+            "Record a release candidate + its PR list. Reads a JSON payload "
+            "from --from-file or stdin."
+        ),
+    )
+    rc_new.add_argument(
+        "--from-file",
+        type=str,
+        default=None,
+        help="Path to a JSON payload file. Use '-' or omit to read stdin.",
+    )
+
+    rc_ls = rc_sub.add_parser(
+        "ls",
+        help=(
+            "List recorded release candidates (parent rows with their "
+            "constituent crates indented underneath)."
+        ),
+    )
+    rc_ls.add_argument(
+        "--binary-target", dest="binary_target", type=str, default=None,
+        help="Filter by binary target (e.g. ant, ant-node).",
+    )
+    rc_ls.add_argument(
+        "--limit", type=int, default=None,
+        help="Cap the number of release candidates returned.",
+    )
+
+    rc_show = rc_sub.add_parser(
+        "show",
+        help="Show a single release candidate with all its crates + PRs.",
+    )
+    rc_show.add_argument(
+        "--id", type=int, default=None,
+        help="Look up by release-candidate id (preferred).",
+    )
+    rc_show.add_argument(
+        "--binary-target", dest="binary_target", type=str, default=None,
+        help="Look up by binary target (combine with --version).",
+    )
+    rc_show.add_argument(
+        "--version", type=str, default=None,
+        help="Look up by binary version (combine with --binary-target).",
+    )
+
+    # =========================================================================
     # === utils group (hetzner-availability, list-regions, vultr-availability) ===
     # =========================================================================
     utils_parser = subparsers.add_parser(
@@ -3333,6 +3394,23 @@ def main():
                 cmd_track_upgrades_details,
             )
             cmd_track_upgrades_details(args)
+    elif args.command == "release-candidates":
+        verb = args.release_candidates_verb
+        if verb == "new":
+            from saorsa_deploy.cmd.release_candidates.new_cmd import (
+                cmd_release_candidates_new,
+            )
+            cmd_release_candidates_new(args)
+        elif verb == "ls":
+            from saorsa_deploy.cmd.release_candidates.ls_cmd import (
+                cmd_release_candidates_ls,
+            )
+            cmd_release_candidates_ls(args)
+        elif verb == "show":
+            from saorsa_deploy.cmd.release_candidates.show_cmd import (
+                cmd_release_candidates_show,
+            )
+            cmd_release_candidates_show(args)
     elif args.command == "utils":
         if args.utils_subcommand == "hetzner-availability":
             from saorsa_deploy.cmd.hetzner_availability import cmd_hetzner_availability
