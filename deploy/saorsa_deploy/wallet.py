@@ -138,12 +138,17 @@ def transfer_eth(w3: Web3, from_secret_key: str, to_address: str, value_wei: int
     acct = Account.from_key(_normalize_secret_key(from_secret_key))
     to_checksum = Web3.to_checksum_address(to_address)
     nonce = w3.eth.get_transaction_count(acct.address)
+    # Arbitrum's intrinsic-gas check for a plain ETH transfer can exceed the
+    # mainnet 21000 because of the L1 calldata component, so ask the node.
+    estimated = w3.eth.estimate_gas(
+        {"from": acct.address, "to": to_checksum, "value": value_wei}
+    )
     tx = {
         "to": to_checksum,
         "value": value_wei,
         "nonce": nonce,
         "chainId": w3.eth.chain_id,
-        "gas": 21_000,
+        "gas": int(estimated * 12 // 10),
         **_gas_fields(w3),
     }
     signed = acct.sign_transaction(tx)
@@ -237,17 +242,28 @@ def drain_wallet(
     gas = _gas_fields(w3)
     # Worst-case gas price: maxFeePerGas under EIP-1559, gasPrice under legacy.
     effective_gas_price = gas.get("maxFeePerGas", gas.get("gasPrice", 0))
-    eth_tx_cost = effective_gas_price * 21_000
+    funding_checksum = Web3.to_checksum_address(funding_address)
+    # Estimate intrinsic gas with a tiny probe value so the node reports the
+    # real cost (Arbitrum may include L1 calldata in the limit, exceeding
+    # 21000).
+    try:
+        gas_limit = w3.eth.estimate_gas(
+            {"from": acct.address, "to": funding_checksum, "value": 1}
+        )
+    except Exception:
+        gas_limit = 21_000
+    gas_limit = int(gas_limit * 12 // 10)
+    eth_tx_cost = effective_gas_price * gas_limit
     sweep_amount = eth_balance - eth_tx_cost - gas_reserve_wei
     if sweep_amount > 0:
         # Send manually so we can control gas without re-querying.
         nonce = w3.eth.get_transaction_count(acct.address)
         tx = {
-            "to": Web3.to_checksum_address(funding_address),
+            "to": funding_checksum,
             "value": sweep_amount,
             "nonce": nonce,
             "chainId": w3.eth.chain_id,
-            "gas": 21_000,
+            "gas": gas_limit,
             **gas,
         }
         signed = acct.sign_transaction(tx)
