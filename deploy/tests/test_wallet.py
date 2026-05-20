@@ -85,6 +85,8 @@ def _mock_w3(chain_id: int = 421614, gas_price: int = 100_000_000, decimals: int
     w3.eth.get_transaction_count.return_value = 0
     # _gas_fields reads baseFeePerGas off the latest block.
     w3.eth.get_block.return_value = {"baseFeePerGas": gas_price}
+    # transfer_eth / drain_wallet ask the node for the intrinsic gas limit.
+    w3.eth.estimate_gas.return_value = 21_000
     # _send_signed: tx receipt status=1 success
     receipt = MagicMock()
     receipt.status = 1
