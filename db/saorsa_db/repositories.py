@@ -26,6 +26,10 @@ from saorsa_db.models.prod_canary import (
     ProdCanaryInitialVerifyStatus,
     ProdCanaryProbeStatus,
 )
+from saorsa_db.models.prod_download_result import (
+    DeploymentProdDownloadResult,
+    ProdDownloadStatus,
+)
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
@@ -217,6 +221,30 @@ class DeploymentRepository(ABC):
     def list_all_prod_upload_results(
         self, failed_only: bool = False
     ) -> list[DeploymentProdUploadResult]:
+        ...
+
+    @abstractmethod
+    def upsert_prod_download_result(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str,
+        address: str,
+        status: ProdDownloadStatus,
+        output_path: str | None,
+        file_size_bytes: int | None,
+        duration_ms: int | None,
+        download_secs: float | None,
+        started_at: datetime,
+        finished_at: datetime,
+        reason: str | None = None,
+    ) -> DeploymentProdDownloadResult:
+        ...
+
+    @abstractmethod
+    def list_prod_download_results_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdDownloadResult]:
         ...
 
     @abstractmethod
@@ -777,6 +805,73 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             DeploymentProdUploadResult.file_name,
             DeploymentProdUploadResult.started_at,
         ).all()
+
+    def upsert_prod_download_result(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str,
+        address: str,
+        status: ProdDownloadStatus,
+        output_path: str | None,
+        file_size_bytes: int | None,
+        duration_ms: int | None,
+        download_secs: float | None,
+        started_at: datetime,
+        finished_at: datetime,
+        reason: str | None = None,
+    ) -> DeploymentProdDownloadResult:
+        existing = (
+            self.session.query(DeploymentProdDownloadResult)
+            .filter(
+                DeploymentProdDownloadResult.deployment_id == deployment_id,
+                DeploymentProdDownloadResult.client_hostname == client_hostname,
+                DeploymentProdDownloadResult.address == address,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = DeploymentProdDownloadResult(
+                deployment_id=deployment_id,
+                client_hostname=client_hostname,
+                region=region,
+                address=address,
+                status=status,
+                output_path=output_path,
+                file_size_bytes=file_size_bytes,
+                duration_ms=duration_ms,
+                download_secs=download_secs,
+                started_at=started_at,
+                finished_at=finished_at,
+                reason=reason,
+            )
+            self.session.add(existing)
+        else:
+            existing.region = region
+            existing.status = status
+            existing.output_path = output_path
+            existing.file_size_bytes = file_size_bytes
+            existing.duration_ms = duration_ms
+            existing.download_secs = download_secs
+            existing.started_at = started_at
+            existing.finished_at = finished_at
+            existing.reason = reason
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def list_prod_download_results_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdDownloadResult]:
+        return (
+            self.session.query(DeploymentProdDownloadResult)
+            .filter(DeploymentProdDownloadResult.deployment_id == deployment_id)
+            .order_by(
+                DeploymentProdDownloadResult.client_hostname,
+                DeploymentProdDownloadResult.started_at,
+            )
+            .all()
+        )
 
     def upsert_prod_canary_upload(
         self,

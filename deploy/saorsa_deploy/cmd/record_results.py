@@ -9,8 +9,9 @@ The CLI entry point ``cmd_record_results`` resolves the deployment's
 * ``prod-uploaders`` → per-file rows of the ``prod_upload`` measurement,
   written to ``deployment_prod_upload_results``. ``--window`` is ignored
   (uploads are bounded runs; we always pull from epoch).
-* ``prod-local-uploads`` → rejected. Local-uploads writes directly to
-  Postgres at run time; there is nothing to record.
+* ``prod-local-uploads`` / ``prod-local-downloads`` → rejected. Local
+  uploads/downloads write directly to Postgres at run time; there is
+  nothing to record.
 """
 import sys
 from datetime import datetime, timezone
@@ -51,9 +52,9 @@ def cmd_record_results(args):
 
     kind = _resolve_kind(deployment.deploy_args)
 
-    if kind == "prod-local-uploads":
+    if kind in ("prod-local-uploads", "prod-local-downloads"):
         console.print(
-            f"[yellow]'{args.name}' is a prod-local-uploads deployment — "
+            f"[yellow]'{args.name}' is a {kind} deployment — "
             f"its per-file results are written directly to Postgres at run "
             f"time. There is nothing to record.[/yellow]"
         )

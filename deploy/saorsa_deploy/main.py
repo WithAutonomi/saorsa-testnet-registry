@@ -2867,6 +2867,62 @@ def main():
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
 
+    # --- prod local-downloads ---
+    prod_ld_parser = prod_subparsers.add_parser(
+        "local-downloads",
+        help=(
+            "Run prod-network downloads from the local machine. Records "
+            "per-address results directly into Postgres; no remote infra."
+        ),
+    )
+    prod_ld_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name. Registered in the database; used to scope "
+        "per-address results in deployment_prod_download_results.",
+    )
+    prod_ld_parser.add_argument(
+        "--addresses-path",
+        type=str,
+        required=True,
+        metavar="FILE",
+        help="Path to a newline-separated list of addresses to download. "
+        "Lines starting with '#' and blank lines are ignored.",
+    )
+    prod_ld_parser.add_argument(
+        "--keep-output-dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Directory to write downloaded files into. When set, files are "
+        "kept after recording. When omitted, each download goes to a "
+        "per-run temp directory and is deleted after the result row is "
+        "recorded.",
+    )
+    prod_ld_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner).",
+    )
+    prod_ld_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name).",
+    )
+    prod_ld_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_ld_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this deployment is for. "
+        "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
+
     # --- prod extend-unmanaged-volumes ---
     prod_euv_parser = prod_subparsers.add_parser(
         "extend-unmanaged-volumes",
@@ -3492,6 +3548,12 @@ def main():
             )
 
             cmd_prod_local_uploads(args)
+        elif args.prod_subcommand == "local-downloads":
+            from saorsa_deploy.cmd.prod_local_downloads import (
+                cmd_prod_local_downloads,
+            )
+
+            cmd_prod_local_downloads(args)
         elif args.prod_subcommand == "extend-unmanaged-volumes":
             from saorsa_deploy.cmd.prod_extend_unmanaged_volumes import (
                 cmd_prod_extend_unmanaged_volumes,

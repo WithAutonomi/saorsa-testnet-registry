@@ -774,6 +774,37 @@ There is no paired destroy command; nothing was provisioned.
 
 `prod local-uploads` deployments have no Influx backend, so `deployments print-uploads` rejects them and points at the forthcoming `deployments print-recorded-results` command (reads `deployment_prod_upload_results` from Postgres). Until that lands, query the table directly via `psql`.
 
+### Running downloads from the local machine (`prod local-downloads`)
+
+`prod local-downloads` is the download-side equivalent of `prod local-uploads`. It runs `ant -v file download <address> -o <output>` sequentially against the production Autonomi network from whichever host the command is invoked on, instead of provisioning a remote downloader VM. Per-address results are written directly into the `deployment_prod_download_results` Postgres table — there is no Influx, no monitoring VM, and no infrastructure to tear down. The intended use case is testing prod downloads from a real home internet connection.
+
+```bash
+uv run saorsa-deploy prod local-downloads \
+    --name LOCAL-DL-01 \
+    --purpose "Smoke test prod downloads from home connection" \
+    --addresses-path /path/to/addresses.txt
+# add --keep-output-dir /path/to/output to retain the downloaded files
+```
+
+Arguments (for `prod local-downloads`):
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--name NAME` | yes | Deployment name; used to scope per-address rows in `deployment_prod_download_results`. |
+| `--purpose TEXT` | yes | Free-text description, persisted to `deploy_args` and surfaced by `deployments slack-post`. |
+| `--addresses-path FILE` | yes | Newline-separated list of addresses. `#`-prefixed and blank lines are ignored. No default — the operator must supply the list explicitly. |
+| `--keep-output-dir DIR` | no | When set, downloaded files are written into `DIR` and kept on disk. When omitted, each download goes to a per-run temp directory and is deleted immediately after the result row is recorded. |
+| `--branch-name BRANCH` + `--repo-owner OWNER` | no | Pull a custom-built `ant` binary from S3 (must be paired). |
+| `--ant-version VERSION` | no | Pin a specific released `ant` version. Mutually exclusive with `--branch-name`. |
+
+Unlike `prod local-uploads` there is no `--secret-key` / `--payment` — downloads are read-only against the network and cost nothing.
+
+The command resolves the live prod bootstrap peers from upstream at startup, downloads the resolved `ant` binary into `~/.cache/saorsa-deploy/ant-binaries/<key>/ant` (pinned releases are cached across runs; `latest` and branch builds are re-fetched), and registers a row in the `deployments` table with `deploy_args.kind = "prod-local-downloads"`. On completion the deployment is marked `stopped` regardless of per-address failures — failures live in the per-row Postgres records.
+
+There is no paired destroy command; nothing was provisioned.
+
+Companion commands behave the same way as for `prod local-uploads`: `deployments record-results` refuses this kind (records are written at run time), `deployments print-recorded-results` renders per-address Rich tables (`--details` for the long form), and `deployments slack-post` posts a "Prod Downloads [Home]" summary.
+
 ### Static IP Management
 
 Static IPs are allocated outside Terraform and stored in `deploy/production-ips.json`. This ensures IPs survive VM teardown and recreation. The IPs were allocated using provider CLIs:

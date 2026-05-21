@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         DeploymentUploadRecord,
     )
     from saorsa_db.models.prod_canary import DeploymentProdCanaryUpload
+    from saorsa_db.models.prod_download_result import DeploymentProdDownloadResult
     from saorsa_db.models.prod_upload_result import DeploymentProdUploadResult
 
 
@@ -86,6 +87,12 @@ class Deployment(Base):
     prod_upload_results: Mapped[list["DeploymentProdUploadResult"]] = relationship(
         back_populates="deployment",
         order_by="DeploymentProdUploadResult.client_hostname",
+        cascade="all, delete-orphan",
+    )
+
+    prod_download_results: Mapped[list["DeploymentProdDownloadResult"]] = relationship(
+        back_populates="deployment",
+        order_by="DeploymentProdDownloadResult.client_hostname",
         cascade="all, delete-orphan",
     )
 

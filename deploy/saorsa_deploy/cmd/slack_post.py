@@ -30,6 +30,7 @@ _KIND_LABELS = {
     "prod-continuous-downloader": "Prod Continuous Downloader",
     "prod-downloaders": "Prod Downloaders",
     "prod-local-uploads": "Prod Uploads [Home]",
+    "prod-local-downloads": "Prod Downloads [Home]",
 }
 
 
@@ -275,6 +276,30 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
     return blocks
 
 
+def _prod_local_downloads_blocks(deploy_args: dict) -> list[dict]:
+    addresses_path = deploy_args.get("addresses_path", "_unknown_")
+    address_count = deploy_args.get("address_count")
+    output_mode = deploy_args.get("output_mode") or "_unknown_"
+    output_dir = deploy_args.get("output_dir", "_unknown_")
+    count_str = (
+        str(address_count) if address_count is not None else "_unknown_"
+    )
+    blocks: list[dict] = [
+        _section(
+            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+        ),
+        _section(f"*Addresses path:* {addresses_path}"),
+        _section(f"*Address count:* {count_str}"),
+        _section(f"*Output mode:* {output_mode} ({output_dir})"),
+    ]
+    addresses = deploy_args.get("addresses") or []
+    if addresses:
+        lines = [f"• `{addr}`" for addr in addresses]
+        header = f"*Addresses ({len(addresses)}):*"
+        blocks.extend(_chunked_sections(header, lines))
+    return blocks
+
+
 def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
     """Render the prod-downloaders / prod-continuous-downloader detail blocks.
 
@@ -417,6 +442,8 @@ def build_slack_blocks(
         blocks.extend(_prod_downloader_blocks(deploy_args))
     elif kind_raw == "prod-local-uploads":
         blocks.extend(_prod_local_uploads_blocks(deploy_args))
+    elif kind_raw == "prod-local-downloads":
+        blocks.extend(_prod_local_downloads_blocks(deploy_args))
 
     if client_state:
         clients = client_state.get("clients") or []

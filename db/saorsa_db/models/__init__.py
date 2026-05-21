@@ -21,6 +21,10 @@ from saorsa_db.models.prod_canary import (
     ProdCanaryInitialVerifyStatus,
     ProdCanaryProbeStatus,
 )
+from saorsa_db.models.prod_download_result import (
+    DeploymentProdDownloadResult,
+    ProdDownloadStatus,
+)
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
@@ -43,6 +47,7 @@ __all__ = [
     "DeploymentProdCanaryLoss",
     "DeploymentProdCanaryProbe",
     "DeploymentProdCanaryUpload",
+    "DeploymentProdDownloadResult",
     "DeploymentProdUploadResult",
     "FileOpType",
     "Migration",
@@ -53,6 +58,7 @@ __all__ = [
     "ProdCanaryChunkRole",
     "ProdCanaryInitialVerifyStatus",
     "ProdCanaryProbeStatus",
+    "ProdDownloadStatus",
     "ProdUploadStatus",
     "ReleaseCandidate",
     "ReleaseCandidateCrate",

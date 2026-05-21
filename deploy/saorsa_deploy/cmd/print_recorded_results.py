@@ -14,6 +14,9 @@ infrastructure has been torn down. Renders, in order:
     ``deployment_prod_upload_results``. Default mode is one Rich table
     per host; ``--details`` prints one full record per upload with no
     truncation.
+  - ``prod-local-downloads`` → per-address rows from
+    ``deployment_prod_download_results``. Default mode is one Rich table
+    per host; ``--details`` prints one full record per download.
 
 If a section's table is empty, a friendly "nothing recorded" line is
 printed in its place rather than skipped silently — the absence is
@@ -31,9 +34,11 @@ from saorsa_db.models import (
     DeploymentDownloadRecord,
     DeploymentFileResult,
     DeploymentHostResult,
+    DeploymentProdDownloadResult,
     DeploymentProdUploadResult,
     DeploymentUploadRecord,
     OpRecordStatus,
+    ProdDownloadStatus,
     ProdUploadStatus,
 )
 
@@ -47,6 +52,7 @@ _FILE_OPS_KINDS = {
     "prod-downloaders",
 }
 _PROD_UPLOAD_KINDS = {"prod-uploaders", "prod-local-uploads"}
+_PROD_DOWNLOAD_KINDS = {"prod-local-downloads"}
 
 _PROD_STATUS_LABELS = {
     ProdUploadStatus.SUCCESS: "[green]ok[/green]",
@@ -58,6 +64,16 @@ _PROD_STATUS_TEXT = {
     ProdUploadStatus.SUCCESS: "ok",
     ProdUploadStatus.PARTIAL_UPLOAD: "partial",
     ProdUploadStatus.DOWNLOAD_FAILED: "dl-fail",
+}
+
+_PROD_DOWNLOAD_STATUS_LABELS = {
+    ProdDownloadStatus.SUCCESS: "[green]ok[/green]",
+    ProdDownloadStatus.FAILED: "[red]fail[/red]",
+}
+
+_PROD_DOWNLOAD_STATUS_TEXT = {
+    ProdDownloadStatus.SUCCESS: "ok",
+    ProdDownloadStatus.FAILED: "fail",
 }
 
 
@@ -97,6 +113,9 @@ def cmd_print_recorded_results(args) -> None:
     elif kind in _PROD_UPLOAD_KINDS:
         rows = repo.list_prod_upload_results_for_deployment(deployment.id)
         _print_prod_upload_section(rows, deployment.name, args.details, console)
+    elif kind in _PROD_DOWNLOAD_KINDS:
+        rows = repo.list_prod_download_results_for_deployment(deployment.id)
+        _print_prod_download_section(rows, deployment.name, args.details, console)
     else:
         rows = repo.list_file_results_for_deployment(deployment.id)
         _print_file_results_section(rows, deployment.name, console)
@@ -408,6 +427,90 @@ def _print_prod_upload_details(
             console.print(f"  Address:           {row.address or '-'}")
             console.print(f"  Duration (ms):     {row.duration_ms or 0}")
             console.print(f"  Upload secs:       {row.upload_secs or 0}")
+            console.print(f"  Reason:            {row.reason or '-'}")
+            console.print()
+
+
+# ---------------------------------------------------------------------------
+# File results section: prod-local-downloads
+# ---------------------------------------------------------------------------
+
+
+def _print_prod_download_section(
+    rows: list[DeploymentProdDownloadResult],
+    name: str,
+    details: bool,
+    console: Console,
+) -> None:
+    console.print()
+    console.print("[bold]Prod download results (per-address rows)[/bold]")
+
+    if not rows:
+        console.print(
+            "[yellow]No prod download results recorded for this deployment "
+            "(deployment_prod_download_results is empty).[/yellow]"
+        )
+        return
+
+    by_host: dict[str, list[DeploymentProdDownloadResult]] = {}
+    for row in rows:
+        by_host.setdefault(row.client_hostname, []).append(row)
+
+    if details:
+        _print_prod_download_details(by_host, console)
+    else:
+        _print_prod_download_tables(by_host, console)
+
+
+def _print_prod_download_tables(
+    by_host: dict[str, list[DeploymentProdDownloadResult]],
+    console: Console,
+) -> None:
+    for host in sorted(by_host.keys()):
+        rows = sorted(by_host[host], key=lambda r: r.started_at)
+        table = Table(
+            title=f"prod_download — {host} ({len(rows)} record(s))",
+            title_style="bold",
+            show_lines=True,
+        )
+        table.add_column("#", justify="right")
+        table.add_column("Address")
+        table.add_column("Status")
+        table.add_column("Size", justify="right")
+        table.add_column("Duration", justify="right")
+        table.add_column("Started (UTC)")
+        for i, row in enumerate(rows, start=1):
+            table.add_row(
+                str(i),
+                row.address,
+                _PROD_DOWNLOAD_STATUS_LABELS.get(row.status, "-"),
+                _fmt_size(row.file_size_bytes),
+                _fmt_duration(row.duration_ms),
+                _fmt_dt(row.started_at),
+            )
+        console.print(table)
+
+
+def _print_prod_download_details(
+    by_host: dict[str, list[DeploymentProdDownloadResult]],
+    console: Console,
+) -> None:
+    for host in sorted(by_host.keys()):
+        rows = sorted(by_host[host], key=lambda r: r.started_at)
+        console.rule(f"[bold]{host} — {len(rows)} record(s)[/bold]")
+        for i, row in enumerate(rows, start=1):
+            console.print(f"[bold]#{i}[/bold]")
+            console.print(f"  Started (UTC):     {_fmt_dt(row.started_at)}")
+            console.print(f"  Finished (UTC):    {_fmt_dt(row.finished_at)}")
+            console.print(f"  Address:           {row.address}")
+            console.print(
+                f"  Status:            "
+                f"{_PROD_DOWNLOAD_STATUS_TEXT.get(row.status, '-')}"
+            )
+            console.print(f"  Size (bytes):      {row.file_size_bytes or '-'}")
+            console.print(f"  Duration (ms):     {row.duration_ms or '-'}")
+            console.print(f"  Download secs:     {row.download_secs or '-'}")
+            console.print(f"  Output path:       {row.output_path or '-'}")
             console.print(f"  Reason:            {row.reason or '-'}")
             console.print()
 
