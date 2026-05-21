@@ -16,7 +16,8 @@ The hard-won quirks this skill bakes in:
 - **Service name is `ant-bootstrap.service`**, not `ant-node`. Naive `systemctl is-active ant-node` always reports `inactive` even on a perfectly healthy host.
 - **Binary path is `/opt/ant-node/ant-node`**, not `/usr/local/bin/antnode`. `--version` works and is fast.
 - **Log directory is `/mnt/ant-node-storage/logs/ant-bootstrap/`** (plural `logs`, singular bootstrap subdir). Different from the regular-node layout, which uses `/mnt/ant-node-storage/log/ant-node-N/`.
-- **Today's log can be huge** (we've seen 700+ MB for a single host on a busy day). `grep` across a `*.log*` glob is too slow and times out SSH commands. Always use `tac <newest-log> | grep -m1` to read backwards from the end and stop on the first match — that's instant regardless of file size.
+- **Today's log can be huge** (we've seen 700+ MB for a single host on a busy day). `grep` across a `*.log*` glob is too slow and times out SSH commands. Use `tac <newest-log> | grep -m1` to read backwards from the end and stop on the first match — that's instant regardless of file size.
+- **Schedule events don't repeat.** The `"New version detected"` / `"Node will stop/restart"` lines fire **once** when the node first sees the new release, then never again. If detection happened yesterday, today's log won't contain them. The schedule check must `zgrep` across rotated logs (`*.log*`), not just `tac` today's file. The startup line, by contrast, fires on every restart and is fine to read from today's log only.
 - **Per-host SSH credentials.** Bootstrap inventories have `ssh_user` and `ssh_key` per VM. AWS bootstraps use `ubuntu`; others use `root`. Don't hard-code; read the per-VM fields.
 - **The `"ant-node starting"` log line is the definitive "I am running version X" signal.** The `tail.version` field on that line is what matters. The `tag.node_version` Telegraf stamps onto every log is *static at provision time* and will lie after an auto-upgrade.
 
@@ -40,9 +41,7 @@ Also use this proactively after running `track-upgrades-setup` for a rollout: th
 
 ## Inputs
 
-Ask the user for any of these that aren't obvious from context:
-
-1. **Bootstrap inventory path** — usually `~/.autonomi/testnets/<NAME>/bootstrap-inventory.json` for a deployment named `<NAME>`. Read the file with `cat` first to extract the VM list and per-host credentials.
+1. **Bootstrap inventory path** — defaults to `~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json` (the production network's bootstraps). Only ask if the user has named a different testnet. Read with the `Read` tool to extract the VM list and per-host credentials.
 2. **Target version** (optional but recommended) — the version every bootstrap is expected to upgrade to. Used in the output table to mark each host as upgraded / scheduled / pending. If omitted, the table just reports the *current* running version per host without classifying it.
 
 A typical invocation has both pieces visible from the conversation already. Don't ask if you can read them off context.
@@ -62,12 +61,14 @@ This is the canonical command shape. Use it verbatim — the cumulative experien
 ```bash
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes \
     "$SSH_USER@$IP" '
-F=$(ls -t /mnt/ant-node-storage/logs/ant-bootstrap/*.log 2>/dev/null | head -1)
+cd /mnt/ant-node-storage/logs/ant-bootstrap 2>/dev/null
+F=$(ls -t *.log 2>/dev/null | head -1)
 echo "service:  $(systemctl is-active ant-bootstrap.service)"
 echo "since:    $(systemctl show ant-bootstrap.service --property=ActiveEnterTimestamp --value)"
 echo "binary:   $(/opt/ant-node/ant-node --version 2>&1 | head -1)"
 echo "startup:  $(tac "$F" 2>/dev/null | grep -m1 "ant-node starting")"
-echo "schedule: $(tac "$F" 2>/dev/null | grep -m1 "Node will stop/restart")"
+echo "detected: $(zgrep -h "New version detected" *.log* 2>/dev/null | tail -1)"
+echo "schedule: $(zgrep -h "Node will stop/restart" *.log* 2>/dev/null | tail -1)"
 echo "errors:   $(grep -hcE "Binary replacement failed|Download failed|CRITICAL.*Replacement failed" "$F" 2>/dev/null || echo 0)"
 '
 ```
@@ -81,6 +82,7 @@ If the user has a lot of bootstraps (10+) and survey latency matters, parallelis
 - `service: active` + `binary: ant-node <to-version>` + `startup` line shows `version=<to-version>` → **upgraded**.
 - `service: active` + `binary: ant-node <from-version>` + `schedule` line in the future → **scheduled**.
 - `service: active` + `binary: ant-node <from-version>` + `schedule` line in the past → **stuck** (the auto-upgrade fired but didn't complete; flag this).
+- `service: active` + `binary: ant-node <from-version>` + no `detected`/`schedule` line at all → **pending** (the node has not yet noticed the new release; check again later).
 - `service: inactive` → **service down**; this is always worth flagging, even if the upgrade-tracking question wasn't about availability.
 - `errors: > 0` → flag with the actual error grep output.
 
