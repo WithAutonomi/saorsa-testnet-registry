@@ -274,6 +274,7 @@ def main() -> int:
     ant_path = os.environ.get("ANT", "/root/.local/bin/ant")
     evm_network = os.environ.get("EVM_NETWORK", "arbitrum-one")
     sleep_interval_secs = int(os.environ.get("SLEEP_INTERVAL_SECS", "900"))
+    one_shot = os.environ.get("ONE_SHOT", "false").strip().lower() == "true"
     download_dir = Path(
         os.environ.get("DOWNLOAD_DIR", "/var/lib/ant-prod-downloader/downloads")
     )
@@ -297,8 +298,9 @@ def main() -> int:
         return 0
 
     influx_enabled = bool(influx_url and influx_token)
+    mode = "one-shot" if one_shot else "continuous"
     print(
-        f"prod downloader starting: host={host} region={region} "
+        f"prod downloader starting: host={host} region={region} mode={mode} "
         f"addresses={len(addresses)} sleep_interval_secs={sleep_interval_secs}",
         flush=True,
     )
@@ -407,6 +409,10 @@ def main() -> int:
             f"--- cycle {cycle} done: failures={cycle_failures}/{len(addresses)} ---",
             flush=True,
         )
+
+        if one_shot:
+            print("one-shot mode: address list exhausted, exiting", flush=True)
+            return 0
 
         if sleep_interval_secs > 0:
             print(

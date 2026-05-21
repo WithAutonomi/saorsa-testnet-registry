@@ -372,6 +372,48 @@ def test_prod_continuous_downloader_renders_spec_and_addresses():
     assert "release v0.3.0" in text
 
 
+def test_prod_continuous_downloader_renders_addresses_inline_when_persisted():
+    deployment = _deployment(
+        name="PROD-CD-02",
+        deploy_args={
+            "kind": "prod-continuous-downloader",
+            "spec": "lon1",
+            "addresses_file": "/path/to/addrs.txt",
+            "addresses": ["abc123", "def456", "ghi789"],
+            "sleep_interval_secs": 900,
+            "ant_binary": {"kind": "release", "version": "0.3.0"},
+        },
+    )
+    payload = build_slack_blocks(deployment, None, None)
+    text = _all_text(payload)
+    # Inline addresses, not the file path
+    assert "abc123" in text
+    assert "def456" in text
+    assert "ghi789" in text
+    assert "Addresses (3)" in text
+    assert "/path/to/addrs.txt" not in text
+    assert "Sleep interval" in text
+
+
+def test_prod_downloaders_kind_renders_without_sleep_interval():
+    deployment = _deployment(
+        name="PROD-DL-OS-01",
+        deploy_args={
+            "kind": "prod-downloaders",
+            "spec": "lon1",
+            "addresses": ["addrA", "addrB"],
+            "ant_binary": {"kind": "release", "version": "0.3.0"},
+        },
+    )
+    payload = build_slack_blocks(deployment, None, None)
+    text = _all_text(payload)
+    assert "Prod Downloaders" in text
+    assert "addrA" in text
+    assert "addrB" in text
+    # No sleep_interval_secs in deploy_args ⇒ no Sleep interval row
+    assert "Sleep interval" not in text
+
+
 def test_prod_local_uploads_chunks_long_file_lists_under_section_cap():
     """Slack rejects sections longer than 3000 chars with `invalid_blocks`.
 

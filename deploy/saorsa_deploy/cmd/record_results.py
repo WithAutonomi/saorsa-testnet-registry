@@ -81,8 +81,8 @@ def cmd_record_results(args):
         )
         return
 
-    # testnet, prod-continuous-downloader, and any unrecognised/empty kind
-    # fall through to the historical aggregate path.
+    # testnet, prod-continuous-downloader, prod-downloaders, and any
+    # unrecognised/empty kind fall through to the historical aggregate path.
     _record_file_ops(
         repo, deployment, args, console,
         influx_url, influx_token, influx_org, influx_bucket,

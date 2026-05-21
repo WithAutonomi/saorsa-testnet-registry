@@ -13,7 +13,7 @@ def _deploy_args(**overrides):
     defaults = {
         "name": "PROD-DL-01",
         "spec": "lon1",
-        "addresses_file": None,
+        "addresses_path": None,
         "branch_name": None,
         "repo_owner": None,
         "ant_version": None,
@@ -136,10 +136,10 @@ class TestDeployHappyPath:
         self, deploy_patches, tmp_path
     ):
         custom_file = tmp_path / "my_addrs.txt"
-        custom_file.write_text("abc\n")
+        custom_file.write_text("a" * 64 + "\n")
 
         cmd_prod_continuous_downloader_deploy(
-            _deploy_args(addresses_file=str(custom_file))
+            _deploy_args(addresses_path=str(custom_file))
         )
 
         # _provision_prod_downloader(args, addresses_file, console)
@@ -158,6 +158,36 @@ class TestDeployHappyPath:
         payload = deploy_patches.record_create.call_args.args[1]
         assert payload["kind"] == "prod-continuous-downloader"
         assert payload["spec"] == "lon1"
+
+    def test_deploy_persists_parsed_addresses_list(
+        self, deploy_patches, tmp_path
+    ):
+        addr_a = "a" * 64
+        addr_b = "b" * 64
+        custom_file = tmp_path / "addrs.txt"
+        custom_file.write_text(f"{addr_a}\n# a comment\n\n{addr_b}\n")
+
+        cmd_prod_continuous_downloader_deploy(
+            _deploy_args(addresses_path=str(custom_file))
+        )
+
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["addresses"] == [addr_a, addr_b]
+        assert payload["addresses_file"] == str(custom_file)
+
+    def test_deploy_rejects_addresses_file_with_extra_tokens(
+        self, deploy_patches, tmp_path
+    ):
+        custom_file = tmp_path / "addrs.txt"
+        # User pasted a full `ant file download <addr> -o name` line.
+        custom_file.write_text(
+            "ant file download " + "a" * 64 + " -o foo.bin\n"
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_prod_continuous_downloader_deploy(
+                _deploy_args(addresses_path=str(custom_file))
+            )
 
     def test_deploy_passes_spec_as_single_downloader_to_infra_clients(
         self, deploy_patches

@@ -2282,7 +2282,7 @@ def main():
         help="Downloader VM spec 'region[:vm_size]' (single client VM).",
     )
     prod_cd_deploy_parser.add_argument(
-        "--addresses-file",
+        "--addresses-path",
         type=str,
         default=None,
         help="Local path to a newline-separated list of public file addresses. "
@@ -2352,6 +2352,99 @@ def main():
         "Default: the monitoring VM is destroyed alongside the client.",
     )
     prod_cd_destroy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
+    # --- prod downloaders (one-shot) ---
+    prod_dl_parser = prod_subparsers.add_parser(
+        "downloaders",
+        help="One-shot variant of continuous-downloader: walks the address "
+        "list a single time and then exits.",
+    )
+    prod_dl_subparsers = prod_dl_parser.add_subparsers(
+        dest="prod_dl_action", required=True
+    )
+
+    prod_dl_deploy_parser = prod_dl_subparsers.add_parser(
+        "deploy",
+        help="Deploy a one-shot prod downloaders client VM and its monitoring stack.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (also used for the paired monitoring stack).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--spec",
+        type=str,
+        required=True,
+        help="Downloader VM spec 'region[:vm_size]' (single client VM).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--addresses-path",
+        type=str,
+        default=None,
+        help="Local path to a newline-separated list of public file addresses. "
+        "Defaults to the list shipped in resources/prod_addresses.txt.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--monitoring-volume-size",
+        type=int,
+        default=50,
+        help="Monitoring VM attached volume size in GB (default: 50).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this deployment is for. "
+        "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
+
+    prod_dl_destroy_parser = prod_dl_subparsers.add_parser(
+        "destroy",
+        help="Destroy a prod downloaders deployment "
+        "(clients and, optionally, monitoring).",
+    )
+    prod_dl_destroy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name to tear down.",
+    )
+    prod_dl_destroy_parser.add_argument(
+        "--keep-monitoring",
+        action="store_true",
+        help="Leave the paired monitoring VM running so recorded metrics "
+        "remain queryable after the client VM is gone. "
+        "Default: the monitoring VM is destroyed alongside the client.",
+    )
+    prod_dl_destroy_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
@@ -3329,6 +3422,24 @@ def main():
             )
 
             cmd_prod_continuous_downloader_destroy(args)
+        elif (
+            args.prod_subcommand == "downloaders"
+            and args.prod_dl_action == "deploy"
+        ):
+            from saorsa_deploy.cmd.prod_downloaders import (
+                cmd_prod_downloaders_deploy,
+            )
+
+            cmd_prod_downloaders_deploy(args)
+        elif (
+            args.prod_subcommand == "downloaders"
+            and args.prod_dl_action == "destroy"
+        ):
+            from saorsa_deploy.cmd.prod_downloaders import (
+                cmd_prod_downloaders_destroy,
+            )
+
+            cmd_prod_downloaders_destroy(args)
         elif (
             args.prod_subcommand == "uploaders"
             and args.prod_up_action == "deploy"

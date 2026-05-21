@@ -63,11 +63,11 @@ def _dispatch(args, op_type: str) -> None:
         _run_prod_uploads(args, console)
         return
 
-    if kind == "prod-continuous-downloader":
+    if kind in ("prod-continuous-downloader", "prod-downloaders"):
         if op_type == "upload":
             console.print(
-                f"[yellow]'{args.name}' is a prod-continuous-downloader "
-                f"deployment and has no upload records.[/yellow]"
+                f"[yellow]'{args.name}' is a {kind} deployment and has no "
+                f"upload records.[/yellow]"
             )
             return
         _run_file_ops(args, op_type, console)

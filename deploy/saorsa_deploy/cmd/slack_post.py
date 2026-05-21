@@ -28,6 +28,7 @@ _KIND_LABELS = {
     "testnet": "Testnet",
     "prod-uploaders": "Prod Uploaders",
     "prod-continuous-downloader": "Prod Continuous Downloader",
+    "prod-downloaders": "Prod Downloaders",
     "prod-local-uploads": "Prod Uploads [Home]",
 }
 
@@ -274,28 +275,44 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
     return blocks
 
 
-def _prod_cd_blocks(deploy_args: dict) -> list[dict]:
+def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
+    """Render the prod-downloaders / prod-continuous-downloader detail blocks.
+
+    Shared by both kinds. The Sleep-interval field is omitted when the kind
+    has no sleep concept (i.e. one-shot ``prod-downloaders``). Addresses are
+    listed inline from ``deploy_args["addresses"]`` when present; older rows
+    that only stored ``addresses_file`` fall back to printing the path.
+    """
     spec = deploy_args.get("spec", "_unknown_")
-    addresses_file = deploy_args.get("addresses_file", "_default_")
-    sleep_interval_secs = deploy_args.get("sleep_interval_secs")
-    if sleep_interval_secs is None:
-        sleep_label = "_unset_"
-    elif sleep_interval_secs == 0:
-        sleep_label = "0s (back-to-back)"
-    else:
-        sleep_label = f"{sleep_interval_secs}s"
-    return [
+    fields: list[tuple[str, str]] = [("Downloader spec", spec)]
+
+    if "sleep_interval_secs" in deploy_args:
+        sleep_interval_secs = deploy_args.get("sleep_interval_secs")
+        if sleep_interval_secs is None:
+            sleep_label = "_unset_"
+        elif sleep_interval_secs == 0:
+            sleep_label = "0s (back-to-back)"
+        else:
+            sleep_label = f"{sleep_interval_secs}s"
+        fields.append(("Sleep interval", sleep_label))
+
+    blocks: list[dict] = [
         _section(
             f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
         ),
-        _fields_section(
-            [
-                ("Downloader spec", spec),
-                ("Addresses file", addresses_file),
-                ("Sleep interval", sleep_label),
-            ]
-        ),
+        _fields_section(fields),
     ]
+
+    addresses = deploy_args.get("addresses") or []
+    if addresses:
+        lines = [f"• `{addr}`" for addr in addresses]
+        header = f"*Addresses ({len(addresses)}):*"
+        blocks.extend(_chunked_sections(header, lines))
+    else:
+        addresses_file = deploy_args.get("addresses_file", "_unknown_")
+        blocks.append(_section(f"*Addresses file:* {addresses_file}"))
+
+    return blocks
 
 
 def _clients_block(clients: list[dict]) -> dict:
@@ -396,8 +413,8 @@ def build_slack_blocks(
         blocks.extend(_testnet_blocks(deploy_args, state))
     elif kind_raw == "prod-uploaders":
         blocks.extend(_prod_uploaders_blocks(deploy_args))
-    elif kind_raw == "prod-continuous-downloader":
-        blocks.extend(_prod_cd_blocks(deploy_args))
+    elif kind_raw in ("prod-continuous-downloader", "prod-downloaders"):
+        blocks.extend(_prod_downloader_blocks(deploy_args))
     elif kind_raw == "prod-local-uploads":
         blocks.extend(_prod_local_uploads_blocks(deploy_args))
 

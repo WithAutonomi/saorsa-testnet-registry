@@ -613,7 +613,7 @@ uv run saorsa-deploy prod continuous-downloader deploy \
   --name PROD-DL-01 \
   --spec lon1 \
   --purpose "Soak-test 0.3.1 downloads from London" \
-  --addresses-file my-addresses.txt   # optional, defaults to resources/prod_addresses.txt
+  --addresses-path my-addresses.txt   # optional, defaults to resources/prod_addresses.txt
 ```
 
 Orchestrated sequence (each step is skipped when its state already exists, so the command is idempotent under reruns):
@@ -633,7 +633,7 @@ Arguments (for `prod continuous-downloader deploy`):
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
 | `--spec` | string | — | Downloader VM `region[:vm_size]` (single VM) |
 | `--purpose` | string | — | Free-text description; persisted into `deploy_args` and shown by `deployments slack-post` |
-| `--addresses-file` | path | shipped default | Local file of newline-separated addresses |
+| `--addresses-path` | path | shipped default | Local file of newline-separated addresses |
 | `--sleep-interval-secs` | int | `900` | Seconds to sleep at the **end of each full pass** through the address list before starting the next cycle. `0` disables the sleep (back-to-back cycling). Persisted in `deploy_args.sleep_interval_secs`. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
 | `--ant-version` | string | — | Optional explicit release version |
@@ -659,6 +659,27 @@ uv run saorsa-deploy prod continuous-downloader destroy --name PROD-DL-01
 ```
 
 By default the monitoring VM is destroyed alongside the client. Pass `--keep-monitoring` when you want to keep the InfluxDB + Grafana stack running for after-the-fact analysis.
+
+### Running one-shot downloaders against production (`prod downloaders`)
+
+`prod downloaders deploy` is the one-shot sibling of `prod continuous-downloader`. The service walks the address list a **single time** and then exits cleanly; the systemd unit is written with `Restart=no` so the VM can be left alone until destroy. Same provisioner, same `prod_downloader.py` script (toggled by the `ONE_SHOT=true` env var), same monitoring stack, same `record-results` / `slack-post` integrations — the only operator-visible difference is the missing `--sleep-interval-secs` flag.
+
+```bash
+uv run saorsa-deploy prod downloaders deploy \
+  --name PROD-DL-OS-01 \
+  --spec lon1 \
+  --purpose "One-pass benchmark of the v0.3.1 client" \
+  --addresses-path my-addresses.txt   # optional, defaults to resources/prod_addresses.txt
+```
+
+Arguments are identical to `prod continuous-downloader deploy` apart from the omitted `--sleep-interval-secs`. The deployment row carries `deploy_args.kind = "prod-downloaders"`.
+
+Teardown:
+
+```bash
+uv run saorsa-deploy prod downloaders destroy --name PROD-DL-OS-01
+# add --keep-monitoring to preserve the InfluxDB VM
+```
 
 ### Running uploaders against production (`prod uploaders`)
 

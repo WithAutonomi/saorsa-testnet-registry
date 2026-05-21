@@ -186,6 +186,50 @@ def _resolve_addresses_file_content(args, console) -> str | None:
     return stripped + "\n"
 
 
+_ADDRESS_LEN = 64
+
+
+def parse_addresses(content: str | None) -> list[str]:
+    """Parse the textual addresses-file payload into a list of addresses.
+
+    Blank lines and ``#`` comment lines are dropped. Every other line must
+    be a single whitespace-separated token that looks like an Autonomi
+    address (64 hex chars). Raises :class:`ValueError` if any line fails —
+    this catches the common mistake of pasting a full ``ant file download
+    <addr> -o <name>`` command into the file instead of bare addresses.
+    """
+    if not content:
+        return []
+    out: list[str] = []
+    bad: list[tuple[int, str, str]] = []
+    for lineno, raw in enumerate(content.splitlines(), start=1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        tokens = stripped.split()
+        if len(tokens) != 1:
+            bad.append((lineno, raw, f"expected 1 token, got {len(tokens)}"))
+            continue
+        token = tokens[0]
+        if len(token) != _ADDRESS_LEN or any(
+            c not in "0123456789abcdefABCDEF" for c in token
+        ):
+            bad.append(
+                (lineno, raw, f"not a {_ADDRESS_LEN}-char hex address")
+            )
+            continue
+        out.append(token.lower())
+    if bad:
+        sample = "\n".join(
+            f"  line {ln}: {reason} — {raw!r}" for ln, raw, reason in bad[:5]
+        )
+        more = f"\n  ... and {len(bad) - 5} more" if len(bad) > 5 else ""
+        raise ValueError(
+            f"Addresses file has {len(bad)} invalid line(s):\n{sample}{more}"
+        )
+    return out
+
+
 def _ensure_uploader_wallets(
     name: str, clients: list[dict], funding_secret_key: str, console
 ) -> list[dict]:

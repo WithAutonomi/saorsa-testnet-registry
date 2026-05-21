@@ -35,6 +35,7 @@ from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.cmd.provision_clients import (
     _resolve_addresses_file_content,
     _resolve_ant_binary,
+    parse_addresses,
 )
 from saorsa_deploy.prod_addresses import get_default_prod_addresses_path
 from saorsa_deploy.prod_bootstraps import (
@@ -53,7 +54,7 @@ from saorsa_deploy.registry import (
     record_event,
     record_status,
 )
-from saorsa_deploy.ssh import clear_known_hosts
+from saorsa_deploy.ssh import clear_known_hosts, wait_for_ssh
 from saorsa_deploy.state import load_client_state, load_monitoring_state
 
 
@@ -219,6 +220,16 @@ def _provision_prod_downloader(
         if c.get("ip")
     ]
 
+    host_ips = [d["ip"] for d in downloaders]
+    clear_known_hosts(host_ips, console)
+    not_ready = wait_for_ssh(host_ips, args.ssh_key_path, console=console)
+    if not_ready:
+        console.print(
+            f"[bold red]Error:[/bold red] SSH never came up on: "
+            f"{', '.join(not_ready)}"
+        )
+        sys.exit(1)
+
     provisioner = ProdDownloaderProvisioner(
         downloaders=downloaders,
         bootstrap_peers=bootstrap_peers,
@@ -315,7 +326,21 @@ def cmd_prod_continuous_downloader_deploy(args):
         )
         sys.exit(1)
 
-    addresses_file = args.addresses_file or get_default_prod_addresses_path()
+    addresses_file = args.addresses_path or get_default_prod_addresses_path()
+    addresses_content = _resolve_addresses_file_content(
+        SimpleNamespace(addresses_file=addresses_file), console
+    )
+    if not addresses_content:
+        console.print(
+            "[bold red]Error:[/bold red] Addresses file is empty or missing."
+        )
+        sys.exit(1)
+    try:
+        addresses_list = parse_addresses(addresses_content)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
     console.print(f"[bold]prod continuous-downloader deploy: {args.name}[/bold]")
     console.print(f"  Addresses file: {addresses_file}")
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
@@ -334,6 +359,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         "kind": "prod-continuous-downloader",
         "prod_bootstraps_url": PROD_BOOTSTRAPS_URL,
         "addresses_file": addresses_file,
+        "addresses": addresses_list,
         "monitoring_name": args.name,
         "spec": args.spec,
         "purpose": args.purpose,

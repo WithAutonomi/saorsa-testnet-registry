@@ -25,6 +25,7 @@ _KIND_LABELS = {
     "testnet": "Testnet",
     "prod-uploaders": "Prod Uploads",
     "prod-continuous-downloader": "Prod Downloads",
+    "prod-downloaders": "Prod Downloads [One-Shot]",
     "prod-local-uploads": "Prod Uploads [Home]",
 }
 

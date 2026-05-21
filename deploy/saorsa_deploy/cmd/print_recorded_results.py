@@ -40,7 +40,12 @@ from saorsa_db.models import (
 from saorsa_deploy.registry import get_repository
 
 _TESTNET_KIND = "testnet"
-_FILE_OPS_KINDS = {"", _TESTNET_KIND, "prod-continuous-downloader"}
+_FILE_OPS_KINDS = {
+    "",
+    _TESTNET_KIND,
+    "prod-continuous-downloader",
+    "prod-downloaders",
+}
 _PROD_UPLOAD_KINDS = {"prod-uploaders", "prod-local-uploads"}
 
 _PROD_STATUS_LABELS = {

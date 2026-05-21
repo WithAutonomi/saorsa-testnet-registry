@@ -158,7 +158,7 @@ The pipeline for an extension skips the bootstrap/genesis stages entirely: `depl
 
 ### Running a prod continuous-downloader
 
-`prod continuous-downloader deploy` is a higher-level saorsa-deploy command that stands up a single-VM client deployment running a dedicated `prod_downloader.py` Python service against the **production** Autonomi network, with a paired InfluxDB monitoring VM (always in `lon1`). The bootstrap peers list is fetched at runtime from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml); a curated list of public file addresses ships at `deploy/saorsa_deploy/resources/prod_addresses.txt` and can be overridden with `--addresses-file`.
+`prod continuous-downloader deploy` is a higher-level saorsa-deploy command that stands up a single-VM client deployment running a dedicated `prod_downloader.py` Python service against the **production** Autonomi network, with a paired InfluxDB monitoring VM (always in `lon1`). The bootstrap peers list is fetched at runtime from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml); a curated list of public file addresses ships at `deploy/saorsa_deploy/resources/prod_addresses.txt` and can be overridden with `--addresses-path`.
 
 - Single VM per deployment; takes one `--spec region[:vm_size]` (download-only — uploaders are rejected).
 - Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
@@ -168,6 +168,16 @@ The pipeline for an extension skips the bootstrap/genesis stages entirely: `depl
 - `prod continuous-downloader destroy` tears down the monitoring VM alongside the client by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack for after-the-fact analysis.
 
 See `deploy/README.md` §"Running continuous downloaders against production" for the full argument table and sequencing.
+
+### Running prod downloaders (one-shot)
+
+`prod downloaders deploy` is the one-shot sibling of `prod continuous-downloader`. The service walks the address list once and then exits 0; the systemd unit is `Type=simple Restart=no` so the VM can be left alone until destroy. All other behaviour is identical to the continuous variant — same provisioner (`ProdDownloaderProvisioner(one_shot=True)`), same `prod_downloader.py` script (toggled by the `ONE_SHOT=true` env var), same monitoring stack, same `record-results` / `slack-post` paths.
+
+- CLI: `prod downloaders deploy` / `prod downloaders destroy`. Same arguments as `prod continuous-downloader` **except** `--sleep-interval-secs` is omitted.
+- Registers a `Deployment` row with `deploy_args.kind = "prod-downloaders"`.
+- The persisted `deploy_args["addresses"]` (list of resolved addresses, also written for `prod-continuous-downloader`) is rendered inline by `deployments slack-post` instead of the raw `addresses_file` path.
+
+See `deploy/README.md` §"Running one-shot downloaders against production" for the full argument table.
 
 ### Running prod uploaders
 

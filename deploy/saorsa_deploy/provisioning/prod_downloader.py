@@ -53,15 +53,23 @@ SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ENV_PATH = "/etc/ant-prod-downloader.env"
 
 
-def _build_systemd_unit() -> str:
-    # `Restart=on-failure` plus the long `RestartSec` keeps the service
-    # alive across transient errors (network blips, ant process crash)
-    # without busy-looping. The script itself runs forever — it only
-    # exits cleanly when the address list is empty, which we treat as
-    # an operator misconfiguration rather than a normal restart trigger.
+def _build_systemd_unit(one_shot: bool = False) -> str:
+    # Continuous mode: `Restart=on-failure` plus the long `RestartSec`
+    # keeps the service alive across transient errors (network blips, ant
+    # process crash) without busy-looping. The script itself runs forever
+    # — it only exits cleanly when the address list is empty.
+    #
+    # One-shot mode: the script walks the address list once then exits 0.
+    # `Restart=no` so systemd lets the service terminate naturally.
+    description = (
+        "Ant Production One-Shot Downloader"
+        if one_shot
+        else "Ant Production Continuous Downloader"
+    )
+    restart_line = "Restart=no" if one_shot else "Restart=on-failure\nRestartSec=30"
     return f"""\
 [Unit]
-Description=Ant Production Continuous Downloader
+Description={description}
 After=network-online.target
 Wants=network-online.target
 
@@ -72,8 +80,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 -u {SCRIPTS_DIR}/prod_downloader.py
 StandardOutput=journal
 StandardError=journal
-Restart=on-failure
-RestartSec=30
+{restart_line}
 
 [Install]
 WantedBy=multi-user.target
@@ -102,11 +109,13 @@ class ProdDownloaderProvisioner:
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
         evm_network: str = "arbitrum-one",
+        one_shot: bool = False,
         console: Console | None = None,
     ):
         self.downloaders = downloaders
         self.bootstrap_peers = bootstrap_peers
         self.sleep_interval_secs = sleep_interval_secs
+        self.one_shot = one_shot
         self.ssh_key_path = ssh_key_path
         self.binary_url = binary_url
         self.binary_is_archive = binary_is_archive
@@ -289,6 +298,7 @@ ADDRESSES_FILE={ADDRESSES_PATH}
 DOWNLOAD_DIR={DOWNLOAD_DIR}
 EVM_NETWORK={self.evm_network}
 SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
+ONE_SHOT={'true' if self.one_shot else 'false'}
 {influx_lines}ENV_EOF"""
 
         add_op(
@@ -299,7 +309,7 @@ SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
         )
 
     def _add_systemd_unit_op(self, state: State) -> None:
-        unit = _build_systemd_unit()
+        unit = _build_systemd_unit(one_shot=self.one_shot)
         cmd = (
             f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n"
             f"{unit}UNIT_EOF\n"
