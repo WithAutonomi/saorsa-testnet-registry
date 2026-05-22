@@ -7,8 +7,10 @@ to the prod Autonomi network and recording a verification probe); the probe
 VMs run forever, hourly probing every canary they own (per a static blake3
 hash partition).
 
-The dataset is the product. ``prod canary destroy`` defaults to
-``--keep-monitoring`` so Influx + Grafana survive a teardown.
+``prod canary destroy`` tears the monitoring stack down by default;
+the persisted dataset lives in Postgres (via ``record-results``), so the
+on-VM Influx + Grafana are treated as ephemeral. Pass
+``--keep-monitoring`` if you want them to survive a teardown.
 
 Pattern mirrors :mod:`saorsa_deploy.cmd.prod_uploaders`. Upload spec is
 provisioned as a single ``--uploader`` slot in clients infra; probe specs
