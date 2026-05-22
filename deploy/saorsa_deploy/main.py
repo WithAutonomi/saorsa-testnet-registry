@@ -2666,9 +2666,10 @@ def main():
     prod_canary_destroy_parser = prod_canary_subparsers.add_parser(
         "destroy",
         help=(
-            "Destroy a canary deployment. Default: keep monitoring (the "
-            "dataset is the product); pass --no-keep-monitoring to also "
-            "destroy Influx + Grafana."
+            "Destroy a canary deployment, including the paired monitoring "
+            "stack. Pass --keep-monitoring if you want Influx + Grafana "
+            "to survive (record-results should already have flushed any "
+            "useful state into Postgres)."
         ),
     )
     prod_canary_destroy_parser.add_argument(
@@ -2680,14 +2681,22 @@ def main():
     prod_canary_destroy_parser.add_argument(
         "--keep-monitoring",
         action="store_true",
-        default=True,
-        help="Leave the paired monitoring VM running (default ON for canary).",
+        default=False,
+        help=(
+            "Leave the paired monitoring VM (and its attached volume) "
+            "running. Default OFF — the monitoring stack is treated as "
+            "ephemeral; persisted state lives in Postgres."
+        ),
     )
     prod_canary_destroy_parser.add_argument(
         "--no-keep-monitoring",
         dest="keep_monitoring",
         action="store_false",
-        help="Tear down the paired monitoring VM along with the canary VMs.",
+        help=(
+            "Tear down the paired monitoring VM along with the canary VMs. "
+            "This is the default; the flag is retained for explicitness "
+            "and back-compat with scripts."
+        ),
     )
     prod_canary_destroy_parser.add_argument(
         "--ssh-key-path",
