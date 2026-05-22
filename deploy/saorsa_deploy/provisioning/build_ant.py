@@ -27,6 +27,7 @@ class AntBuilder:
         branch_name: str,
         console: Console | None = None,
         validation_string: str | None = None,
+        musl: bool = False,
     ):
         self.name = name
         self.ip = ip
@@ -35,7 +36,10 @@ class AntBuilder:
         self.branch_name = branch_name
         self.console = console or Console()
         self.validation_string = validation_string
+        self.musl = musl
         self.s3_key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/ant"
+        self._target_subdir = "x86_64-unknown-linux-musl/release" if musl else "release"
+        self._cargo_target_flag = " --target x86_64-unknown-linux-musl" if musl else ""
 
     def execute(self) -> str:
         """Build ant and upload to S3. Returns the S3 URL of the uploaded binary."""
@@ -77,13 +81,15 @@ class AntBuilder:
                 commands=[build_disable_unattended_upgrades_command()],
             )
 
+            apt_packages = "curl build-essential pkg-config libssl-dev git unzip"
+            if self.musl:
+                apt_packages += " musl-tools"
             add_op(
                 state,
                 server.shell,
                 name="Install build dependencies",
                 commands=[
-                    "apt-get update -qq && apt-get install -y -qq "
-                    "curl build-essential pkg-config libssl-dev git unzip"
+                    f"apt-get update -qq && apt-get install -y -qq {apt_packages}"
                 ],
             )
 
@@ -109,6 +115,16 @@ class AntBuilder:
                 ],
             )
 
+            if self.musl:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Install Rust musl target",
+                    commands=[
+                        "/root/.cargo/bin/rustup target add x86_64-unknown-linux-musl"
+                    ],
+                )
+
             add_op(
                 state,
                 server.shell,
@@ -125,9 +141,12 @@ class AntBuilder:
                 name="Build ant (release)",
                 commands=[
                     "cd /root/ant-client && "
-                    "/root/.cargo/bin/cargo build --release --bin ant"
+                    f"/root/.cargo/bin/cargo build --release{self._cargo_target_flag} "
+                    "--bin ant"
                 ],
             )
+
+            binary_path = f"/root/ant-client/target/{self._target_subdir}/ant"
 
             if self.validation_string:
                 validate_op = add_op(
@@ -135,7 +154,7 @@ class AntBuilder:
                     server.shell,
                     name="Validate binary",
                     commands=[
-                        "strings /root/ant-client/target/release/ant "
+                        f"strings {binary_path} "
                         f"| grep -q '{self.validation_string}'"
                     ],
                 )
@@ -147,7 +166,7 @@ class AntBuilder:
                 commands=[
                     f"AWS_ACCESS_KEY_ID={aws_access_key} "
                     f"AWS_SECRET_ACCESS_KEY={aws_secret_key} "
-                    f"aws s3 cp /root/ant-client/target/release/ant "
+                    f"aws s3 cp {binary_path} "
                     f"s3://{BUILDS_BUCKET}/{self.s3_key}"
                 ],
             )

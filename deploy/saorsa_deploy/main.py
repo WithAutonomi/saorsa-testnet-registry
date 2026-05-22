@@ -305,6 +305,11 @@ def main():
         default=None,
         help="DigitalOcean droplet size for the build VM (default: c-32)",
     )
+    build_ant_parser.add_argument(
+        "--musl",
+        action="store_true",
+        help="Build against the x86_64-unknown-linux-musl target (statically linked)",
+    )
 
     # build ant-node
     build_ant_node_parser = build_subparsers.add_parser(
@@ -345,6 +350,11 @@ def main():
         type=str,
         default=None,
         help="DigitalOcean droplet size for the build VM (default: c-32)",
+    )
+    build_ant_node_parser.add_argument(
+        "--musl",
+        action="store_true",
+        help="Build against the x86_64-unknown-linux-musl target (statically linked)",
     )
 
     # =========================================================================

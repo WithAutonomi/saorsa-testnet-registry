@@ -55,6 +55,7 @@ def cmd_build_ant(args):
             branch_name=args.branch_name,
             console=console,
             validation_string=args.validation_string,
+            musl=args.musl,
         )
         s3_url = builder.execute()
 
