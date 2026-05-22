@@ -86,9 +86,11 @@ def cmd_track_upgrades_init(args):
     with open_db(db_path) as conn:
         repo = Repository(conn)
 
-        if args.reset:
-            conn.execute("DELETE FROM node_upgrades")
-            conn.execute("DELETE FROM metadata")
+        # init always starts from a clean slate — previous-rollout rows leak
+        # into list_active() and create stale (host, service) keys that
+        # collide with current-rollout rows during sync.
+        conn.execute("DELETE FROM node_upgrades")
+        conn.execute("DELETE FROM metadata")
 
         repo.set_meta("testnet_name", testnet_name)
         repo.set_meta("from_version", args.from_version)
@@ -102,10 +104,9 @@ def cmd_track_upgrades_init(args):
             repo.set_meta("es_username", resolved.creds.username)
         if resolved.creds.password:
             repo.set_meta("es_password", resolved.creds.password)
-        # Seed sync cursor to the initialisation time so we ignore historical
-        # logs from before the release window.
-        if repo.get_meta("sync_cursor") is None or args.reset:
-            repo.set_meta("sync_cursor", args.since or now)
+        # Seed sync cursor to the initialisation time (or --since) so sync
+        # has a starting point.
+        repo.set_meta("sync_cursor", args.since or now)
 
         inserted = 0
         skipped = 0

@@ -3073,10 +3073,6 @@ def main():
             "(captures only logs emitted after init)."
         ),
     )
-    ti_init.add_argument(
-        "--reset", action="store_true",
-        help="Wipe existing rows and metadata before seeding.",
-    )
 
     # sync
     ti_sync = track_upgrades_sub.add_parser(
