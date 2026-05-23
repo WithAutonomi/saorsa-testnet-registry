@@ -35,6 +35,45 @@ PROBE_OK = "ok"
 PROBE_FAILED = "failed"
 PROBE_INCONCLUSIVE = "inconclusive"
 
+
+def _is_genuine_absence(peer_outcomes) -> bool:
+    """True if a failed fetch reflects genuine chunk absence rather than a
+    reachability problem from the probing vantage.
+
+    A genuinely missing chunk shows up as NotFound across the close group;
+    a fetch that fails because most peers *timed out* says nothing about
+    presence (we never reached enough holders). Require a strict majority of
+    the close group to have actively responded NotFound
+    (``not_found * 2 > queried``).
+
+    ``peer_outcomes`` is the stored ``terminal_peer_outcomes`` JSON (dict).
+    When it's missing or has no ``queried`` count (e.g. recorded by an ant
+    binary without the chunk_get summary line), we can't downgrade and fall
+    back to treating the failure as genuine — preserving pre-summary
+    behaviour.
+    """
+    if not isinstance(peer_outcomes, dict):
+        return True
+    queried = peer_outcomes.get("queried")
+    if not queried or queried <= 0:
+        return True
+    not_found = peer_outcomes.get("not_found") or 0
+    return not_found * 2 > queried
+
+
+def _effective_status(probe) -> str:
+    """Probe status with timeout-dominated ``failed`` reclassified as
+    ``inconclusive``. Mirrors the runtime probe script's reclassification so
+    that re-running record-results retroactively corrects records written by
+    an older probe script (or before this fix)."""
+    status = probe.status.value if hasattr(probe.status, "value") else probe.status
+    if status == PROBE_FAILED and not _is_genuine_absence(
+        getattr(probe, "terminal_peer_outcomes", None)
+    ):
+        return PROBE_INCONCLUSIVE
+    return status
+
+
 # ---------------------------------------------------------------------------
 # Two-strike global derivation
 # ---------------------------------------------------------------------------
@@ -70,7 +109,7 @@ def derive_loss(
             first_failed_chunk = None
             confirmed = None
             for p in host_probes:
-                status = p.status.value if hasattr(p.status, "value") else p.status
+                status = _effective_status(p)
                 if status == PROBE_INCONCLUSIVE:
                     continue
                 if status == PROBE_OK:
@@ -320,11 +359,7 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
             host_probes_list.sort(key=lambda p: p.probed_at)
             last_failed_chunk: str | None = None
             for probe in host_probes_list:
-                status = (
-                    probe.status.value
-                    if hasattr(probe.status, "value")
-                    else probe.status
-                )
+                status = _effective_status(probe)
                 if status == PROBE_OK:
                     last_failed_chunk = None
                 elif status == PROBE_FAILED:
@@ -412,11 +447,7 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
                 last_chunk: str | None = None
                 lost_here = False
                 for probe in host_probes_list:
-                    status = (
-                        probe.status.value
-                        if hasattr(probe.status, "value")
-                        else probe.status
-                    )
+                    status = _effective_status(probe)
                     if status == PROBE_INCONCLUSIVE:
                         continue
                     if status == PROBE_OK:

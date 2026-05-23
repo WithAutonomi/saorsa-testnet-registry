@@ -82,12 +82,13 @@ class _Status(enum.Enum):
     INCONCLUSIVE = "inconclusive"
 
 
-def _probe(probed_at, status, missing="", host="probe-A"):
+def _probe(probed_at, status, missing="", host="probe-A", peer_outcomes=None):
     return SimpleNamespace(
         probed_at=probed_at,
         probed_by_host=host,
         status=_Status(status),
         missing_chunk_address=missing,
+        terminal_peer_outcomes=peer_outcomes,
     )
 
 
@@ -185,6 +186,57 @@ class TestDeriveLoss:
         # probe-B confirmed at hour 3, probe-A at hour 6 → B wins.
         assert losses[cid]["confirmed_lost_at"] == _ts(3)
         assert losses[cid]["missing_chunk_address"] == "ADDR2"
+
+    def test_timeout_dominated_failures_do_not_confirm_loss(self):
+        # Two consecutive failures on the same chunk, but each failure was
+        # timeout-dominated (only 1 of 7 close-group peers actually said
+        # NotFound). These reflect a reachability problem, not loss, so they
+        # must be reclassified as inconclusive and NOT confirm a loss.
+        cid = uuid.uuid4()
+        uploads = {cid: _ts(0)}
+        timeout_dominated = {
+            "queried": 7, "not_found": 1, "timeout": 6, "network_err": 0,
+        }
+        probes = {
+            cid: [
+                _probe(_ts(2), "failed", missing="ADDR1",
+                       peer_outcomes=timeout_dominated),
+                _probe(_ts(3), "failed", missing="ADDR1",
+                       peer_outcomes=timeout_dominated),
+            ]
+        }
+        losses = derive_loss(uploads, probes)
+        assert cid not in losses
+
+    def test_not_found_majority_confirms_loss(self):
+        # A strict majority of the close group actively responded NotFound —
+        # genuine absence — so the two-strike rule still confirms.
+        cid = uuid.uuid4()
+        uploads = {cid: _ts(0)}
+        genuine = {"queried": 7, "not_found": 7, "timeout": 0, "network_err": 0}
+        probes = {
+            cid: [
+                _probe(_ts(2), "failed", missing="ADDR1", peer_outcomes=genuine),
+                _probe(_ts(3), "failed", missing="ADDR1", peer_outcomes=genuine),
+            ]
+        }
+        losses = derive_loss(uploads, probes)
+        assert cid in losses
+        assert losses[cid]["confirmed_lost_at"] == _ts(3)
+
+    def test_missing_peer_outcomes_falls_back_to_failed(self):
+        # No terminal_peer_outcomes (e.g. ant binary without the chunk_get
+        # summary line) → can't downgrade; preserve old failed semantics.
+        cid = uuid.uuid4()
+        uploads = {cid: _ts(0)}
+        probes = {
+            cid: [
+                _probe(_ts(2), "failed", missing="ADDR1", peer_outcomes=None),
+                _probe(_ts(3), "failed", missing="ADDR1", peer_outcomes=None),
+            ]
+        }
+        losses = derive_loss(uploads, probes)
+        assert cid in losses
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +371,37 @@ class TestProbeOutcomeParsing:
         assert outcomes["timeout"] == 1
         assert outcomes["network_err"] == 1
         assert outcomes["role"] == "data"
+
+    def test_timeout_dominated_failure_is_inconclusive(self, probe_mod):
+        # Most of the close group timed out; only 1 of 7 said NotFound. The
+        # chunk's presence is undetermined, so this is a reachability problem,
+        # not loss → inconclusive (but the address + summary are still kept).
+        stderr = (
+            "Error: Download failed: encryption error: decryption failed: "
+            "Generic error(Chunk not found: ADDRY)\n"
+            "INFO chunk_get exhausted close group for ADDRY: "
+            "queried=7 not_found=1 timeout=6 network_err=0\n"
+        )
+        status, missing, peer = probe_mod._parse_probe_outcome(
+            exit_code=1, stderr_text=stderr, downloaded_bytes=0
+        )
+        assert status == probe_mod.PROBE_INCONCLUSIVE
+        assert missing == "ADDRY"
+        import json as _json
+        assert _json.loads(peer)["timeout"] == 6
+
+    def test_not_found_majority_failure_is_failed(self, probe_mod):
+        stderr = (
+            "Error: Download failed: encryption error: decryption failed: "
+            "Generic error(Chunk not found: ADDRZ)\n"
+            "INFO chunk_get exhausted close group for ADDRZ: "
+            "queried=7 not_found=5 timeout=2 network_err=0\n"
+        )
+        status, missing, _peer = probe_mod._parse_probe_outcome(
+            exit_code=1, stderr_text=stderr, downloaded_bytes=0
+        )
+        assert status == probe_mod.PROBE_FAILED
+        assert missing == "ADDRZ"
 
 
 # --- Two-strike LOCAL rule (probe-side SQLite) ----------------------------
