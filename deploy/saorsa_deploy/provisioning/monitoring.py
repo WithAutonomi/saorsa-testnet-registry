@@ -380,6 +380,8 @@ class MonitoringProvisioner:
 
         add(self._panel_cpu_usage)
         add(self._panel_memory_usage)
+        add(self._panel_node_rss)
+        add(self._panel_node_cpu)
         add(self._panel_disk_usage, title="System Disk Usage", mount_path="/")
         add(self._panel_disk_usage, title="Attached Volume Usage",
             mount_path="/mnt/ant-node-storage")
@@ -791,6 +793,90 @@ class MonitoringProvisioner:
                     "refId": "A",
                 }
             ],
+        }
+
+    def _procstat_agg_query(self, field: str, agg: str) -> str:
+        """Cross-node aggregate Flux query against the procstat measurement.
+
+        Collapses every matching node into a single line per aggregate
+        (max / mean / min), so the panel stays readable whether the testnet
+        has 50 nodes or 900. The Host / Role template variables still scope
+        which nodes are included.
+
+        Per timestamp: downsample each node to the window, group all nodes
+        at the same time, then reduce across nodes with `agg`.
+        """
+        return (
+            'from(bucket: "testnet-metrics")\n'
+            "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
+            '  |> filter(fn: (r) => r["_measurement"] == "procstat")\n'
+            f'  |> filter(fn: (r) => r["_field"] == "{field}")\n'
+            '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
+            '  |> filter(fn: (r) => r["host_role"] =~ /^$host_role$/)\n'
+            "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
+            "createEmpty: false)\n"
+            '  |> group(columns: ["_time"])\n'
+            f"  |> {agg}()\n"
+            "  |> group()\n"
+            '  |> keep(columns: ["_time", "_value"])\n'
+            # Rename the value column so Grafana labels the series "max" /
+            # "mean" / "min" instead of three identical "Value" entries (the
+            # Flux datasource names a series after its value column).
+            f'  |> rename(columns: {{_value: "{agg}"}})\n'
+            f'  |> yield(name: "{agg}")'
+        )
+
+    def _procstat_agg_targets(self, field: str) -> list[dict]:
+        """max / mean / min across nodes as three Grafana targets."""
+        return [
+            {"query": self._procstat_agg_query(field, "max"), "refId": "A"},
+            {"query": self._procstat_agg_query(field, "mean"), "refId": "B"},
+            {"query": self._procstat_agg_query(field, "min"), "refId": "C"},
+        ]
+
+    def _panel_node_rss(self, grid_pos: dict) -> dict:
+        """Resident memory (RSS) aggregated across nodes: max / mean / min.
+
+        The leak-watch view: `mean` rising is fleet-wide growth (warm-up or a
+        systemic leak); `max` pulling away from `mean` is one node leaking;
+        `min` is the floor. Three lines at any node count. Narrow the Host
+        variable to a single VM to scope it down.
+        """
+        return {
+            "title": "Node RSS (max / mean / min across nodes)",
+            "type": "timeseries",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {"unit": "bytes"},
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "legend": {"displayMode": "list", "placement": "right"},
+            },
+            "targets": self._procstat_agg_targets("memory_rss"),
+        }
+
+    def _panel_node_cpu(self, grid_pos: dict) -> dict:
+        """Instantaneous per-process CPU aggregated across nodes.
+
+        procstat reports a true point-in-time CPU% (unlike `ps`, whose value
+        is the cumulative average since process start). max / mean / min so
+        it scales like the RSS panel.
+        """
+        return {
+            "title": "Node CPU (max / mean / min across nodes)",
+            "type": "timeseries",
+            "datasource": {"type": "influxdb", "uid": "influxdb"},
+            "fieldConfig": {
+                "defaults": {"unit": "percent"},
+                "overrides": [],
+            },
+            "gridPos": grid_pos,
+            "options": {
+                "legend": {"displayMode": "list", "placement": "right"},
+            },
+            "targets": self._procstat_agg_targets("cpu_usage"),
         }
 
     def _panel_disk_usage(self, title: str, mount_path: str, grid_pos: dict) -> dict:
