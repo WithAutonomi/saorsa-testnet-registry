@@ -2606,7 +2606,9 @@ def main():
         metavar="REGION[:VM_SIZE]:count=N",
         help=(
             "Probe spec, repeatable. Total probe VM count = sum of count=N "
-            "values; each probe VM is assigned a sequential shard index."
+            "values; each probe VM is assigned a sequential shard index. "
+            "Default vm_size: s-2vcpu-4gb (probes need RAM headroom for "
+            "concurrent large-file downloads)."
         ),
     )
     prod_canary_deploy_parser.add_argument(
@@ -2633,8 +2635,12 @@ def main():
     prod_canary_deploy_parser.add_argument(
         "--probe-concurrency",
         type=int,
-        default=4,
-        help="Concurrent ant download invocations per probe VM (default: 4).",
+        default=3,
+        help=(
+            "Concurrent ant download invocations per probe VM (default: 3). "
+            "Sized so 3 concurrent ~500 MB downloads fit in an s-2vcpu-4gb "
+            "probe VM without OOM."
+        ),
     )
     prod_canary_deploy_parser.add_argument(
         "--branch-name",

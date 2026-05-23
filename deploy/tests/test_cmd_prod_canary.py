@@ -45,9 +45,11 @@ class TestParseUploadSpec:
 
 class TestParseProbeSpec:
     def test_region_with_count(self):
+        # Probe VMs default to s-2vcpu-4gb (RAM headroom for concurrent
+        # large-file downloads); only the count is required.
         assert parse_probe_spec("lon1:count=2") == {
             "region": "lon1",
-            "vm_size": "s-1vcpu-2gb",
+            "vm_size": "s-2vcpu-4gb",
             "count": 2,
         }
 

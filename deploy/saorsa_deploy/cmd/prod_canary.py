@@ -57,8 +57,16 @@ from saorsa_deploy.registry import (
 from saorsa_deploy.ssh import clear_known_hosts, wait_for_ssh
 from saorsa_deploy.state import load_client_state, load_monitoring_state
 
-DEFAULT_PROBE_CONCURRENCY = 4
+DEFAULT_PROBE_CONCURRENCY = 3
+# Upload VM stays small: it uploads sequentially and runs one verification
+# download at a time.
 DEFAULT_VM_SIZE = "s-1vcpu-2gb"
+# Probe VMs need headroom: each `ant file download` of a ~500 MB file peaks
+# at ~720 MB RSS (measured), and probes run several concurrently. A
+# 1-vCPU/2 GB box OOM-kills itself at concurrency >1 with large files, which
+# surfaces as bogus timeout-driven "loss". s-2vcpu-4gb fits 3 concurrent
+# 500 MB downloads with headroom.
+DEFAULT_PROBE_VM_SIZE = "s-2vcpu-4gb"
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +91,8 @@ def parse_upload_spec(spec: str) -> dict:
 def parse_probe_spec(spec: str) -> dict:
     """Parse a ``--probe-spec`` value: ``REGION[:VM_SIZE]:count=N``.
 
-    ``count`` is required; ``vm_size`` is optional and defaults to the
-    canary-wide default. Returns ``{region, vm_size, count}``.
+    ``count`` is required; ``vm_size`` is optional and defaults to
+    ``DEFAULT_PROBE_VM_SIZE``. Returns ``{region, vm_size, count}``.
     """
     parts = spec.split(":")
     if len(parts) < 2:
@@ -96,7 +104,7 @@ def parse_probe_spec(spec: str) -> dict:
         raise ValueError(f"Invalid probe spec '{spec}': region cannot be empty.")
 
     options: dict[str, str] = {}
-    vm_size = DEFAULT_VM_SIZE
+    vm_size = DEFAULT_PROBE_VM_SIZE
     for token in parts[1:]:
         if "=" in token:
             key, val = token.split("=", 1)
@@ -106,7 +114,7 @@ def parse_probe_spec(spec: str) -> dict:
                 )
             options[key] = val
         else:
-            if vm_size != DEFAULT_VM_SIZE:
+            if vm_size != DEFAULT_PROBE_VM_SIZE:
                 raise ValueError(
                     f"Invalid probe spec '{spec}': vm_size already set."
                 )
