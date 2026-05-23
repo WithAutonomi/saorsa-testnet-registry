@@ -372,7 +372,37 @@ def _parse_probe_outcome(
             except ValueError:
                 continue
     summary["role"] = role
-    return PROBE_FAILED, missing, json.dumps(summary, sort_keys=True)
+
+    # Distinguish genuine absence from a reachability problem. A truly missing
+    # chunk shows up as NotFound across the close group; if instead most peers
+    # timed out we never reached enough holders to determine presence, so the
+    # download failure says nothing about loss. Only treat the failure as a
+    # loss candidate when a strict majority of the close group actively
+    # responded NotFound; otherwise it's inconclusive. The peer summary +
+    # missing address are still recorded for diagnostics either way.
+    peer_outcomes_json = json.dumps(summary, sort_keys=True)
+    if not _is_genuine_absence(summary):
+        return PROBE_INCONCLUSIVE, missing, peer_outcomes_json
+    return PROBE_FAILED, missing, peer_outcomes_json
+
+
+def _is_genuine_absence(peer_outcomes: dict) -> bool:
+    """True if a failed fetch reflects genuine chunk absence rather than a
+    reachability problem from this vantage.
+
+    Requires a strict majority of the close group to have actively responded
+    NotFound (``not_found * 2 > queried``). Timeout- / network-error-dominated
+    failures don't clear the bar. When the peer summary is missing entirely
+    (``queried`` absent — e.g. an ant binary without the chunk_get summary
+    line) we fall back to treating the failure as genuine, preserving the
+    pre-summary behaviour.
+    """
+    queried = peer_outcomes.get("queried")
+    if not queried or queried <= 0:
+        # No usable summary — can't downgrade; keep the old failed semantics.
+        return True
+    not_found = peer_outcomes.get("not_found") or 0
+    return not_found * 2 > queried
 
 
 def _build_probe_line(
