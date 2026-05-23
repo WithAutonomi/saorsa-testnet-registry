@@ -491,6 +491,12 @@ def cmd_prod_uploaders_deploy(args):
         _ensure_client_infra(args, parsed_specs, console)
         _provision_uploaders(args, parsed_specs, console)
         _start_uploaders(args, console)
+        from saorsa_deploy.cmd.provision_telegraf_metrics import (
+            provision_client_telegraf_best_effort,
+        )
+        provision_client_telegraf_best_effort(
+            args.name, args.ssh_key_path, console=console
+        )
     except SystemExit:
         record_event(args.name, "prod_uploaders_deploy_failed")
         record_status(args.name, DeploymentStatus.FAILED)

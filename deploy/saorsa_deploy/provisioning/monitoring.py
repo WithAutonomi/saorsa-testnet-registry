@@ -27,6 +27,7 @@ GRAFANA_DATASOURCE_PATH = "/etc/grafana/provisioning/datasources/influxdb.yml"
 GRAFANA_DASHBOARD_PROVIDER_PATH = "/etc/grafana/provisioning/dashboards/ant.yml"
 GRAFANA_DASHBOARD_DIR = "/var/lib/grafana/dashboards"
 GRAFANA_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/host-metrics.json"
+GRAFANA_CLIENT_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/client-host-metrics.json"
 GRAFANA_NODE_TABLE_PATH = f"{GRAFANA_DASHBOARD_DIR}/node-overview.json"
 
 
@@ -239,6 +240,17 @@ class MonitoringProvisioner:
             ],
         )
 
+        client_dashboard_json = self._build_client_host_metrics_dashboard()
+        add_op(
+            state,
+            server.shell,
+            name="Write client host metrics dashboard",
+            commands=[
+                f"cat > {GRAFANA_CLIENT_DASHBOARD_PATH}"
+                f" << 'CLIENT_DASH_EOF'\n{client_dashboard_json}\nCLIENT_DASH_EOF",
+            ],
+        )
+
         node_table_json = self._build_node_overview_dashboard()
         add_op(
             state,
@@ -349,19 +361,71 @@ class MonitoringProvisioner:
         return template.replace("{{GRAFANA_DASHBOARD_DIR}}", GRAFANA_DASHBOARD_DIR)
 
     def _build_host_metrics_dashboard(self) -> str:
+        """Node-side host dashboard: all host panels plus the per-process
+        (procstat) Node RSS / Node CPU panels, which only the ant-node VMs
+        emit. Defaults to All roles so every host is visible."""
+        return self._build_host_dashboard(
+            title="Node Host Statistics",
+            uid="ant-host-metrics",
+            tag="host-metrics",
+            panel_specs=[
+                (self._panel_cpu_usage, {}),
+                (self._panel_memory_usage, {}),
+                (self._panel_node_rss, {}),
+                (self._panel_node_cpu, {}),
+                (self._panel_disk_usage,
+                 {"title": "System Disk Usage", "mount_path": "/"}),
+                (self._panel_disk_usage,
+                 {"title": "Attached Volume Usage",
+                  "mount_path": "/mnt/ant-node-storage"}),
+                (self._panel_network_inbound, {}),
+                (self._panel_network_outbound, {}),
+            ],
+        )
+
+    def _build_client_host_metrics_dashboard(self) -> str:
+        """Client-side host dashboard: the host-level CPU / Memory / Disk /
+        Network panels only, scoped to host_role=CLIENT by default.
+
+        The per-process Node RSS / Node CPU panels are omitted because client
+        VMs run no ant-node services and therefore emit no procstat metrics;
+        the node-only attached-volume mount (/mnt/ant-node-storage) is omitted
+        for the same reason. This is the view for watching client resource
+        usage during prod upload/download runs."""
+        return self._build_host_dashboard(
+            title="Client Host Statistics",
+            uid="ant-client-host-metrics",
+            tag="client-host-metrics",
+            panel_specs=[
+                (self._panel_cpu_usage, {}),
+                (self._panel_memory_usage, {}),
+                (self._panel_disk_usage,
+                 {"title": "System Disk Usage", "mount_path": "/"}),
+                (self._panel_network_inbound, {}),
+                (self._panel_network_outbound, {}),
+            ],
+            default_host_role="CLIENT",
+        )
+
+    def _build_host_dashboard(
+        self,
+        *,
+        title: str,
+        uid: str,
+        tag: str,
+        panel_specs: list[tuple],
+        default_host_role: str | None = None,
+    ) -> str:
+        """Build a host-statistics dashboard from a list of panel specs.
+
+        Each panel spec is a (panel_fn, kwargs) tuple; panels are laid out
+        full-width, top to bottom. When ``default_host_role`` is given, the
+        Role template variable opens scoped to that single role instead of
+        "All" (the panels themselves filter on the $host / $host_role
+        template variables regardless)."""
         panels = []
         y = 0
-
-        def row(title):
-            nonlocal y, x
-            if x > 0:
-                y += 8
-                x = 0
-            panels.append({
-                "title": title, "type": "row", "collapsed": False,
-                "gridPos": {"h": 1, "w": 24, "x": 0, "y": y}, "panels": [],
-            })
-            y += 1
+        x = 0
 
         def add(panel_fn, w=24, h=8, **kwargs):
             nonlocal y, x
@@ -376,17 +440,21 @@ class MonitoringProvisioner:
                 x = 0
                 y += h
 
-        x = 0
+        for panel_fn, kwargs in panel_specs:
+            add(panel_fn, **kwargs)
 
-        add(self._panel_cpu_usage)
-        add(self._panel_memory_usage)
-        add(self._panel_node_rss)
-        add(self._panel_node_cpu)
-        add(self._panel_disk_usage, title="System Disk Usage", mount_path="/")
-        add(self._panel_disk_usage, title="Attached Volume Usage",
-            mount_path="/mnt/ant-node-storage")
-        add(self._panel_network_inbound)
-        add(self._panel_network_outbound)
+        if default_host_role is not None:
+            host_role_current = {
+                "selected": True,
+                "text": default_host_role,
+                "value": default_host_role,
+            }
+        else:
+            host_role_current = {
+                "selected": True,
+                "text": "All",
+                "value": "$__all",
+            }
 
         dashboard = {
             "annotations": {"list": []},
@@ -396,15 +464,11 @@ class MonitoringProvisioner:
             "links": [],
             "panels": panels,
             "schemaVersion": 39,
-            "tags": ["ant", "testnet", "host-metrics"],
+            "tags": ["ant", "testnet", tag],
             "templating": {
                 "list": [
                     {
-                        "current": {
-                            "selected": True,
-                            "text": "All",
-                            "value": "$__all",
-                        },
+                        "current": host_role_current,
                         "datasource": {"type": "influxdb", "uid": "influxdb"},
                         "definition": (
                             'import "influxdata/influxdb/schema"\n'
@@ -468,8 +532,8 @@ class MonitoringProvisioner:
             "time": {"from": "now-1h", "to": "now"},
             "timepicker": {},
             "timezone": "utc",
-            "title": "Host Metrics",
-            "uid": "ant-host-metrics",
+            "title": title,
+            "uid": uid,
         }
         return json.dumps(dashboard, indent=2)
 

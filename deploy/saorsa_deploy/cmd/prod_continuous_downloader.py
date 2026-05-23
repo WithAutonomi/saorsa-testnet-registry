@@ -376,6 +376,12 @@ def cmd_prod_continuous_downloader_deploy(args):
         _ensure_client_infra(args, console)
         _provision_prod_downloader(args, addresses_file, console)
         _start_prod_downloader(args, console)
+        from saorsa_deploy.cmd.provision_telegraf_metrics import (
+            provision_client_telegraf_best_effort,
+        )
+        provision_client_telegraf_best_effort(
+            args.name, args.ssh_key_path, console=console
+        )
     except SystemExit:
         record_event(args.name, "prod_downloader_deploy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
