@@ -487,6 +487,12 @@ def cmd_prod_canary_deploy(args):
         _ensure_monitoring(args, console)
         _ensure_client_infra(args, upload_spec, probe_specs, console)
         _provision_canary(args, urls_content, console)
+        from saorsa_deploy.cmd.provision_telegraf_metrics import (
+            provision_client_telegraf_best_effort,
+        )
+        provision_client_telegraf_best_effort(
+            args.name, args.ssh_key_path, console=console
+        )
     except SystemExit:
         record_event(args.name, "prod_canary_deploy_failed")
         record_status(args.name, DeploymentStatus.FAILED)

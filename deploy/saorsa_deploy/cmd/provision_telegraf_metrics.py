@@ -17,6 +17,212 @@ from saorsa_deploy.state import (
 )
 
 
+def _provision_node_telegraf(
+    state: dict, common_kwargs: dict, influxdb_url: str, console: Console
+) -> bool:
+    """Provision Telegraf host metrics on a testnet's node VMs.
+
+    Returns True if any node VM was provisioned, False if the deployment has
+    no node VMs. Calls sys.exit(1) on a provisioning failure.
+    """
+    node_count = state.get("node_count", 0)
+    bootstrap_nodes = state.get("bootstrap_nodes") or []
+    bootstrap_ip = state.get("bootstrap_ip")
+    vm_ips = state.get("vm_ips", {})
+
+    if bootstrap_nodes:
+        genesis_ips = [
+            n["ip"] for n in bootstrap_nodes
+            if n.get("bootstrap_index") == 1 and n.get("ip")
+        ]
+        secondary_ips = [
+            n["ip"] for n in bootstrap_nodes
+            if n.get("bootstrap_index", 0) >= 2 and n.get("ip")
+        ]
+    else:
+        genesis_ips = [bootstrap_ip] if bootstrap_ip else []
+        secondary_ips = []
+
+    regular_ips = []
+    for region_key in sorted(vm_ips.keys()):
+        regular_ips.extend(vm_ips[region_key])
+
+    all_ips = list(genesis_ips) + list(secondary_ips) + list(regular_ips)
+    if not all_ips:
+        return False
+
+    console.print(f"  InfluxDB URL: {influxdb_url}")
+    console.print(f"  Target hosts: {len(all_ips)}")
+    if node_count:
+        console.print(f"  Node count per VM: {node_count}")
+    console.print()
+
+    clear_known_hosts(all_ips, console)
+
+    # Provision bootstrap VMs (genesis + any secondary bootstraps)
+    for role, is_genesis, ips in [
+        ("GENESIS", True, genesis_ips),
+        ("BOOTSTRAP", True, secondary_ips),
+    ]:
+        if not ips:
+            continue
+        console.print(
+            f"[bold]Provisioning Telegraf on {len(ips)} {role} "
+            f"node(s): {', '.join(ips)}...[/bold]"
+        )
+        try:
+            TelegrafMetricsProvisioner(
+                host_ips=ips,
+                node_count=1,
+                is_genesis=is_genesis,
+                host_role=role,
+                **common_kwargs,
+            ).execute()
+        except Exception as e:
+            console.print(
+                f"[bold red]Telegraf metrics provisioning failed on {role}:"
+                f"[/bold red] {e}"
+            )
+            sys.exit(1)
+
+    # Provision regular VMs (N nodes each)
+    if regular_ips:
+        console.print(
+            f"\n[bold]Provisioning Telegraf on {len(regular_ips)}"
+            f" regular VM(s)...[/bold]"
+        )
+        try:
+            TelegrafMetricsProvisioner(
+                host_ips=regular_ips,
+                node_count=node_count,
+                host_role="WAN_NODE",
+                **common_kwargs,
+            ).execute()
+        except Exception as e:
+            console.print(
+                f"[bold red]Telegraf metrics provisioning failed:[/bold red] {e}"
+            )
+            sys.exit(1)
+
+    return True
+
+
+def _provision_client_telegraf(
+    name: str, common_kwargs: dict, console: Console
+) -> bool:
+    """Provision Telegraf host metrics (host_role=CLIENT) on a deployment's
+    client VMs (uploaders / downloaders / canary).
+
+    node_count=0 → host stats only, no Prometheus scrape block. Returns True
+    if any client VM was provisioned, False if the deployment has no client
+    state or no client IPs. Calls sys.exit(1) on a provisioning failure.
+    """
+    try:
+        client_state = load_client_state(name)
+    except RuntimeError:
+        return False
+
+    client_ips = [
+        c["ip"] for c in client_state.get("clients", []) if c.get("ip")
+    ]
+    if not client_ips:
+        return False
+
+    console.print(
+        f"\n[bold]Provisioning Telegraf on {len(client_ips)}"
+        f" client VM(s) (host_role=CLIENT)...[/bold]"
+    )
+    clear_known_hosts(client_ips, console)
+    try:
+        TelegrafMetricsProvisioner(
+            host_ips=client_ips,
+            node_count=0,
+            host_role="CLIENT",
+            **common_kwargs,
+        ).execute()
+    except Exception as e:
+        console.print(
+            f"[bold red]Telegraf metrics provisioning failed on "
+            f"clients:[/bold red] {e}"
+        )
+        sys.exit(1)
+    return True
+
+
+def provision_client_telegraf_for_deployment(
+    name: str,
+    ssh_key_path: str,
+    ssh_user: str = "root",
+    console: Console | None = None,
+) -> bool:
+    """Provision CLIENT-tagged Telegraf host metrics for a client-only
+    deployment, resolving InfluxDB connection details from its monitoring
+    state. Intended to be called from the prod client deploy flows so a fresh
+    deployment auto-collects host metrics.
+
+    Returns True if any client VM was provisioned. Raises RuntimeError if the
+    deployment has no monitoring state; may call sys.exit(1) if the underlying
+    provisioning fails (callers that want host metrics to be best-effort
+    should catch SystemExit).
+    """
+    console = console or Console()
+    monitoring = load_monitoring_state(name)
+    common_kwargs = {
+        "ssh_key_path": ssh_key_path,
+        "ssh_user": ssh_user,
+        "influxdb_url": monitoring.get("influxdb_url", ""),
+        "influxdb_token": monitoring.get("influxdb_token", ""),
+        "influxdb_org": monitoring.get("influxdb_org", "ant"),
+        "influxdb_bucket": monitoring.get("influxdb_bucket", "testnet-metrics"),
+        "testnet_name": name,
+        "console": console,
+    }
+    return _provision_client_telegraf(name, common_kwargs, console)
+
+
+def provision_client_telegraf_best_effort(
+    name: str,
+    ssh_key_path: str,
+    ssh_user: str = "root",
+    console: Console | None = None,
+) -> bool:
+    """Best-effort wrapper around :func:`provision_client_telegraf_for_deployment`
+    for use inside the prod client deploy flows.
+
+    Never raises or exits — the client service is the deploy deliverable, so a
+    Telegraf hiccup should warn and leave the deploy intact. Returns True if
+    client host metrics were provisioned, and prints the manual re-run command
+    on failure.
+    """
+    console = console or Console()
+    console.print(
+        "[bold cyan]Provisioning client host metrics (Telegraf)[/bold cyan]"
+    )
+    try:
+        provisioned = provision_client_telegraf_for_deployment(
+            name, ssh_key_path, ssh_user, console
+        )
+        if not provisioned:
+            console.print(
+                "[yellow]No client VMs found to provision host metrics on."
+                "[/yellow]"
+            )
+        return provisioned
+    except SystemExit:
+        console.print(
+            "[yellow]Client host-metrics provisioning failed; deploy "
+            "continues. Re-run later with: saorsa-deploy monitoring "
+            f"provision-telegraf --name {name}[/yellow]"
+        )
+        return False
+    except Exception as e:
+        console.print(
+            f"[yellow]Client host-metrics provisioning error ({e}); deploy "
+            "continues.[/yellow]"
+        )
+        return False
+
+
 def cmd_provision_telegraf_metrics(args):
     """Provision Telegraf for InfluxDB metrics forwarding on testnet VMs."""
     console = Console()
@@ -166,120 +372,35 @@ def cmd_provision_telegraf_metrics(args):
         console.print(
             f"[bold]Loading deployment state for '{args.name}'...[/bold]"
         )
+        # Deployment (testnet) state is optional: client-only deployments
+        # (prod uploaders / downloaders / canary) save client state but no
+        # testnet deployment state. Tolerate its absence and provision
+        # whatever VMs the deployment actually has.
         try:
             state = load_deployment_state(args.name)
-        except RuntimeError as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
-            sys.exit(1)
-
-        node_count = state.get("node_count", 0)
-        bootstrap_nodes = state.get("bootstrap_nodes") or []
-        bootstrap_ip = state.get("bootstrap_ip")
-        vm_ips = state.get("vm_ips", {})
-
-        if bootstrap_nodes:
-            genesis_ips = [
-                n["ip"] for n in bootstrap_nodes
-                if n.get("bootstrap_index") == 1 and n.get("ip")
-            ]
-            secondary_ips = [
-                n["ip"] for n in bootstrap_nodes
-                if n.get("bootstrap_index", 0) >= 2 and n.get("ip")
-            ]
-        else:
-            genesis_ips = [bootstrap_ip] if bootstrap_ip else []
-            secondary_ips = []
-
-        regular_ips = []
-        for region_key in sorted(vm_ips.keys()):
-            regular_ips.extend(vm_ips[region_key])
-
-        all_ips = list(genesis_ips) + list(secondary_ips) + list(regular_ips)
-
-        console.print(f"  InfluxDB URL: {influxdb_url}")
-        console.print(f"  Target hosts: {len(all_ips)}")
-        if node_count:
-            console.print(f"  Node count per VM: {node_count}")
-        console.print()
-
-        clear_known_hosts(all_ips, console)
-
-        # Provision bootstrap VMs (genesis + any secondary bootstraps)
-        for role, is_genesis, ips in [
-            ("GENESIS", True, genesis_ips),
-            ("BOOTSTRAP", True, secondary_ips),
-        ]:
-            if not ips:
-                continue
-            console.print(
-                f"[bold]Provisioning Telegraf on {len(ips)} {role} "
-                f"node(s): {', '.join(ips)}...[/bold]"
-            )
-            try:
-                TelegrafMetricsProvisioner(
-                    host_ips=ips,
-                    node_count=1,
-                    is_genesis=is_genesis,
-                    host_role=role,
-                    **common_kwargs,
-                ).execute()
-            except Exception as e:
-                console.print(
-                    f"[bold red]Telegraf metrics provisioning failed on {role}:"
-                    f"[/bold red] {e}"
-                )
-                sys.exit(1)
-
-        # Provision regular VMs (N nodes each)
-        if regular_ips:
-            console.print(
-                f"\n[bold]Provisioning Telegraf on {len(regular_ips)}"
-                f" regular VM(s)...[/bold]"
-            )
-            try:
-                TelegrafMetricsProvisioner(
-                    host_ips=regular_ips,
-                    node_count=node_count,
-                    host_role="WAN_NODE",
-                    **common_kwargs,
-                ).execute()
-            except Exception as e:
-                console.print(
-                    f"[bold red]Telegraf metrics provisioning failed:[/bold red] {e}"
-                )
-                sys.exit(1)
-
-        # Provision client VMs (uploaders + downloaders) — host stats only
-        # (node_count=0 → no Prometheus scrape block). Client state is
-        # optional: a testnet may have nodes but no clients yet.
-        client_ips: list[str] = []
-        try:
-            client_state = load_client_state(args.name)
-            client_ips = [
-                c["ip"] for c in client_state.get("clients", []) if c.get("ip")
-            ]
         except RuntimeError:
-            pass
-
-        if client_ips:
+            state = None
             console.print(
-                f"\n[bold]Provisioning Telegraf on {len(client_ips)}"
-                f" client VM(s) (host_role=CLIENT)...[/bold]"
+                f"[dim]No testnet deployment state for '{args.name}' — "
+                "provisioning client VMs only (if any).[/dim]"
             )
-            clear_known_hosts(client_ips, console)
-            try:
-                TelegrafMetricsProvisioner(
-                    host_ips=client_ips,
-                    node_count=0,
-                    host_role="CLIENT",
-                    **common_kwargs,
-                ).execute()
-            except Exception as e:
-                console.print(
-                    f"[bold red]Telegraf metrics provisioning failed on "
-                    f"clients:[/bold red] {e}"
-                )
-                sys.exit(1)
+
+        provisioned_nodes = False
+        if state is not None:
+            provisioned_nodes = _provision_node_telegraf(
+                state, common_kwargs, influxdb_url, console
+            )
+
+        provisioned_clients = _provision_client_telegraf(
+            args.name, common_kwargs, console
+        )
+
+        if not provisioned_nodes and not provisioned_clients:
+            console.print(
+                "[bold red]Error:[/bold red] No node or client VMs found for "
+                f"'{args.name}'. Nothing to provision."
+            )
+            sys.exit(1)
     else:
         console.print(
             "[bold red]Error:[/bold red] "
