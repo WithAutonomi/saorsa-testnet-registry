@@ -443,7 +443,9 @@ def main():
 
     # clients infra
     clients_infra_parser = clients_subparsers.add_parser(
-        "infra", help="Create client VMs on Digital Ocean"
+        "infra",
+        help="Create client VMs on a cloud provider "
+        "(digital_ocean, vultr, hetzner, ovh)",
     )
     clients_infra_parser.add_argument(
         "--name",
@@ -456,21 +458,26 @@ def main():
         type=str,
         action="append",
         default=[],
-        help="Uploader VM spec: 'region:file_size_mb[:vm_size][:payment=MODE]'. "
-        "Repeat for multiple uploaders. Default vm_size=s-2vcpu-4gb. "
-        "Optional payment=merkle|no-merkle forces the payment mode for that "
-        "uploader's `ant file upload` calls; omit for ant's default. "
-        "Example: --uploader 'lon1:50' "
-        "--uploader 'nyc1:100:s-4vcpu-8gb:payment=merkle'",
+        help="Uploader VM spec: "
+        "'provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]'. "
+        "provider is mandatory: digital_ocean, vultr, hetzner, or ovh. "
+        "Region names and VM sizes vary per provider and are passed through "
+        "verbatim (supply valid strings). Repeat for multiple uploaders. "
+        "Default vm_size=s-2vcpu-4gb (DO). Optional payment=merkle|no-merkle "
+        "forces the payment mode for that uploader's `ant file upload` calls; "
+        "omit for ant's default. Example: --uploader 'digital_ocean:lon1:50' "
+        "--uploader 'hetzner:fsn1:100:cpx32:payment=merkle'",
     )
     clients_infra_parser.add_argument(
         "--downloader",
         type=str,
         action="append",
         default=[],
-        help="Downloader VM spec: 'region[:vm_size]'. Repeat for multiple "
-        "downloaders. Default vm_size=s-2vcpu-4gb. Example: "
-        "--downloader 'lon1' --downloader 'nyc1:s-4vcpu-8gb'",
+        help="Downloader VM spec: 'provider:region[:vm_size]'. provider is "
+        "mandatory: digital_ocean, vultr, hetzner, or ovh. Repeat for "
+        "multiple downloaders. Default vm_size=s-2vcpu-4gb (DO). Example: "
+        "--downloader 'digital_ocean:lon1' "
+        "--downloader 'vultr:nrt:vc2-4c-8gb'",
     )
     clients_infra_parser.add_argument(
         "--force",

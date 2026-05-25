@@ -21,14 +21,14 @@ from saorsa_deploy.cmd.infra_clients import (
 # --- parse_uploader_spec --------------------------------------------------
 
 def test_uploader_spec_defaults_when_funding_omitted():
-    spec = parse_uploader_spec("lon1:1000:s-2vcpu-4gb")
+    spec = parse_uploader_spec("digital_ocean:lon1:1000:s-2vcpu-4gb")
     assert spec["ant_funding"] == DEFAULT_ANT_FUNDING == "100"
     assert spec["eth_funding"] == DEFAULT_ETH_FUNDING == "0.5"
 
 
 def test_uploader_spec_accepts_ant_and_eth():
     spec = parse_uploader_spec(
-        "nyc1:500:s-2vcpu-4gb:payment=no-merkle:ant=250:eth=1"
+        "digital_ocean:nyc1:500:s-2vcpu-4gb:payment=no-merkle:ant=250:eth=1"
     )
     assert spec["payment_type"] == "no-merkle"
     assert spec["ant_funding"] == "250"
@@ -37,19 +37,19 @@ def test_uploader_spec_accepts_ant_and_eth():
 
 def test_uploader_spec_rejects_non_numeric_funding():
     with pytest.raises(ValueError, match="ant"):
-        parse_uploader_spec("lon1:1000:s-2vcpu-4gb:ant=lots")
+        parse_uploader_spec("digital_ocean:lon1:1000:s-2vcpu-4gb:ant=lots")
 
 
 def test_uploader_spec_rejects_zero_or_negative_funding():
     with pytest.raises(ValueError, match="> 0"):
-        parse_uploader_spec("lon1:1000:s-2vcpu-4gb:eth=0")
+        parse_uploader_spec("digital_ocean:lon1:1000:s-2vcpu-4gb:eth=0")
     with pytest.raises(ValueError, match="> 0"):
-        parse_uploader_spec("lon1:1000:s-2vcpu-4gb:ant=-1")
+        parse_uploader_spec("digital_ocean:lon1:1000:s-2vcpu-4gb:ant=-1")
 
 
 def test_uploader_spec_rejects_unknown_keys():
     with pytest.raises(ValueError, match="unknown key"):
-        parse_uploader_spec("lon1:1000:s-2vcpu-4gb:wallet=xyz")
+        parse_uploader_spec("digital_ocean:lon1:1000:s-2vcpu-4gb:wallet=xyz")
 
 
 # --- create_wallet --------------------------------------------------------

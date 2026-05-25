@@ -1,9 +1,11 @@
+import os
 import sys
 from pathlib import Path
 
 from rich.console import Console
 
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.providers import CLIENT_PROVIDERS, resolve_client_provider
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
@@ -14,7 +16,6 @@ from saorsa_deploy.state import (
 )
 from saorsa_deploy.terraform import TerraformRunConfig
 
-CLIENT_STATE_KEY_PREFIX = "saorsa-deploy/do-client"
 DEFAULT_VM_SIZE = "s-2vcpu-4gb"
 ROLE_UPLOAD = "upload"
 ROLE_DOWNLOAD = "download"
@@ -48,12 +49,17 @@ def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
 def parse_uploader_spec(spec: str) -> dict:
     """Parse an uploader spec.
 
-    Format: ``region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]``
+    Format:
+    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]``
 
-    Returns a dict with keys: role=upload, region, file_size_mb, vm_size,
-    payment_type (None unless ``payment=merkle`` or ``payment=no-merkle``),
-    ant_funding (str numeric, default "100"), eth_funding (str numeric,
-    default "0.5").
+    ``provider`` is mandatory and must be one of digital_ocean, vultr,
+    hetzner, ovh. Region names and VM sizes vary per provider and are passed
+    through verbatim — the user is responsible for supplying valid strings.
+
+    Returns a dict with keys: role=upload, provider (canonical internal name),
+    region, file_size_mb, vm_size, payment_type (None unless ``payment=merkle``
+    or ``payment=no-merkle``), ant_funding (str numeric, default "100"),
+    eth_funding (str numeric, default "0.5").
     """
     raw_parts = spec.split(":")
     positional: list[str] = []
@@ -73,21 +79,27 @@ def parse_uploader_spec(spec: str) -> dict:
         else:
             positional.append(part)
 
-    if len(positional) < 2 or len(positional) > 3:
+    if len(positional) < 3 or len(positional) > 4:
         raise ValueError(
             f"Invalid uploader spec '{spec}'. "
-            f"Expected format: region:file_size_mb[:vm_size]"
+            f"Expected format: provider:region:file_size_mb[:vm_size]"
             f"[:payment=MODE][:ant=N][:eth=N]"
         )
-    region = positional[0]
     try:
-        file_size_mb = int(positional[1])
+        provider = resolve_client_provider(positional[0]).name
+    except ValueError as e:
+        raise ValueError(f"Invalid uploader spec '{spec}': {e}")
+    region = positional[1]
+    if not region:
+        raise ValueError(f"Invalid uploader spec '{spec}': region cannot be empty.")
+    try:
+        file_size_mb = int(positional[2])
     except ValueError:
         raise ValueError(
-            f"Invalid file size '{positional[1]}' in uploader spec '{spec}'. "
+            f"Invalid file size '{positional[2]}' in uploader spec '{spec}'. "
             f"Must be an integer (MB)."
         )
-    vm_size = positional[2] if len(positional) == 3 else DEFAULT_VM_SIZE
+    vm_size = positional[3] if len(positional) == 4 else DEFAULT_VM_SIZE
 
     payment_type: str | None = options.get("payment")
     if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
@@ -109,6 +121,7 @@ def parse_uploader_spec(spec: str) -> dict:
 
     return {
         "role": ROLE_UPLOAD,
+        "provider": provider,
         "region": region,
         "file_size_mb": file_size_mb,
         "vm_size": vm_size,
@@ -119,22 +132,29 @@ def parse_uploader_spec(spec: str) -> dict:
 
 
 def parse_downloader_spec(spec: str) -> dict:
-    """Parse a downloader spec: 'region[:vm_size]'.
+    """Parse a downloader spec: 'provider:region[:vm_size]'.
 
-    Returns a dict with keys: role=download, region, vm_size.
+    ``provider`` is mandatory (digital_ocean, vultr, hetzner, ovh). Returns a
+    dict with keys: role=download, provider (canonical internal name), region,
+    vm_size.
     """
     parts = spec.split(":")
-    if len(parts) < 1 or len(parts) > 2:
+    if len(parts) < 2 or len(parts) > 3:
         raise ValueError(
             f"Invalid downloader spec '{spec}'. "
-            f"Expected format: region[:vm_size]"
+            f"Expected format: provider:region[:vm_size]"
         )
-    region = parts[0]
+    try:
+        provider = resolve_client_provider(parts[0]).name
+    except ValueError as e:
+        raise ValueError(f"Invalid downloader spec '{spec}': {e}")
+    region = parts[1]
     if not region:
         raise ValueError(f"Invalid downloader spec '{spec}': region cannot be empty.")
-    vm_size = parts[1] if len(parts) == 2 else DEFAULT_VM_SIZE
+    vm_size = parts[2] if len(parts) == 3 else DEFAULT_VM_SIZE
     return {
         "role": ROLE_DOWNLOAD,
+        "provider": provider,
         "region": region,
         "vm_size": vm_size,
     }
@@ -144,6 +164,7 @@ def _spec_signature(spec: dict) -> tuple:
     """Identity tuple for matching requested vs. recorded client specs."""
     return (
         spec.get("role"),
+        spec.get("provider"),
         spec.get("region"),
         spec.get("client_index"),
         spec.get("vm_size"),
@@ -198,14 +219,15 @@ def cmd_infra_clients(args):
             ant = spec.get("ant_funding", DEFAULT_ANT_FUNDING)
             eth = spec.get("eth_funding", DEFAULT_ETH_FUNDING)
             console.print(
-                f"  Uploader #{spec['client_index']}: {spec['region']} "
+                f"  Uploader #{spec['client_index']}: {spec['provider']}:"
+                f"{spec['region']} "
                 f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads"
                 f"{payment_str}, fund {ant} ANT + {eth} ETH)"
             )
         else:
             console.print(
-                f"  Downloader #{spec['client_index']}: {spec['region']} "
-                f"({spec['vm_size']})"
+                f"  Downloader #{spec['client_index']}: {spec['provider']}:"
+                f"{spec['region']} ({spec['vm_size']})"
             )
     console.print()
 
@@ -231,7 +253,8 @@ def cmd_infra_clients(args):
                 label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
                 console.print(
                     f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
-                    f"({spec['region']}, {spec['vm_size']})"
+                    f"({spec.get('provider', 'digitalocean')}:{spec['region']}, "
+                    f"{spec['vm_size']})"
                 )
             return
         console.print(
@@ -242,18 +265,34 @@ def cmd_infra_clients(args):
         )
         sys.exit(1)
 
+    # OVH targets a specific Public Cloud project; the manifest needs its UUID
+    # as a Terraform variable. Mirror the migration command's env-var sourcing.
+    ovh_service_name = None
+    if any(spec["provider"] == "ovh" for spec in client_specs):
+        ovh_service_name = os.environ.get("OVH_CLOUD_PROJECT_SERVICE")
+        if not ovh_service_name:
+            console.print(
+                "[bold red]Error:[/bold red] One or more OVH clients were "
+                "requested but OVH_CLOUD_PROJECT_SERVICE is not set. Export it "
+                "(the OVH Public Cloud project ID) so the OVH manifest can "
+                "target the right project."
+            )
+            sys.exit(1)
+
     resources_dir = get_resources_dir()
-    tf_source = resources_dir / "digitalocean-client"
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
 
     configs = []
     for spec in client_specs:
+        info = CLIENT_PROVIDERS[spec["provider"]]
+        tf_source = resources_dir / info.tf_dir
         workspace_dir = (
             workspace_base
-            / f"do-client-{args.name}-{spec['role']}-{spec['region']}-{spec['client_index']}"
+            / f"{info.name}-client-{args.name}-{spec['role']}"
+            f"-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
-            f"{CLIENT_STATE_KEY_PREFIX}-{args.name}-{spec['role']}"
+            f"{info.state_key_prefix}-{args.name}-{spec['role']}"
             f"-{spec['region']}-{spec['client_index']}.tfstate"
         )
         variables = {
@@ -261,10 +300,12 @@ def cmd_infra_clients(args):
             "role": spec["role"],
             "region": spec["region"],
             "client_index": str(spec["client_index"]),
-            "droplet_size": spec["vm_size"],
+            info.size_var: spec["vm_size"],
         }
+        if info.name == "ovh":
+            variables["service_name"] = ovh_service_name
         config = TerraformRunConfig(
-            provider="digitalocean",
+            provider=info.name,
             region=spec["region"],
             tf_source_dir=tf_source,
             workspace_dir=workspace_dir,
