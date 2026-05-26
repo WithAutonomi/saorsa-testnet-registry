@@ -1,20 +1,31 @@
-"""``saorsa-deploy migration destroy-source`` — terminate the AWS source VMs.
+"""``saorsa-deploy migration destroy-source`` — terminate the source VMs.
 
-The AWS prod fleet is not in any saorsa-deploy Terraform state, so destruction
-goes through boto3 directly. EBS root volumes auto-delete when their parent
-instance terminates if ``DeleteOnTermination`` is true on the root device
-mapping; we verify that before terminating, and fall back to explicit
-``delete_volume`` for any volume that wouldn't be auto-cleaned.
+Supports two source providers:
+
+* **aws** — the AWS prod fleet is not in any saorsa-deploy Terraform state, so
+  destruction goes through boto3 directly. EBS root volumes auto-delete when
+  their parent instance terminates if ``DeleteOnTermination`` is true on the
+  root device mapping; we verify that before terminating, and fall back to
+  explicit ``delete_volume`` for any volume that wouldn't be auto-cleaned.
+* **digitalocean** — droplets are deleted via the DO API by droplet ID. DO does
+  **not** delete a droplet's attached volumes when the droplet is destroyed, so
+  we look up each droplet's volume(s) first and delete them explicitly
+  afterwards. If a droplet was already removed by a previous partial run, its
+  data volume is found by the ``<name>-data`` naming convention so it is never
+  left orphaned.
 
 Refuses unless every VM in the migration is in ``source_drained`` state. Use
 ``--force`` to override (e.g. to clean up after a partial drain).
 """
 
+import os
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
 import boto3
+import requests
 from rich.console import Console
 from saorsa_db.models import MigrationStatus, MigrationVmStatus
 
@@ -22,6 +33,15 @@ from saorsa_deploy.migration_registry import (
     MigrationRegistryError,
     get_migration_repository,
 )
+
+SUPPORTED_SOURCE_PROVIDERS = ("aws", "digitalocean")
+
+DO_API_BASE = "https://api.digitalocean.com/v2"
+DO_REQUEST_TIMEOUT = 30
+# Deleting a droplet detaches its volumes asynchronously; a volume delete can
+# briefly fail ("still attached") in that window, so retry a few times.
+DO_VOLUME_DELETE_ATTEMPTS = 6
+DO_VOLUME_DELETE_BACKOFF_SECS = 5
 
 
 def _check_root_delete_on_termination(
@@ -54,6 +74,222 @@ def _check_root_delete_on_termination(
             if instance_auto:
                 auto_delete.add(iid)
     return auto_delete, explicit_volumes
+
+
+def _destroy_aws(by_region: dict, repo, console: Console) -> list[str]:
+    """Terminate AWS source instances per region; return failed source names.
+
+    Marks each successfully-terminated VM ``SOURCE_DESTROYED``.
+    """
+    failures: list[str] = []
+    for region, vms in by_region.items():
+        instance_ids = [vm.source_provider_id for vm in vms]
+        console.print(
+            f"[bold]{region}:[/bold] terminating "
+            f"{len(instance_ids)} instance(s)..."
+        )
+
+        ec2 = boto3.client("ec2", region_name=region)
+
+        try:
+            _, explicit_volumes = _check_root_delete_on_termination(
+                ec2, instance_ids
+            )
+        except Exception as e:
+            console.print(
+                f"[red]{region}: failed to inspect block device mappings: {e}"
+                "[/red]"
+            )
+            failures.extend(vm.source_name for vm in vms)
+            continue
+
+        try:
+            ec2.terminate_instances(InstanceIds=instance_ids)
+        except Exception as e:
+            console.print(
+                f"[red]{region}: terminate_instances failed: {e}[/red]"
+            )
+            failures.extend(vm.source_name for vm in vms)
+            continue
+
+        # Wait for termination to complete (default 600s, 40 attempts × 15s).
+        waiter = ec2.get_waiter("instance_terminated")
+        try:
+            waiter.wait(InstanceIds=instance_ids)
+        except Exception as e:
+            console.print(f"[red]{region}: waiter failed: {e}[/red]")
+            failures.extend(vm.source_name for vm in vms)
+            continue
+
+        # Explicit cleanup for any volumes whose mapping had
+        # DeleteOnTermination=False.
+        for vol_id in explicit_volumes:
+            try:
+                ec2.delete_volume(VolumeId=vol_id)
+                console.print(f"  [dim]Deleted volume {vol_id}[/dim]")
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: failed to delete volume {vol_id}: {e}"
+                    "[/yellow]"
+                )
+
+        now = datetime.now(timezone.utc)
+        for vm in vms:
+            repo.update_vm(
+                vm.id,
+                status=MigrationVmStatus.SOURCE_DESTROYED,
+                source_destroyed_at=now,
+            )
+        console.print(
+            f"[green]{region}: {len(instance_ids)} instance(s) terminated.[/green]"
+        )
+    return failures
+
+
+def _do_headers() -> dict:
+    token = os.environ.get("DO_TOKEN")
+    if not token:
+        raise RuntimeError("DO_TOKEN environment variable is not set")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
+def _do_check(resp: requests.Response, context: str) -> None:
+    """Raise RuntimeError with the response body when a DO call failed."""
+    if resp.ok:
+        return
+    raise RuntimeError(
+        f"{context} → HTTP {resp.status_code} {resp.reason}: "
+        f"{resp.text.strip() or '<empty body>'}"
+    )
+
+
+def _do_volume_ids_by_name(name: str, region: str) -> list[str]:
+    resp = requests.get(
+        f"{DO_API_BASE}/volumes",
+        headers=_do_headers(),
+        params={"name": name, "region": region},
+        timeout=DO_REQUEST_TIMEOUT,
+    )
+    _do_check(resp, f"DO GET volumes?name={name}")
+    return [v["id"] for v in (resp.json().get("volumes") or [])]
+
+
+def _do_volume_ids_for_vm(vm) -> list[str]:
+    """Volume IDs to clean up for a DO source VM.
+
+    Prefers the live droplet's attachment list; if the droplet is already gone
+    (a prior run deleted it), falls back to the ``<source_name>-data`` naming
+    convention so a half-deleted VM's data volume is still found and removed.
+    """
+    resp = requests.get(
+        f"{DO_API_BASE}/droplets/{vm.source_provider_id}",
+        headers=_do_headers(),
+        timeout=DO_REQUEST_TIMEOUT,
+    )
+    if resp.status_code == 404:
+        return _do_volume_ids_by_name(
+            f"{vm.source_name}-data", vm.source_region
+        )
+    _do_check(resp, f"DO GET droplets/{vm.source_provider_id}")
+    return (resp.json().get("droplet") or {}).get("volume_ids") or []
+
+
+def _do_delete_droplet(droplet_id: str) -> None:
+    resp = requests.delete(
+        f"{DO_API_BASE}/droplets/{droplet_id}",
+        headers=_do_headers(),
+        timeout=DO_REQUEST_TIMEOUT,
+    )
+    if resp.status_code == 404:  # already gone — idempotent
+        return
+    _do_check(resp, f"DO DELETE droplets/{droplet_id}")
+
+
+def _do_delete_volume(volume_id: str) -> None:
+    last_error = None
+    for attempt in range(DO_VOLUME_DELETE_ATTEMPTS):
+        resp = requests.delete(
+            f"{DO_API_BASE}/volumes/{volume_id}",
+            headers=_do_headers(),
+            timeout=DO_REQUEST_TIMEOUT,
+        )
+        if resp.status_code in (204, 404):  # deleted, or already gone
+            return
+        last_error = (
+            f"HTTP {resp.status_code} {resp.reason}: "
+            f"{resp.text.strip() or '<empty body>'}"
+        )
+        # A 422 here usually means the droplet detach hasn't settled yet; wait
+        # and retry rather than orphaning the volume.
+        if attempt < DO_VOLUME_DELETE_ATTEMPTS - 1:
+            time.sleep(DO_VOLUME_DELETE_BACKOFF_SECS)
+    raise RuntimeError(
+        f"DO DELETE volumes/{volume_id} failed after "
+        f"{DO_VOLUME_DELETE_ATTEMPTS} attempts → {last_error}"
+    )
+
+
+def _destroy_digitalocean(vms: list, repo, console: Console) -> list[str]:
+    """Delete DO source droplets and their attached volumes.
+
+    Returns the source names that failed. Marks each fully-destroyed VM
+    (droplet **and** volumes gone) ``SOURCE_DESTROYED``.
+    """
+    failures: list[str] = []
+    for vm in vms:
+        console.print(
+            f"[bold]{vm.source_region}:[/bold] destroying DO droplet "
+            f"{vm.source_provider_id} ({vm.source_name})..."
+        )
+
+        try:
+            volume_ids = _do_volume_ids_for_vm(vm)
+        except Exception as e:
+            console.print(
+                f"[red]{vm.source_name}: volume lookup failed: {e}[/red]"
+            )
+            failures.append(vm.source_name)
+            continue
+
+        try:
+            _do_delete_droplet(vm.source_provider_id)
+        except Exception as e:
+            console.print(
+                f"[red]{vm.source_name}: droplet delete failed: {e}[/red]"
+            )
+            failures.append(vm.source_name)
+            continue
+
+        # Droplet deletion detaches but does NOT delete volumes — remove them
+        # explicitly so no orphaned data volumes are left behind.
+        volume_failed = False
+        for vid in volume_ids:
+            try:
+                _do_delete_volume(vid)
+                console.print(f"  [dim]Deleted volume {vid}[/dim]")
+            except Exception as e:
+                console.print(
+                    f"[bold red]{vm.source_name}: volume {vid} NOT deleted "
+                    f"(orphaned — remove manually):[/bold red] {e}"
+                )
+                volume_failed = True
+        if volume_failed:
+            failures.append(vm.source_name)
+            continue
+
+        repo.update_vm(
+            vm.id,
+            status=MigrationVmStatus.SOURCE_DESTROYED,
+            source_destroyed_at=datetime.now(timezone.utc),
+        )
+        console.print(
+            f"[green]{vm.source_region}: droplet {vm.source_provider_id} + "
+            f"{len(volume_ids)} volume(s) destroyed.[/green]"
+        )
+    return failures
 
 
 def cmd_migration_destroy_source(args):
@@ -107,84 +343,32 @@ def cmd_migration_destroy_source(args):
         )
         sys.exit(1)
 
-    # Group by AWS region — boto3.ec2 is per-region.
-    by_region: dict[str, list] = defaultdict(list)
-    for vm in targets:
-        if vm.source_provider != "aws":
-            console.print(
-                f"[bold red]Error:[/bold red] VM {vm.source_name} has "
-                f"source_provider={vm.source_provider!r}; only 'aws' is "
-                "supported by destroy-source."
-            )
-            sys.exit(1)
-        by_region[vm.source_region].append(vm)
+    unsupported = sorted(
+        {vm.source_provider for vm in targets} - set(SUPPORTED_SOURCE_PROVIDERS)
+    )
+    if unsupported:
+        console.print(
+            f"[bold red]Error:[/bold red] unsupported source_provider(s): "
+            f"{', '.join(unsupported)}. Supported: "
+            f"{', '.join(SUPPORTED_SOURCE_PROVIDERS)}."
+        )
+        sys.exit(1)
 
     repo.update_migration_status(migration.id, MigrationStatus.DESTROYING)
 
+    aws_by_region: dict[str, list] = defaultdict(list)
+    do_vms: list = []
+    for vm in targets:
+        if vm.source_provider == "aws":
+            aws_by_region[vm.source_region].append(vm)
+        elif vm.source_provider == "digitalocean":
+            do_vms.append(vm)
+
     failures: list[str] = []
-    for region, vms in by_region.items():
-        instance_ids = [vm.source_provider_id for vm in vms]
-        console.print(
-            f"[bold]{region}:[/bold] terminating "
-            f"{len(instance_ids)} instance(s)..."
-        )
-
-        ec2 = boto3.client("ec2", region_name=region)
-
-        try:
-            _, explicit_volumes = _check_root_delete_on_termination(
-                ec2, instance_ids
-            )
-        except Exception as e:
-            console.print(
-                f"[red]{region}: failed to inspect block device mappings: {e}"
-                "[/red]"
-            )
-            failures.extend(vm.source_name for vm in vms)
-            continue
-
-        try:
-            ec2.terminate_instances(InstanceIds=instance_ids)
-        except Exception as e:
-            console.print(
-                f"[red]{region}: terminate_instances failed: {e}[/red]"
-            )
-            failures.extend(vm.source_name for vm in vms)
-            continue
-
-        # Wait for termination to complete (default 600s, 40 attempts × 15s).
-        waiter = ec2.get_waiter("instance_terminated")
-        try:
-            waiter.wait(InstanceIds=instance_ids)
-        except Exception as e:
-            console.print(
-                f"[red]{region}: waiter failed: {e}[/red]"
-            )
-            failures.extend(vm.source_name for vm in vms)
-            continue
-
-        # Explicit cleanup for any volumes whose mapping had
-        # DeleteOnTermination=False.
-        for vol_id in explicit_volumes:
-            try:
-                ec2.delete_volume(VolumeId=vol_id)
-                console.print(f"  [dim]Deleted volume {vol_id}[/dim]")
-            except Exception as e:
-                console.print(
-                    f"[yellow]Warning: failed to delete volume {vol_id}: {e}"
-                    "[/yellow]"
-                )
-
-        now = datetime.now(timezone.utc)
-        for vm in vms:
-            repo.update_vm(
-                vm.id,
-                status=MigrationVmStatus.SOURCE_DESTROYED,
-                source_destroyed_at=now,
-            )
-        console.print(
-            f"[green]{region}: {len(instance_ids)} instance(s) terminated.[/green]"
-        )
+    if aws_by_region:
+        failures += _destroy_aws(aws_by_region, repo, console)
+    if do_vms:
+        failures += _destroy_digitalocean(do_vms, repo, console)
 
     if failures:
         console.print()
