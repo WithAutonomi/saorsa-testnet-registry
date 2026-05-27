@@ -3,7 +3,31 @@ import sys
 from importlib.metadata import version
 
 
-def main():
+def _add_manifest_args(p):
+    """Shared --config/--set/--name args for the manifest-driven commands."""
+    p.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to a deployment manifest (YAML).",
+    )
+    p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a manifest value by dotted key (repeatable), "
+        "e.g. --set testnet.nodes.nat_percent=0",
+    )
+    p.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Override the manifest's deployment name.",
+    )
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="saorsa-deploy",
         description="Deploy testnets for ant-node using Terraform and Pyinfra",
@@ -631,6 +655,58 @@ def main():
         dest="deployments_subcommand", required=True
     )
 
+    # deployments config
+    deployments_config_parser = deployments_subparsers.add_parser(
+        "config",
+        help="Inspect declarative deployment manifests (read-only).",
+    )
+    deployments_config_subparsers = deployments_config_parser.add_subparsers(
+        dest="config_subcommand", required=True
+    )
+    deployments_config_show_parser = deployments_config_subparsers.add_parser(
+        "show",
+        help="Print the fully-merged, validated manifest as YAML.",
+    )
+    _add_manifest_args(deployments_config_show_parser)
+    deployments_config_validate_parser = deployments_config_subparsers.add_parser(
+        "validate",
+        help="Validate a manifest; non-zero exit if invalid.",
+    )
+    _add_manifest_args(deployments_config_validate_parser)
+
+    # deployments down
+    deployments_down_parser = deployments_subparsers.add_parser(
+        "down",
+        help="Destroy a manifest's deployment (reverse sequence).",
+    )
+    _add_manifest_args(deployments_down_parser)
+    deployments_down_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the destroy plan without executing it.",
+    )
+
+    # deployments edit-analysis-summary
+    deployments_edit_analysis_summary_parser = deployments_subparsers.add_parser(
+        "edit-analysis-summary",
+        help=(
+            "Update the freeform summary on an existing deployment_host_results "
+            "row without re-querying InfluxDB."
+        ),
+    )
+    deployments_edit_analysis_summary_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match a row in the registry deployments table)",
+    )
+    deployments_edit_analysis_summary_parser.add_argument(
+        "--summary",
+        type=str,
+        required=True,
+        help="Freeform summary text describing the testnet run outcome.",
+    )
+
     # deployments extend
     deployments_extend_parser = deployments_subparsers.add_parser(
         "extend",
@@ -735,6 +811,13 @@ def main():
         help="Show only active deployments (pending, running, destroying).",
     )
 
+    # deployments plan
+    deployments_plan_parser = deployments_subparsers.add_parser(
+        "plan",
+        help="Print the deploy command sequence for a manifest (never executes).",
+    )
+    _add_manifest_args(deployments_plan_parser)
+
     # deployments print-downloads
     deployments_print_downloads_parser = deployments_subparsers.add_parser(
         "print-downloads",
@@ -748,30 +831,6 @@ def main():
         ),
     )
     _add_print_file_ops_args(deployments_print_downloads_parser)
-
-    # deployments print-uploads
-    deployments_print_uploads_parser = deployments_subparsers.add_parser(
-        "print-uploads",
-        help=(
-            "Print every upload operation from the deployment's live "
-            "InfluxDB feed, one table per client host. Reads live results "
-            "(monitoring stack must still be up); for the persisted "
-            "Postgres view use `deployments print-recorded-results`. Works "
-            "for testnet deployments (file_ops measurement) and "
-            "prod-uploaders (prod_upload measurement); rejects "
-            "prod-continuous-downloader and prod-local-uploads."
-        ),
-    )
-    _add_print_file_ops_args(deployments_print_uploads_parser)
-    deployments_print_uploads_parser.add_argument(
-        "--details",
-        action="store_true",
-        help=(
-            "For prod-uploaders only: print one full record per upload with "
-            "no truncation — full addresses, full file names, source URL, "
-            "raw byte counts. Ignored for other kinds."
-        ),
-    )
 
     # deployments print-recorded-results
     deployments_print_recorded_parser = deployments_subparsers.add_parser(
@@ -809,65 +868,28 @@ def main():
         ),
     )
 
-    # deployments record-results
-    deployments_record_results_parser = deployments_subparsers.add_parser(
-        "record-results",
+    # deployments print-uploads
+    deployments_print_uploads_parser = deployments_subparsers.add_parser(
+        "print-uploads",
         help=(
-            "Persist file-operation results from a deployment's InfluxDB into "
-            "Postgres. Dispatches on deploy_args.kind: testnet and "
-            "prod-continuous-downloader → per-host aggregates in "
-            "deployment_file_results; prod-uploaders → per-file rows in "
-            "deployment_prod_upload_results (--window ignored); "
-            "prod-local-uploads is rejected (already in Postgres)."
+            "Print every upload operation from the deployment's live "
+            "InfluxDB feed, one table per client host. Reads live results "
+            "(monitoring stack must still be up); for the persisted "
+            "Postgres view use `deployments print-recorded-results`. Works "
+            "for testnet deployments (file_ops measurement) and "
+            "prod-uploaders (prod_upload measurement); rejects "
+            "prod-continuous-downloader and prod-local-uploads."
         ),
     )
-    deployments_record_results_parser.add_argument(
-        "--name",
-        type=str,
-        required=True,
-        help="Deployment name (must match a row in the registry deployments table)",
-    )
-    deployments_record_results_parser.add_argument(
-        "--monitoring-name",
-        type=str,
-        default=None,
+    _add_print_file_ops_args(deployments_print_uploads_parser)
+    deployments_print_uploads_parser.add_argument(
+        "--details",
+        action="store_true",
         help=(
-            "Monitoring stack name to load Influx credentials from "
-            "(defaults to --name)."
+            "For prod-uploaders only: print one full record per upload with "
+            "no truncation — full addresses, full file names, source URL, "
+            "raw byte counts. Ignored for other kinds."
         ),
-    )
-    deployments_record_results_parser.add_argument(
-        "--influx-url",
-        type=str,
-        default=None,
-        help="InfluxDB URL (overrides monitoring state lookup)",
-    )
-    deployments_record_results_parser.add_argument(
-        "--influx-token",
-        type=str,
-        default=None,
-        help="InfluxDB API token (overrides monitoring state lookup)",
-    )
-    deployments_record_results_parser.add_argument(
-        "--influx-org",
-        type=str,
-        default=None,
-        help="InfluxDB organization (default: from monitoring state, else 'ant')",
-    )
-    deployments_record_results_parser.add_argument(
-        "--influx-bucket",
-        type=str,
-        default=None,
-        help=(
-            "InfluxDB bucket (default: from monitoring state, else "
-            "'testnet-metrics')"
-        ),
-    )
-    deployments_record_results_parser.add_argument(
-        "--window",
-        type=str,
-        default="-30d",
-        help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
     )
 
     # deployments record-analysis
@@ -937,6 +959,67 @@ def main():
         ),
     )
 
+    # deployments record-results
+    deployments_record_results_parser = deployments_subparsers.add_parser(
+        "record-results",
+        help=(
+            "Persist file-operation results from a deployment's InfluxDB into "
+            "Postgres. Dispatches on deploy_args.kind: testnet and "
+            "prod-continuous-downloader → per-host aggregates in "
+            "deployment_file_results; prod-uploaders → per-file rows in "
+            "deployment_prod_upload_results (--window ignored); "
+            "prod-local-uploads is rejected (already in Postgres)."
+        ),
+    )
+    deployments_record_results_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match a row in the registry deployments table)",
+    )
+    deployments_record_results_parser.add_argument(
+        "--monitoring-name",
+        type=str,
+        default=None,
+        help=(
+            "Monitoring stack name to load Influx credentials from "
+            "(defaults to --name)."
+        ),
+    )
+    deployments_record_results_parser.add_argument(
+        "--influx-url",
+        type=str,
+        default=None,
+        help="InfluxDB URL (overrides monitoring state lookup)",
+    )
+    deployments_record_results_parser.add_argument(
+        "--influx-token",
+        type=str,
+        default=None,
+        help="InfluxDB API token (overrides monitoring state lookup)",
+    )
+    deployments_record_results_parser.add_argument(
+        "--influx-org",
+        type=str,
+        default=None,
+        help="InfluxDB organization (default: from monitoring state, else 'ant')",
+    )
+    deployments_record_results_parser.add_argument(
+        "--influx-bucket",
+        type=str,
+        default=None,
+        help=(
+            "InfluxDB bucket (default: from monitoring state, else "
+            "'testnet-metrics')"
+        ),
+    )
+    deployments_record_results_parser.add_argument(
+        "--window",
+        type=str,
+        default="-30d",
+        help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
+    )
+
     # deployments slack-post
     deployments_slack_post_parser = deployments_subparsers.add_parser(
         "slack-post",
@@ -957,27 +1040,6 @@ def main():
         help="Print the Slack payload as JSON instead of posting.",
     )
 
-    # deployments edit-analysis-summary
-    deployments_edit_analysis_summary_parser = deployments_subparsers.add_parser(
-        "edit-analysis-summary",
-        help=(
-            "Update the freeform summary on an existing deployment_host_results "
-            "row without re-querying InfluxDB."
-        ),
-    )
-    deployments_edit_analysis_summary_parser.add_argument(
-        "--name",
-        type=str,
-        required=True,
-        help="Deployment name (must match a row in the registry deployments table)",
-    )
-    deployments_edit_analysis_summary_parser.add_argument(
-        "--summary",
-        type=str,
-        required=True,
-        help="Freeform summary text describing the testnet run outcome.",
-    )
-
     # deployments unextend
     deployments_unextend_parser = deployments_subparsers.add_parser(
         "unextend",
@@ -993,6 +1055,18 @@ def main():
         "--force",
         action="store_true",
         help="Skip the interactive confirmation prompt",
+    )
+
+    # deployments up
+    deployments_up_parser = deployments_subparsers.add_parser(
+        "up",
+        help="Deploy from a manifest (runs the full ordered command sequence).",
+    )
+    _add_manifest_args(deployments_up_parser)
+    deployments_up_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the deploy plan without executing it.",
     )
 
     # =========================================================================
@@ -3240,7 +3314,7 @@ def main():
         help="Comma-separated list of regions to show (e.g. ewr,lhr,fra)",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.command is None:
         parser.print_help()
@@ -3298,7 +3372,26 @@ def main():
 
             cmd_stop_clients(args)
     elif args.command == "deployments":
-        if args.deployments_subcommand == "extend":
+        if args.deployments_subcommand == "config":
+            if args.config_subcommand == "show":
+                from saorsa_deploy.cmd.config_cmds import cmd_config_show
+
+                cmd_config_show(args)
+            elif args.config_subcommand == "validate":
+                from saorsa_deploy.cmd.config_cmds import cmd_config_validate
+
+                cmd_config_validate(args)
+        elif args.deployments_subcommand == "down":
+            from saorsa_deploy.cmd.deploy_cmds import cmd_down
+
+            cmd_down(args)
+        elif args.deployments_subcommand == "edit-analysis-summary":
+            from saorsa_deploy.cmd.edit_analysis_summary import (
+                cmd_edit_analysis_summary,
+            )
+
+            cmd_edit_analysis_summary(args)
+        elif args.deployments_subcommand == "extend":
             from saorsa_deploy.cmd.extend import cmd_extend
 
             cmd_extend(args)
@@ -3310,34 +3403,32 @@ def main():
             from saorsa_deploy.cmd.ls import cmd_ls
 
             cmd_ls(args)
+        elif args.deployments_subcommand == "plan":
+            from saorsa_deploy.cmd.deploy_cmds import cmd_plan
+
+            cmd_plan(args)
         elif args.deployments_subcommand == "print-downloads":
             from saorsa_deploy.cmd.print_file_ops import cmd_print_downloads
 
             cmd_print_downloads(args)
-        elif args.deployments_subcommand == "print-uploads":
-            from saorsa_deploy.cmd.print_file_ops import cmd_print_uploads
-
-            cmd_print_uploads(args)
         elif args.deployments_subcommand == "print-recorded-results":
             from saorsa_deploy.cmd.print_recorded_results import (
                 cmd_print_recorded_results,
             )
 
             cmd_print_recorded_results(args)
-        elif args.deployments_subcommand == "record-results":
-            from saorsa_deploy.cmd.record_results import cmd_record_results
+        elif args.deployments_subcommand == "print-uploads":
+            from saorsa_deploy.cmd.print_file_ops import cmd_print_uploads
 
-            cmd_record_results(args)
+            cmd_print_uploads(args)
         elif args.deployments_subcommand == "record-analysis":
             from saorsa_deploy.cmd.record_analysis import cmd_record_analysis
 
             cmd_record_analysis(args)
-        elif args.deployments_subcommand == "edit-analysis-summary":
-            from saorsa_deploy.cmd.edit_analysis_summary import (
-                cmd_edit_analysis_summary,
-            )
+        elif args.deployments_subcommand == "record-results":
+            from saorsa_deploy.cmd.record_results import cmd_record_results
 
-            cmd_edit_analysis_summary(args)
+            cmd_record_results(args)
         elif args.deployments_subcommand == "slack-post":
             from saorsa_deploy.cmd.slack_post import cmd_slack_post
 
@@ -3346,6 +3437,10 @@ def main():
             from saorsa_deploy.cmd.unextend import cmd_unextend
 
             cmd_unextend(args)
+        elif args.deployments_subcommand == "up":
+            from saorsa_deploy.cmd.deploy_cmds import cmd_up
+
+            cmd_up(args)
     elif args.command == "elastic":
         if args.elastic_subcommand == "clean":
             from saorsa_deploy.cmd.clean_elastic import cmd_clean_elastic

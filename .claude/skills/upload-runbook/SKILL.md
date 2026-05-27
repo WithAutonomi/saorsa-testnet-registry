@@ -5,6 +5,13 @@ description: Interview the user to gather requirements for a production uploader
 
 # upload-runbook
 
+> **Prefer a declarative manifest.** `saorsa-deploy` now supports `kind: prod-uploaders`
+> manifests run with `saorsa-deploy deployments up`/`down`/`plan` — see `deploy/manifests/`
+> and `deploy/README.md` §"Declarative manifests". A manifest is reusable
+> (`extends:`/`--set`/`--name`) and keeps the wallet key in the env. Use that path unless
+> the user specifically wants a bash script; the preflight reminders below apply equally
+> when authoring a manifest.
+
 Generate an executable bash runbook that runs a production uploaders deployment end-to-end via `saorsa-deploy prod uploaders deploy`, plus a matching destroy runbook, based on a short interview.
 
 ## Why this skill exists

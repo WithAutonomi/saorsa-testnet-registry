@@ -19,11 +19,14 @@ from saorsa_deploy.state import (
 
 def _provision_node_telegraf(
     state: dict, common_kwargs: dict, influxdb_url: str, console: Console
-) -> bool:
+) -> tuple[bool, bool]:
     """Provision Telegraf host metrics on a testnet's node VMs.
 
-    Returns True if any node VM was provisioned, False if the deployment has
-    no node VMs. Calls sys.exit(1) on a provisioning failure.
+    Returns ``(found, ok)``: ``found`` is True if the deployment had any node
+    VMs to provision, ``ok`` is True if every node group provisioned without
+    error. A failure no longer aborts the process — it is reported and recorded
+    in ``ok`` so the caller can still provision client host metrics and decide
+    the overall exit status. Provisioning of later groups continues regardless.
     """
     node_count = state.get("node_count", 0)
     bootstrap_nodes = state.get("bootstrap_nodes") or []
@@ -49,8 +52,9 @@ def _provision_node_telegraf(
 
     all_ips = list(genesis_ips) + list(secondary_ips) + list(regular_ips)
     if not all_ips:
-        return False
+        return (False, True)
 
+    ok = True
     console.print(f"  InfluxDB URL: {influxdb_url}")
     console.print(f"  Target hosts: {len(all_ips)}")
     if node_count:
@@ -83,7 +87,7 @@ def _provision_node_telegraf(
                 f"[bold red]Telegraf metrics provisioning failed on {role}:"
                 f"[/bold red] {e}"
             )
-            sys.exit(1)
+            ok = False
 
     # Provision regular VMs (N nodes each)
     if regular_ips:
@@ -102,31 +106,32 @@ def _provision_node_telegraf(
             console.print(
                 f"[bold red]Telegraf metrics provisioning failed:[/bold red] {e}"
             )
-            sys.exit(1)
+            ok = False
 
-    return True
+    return (True, ok)
 
 
 def _provision_client_telegraf(
     name: str, common_kwargs: dict, console: Console
-) -> bool:
+) -> tuple[bool, bool]:
     """Provision Telegraf host metrics (host_role=CLIENT) on a deployment's
     client VMs (uploaders / downloaders / canary).
 
-    node_count=0 → host stats only, no Prometheus scrape block. Returns True
-    if any client VM was provisioned, False if the deployment has no client
-    state or no client IPs. Calls sys.exit(1) on a provisioning failure.
+    node_count=0 → host stats only, no Prometheus scrape block. Returns
+    ``(found, ok)``: ``found`` is True if the deployment had client VMs to
+    provision, ``ok`` is True if provisioning did not error. Does not exit the
+    process — the caller owns the overall exit status.
     """
     try:
         client_state = load_client_state(name)
     except RuntimeError:
-        return False
+        return (False, True)
 
     client_ips = [
         c["ip"] for c in client_state.get("clients", []) if c.get("ip")
     ]
     if not client_ips:
-        return False
+        return (False, True)
 
     console.print(
         f"\n[bold]Provisioning Telegraf on {len(client_ips)}"
@@ -145,8 +150,8 @@ def _provision_client_telegraf(
             f"[bold red]Telegraf metrics provisioning failed on "
             f"clients:[/bold red] {e}"
         )
-        sys.exit(1)
-    return True
+        return (True, False)
+    return (True, True)
 
 
 def provision_client_telegraf_for_deployment(
@@ -177,7 +182,10 @@ def provision_client_telegraf_for_deployment(
         "testnet_name": name,
         "console": console,
     }
-    return _provision_client_telegraf(name, common_kwargs, console)
+    found, ok = _provision_client_telegraf(name, common_kwargs, console)
+    if not ok:
+        sys.exit(1)
+    return found
 
 
 def provision_client_telegraf_best_effort(
@@ -385,20 +393,37 @@ def cmd_provision_telegraf_metrics(args):
                 "provisioning client VMs only (if any).[/dim]"
             )
 
-        provisioned_nodes = False
+        # Provision node and client host metrics independently: a failure on
+        # one must not skip the other (a single flaky node used to abort the
+        # whole command before client VMs were ever touched). Attempt both,
+        # then fail at the end if either had an error.
+        node_found, node_ok = (False, True)
         if state is not None:
-            provisioned_nodes = _provision_node_telegraf(
+            node_found, node_ok = _provision_node_telegraf(
                 state, common_kwargs, influxdb_url, console
             )
 
-        provisioned_clients = _provision_client_telegraf(
+        client_found, client_ok = _provision_client_telegraf(
             args.name, common_kwargs, console
         )
 
-        if not provisioned_nodes and not provisioned_clients:
+        if not node_found and not client_found:
             console.print(
                 "[bold red]Error:[/bold red] No node or client VMs found for "
                 f"'{args.name}'. Nothing to provision."
+            )
+            sys.exit(1)
+
+        if not node_ok or not client_ok:
+            failed = [
+                label
+                for label, ok in (("node", node_ok), ("client", client_ok))
+                if not ok
+            ]
+            console.print(
+                f"[bold red]Error:[/bold red] Telegraf provisioning failed on "
+                f"{' and '.join(failed)} host(s) for '{args.name}'. "
+                "Other host groups were still provisioned; re-run to retry."
             )
             sys.exit(1)
     else:

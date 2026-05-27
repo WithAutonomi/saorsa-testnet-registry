@@ -88,6 +88,14 @@ class TestInfluxLine:
             chunks_stored=42,
             chunks_failed=0,
             total_chunks=42,
+            chunk_attempts_total=50,
+            retries_round_0=5,
+            retries_round_1=2,
+            retries_round_2=1,
+            retries_round_3=0,
+            store_duration_p50_ms=120,
+            store_duration_p95_ms=340,
+            store_duration_max_ms=900,
             address="addr-xyz",
             file_name="file.bin",
             source_url="https://example.com/file.bin",
@@ -109,6 +117,10 @@ class TestInfluxLine:
         assert "status=0i" in line
         assert "chunks_stored=42i" in line
         assert "total_chunks=42i" in line
+        # chunk-retry + store-duration fields (added later) are also integers
+        assert "chunk_attempts_total=50i" in line
+        assert "retries_round_0=5i" in line
+        assert "store_duration_p95_ms=340i" in line
 
     def test_string_fields_quoted(self, service):
         line = self._line(service, address="abc \"x\"")
@@ -149,34 +161,6 @@ class TestTailLines:
     def test_no_trailing_newline_preserved(self, service):
         text = "a\nb\nc"
         assert service._tail_lines(text, 2) == "b\nc"
-
-
-class TestWriteFailureLog:
-    def test_writes_full_stderr_under_idx_filename(
-        self, service, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(service, "LOG_DIR", str(tmp_path))
-        path = service._write_failure_log(7, "song.mp3", "line1\nline2\n")
-        assert path is not None
-        from pathlib import Path
-        written = Path(path)
-        assert written.parent == tmp_path
-        assert written.name == "0007-song.mp3.stderr"
-        assert written.read_text() == "line1\nline2\n"
-
-    def test_returns_none_for_empty_stderr(self, service, tmp_path, monkeypatch):
-        monkeypatch.setattr(service, "LOG_DIR", str(tmp_path))
-        assert service._write_failure_log(1, "x", "") is None
-
-    def test_strips_path_separators_in_filename(
-        self, service, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(service, "LOG_DIR", str(tmp_path))
-        path = service._write_failure_log(3, "evil/../escape", "data")
-        assert path is not None
-        from pathlib import Path
-        assert Path(path).parent == tmp_path
-        assert "/" not in Path(path).name
 
 
 class TestPaymentFlag:

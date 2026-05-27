@@ -24,3 +24,8 @@ venv/
 .claude/plans/
 .saorsa/
 runbooks/
+
+# Concrete deployment manifests are instances that churn (new versions/branches per
+# run) — like runbooks/, they stay local. Reusable profiles under
+# deploy/manifests/profiles/ ARE committed.
+deploy/manifests/runs/

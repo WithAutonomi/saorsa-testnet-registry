@@ -1,0 +1,228 @@
+"""Tests for manifest loading, extends-merge, --set/--name overrides, validation."""
+
+import textwrap
+
+import pytest
+
+from saorsa_deploy.config import ManifestError, load_manifest, merge_manifest_dict
+
+
+def _write(tmp_path, name, body):
+    p = tmp_path / name
+    p.write_text(textwrap.dedent(body))
+    return p
+
+
+PROD_UL = """\
+    name: PROD-UL-01
+    kind: prod-uploaders
+    purpose: "weather check"
+    prod_uploaders:
+      binary: { version: "0.2.4" }
+      uploaders:
+        - { region: lon1, vm_size: s-2vcpu-4gb, urls: /tmp/list.txt, payment: merkle }
+"""
+
+
+def test_load_valid_prod_uploaders(tmp_path):
+    p = _write(tmp_path, "ul.yaml", PROD_UL)
+    m = load_manifest(p)
+    assert m.kind == "prod-uploaders"
+    assert m.name == "PROD-UL-01"
+    assert m.prod_uploaders.uploaders[0].region == "lon1"
+    assert m.prod_uploaders.secret_key_env == "ARBITRUM_ONE_SECRET_KEY"  # default
+
+
+def test_numeric_funding_coerced_to_str(tmp_path):
+    body = """\
+        name: T
+        kind: testnet
+        purpose: p
+        testnet:
+          binaries: { ant_node: { version: "1" }, ant: { version: "1" } }
+          nodes:
+            per_vm: 5
+            providers: { digital_ocean: { vm_count: 1 } }
+          clients:
+            uploaders:
+              - { provider: vultr, region: ewr, file_size_mb: 10, ant: 1000, eth: 0.1 }
+            downloaders:
+              - { provider: digital_ocean, region: lon1 }
+    """
+    m = load_manifest(_write(tmp_path, "t.yaml", body))
+    up = m.testnet.clients.uploaders[0]
+    assert up.ant == "1000" and up.eth == "0.1"
+
+
+# --------------------------------------------------------------------------- #
+# extends
+# --------------------------------------------------------------------------- #
+BASE = """\
+    kind: prod-uploaders
+    purpose: "base purpose"
+    ssh_key_path: ~/.ssh/ant_deploy
+    prod_uploaders:
+      binary: { version: "0.2.4" }
+      monitoring_volume_size: 50
+      uploaders:
+        - { region: lon1, vm_size: s-2vcpu-4gb, urls: /tmp/a.txt }
+        - { region: nyc1, vm_size: s-2vcpu-4gb, urls: /tmp/b.txt }
+"""
+
+
+def test_extends_deep_merge_and_scalar_override(tmp_path):
+    _write(tmp_path, "base.yaml", BASE)
+    child = """\
+        extends: base.yaml
+        name: PROD-UL-09
+        purpose: "child override"
+        prod_uploaders:
+          monitoring_volume_size: 100
+    """
+    m = load_manifest(_write(tmp_path, "child.yaml", child))
+    assert m.name == "PROD-UL-09"
+    assert m.purpose == "child override"  # scalar overridden
+    assert m.ssh_key_path == "~/.ssh/ant_deploy"  # inherited
+    assert m.prod_uploaders.monitoring_volume_size == 100  # deep-merged scalar
+    assert m.prod_uploaders.binary.version == "0.2.4"  # inherited nested
+    assert len(m.prod_uploaders.uploaders) == 2  # inherited list
+
+
+def test_extends_list_is_replaced_not_appended(tmp_path):
+    _write(tmp_path, "base.yaml", BASE)
+    child = """\
+        extends: base.yaml
+        name: PROD-UL-10
+        prod_uploaders:
+          uploaders:
+            - { region: sgp1, vm_size: s-2vcpu-4gb, urls: /tmp/only.txt }
+    """
+    m = load_manifest(_write(tmp_path, "child.yaml", child))
+    # list-replace semantics: the single child entry fully replaces the base's two
+    assert len(m.prod_uploaders.uploaders) == 1
+    assert m.prod_uploaders.uploaders[0].region == "sgp1"
+
+
+def test_extends_circular_raises(tmp_path):
+    _write(tmp_path, "a.yaml", "extends: b.yaml\nname: A\nkind: prod-uploaders\npurpose: p\n")
+    _write(tmp_path, "b.yaml", "extends: a.yaml\nname: B\nkind: prod-uploaders\npurpose: p\n")
+    with pytest.raises(ManifestError, match="circular"):
+        load_manifest(tmp_path / "a.yaml")
+
+
+# --------------------------------------------------------------------------- #
+# --set / --name
+# --------------------------------------------------------------------------- #
+def test_set_dotted_scalar_and_type_coercion(tmp_path):
+    body = """\
+        name: T
+        kind: testnet
+        purpose: p
+        testnet:
+          binaries: { ant_node: { version: "1" } }
+          nodes:
+            per_vm: 5
+            nat_percent: 30
+            providers: { digital_ocean: { vm_count: 1 } }
+    """
+    p = _write(tmp_path, "t.yaml", body)
+    m = load_manifest(p, sets=["testnet.nodes.nat_percent=0", "testnet.nodes.per_vm=20"])
+    assert m.testnet.nodes.nat_percent == 0  # coerced to int, not "0"
+    assert m.testnet.nodes.per_vm == 20
+
+
+def test_set_creates_nested_path(tmp_path):
+    p = _write(tmp_path, "ul.yaml", PROD_UL)
+    d = merge_manifest_dict(p, sets=["prod_uploaders.monitoring_volume_size=200"])
+    assert d["prod_uploaders"]["monitoring_volume_size"] == 200
+
+
+def test_name_override(tmp_path):
+    p = _write(tmp_path, "ul.yaml", PROD_UL)
+    m = load_manifest(p, name="PROD-UL-99")
+    assert m.name == "PROD-UL-99"
+
+
+def test_set_without_equals_raises(tmp_path):
+    p = _write(tmp_path, "ul.yaml", PROD_UL)
+    with pytest.raises(ManifestError, match="KEY=VALUE"):
+        load_manifest(p, sets=["bad_no_equals"])
+
+
+# --------------------------------------------------------------------------- #
+# validation failures
+# --------------------------------------------------------------------------- #
+def test_unknown_kind_rejected(tmp_path):
+    body = "name: X\nkind: not-a-kind\npurpose: p\n"
+    with pytest.raises(ManifestError, match="unknown kind"):
+        load_manifest(_write(tmp_path, "x.yaml", body))
+
+
+def test_kind_without_matching_block_rejected(tmp_path):
+    body = "name: X\nkind: prod-uploaders\npurpose: p\n"
+    with pytest.raises(ManifestError, match="requires a top-level `prod_uploaders:`"):
+        load_manifest(_write(tmp_path, "x.yaml", body))
+
+
+def test_binary_version_and_branch_mutually_exclusive(tmp_path):
+    body = """\
+        name: X
+        kind: prod-uploaders
+        purpose: p
+        prod_uploaders:
+          binary: { version: "0.2.4", branch: feat-x }
+          uploaders:
+            - { region: lon1, vm_size: s-2vcpu-4gb, urls: /tmp/a.txt }
+    """
+    with pytest.raises(ManifestError, match="either `version` or `branch`"):
+        load_manifest(_write(tmp_path, "x.yaml", body))
+
+
+def test_unknown_key_rejected(tmp_path):
+    body = """\
+        name: X
+        kind: prod-uploaders
+        purpose: p
+        prod_uplaoders:        # typo
+          binary: { version: "0.2.4" }
+    """
+    with pytest.raises(ManifestError):
+        load_manifest(_write(tmp_path, "x.yaml", body))
+
+
+def test_clients_require_both_roles(tmp_path):
+    body = """\
+        name: T
+        kind: testnet
+        purpose: p
+        testnet:
+          binaries: { ant_node: { version: "1" }, ant: { version: "1" } }
+          nodes:
+            per_vm: 5
+            providers: { digital_ocean: { vm_count: 1 } }
+          clients:
+            uploaders:
+              - { provider: vultr, region: ewr, file_size_mb: 10 }
+    """
+    with pytest.raises(ManifestError, match="uploader AND one downloader"):
+        load_manifest(_write(tmp_path, "t.yaml", body))
+
+
+def test_testnet_clients_require_ant_binary(tmp_path):
+    body = """\
+        name: T
+        kind: testnet
+        purpose: p
+        testnet:
+          binaries: { ant_node: { version: "1" } }
+          nodes:
+            per_vm: 5
+            providers: { digital_ocean: { vm_count: 1 } }
+          clients:
+            uploaders:
+              - { provider: vultr, region: ewr, file_size_mb: 10 }
+            downloaders:
+              - { provider: digital_ocean, region: lon1 }
+    """
+    with pytest.raises(ManifestError, match="binaries.ant is required"):
+        load_manifest(_write(tmp_path, "t.yaml", body))

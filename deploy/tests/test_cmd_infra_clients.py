@@ -9,7 +9,9 @@ from saorsa_deploy.terraform import TerraformResult
 
 def _args(**overrides):
     defaults = {
-        "name": "DEV-02",
+        # Deliberately not a real deployment name — these are unit tests and
+        # load_client_state is mocked, so this never touches S3.
+        "name": "UNITTEST-CLIENTS",
         "uploader": ["digital_ocean:lon1:50", "digital_ocean:nyc3:50"],
         "downloader": [],
         "force": False,
@@ -36,8 +38,14 @@ def patches():
         patch(
             "saorsa_deploy.cmd.infra_clients.execute_terraform_runs"
         ) as p_execute,
+        patch(
+            "saorsa_deploy.cmd.infra_clients.load_client_state"
+        ) as p_load,
     ):
         p_check.return_value = False
+        # Simulate a fresh deployment with no pre-existing client state, so the
+        # idempotent-reuse path is skipped. (Hermetic: never reads real S3.)
+        p_load.side_effect = RuntimeError("no client state")
         p_execute.return_value = [
             TerraformResult(
                 success=True,
@@ -58,6 +66,7 @@ def patches():
             save=p_save,
             update=p_update,
             execute=p_execute,
+            load=p_load,
         )
 
 

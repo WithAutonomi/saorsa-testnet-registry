@@ -5,6 +5,13 @@ description: Interview the user to gather requirements for a production continuo
 
 # download-runbook
 
+> **Prefer a declarative manifest.** `saorsa-deploy` now supports
+> `kind: prod-continuous-downloader` (and `prod-downloaders`) manifests run with
+> `saorsa-deploy deployments up`/`down`/`plan` — see `deploy/manifests/` and
+> `deploy/README.md` §"Declarative manifests". A manifest is reusable
+> (`extends:`/`--set`/`--name`). Use that path unless the user specifically wants a
+> bash script; the decisions below apply equally when authoring a manifest.
+
 Generate an executable bash runbook that runs a production continuous-downloader deployment end-to-end via `saorsa-deploy prod continuous-downloader deploy`, plus a matching destroy runbook, based on a short interview.
 
 ## Why this skill exists

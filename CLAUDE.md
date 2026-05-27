@@ -127,6 +127,39 @@ uv run saorsa-deploy --help
 uv run ruff check .
 ```
 
+## Declarative manifests (`deployments up` / `down` / `plan`)
+
+A deployment can be described by a single declarative YAML **manifest** and run
+with one command, instead of a hand-edited bash runbook:
+
+- `saorsa-deploy deployments plan --config <manifest>` — print the computed command sequence (dry-run).
+- `saorsa-deploy deployments up --config <manifest>` — run the full deploy sequence.
+- `saorsa-deploy deployments down --config <manifest>` — run the destroy sequence.
+- `saorsa-deploy deployments config show|validate --config <manifest>` — inspect/validate a manifest.
+
+One manifest = one deployment's full desired state, discriminated by `kind`
+(`testnet`, `testnet-extension`, and the six `prod-*` kinds). The orchestrator
+(`deploy/saorsa_deploy/orchestrator/`, schema in `config/`) owns the
+ordering/flag-coupling invariants that previously lived in the `deploy-runbook`
+skill's prose — it is the single source of truth. `up` executes each step by
+re-entering the CLI in-process (`main(argv)`); a failing step halts the run.
+
+For testnet/extension kinds, **monitoring (InfluxDB + Grafana) defaults ON**
+(omit the `monitoring:` block, or `monitoring: {enabled: false}` to opt out) so
+client upload/download metrics are captured; Elasticsearch log-forwarding stays
+opt-in.
+
+Reuse: `extends: <path>` (deep-merge a base profile; **lists replace, not
+append**), `--set dotted.key=value`, and `--name`. Secrets are never in a
+manifest — prod kinds name an env var (`secret_key_env`, default
+`ARBITRUM_ONE_SECRET_KEY`). Reusable profiles are committed under
+`deploy/manifests/profiles/` (`reference.yaml` = every option, `staging-rc.yaml` =
+a base); concrete run manifests live in the git-ignored `deploy/manifests/runs/`
+(they churn per run, like `runbooks/`). The
+legacy `runbooks/` bash scripts and the primitive `infra`/`provision` commands
+remain fully supported and unchanged. See `deploy/README.md` §"Declarative
+manifests" for the schema reference.
+
 ## Deploying & Destroying Testnets
 
 The data flow is: **Claude → MCP → saorsa-deploy (subprocess) → infrastructure**
@@ -296,6 +329,8 @@ Optional per-testnet Elasticsearch instance on a dedicated VM. Enabled via `enab
 
 ## Key Commands
 
+- `uv run saorsa-deploy deployments plan --config deploy/manifests/profiles/reference.yaml` - Preview a manifest's command sequence
+- `uv run saorsa-deploy deployments up --config <manifest>` / `deployments down --config <manifest>` - Deploy/destroy from a manifest
 - `uv run flask --app saorsa_web.app run` - Dev server
 - `cd db && uv run alembic revision --autogenerate -m "description"` - New migration
 - `cd db && uv run alembic upgrade head` - Apply migrations

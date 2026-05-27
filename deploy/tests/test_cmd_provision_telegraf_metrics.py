@@ -86,6 +86,33 @@ class TestNameBranchClientOnly:
         assert "WAN_NODE" in roles
         assert "CLIENT" not in roles
 
+    @patch.object(ptm, "clear_known_hosts")
+    @patch.object(ptm, "TelegrafMetricsProvisioner")
+    @patch.object(ptm, "load_client_state")
+    @patch.object(ptm, "load_deployment_state")
+    def test_node_failure_still_provisions_clients_then_exits(
+        self, mock_dep, mock_client, mock_prov, _ckh
+    ):
+        # A flaky node must NOT prevent client host-metrics from being
+        # provisioned; the command still exits non-zero overall.
+        mock_dep.return_value = {
+            "node_count": 15,
+            "vm_ips": {"lon1": ["10.0.0.1"]},
+        }
+        mock_client.return_value = {"clients": [{"ip": "1.2.3.4"}]}
+        # First execute() (node WAN_NODE) raises; second (client) succeeds.
+        mock_prov.return_value.execute.side_effect = [
+            RuntimeError("node telegraf boom"),
+            None,
+        ]
+
+        with pytest.raises(SystemExit):
+            ptm.cmd_provision_telegraf_metrics(_args(name="DEV-02"))
+
+        roles = [kw["host_role"] for kw in _provisioner_calls(mock_prov)]
+        assert "WAN_NODE" in roles  # node was attempted
+        assert "CLIENT" in roles  # client STILL attempted despite node failure
+
 
 class TestProvisionClientTelegrafForDeployment:
     @patch.object(ptm, "clear_known_hosts")

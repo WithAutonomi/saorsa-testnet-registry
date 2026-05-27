@@ -1,0 +1,43 @@
+# Small base profile: ~100-node testnet with a couple of 10 MB uploaders.
+#
+# Like staging-rc.yaml, this is a base profile (no name/purpose/binaries) — a run
+# `extends:` it and supplies those. Monitoring (InfluxDB + Grafana) is ON by default,
+# so client upload/download metrics are captured; no monitoring block is needed here.
+# Elastic log-forwarding stays opt-in — add an `elastic:` block to enable it.
+#
+# Node math: 100 ant-node services = 20 VMs (10 DO + 10 Vultr) × per_vm 5.
+
+kind: testnet
+
+ssh_key_path: ~/.ssh/ant_deploy
+
+testnet:
+  mode: true
+
+  bootstraps:
+    count: 7
+    port: 10000
+
+  nodes:
+    per_vm: 5                # ant-node services per VM (20 VMs × 5 = 100 nodes)
+    providers:
+      digital_ocean:
+        vm_count: 5          # per region
+        regions: 2           # 5 × 2 = 10 VMs
+        size: s-2vcpu-4gb
+      vultr:
+        vm_count: 5                 # per region
+        regions_list: [ord, lax]    # 5 × 2 = 10 VMs. ewr omitted — it repeatedly
+                                     # strands VMs in 'pending', stalling the apply.
+        # vhp (High Performance), NOT vc2: node VMs attach a block-storage volume,
+        # and vc2 Cloud Compute plans reject Vultr's default volume type.
+        size: vhp-2c-4gb-intel
+
+  clients:
+    # A couple of uploaders publishing 10 MB files. At least one downloader is
+    # required — it consumes the addresses the uploaders publish.
+    uploaders:
+      - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.04 }
+      - { provider: digital_ocean, region: nyc1, file_size_mb: 10, ant: 200, eth: 0.04 }
+    downloaders:
+      - { provider: digital_ocean, region: lon1 }

@@ -28,6 +28,77 @@ Terraform state and deployment metadata are stored in the `maidsafe-org-infra-tf
 
 The `ANT_BUILD_AWS_*` credentials are for the `ant-build-uploader` IAM user, which has `s3:PutObject` on the `ant-node-builds` bucket. Create the access key manually after applying the Terraform in `saorsa_deploy/resources/aws-build-infra/`.
 
+## Declarative manifests (`deployments up` / `down` / `plan`)
+
+The per-phase commands below are the primitives. For day-to-day work, prefer a
+**declarative YAML manifest** plus the orchestrator, which computes the correct
+ordered command sequence for you — replacing the hand-edited bash runbooks.
+
+```bash
+saorsa-deploy deployments plan          --config deploy/manifests/runs/STG-01.yaml   # preview the sequence (no execution)
+saorsa-deploy deployments config show   --config deploy/manifests/runs/STG-01.yaml   # merged + validated manifest as YAML
+saorsa-deploy deployments up            --config deploy/manifests/runs/STG-01.yaml   # run the full deploy sequence
+saorsa-deploy deployments down          --config deploy/manifests/runs/STG-01.yaml   # run the destroy sequence
+```
+
+Reusable profiles are committed under `deploy/manifests/profiles/`
+(`reference.yaml` shows every option); your concrete run manifests live in the
+git-ignored `deploy/manifests/runs/` — they pin versions/branches and churn per
+run, so like the bash `runbooks/` they stay local.
+
+One manifest describes one deployment's full desired state, tagged by `kind`
+(`testnet`, `testnet-extension`, `prod-uploaders`, `prod-canary`,
+`prod-continuous-downloader`, `prod-downloaders`, `prod-local-uploads`,
+`prod-local-downloads`). The orchestrator owns the ordering and flag-coupling
+invariants (e.g. `bootstraps provision` only when bootstrap count > 1, `--testnet`
+on all three node-provision commands, telegraf after `nodes start`, destroy in
+reverse) so they can't be got wrong by hand. `up` executes each step by
+re-entering the CLI in-process, so a failing step halts the run.
+
+See [`manifests/README.md`](manifests/) for worked examples. Schema sketch
+(`testnet` kind):
+
+```yaml
+name: STG-01
+kind: testnet
+purpose: "RC sanity check"
+ssh_key_path: ~/.ssh/ant_deploy
+extends: profiles/staging-rc.yaml      # optional: deep-merge a reusable base (lists REPLACE)
+testnet:
+  mode: true                            # --testnet
+  upgrade_channel: beta                 # beta | stable | omit
+  binaries:
+    ant_node: { version: 0.11.5-rc.4 }  # XOR { branch: x, repo_owner: y, validation: z }
+    ant:      { version: 0.2.5-rc.4 }   # required when clients are present
+  bootstraps: { count: 7, port: 10000 }
+  nodes:
+    per_vm: 15
+    nat_percent: 30
+    attached_volume_size: 100
+    providers:                          # vm_count is PER REGION; total = vm_count × regions
+      digital_ocean: { vm_count: 5, regions_list: [ams3, lon1, nyc1], size: s-8vcpu-16gb }
+      vultr:         { vm_count: 5, regions: 3, size: vhp-8c-16gb-intel }
+  clients:                              # need ≥1 uploader AND ≥1 downloader
+    uploaders:
+      - { provider: vultr, region: syd, file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1 }
+    downloaders:
+      - { provider: digital_ocean, region: tor1 }
+  elastic:    { enabled: true, droplet_size: s-8vcpu-16gb, volume_size: 500, shards: 8 }  # opt-in (default off)
+  monitoring: { enabled: true }   # InfluxDB + Grafana — ON by default; set `enabled: false` to opt out
+```
+
+**Monitoring defaults ON** for testnet/extension kinds (the `monitoring:` block can be
+omitted entirely). Client upload/download metrics need an InfluxDB to land in, and
+`deployments print-uploads` / `record-results` read from it — so it's opt-out, not
+opt-in. Elasticsearch log-forwarding stays opt-in.
+
+**Reuse:** `extends:` (deep-merge a base; lists replace wholesale), `--set
+dotted.key=value` (override one value, e.g. `--set testnet.nodes.nat_percent=0`),
+and `--name NEW`. **Secrets** are never in a manifest — prod kinds name an env var
+(`secret_key_env:`, default `ARBITRUM_ONE_SECRET_KEY`) and `up` fails fast if it's
+unset. The legacy bash runbooks and the primitive commands below remain fully
+supported.
+
 ## Usage
 
 A deployment is built up in phases. Each phase has its own `infra-*` /

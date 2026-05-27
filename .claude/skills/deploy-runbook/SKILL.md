@@ -1,479 +1,96 @@
 ---
 name: deploy-runbook
-description: Interview the user to gather testnet requirements and then generate a self-contained bash runbook that chains the correct saorsa-deploy commands to deploy (and destroy) a testnet. Use this skill whenever the user asks to "plan a testnet run", "compose a runbook", "generate a deploy script", "script a testnet deployment", or otherwise wants the set of saorsa-deploy commands for a specific testnet spec laid out as an executable script — even if they don't say the word "runbook". Prefer this skill over hand-rolling the command sequence yourself; the sequencing rules, binary-build gating, client/elastic/monitoring interplay, and destroy ordering are easy to get subtly wrong.
+description: Interview the user to gather testnet requirements and then generate a declarative YAML deployment manifest (for `saorsa-deploy up`/`plan`), not a bash script. Use this skill whenever the user asks to "plan a testnet run", "compose a runbook", "generate a deploy script/manifest", "script a testnet deployment", or otherwise wants the configuration for a specific testnet spec laid out as a runnable artifact — even if they say "runbook". Prefer this skill over hand-rolling a manifest; the interview catches the provider-distribution heuristics, the ES large-testnet sizing envelope, and the clients-need-both-roles rule.
 ---
 
 # deploy-runbook
 
-Generate an executable bash runbook that deploys a saorsa testnet end-to-end, plus a matching destroy runbook, based on a short interview.
+Generate a declarative **YAML manifest** that deploys a saorsa testnet end-to-end via
+`saorsa-deploy up`, based on a short interview.
 
-## Why this skill exists
-
-Deploying a testnet requires roughly 5–15 `saorsa-deploy` subcommands executed in a strict order, with a bunch of optional stages (elastic, monitoring, clients) that mutate the rest of the sequence. The ordering rules are documented in `CLAUDE.md` and `deploy/README.md`, but they're easy to get wrong by hand: for example, `bootstraps provision` must only run when bootstrap-count > 1, `elastic provision-telegraf` requires elastic state to have been written first, and `bootstraps destroy` refuses to run while nodes still exist.
-
-Rather than re-deriving that order every time, this skill interviews the user once, then emits a correct, idempotent-ish bash script that bakes the whole plan in.
+> **This skill no longer emits bash.** The command ordering and flag-coupling rules
+> that used to live here as prose now live in the `saorsa-deploy` orchestrator
+> (`deploy/saorsa_deploy/orchestrator/`). You produce a manifest; the orchestrator
+> produces the correct command sequence. Run `saorsa-deploy deployments plan --config
+> <file>` to preview that sequence and `saorsa-deploy deployments up --config <file>` to
+> execute it. The old bash runbooks under `runbooks/` still work but are no longer the
+> recommended path.
 
 ## Output contract
 
-Two files are generated per run, both placed in `runbooks/`:
+Write **one** manifest to the git-ignored `deploy/manifests/runs/<NAME>.yaml` (e.g.
+`deploy/manifests/runs/STG-05.yaml`) — concrete run manifests are not committed (the
+committed profiles live in `deploy/manifests/profiles/`). No separate destroy file —
+`saorsa-deploy deployments down --config <file>` derives the teardown sequence from the
+same manifest.
 
-- `runbooks/<TESTNET_NAME>-<YYYYMMDD-HHMMSS>-deploy.sh`
-- `runbooks/<TESTNET_NAME>-<YYYYMMDD-HHMMSS>-destroy.sh`
+If a suitable base profile already exists under `deploy/manifests/profiles/` (e.g.
+`staging-rc.yaml`), prefer `extends:` it and override only what changes
+(name, purpose, binaries). That is the whole point — reuse the shape, edit the run.
 
-The timestamp suffix is computed at **generation time**, not runtime. It exists because the same testnet name gets reused across runs and the user wants a linear record of attempts.
-
-Both files are executable (`chmod +x`). Neither is committed — if `runbooks/` isn't in `.gitignore` already, remind the user.
-
-Both scripts start with `set -euo pipefail` so the first failing command halts execution. Do not add `|| true` or swallow errors anywhere.
+After writing, **do not run it**. Validate it (`saorsa-deploy deployments config validate
+--config <file>`), show the user the path, and suggest they run `deployments plan` to
+preview.
 
 ## The interview
 
-Ask questions **in the order below**. Ask them one at a time so the user can answer conversationally, but it's fine to batch tightly related sub-questions (e.g. all per-client details for one client in a single turn). After each answer, echo back your understanding in one short line before moving on.
-
-The user will sometimes give you a partial spec upfront ("deploy DEV-01 with 15 nodes, no clients"). In that case, extract what you can, confirm it, and only ask about the gaps.
-
-### 1. Testnet name
-
-Required on every command. Used to name both output files. Conventional form is `UPPERCASE-NN` (e.g. `DEV-01`, `STAGING-03`).
-
-### 1a. Purpose
-
-Free-text description of what this testnet is for (e.g. "Soak-test rc-2026.4.4 ant-node release candidate", "Reproduce PROD-UL-01 merkle rejection"). Required by `bootstraps infra --purpose` — it's persisted into `deploy_args` and surfaced by `deployments slack-post`. Pass through verbatim, single-quoted, on `bootstraps infra` only (no other infra command takes it).
-
-### 2. Binaries: `ant-node` and `ant` (client)
-
-Ask about each binary separately. For each:
-
-- **Version** (GitHub release, e.g. `0.2.0`) — uses a prebuilt release binary, and
-- **Branch** — requires building from source first; ask for `--branch-name`, `--repo-owner`, and optionally a `--validation-string` (a literal string expected inside the resulting binary, used as a build sanity check — e.g. a log message only present on that branch).
-
-These are **mutually exclusive per binary** but can mix across the two (e.g. ant-node from branch, ant client from release). If the user picks a branch, the runbook must include the matching `build ant-node` or `build ant` step before any provisioning.
-
-If the user opts for "no clients" in question 6, skip the `ant` client binary question entirely — it's not needed.
-
-### 3. Bootstrap count
-
-Integer ≥ 1. If `> 1`, the runbook needs both `nodes provision-genesis` AND `bootstraps provision`. If `= 1`, only `nodes provision-genesis` runs — do not emit `bootstraps provision`.
-
-### 4. Node count and provider distribution
-
-Ask for the **total non-bootstrap node count** as a single number. Then **propose a distribution** across DigitalOcean, Hetzner, and Vultr and let the user accept or adjust.
-
-Guidelines for the suggestion:
-
-- **Hetzner is constrained** — capacity/availability issues are common. Keep Hetzner at roughly 2–4 VMs regardless of total, unless the user explicitly says to push more there. For small totals (≤ 5), it's fine to leave Hetzner at 0.
-- **DigitalOcean is the default primary** — aim for ~50–60% of total there.
-- **Vultr fills the rest** — ~25–35%, whatever remains after DO and Hetzner.
-- Present the suggestion concretely: e.g. for 20 total → `12 DO / 3 Hetzner / 5 Vultr`. Let the user override any of the three.
-
-**Important — the CLI counts are per-region, not total.** `--do-vm-count` means "VMs per region on DO", and `--do-regions` defaults to 3 (same for Hetzner and Vultr). So to achieve a provider total of 12 DO VMs, you typically emit `--do-vm-count 4 --do-regions 3` (4 per region × 3 regions = 12).
-
-When translating the confirmed provider totals into CLI flags:
-
-- Default to 3 regions per provider — aligns with "distribute across geographies".
-- If the provider total divides cleanly by 3, use `--do-regions 3` (or equivalent) and `--<provider>-vm-count = total / 3`.
-- If it doesn't divide cleanly, pick the closest region count that does (e.g. 10 DO → 5 per region × 2 regions, or 10 per region × 1 region). Show the user the resulting `per-region × regions` math and let them confirm or adjust.
-- If a provider total is 0, **omit that provider's `--vm-count` flag entirely** (CLI default is 0 = provider not used). Don't emit `--hetzner-vm-count 0`.
-- For Hetzner specifically, since the total is usually small (2–4), a single region is fine: `--hetzner-vm-count N --hetzner-regions 1`.
-
-Then confirm **VM sizes per provider**. Sensible defaults if the user shrugs:
-
-| Provider | Default slug | Equivalent |
-|---|---|---|
-| DigitalOcean | `s-2vcpu-4gb` | 2 vCPU / 4 GB |
-| Hetzner | `cpx22` | 2 vCPU / 4 GB |
-| Vultr | `vc2-2c-4gb` | 2 vCPU / 4 GB |
-
-If the user wants a single "tier" (e.g. "4/8"), map to equivalents: DO `s-4vcpu-8gb`, Hetzner `cpx32`, Vultr `vc2-4c-8gb`. Always surface the chosen slugs back to the user so a typo is caught early.
-
-### 5. Testnet mode
-
-Boolean yes/no. If yes, pass `--testnet` to **all three** of `nodes provision-genesis`, `bootstraps provision` (if emitted), and `nodes provision`.
-
-### 5a. Upgrade channel
-
-Ask: "Which ant-node upgrade channel — `beta`, `stable`, or none?" Only `beta` and `stable` are valid saorsa-deploy choices; "none" means omit the flag entirely (ant-node's built-in default applies).
-
-- If `beta` or `stable`, pass `--upgrade-channel {beta|stable}` to **all three** of `nodes provision-genesis`, `bootstraps provision` (if emitted), and `nodes provision` — same value on all three, never mix channels across the commands.
-- If "none", omit `--upgrade-channel` from all three.
-- This setting only affects `ant-node` (nodes/bootstraps/genesis); clients do not take `--upgrade-channel`.
-
-### 5b. Port-restricted NAT simulation
-
-Boolean yes/no. If yes, ask for a **percentage** (1–100) of node VMs that should run behind a simulated port-restricted NAT (Linux network namespace + iptables DNAT/MASQUERADE).
-
-- If yes, pass `--nat-percent N` to `nodes provision`.
-- If no (or 0%), omit the flag entirely — current behaviour is unchanged.
-- Selection is deterministic ("one per region first, then round-robin") and is locked into deployment state on first run. `--force-nat-reselect` can reshuffle but the runbook should not emit it without being asked.
-- NAT only applies to regular node VMs. Bootstrap, genesis, client, and monitoring/elastic VMs are always public.
-
-### 6. Clients
-
-Ask first: "Do you want clients at all?" If no, skip the rest of this section and omit `clients infra`, `clients provision`, and `clients start` from the runbook.
-
-If yes: clients are split by role. Each client VM is **either** an **uploader** (produces test files and publishes addresses) **or** a **downloader** (consumes those addresses and verifies retrieval). They run on separate VMs now. Collect **at least one uploader and at least one downloader** — downloaders do nothing without uploaders producing addresses.
-
-Ask how many of each, then for each:
-
-**Uploaders** — collect:
-- **Region** — a DigitalOcean region slug (`lon1`, `nyc1`, `ams3`, `sfo3`, `sgp1`, `blr1`, `fra1`, `tor1`).
-- **File size** — in MB, integer. This is the upload size.
-- **VM size** — defaults to `s-2vcpu-4gb`.
-- **Payment mode** (optional) — `merkle`, `no-merkle`, or default. Ask per uploader: "Force a payment mode (merkle / no-merkle) on this uploader's `ant file upload`, or leave at ant's default?" `merkle` adds `--merkle` (single-tx batch payment), `no-merkle` adds `--no-merkle` (per-chunk payments). Different uploaders in the same testnet may use different modes — back-to-back A/B comparisons of merkle vs no-merkle are a primary use case.
-
-Emit each uploader as a separate `--uploader` flag to `clients infra`. Spec format: `region:file_size_mb[:vm_size][:payment=MODE]` — region and file_size_mb are required; vm_size and `payment=` are optional. Only emit `:payment=X` when the user picked `merkle` or `no-merkle`.
-
-**Downloaders** — collect:
-- **Region** — same slug list.
-- **VM size** — defaults to `s-2vcpu-4gb`.
-
-Emit each downloader as a separate `--downloader` flag. Spec format: `region[:vm_size]`. Downloaders have no file-size slot — address selection is random and lives on S3.
-
-Clients always run on DO (saorsa-deploy doesn't support other providers for clients).
-
-If clients are enabled, the runbook must preflight-check **three** environment variables — fail fast if any is missing:
-
-1. `ANT_DEPLOY_SECRET_KEY` — the EVM wallet key for uploads.
-2. `ANT_CLIENT_AWS_ACCESS_KEY_ID` — from the `aws-client-s3` Terraform module.
-3. `ANT_CLIENT_AWS_SECRET_ACCESS_KEY` — same source.
-
-The AWS creds are consumed by `clients provision`, which injects them into each client VM's `/etc/ant-client.env` so uploaders can push to and downloaders can pull from `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`. See `deploy/README.md` "Client VMs" for the one-time `terraform apply` needed to create the IAM user.
-
-Note: `clients destroy` now wipes the per-testnet addresses prefix automatically — no extra step is needed in the destroy runbook.
-
-### 7. Elasticsearch
-
-First: boolean yes/no. If yes, emit these in the right places:
-
-- `elastic infra --name $NAME` during the infra phase
-- `elastic provision --name $NAME` during the provision phase (before `elastic provision-telegraf`)
-- `elastic provision-telegraf --name $NAME` **after** nodes are provisioned (it auto-loads ES creds from elastic state)
-- `elastic destroy --name $NAME --force` at the end of the destroy script
-
-Then ask about sizing. ES is the single part of the stack that falls over quietly at scale — DEV-01 (2026-04-22) lost 90% of node-side log forwarding because the default `s-4vcpu-8gb` + single-shard + 100 GB sizing couldn't keep up with ~900 nodes. The defaults below are fine for small/short testnets but must be bumped for anything approaching 1000 nodes or a multi-day run.
-
-#### 7a. Proactive large-testnet warning
-
-**Before asking about sizing**, check the total node count from section 4. If it's **≥ 500 nodes**, surface the following reminder verbatim to the user and ask them to confirm the ES sizing accordingly:
-
-> Heads up — with ~{TOTAL_NODES} nodes you're past the default ES sizing envelope. A 1000-node testnet generates roughly **500 GB of index data per day** at the default `--log-level info`, and ingest bottlenecks on a 4-core droplet with one shard per daily index. Recommend bumping:
->
-> - **Droplet size:** `s-8vcpu-16gb` (from `s-4vcpu-8gb`)
-> - **Volume size:** `500` GB for 1 day, `1000` GB for 2 days (from `100`)
-> - **Shards:** `8` to match the 8 vCPU on the bigger droplet (from `4`)
->
-> We won't be running testnets bigger than ~1000 nodes, so you shouldn't need to go beyond `s-8vcpu-16gb` / 1 TB / 8 shards.
-
-For 100–499 nodes, skip the warning and just take the defaults unless the user says otherwise.
-
-#### 7b. Elasticsearch sizing knobs
-
-Collect each of these. Offer the default shown; only emit the corresponding `--flag` in the runbook when the user overrides it, to keep small-testnet scripts tidy.
-
-| Knob | Default | When to change |
-|---|---|---|
-| ES droplet size (`elastic infra --droplet-size`) | `s-4vcpu-8gb` | Bump to `s-8vcpu-16gb` for testnets ≥ 500 nodes. |
-| ES volume size in GB (`elastic infra --volume-size`) | `100` | `250` for ~500 nodes / 1 day. `500` for ~1000 nodes / 1 day. `1000` for ~1000 nodes / 2 days. |
-| Primary shards per index (`elastic provision --shards`) | `4` | Match vCPU count of the ES droplet: `8` when on `s-8vcpu-16gb`. |
-| ILM retention days (`elastic provision --retention-days`) | `7` | Rarely changed for testnets. Lower to `2` for very short/ephemeral runs. |
-| Telegraf drop log levels (`elastic provision-telegraf --drop-log-levels`) | `DEBUG,TRACE` | `""` to keep every line while debugging a specific bug. `DEBUG,TRACE,INFO` only when ES is genuinely overwhelmed and you accept losing forensic breadcrumbs. |
-| Telegraf output buffer lines (`elastic provision-telegraf --buffer-limit`) | `2000000` | Drop to `200000` for tiny/short runs. Raise to `5000000` for very large testnets where you expect sustained ES stalls. |
-
-A reasonable shortcut for the interview: ask one question — "small (≤100 nodes) / default (a few hundred) / large (≥ 500)" — and pre-fill the overrides for "large" without walking through every knob individually. Still let the user override specific values before moving on.
-
-### 8. Monitoring (InfluxDB + Grafana)
-
-Boolean yes/no. If yes, emit:
-
-- `monitoring infra --name $NAME` during the infra phase
-- `monitoring provision --name $NAME` during the provision phase
-- `monitoring provision-telegraf --name $NAME` after nodes are provisioned (auto-loads Influx creds from monitoring state)
-- `monitoring destroy --name $NAME --force` at the end of the destroy script
-
-### 9. SSH key path
-
-Ask for the **absolute path to the SSH private key** that should be used for all provisioning SSH (e.g. `/home/chris/.ssh/ant_deploy`). The key's public half must be registered with every provider in use (DO, Hetzner, Vultr) — if it isn't, Terraform fails before any VM is created.
-
-- Default is `~/.ssh/id_rsa`; the user will almost always want to override this with a project-specific key, so always ask.
-- Emit the path as a top-level `SSH_KEY="..."` variable in the runbook and pass `--ssh-key-path "$SSH_KEY"` to every command that accepts it.
-- Commands that accept `--ssh-key-path` (anything that SSHes into a VM): `build ant-node`, `build ant`, `nodes provision-genesis`, `bootstraps provision`, `nodes provision`, `nodes start`, `monitoring provision`, `elastic provision`, `monitoring provision-telegraf`, `elastic provision-telegraf`, `clients provision`, `clients start`.
-- Infra/destroy commands (`infra-*`, `monitoring infra`, `elastic infra`, `destroy-*`) do **not** take `--ssh-key-path` — they're pure Terraform, no SSH. Don't emit the flag on those.
-
-## Generation rules
-
-Once the interview is done, before writing the files:
-
-1. **Recap the plan** back to the user as a bullet list. Let them correct anything. Do not generate files until they say go.
-2. **Compute the timestamp once** (shell: `date +%Y%m%d-%H%M%S`) and use it in both filenames.
-3. **Create `runbooks/` if it doesn't exist.** Use `mkdir -p runbooks`.
-4. **Write both files**, then `chmod +x` them.
-5. **Do not run the generated script.** Just report the two paths and tell the user what to do next (e.g. `./runbooks/DEV-01-20260421-143022-deploy.sh`).
-6. **If `runbooks/` is not already in `.gitignore`**, tell the user — don't edit `.gitignore` yourself.
-
-### Command-ordering invariants
-
-These are non-negotiable; the generated script must respect them:
-
-- `bootstraps infra` before `nodes infra`
-- Any `build-ant-*-binary` before any `provision-*` that uses that branch
-- `nodes infra` before `nodes provision`
-- `nodes provision-genesis` before `bootstraps provision` and `nodes provision`
-- `elastic provision` before `elastic provision-telegraf`
-- `monitoring provision` before `monitoring provision-telegraf`
-- `nodes provision` before `nodes start` (nodes provision enables services; nodes start brings them up)
-- `nodes start` before `provision-telegraf-*` (telegraf targets running nodes)
-- `nodes provision` before `provision-telegraf-*` (telegraf targets node VMs)
-- `clients infra` before `clients provision` before `clients start`
-- `deployments generate-inventory` is always the **final** saorsa-deploy command in the deploy script — after every provision/start step (including clients/telegraf), before the closing `echo`. It writes `inventory.json` under `~/.autonomi/testnets/$NAME/` summarising the VMs and ports for downstream tooling; it must run after everything else so the snapshot reflects the final topology.
-- Destroy order: `clients destroy` → `nodes destroy` → `bootstraps destroy` → `elastic destroy` → `monitoring destroy` (skip `clients stop` — the VMs are about to die anyway)
-
-### Flag rules
-
-- `--testnet` goes on `nodes provision-genesis`, `bootstraps provision`, and `nodes provision` — all three or none.
-- `--upgrade-channel {beta|stable}` goes on `nodes provision-genesis`, `bootstraps provision`, and `nodes provision` — same value on all three, or omit from all three. Only accepts `beta` or `stable`; never emit the flag with any other value. The flag is unique to node provisioning — do not emit it on `clients provision` or any other command.
-- Binary selection is mutually exclusive **per binary**: either `--node-version X` or `--branch-name Y --repo-owner Z`, never both, on the same command.
-- Port `10000` for `nodes provision-genesis --port` and `bootstraps provision --port`.
-- Always include `--name "$NAME"` on every command.
-- Use `--force` on all destroy commands (user already ran through the interview; no interactive confirm needed).
-- **Do not** use `--force` on infra-creation commands (`bootstraps infra`, `nodes infra`, `clients infra`, `monitoring infra`, `elastic infra`). On those commands `--force` only deletes the stale S3 tfstate — it does **not** destroy the real cloud resources that state references. The next Terraform run then creates new resources that collide with the orphans (volume/firewall name conflicts, duplicate droplets, etc.) and leaves the account in a worse state. If a stale-state error fires, tell the user to run the matching `destroy-*` command first, then retry — don't paper over it with `--force`.
-
-## Deploy runbook template
-
-Use this structure. Fill the `{{...}}` placeholders with interview answers. Omit sections wholesale when the corresponding feature is disabled — don't emit dead `if false; then ... fi` blocks, just leave them out.
-
-```bash
-#!/usr/bin/env bash
-# Runbook: deploy {{NAME}}
-# Generated: {{TIMESTAMP_HUMAN}}
-# Spec:
-#   Purpose:     {{PURPOSE}}
-#   Bootstraps:  {{BOOTSTRAP_COUNT}}
-#   Nodes:       {{TOTAL_NODES}} total
-#                  DO      = {{DO_PER_REGION}} × {{DO_REGIONS}} region(s) = {{DO_TOTAL}}
-#                  Hetzner = {{HETZNER_PER_REGION}} × {{HETZNER_REGIONS}} region(s) = {{HETZNER_TOTAL}}
-#                  Vultr   = {{VULTR_PER_REGION}} × {{VULTR_REGIONS}} region(s) = {{VULTR_TOTAL}}
-#   Testnet:     {{YES_OR_NO}}
-#   Upgrade chan: {{UPGRADE_CHANNEL_OR_NONE}}
-#   NAT sim:     {{NAT_YES_NO_WITH_PERCENT}}
-#   Clients:     {{UPLOADER_COUNT_OR_NONE}} uploader(s), {{DOWNLOADER_COUNT_OR_NONE}} downloader(s)
-#   Elastic:     {{YES_OR_NO}}{{#if elastic}}
-#                  droplet={{ES_DROPLET_SIZE}} volume={{ES_VOLUME_SIZE}}GB shards={{ES_SHARDS}}
-#                  retention={{ES_RETENTION_DAYS}}d drop_levels={{ES_DROP_LEVELS}} buffer={{ES_BUFFER_LIMIT}}{{/if}}
-#   Monitoring:  {{YES_OR_NO}}
-#   ant-node:    {{VERSION_OR_BRANCH_DESC}}
-#   ant:         {{VERSION_OR_BRANCH_DESC_OR_NA}}
-#   SSH key:     {{SSH_KEY_PATH}}
-
-set -euo pipefail
-
-NAME="{{NAME}}"
-BOOTSTRAP_PORT=10000
-SSH_KEY="{{SSH_KEY_PATH}}"
-
-cd "$(dirname "$0")/.."
-
-# --- Load .env ---
-# `uv run` already picks up .env for the python subprocesses, but the preflight
-# checks below are plain bash and would otherwise miss vars defined only there.
-set -a
-[ -f .env ] && . .env
-set +a
-
-# --- Preflight ---
-{{#if clients}}
-if [[ -z "${ANT_DEPLOY_SECRET_KEY:-}" ]]; then
-  echo "ERROR: ANT_DEPLOY_SECRET_KEY must be set in the environment for clients provision" >&2
-  exit 1
-fi
-if [[ -z "${ANT_CLIENT_AWS_ACCESS_KEY_ID:-}" || -z "${ANT_CLIENT_AWS_SECRET_ACCESS_KEY:-}" ]]; then
-  echo "ERROR: ANT_CLIENT_AWS_ACCESS_KEY_ID and ANT_CLIENT_AWS_SECRET_ACCESS_KEY must be set for clients provision" >&2
-  echo "Generate these once via: terraform -chdir=deploy/saorsa_deploy/resources/aws-client-s3 apply" >&2
-  exit 1
-fi
-{{/if}}
-
-# --- Phase 1: Build binaries ---
-{{#if ant_node_from_branch}}
-uv run saorsa-deploy build ant-node \
-  --name "$NAME" \
-  --branch-name "{{ANT_NODE_BRANCH}}" \
-  --repo-owner "{{ANT_NODE_REPO_OWNER}}" \
-  --ssh-key-path "$SSH_KEY" \
-  {{#if ant_node_validation}}--validation-string "{{ANT_NODE_VALIDATION}}"{{/if}}
-{{/if}}
-{{#if ant_from_branch}}
-uv run saorsa-deploy build ant \
-  --name "$NAME" \
-  --branch-name "{{ANT_BRANCH}}" \
-  --repo-owner "{{ANT_REPO_OWNER}}" \
-  --ssh-key-path "$SSH_KEY" \
-  {{#if ant_validation}}--validation-string "{{ANT_VALIDATION}}"{{/if}}
-{{/if}}
-
-# --- Phase 2: Infrastructure ---
-uv run saorsa-deploy bootstraps infra \
-  --name "$NAME" \
-  --bootstrap-count {{BOOTSTRAP_COUNT}} \
-  --purpose '{{PURPOSE}}'
-
-uv run saorsa-deploy nodes infra \
-  --name "$NAME" \
-  {{#if do_used}}--do-vm-count {{DO_PER_REGION}} --do-regions {{DO_REGIONS}} --do-droplet-size "{{DO_SIZE}}"{{/if}} \
-  {{#if hetzner_used}}--hetzner-vm-count {{HETZNER_PER_REGION}} --hetzner-regions {{HETZNER_REGIONS}} --hetzner-server-type "{{HETZNER_SIZE}}"{{/if}} \
-  {{#if vultr_used}}--vultr-vm-count {{VULTR_PER_REGION}} --vultr-regions {{VULTR_REGIONS}} --vultr-plan "{{VULTR_SIZE}}"{{/if}}
-
-{{#if elastic}}
-uv run saorsa-deploy elastic infra \
-  --name "$NAME" \
-  {{#if es_droplet_size_override}}--droplet-size "{{ES_DROPLET_SIZE}}"{{/if}} \
-  {{#if es_volume_size_override}}--volume-size {{ES_VOLUME_SIZE}}{{/if}}
-{{/if}}
-{{#if monitoring}}
-uv run saorsa-deploy monitoring infra --name "$NAME"
-{{/if}}
-{{#if clients}}
-uv run saorsa-deploy clients infra \
-  --name "$NAME" \
-  {{#each uploader}}--uploader '{{region}}:{{file_size_mb}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}{{#if payment_override}}:payment={{payment}}{{/if}}' \
-  {{/each}}{{#each downloader}}--downloader '{{region}}{{#if vm_size_overridden}}:{{vm_size}}{{/if}}' \
-  {{/each}}
-{{/if}}
-
-# --- Phase 3: Provisioning ---
-{{#if elastic}}
-uv run saorsa-deploy elastic provision \
-  --name "$NAME" \
-  {{#if es_shards_override}}--shards {{ES_SHARDS}}{{/if}} \
-  {{#if es_retention_override}}--retention-days {{ES_RETENTION_DAYS}}{{/if}} \
-  --ssh-key-path "$SSH_KEY"
-{{/if}}
-{{#if monitoring}}
-uv run saorsa-deploy monitoring provision \
-  --name "$NAME" \
-  --ssh-key-path "$SSH_KEY"
-{{/if}}
-
-uv run saorsa-deploy nodes provision-genesis \
-  --name "$NAME" \
-  --port $BOOTSTRAP_PORT \
-  {{BINARY_FLAGS_NODE}} \
-  {{#if testnet}}--testnet{{/if}} \
-  {{#if upgrade_channel}}--upgrade-channel {{UPGRADE_CHANNEL}}{{/if}} \
-  --ssh-key-path "$SSH_KEY"
-
-{{#if multi_bootstrap}}
-uv run saorsa-deploy bootstraps provision \
-  --name "$NAME" \
-  --port $BOOTSTRAP_PORT \
-  {{BINARY_FLAGS_NODE}} \
-  {{#if testnet}}--testnet{{/if}} \
-  {{#if upgrade_channel}}--upgrade-channel {{UPGRADE_CHANNEL}}{{/if}} \
-  --ssh-key-path "$SSH_KEY"
-{{/if}}
-
-uv run saorsa-deploy nodes provision \
-  --name "$NAME" \
-  --node-count 1 \
-  {{BINARY_FLAGS_NODE}} \
-  {{#if testnet}}--testnet{{/if}} \
-  {{#if upgrade_channel}}--upgrade-channel {{UPGRADE_CHANNEL}}{{/if}} \
-  {{#if nat_enabled}}--nat-percent {{NAT_PERCENT}}{{/if}} \
-  --ssh-key-path "$SSH_KEY"
-
-uv run saorsa-deploy nodes start \
-  --name "$NAME" \
-  --ssh-key-path "$SSH_KEY"
-
-{{#if elastic}}
-uv run saorsa-deploy elastic provision-telegraf \
-  --name "$NAME" \
-  {{#if es_drop_levels_override}}--drop-log-levels "{{ES_DROP_LEVELS}}"{{/if}} \
-  {{#if es_buffer_limit_override}}--buffer-limit {{ES_BUFFER_LIMIT}}{{/if}} \
-  --ssh-key-path "$SSH_KEY"
-{{/if}}
-{{#if monitoring}}
-uv run saorsa-deploy monitoring provision-telegraf \
-  --name "$NAME" \
-  --ssh-key-path "$SSH_KEY"
-{{/if}}
-
-{{#if clients}}
-uv run saorsa-deploy clients provision \
-  --name "$NAME" \
-  {{BINARY_FLAGS_ANT}} \
-  {{#if monitoring}}--monitoring-name "$NAME"{{/if}} \
-  --ssh-key-path "$SSH_KEY"
-
-uv run saorsa-deploy clients start \
-  --name "$NAME" \
-  --ssh-key-path "$SSH_KEY"
-{{/if}}
-
-# --- Phase 4: Inventory snapshot ---
-uv run saorsa-deploy deployments generate-inventory \
-  --name "$NAME" \
-  --ssh-key-path "$SSH_KEY"
-
-echo ""
-echo "Testnet $NAME is up."
-```
-
-`{{BINARY_FLAGS_NODE}}` expands to either:
-- `--node-version {{ANT_NODE_VERSION}}`, or
-- `--branch-name {{ANT_NODE_BRANCH}} --repo-owner {{ANT_NODE_REPO_OWNER}}`
-
-`{{BINARY_FLAGS_ANT}}` expands to either:
-- `--ant-version {{ANT_VERSION}}`, or
-- `--branch-name {{ANT_BRANCH}} --repo-owner {{ANT_REPO_OWNER}}`
-
-Note that for `clients provision`, the client binary flags use `--branch-name`/`--repo-owner` too (not a separate `--ant-branch-name`); saorsa-deploy infers which binary from the command context.
-
-## Destroy runbook template
-
-```bash
-#!/usr/bin/env bash
-# Runbook: destroy {{NAME}}
-# Generated: {{TIMESTAMP_HUMAN}}
-
-set -euo pipefail
-
-NAME="{{NAME}}"
-
-cd "$(dirname "$0")/.."
-
-{{#if clients}}
-uv run saorsa-deploy clients destroy --name "$NAME" --force
-{{/if}}
-
-uv run saorsa-deploy nodes destroy --name "$NAME" --force
-uv run saorsa-deploy bootstraps destroy --name "$NAME" --force
-
-{{#if elastic}}
-uv run saorsa-deploy elastic destroy --name "$NAME" --force
-{{/if}}
-{{#if monitoring}}
-uv run saorsa-deploy monitoring destroy --name "$NAME" --force
-{{/if}}
-
-echo ""
-echo "Testnet $NAME has been destroyed."
-```
-
-Do **not** emit `clients stop` in the destroy script. The VMs are about to be torn down by `clients destroy`, so gracefully stopping the services first is a redundant step that just adds latency (and can spuriously fail if services were never running). Destroy propagates all errors — no `|| true` anywhere.
-
-## Common pitfalls
-
-- **`--do-vm-count` is per-region, not total.** Same for `--hetzner-vm-count` and `--vultr-vm-count`. The provider total is `vm-count × regions`. Always confirm the math with the user before generating.
-- **Don't emit a provider's `--*-vm-count` flag if its total is 0.** CLI default is 0 (provider not used); an explicit 0 still no-ops but adds noise.
-- **Don't include `bootstraps provision` when `bootstrap-count == 1`.** The genesis bootstrap is the only one; `bootstraps provision` would no-op or error.
-- **`nodes start` is always required after `nodes provision`.** `nodes provision` only enables the systemd units — it no longer starts them, so the runbook must emit `nodes start` next, regardless of whether NAT simulation is enabled. Telegraf steps go after `nodes start` so they target running nodes.
-- **Don't mix `--node-version` and `--branch-name` on the same command.** They're mutually exclusive flags in saorsa-deploy.
-- **Don't emit `elastic provision-telegraf` without elastic** (nor `monitoring provision-telegraf` without monitoring). Those commands auto-load credentials from state files that only exist if the corresponding stack was provisioned.
-- **Do pass `--monitoring-name "$NAME"` to `clients provision` when monitoring is enabled.** Without it, client upload/download metrics never reach the testnet's InfluxDB, which defeats the point of running both stacks.
-- **Always emit at least one `--uploader` AND one `--downloader` when clients are enabled.** Downloaders fetch addresses from S3 that uploaders publish — downloaders on their own have nothing to pull, and uploaders with no downloaders are pointless. Refuse to generate a clients section unless the user has confirmed both.
-- **Never emit the old `--client` flag.** It was removed. Only `--uploader` / `--downloader` are valid on `clients infra`.
-- **Each uploader spec optionally appends `:payment=merkle|no-merkle`.** Only emit when the user explicitly picked a mode for that uploader; omit for ant's default. There is no global payment flag — payment is per-uploader. Different uploaders in the same testnet may use different modes.
-- **Don't parameterize the timestamp.** It's baked into the filename at generation and the header comment for traceability; runtime regeneration defeats the point.
-- **Don't add retry loops or sleeps.** If a command fails, the user wants to see it and decide what to do — `set -e` is the contract.
-- **Don't skip the large-testnet ES warning.** For any testnet with ≥ 500 nodes, emit the reminder in section 7a verbatim *before* collecting ES sizing answers — don't let the user slide into the default 100 GB / 4-shard / 4-vCPU sizing without seeing the sizing table. The defaults are designed for small runs; a 1000-node testnet will silently lose logs on them.
-- **Only emit ES sizing flags when they differ from the default.** `--droplet-size s-4vcpu-8gb`, `--volume-size 100`, `--shards 4`, `--retention-days 7`, `--drop-log-levels DEBUG,TRACE`, `--buffer-limit 2000000` are all the CLI defaults — emitting them explicitly adds noise without changing behaviour. Only pass a flag when the user picked something else.
+Ask in this order; batch tightly-related sub-questions. If the user gives a partial
+spec upfront, extract what you can, confirm, and only ask about gaps. Each answer maps
+to a manifest field — see the schema in `deploy/README.md` §"Declarative manifests".
+
+1. **Name** — `name:` (conventional `UPPERCASE-NN`, e.g. `DEV-01`).
+2. **Purpose** — `purpose:` (free text; required; surfaced by `deployments slack-post`).
+3. **Binaries** — `testnet.binaries.ant_node` and `.ant`. Each is `{ version: X }`
+   (a release) **or** `{ branch: Y, repo_owner: Z, validation: W }` (a branch build).
+   The orchestrator emits the `build ant-node`/`build ant` step automatically for
+   branch builds. Skip `ant` if the user wants no clients.
+4. **Bootstraps** — `testnet.bootstraps.count` (≥1). The orchestrator emits
+   `bootstraps provision` only when count > 1; you don't manage that.
+5. **Nodes** — `testnet.nodes.per_vm` (services per VM) and `.providers`. Ask for the
+   total non-bootstrap node count, then **propose a distribution**:
+   - Hetzner is capacity-constrained — keep it ~2–4 VMs (0 for small totals).
+   - DigitalOcean is the default primary (~50–60%).
+   - Vultr fills the rest (~25–35%).
+   - **`vm_count` is PER REGION**: provider total = `vm_count × len(regions_list)`
+     (or `× regions`). Show the user the math. Omit a provider entirely to not use it.
+   - `size:` per provider maps to the right flag (DO droplet-size / Vultr plan /
+     Hetzner server-type). Defaults if the user shrugs: DO `s-2vcpu-4gb`,
+     Vultr `vc2-2c-4gb`, Hetzner `cpx22`.
+6. **Testnet mode / upgrade channel / NAT** — `testnet.mode: true|false`,
+   `testnet.upgrade_channel: beta|stable` (omit for default),
+   `testnet.nodes.nat_percent: N` (omit/0 to disable).
+7. **Clients** — `testnet.clients`. If none, omit the block. Otherwise collect **≥1
+   uploader AND ≥1 downloader** (validation enforces both):
+   - uploader: `{ provider, region, file_size_mb, vm_size?, payment?(merkle|no-merkle), ant?, eth? }`
+   - downloader: `{ provider, region, vm_size? }`
+   Requires `ANT_DEPLOY_SECRET_KEY` + `ANT_CLIENT_AWS_*` in the env at `up` time.
+8. **Elasticsearch** — `testnet.elastic`. `{ enabled: true, droplet_size, volume_size,
+   shards, retention_days, drop_log_levels, buffer_limit }`. **Large-testnet warning:**
+   if total nodes ≥ 500, tell the user the defaults (`s-4vcpu-8gb` / 100 GB / 4 shards)
+   will silently drop logs at scale, and recommend `s-8vcpu-16gb` / 500–1000 GB / 8
+   shards. Only set fields that differ from defaults.
+9. **Monitoring** — `testnet.monitoring.enabled: true|false`.
+10. **SSH key** — `ssh_key_path:` (absolute path or `~/...`; public half registered with
+    every provider in use).
+
+## Reuse mechanisms (mention to the user)
+
+- `extends: ../profiles/<base>.yaml` — deep-merge a base; **lists replace** (redefine
+  `clients` to swap it wholesale). Path is relative to the run manifest in `runs/`.
+- `saorsa-deploy deployments up --config <file> --set testnet.nodes.nat_percent=0` — one-off override.
+- `saorsa-deploy deployments up --config <file> --name STG-09` — reuse a manifest under a new name.
+
+## Don'ts
+
+- Don't emit bash, command sequences, or ordering rules — the orchestrator owns those.
+- Don't put secrets in the manifest.
+- Don't set fields that equal the CLI defaults — keep manifests tidy.
+- Don't run `up` yourself; generate + validate, then hand off.
+
+## For non-testnet kinds
+
+For production runs, the manifest `kind:` selects the shape: `prod-uploaders`,
+`prod-canary`, `prod-continuous-downloader`, `prod-downloaders`, `prod-local-uploads`,
+`prod-local-downloads`. See `deploy/manifests/` for `PROD-UL-01.yaml`, `PROD-DL-01.yaml`,
+`CAN-01.yaml` examples. The `upload-runbook` / `download-runbook` / `extend-runbook`
+skills cover those flows; prefer producing a manifest there too.

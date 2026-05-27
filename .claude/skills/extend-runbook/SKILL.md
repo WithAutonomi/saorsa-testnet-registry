@@ -5,6 +5,13 @@ description: Interview the user to gather the spec for an _extension_ testnet (o
 
 # extend-runbook
 
+> **Prefer a declarative manifest.** `saorsa-deploy` now supports
+> `kind: testnet-extension` manifests run with `saorsa-deploy deployments up`/`down`/`plan`; the
+> orchestrator automatically skips the bootstrap/genesis stages and wires in
+> `deployments extend`/`unextend`. Set `extension.source:` to the source testnet. See
+> `deploy/README.md` §"Declarative manifests". Use that path unless the user
+> specifically wants a bash script.
+
 Generate an executable bash runbook that deploys an _extension_ testnet — a second testnet that peers with an existing testnet's bootstraps but has its own fresh node VMs, typically running a different `ant-node` binary for compatibility testing. Also emits a matching unextend runbook.
 
 ## Why this skill exists
