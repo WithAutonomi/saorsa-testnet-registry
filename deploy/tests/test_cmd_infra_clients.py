@@ -10,7 +10,7 @@ from saorsa_deploy.terraform import TerraformResult
 def _args(**overrides):
     defaults = {
         "name": "DEV-02",
-        "uploader": ["lon1:50", "nyc3:50"],
+        "uploader": ["digital_ocean:lon1:50", "digital_ocean:nyc3:50"],
         "downloader": [],
         "force": False,
     }

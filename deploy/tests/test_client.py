@@ -31,10 +31,11 @@ from saorsa_deploy.state import (
 
 
 class TestParseUploaderSpec:
-    def test_region_and_file_size(self):
-        result = parse_uploader_spec("lon1:50")
+    def test_provider_region_and_file_size(self):
+        result = parse_uploader_spec("digital_ocean:lon1:50")
         assert result == {
             "role": "upload",
+            "provider": "digitalocean",
             "region": "lon1",
             "file_size_mb": 50,
             "vm_size": "s-2vcpu-4gb",
@@ -43,10 +44,11 @@ class TestParseUploaderSpec:
             "eth_funding": "0.5",
         }
 
-    def test_region_file_size_and_vm_size(self):
-        result = parse_uploader_spec("nyc1:100:s-4vcpu-8gb")
+    def test_provider_region_file_size_and_vm_size(self):
+        result = parse_uploader_spec("digital_ocean:nyc1:100:s-4vcpu-8gb")
         assert result == {
             "role": "upload",
+            "provider": "digitalocean",
             "region": "nyc1",
             "file_size_mb": 100,
             "vm_size": "s-4vcpu-8gb",
@@ -55,70 +57,116 @@ class TestParseUploaderSpec:
             "eth_funding": "0.5",
         }
 
+    @pytest.mark.parametrize(
+        "token,internal",
+        [
+            ("digital_ocean", "digitalocean"),
+            ("digitalocean", "digitalocean"),
+            ("vultr", "vultr"),
+            ("hetzner", "hetzner"),
+            ("ovh", "ovh"),
+        ],
+    )
+    def test_all_providers_and_alias(self, token, internal):
+        result = parse_uploader_spec(f"{token}:somewhere:50")
+        assert result["provider"] == internal
+        assert result["region"] == "somewhere"
+
+    def test_provider_specific_region_and_size_pass_through(self):
+        # Region names and sizes vary per provider; they must pass verbatim.
+        result = parse_uploader_spec("ovh:EU-WEST-PAR:100:b3-16")
+        assert result["region"] == "EU-WEST-PAR"
+        assert result["vm_size"] == "b3-16"
+
+    def test_missing_provider_rejected(self):
+        # A bare region:file_size (the old format) is now too few parts.
+        with pytest.raises(ValueError, match="Invalid uploader spec"):
+            parse_uploader_spec("lon1:50")
+
+    def test_unknown_provider_rejected(self):
+        with pytest.raises(ValueError, match="Unknown provider"):
+            parse_uploader_spec("aws:lon1:50")
+
     def test_invalid_too_few_parts(self):
         with pytest.raises(ValueError, match="Invalid uploader spec"):
-            parse_uploader_spec("lon1")
+            parse_uploader_spec("digital_ocean:lon1")
 
     def test_invalid_too_many_parts(self):
         with pytest.raises(ValueError, match="Invalid uploader spec"):
-            parse_uploader_spec("lon1:50:s-2vcpu-4gb:extra")
+            parse_uploader_spec("digital_ocean:lon1:50:s-2vcpu-4gb:extra")
 
     def test_invalid_file_size(self):
         with pytest.raises(ValueError, match="Invalid file size"):
-            parse_uploader_spec("lon1:abc")
+            parse_uploader_spec("digital_ocean:lon1:abc")
 
     def test_zero_file_size(self):
-        result = parse_uploader_spec("lon1:0")
+        result = parse_uploader_spec("digital_ocean:lon1:0")
         assert result["file_size_mb"] == 0
 
     @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
     def test_payment_with_default_vm_size(self, payment_type):
-        result = parse_uploader_spec(f"lon1:50:payment={payment_type}")
+        result = parse_uploader_spec(
+            f"digital_ocean:lon1:50:payment={payment_type}"
+        )
         assert result["payment_type"] == payment_type
         assert result["vm_size"] == "s-2vcpu-4gb"
 
     def test_payment_with_explicit_vm_size(self):
-        result = parse_uploader_spec("nyc1:100:s-4vcpu-8gb:payment=no-merkle")
+        result = parse_uploader_spec(
+            "digital_ocean:nyc1:100:s-4vcpu-8gb:payment=no-merkle"
+        )
         assert result["payment_type"] == "no-merkle"
         assert result["vm_size"] == "s-4vcpu-8gb"
 
     def test_payment_invalid_value_rejected(self):
         with pytest.raises(ValueError, match="payment must be one of"):
-            parse_uploader_spec("lon1:50:payment=bogus")
+            parse_uploader_spec("digital_ocean:lon1:50:payment=bogus")
 
     def test_payment_unknown_key_rejected(self):
         with pytest.raises(ValueError, match="unknown key"):
-            parse_uploader_spec("lon1:50:bogus=x")
+            parse_uploader_spec("digital_ocean:lon1:50:bogus=x")
 
     def test_payment_duplicate_rejected(self):
         with pytest.raises(ValueError, match="duplicate key"):
-            parse_uploader_spec("lon1:50:payment=merkle:payment=no-merkle")
+            parse_uploader_spec(
+                "digital_ocean:lon1:50:payment=merkle:payment=no-merkle"
+            )
 
 
 class TestParseDownloaderSpec:
-    def test_region_only(self):
-        result = parse_downloader_spec("lon1")
+    def test_provider_and_region(self):
+        result = parse_downloader_spec("digital_ocean:lon1")
         assert result == {
             "role": "download",
+            "provider": "digitalocean",
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
         }
 
-    def test_region_and_vm_size(self):
-        result = parse_downloader_spec("nyc1:s-4vcpu-8gb")
+    def test_provider_region_and_vm_size(self):
+        result = parse_downloader_spec("vultr:nrt:vc2-4c-8gb")
         assert result == {
             "role": "download",
-            "region": "nyc1",
-            "vm_size": "s-4vcpu-8gb",
+            "provider": "vultr",
+            "region": "nrt",
+            "vm_size": "vc2-4c-8gb",
         }
+
+    def test_missing_provider_rejected(self):
+        with pytest.raises(ValueError, match="Invalid downloader spec"):
+            parse_downloader_spec("lon1")
+
+    def test_unknown_provider_rejected(self):
+        with pytest.raises(ValueError, match="Unknown provider"):
+            parse_downloader_spec("aws:lon1")
 
     def test_invalid_empty_region(self):
         with pytest.raises(ValueError, match="region cannot be empty"):
-            parse_downloader_spec("")
+            parse_downloader_spec("digital_ocean:")
 
     def test_invalid_too_many_parts(self):
         with pytest.raises(ValueError, match="Invalid downloader spec"):
-            parse_downloader_spec("lon1:s-2vcpu-4gb:extra")
+            parse_downloader_spec("digital_ocean:lon1:s-2vcpu-4gb:extra")
 
 
 # --- Client state management ---

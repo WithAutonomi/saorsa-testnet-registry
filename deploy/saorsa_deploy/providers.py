@@ -113,3 +113,93 @@ def resolve_regions(
             result.append((provider.name, region))
 
     return result
+
+
+@dataclass(frozen=True)
+class ClientProviderInfo:
+    """Per-provider configuration for client (uploader/downloader) VMs.
+
+    Client VMs are single-VM, storage-less variants of the node manifests.
+    Each provider ships its own Terraform manifest dir (``tf_dir``) and names
+    the VM-size Terraform variable differently (``size_var``): DigitalOcean
+    ``droplet_size``, Hetzner ``server_type``, Vultr ``plan``, OVH
+    ``flavor_name``. ``tf_resource_type`` / ``tf_resource_name`` /
+    ``tf_size_attr`` are used to recover a VM's size from orphan tfstate when
+    client state is missing.
+    """
+
+    name: str
+    tf_dir: str
+    size_var: str
+    state_key_prefix: str
+    tf_resource_type: str
+    tf_resource_name: str
+    tf_size_attr: str
+
+
+CLIENT_PROVIDERS: dict[str, ClientProviderInfo] = {
+    "digitalocean": ClientProviderInfo(
+        name="digitalocean",
+        tf_dir="digitalocean-client",
+        size_var="droplet_size",
+        state_key_prefix="saorsa-deploy/do-client",
+        tf_resource_type="digitalocean_droplet",
+        tf_resource_name="client_vm",
+        tf_size_attr="size",
+    ),
+    "vultr": ClientProviderInfo(
+        name="vultr",
+        tf_dir="vultr-client",
+        size_var="plan",
+        state_key_prefix="saorsa-deploy/vl-client",
+        tf_resource_type="vultr_instance",
+        tf_resource_name="client_vm",
+        tf_size_attr="plan",
+    ),
+    "hetzner": ClientProviderInfo(
+        name="hetzner",
+        tf_dir="hetzner-client",
+        size_var="server_type",
+        state_key_prefix="saorsa-deploy/hz-client",
+        tf_resource_type="hcloud_server",
+        tf_resource_name="client_vm",
+        tf_size_attr="server_type",
+    ),
+    "ovh": ClientProviderInfo(
+        name="ovh",
+        tf_dir="ovh-client",
+        size_var="flavor_name",
+        state_key_prefix="saorsa-deploy/ovh-client",
+        tf_resource_type="ovh_cloud_project_instance",
+        tf_resource_name="client_vm",
+        # flavor is stored as a flavor_id UUID, not the name; recovery falls
+        # back to the manifest default for OVH.
+        tf_size_attr="",
+    ),
+}
+
+# CLI provider tokens accepted in --uploader/--downloader specs, mapped to the
+# internal provider name. 'digital_ocean' is the documented client-spec
+# spelling; the internal/node-side name is 'digitalocean'.
+CLIENT_PROVIDER_ALIASES: dict[str, str] = {
+    "digital_ocean": "digitalocean",
+    "digitalocean": "digitalocean",
+    "vultr": "vultr",
+    "hetzner": "hetzner",
+    "ovh": "ovh",
+}
+
+
+def resolve_client_provider(token: str) -> ClientProviderInfo:
+    """Map a client-spec provider token to its :class:`ClientProviderInfo`.
+
+    Accepts the documented CLI spellings (e.g. ``digital_ocean``) and the
+    internal names. Raises ``ValueError`` on an unknown or empty provider.
+    """
+    internal = CLIENT_PROVIDER_ALIASES.get(token)
+    if internal is None:
+        valid = ", ".join(sorted(CLIENT_PROVIDER_ALIASES))
+        raise ValueError(
+            f"Unknown provider '{token}'. Valid providers: {valid}."
+        )
+    return CLIENT_PROVIDERS[internal]

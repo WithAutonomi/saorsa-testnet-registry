@@ -6,6 +6,7 @@ from pathlib import Path
 from rich.console import Console
 
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
+from saorsa_deploy.providers import CLIENT_PROVIDERS
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     delete_client_addresses_prefix,
@@ -25,7 +26,6 @@ from saorsa_deploy.wallet import (
     get_web3,
 )
 
-CLIENT_STATE_KEY_PREFIX = "saorsa-deploy/do-client"
 ROLE_UPLOAD = "upload"
 ROLE_DOWNLOAD = "download"
 VALID_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD)
@@ -59,7 +59,8 @@ def cmd_destroy_clients(args):
         role = c.get("role", ROLE_UPLOAD)
         console.print(
             f"  [dim]{role} #{c['client_index']}: {c.get('ip', 'N/A')} "
-            f"({c['region']}, {c['vm_size']})[/dim]"
+            f"({c.get('provider', 'digitalocean')}:{c['region']}, "
+            f"{c['vm_size']})[/dim]"
         )
     console.print()
 
@@ -101,19 +102,34 @@ def cmd_destroy_clients(args):
             skip_failures=getattr(args, "skip_drain_failures", False),
         )
 
+    # OVH destroy needs the project UUID for the provider to authenticate and
+    # target the right project, same as create.
+    ovh_service_name = None
+    if any((c.get("provider") or "digitalocean") == "ovh" for c in clients):
+        ovh_service_name = os.environ.get("OVH_CLOUD_PROJECT_SERVICE")
+        if not ovh_service_name:
+            console.print(
+                "[bold red]Error:[/bold red] OVH client(s) present but "
+                "OVH_CLOUD_PROJECT_SERVICE is not set; cannot destroy them. "
+                "Export it (the OVH Public Cloud project ID) and retry."
+            )
+            sys.exit(1)
+
     resources_dir = get_resources_dir()
-    tf_source = resources_dir / "digitalocean-client"
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
 
     configs = []
     for spec in clients:
         role = spec.get("role", ROLE_UPLOAD)
+        info = CLIENT_PROVIDERS[spec.get("provider") or "digitalocean"]
+        tf_source = resources_dir / info.tf_dir
         workspace_dir = (
             workspace_base
-            / f"do-client-{args.name}-{role}-{spec['region']}-{spec['client_index']}"
+            / f"{info.name}-client-{args.name}-{role}"
+            f"-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
-            f"{CLIENT_STATE_KEY_PREFIX}-{args.name}-{role}"
+            f"{info.state_key_prefix}-{args.name}-{role}"
             f"-{spec['region']}-{spec['client_index']}.tfstate"
         )
         variables = {
@@ -121,10 +137,12 @@ def cmd_destroy_clients(args):
             "role": role,
             "region": spec["region"],
             "client_index": str(spec["client_index"]),
-            "droplet_size": spec.get("vm_size", "s-2vcpu-4gb"),
+            info.size_var: spec.get("vm_size", "s-2vcpu-4gb"),
         }
+        if info.name == "ovh":
+            variables["service_name"] = ovh_service_name
         config = TerraformRunConfig(
-            provider="digitalocean",
+            provider=info.name,
             region=spec["region"],
             tf_source_dir=tf_source,
             workspace_dir=workspace_dir,
@@ -271,52 +289,60 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
     """Reconstruct client specs from S3-backed tfstate when client state is missing.
 
     Used when an earlier clients infra run crashed before saving client state,
-    leaving orphan droplets that clients destroy otherwise couldn't see.
+    leaving orphan VMs that clients destroy otherwise couldn't see. Scans every
+    provider's client-tfstate prefix so multi-provider deployments recover too.
     """
-    prefix = f"{CLIENT_STATE_KEY_PREFIX}-{name}-"
-    keys = list_terraform_state_keys(prefix)
-    if not keys:
-        return []
-
     recovered: list[dict] = []
-    for key in keys:
-        # Key shape: saorsa-deploy/do-client-{name}-{role}-{region}-{client_index}.tfstate
-        suffix = key[len(prefix) : -len(".tfstate")]
-        parts = suffix.split("-")
-        if len(parts) < 3 or not parts[-1].isdigit() or parts[0] not in VALID_ROLES:
-            console.print(
-                f"[yellow]Skipping unparseable tfstate key: {key}[/yellow]"
-            )
-            continue
-        role = parts[0]
-        client_index = int(parts[-1])
-        region = "-".join(parts[1:-1])
+    for info in CLIENT_PROVIDERS.values():
+        prefix = f"{info.state_key_prefix}-{name}-"
+        keys = list_terraform_state_keys(prefix)
+        for key in keys:
+            # Key shape:
+            # {state_key_prefix}-{name}-{role}-{region}-{client_index}.tfstate
+            suffix = key[len(prefix) : -len(".tfstate")]
+            parts = suffix.split("-")
+            if (
+                len(parts) < 3
+                or not parts[-1].isdigit()
+                or parts[0] not in VALID_ROLES
+            ):
+                console.print(
+                    f"[yellow]Skipping unparseable tfstate key: {key}[/yellow]"
+                )
+                continue
+            role = parts[0]
+            client_index = int(parts[-1])
+            region = "-".join(parts[1:-1])
 
-        vm_size = "s-2vcpu-4gb"
-        try:
-            tfstate = load_terraform_state(key)
-            droplet = terraform_state_attributes(
-                tfstate, "digitalocean_droplet", "client_vm"
-            )
-            if droplet and droplet.get("size"):
-                vm_size = droplet["size"]
-        except Exception:
-            # Empty/corrupt tfstate (e.g. the 181-byte init-only files from a
-            # failed create) — nothing to destroy; skip.
-            continue
+            vm_size = "s-2vcpu-4gb"
+            try:
+                tfstate = load_terraform_state(key)
+                if info.tf_size_attr:
+                    vm = terraform_state_attributes(
+                        tfstate, info.tf_resource_type, info.tf_resource_name
+                    )
+                    if vm and vm.get(info.tf_size_attr):
+                        vm_size = vm[info.tf_size_attr]
+            except Exception:
+                # Empty/corrupt tfstate (e.g. the init-only files from a failed
+                # create) — nothing to destroy; skip.
+                continue
 
-        entry = {
-            "role": role,
-            "region": region,
-            "client_index": client_index,
-            "vm_size": vm_size,
-            "ip": "",
-        }
-        if role == ROLE_UPLOAD:
-            entry["file_size_mb"] = 0
-        recovered.append(entry)
+            entry = {
+                "role": role,
+                "provider": info.name,
+                "region": region,
+                "client_index": client_index,
+                "vm_size": vm_size,
+                "ip": "",
+            }
+            if role == ROLE_UPLOAD:
+                entry["file_size_mb"] = 0
+            recovered.append(entry)
 
-    recovered.sort(key=lambda c: (c["role"], c["region"], c["client_index"]))
+    recovered.sort(
+        key=lambda c: (c["provider"], c["role"], c["region"], c["client_index"])
+    )
     console.print(
         f"[dim]Recovered {len(recovered)} client(s) from tfstate.[/dim]"
     )
