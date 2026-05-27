@@ -118,10 +118,12 @@ def _ensure_client_infra(args, console: Console) -> None:
         return
 
     console.print(f"[bold cyan]Step 3/5: creating downloader VM ({args.spec})[/bold cyan]")
+    # prod continuous-downloader is Digital Ocean only (--spec carries no
+    # provider field); prefix the provider parse_downloader_spec now requires.
     infra_args = SimpleNamespace(
         name=args.name,
         uploader=[],
-        downloader=[args.spec],
+        downloader=[f"digital_ocean:{args.spec}"],
         force=False,
     )
     cmd_infra_clients(infra_args)

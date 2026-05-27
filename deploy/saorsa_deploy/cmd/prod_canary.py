@@ -227,11 +227,16 @@ def _ensure_client_infra(
         )
         return
 
-    synth_uploader = [f"{upload_spec['region']}:0:{upload_spec['vm_size']}"]
+    # prod canary VMs are Digital Ocean only (the upload/probe specs carry no
+    # provider field), so synthesise client specs with the digital_ocean
+    # provider that parse_uploader_spec / parse_downloader_spec now require.
+    synth_uploader = [
+        f"digital_ocean:{upload_spec['region']}:0:{upload_spec['vm_size']}"
+    ]
     synth_downloaders: list[str] = []
     for ps in probe_specs:
         for _ in range(ps["count"]):
-            synth_downloaders.append(f"{ps['region']}:{ps['vm_size']}")
+            synth_downloaders.append(f"digital_ocean:{ps['region']}:{ps['vm_size']}")
 
     console.print(
         f"[bold cyan]Step 3/5: creating 1 upload VM + "

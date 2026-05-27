@@ -263,10 +263,12 @@ def _ensure_monitoring(args, console: Console) -> None:
 def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> None:
     """Create the uploader VMs via clients infra.
 
-    The existing clients infra parser expects testnet uploader specs of the
-    form ``region:file_size_mb[:vm_size]``. We synthesise those with
-    file_size_mb=0 because that field is only consumed by the legacy testnet
-    uploader.sh and is unused for prod uploads.
+    The existing clients infra parser expects uploader specs of the form
+    ``provider:region:file_size_mb[:vm_size]``. We synthesise those with the
+    ``digital_ocean`` provider (prod uploaders are Digital Ocean only — the
+    ``--uploader`` spec carries no provider field) and file_size_mb=0 because
+    that field is only consumed by the legacy testnet uploader.sh and is
+    unused for prod uploads.
     """
     from saorsa_deploy.cmd.infra_clients import cmd_infra_clients
 
@@ -278,7 +280,7 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
         return
 
     synth_uploader_specs = [
-        f"{s['region']}:0:{s['vm_size']}"
+        f"digital_ocean:{s['region']}:0:{s['vm_size']}"
         for s in parsed_specs
     ]
     console.print(

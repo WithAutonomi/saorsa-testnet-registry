@@ -198,7 +198,7 @@ class TestDeployHappyPath:
 
         infra_args = deploy_patches.infra_clients.call_args.args[0]
         assert infra_args.uploader == []
-        assert infra_args.downloader == ["nyc1:s-4vcpu-8gb"]
+        assert infra_args.downloader == ["digital_ocean:nyc1:s-4vcpu-8gb"]
 
 
 class TestDeployFailure:
