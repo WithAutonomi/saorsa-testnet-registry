@@ -3,6 +3,7 @@ import sys
 
 from rich.console import Console
 
+from saorsa_deploy.binary_source import validate_branch_exists
 from saorsa_deploy.build_droplet import create_build_vm, destroy_build_vm, wait_for_ssh
 from saorsa_deploy.provisioning.build import AntNodeBuilder
 from saorsa_deploy.ssh import clear_known_hosts
@@ -16,6 +17,12 @@ def cmd_build(args):
         if not os.environ.get(var):
             console.print(f"[bold red]Error:[/bold red] {var} environment variable is not set")
             sys.exit(1)
+
+    try:
+        validate_branch_exists(args.repo_owner, "ant-node", args.branch_name)
+    except (ValueError, RuntimeError) as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
 
     console.print(
         f"[bold]Building ant-node from {args.repo_owner}/ant-node "

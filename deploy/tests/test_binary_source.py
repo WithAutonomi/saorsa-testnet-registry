@@ -1,3 +1,4 @@
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import botocore.exceptions
@@ -11,6 +12,8 @@ from saorsa_deploy.binary_source import (
     check_release_exists,
     get_custom_build_url,
     get_release_url,
+    remote_branch_exists,
+    validate_branch_exists,
 )
 
 
@@ -148,3 +151,81 @@ class TestCheckCustomBuildExists:
         mock_boto_client.return_value = mock_s3
 
         assert check_custom_build_exists("DEV-01", "myorg", "nonexistent") is False
+
+
+class TestRemoteBranchExists:
+    @patch("saorsa_deploy.binary_source.subprocess.run")
+    def test_true_when_ref_found(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="abc123\trefs/heads/feature-x\n", stderr=""
+        )
+
+        assert remote_branch_exists("myorg", "ant-client", "feature-x") is True
+        mock_run.assert_called_once()
+        call = mock_run.call_args
+        assert call.args[0] == [
+            "git",
+            "ls-remote",
+            "--heads",
+            "--tags",
+            "https://github.com/myorg/ant-client.git",
+            "feature-x",
+        ]
+        assert call.kwargs["capture_output"] is True
+        assert call.kwargs["text"] is True
+        assert call.kwargs["timeout"] == 30
+        # Git must be forced non-interactive so a 401 errors out instead of
+        # prompting for credentials on the terminal.
+        assert call.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    @patch("saorsa_deploy.binary_source.subprocess.run")
+    def test_false_when_ref_absent(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        assert remote_branch_exists("myorg", "ant-node", "nope") is False
+
+    @patch("saorsa_deploy.binary_source.subprocess.run")
+    def test_raises_when_git_fails(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=128, stdout="", stderr="fatal: repository not found"
+        )
+
+        with pytest.raises(RuntimeError, match="repository not found"):
+            remote_branch_exists("badorg", "ant-node", "main")
+
+    @patch("saorsa_deploy.binary_source.subprocess.run")
+    def test_raises_clear_message_on_401(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=128,
+            stdout="",
+            stderr="fatal: could not read Username for 'https://github.com': "
+            "terminal prompts disabled",
+        )
+
+        with pytest.raises(RuntimeError, match="not found or is private"):
+            remote_branch_exists("wrongowner", "ant-client", "some-branch")
+
+    @patch("saorsa_deploy.binary_source.subprocess.run")
+    def test_raises_on_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=30)
+
+        with pytest.raises(RuntimeError, match="Timed out"):
+            remote_branch_exists("myorg", "ant-node", "main")
+
+    @patch("saorsa_deploy.binary_source.subprocess.run")
+    def test_raises_when_git_missing(self, mock_run):
+        mock_run.side_effect = FileNotFoundError()
+
+        with pytest.raises(RuntimeError, match="git executable not found"):
+            remote_branch_exists("myorg", "ant-node", "main")
+
+
+class TestValidateBranchExists:
+    @patch("saorsa_deploy.binary_source.remote_branch_exists", return_value=True)
+    def test_passes_silently_when_found(self, _mock_exists):
+        validate_branch_exists("myorg", "ant-client", "feature-x")
+
+    @patch("saorsa_deploy.binary_source.remote_branch_exists", return_value=False)
+    def test_raises_value_error_when_missing(self, _mock_exists):
+        with pytest.raises(ValueError, match="was not found"):
+            validate_branch_exists("myorg", "ant-client", "feature-x")

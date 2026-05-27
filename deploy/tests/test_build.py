@@ -6,6 +6,7 @@ import pytest
 
 
 class TestCmdBuild:
+    @patch("saorsa_deploy.cmd.build.validate_branch_exists")
     @patch("saorsa_deploy.cmd.build.clear_known_hosts")
     @patch("saorsa_deploy.cmd.build.AntNodeBuilder")
     @patch("saorsa_deploy.cmd.build.wait_for_ssh")
@@ -18,6 +19,7 @@ class TestCmdBuild:
         mock_wait_ssh,
         mock_builder_cls,
         mock_clear_hosts,
+        mock_validate,
     ):
         os.environ["ANT_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
         os.environ["ANT_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
@@ -38,9 +40,11 @@ class TestCmdBuild:
                 ssh_key_path="~/.ssh/id_rsa",
                 validation_string=None,
                 build_vm_size=None,
+                musl=False,
             )
             cmd_build(args)
 
+            mock_validate.assert_called_once_with("myorg", "ant-node", "feature-x")
             mock_create.assert_called_once_with("ant-node", "DEV-01", "myorg", "feature-x", None)
             mock_wait_ssh.assert_called_once_with("1.2.3.4")
             mock_clear_hosts.assert_called_once()
@@ -71,6 +75,33 @@ class TestCmdBuild:
 
         mock_create.assert_not_called()
 
+    @patch("saorsa_deploy.cmd.build.create_build_vm")
+    @patch("saorsa_deploy.cmd.build.validate_branch_exists")
+    def test_exits_before_droplet_when_branch_missing(self, mock_validate, mock_create):
+        os.environ["ANT_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
+        os.environ["ANT_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
+        mock_validate.side_effect = ValueError("Branch 'nope' was not found")
+        try:
+            from saorsa_deploy.cmd.build import cmd_build
+
+            args = SimpleNamespace(
+                name="DEV-01",
+                branch_name="nope",
+                repo_owner="myorg",
+                ssh_key_path="~/.ssh/id_rsa",
+                validation_string=None,
+                build_vm_size=None,
+            )
+            with pytest.raises(SystemExit):
+                cmd_build(args)
+
+            mock_validate.assert_called_once_with("myorg", "ant-node", "nope")
+            mock_create.assert_not_called()
+        finally:
+            os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)
+            os.environ.pop("ANT_BUILD_AWS_SECRET_ACCESS_KEY", None)
+
+    @patch("saorsa_deploy.cmd.build.validate_branch_exists")
     @patch("saorsa_deploy.cmd.build.clear_known_hosts")
     @patch("saorsa_deploy.cmd.build.AntNodeBuilder")
     @patch("saorsa_deploy.cmd.build.wait_for_ssh")
@@ -83,6 +114,7 @@ class TestCmdBuild:
         mock_wait_ssh,
         mock_builder_cls,
         mock_clear_hosts,
+        mock_validate,
     ):
         os.environ["ANT_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
         os.environ["ANT_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
@@ -103,6 +135,7 @@ class TestCmdBuild:
                 ssh_key_path="~/.ssh/id_rsa",
                 validation_string=None,
                 build_vm_size=None,
+                musl=False,
             )
             with pytest.raises(SystemExit):
                 cmd_build(args)
@@ -112,6 +145,7 @@ class TestCmdBuild:
             os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)
             os.environ.pop("ANT_BUILD_AWS_SECRET_ACCESS_KEY", None)
 
+    @patch("saorsa_deploy.cmd.build.validate_branch_exists")
     @patch("saorsa_deploy.cmd.build.clear_known_hosts")
     @patch("saorsa_deploy.cmd.build.AntNodeBuilder")
     @patch("saorsa_deploy.cmd.build.wait_for_ssh")
@@ -124,6 +158,7 @@ class TestCmdBuild:
         mock_wait_ssh,
         mock_builder_cls,
         mock_clear_hosts,
+        mock_validate,
     ):
         os.environ["ANT_BUILD_AWS_ACCESS_KEY_ID"] = "test-key"
         os.environ["ANT_BUILD_AWS_SECRET_ACCESS_KEY"] = "test-secret"
@@ -144,6 +179,7 @@ class TestCmdBuild:
                 ssh_key_path="~/.ssh/id_rsa",
                 validation_string="v0.42.0",
                 build_vm_size=None,
+                musl=False,
             )
             cmd_build(args)
 
@@ -155,6 +191,7 @@ class TestCmdBuild:
                 branch_name="feature-x",
                 console=mock_builder_cls.call_args[1]["console"],
                 validation_string="v0.42.0",
+                musl=False,
             )
         finally:
             os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)
