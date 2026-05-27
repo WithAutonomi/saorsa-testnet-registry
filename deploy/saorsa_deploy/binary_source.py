@@ -1,3 +1,6 @@
+import os
+import subprocess
+
 import boto3
 import botocore.exceptions
 import requests
@@ -8,6 +11,62 @@ RELEASE_ASSET_NAME = "ant-node-cli-linux-x64.tar.gz"
 BUILDS_BUCKET = "ant-node-builds"
 BUILDS_REGION = "eu-west-2"
 BUILDS_KEY_PREFIX = "builds"
+
+
+def remote_branch_exists(repo_owner: str, repo_name: str, branch_name: str) -> bool:
+    """Return True if ``branch_name`` resolves to a ref on the remote GitHub repo.
+
+    Uses ``git ls-remote --heads --tags`` so both branches and tags are accepted
+    (``git clone --branch`` accepts either). No authentication is required for
+    public repos. Raises RuntimeError if git itself fails to reach the remote.
+
+    Git is forced into non-interactive mode: when the repo or branch is missing
+    (or the repo is private), GitHub answers HTTPS with a 401, which would
+    otherwise make git prompt for a username/password on the terminal. The env
+    overrides below turn that prompt into a clean non-zero exit instead.
+    """
+    url = f"https://github.com/{repo_owner}/{repo_name}.git"
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "",
+        "GCM_INTERACTIVE": "never",
+    }
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", "--tags", url, branch_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("git executable not found on PATH") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"Timed out querying {url} for branch '{branch_name}'") from e
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        # A 401 over HTTPS (with prompts disabled) means the repo does not exist
+        # or is private — almost always a wrong --repo-owner.
+        if "could not read Username" in stderr or "Authentication failed" in stderr:
+            raise RuntimeError(
+                f"Repository {url} was not found or is private "
+                f"(GitHub returned 401). Check --repo-owner."
+            )
+        raise RuntimeError(f"Failed to query {url}: {stderr or 'git ls-remote failed'}")
+
+    return bool(result.stdout.strip())
+
+
+def validate_branch_exists(repo_owner: str, repo_name: str, branch_name: str) -> None:
+    """Raise ValueError if ``branch_name`` does not exist on the remote repo."""
+    if not remote_branch_exists(repo_owner, repo_name, branch_name):
+        raise ValueError(
+            f"Branch '{branch_name}' was not found on "
+            f"https://github.com/{repo_owner}/{repo_name}. "
+            f"Check --repo-owner and --branch-name."
+        )
 
 
 def get_release_url(version: str | None = None) -> str:
