@@ -708,6 +708,17 @@ def main(argv=None):
         action="store_true",
         help="Print the destroy plan without executing it.",
     )
+    deployments_down_parser.add_argument(
+        "--skip-drain-failures",
+        action="store_true",
+        help=(
+            "Pass --skip-drain-failures to the clients-destroy step so teardown "
+            "proceeds even if one or more per-uploader wallet drains fail. Use "
+            "when a drain keeps erroring (e.g. nonce/balance issues) and you "
+            "just need to tear the deployment down; abandoned dust is reported "
+            "but no longer blocks the destroy."
+        ),
+    )
 
     # deployments edit-analysis-summary
     deployments_edit_analysis_summary_parser = deployments_subparsers.add_parser(

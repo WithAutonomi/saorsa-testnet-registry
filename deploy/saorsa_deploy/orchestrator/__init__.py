@@ -35,18 +35,28 @@ def build_deploy_steps(manifest: Manifest) -> list[Step]:
     return prod.build_deploy_steps(manifest)
 
 
-def build_destroy_steps(manifest: Manifest) -> list[Step]:
+def build_destroy_steps(
+    manifest: Manifest, *, skip_drain_failures: bool = False
+) -> list[Step]:
     kind = manifest.kind
     if kind == "testnet":
-        return build_testnet_destroy_steps(manifest)
+        return build_testnet_destroy_steps(
+            manifest, skip_drain_failures=skip_drain_failures
+        )
     if kind == "testnet-extension":
-        return build_extension_destroy_steps(manifest)
+        return build_extension_destroy_steps(
+            manifest, skip_drain_failures=skip_drain_failures
+        )
     from saorsa_deploy.orchestrator import prod
 
+    # prod-* kinds tear down via their own `prod <kind> destroy` command, which
+    # has no --skip-drain-failures flag, so the flag does not apply there.
     return prod.build_destroy_steps(manifest)
 
 
-def build_destroy_steps_from_state(name: str) -> list[Step]:
+def build_destroy_steps_from_state(
+    name: str, *, skip_drain_failures: bool = False
+) -> list[Step]:
     """Destroy steps derived from what actually exists in S3 state — for a
     name-only ``down`` (no manifest).
 
@@ -55,6 +65,10 @@ def build_destroy_steps_from_state(name: str) -> list[Step]:
     bootstraps → elastic → monitoring). It covers testnet/extension deployments;
     prod-* kinds are single-command deployments with no testnet state — use
     their ``prod <kind> destroy --name`` command (or ``down --config``).
+
+    When ``skip_drain_failures`` is set, the clients-destroy step is told to
+    proceed with teardown even if draining a per-uploader wallet fails (the
+    abandoned dust is reported but no longer blocks the destroy).
     """
     from saorsa_deploy.state import (
         load_client_state,
@@ -71,9 +85,10 @@ def build_destroy_steps_from_state(name: str) -> list[Step]:
 
     steps: list[Step] = []
     if _exists(load_client_state):
-        steps.append(
-            Step(["clients", "destroy", "--name", name, "--force"], "Destroy clients")
-        )
+        clients_argv = ["clients", "destroy", "--name", name, "--force"]
+        if skip_drain_failures:
+            clients_argv.append("--skip-drain-failures")
+        steps.append(Step(clients_argv, "Destroy clients"))
     if _exists(load_deployment_state):
         steps.append(
             Step(["nodes", "destroy", "--name", name, "--force"], "Destroy nodes")

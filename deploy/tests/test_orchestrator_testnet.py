@@ -289,6 +289,23 @@ def test_stg01_destroy_sequence():
     ]
 
 
+def test_stg01_destroy_skip_drain_failures():
+    # The flag rides only on the clients-destroy step; every other step is
+    # identical to the default sequence.
+    manifest = Manifest.model_validate(STG_01)
+    steps = _argvs(build_destroy_steps(manifest, skip_drain_failures=True))
+    assert steps[0] == [
+        "clients", "destroy", "--name", "STG-01", "--force",
+        "--skip-drain-failures",
+    ]
+    assert steps[1:] == [
+        ["nodes", "destroy", "--name", "STG-01", "--force"],
+        ["bootstraps", "destroy", "--name", "STG-01", "--force"],
+        ["elastic", "destroy", "--name", "STG-01", "--force"],
+        ["monitoring", "destroy", "--name", "STG-01", "--force"],
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # invariants
 # --------------------------------------------------------------------------- #

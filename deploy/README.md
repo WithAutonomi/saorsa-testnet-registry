@@ -47,6 +47,12 @@ bootstraps → elastic → monitoring), while `down --config <manifest>` mirrors
 specific manifest's components. (prod-* kinds are single-command deployments —
 tear them down with their own `prod <kind> destroy --name`, or `down --config`.)
 
+Pass `--skip-drain-failures` to forward the same flag to the clients-destroy
+step, so teardown proceeds even when draining a per-uploader wallet keeps
+failing (e.g. a stuck nonce or too little ETH to cover the drain). The
+abandoned dust is reported but no longer blocks the destroy. Without it, a
+drain failure aborts `down` at step 1 so funds aren't silently lost.
+
 Reusable profiles are committed under `deploy/manifests/profiles/`
 (`reference.yaml` shows every option); your concrete run manifests live in the
 git-ignored `deploy/manifests/runs/` — they pin versions/branches and churn per
