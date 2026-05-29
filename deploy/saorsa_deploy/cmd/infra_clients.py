@@ -22,9 +22,22 @@ ROLE_DOWNLOAD = "download"
 
 
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
-_VALID_UPLOADER_KEYS = ("payment", "ant", "eth")
+_VALID_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew")
+_VALID_DOWNLOADER_KEYS = ("clock_skew",)
 DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
+
+
+def _parse_clock_skew(spec: str, value: str) -> bool:
+    """Validate and parse a ``clock_skew=`` spec option into a bool."""
+    lowered = value.strip().lower()
+    if lowered in ("true", "1", "yes"):
+        return True
+    if lowered in ("false", "0", "no"):
+        return False
+    raise ValueError(
+        f"Invalid spec '{spec}': clock_skew must be true or false, got '{value}'."
+    )
 
 
 def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
@@ -50,7 +63,7 @@ def parse_uploader_spec(spec: str) -> dict:
     """Parse an uploader spec.
 
     Format:
-    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]``
+    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=true]``
 
     ``provider`` is mandatory and must be one of digital_ocean, vultr,
     hetzner, ovh. Region names and VM sizes vary per provider and are passed
@@ -118,6 +131,11 @@ def parse_uploader_spec(spec: str) -> dict:
         if "eth" in options
         else DEFAULT_ETH_FUNDING
     )
+    clock_skew = (
+        _parse_clock_skew(spec, options["clock_skew"])
+        if "clock_skew" in options
+        else False
+    )
 
     return {
         "role": ROLE_UPLOAD,
@@ -128,35 +146,59 @@ def parse_uploader_spec(spec: str) -> dict:
         "payment_type": payment_type,
         "ant_funding": ant_funding,
         "eth_funding": eth_funding,
+        "clock_skew": clock_skew,
     }
 
 
 def parse_downloader_spec(spec: str) -> dict:
-    """Parse a downloader spec: 'provider:region[:vm_size]'.
+    """Parse a downloader spec: 'provider:region[:vm_size][:clock_skew=true]'.
 
     ``provider`` is mandatory (digital_ocean, vultr, hetzner, ovh). Returns a
     dict with keys: role=download, provider (canonical internal name), region,
-    vm_size.
+    vm_size, clock_skew (bool, default False).
     """
-    parts = spec.split(":")
-    if len(parts) < 2 or len(parts) > 3:
+    raw_parts = spec.split(":")
+    positional: list[str] = []
+    options: dict[str, str] = {}
+    for part in raw_parts:
+        if "=" in part:
+            key, value = part.split("=", 1)
+            if key not in _VALID_DOWNLOADER_KEYS:
+                raise ValueError(
+                    f"Invalid downloader spec '{spec}': unknown key '{key}'."
+                )
+            if key in options:
+                raise ValueError(
+                    f"Invalid downloader spec '{spec}': duplicate key '{key}'."
+                )
+            options[key] = value
+        else:
+            positional.append(part)
+
+    if len(positional) < 2 or len(positional) > 3:
         raise ValueError(
             f"Invalid downloader spec '{spec}'. "
-            f"Expected format: provider:region[:vm_size]"
+            f"Expected format: provider:region[:vm_size][:clock_skew=true]"
         )
     try:
-        provider = resolve_client_provider(parts[0]).name
+        provider = resolve_client_provider(positional[0]).name
     except ValueError as e:
         raise ValueError(f"Invalid downloader spec '{spec}': {e}")
-    region = parts[1]
+    region = positional[1]
     if not region:
         raise ValueError(f"Invalid downloader spec '{spec}': region cannot be empty.")
-    vm_size = parts[2] if len(parts) == 3 else DEFAULT_VM_SIZE
+    vm_size = positional[2] if len(positional) == 3 else DEFAULT_VM_SIZE
+    clock_skew = (
+        _parse_clock_skew(spec, options["clock_skew"])
+        if "clock_skew" in options
+        else False
+    )
     return {
         "role": ROLE_DOWNLOAD,
         "provider": provider,
         "region": region,
         "vm_size": vm_size,
+        "clock_skew": clock_skew,
     }
 
 
@@ -172,6 +214,7 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("payment_type"),
         spec.get("ant_funding"),
         spec.get("eth_funding"),
+        bool(spec.get("clock_skew")),
     )
 
 
@@ -213,6 +256,7 @@ def cmd_infra_clients(args):
 
     console.print(f"[bold]Creating {len(client_specs)} client VM(s) for {args.name}...[/bold]")
     for spec in client_specs:
+        skew_str = ", clock-skew" if spec.get("clock_skew") else ""
         if spec["role"] == ROLE_UPLOAD:
             payment = spec.get("payment_type")
             payment_str = f", payment={payment}" if payment else ""
@@ -222,12 +266,12 @@ def cmd_infra_clients(args):
                 f"  Uploader #{spec['client_index']}: {spec['provider']}:"
                 f"{spec['region']} "
                 f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads"
-                f"{payment_str}, fund {ant} ANT + {eth} ETH)"
+                f"{payment_str}, fund {ant} ANT + {eth} ETH{skew_str})"
             )
         else:
             console.print(
                 f"  Downloader #{spec['client_index']}: {spec['provider']}:"
-                f"{spec['region']} ({spec['vm_size']})"
+                f"{spec['region']} ({spec['vm_size']}{skew_str})"
             )
     console.print()
 
@@ -251,10 +295,11 @@ def cmd_infra_clients(args):
             )
             for spec in existing_clients:
                 label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
+                skew_str = ", clock-skew" if spec.get("clock_skew") else ""
                 console.print(
                     f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
                     f"({spec.get('provider', 'digitalocean')}:{spec['region']}, "
-                    f"{spec['vm_size']})"
+                    f"{spec['vm_size']}{skew_str})"
                 )
             return
         console.print(

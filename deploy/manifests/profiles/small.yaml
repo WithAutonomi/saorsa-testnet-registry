@@ -13,31 +13,27 @@ ssh_key_path: ~/.ssh/ant_deploy
 
 testnet:
   mode: true
-
   bootstraps:
     count: 7
     port: 10000
 
   nodes:
-    per_vm: 5                # ant-node services per VM (20 VMs × 5 = 100 nodes)
+    clock_skew: 1
+    per_vm: 5
     providers:
       digital_ocean:
-        vm_count: 5          # per region
-        regions: 2           # 5 × 2 = 10 VMs
+        vm_count: 5
+        regions: 2
         size: s-2vcpu-4gb
       vultr:
-        vm_count: 5                 # per region
-        regions_list: [ord, lax]    # 5 × 2 = 10 VMs. ewr omitted — it repeatedly
-                                     # strands VMs in 'pending', stalling the apply.
-        # vhp (High Performance), NOT vc2: node VMs attach a block-storage volume,
-        # and vc2 Cloud Compute plans reject Vultr's default volume type.
+        vm_count: 5
+        regions_list: [ord, lax]
         size: vhp-2c-4gb-intel
 
   clients:
-    # A couple of uploaders publishing 10 MB files. At least one downloader is
-    # required — it consumes the addresses the uploaders publish.
     uploaders:
       - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.04 }
-      - { provider: digital_ocean, region: nyc1, file_size_mb: 10, ant: 200, eth: 0.04 }
+      - { provider: digital_ocean, clock_skew: true, region: nyc1, file_size_mb: 10, ant: 200, eth: 0.04 }
     downloaders:
       - { provider: digital_ocean, region: lon1 }
+      - { provider: digital_ocean, clock_skew: true, region: lon1 }

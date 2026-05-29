@@ -11,6 +11,10 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
 )
 from saorsa_deploy.provisioning.bootstrap import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
+from saorsa_deploy.provisioning.clock_skew import (
+    build_clock_skew_command,
+    skew_direction_for_ip,
+)
 from saorsa_deploy.provisioning.nat import NAT_IP_EXEC_PREFIX, build_nat_setup_command
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
@@ -132,6 +136,7 @@ class AntNodeProvisioner:
         upgrade_channel: str | None = None,
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         nat_ips: set[str] | None = None,
+        clock_skew_ips: set[str] | None = None,
         evm_network: str | None = "arbitrum-sepolia",
         restart_policy: str = "on-success",
         restart_sec: int = 5,
@@ -150,6 +155,7 @@ class AntNodeProvisioner:
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
         self.nat_ips = set(nat_ips) if nat_ips else set()
+        self.clock_skew_ips = set(clock_skew_ips) if clock_skew_ips else set()
         self.evm_network = evm_network
         self.restart_policy = restart_policy
         self.restart_sec = restart_sec
@@ -204,6 +210,12 @@ class AntNodeProvisioner:
                 f"{len(self.host_ips)} host(s).[/cyan]"
             )
 
+        if self.clock_skew_ips:
+            self.console.print(
+                f"[cyan]Clock skew enabled on {len(self.clock_skew_ips)}/"
+                f"{len(self.host_ips)} host(s).[/cyan]"
+            )
+
         hosts_data = [
             (ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
@@ -224,6 +236,7 @@ class AntNodeProvisioner:
             active_hosts = list(state.inventory.get_active_hosts())
             nat_hosts = [h for h in active_hosts if h.name in self.nat_ips]
             plain_hosts = [h for h in active_hosts if h.name not in self.nat_ips]
+            skew_hosts = [h for h in active_hosts if h.name in self.clock_skew_ips]
 
             add_op(
                 state,
@@ -275,6 +288,18 @@ class AntNodeProvisioner:
                 name="Download and install ant-node binary",
                 commands=[install_cmd],
             )
+
+            # Inject clock skew per-host: each selected host shifts by a fixed
+            # magnitude in a per-host direction, so we add one op per host.
+            for host in skew_hosts:
+                direction = skew_direction_for_ip(host.name)
+                add_op(
+                    state,
+                    server.shell,
+                    name=f"Inject clock skew ({'fast' if direction >= 0 else 'slow'})",
+                    commands=[build_clock_skew_command(direction)],
+                    host=[host],
+                )
 
             if nat_hosts:
                 add_op(

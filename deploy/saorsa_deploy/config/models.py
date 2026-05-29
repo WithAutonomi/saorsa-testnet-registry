@@ -105,6 +105,7 @@ class ProviderNodes(_Base):
 class Nodes(_Base):
     per_vm: int  # nodes provision --node-count
     nat_percent: Optional[int] = None
+    clock_skew: Optional[int] = None  # nodes provision --clock-skew-count (N random hosts)
     attached_volume_size: Optional[int] = None
     providers: dict[str, ProviderNodes]
 
@@ -130,12 +131,14 @@ class Uploader(_Base):
     payment: Optional[Payment] = None
     ant: Optional[str] = None  # wallet funding (ANT tokens)
     eth: Optional[str] = None  # wallet funding (ETH)
+    clock_skew: bool = False  # inject intentional clock skew on this VM
 
 
 class Downloader(_Base):
     provider: str
     region: str
     vm_size: Optional[str] = None
+    clock_skew: bool = False  # inject intentional clock skew on this VM
 
 
 class Clients(_Base):

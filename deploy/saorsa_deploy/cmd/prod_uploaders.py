@@ -49,8 +49,21 @@ MONITORING_REGION = "lon1"
 DEFAULT_MONITORING_VOLUME_SIZE = 50
 
 
-_KNOWN_SPEC_KEYS = ("urls", "payment")
+_KNOWN_SPEC_KEYS = ("urls", "payment", "clock_skew")
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
+
+
+def _parse_clock_skew_token(spec: str, value: str) -> bool:
+    """Validate and parse a ``clock_skew=`` uploader-spec token into a bool."""
+    lowered = value.strip().lower()
+    if lowered in ("true", "1", "yes"):
+        return True
+    if lowered in ("false", "0", "no"):
+        return False
+    raise ValueError(
+        f"Invalid uploader spec '{spec}': clock_skew must be true or false, "
+        f"got '{value}'."
+    )
 
 
 def parse_prod_uploader_spec(spec: str) -> dict:
@@ -123,11 +136,18 @@ def parse_prod_uploader_spec(spec: str) -> dict:
             f"{', '.join(_VALID_PAYMENT_VALUES)}."
         )
 
+    clock_skew = (
+        _parse_clock_skew_token(spec, options["clock_skew"])
+        if "clock_skew" in options
+        else False
+    )
+
     return {
         "region": region,
         "vm_size": vm_size,
         "urls_file": urls_file,
         "payment_type": payment_type,
+        "clock_skew": clock_skew,
     }
 
 
@@ -334,6 +354,7 @@ def _provision_uploaders(
             "client_index": client["client_index"],
             "urls_file_content": spec["_urls_file_content"],
             "payment_type": spec.get("payment_type"),
+            "clock_skew": spec.get("clock_skew", False),
         })
 
     secret_key = _resolve_secret_key(args, console)
@@ -477,6 +498,7 @@ def cmd_prod_uploaders_deploy(args):
                 "urls_file": s["urls_file"],
                 "file_names": _extract_file_names(s["_urls_file_content"]),
                 "payment_type": s.get("payment_type"),
+                "clock_skew": s.get("clock_skew", False),
             }
             for s in parsed_specs
         ],

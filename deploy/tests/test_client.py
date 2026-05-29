@@ -42,6 +42,7 @@ class TestParseUploaderSpec:
             "payment_type": None,
             "ant_funding": "100",
             "eth_funding": "0.5",
+            "clock_skew": False,
         }
 
     def test_provider_region_file_size_and_vm_size(self):
@@ -55,6 +56,7 @@ class TestParseUploaderSpec:
             "payment_type": None,
             "ant_funding": "100",
             "eth_funding": "0.5",
+            "clock_skew": False,
         }
 
     @pytest.mark.parametrize(
@@ -141,6 +143,7 @@ class TestParseDownloaderSpec:
             "provider": "digitalocean",
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
+            "clock_skew": False,
         }
 
     def test_provider_region_and_vm_size(self):
@@ -150,6 +153,7 @@ class TestParseDownloaderSpec:
             "provider": "vultr",
             "region": "nrt",
             "vm_size": "vc2-4c-8gb",
+            "clock_skew": False,
         }
 
     def test_missing_provider_rejected(self):

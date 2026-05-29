@@ -200,6 +200,7 @@ def _provision_prod_downloader(
             "ip": c["ip"],
             "region": c.get("region", "unknown"),
             "addresses_file_content": addresses_file_content,
+            "clock_skew": getattr(args, "clock_skew", False),
         }
         for c in clients
         if c.get("ip")
@@ -333,6 +334,7 @@ def cmd_prod_downloaders_deploy(args):
         "addresses": addresses_list,
         "monitoring_name": args.name,
         "spec": args.spec,
+        "clock_skew": getattr(args, "clock_skew", False),
         "purpose": args.purpose,
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version

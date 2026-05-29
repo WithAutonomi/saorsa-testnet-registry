@@ -53,6 +53,8 @@ def _uploader_spec(u) -> str:
         parts.append(f"ant={u.ant}")
     if u.eth is not None:
         parts.append(f"eth={u.eth}")
+    if u.clock_skew:
+        parts.append("clock_skew=true")
     return ":".join(parts)
 
 
@@ -60,6 +62,8 @@ def _downloader_spec(d) -> str:
     parts = [d.provider, d.region]
     if d.vm_size:
         parts.append(d.vm_size)
+    if d.clock_skew:
+        parts.append("clock_skew=true")
     return ":".join(parts)
 
 
@@ -190,6 +194,10 @@ def _provision_and_start_steps(
         # keep --nat-percent adjacent to other nodes-provision flags, before ssh key
         idx = nodes_argv.index("--ssh-key-path")
         nodes_argv[idx:idx] = ["--nat-percent", str(nodes.nat_percent)]
+    if nodes.clock_skew is not None:
+        # keep --clock-skew-count adjacent to other nodes-provision flags
+        idx = nodes_argv.index("--ssh-key-path")
+        nodes_argv[idx:idx] = ["--clock-skew-count", str(nodes.clock_skew)]
     steps.append(Step(nodes_argv, "Provision nodes"))
 
     steps.append(Step(["nodes", "start", "--name", name, "--ssh-key-path", ssh_key], "Start nodes"))

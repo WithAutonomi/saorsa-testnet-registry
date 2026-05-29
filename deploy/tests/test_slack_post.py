@@ -781,3 +781,146 @@ def test_cmd_slack_post_loads_monitoring_and_elastic_state(repo):
     assert "http://mon:8086" in rendered
     assert "https://es:9200" in rendered
 
+
+
+# --------------------------------------------------------------------------- #
+# clock skew rendering
+# --------------------------------------------------------------------------- #
+def test_testnet_clients_render_clock_skew():
+    deployment = _deployment(
+        deploy_args={
+            "bootstrap_count": 3,
+            "vm_count": 6,
+            "nodes_per_vm": 25,
+            "clock_skew_count": 1,
+            "node_binary": {"kind": "release", "version": "0.4.1"},
+        },
+    )
+    state = {"clock_skew_vm_ips": ["1.1.1.1"]}
+    client_state = {
+        "clients": [
+            {
+                "role": "upload",
+                "region": "lon1",
+                "vm_size": "s-2vcpu-4gb",
+                "file_size_mb": 50,
+                "clock_skew": True,
+            },
+            {
+                "role": "download",
+                "region": "fra1",
+                "vm_size": "s-2vcpu-4gb",
+                "clock_skew": True,
+            },
+            {
+                "role": "download",
+                "region": "ams3",
+                "vm_size": "s-2vcpu-4gb",
+            },
+        ]
+    }
+    text = _all_text(build_slack_blocks(deployment, state, client_state))
+    # Summary field counts both tiers: 1 node + 2 client VMs = 3.
+    assert "Clock-skewed VMs" in text
+    assert "3 (1 node, 2 client)" in text
+    # Per-client clock-skew markers — uploader and downloader that opted in.
+    assert "upload — lon1" in text
+    assert "clock-skew" in text
+    # The non-skewed downloader line must not carry the marker.
+    ams_line = next(line for line in text.splitlines() if "ams3" in line)
+    assert "clock-skew" not in ams_line
+
+
+def test_testnet_client_only_clock_skew_counted_in_summary():
+    # Regression: clock_skew set on a client (not on nodes) must still show in
+    # the "Clock-skewed VMs" summary, not report 0.
+    deployment = _deployment(
+        deploy_args={"bootstrap_count": 3, "vm_count": 6, "nodes_per_vm": 25},
+    )
+    state = {}  # no node-tier skew selected
+    client_state = {
+        "clients": [
+            {"role": "upload", "region": "lon1", "vm_size": "s-2vcpu-4gb", "file_size_mb": 50},
+            {"role": "download", "region": "fra1", "vm_size": "s-2vcpu-4gb", "clock_skew": True},
+        ]
+    }
+    text = _all_text(build_slack_blocks(deployment, state, client_state))
+    assert "Clock-skewed VMs" in text
+    assert "1 (1 client)" in text
+
+
+def test_testnet_clients_omit_clock_skew_when_unset():
+    deployment = _deployment(
+        deploy_args={"bootstrap_count": 3, "vm_count": 6, "nodes_per_vm": 25},
+    )
+    state = {}
+    client_state = {
+        "clients": [
+            {"role": "upload", "region": "lon1", "vm_size": "s-2vcpu-4gb", "file_size_mb": 50},
+            {"role": "download", "region": "fra1", "vm_size": "s-2vcpu-4gb"},
+        ]
+    }
+    text = _all_text(build_slack_blocks(deployment, state, client_state))
+    assert "clock-skew" not in text
+    # Field is still present but reports zero.
+    assert "Clock-skewed VMs" in text
+
+
+def test_prod_uploaders_render_clock_skew():
+    deployment = _deployment(
+        name="PROD-UP-SKEW",
+        deploy_args={
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ant_binary": {"kind": "release", "version": "0.3.0"},
+            "uploaders": [
+                {
+                    "region": "lon1",
+                    "vm_size": "s-2vcpu-4gb",
+                    "file_names": [],
+                    "clock_skew": True,
+                },
+                {
+                    "region": "fra1",
+                    "vm_size": "s-2vcpu-4gb",
+                    "file_names": [],
+                },
+            ],
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "lon1 (s-2vcpu-4gb)" in text
+    assert "clock-skew" in text
+    # The non-skewed fra1 line must not carry the marker.
+    fra_line = next(line for line in text.splitlines() if "fra1 (s-2vcpu-4gb)" in line)
+    assert "clock-skew" not in fra_line
+
+
+def test_prod_downloader_renders_clock_skew_field():
+    deployment = _deployment(
+        name="PROD-CD-SKEW",
+        deploy_args={
+            "kind": "prod-continuous-downloader",
+            "spec": "lon1:s-2vcpu-4gb",
+            "clock_skew": True,
+            "addresses_file": "/path/to/addrs.txt",
+            "ant_binary": {"kind": "release", "version": "0.3.0"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "Clock skew" in text
+
+
+def test_prod_downloader_omits_clock_skew_field_when_unset():
+    deployment = _deployment(
+        name="PROD-CD-NOSKEW",
+        deploy_args={
+            "kind": "prod-continuous-downloader",
+            "spec": "lon1:s-2vcpu-4gb",
+            "clock_skew": False,
+            "addresses_file": "/path/to/addrs.txt",
+            "ant_binary": {"kind": "release", "version": "0.3.0"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "Clock skew" not in text

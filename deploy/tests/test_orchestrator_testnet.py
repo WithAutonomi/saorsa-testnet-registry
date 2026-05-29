@@ -353,6 +353,47 @@ def test_nat_omitted_when_unset():
     assert "--nat-percent" not in nprov.argv
 
 
+def test_clock_skew_omitted_when_unset():
+    steps = build_deploy_steps(_minimal())
+    nprov = next(s for s in steps if s.argv[:2] == ["nodes", "provision"])
+    assert "--clock-skew-count" not in nprov.argv
+
+
+def test_clock_skew_count_emitted_when_set():
+    m = _minimal(
+        nodes={
+            "per_vm": 5,
+            "clock_skew": 2,
+            "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+        }
+    )
+    steps = build_deploy_steps(m)
+    nprov = next(s for s in steps if s.argv[:2] == ["nodes", "provision"])
+    assert "--clock-skew-count" in nprov.argv
+    assert nprov.argv[nprov.argv.index("--clock-skew-count") + 1] == "2"
+
+
+def test_clients_clock_skew_token_in_specs():
+    m = _minimal(
+        binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "1.0"}},
+        nodes={"per_vm": 5, "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}}},
+        clients={
+            "uploaders": [
+                {"provider": "vultr", "region": "syd", "file_size_mb": 100, "clock_skew": True}
+            ],
+            "downloaders": [
+                {"provider": "digital_ocean", "region": "lon1", "clock_skew": True}
+            ],
+        },
+    )
+    steps = build_deploy_steps(m)
+    cinfra = next(s for s in steps if s.argv[:2] == ["clients", "infra"])
+    up = cinfra.argv[cinfra.argv.index("--uploader") + 1]
+    dl = cinfra.argv[cinfra.argv.index("--downloader") + 1]
+    assert up.endswith("clock_skew=true")
+    assert dl.endswith("clock_skew=true")
+
+
 def test_branch_binary_adds_build_step_and_uses_branch_flags():
     m = _minimal(binaries={"ant_node": {"branch": "feat-x", "repo_owner": "me"}})
     steps = build_deploy_steps(m)
