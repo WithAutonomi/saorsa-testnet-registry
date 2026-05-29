@@ -3,6 +3,57 @@ import subprocess
 import time
 from typing import Iterable
 
+# Transient SSH connect failures — "Error reading SSH protocol banner",
+# connection reset, EOF — are common when a freshly-booted droplet's sshd is
+# still settling or is rate-limiting a burst of parallel connects. pyinfra's
+# SSH connector already retries on exactly these exception types
+# (SSHException / EOFError / socket errors), but only when the per-host
+# `ssh_connect_retries` data value is > 0, and it defaults to 0 (no retries).
+#
+# We build a fresh one-off Inventory in every provisioner (~two dozen call
+# sites), so rather than thread the setting through each one — and silently
+# miss any added later — we raise the connector's *default* once at package
+# import (see saorsa_deploy/__init__.py). Per-host inventory data still
+# overrides these, so individual call sites can opt out or tune if needed.
+SSH_CONNECT_RETRIES = 5
+SSH_CONNECT_RETRY_MIN_DELAY = 2.0
+SSH_CONNECT_RETRY_MAX_DELAY = 5.0
+
+
+def configure_ssh_connect_retries(
+    retries: int = SSH_CONNECT_RETRIES,
+    min_delay: float = SSH_CONNECT_RETRY_MIN_DELAY,
+    max_delay: float = SSH_CONNECT_RETRY_MAX_DELAY,
+) -> bool:
+    """Raise pyinfra's default SSH connect-retry count for every connection.
+
+    Mutates the SSH connector's ``DataMeta`` defaults so that, absent an
+    explicit per-host override, every ``connect_all`` retries transient
+    connection failures (banner read errors, resets, EOF) with a randomised
+    backoff between ``min_delay`` and ``max_delay`` seconds.
+
+    Returns ``True`` if the defaults were applied. Defensive against pyinfra's
+    internals shifting across versions: if the expected module / keys are
+    absent this is a no-op (connections simply keep the old no-retry
+    behaviour) rather than crashing the CLI on import.
+    """
+    try:
+        from pyinfra.connectors.ssh import connector_data_meta
+    except Exception:
+        return False
+
+    applied = False
+    for key, value in (
+        ("ssh_connect_retries", retries),
+        ("ssh_connect_retry_min_delay", min_delay),
+        ("ssh_connect_retry_max_delay", max_delay),
+    ):
+        meta = connector_data_meta.get(key)
+        if meta is not None:
+            meta.default = value
+            applied = True
+    return applied
+
 
 def clear_known_hosts(ips, console=None):
     """Remove IPs from SSH known_hosts to prevent host key verification failures.
