@@ -7,7 +7,8 @@ Placeholder values (replaced at deploy time):
   {{INFLUXDB_ADMIN_USER}}  - admin username
   {{INFLUXDB_ADMIN_PASSWORD}} - generated admin password
   {{INFLUXDB_ORG}}          - organisation name
-  {{INFLUXDB_BUCKET}}       - bucket name
+  {{INFLUXDB_BUCKET}}       - node-tier bucket name
+  {{INFLUXDB_CLIENT_BUCKET}} - client-tier bucket name
 """
 
 import json
@@ -40,7 +41,7 @@ def api(method, path, data=None, token=None):
         sys.exit(1)
 
 
-# Step 1: Initial setup
+# Step 1: Initial setup (creates the org + the node-tier bucket)
 setup = api("POST", "/api/v2/setup", {
     "username": "{{INFLUXDB_ADMIN_USER}}",
     "password": "{{INFLUXDB_ADMIN_PASSWORD}}",
@@ -50,15 +51,24 @@ setup = api("POST", "/api/v2/setup", {
 })
 admin_token = setup["auth"]["token"]
 org_id = setup["org"]["id"]
-bucket_id = setup["bucket"]["id"]
 
-# Step 2: Create a read/write token for Telegraf
+# Step 2: Create the client-tier bucket. Client host metrics land here so the
+# Client Host Statistics dashboard is physically isolated from node data.
+api("POST", "/api/v2/buckets", {
+    "orgID": org_id,
+    "name": "{{INFLUXDB_CLIENT_BUCKET}}",
+    "retentionRules": [],
+}, token=admin_token)
+
+# Step 3: Create a read/write token for Telegraf. Scoped at the org level so it
+# covers both buckets (and any added later) — InfluxDB v2 tokens are immutable,
+# so a per-bucket token would have to be reminted whenever a bucket is added.
 auth = api("POST", "/api/v2/authorizations", {
     "orgID": org_id,
     "description": "Telegraf write token",
     "permissions": [
-        {"action": "read", "resource": {"type": "buckets", "id": bucket_id}},
-        {"action": "write", "resource": {"type": "buckets", "id": bucket_id}},
+        {"action": "read", "resource": {"type": "buckets", "orgID": org_id}},
+        {"action": "write", "resource": {"type": "buckets", "orgID": org_id}},
     ],
 }, token=admin_token)
 telegraf_token = auth["token"]
