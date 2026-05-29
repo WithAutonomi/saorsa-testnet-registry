@@ -17,7 +17,12 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.config import ManifestError, load_manifest
-from saorsa_deploy.orchestrator import Step, build_deploy_steps, build_destroy_steps
+from saorsa_deploy.orchestrator import (
+    Step,
+    build_deploy_steps,
+    build_destroy_steps,
+    build_destroy_steps_from_state,
+)
 
 # prod kinds whose wallet key spends real ETH on Arbitrum One — must be present
 # before we start, and bridged to the var the underlying commands read.
@@ -35,10 +40,12 @@ def _load(args, console: Console):
         sys.exit(1)
 
 
-def _print_plan(console: Console, manifest, steps: list[Step], verb: str) -> None:
+def _print_plan(
+    console: Console, name: str, kind: str, steps: list[Step], verb: str
+) -> None:
     console.print(
-        f"[bold]{verb} plan for {manifest.name}[/bold] "
-        f"([bold]{manifest.kind}[/bold]) — {len(steps)} step(s):"
+        f"[bold]{verb} plan for {name}[/bold] "
+        f"([bold]{kind}[/bold]) — {len(steps)} step(s):"
     )
     for i, step in enumerate(steps, 1):
         console.print(f"  [cyan]{i:>2}.[/cyan] {step.label}")
@@ -89,10 +96,10 @@ def cmd_up(args):
     manifest = _load(args, console)
     steps = build_deploy_steps(manifest)
     if getattr(args, "dry_run", False):
-        _print_plan(console, manifest, steps, "Deploy")
+        _print_plan(console, manifest.name, manifest.kind, steps, "Deploy")
         return
     _prepare_secret_env(manifest, console)
-    _print_plan(console, manifest, steps, "Deploy")
+    _print_plan(console, manifest.name, manifest.kind, steps, "Deploy")
     console.print()
     _execute(console, steps)
     console.print(f"\n[bold green]{manifest.name} is up.[/bold green]")
@@ -100,18 +107,46 @@ def cmd_up(args):
 
 def cmd_down(args):
     console = Console()
-    manifest = _load(args, console)
-    steps = build_destroy_steps(manifest)
+
+    # Destroy is name/state-driven: a manifest is optional. With --config we
+    # mirror the manifest's components; with --name alone we derive the teardown
+    # from what actually exists in S3 state.
+    if getattr(args, "config", None):
+        manifest = _load(args, console)
+        name, kind = manifest.name, manifest.kind
+        steps = build_destroy_steps(manifest)
+    elif getattr(args, "name", None):
+        name, kind = args.name, "from state"
+        steps = build_destroy_steps_from_state(name)
+        if not steps:
+            console.print(
+                f"[yellow]No resources found in state for '{name}'. "
+                "Nothing to destroy.[/yellow]"
+            )
+            console.print(
+                "[dim]If this is a prod-* deployment, tear it down with its "
+                "`prod <kind> destroy --name ...` command, or pass --config.[/dim]"
+            )
+            return
+    else:
+        console.print(
+            "[bold red]Error:[/bold red] provide --config <manifest> or "
+            "--name <deployment>."
+        )
+        sys.exit(1)
+
     if getattr(args, "dry_run", False):
-        _print_plan(console, manifest, steps, "Destroy")
+        _print_plan(console, name, kind, steps, "Destroy")
         return
-    _print_plan(console, manifest, steps, "Destroy")
+    _print_plan(console, name, kind, steps, "Destroy")
     console.print()
     _execute(console, steps)
-    console.print(f"\n[bold green]{manifest.name} has been destroyed.[/bold green]")
+    console.print(f"\n[bold green]{name} has been destroyed.[/bold green]")
 
 
 def cmd_plan(args):
     console = Console()
     manifest = _load(args, console)
-    _print_plan(console, manifest, build_deploy_steps(manifest), "Deploy")
+    _print_plan(
+        console, manifest.name, manifest.kind, build_deploy_steps(manifest), "Deploy"
+    )

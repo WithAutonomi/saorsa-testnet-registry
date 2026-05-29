@@ -674,12 +674,35 @@ def main(argv=None):
     )
     _add_manifest_args(deployments_config_validate_parser)
 
-    # deployments down
+    # deployments down — destroy is name/state-driven, so --config is optional:
+    # pass --config to mirror a manifest, or just --name to tear down whatever
+    # exists in state for that deployment.
     deployments_down_parser = deployments_subparsers.add_parser(
         "down",
-        help="Destroy a manifest's deployment (reverse sequence).",
+        help="Destroy a deployment. Pass --name (teardown derived from state) "
+        "or --config <manifest>.",
     )
-    _add_manifest_args(deployments_down_parser)
+    deployments_down_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to a deployment manifest (YAML). Optional — omit and use "
+        "--name to derive the teardown from S3 state.",
+    )
+    deployments_down_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a manifest value by dotted key (only with --config).",
+    )
+    deployments_down_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Deployment name. Used alone to destroy by state, or to override "
+        "the manifest's name with --config.",
+    )
     deployments_down_parser.add_argument(
         "--dry-run",
         action="store_true",

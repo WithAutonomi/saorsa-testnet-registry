@@ -134,7 +134,7 @@ with one command, instead of a hand-edited bash runbook:
 
 - `saorsa-deploy deployments plan --config <manifest>` — print the computed command sequence (dry-run).
 - `saorsa-deploy deployments up --config <manifest>` — run the full deploy sequence.
-- `saorsa-deploy deployments down --config <manifest>` — run the destroy sequence.
+- `saorsa-deploy deployments down --name <deployment>` (or `--config <manifest>`) — run the destroy sequence. With `--name` alone the teardown is derived from what exists in S3 state (no manifest needed); `--config` mirrors a manifest's components.
 - `saorsa-deploy deployments config show|validate --config <manifest>` — inspect/validate a manifest.
 
 One manifest = one deployment's full desired state, discriminated by `kind`

@@ -38,8 +38,14 @@ ordered command sequence for you — replacing the hand-edited bash runbooks.
 saorsa-deploy deployments plan          --config deploy/manifests/runs/STG-01.yaml   # preview the sequence (no execution)
 saorsa-deploy deployments config show   --config deploy/manifests/runs/STG-01.yaml   # merged + validated manifest as YAML
 saorsa-deploy deployments up            --config deploy/manifests/runs/STG-01.yaml   # run the full deploy sequence
-saorsa-deploy deployments down          --config deploy/manifests/runs/STG-01.yaml   # run the destroy sequence
+saorsa-deploy deployments down          --name STG-01                                # destroy (teardown derived from state)
 ```
+
+`down` is name/state-driven, so a manifest is optional: `down --name <deployment>`
+tears down whatever exists in S3 state for that deployment (clients → nodes →
+bootstraps → elastic → monitoring), while `down --config <manifest>` mirrors a
+specific manifest's components. (prod-* kinds are single-command deployments —
+tear them down with their own `prod <kind> destroy --name`, or `down --config`.)
 
 Reusable profiles are committed under `deploy/manifests/profiles/`
 (`reference.yaml` shows every option); your concrete run manifests live in the

@@ -29,7 +29,7 @@ saorsa-deploy deployments plan            --config deploy/manifests/profiles/ref
 # Your own runs (local, git-ignored):
 saorsa-deploy deployments plan --config deploy/manifests/runs/STG-01.yaml   # preview the sequence
 saorsa-deploy deployments up   --config deploy/manifests/runs/STG-01.yaml   # deploy
-saorsa-deploy deployments down --config deploy/manifests/runs/STG-01.yaml   # destroy
+saorsa-deploy deployments down --name STG-01                                # destroy (state-driven; --config also works)
 ```
 
 ## Committed files
