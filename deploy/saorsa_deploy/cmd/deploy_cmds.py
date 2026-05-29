@@ -111,13 +111,18 @@ def cmd_down(args):
     # Destroy is name/state-driven: a manifest is optional. With --config we
     # mirror the manifest's components; with --name alone we derive the teardown
     # from what actually exists in S3 state.
+    skip_drain_failures = getattr(args, "skip_drain_failures", False)
     if getattr(args, "config", None):
         manifest = _load(args, console)
         name, kind = manifest.name, manifest.kind
-        steps = build_destroy_steps(manifest)
+        steps = build_destroy_steps(
+            manifest, skip_drain_failures=skip_drain_failures
+        )
     elif getattr(args, "name", None):
         name, kind = args.name, "from state"
-        steps = build_destroy_steps_from_state(name)
+        steps = build_destroy_steps_from_state(
+            name, skip_drain_failures=skip_drain_failures
+        )
         if not steps:
             console.print(
                 f"[yellow]No resources found in state for '{name}'. "

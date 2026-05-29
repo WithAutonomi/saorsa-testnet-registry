@@ -57,3 +57,27 @@ def test_no_state_yields_no_steps(monkeypatch):
         monkeypatch, client=False, deployment=False, elastic=False, monitoring=False
     )
     assert build_destroy_steps_from_state("GONE-01") == []
+
+
+def test_skip_drain_failures_appended_to_clients_destroy(monkeypatch):
+    _patch_state(
+        monkeypatch, client=True, deployment=True, elastic=False, monitoring=True
+    )
+    steps = build_destroy_steps_from_state("DEV-02", skip_drain_failures=True)
+    # Only the clients-destroy step carries the flag; the rest are untouched.
+    assert _argvs(steps) == [
+        ["clients", "destroy", "--name", "DEV-02", "--force", "--skip-drain-failures"],
+        ["nodes", "destroy", "--name", "DEV-02", "--force"],
+        ["bootstraps", "destroy", "--name", "DEV-02", "--force"],
+        ["monitoring", "destroy", "--name", "DEV-02", "--force"],
+    ]
+
+
+def test_skip_drain_failures_defaults_off(monkeypatch):
+    _patch_state(
+        monkeypatch, client=True, deployment=False, elastic=False, monitoring=False
+    )
+    steps = build_destroy_steps_from_state("DEV-02")
+    assert _argvs(steps) == [
+        ["clients", "destroy", "--name", "DEV-02", "--force"],
+    ]

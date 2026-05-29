@@ -100,6 +100,13 @@ def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
     return argv
 
 
+def _clients_destroy_argv(name: str, skip_drain_failures: bool) -> list[str]:
+    argv = ["clients", "destroy", "--name", name, "--force"]
+    if skip_drain_failures:
+        argv.append("--skip-drain-failures")
+    return argv
+
+
 def _node_provision_common(binary, mode: bool, upgrade_channel, ssh_key) -> list[str]:
     """Flags shared by genesis / bootstraps / nodes provision."""
     argv = list(node_binary_flags(binary))
@@ -277,12 +284,19 @@ def build_testnet_deploy_steps(manifest: Manifest) -> list[Step]:
     return steps
 
 
-def build_testnet_destroy_steps(manifest: Manifest) -> list[Step]:
+def build_testnet_destroy_steps(
+    manifest: Manifest, *, skip_drain_failures: bool = False
+) -> list[Step]:
     spec: TestnetSpec = manifest.testnet
     name = manifest.name
     steps: list[Step] = []
     if spec.clients is not None:
-        steps.append(Step(["clients", "destroy", "--name", name, "--force"], "Destroy clients"))
+        steps.append(
+            Step(
+                _clients_destroy_argv(name, skip_drain_failures),
+                "Destroy clients",
+            )
+        )
     steps.append(Step(["nodes", "destroy", "--name", name, "--force"], "Destroy nodes"))
     steps.append(Step(["bootstraps", "destroy", "--name", name, "--force"], "Destroy bootstraps"))
     if spec.elastic.enabled:
@@ -351,12 +365,19 @@ def build_extension_deploy_steps(manifest: Manifest) -> list[Step]:
     return steps
 
 
-def build_extension_destroy_steps(manifest: Manifest) -> list[Step]:
+def build_extension_destroy_steps(
+    manifest: Manifest, *, skip_drain_failures: bool = False
+) -> list[Step]:
     spec: ExtensionSpec = manifest.extension
     name = manifest.name
     steps: list[Step] = []
     if spec.clients is not None:
-        steps.append(Step(["clients", "destroy", "--name", name, "--force"], "Destroy clients"))
+        steps.append(
+            Step(
+                _clients_destroy_argv(name, skip_drain_failures),
+                "Destroy clients",
+            )
+        )
     steps.append(Step(["nodes", "destroy", "--name", name, "--force"], "Destroy nodes"))
     if spec.elastic.enabled:
         steps.append(
