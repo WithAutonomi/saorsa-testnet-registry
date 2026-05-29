@@ -20,7 +20,13 @@ from saorsa_deploy.resources import get_resources_dir
 MONITORING_MOUNT_POINT = "/mnt/monitoring-storage"
 INFLUXDB_DATA_DIR = f"{MONITORING_MOUNT_POINT}/influxdb"
 INFLUXDB_ORG = "ant"
+# Node-tier host metrics (cpu/mem/disk/net/procstat) plus the prometheus and
+# application measurements (download/prod_upload/canary/...) all live here.
 INFLUXDB_BUCKET = "testnet-metrics"
+# Client-tier host metrics live in their own bucket so the Client Host
+# Statistics dashboard is physically isolated from node data (and vice versa)
+# rather than relying on a mutable host_role dropdown to keep them apart.
+INFLUXDB_CLIENT_BUCKET = "client-metrics"
 INFLUXDB_ADMIN_USER = "admin"
 
 GRAFANA_DATASOURCE_PATH = "/etc/grafana/provisioning/datasources/influxdb.yml"
@@ -334,6 +340,7 @@ class MonitoringProvisioner:
             "influxdb_token": token,
             "influxdb_org": INFLUXDB_ORG,
             "influxdb_bucket": INFLUXDB_BUCKET,
+            "influxdb_client_bucket": INFLUXDB_CLIENT_BUCKET,
             "grafana_url": f"http://{self.host_ip}:3000",
             "grafana_password": self.grafana_password,
         }
@@ -351,6 +358,7 @@ class MonitoringProvisioner:
             .replace("{{INFLUXDB_ADMIN_PASSWORD}}", self._admin_password)
             .replace("{{INFLUXDB_ORG}}", INFLUXDB_ORG)
             .replace("{{INFLUXDB_BUCKET}}", INFLUXDB_BUCKET)
+            .replace("{{INFLUXDB_CLIENT_BUCKET}}", INFLUXDB_CLIENT_BUCKET)
         )
 
     def _build_grafana_datasource_yaml(self) -> str:
@@ -368,6 +376,7 @@ class MonitoringProvisioner:
             title="Node Host Statistics",
             uid="ant-host-metrics",
             tag="host-metrics",
+            bucket=INFLUXDB_BUCKET,
             panel_specs=[
                 (self._panel_cpu_usage, {}),
                 (self._panel_memory_usage, {}),
@@ -396,6 +405,7 @@ class MonitoringProvisioner:
             title="Client Host Statistics",
             uid="ant-client-host-metrics",
             tag="client-host-metrics",
+            bucket=INFLUXDB_CLIENT_BUCKET,
             panel_specs=[
                 (self._panel_cpu_usage, {}),
                 (self._panel_memory_usage, {}),
@@ -413,16 +423,19 @@ class MonitoringProvisioner:
         title: str,
         uid: str,
         tag: str,
+        bucket: str,
         panel_specs: list[tuple],
         default_host_role: str | None = None,
     ) -> str:
         """Build a host-statistics dashboard from a list of panel specs.
 
         Each panel spec is a (panel_fn, kwargs) tuple; panels are laid out
-        full-width, top to bottom. When ``default_host_role`` is given, the
-        Role template variable opens scoped to that single role instead of
-        "All" (the panels themselves filter on the $host / $host_role
-        template variables regardless)."""
+        full-width, top to bottom. Every panel and template-variable query is
+        scoped to ``bucket`` so the node and client host dashboards read from
+        physically separate InfluxDB buckets. When ``default_host_role`` is
+        given, the Role template variable opens scoped to that single role
+        instead of "All" (the panels themselves filter on the $host /
+        $host_role template variables regardless)."""
         panels = []
         y = 0
         x = 0
@@ -433,7 +446,8 @@ class MonitoringProvisioner:
                 x = 0
                 y += h
             panels.append(panel_fn(
-                grid_pos={"h": h, "w": w, "x": x, "y": y}, **kwargs,
+                grid_pos={"h": h, "w": w, "x": x, "y": y},
+                bucket=bucket, **kwargs,
             ))
             x += w
             if x >= 24:
@@ -473,7 +487,7 @@ class MonitoringProvisioner:
                         "definition": (
                             'import "influxdata/influxdb/schema"\n'
                             'schema.tagValues(\n'
-                            '  bucket: "testnet-metrics",\n'
+                            f'  bucket: "{bucket}",\n'
                             '  tag: "host_role"\n'
                             ")"
                         ),
@@ -485,7 +499,7 @@ class MonitoringProvisioner:
                         "query": (
                             'import "influxdata/influxdb/schema"\n'
                             'schema.tagValues(\n'
-                            '  bucket: "testnet-metrics",\n'
+                            f'  bucket: "{bucket}",\n'
                             '  tag: "host_role"\n'
                             ")"
                         ),
@@ -501,7 +515,7 @@ class MonitoringProvisioner:
                         },
                         "datasource": {"type": "influxdb", "uid": "influxdb"},
                         "definition": (
-                            'from(bucket: "testnet-metrics")\n'
+                            f'from(bucket: "{bucket}")\n'
                             '  |> range(start: -1h)\n'
                             '  |> filter(fn: (r) => '
                             'r["host_role"] =~ /^${host_role}$/)\n'
@@ -515,7 +529,7 @@ class MonitoringProvisioner:
                         "name": "host",
                         "label": "Host",
                         "query": (
-                            'from(bucket: "testnet-metrics")\n'
+                            f'from(bucket: "{bucket}")\n'
                             '  |> range(start: -1h)\n'
                             '  |> filter(fn: (r) => '
                             'r["host_role"] =~ /^${host_role}$/)\n'
@@ -780,10 +794,12 @@ class MonitoringProvisioner:
         fields: list[str],
         fn: str = "mean",
         extra_filter: str | None = None,
+        *,
+        bucket: str,
     ) -> str:
         field_filter = " or ".join(f'r["_field"] == "{f}"' for f in fields)
         query = (
-            f'from(bucket: "testnet-metrics")\n'
+            f'from(bucket: "{bucket}")\n'
             f"  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
             f'  |> filter(fn: (r) => r["_measurement"] == "{measurement}")\n'
             f"  |> filter(fn: (r) => {field_filter})\n"
@@ -799,9 +815,9 @@ class MonitoringProvisioner:
         )
         return query
 
-    def _panel_cpu_usage(self, grid_pos: dict) -> dict:
+    def _panel_cpu_usage(self, grid_pos: dict, *, bucket: str) -> dict:
         cpu_query = (
-            'from(bucket: "testnet-metrics")\n'
+            f'from(bucket: "{bucket}")\n'
             "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
             '  |> filter(fn: (r) => r["_measurement"] == "cpu")\n'
             '  |> filter(fn: (r) => r["_field"] == "usage_idle")\n'
@@ -838,7 +854,7 @@ class MonitoringProvisioner:
             ],
         }
 
-    def _panel_memory_usage(self, grid_pos: dict) -> dict:
+    def _panel_memory_usage(self, grid_pos: dict, *, bucket: str) -> dict:
         return {
             "title": "Memory Usage",
             "type": "timeseries",
@@ -853,13 +869,13 @@ class MonitoringProvisioner:
             },
             "targets": [
                 {
-                    "query": self._flux_query("mem", ["used"]),
+                    "query": self._flux_query("mem", ["used"], bucket=bucket),
                     "refId": "A",
                 }
             ],
         }
 
-    def _procstat_agg_query(self, field: str, agg: str) -> str:
+    def _procstat_agg_query(self, field: str, agg: str, *, bucket: str) -> str:
         """Cross-node aggregate Flux query against the procstat measurement.
 
         Collapses every matching node into a single line per aggregate
@@ -871,7 +887,7 @@ class MonitoringProvisioner:
         at the same time, then reduce across nodes with `agg`.
         """
         return (
-            'from(bucket: "testnet-metrics")\n'
+            f'from(bucket: "{bucket}")\n'
             "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
             '  |> filter(fn: (r) => r["_measurement"] == "procstat")\n'
             f'  |> filter(fn: (r) => r["_field"] == "{field}")\n'
@@ -890,15 +906,18 @@ class MonitoringProvisioner:
             f'  |> yield(name: "{agg}")'
         )
 
-    def _procstat_agg_targets(self, field: str) -> list[dict]:
+    def _procstat_agg_targets(self, field: str, *, bucket: str) -> list[dict]:
         """max / mean / min across nodes as three Grafana targets."""
         return [
-            {"query": self._procstat_agg_query(field, "max"), "refId": "A"},
-            {"query": self._procstat_agg_query(field, "mean"), "refId": "B"},
-            {"query": self._procstat_agg_query(field, "min"), "refId": "C"},
+            {"query": self._procstat_agg_query(field, "max", bucket=bucket),
+             "refId": "A"},
+            {"query": self._procstat_agg_query(field, "mean", bucket=bucket),
+             "refId": "B"},
+            {"query": self._procstat_agg_query(field, "min", bucket=bucket),
+             "refId": "C"},
         ]
 
-    def _panel_node_rss(self, grid_pos: dict) -> dict:
+    def _panel_node_rss(self, grid_pos: dict, *, bucket: str) -> dict:
         """Resident memory (RSS) aggregated across nodes: max / mean / min.
 
         The leak-watch view: `mean` rising is fleet-wide growth (warm-up or a
@@ -918,10 +937,10 @@ class MonitoringProvisioner:
             "options": {
                 "legend": {"displayMode": "list", "placement": "right"},
             },
-            "targets": self._procstat_agg_targets("memory_rss"),
+            "targets": self._procstat_agg_targets("memory_rss", bucket=bucket),
         }
 
-    def _panel_node_cpu(self, grid_pos: dict) -> dict:
+    def _panel_node_cpu(self, grid_pos: dict, *, bucket: str) -> dict:
         """Instantaneous per-process CPU aggregated across nodes.
 
         procstat reports a true point-in-time CPU% (unlike `ps`, whose value
@@ -940,10 +959,12 @@ class MonitoringProvisioner:
             "options": {
                 "legend": {"displayMode": "list", "placement": "right"},
             },
-            "targets": self._procstat_agg_targets("cpu_usage"),
+            "targets": self._procstat_agg_targets("cpu_usage", bucket=bucket),
         }
 
-    def _panel_disk_usage(self, title: str, mount_path: str, grid_pos: dict) -> dict:
+    def _panel_disk_usage(
+        self, grid_pos: dict, *, bucket: str, title: str, mount_path: str,
+    ) -> dict:
         return {
             "title": title,
             "type": "timeseries",
@@ -962,17 +983,20 @@ class MonitoringProvisioner:
                         "disk",
                         ["used"],
                         extra_filter=f'r["path"] == "{mount_path}"',
+                        bucket=bucket,
                     ),
                     "refId": "A",
                 }
             ],
         }
 
-    def _panel_network_inbound(self, grid_pos: dict) -> dict:
-        return self._panel_network("Network Inbound", "bytes_recv", grid_pos)
+    def _panel_network_inbound(self, grid_pos: dict, *, bucket: str) -> dict:
+        return self._panel_network(
+            "Network Inbound", "bytes_recv", grid_pos, bucket=bucket)
 
-    def _panel_network_outbound(self, grid_pos: dict) -> dict:
-        return self._panel_network("Network Outbound", "bytes_sent", grid_pos)
+    def _panel_network_outbound(self, grid_pos: dict, *, bucket: str) -> dict:
+        return self._panel_network(
+            "Network Outbound", "bytes_sent", grid_pos, bucket=bucket)
 
     def _p2p_query(self, fields: list[str]) -> str:
         """Base Flux query for p2p metrics from the prometheus measurement.
@@ -1245,7 +1269,9 @@ class MonitoringProvisioner:
             "properties": props,
         }
 
-    def _panel_network(self, title: str, field: str, grid_pos: dict) -> dict:
+    def _panel_network(
+        self, title: str, field: str, grid_pos: dict, *, bucket: str,
+    ) -> dict:
         return {
             "title": title,
             "type": "timeseries",
@@ -1261,7 +1287,7 @@ class MonitoringProvisioner:
             "targets": [
                 {
                     "query": (
-                        'from(bucket: "testnet-metrics")\n'
+                        f'from(bucket: "{bucket}")\n'
                         "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
                         '  |> filter(fn: (r) => r["_measurement"] == "net")\n'
                         f'  |> filter(fn: (r) => r["_field"] == "{field}")\n'

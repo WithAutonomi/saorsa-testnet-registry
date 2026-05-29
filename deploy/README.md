@@ -463,6 +463,15 @@ uv run saorsa-deploy monitoring provision --name DEV-01
 
 On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `monitoring provision-telegraf` command.
 
+This step creates **two** InfluxDB buckets — `testnet-metrics` (node-tier host
+metrics, the `prometheus` per-node measurement, and application measurements
+like `download` / `prod_upload` / `prod_canary_*`) and `client-metrics`
+(client-tier host metrics only) — and mints an org-scoped Telegraf token with
+read+write on both. Splitting host metrics across two buckets keeps the **Node
+Host Statistics** and **Client Host Statistics** Grafana dashboards physically
+isolated: each dashboard queries only its own bucket, so neither can render the
+other's data.
+
 ### `monitoring provision-telegraf` command
 
 Install Telegraf for InfluxDB metrics forwarding on testnet VMs. Collects host-level metrics: CPU, memory, disk space (all mount points), and network bandwidth.
@@ -489,12 +498,12 @@ uv run saorsa-deploy monitoring provision-telegraf \
 | `--influxdb-url` | string | Yes | - | InfluxDB URL |
 | `--influxdb-token` | string | Yes | - | InfluxDB API token |
 | `--influxdb-org` | string | No | `ant` | InfluxDB organization |
-| `--influxdb-bucket` | string | No | `testnet-metrics` | InfluxDB bucket |
+| `--influxdb-bucket` | string | No | `testnet-metrics` | InfluxDB bucket for **node** host metrics (CLIENT hosts always use `client-metrics`) |
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
 
 Either `--name` or `--host-ips` must be provided. The `--host-ips` flag allows provisioning machines from external testnet setups without any deployment state in this repository.
 
-When `--name` is provided the command also enumerates client VMs from client state (if any exist) and provisions host-stat telegraf on them with `host_role="CLIENT"`. The existing Grafana **Host Statistics** dashboard's `host_role` template variable is populated from InfluxDB tag values, so `CLIENT` appears as a new selectable role alongside `WAN_NODE` / `BOOTSTRAP` / `GENESIS` — no dashboard changes are required.
+When `--name` is provided the command also enumerates client VMs from client state (if any exist) and provisions host-stat telegraf on them with `host_role="CLIENT"`. CLIENT-role hosts are routed to the dedicated **`client-metrics`** bucket (overriding `--influxdb-bucket`, which only governs node-tier hosts), so client host metrics surface on the **Client Host Statistics** dashboard while node metrics stay on **Node Host Statistics** — the two dashboards read from separate buckets and never cross-contaminate.
 
 ### `monitoring info` command
 

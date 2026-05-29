@@ -51,6 +51,9 @@ class TestNameBranchClientOnly:
         assert kw["host_ips"] == ["139.59.190.165"]
         assert kw["host_role"] == "CLIENT"
         assert kw["node_count"] == 0
+        # Client host metrics go to the dedicated client bucket, not the
+        # node bucket passed in via --influxdb-bucket.
+        assert kw["influxdb_bucket"] == "client-metrics"
 
     @patch.object(ptm, "clear_known_hosts")
     @patch.object(ptm, "TelegrafMetricsProvisioner")
@@ -82,9 +85,13 @@ class TestNameBranchClientOnly:
 
         ptm.cmd_provision_telegraf_metrics(_args(name="DEV-01"))
 
-        roles = [kw["host_role"] for kw in _provisioner_calls(mock_prov)]
+        calls = _provisioner_calls(mock_prov)
+        roles = [kw["host_role"] for kw in calls]
         assert "WAN_NODE" in roles
         assert "CLIENT" not in roles
+        # Node host metrics stay in the node bucket.
+        for kw in calls:
+            assert kw["influxdb_bucket"] == "testnet-metrics"
 
     @patch.object(ptm, "clear_known_hosts")
     @patch.object(ptm, "TelegrafMetricsProvisioner")
@@ -139,6 +146,9 @@ class TestProvisionClientTelegrafForDeployment:
         assert kw["influxdb_token"] == "secret"
         assert kw["host_role"] == "CLIENT"
         assert kw["host_ips"] == ["1.2.3.4"]
+        # Bucket from monitoring state (testnet-metrics) is overridden to the
+        # client bucket for CLIENT-role host metrics.
+        assert kw["influxdb_bucket"] == "client-metrics"
 
     @patch.object(ptm, "TelegrafMetricsProvisioner")
     @patch.object(ptm, "load_client_state")

@@ -21,6 +21,7 @@ def cmd_monitoring_info(args):
     influxdb_token = state.get("influxdb_token", "")
     influxdb_org = state.get("influxdb_org", "")
     influxdb_bucket = state.get("influxdb_bucket", "")
+    influxdb_client_bucket = state.get("influxdb_client_bucket", "")
     grafana_url = state.get("grafana_url", "")
     grafana_password = state.get("grafana_password", "")
 
@@ -48,9 +49,14 @@ def cmd_monitoring_info(args):
         f"  [bold]InfluxDB:[/bold]  {influxdb_url}",
         f"  [bold]Grafana:[/bold]   {grafana_url}{grafana_login}",
         f"  [bold]Org:[/bold]       {influxdb_org}",
-        f"  [bold]Bucket:[/bold]    {influxdb_bucket}",
-        f"  [bold]API Token:[/bold] {influxdb_token}",
+        f"  [bold]Bucket:[/bold]    {influxdb_bucket}  (node host metrics)",
     ]
+    if influxdb_client_bucket:
+        lines.append(
+            f"  [bold]Client Bucket:[/bold] {influxdb_client_bucket}"
+            "  (client host metrics)"
+        )
+    lines.append(f"  [bold]API Token:[/bold] {influxdb_token}")
 
     console.print(
         Panel(

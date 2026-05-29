@@ -301,6 +301,27 @@ Optional per-testnet monitoring stack (InfluxDB 2.x + Grafana) on a single VM. S
 - State: separate S3 key prefix `saorsa-deploy/monitoring/{name}.json` (independent of deployment state)
 - Telegraf metrics runs as a separate systemd service (`telegraf-ant-metrics`) alongside the existing log forwarding (`telegraf-ant-elasticsearch`)
 
+### Buckets (node vs client isolation)
+
+Host metrics are split across **two InfluxDB buckets** so the "Node Host
+Statistics" and "Client Host Statistics" dashboards are *physically* isolated
+rather than relying on a mutable `host_role` dropdown:
+
+- **`testnet-metrics`** — node-tier host metrics (genesis/bootstrap/WAN nodes:
+  cpu/mem/disk/net/procstat), the `prometheus` per-node measurement, and all
+  application measurements (`download`, `prod_upload`, `prod_canary_*`, …).
+- **`client-metrics`** — client-tier host metrics only (uploader / downloader /
+  canary client VMs, tagged `host_role=CLIENT`).
+
+`monitoring provision` creates both buckets and mints an **org-scoped** Telegraf
+token (read+write on every bucket, so adding a bucket never requires reminting
+the immutable token). `monitoring provision-telegraf` routes CLIENT-role hosts
+to `client-metrics` and everything else to `testnet-metrics`. The Node Host
+Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
+`client-metrics` — neither can render the other's data regardless of the Role
+dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
+`INFLUXDB_CLIENT_BUCKET`).
+
 ### Telegraf naming
 
 - `elastic provision-telegraf` — Elasticsearch log forwarding

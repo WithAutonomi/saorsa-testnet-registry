@@ -8,6 +8,7 @@ from saorsa_deploy.cmd.provision_telegraf import (
     read_ips_from_file,
     set_hostnames,
 )
+from saorsa_deploy.provisioning.monitoring import INFLUXDB_CLIENT_BUCKET
 from saorsa_deploy.provisioning.telegraf_metrics import TelegrafMetricsProvisioner
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import (
@@ -135,15 +136,19 @@ def _provision_client_telegraf(
 
     console.print(
         f"\n[bold]Provisioning Telegraf on {len(client_ips)}"
-        f" client VM(s) (host_role=CLIENT)...[/bold]"
+        f" client VM(s) (host_role=CLIENT, bucket={INFLUXDB_CLIENT_BUCKET})..."
+        f"[/bold]"
     )
     clear_known_hosts(client_ips, console)
+    # Client host metrics land in the dedicated client bucket so the Client
+    # Host Statistics dashboard stays physically isolated from node data.
+    client_kwargs = {**common_kwargs, "influxdb_bucket": INFLUXDB_CLIENT_BUCKET}
     try:
         TelegrafMetricsProvisioner(
             host_ips=client_ips,
             node_count=0,
             host_role="CLIENT",
-            **common_kwargs,
+            **client_kwargs,
         ).execute()
     except Exception as e:
         console.print(
@@ -303,9 +308,14 @@ def cmd_provision_telegraf_metrics(args):
             # Bootstrap VMs run a single service; node VMs run many.
             # node_count=0 makes telegraf_metrics auto-detect based on
             # actual services present, so it's safe for either.
+            # CLIENT-role hosts write to the dedicated client bucket so their
+            # host metrics stay isolated from node data.
+            bucket = (
+                INFLUXDB_CLIENT_BUCKET if role == "CLIENT" else influxdb_bucket
+            )
             console.print(
                 f"[bold]Provisioning {len(ips)} host(s) "
-                f"(role={role}, ssh_user={ssh_user})...[/bold]"
+                f"(role={role}, ssh_user={ssh_user}, bucket={bucket})...[/bold]"
             )
             try:
                 TelegrafMetricsProvisioner(
@@ -317,7 +327,7 @@ def cmd_provision_telegraf_metrics(args):
                     influxdb_url=influxdb_url,
                     influxdb_token=influxdb_token,
                     influxdb_org=influxdb_org,
-                    influxdb_bucket=influxdb_bucket,
+                    influxdb_bucket=bucket,
                     testnet_name=args.name or "",
                     console=console,
                 ).execute()
