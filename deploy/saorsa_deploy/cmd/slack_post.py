@@ -119,7 +119,7 @@ def _regions_by_provider(state: dict) -> dict[str, list[str]]:
     return out
 
 
-def _testnet_blocks(deploy_args: dict, state: dict) -> list[dict]:
+def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -> list[dict]:
     blocks: list[dict] = [
         _section(
             f"*Node binary:* {_format_binary(deploy_args.get('node_binary'))}"
@@ -150,11 +150,28 @@ def _testnet_blocks(deploy_args: dict, state: dict) -> list[dict]:
     else:
         nat_value = "0"
 
+    # Clock skew spans both tiers: node VMs (selected by --clock-skew-count,
+    # persisted to state) and client VMs (clock_skew=true on their spec).
+    node_skew = len(state.get("clock_skew_vm_ips") or [])
+    client_skew = sum(
+        1 for c in ((client_state or {}).get("clients") or []) if c.get("clock_skew")
+    )
+    total_skew = node_skew + client_skew
+    if total_skew and node_skew and client_skew:
+        skew_value = f"{total_skew} ({node_skew} node, {client_skew} client)"
+    elif client_skew:
+        skew_value = f"{total_skew} ({client_skew} client)"
+    elif node_skew:
+        skew_value = f"{total_skew} ({node_skew} node)"
+    else:
+        skew_value = "0"
+
     blocks.append(
         _fields_section(
             [
                 ("Total nodes", node_value),
                 ("NAT-simulated nodes", nat_value),
+                ("Clock-skewed VMs", skew_value),
             ]
         )
     )
@@ -209,7 +226,8 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
         vm_size = u.get("vm_size", "?")
         payment = u.get("payment_type") or "default"
         file_names = u.get("file_names") or []
-        lines.append(f"• {region} ({vm_size}) — payment: {payment}")
+        skew_str = " — ⏰ clock-skew" if u.get("clock_skew") else ""
+        lines.append(f"• {region} ({vm_size}) — payment: {payment}{skew_str}")
         if file_names:
             for name in file_names:
                 lines.append(f"    • `{name}`")
@@ -311,6 +329,9 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
     spec = deploy_args.get("spec", "_unknown_")
     fields: list[tuple[str, str]] = [("Downloader spec", spec)]
 
+    if deploy_args.get("clock_skew"):
+        fields.append(("Clock skew", "enabled ⏰"))
+
     if "sleep_interval_secs" in deploy_args:
         sleep_interval_secs = deploy_args.get("sleep_interval_secs")
         if sleep_interval_secs is None:
@@ -346,6 +367,7 @@ def _clients_block(clients: list[dict]) -> dict:
         role = c.get("role", "upload")
         region = c.get("region", "?")
         vm_size = c.get("vm_size", "?")
+        skew_str = " — ⏰ clock-skew" if c.get("clock_skew") else ""
         if role == "upload":
             file_size = c.get("file_size_mb")
             # file_size_mb is 0 for prod uploaders (real files of arbitrary
@@ -354,10 +376,10 @@ def _clients_block(clients: list[dict]) -> dict:
             size_str = f", {file_size}MB files" if file_size else ""
             payment = c.get("payment_type") or "default"
             lines.append(
-                f"• upload — {region} ({vm_size}{size_str}) — payment: {payment}"
+                f"• upload — {region} ({vm_size}{size_str}) — payment: {payment}{skew_str}"
             )
         else:
-            lines.append(f"• download — {region} ({vm_size})")
+            lines.append(f"• download — {region} ({vm_size}){skew_str}")
     return _section("*Clients:*\n" + "\n".join(lines))
 
 
@@ -435,7 +457,7 @@ def build_slack_blocks(
         blocks.append(_section("*Purpose:*\n_(none recorded)_"))
 
     if kind_raw == "testnet":
-        blocks.extend(_testnet_blocks(deploy_args, state))
+        blocks.extend(_testnet_blocks(deploy_args, state, client_state))
     elif kind_raw == "prod-uploaders":
         blocks.extend(_prod_uploaders_blocks(deploy_args))
     elif kind_raw in ("prod-continuous-downloader", "prod-downloaders"):

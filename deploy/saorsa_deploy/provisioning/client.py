@@ -12,6 +12,10 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
+from saorsa_deploy.provisioning.clock_skew import (
+    build_clock_skew_command,
+    skew_direction_for_ip,
+)
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -180,6 +184,28 @@ class AntClientProvisioner:
                 name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
                 commands=[build_disable_unattended_upgrades_command()],
             )
+
+            # Inject clock skew on any client whose spec sets clock_skew=true.
+            # Each selected host shifts by a fixed magnitude in a per-host
+            # direction, so we add one op per host.
+            skew_ips = {c["ip"] for c in self.clients if c.get("ip") and c.get("clock_skew")}
+            if skew_ips:
+                self.console.print(
+                    f"[cyan]Clock skew enabled on {len(skew_ips)}/"
+                    f"{len(host_ips)} client host(s).[/cyan]"
+                )
+                active_hosts = list(state.inventory.get_active_hosts())
+                for host in active_hosts:
+                    if host.name not in skew_ips:
+                        continue
+                    direction = skew_direction_for_ip(host.name)
+                    add_op(
+                        state,
+                        server.shell,
+                        name=f"Inject clock skew ({'fast' if direction >= 0 else 'slow'})",
+                        commands=[build_clock_skew_command(direction)],
+                        host=[host],
+                    )
 
             # Create directories
             add_op(

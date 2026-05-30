@@ -230,6 +230,37 @@ ssh root@<VM> "iptables -t nat -L PREROUTING -n | grep -c DNAT"   # expect 2
 ssh root@<VM> "ip netns list"                                      # expect 'ant_nat'
 ```
 
+#### Clock skew (testing clock-independence)
+
+`nodes provision` can inject deliberate clock skew into a subset of node VMs.
+On a selected host, provisioning disables the OS time-sync service
+(`systemd-timesyncd` / chrony / ntp) and jumps the system clock by a fixed
+magnitude (a few hours) in a per-host direction (some VMs run fast, some slow).
+This exists to verify the network no longer depends on client/node clocks being
+on UTC.
+
+```bash
+uv run saorsa-deploy nodes provision --name DEV-01 --node-count 25 --clock-skew-count 2
+```
+
+`--clock-skew-count N` skews `N` VMs, chosen with the same deterministic,
+region-distributed strategy as `--nat-percent` and recorded in deployment state
+on first run. Subsequent runs honour the locked selection — `--clock-skew-count`
+is ignored unless you pass `--force-clock-skew-reselect`. The clock change is
+idempotent (guarded by a `/etc/ant-clock-skew-applied` marker), so re-running
+`nodes provision` never compounds the offset. The skew persists until the VM is
+destroyed.
+
+Verify on a skewed VM:
+
+```bash
+ssh root@<VM> "cat /etc/ant-clock-skew-applied"   # e.g. '+3 hours'
+ssh root@<VM> "timedatectl"                        # NTP synchronized: no
+```
+
+The same option is available per-VM on clients — see the `clock_skew=true` spec
+token under "Deploying clients" and the prod client commands below.
+
 #### Binary version selection
 
 By default provisioning uses the latest GitHub release. Override with:
@@ -331,7 +362,7 @@ Client VMs run the ant binary as long-running upload-or-download workers against
 
 Commands:
 
-- `clients infra --name <testnet> --uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N] [--uploader ...] --downloader provider:region[:vm_size] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required. `provider` is **mandatory** and must be one of `digital_ocean`, `vultr`, `hetzner`, `ovh` — different uploaders/downloaders may target different providers (e.g. cheap-egress providers for the upload-heavy VMs). **Region names and VM sizes vary per provider and are passed through verbatim** — supply valid strings for the chosen provider (DO `s-2vcpu-4gb` / Vultr `vc2-2c-4gb` / Hetzner `cpx22` / OVH `b3-8`, regions like DO `lon1` / Vultr `lhr` / Hetzner `fsn1` / OVH `GRA9`); there is no per-provider validation. The optional `ant=` / `eth=` keys set per-uploader funding amounts (defaults: 100 ANT, 0.5 ETH). The optional `payment=` key sets the storage-payment mode (`merkle` or `no-merkle`). OVH requires `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` env vars; Vultr requires `VULTR_API_KEY`; Hetzner requires `HCLOUD_TOKEN`; DigitalOcean requires `DO_TOKEN`.
+- `clients infra --name <testnet> --uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=true] [--uploader ...] --downloader provider:region[:vm_size][:clock_skew=true] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required. `provider` is **mandatory** and must be one of `digital_ocean`, `vultr`, `hetzner`, `ovh` — different uploaders/downloaders may target different providers (e.g. cheap-egress providers for the upload-heavy VMs). **Region names and VM sizes vary per provider and are passed through verbatim** — supply valid strings for the chosen provider (DO `s-2vcpu-4gb` / Vultr `vc2-2c-4gb` / Hetzner `cpx22` / OVH `b3-8`, regions like DO `lon1` / Vultr `lhr` / Hetzner `fsn1` / OVH `GRA9`); there is no per-provider validation. The optional `ant=` / `eth=` keys set per-uploader funding amounts (defaults: 100 ANT, 0.5 ETH). The optional `payment=` key sets the storage-payment mode (`merkle` or `no-merkle`). The optional `clock_skew=true` key makes `clients provision` disable time sync and shift that VM's clock by a few hours (direction varies per host) — for testing the network's clock-independence; idempotent via a `/etc/ant-clock-skew-applied` marker. OVH requires `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` env vars; Vultr requires `VULTR_API_KEY`; Hetzner requires `HCLOUD_TOKEN`; DigitalOcean requires `DO_TOKEN`.
 - `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM). For each uploader, generates a fresh Arbitrum Sepolia EOA wallet, transfers the configured ANT + ETH from the funding wallet (`--wallet-secret-key` / `ANT_DEPLOY_SECRET_KEY`), persists wallet info in S3 client state, and writes the per-uploader secret key into `/etc/ant-client.env`. Idempotent: re-runs reuse wallets already recorded in client state. Skipped under `--prod`.
 - `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
 - `clients destroy` — drains every per-uploader wallet (ANT + ETH back to the funding wallet on Arbitrum Sepolia, less a small ETH gas reserve), then tears down VMs and wipes the per-testnet addresses folder at `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`. Drain failures abort the destroy so VMs and state remain available for retry — pass `--wallet-secret-key` (or set `ANT_DEPLOY_SECRET_KEY`) so funds know where to return.
@@ -724,6 +755,7 @@ Arguments (for `prod continuous-downloader deploy`):
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
 | `--spec` | string | — | Downloader VM `region[:vm_size]` (single VM) |
+| `--clock-skew` | flag | off | Disable time sync and shift the downloader VM's clock by a few hours (direction varies per host) — for testing clock-independence |
 | `--purpose` | string | — | Free-text description; persisted into `deploy_args` and shown by `deployments slack-post` |
 | `--addresses-path` | path | shipped default | Local file of newline-separated addresses |
 | `--sleep-interval-secs` | int | `900` | Seconds to sleep at the **end of each full pass** through the address list before starting the next cycle. `0` disables the sleep (back-to-back cycling). Persisted in `deploy_args.sleep_interval_secs`. |
@@ -799,7 +831,7 @@ Arguments (for `prod uploaders deploy`):
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
-| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH`. All three parts required. |
+| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=true]`. The first three parts are required. `clock_skew=true` disables time sync and shifts that VM's clock by a few hours (testing only). |
 | `--secret-key` | string | `$ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet secret key shared across all uploaders. Deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` — prod uploads cost real ETH. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
 | `--ant-version` | string | — | Optional explicit release version |

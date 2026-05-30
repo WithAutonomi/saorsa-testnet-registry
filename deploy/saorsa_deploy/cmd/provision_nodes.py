@@ -4,6 +4,7 @@ from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
+from saorsa_deploy.provisioning.clock_skew import select_skew_ips
 from saorsa_deploy.provisioning.nat import select_nat_ips
 from saorsa_deploy.provisioning.node import AntNodeProvisioner
 from saorsa_deploy.registry import (
@@ -62,6 +63,7 @@ def cmd_provision_nodes(args):
     binary_url, binary_is_archive = _resolve_binary_source(args, console)
 
     nat_ips = _resolve_nat_ips(args, state, vm_ips, console)
+    clock_skew_ips = _resolve_clock_skew_ips(args, state, vm_ips, console)
 
     if args.region:
         if args.region not in vm_ips:
@@ -108,6 +110,7 @@ def cmd_provision_nodes(args):
         "console": console,
         "rewards_address": args.rewards_address,
         "nat_ips": nat_ips,
+        "clock_skew_ips": clock_skew_ips,
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel
@@ -159,6 +162,7 @@ def cmd_provision_nodes(args):
     # S3 state.
     try:
         nat_percent_value = getattr(args, "nat_percent", 0) or 0
+        clock_skew_count_value = getattr(args, "clock_skew_count", 0) or 0
         node_binary = build_binary_descriptor(
             getattr(args, "branch_name", None),
             getattr(args, "repo_owner", None),
@@ -169,6 +173,7 @@ def cmd_provision_nodes(args):
             {
                 "nodes_per_vm": args.node_count,
                 "nat_percent": nat_percent_value,
+                "clock_skew_count": clock_skew_count_value,
                 "node_binary": node_binary,
             },
         )
@@ -214,6 +219,45 @@ def _resolve_nat_ips(args, state, vm_ips_by_region, console) -> set[str]:
         )
     elif locked:
         console.print(f"  NAT VMs: {len(locked)} from state")
+    return locked
+
+
+def _resolve_clock_skew_ips(args, state, vm_ips_by_region, console) -> set[str]:
+    """Determine which VM IPs should have intentional clock skew injected.
+
+    Mirrors :func:`_resolve_nat_ips`: uses the persisted selection from
+    deployment state when available so re-running nodes provision never flips
+    a VM between skewed and un-skewed unless ``--force-clock-skew-reselect`` is
+    passed.
+    """
+    skew_count = getattr(args, "clock_skew_count", 0) or 0
+    force_reselect = getattr(args, "force_clock_skew_reselect", False)
+    existing = state.get("clock_skew_vm_ips")
+
+    if existing is None or force_reselect:
+        new_list = select_skew_ips(vm_ips_by_region, skew_count) if skew_count > 0 else []
+        if new_list or existing is not None:
+            try:
+                update_deployment_state(args.name, {"clock_skew_vm_ips": new_list})
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: failed to persist clock_skew_vm_ips to state: {e}[/yellow]"
+                )
+        if new_list:
+            console.print(
+                f"  Clock-skew VMs: {len(new_list)} selected from "
+                f"--clock-skew-count {skew_count} (persisted to state)"
+            )
+        return set(new_list)
+
+    locked = set(existing)
+    if skew_count > 0 and locked:
+        console.print(
+            f"  Clock-skew VMs: {len(locked)} locked from state "
+            "(--clock-skew-count ignored; pass --force-clock-skew-reselect to recompute)"
+        )
+    elif locked:
+        console.print(f"  Clock-skew VMs: {len(locked)} from state")
     return locked
 
 

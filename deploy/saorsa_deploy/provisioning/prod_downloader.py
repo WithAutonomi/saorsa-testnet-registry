@@ -36,6 +36,10 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
+from saorsa_deploy.provisioning.clock_skew import (
+    build_clock_skew_command,
+    skew_direction_for_ip,
+)
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -158,6 +162,8 @@ class ProdDownloaderProvisioner:
                 commands=[build_disable_unattended_upgrades_command()],
             )
 
+            self._add_clock_skew_ops(state)
+
             add_op(
                 state,
                 server.shell,
@@ -199,6 +205,32 @@ class ProdDownloaderProvisioner:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
             raise RuntimeError(
                 f"{len(failed)} host(s) failed prod-downloader provisioning"
+            )
+
+    def _add_clock_skew_ops(self, state: State) -> None:
+        """Inject clock skew on any downloader whose spec sets clock_skew=true.
+
+        Each selected host shifts by a fixed magnitude in a per-host direction,
+        so we add one op per host.
+        """
+        skew_ips = {
+            d["ip"] for d in self.downloaders if d.get("ip") and d.get("clock_skew")
+        }
+        if not skew_ips:
+            return
+        self.console.print(
+            f"[cyan]Clock skew enabled on {len(skew_ips)} downloader host(s).[/cyan]"
+        )
+        for host in state.inventory.get_active_hosts():
+            if host.name not in skew_ips:
+                continue
+            direction = skew_direction_for_ip(host.name)
+            add_op(
+                state,
+                server.shell,
+                name=f"Inject clock skew ({'fast' if direction >= 0 else 'slow'})",
+                commands=[build_clock_skew_command(direction)],
+                host=[host],
             )
 
     def _add_install_ant_op(self, state: State) -> None:

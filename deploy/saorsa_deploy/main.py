@@ -483,13 +483,16 @@ def main(argv=None):
         action="append",
         default=[],
         help="Uploader VM spec: "
-        "'provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]'. "
+        "'provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]"
+        "[:clock_skew=true]'. "
         "provider is mandatory: digital_ocean, vultr, hetzner, or ovh. "
         "Region names and VM sizes vary per provider and are passed through "
         "verbatim (supply valid strings). Repeat for multiple uploaders. "
         "Default vm_size=s-2vcpu-4gb (DO). Optional payment=merkle|no-merkle "
         "forces the payment mode for that uploader's `ant file upload` calls; "
-        "omit for ant's default. Example: --uploader 'digital_ocean:lon1:50' "
+        "omit for ant's default. clock_skew=true disables time sync and shifts "
+        "that VM's clock by a few hours (testing only). "
+        "Example: --uploader 'digital_ocean:lon1:50' "
         "--uploader 'hetzner:fsn1:100:cpx32:payment=merkle'",
     )
     clients_infra_parser.add_argument(
@@ -497,11 +500,13 @@ def main(argv=None):
         type=str,
         action="append",
         default=[],
-        help="Downloader VM spec: 'provider:region[:vm_size]'. provider is "
+        help="Downloader VM spec: 'provider:region[:vm_size][:clock_skew=true]'. "
+        "provider is "
         "mandatory: digital_ocean, vultr, hetzner, or ovh. Repeat for "
-        "multiple downloaders. Default vm_size=s-2vcpu-4gb (DO). Example: "
-        "--downloader 'digital_ocean:lon1' "
-        "--downloader 'vultr:nrt:vc2-4c-8gb'",
+        "multiple downloaders. Default vm_size=s-2vcpu-4gb (DO). clock_skew=true "
+        "disables time sync and shifts that VM's clock by a few hours (testing "
+        "only). Example: --downloader 'digital_ocean:lon1' "
+        "--downloader 'vultr:nrt:vc2-4c-8gb:clock_skew=true'",
     )
     clients_infra_parser.add_argument(
         "--force",
@@ -2209,6 +2214,22 @@ def main(argv=None):
         "deployment state already has one recorded. Use with caution — this "
         "can flip a VM between NAT and non-NAT between runs.",
     )
+    nodes_provision_parser.add_argument(
+        "--clock-skew-count",
+        type=int,
+        default=0,
+        help="Number of node VMs to inject intentional clock skew into "
+        "(default: 0 = disabled). Selected hosts disable time sync and shift "
+        "their clock by a few hours (direction varies per host). Selection is "
+        "region-distributed and persisted to deployment state on first run.",
+    )
+    nodes_provision_parser.add_argument(
+        "--force-clock-skew-reselect",
+        action="store_true",
+        help="Re-compute the clock-skew VM selection from --clock-skew-count "
+        "even if deployment state already has one recorded. Use with caution — "
+        "this can flip a VM between skewed and un-skewed between runs.",
+    )
 
     # nodes provision-genesis
     nodes_provision_genesis_parser = nodes_subparsers.add_parser(
@@ -2407,6 +2428,13 @@ def main(argv=None):
         help="Downloader VM spec 'region[:vm_size]' (single client VM).",
     )
     prod_cd_deploy_parser.add_argument(
+        "--clock-skew",
+        action="store_true",
+        help="Inject intentional clock skew on the downloader VM: disable time "
+        "sync and shift the system clock by a few hours (direction varies "
+        "per host). For testing clock-independence of the network.",
+    )
+    prod_cd_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -2510,6 +2538,13 @@ def main(argv=None):
         help="Downloader VM spec 'region[:vm_size]' (single client VM).",
     )
     prod_dl_deploy_parser.add_argument(
+        "--clock-skew",
+        action="store_true",
+        help="Inject intentional clock skew on the downloader VM: disable time "
+        "sync and shift the system clock by a few hours (direction varies "
+        "per host). For testing clock-independence of the network.",
+    )
+    prod_dl_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -2602,12 +2637,13 @@ def main(argv=None):
         "--uploader",
         action="append",
         default=[],
-        metavar="REGION:VM_SIZE:urls=PATH[:payment=MODE]",
+        metavar="REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=true]",
         help=(
             "Uploader spec, repeatable. Example: "
             "lon1:s-2vcpu-4gb:urls=/path/to/list.txt:payment=merkle. "
             "payment=merkle|no-merkle is optional and applies per-uploader; "
-            "omit to let ant pick its default."
+            "omit to let ant pick its default. clock_skew=true disables time "
+            "sync and shifts that VM's clock by a few hours (testing only)."
         ),
     )
     prod_up_deploy_parser.add_argument(
