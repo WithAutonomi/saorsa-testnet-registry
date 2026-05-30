@@ -18,6 +18,11 @@ from typing import Iterator, Optional
 TARGET_AT_STARTUP = "ant_node"
 TARGET_UPGRADE_PREFIX = "ant_node::upgrade"
 
+# Keep-alive for the point-in-time used by paginated scans. Each search that
+# carries the PIT resets this window, so it only has to exceed the gap between
+# consecutive page fetches, not the whole scan duration.
+PIT_KEEP_ALIVE = "2m"
+
 
 @dataclass
 class ESCredentials:
@@ -67,24 +72,78 @@ class ESClient:
         except urllib.error.URLError as e:
             raise ESError(f"ES connection error: {e.reason}") from e
 
-    def search(
-        self,
-        index_pattern: str,
-        query: dict,
-        size: int = 1000,
-        sort: Optional[list] = None,
-        search_after: Optional[list] = None,
-    ) -> dict:
-        body: dict = {
-            "query": query,
-            "size": size,
+    def _target_filter(self) -> dict:
+        """The shared `should` clause matching startup + upgrade-module docs."""
+        return {
+            "bool": {
+                "should": [
+                    {"term": {"tag.target.keyword": TARGET_AT_STARTUP}},
+                    {
+                        "prefix": {
+                            "tag.target.keyword": f"{TARGET_UPGRADE_PREFIX}::",
+                        }
+                    },
+                ],
+                "minimum_should_match": 1,
+            }
         }
-        if sort is not None:
-            body["sort"] = sort
-        if search_after is not None:
-            body["search_after"] = search_after
-        encoded_pattern = urllib.parse.quote(index_pattern, safe="*-")
-        return self._request("POST", f"/{encoded_pattern}/_search", body)
+
+    def _open_pit(self, index_pattern: str) -> str:
+        encoded = urllib.parse.quote(index_pattern, safe="*-")
+        resp = self._request(
+            "POST", f"/{encoded}/_pit?keep_alive={PIT_KEEP_ALIVE}", None
+        )
+        pit_id = resp.get("id")
+        if not pit_id:
+            raise ESError("Elasticsearch did not return a point-in-time id")
+        return pit_id
+
+    def _close_pit(self, pit_id: str) -> None:
+        # Best-effort: the PIT also auto-expires after PIT_KEEP_ALIVE, so a
+        # failure here only leaks a short-lived reader, never data.
+        try:
+            self._request("DELETE", "/_pit", {"id": pit_id})
+        except ESError:
+            pass
+
+    def _scan(
+        self, index_pattern: str, query: dict, page_size: int = 1000,
+    ) -> Iterator[dict]:
+        """Yield every `_source` matching `query`, in @timestamp order.
+
+        Pages with `search_after` over a point-in-time, tie-broken by the
+        PIT-provided `_shard_doc`. Unlike a plain `search_after` on
+        `(@timestamp, host, service)`, this tie-breaker is GUARANTEED unique
+        and stable, so documents sharing a millisecond `@timestamp` are never
+        dropped at a page boundary (the failure mode that previously stranded
+        completion events emitted during dense upgrade bursts).
+        """
+        pit_id = self._open_pit(index_pattern)
+        sort = [{"@timestamp": "asc"}, {"_shard_doc": "asc"}]
+        search_after: Optional[list] = None
+        try:
+            while True:
+                body: dict = {
+                    "size": page_size,
+                    "query": query,
+                    "sort": sort,
+                    "pit": {"id": pit_id, "keep_alive": PIT_KEEP_ALIVE},
+                }
+                if search_after is not None:
+                    body["search_after"] = search_after
+                resp = self._request("POST", "/_search", body)
+                # The PIT id can be refreshed across requests; keep the latest.
+                pit_id = resp.get("pit_id", pit_id)
+                hits = resp.get("hits", {}).get("hits", [])
+                if not hits:
+                    return
+                for hit in hits:
+                    yield hit["_source"]
+                if len(hits) < page_size:
+                    return
+                search_after = hits[-1]["sort"]
+        finally:
+            self._close_pit(pit_id)
 
     def scan_upgrade_events(
         self,
@@ -93,66 +152,41 @@ class ESClient:
         since: str,
         page_size: int = 1000,
     ) -> Iterator[dict]:
-        """Yield every upgrade-lifecycle + startup doc with @timestamp >= since.
-
-        Sorted by @timestamp asc, tie-broken by _id for stability. Uses
-        search_after to iterate without deep-pagination limits.
-        """
+        """Yield every upgrade-lifecycle + startup doc with @timestamp >= since."""
         query = {
             "bool": {
                 "filter": [
                     {"range": {"@timestamp": {"gte": since}}},
-                    {
-                        "term": {
-                            "tag.testnet_name.keyword": testnet_name,
-                        }
-                    },
-                    {
-                        "bool": {
-                            "should": [
-                                {
-                                    "term": {
-                                        "tag.target.keyword": TARGET_AT_STARTUP,
-                                    }
-                                },
-                                {
-                                    "prefix": {
-                                        "tag.target.keyword": (
-                                            f"{TARGET_UPGRADE_PREFIX}::"
-                                        ),
-                                    }
-                                },
-                            ],
-                            "minimum_should_match": 1,
-                        }
-                    },
+                    {"term": {"tag.testnet_name.keyword": testnet_name}},
+                    self._target_filter(),
                 ]
             }
         }
-        # `_id` as a sort tie-breaker is disallowed in ES 8.x without
-        # enabling fielddata cluster-wide. Use keyword subfields on the
-        # host + service tags — together with the (microsecond) timestamp
-        # the compound key is effectively unique per event.
-        sort = [
-            {"@timestamp": "asc"},
-            {"tag.host.keyword": "asc"},
-            {"tag.service_number.keyword": "asc"},
-        ]
+        yield from self._scan(index_pattern, query, page_size)
 
-        search_after: Optional[list] = None
-        while True:
-            resp = self.search(
-                index_pattern=index_pattern,
-                query=query,
-                size=page_size,
-                sort=sort,
-                search_after=search_after,
-            )
-            hits = resp.get("hits", {}).get("hits", [])
-            if not hits:
-                return
-            for hit in hits:
-                yield hit["_source"]
-            if len(hits) < page_size:
-                return
-            search_after = hits[-1]["sort"]
+    def scan_node_events(
+        self,
+        index_pattern: str,
+        testnet_name: str,
+        host: str,
+        service_number: str,
+        page_size: int = 1000,
+    ) -> Iterator[dict]:
+        """Yield a single node's COMPLETE upgrade-lifecycle + startup history.
+
+        Unbounded in time (no `since`) and scoped to one (host, service) so the
+        caller can re-derive that row's state from scratch — used by
+        `track-upgrades reconcile` to recover rows that incremental sync left
+        stuck behind its forward-only cursor.
+        """
+        query = {
+            "bool": {
+                "filter": [
+                    {"term": {"tag.testnet_name.keyword": testnet_name}},
+                    {"term": {"tag.host.keyword": host}},
+                    {"term": {"tag.service_number.keyword": str(service_number)}},
+                    self._target_filter(),
+                ]
+            }
+        }
+        yield from self._scan(index_pattern, query, page_size)

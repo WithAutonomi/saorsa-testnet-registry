@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from saorsa_deploy.cmd.track_upgrades.init_cmd import _enumerate_nodes
+from saorsa_deploy.cmd.track_upgrades.reconcile_cmd import reconcile_rows
 from saorsa_deploy.cmd.track_upgrades.sync_cmd import _advance_cursor
 from saorsa_deploy.upgrade_tracker.db import (
     NodeUpgrade,
@@ -402,6 +403,152 @@ class TestAdvanceCursor:
             lag_seconds=120,
         )
         assert out == "2026-04-18T12:30:45.123456Z"
+
+
+class _FakeNodeES:
+    """Stand-in for ESClient exposing scan_node_events keyed by (host, svc)."""
+
+    def __init__(self, by_node: dict[tuple[str, str], list[dict]]):
+        self.by_node = by_node
+        self.calls: list[tuple[str, str]] = []
+
+    def scan_node_events(
+        self, index_pattern, testnet_name, host, service_number,
+    ):
+        self.calls.append((host, str(service_number)))
+        return list(self.by_node.get((host, str(service_number)), []))
+
+
+class TestReconcile:
+    def _stuck_pending(self, conn):
+        """A node frozen at pending whose upgrade actually completed in ES."""
+        repo = Repository(conn)
+        repo.insert_node(NodeUpgrade(
+            host="ANT-PROD-01-OVH-BHS5-3",
+            service_number="14",
+            from_version="0.11.4",
+            to_version="0.11.5",
+            running_version="0.11.4",
+            status="pending",
+            last_synced_at="2026-05-30T17:59:00.000Z",
+        ))
+        return repo
+
+    def test_recovers_missed_completion(self, tmp_path: Path):
+        db_path = tmp_path / "t.db"
+        with open_db(db_path) as conn:
+            self._stuck_pending(conn)
+        host, svc = "ANT-PROD-01-OVH-BHS5-3", "14"
+        events = [
+            _doc(ts="2026-05-28T14:39:10.000Z", host=host, service_number=svc,
+                 target="ant_node::upgrade::monitor", testnet_name="ant-prod-01",
+                 message="New version detected, staged rollout delay calculated",
+                 tail_extra={"delay_hours": 0, "delay_minutes": 25}),
+            _doc(ts="2026-05-28T15:04:08.000Z", host=host, service_number=svc,
+                 target="ant_node::upgrade::monitor", testnet_name="ant-prod-01",
+                 message="Starting auto-apply upgrade from 0.11.4 to 0.11.5"),
+            _doc(ts="2026-05-28T15:04:24.000Z", host=host, service_number=svc,
+                 target="ant_node", testnet_name="ant-prod-01",
+                 message="ant-node starting", tail_extra={"version": "0.11.5"}),
+        ]
+        es = _FakeNodeES({(host, svc): events})
+        with open_db(db_path) as conn:
+            repo = Repository(conn)
+            changes = reconcile_rows(
+                repo, es, "telegraf-ant-nodes-ant-prod-01-*", "ant-prod-01",
+            )
+            got = repo.get_node(host, svc, "0.11.5")
+        assert es.calls == [(host, svc)]
+        assert len(changes) == 1
+        assert changes[0][2:4] == ("pending", "completed")
+        assert got.status == "completed"
+        assert got.running_version == "0.11.5"
+        assert got.completed_at == "2026-05-28T15:04:24.000Z"
+
+    def test_leaves_genuinely_unupgraded_row_untouched(self, tmp_path: Path):
+        db_path = tmp_path / "t.db"
+        with open_db(db_path) as conn:
+            self._stuck_pending(conn)
+        host, svc = "ANT-PROD-01-OVH-BHS5-3", "14"
+        # Only a (still-on-old-version) startup — no 0.11.5 boot anywhere.
+        es = _FakeNodeES({(host, svc): [
+            _doc(ts="2026-05-28T12:00:00.000Z", host=host, service_number=svc,
+                 target="ant_node", testnet_name="ant-prod-01",
+                 message="ant-node starting", tail_extra={"version": "0.11.4"}),
+        ]})
+        with open_db(db_path) as conn:
+            repo = Repository(conn)
+            changes = reconcile_rows(
+                repo, es, "telegraf-ant-nodes-ant-prod-01-*", "ant-prod-01",
+            )
+            got = repo.get_node(host, svc, "0.11.5")
+        assert changes == []
+        assert got.status == "pending"
+
+    def test_skips_terminal_rows(self, tmp_path: Path):
+        db_path = tmp_path / "t.db"
+        with open_db(db_path) as conn:
+            repo = Repository(conn)
+            repo.insert_node(NodeUpgrade(
+                host="H", service_number="1", from_version="0.11.4",
+                to_version="0.11.5", running_version="0.11.5",
+                status="completed", last_synced_at="2026-05-30T00:00:00.000Z",
+            ))
+        es = _FakeNodeES({})
+        with open_db(db_path) as conn:
+            repo = Repository(conn)
+            changes = reconcile_rows(repo, es, "idx", "ant-prod-01")
+        # Terminal rows are never scanned.
+        assert es.calls == []
+        assert changes == []
+
+
+class TestScanPagination:
+    def test_scan_pages_and_closes_pit(self):
+        from saorsa_deploy.upgrade_tracker.es_client import (
+            ESClient,
+            ESCredentials,
+        )
+
+        es = ESClient(ESCredentials(url="http://es:9200", api_key="k"))
+        # Two full pages then a short page; identical @timestamp across the
+        # page boundary is exactly the case the old sort key dropped.
+        pages = [
+            {"pit_id": "p1", "hits": {"hits": [
+                {"_source": {"n": 0}, "sort": [1000, 10]},
+                {"_source": {"n": 1}, "sort": [1000, 11]},
+            ]}},
+            {"pit_id": "p2", "hits": {"hits": [
+                {"_source": {"n": 2}, "sort": [1000, 12]},
+                {"_source": {"n": 3}, "sort": [1001, 13]},
+            ]}},
+            {"pit_id": "p3", "hits": {"hits": [
+                {"_source": {"n": 4}, "sort": [1002, 14]},
+            ]}},
+        ]
+        calls = {"open": 0, "close": 0, "search": 0, "search_after": []}
+
+        def fake_request(method, path, body):
+            if "_pit" in path and method == "POST":
+                calls["open"] += 1
+                return {"id": "pit-abc"}
+            if path == "/_pit" and method == "DELETE":
+                calls["close"] += 1
+                return {"succeeded": True}
+            # /_search
+            calls["search"] += 1
+            calls["search_after"].append(body.get("search_after"))
+            assert body["pit"]["id"]  # PIT carried on every search
+            assert body["sort"][-1] == {"_shard_doc": "asc"}
+            return pages[calls["search"] - 1]
+
+        es._request = fake_request
+        out = list(es._scan("idx-*", {"match_all": {}}, page_size=2))
+        assert [d["n"] for d in out] == [0, 1, 2, 3, 4]
+        assert calls["open"] == 1
+        assert calls["close"] == 1  # PIT always cleaned up
+        # search_after advances using the last hit's full (unique) sort tuple.
+        assert calls["search_after"] == [None, [1000, 11], [1001, 13]]
 
 
 class TestAntProd01FullShape:
