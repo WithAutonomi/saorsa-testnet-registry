@@ -3270,6 +3270,17 @@ def main(argv=None):
     )
     ti_details.add_argument("--db", type=str, required=True)
 
+    # reconcile
+    ti_reconcile = track_upgrades_sub.add_parser(
+        "reconcile",
+        help=(
+            "Repair stuck rows by re-deriving each non-terminal node's state "
+            "from its complete Elasticsearch history. Cursor-independent — "
+            "recovers events that incremental sync dropped/missed."
+        ),
+    )
+    ti_reconcile.add_argument("--db", type=str, required=True)
+
     # =========================================================================
     # === release-candidates group (new, ls, show) ===
     # =========================================================================
@@ -3779,6 +3790,11 @@ def main(argv=None):
                 cmd_track_upgrades_details,
             )
             cmd_track_upgrades_details(args)
+        elif verb == "reconcile":
+            from saorsa_deploy.cmd.track_upgrades.reconcile_cmd import (
+                cmd_track_upgrades_reconcile,
+            )
+            cmd_track_upgrades_reconcile(args)
     elif args.command == "release-candidates":
         verb = args.release_candidates_verb
         if verb == "new":
