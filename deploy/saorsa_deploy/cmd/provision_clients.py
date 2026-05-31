@@ -475,6 +475,7 @@ def cmd_provision_clients(args):
         wallet_secret_key=wallet_secret_key,
         addresses_file_content=addresses_file_content,
         heaptrack_targets=heaptrack_targets,
+        deployment_name=args.name,
     )
 
     try:

@@ -128,9 +128,8 @@ def _provision_client_telegraf(
     except RuntimeError:
         return (False, True)
 
-    client_ips = [
-        c["ip"] for c in client_state.get("clients", []) if c.get("ip")
-    ]
+    clients = [c for c in client_state.get("clients", []) if c.get("ip")]
+    client_ips = [c["ip"] for c in clients]
     if not client_ips:
         return (False, True)
 
@@ -140,6 +139,31 @@ def _provision_client_telegraf(
         f"[/bold]"
     )
     clear_known_hosts(client_ips, console)
+    # Set the OS hostname BEFORE Telegraf starts. Telegraf captures the
+    # hostname at service-start time (omit_hostname=false), and uploader.sh /
+    # downloader.sh tag their Influx points with `$(hostname)` too. Only the
+    # vultr-client terraform module sets the instance hostname from the VM
+    # name; DO / OVH / Hetzner client images boot with a provider-assigned
+    # machine-id hostname, so without this their metrics land under an opaque
+    # tag instead of the inventory name. Build the canonical client hostname
+    # (matching vultr-client/main.tf: `<name>-ant-client-<role>-<region>-<idx>`)
+    # and apply it before the Telegraf install below.
+    ssh_key = common_kwargs.get("ssh_key_path", "~/.ssh/id_rsa")
+    ssh_user = common_kwargs.get("ssh_user", "root")
+    hostname_entries = [
+        {
+            "ip": c["ip"],
+            "name": (
+                f"{name}-ant-client-"
+                f"{c.get('role', 'upload')}-{c['region']}-{c['client_index']}"
+            ),
+            "ssh_user": ssh_user,
+            "ssh_key": ssh_key,
+        }
+        for c in clients
+        if c.get("region") is not None and c.get("client_index") is not None
+    ]
+    set_hostnames(hostname_entries, console)
     # Client host metrics land in the dedicated client bucket so the Client
     # Host Statistics dashboard stays physically isolated from node data.
     client_kwargs = {**common_kwargs, "influxdb_bucket": INFLUXDB_CLIENT_BUCKET}
