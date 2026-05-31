@@ -121,6 +121,62 @@ class TestNameBranchClientOnly:
         assert "CLIENT" in roles  # client STILL attempted despite node failure
 
 
+class TestClientHostnamesSetBeforeTelegraf:
+    @patch.object(ptm, "set_hostnames")
+    @patch.object(ptm, "clear_known_hosts")
+    @patch.object(ptm, "TelegrafMetricsProvisioner")
+    @patch.object(ptm, "load_client_state")
+    def test_sets_canonical_hostnames_before_telegraf(
+        self, mock_client, mock_prov, _ckh, mock_set_hostnames
+    ):
+        # Telegraf captures `$(hostname)` at start, and uploader.sh /
+        # downloader.sh tag Influx with it too. Only vultr-client sets the
+        # hostname from the VM name in terraform; DO / OVH / Hetzner do not,
+        # so the client provisioner must set it explicitly using the inventory
+        # name before Telegraf runs.
+        mock_client.return_value = {
+            "clients": [
+                {
+                    "ip": "1.1.1.1",
+                    "role": "upload",
+                    "region": "lon1",
+                    "client_index": 1,
+                },
+                {
+                    "ip": "2.2.2.2",
+                    "role": "download",
+                    "region": "nyc1",
+                    "client_index": 2,
+                },
+            ]
+        }
+        common = {
+            "ssh_key_path": "~/.ssh/k",
+            "ssh_user": "root",
+            "influxdb_url": "http://x:8086",
+            "influxdb_token": "tok",
+            "influxdb_org": "ant",
+            "influxdb_bucket": "testnet-metrics",
+            "testnet_name": "DEV-01",
+            "console": MagicMock(),
+        }
+
+        found, ok = ptm._provision_client_telegraf("DEV-01", common, MagicMock())
+
+        assert (found, ok) == (True, True)
+        mock_prov.assert_called_once()
+        mock_set_hostnames.assert_called_once()
+        entries = mock_set_hostnames.call_args.args[0]
+        assert {e["ip"]: e["name"] for e in entries} == {
+            "1.1.1.1": "DEV-01-ant-client-upload-lon1-1",
+            "2.2.2.2": "DEV-01-ant-client-download-nyc1-2",
+        }
+        # Each entry carries the SSH details set_hostnames needs.
+        for e in entries:
+            assert e["ssh_user"] == "root"
+            assert e["ssh_key"] == "~/.ssh/k"
+
+
 class TestProvisionClientTelegrafForDeployment:
     @patch.object(ptm, "clear_known_hosts")
     @patch.object(ptm, "TelegrafMetricsProvisioner")

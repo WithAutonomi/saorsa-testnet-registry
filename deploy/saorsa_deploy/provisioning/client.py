@@ -10,7 +10,9 @@ from rich.console import Console
 
 from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+    SET_HOSTNAME_OP_NAME,
     build_disable_unattended_upgrades_command,
+    build_set_hostname_command,
 )
 from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
@@ -129,8 +131,10 @@ class AntClientProvisioner:
         wallet_secret_key: str = "",
         addresses_file_content: str | None = None,
         heaptrack_targets: frozenset[str] = frozenset(),
+        deployment_name: str = "",
     ):
         self.clients = clients
+        self.deployment_name = deployment_name
         self.bootstrap_peers = bootstrap_peers
         self.aws_access_key_id = aws_access_key_id
         self.aws_secret_access_key = aws_secret_access_key
@@ -184,6 +188,40 @@ class AntClientProvisioner:
                 name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
                 commands=[build_disable_unattended_upgrades_command()],
             )
+
+            # Set each VM's OS hostname to its inventory name. Only the
+            # vultr-client terraform module sets the hostname from the VM name;
+            # DO / OVH / Hetzner client images boot with a provider-assigned
+            # machine-id hostname. uploader.sh / downloader.sh tag their Influx
+            # points with `$(hostname)` and Telegraf captures it too, so an
+            # unset hostname makes a client's metrics land under an opaque tag.
+            # Apply it here (one op per host) so it is correct even when
+            # monitoring is disabled and the Telegraf path never runs. The
+            # hostname format matches vultr-client/main.tf and the inventory:
+            # `<name>-ant-client-<role>-<region>-<index>`.
+            ip_to_hostname = {
+                c["ip"]: (
+                    f"{self.deployment_name}-ant-client-"
+                    f"{c.get('role', 'upload')}-{c['region']}-{c['client_index']}"
+                )
+                for c in self.clients
+                if c.get("ip")
+                and self.deployment_name
+                and c.get("region") is not None
+                and c.get("client_index") is not None
+            }
+            if ip_to_hostname:
+                for host in state.inventory.get_active_hosts():
+                    hostname = ip_to_hostname.get(host.name)
+                    if not hostname:
+                        continue
+                    add_op(
+                        state,
+                        server.shell,
+                        name=SET_HOSTNAME_OP_NAME,
+                        commands=[build_set_hostname_command(hostname)],
+                        host=[host],
+                    )
 
             # Inject clock skew on any client whose spec sets clock_skew=true.
             # Each selected host shifts by a fixed magnitude in a per-host
