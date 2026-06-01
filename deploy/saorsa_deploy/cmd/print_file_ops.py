@@ -18,7 +18,8 @@ per kind; flags that don't apply to the resolved kind are silently
 ignored.
 """
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from statistics import median
 
 from rich.console import Console
 from rich.table import Table
@@ -203,6 +204,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             by_host[host], key=lambda p: p.get("start_ns") or 0
         )
         total = len(ops)
+        skew_label = _clock_skew_label(ops)
         if args.recent:
             ops = ops[-10:]
         title_count = (
@@ -210,11 +212,13 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             if args.recent and total > len(ops)
             else f"{len(ops)} op(s)"
         )
+        title_parts = [host]
         if op_type == "upload":
             payment = payment_by_host.get(host, "default")
-            title = f"{host} — payment={payment} ({title_count})"
-        else:
-            title = f"{host} ({title_count})"
+            title_parts.append(f"payment={payment}")
+        if skew_label:
+            title_parts.append(f"clock skew {skew_label}")
+        title = " — ".join(title_parts) + f" ({title_count})"
         table = Table(
             title=title,
             title_style="bold",
@@ -228,7 +232,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         for i, op in enumerate(ops, start=1):
             table.add_row(
                 str(i),
-                _fmt_start(op.get("start_ns")),
+                _fmt_started(op),
                 _fmt_time(op.get("_time")),
                 _fmt_size(op.get("file_size")),
                 _fmt_status(op.get("status")),
@@ -455,8 +459,13 @@ def _prod_print_table(
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
         payment = payment_by_host.get(host, "default")
+        skew_label = _clock_skew_label(ops)
+        skew_seg = f" — clock skew {skew_label}" if skew_label else ""
         table = Table(
-            title=f"prod_upload — {host} — payment={payment} ({len(ops)} record(s))",
+            title=(
+                f"prod_upload — {host} — payment={payment}"
+                f"{skew_seg} ({len(ops)} record(s))"
+            ),
             title_style="bold",
             show_lines=True,
         )
@@ -488,12 +497,14 @@ def _prod_print_details(
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
         payment = payment_by_host.get(host, "default")
+        skew_label = _clock_skew_label(ops)
+        skew_seg = f" — clock skew {skew_label}" if skew_label else ""
         console.rule(
-            f"[bold]{host} — payment={payment} — {len(ops)} record(s)[/bold]"
+            f"[bold]{host} — payment={payment}{skew_seg} — {len(ops)} record(s)[/bold]"
         )
         for i, op in enumerate(ops, start=1):
             console.print(f"[bold]#{i}[/bold]")
-            console.print(f"  Started (UTC):     {_fmt_start(op.get('start_ns'))}")
+            console.print(f"  Started (UTC):     {_fmt_started(op)}")
             console.print(f"  Finished (UTC):    {_fmt_time(op.get('_time'))}")
             console.print(f"  File:              {op.get('file_name') or '-'}")
             console.print(f"  Source URL:        {op.get('source_url') or '-'}")
@@ -572,9 +583,60 @@ def _fmt_time(dt) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _fmt_start(start_ns) -> str:
-    if start_ns is None:
+def _fmt_started(op: dict) -> str:
+    """Render an op's start as ``Completed - Duration``.
+
+    InfluxDB now stamps each point's ``_time`` with its own (correct) server
+    clock, while the ``start_ns`` field carries the client's own — possibly
+    skewed — clock. Deriving the start from the server-side completion time
+    keeps the Started/Completed columns in the same clock frame; using the raw
+    ``start_ns`` would show the client's skewed clock and could read *after*
+    the Completed column on a clock-skewed host.
+    """
+    completed = op.get("_time")
+    if completed is None:
         return "-"
-    return datetime.fromtimestamp(
-        start_ns / 1_000_000_000, tz=timezone.utc
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    total_ms = op.get("total_ms")
+    if total_ms is None:
+        return _fmt_time(completed)
+    return _fmt_time(completed - timedelta(milliseconds=total_ms))
+
+
+# Below this magnitude a start_ns/_time gap is just normal drift + the tiny lag
+# between op completion and the Influx write, not an injected clock skew.
+_SKEW_THRESHOLD_S = 60.0
+
+
+def _clock_skew_seconds(ops: list[dict]) -> float | None:
+    """Estimate a host's clock skew from its recorded ops, or ``None``.
+
+    Each point's ``_time`` is the server-assigned completion time while the
+    ``start_ns`` field is the client's own start time. The client's start in
+    the server frame is ``_time - total_ms``, so ``start_ns - (_time -
+    total_ms)`` is how far the client's clock is shifted. Returns the median
+    offset (seconds; +ve = client clock ahead) over all usable ops.
+    """
+    offsets: list[float] = []
+    for op in ops:
+        completed = op.get("_time")
+        start_ns = op.get("start_ns")
+        total_ms = op.get("total_ms")
+        if completed is None or start_ns is None or total_ms is None:
+            continue
+        server_start = completed.timestamp() - total_ms / 1000.0
+        offsets.append(start_ns / 1_000_000_000 - server_start)
+    if not offsets:
+        return None
+    return median(offsets)
+
+
+def _clock_skew_label(ops: list[dict]) -> str | None:
+    """A ``+3h00m`` / ``-3h00m`` skew label for ``ops``, or ``None`` if the
+    host's clock is effectively un-skewed (within ``_SKEW_THRESHOLD_S``)."""
+    skew = _clock_skew_seconds(ops)
+    if skew is None or abs(skew) < _SKEW_THRESHOLD_S:
+        return None
+    sign = "+" if skew >= 0 else "-"
+    total_min = round(abs(skew) / 60)
+    hours, minutes = divmod(total_min, 60)
+    return f"{sign}{hours}h{minutes:02d}m"

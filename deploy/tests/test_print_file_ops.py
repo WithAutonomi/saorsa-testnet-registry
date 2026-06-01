@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from saorsa_deploy.cmd.print_file_ops import _build_payment_map, _summarise_host
+from saorsa_deploy.cmd.print_file_ops import (
+    _build_payment_map,
+    _clock_skew_label,
+    _clock_skew_seconds,
+    _fmt_started,
+    _summarise_host,
+)
 
 # A fixed "now" so elapsed-second assertions stay deterministic.
 NOW = datetime(2026, 4, 23, 12, 0, 0, tzinfo=timezone.utc)
@@ -145,3 +151,63 @@ def test_summarise_reports_none_times_when_no_start_ns():
 
     assert summary["started_at"] is None
     assert summary["elapsed_s"] is None
+
+
+# ---------------------------------------------------------------------------
+# Clock-skew detection + Started-column derivation
+# ---------------------------------------------------------------------------
+
+
+def _op_with_skew(completed, total_ms, skew_s):
+    """An op whose server `_time` is `completed`, server-frame start is
+    `completed - total_ms`, and whose client `start_ns` is shifted by `skew_s`
+    seconds (mimicking a clock-skewed client emitting into the future)."""
+    server_start = completed.timestamp() - total_ms / 1000.0
+    return {
+        "_time": completed,
+        "start_ns": int((server_start + skew_s) * 1_000_000_000),
+        "total_ms": total_ms,
+    }
+
+
+def test_clock_skew_seconds_recovers_offset():
+    op = _op_with_skew(NOW, total_ms=180_000, skew_s=10_800.0)  # +3h
+    assert abs(_clock_skew_seconds([op]) - 10_800.0) < 1.0
+
+
+def test_clock_skew_seconds_is_median_across_ops():
+    ops = [
+        _op_with_skew(NOW, total_ms=1000, skew_s=10_790.0),
+        _op_with_skew(NOW, total_ms=1000, skew_s=10_800.0),
+        _op_with_skew(NOW, total_ms=1000, skew_s=10_820.0),
+    ]
+    assert abs(_clock_skew_seconds(ops) - 10_800.0) < 1.0
+
+
+def test_clock_skew_seconds_none_without_usable_ops():
+    assert _clock_skew_seconds([]) is None
+    assert _clock_skew_seconds([{"_time": NOW, "start_ns": None, "total_ms": 1}]) is None
+
+
+def test_clock_skew_label_formats_positive_skew():
+    op = _op_with_skew(NOW, total_ms=180_000, skew_s=10_800.0)
+    assert _clock_skew_label([op]) == "+3h00m"
+
+
+def test_clock_skew_label_formats_negative_skew():
+    op = _op_with_skew(NOW, total_ms=180_000, skew_s=-10_800.0)
+    assert _clock_skew_label([op]) == "-3h00m"
+
+
+def test_clock_skew_label_none_for_unskewed_host():
+    # A few seconds of drift / write-lag must not be reported as injected skew.
+    op = _op_with_skew(NOW, total_ms=2000, skew_s=5.0)
+    assert _clock_skew_label([op]) is None
+
+
+def test_fmt_started_is_completion_minus_duration_not_skewed_start():
+    # start_ns is +3h in the future; Started must still track _time - duration.
+    op = _op_with_skew(NOW, total_ms=180_000, skew_s=10_800.0)
+    assert _fmt_started(op) == "2026-04-23 11:57:00"
+    assert _fmt_started({"_time": NOW, "total_ms": None}) == "2026-04-23 12:00:00"
+    assert _fmt_started({"_time": None, "total_ms": 1000}) == "-"
