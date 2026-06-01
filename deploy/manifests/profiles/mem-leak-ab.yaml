@@ -1,0 +1,57 @@
+# Base profile for the ant-node memory-leak A/B experiment.
+#
+# Two runs (DEV-01, DEV-02) `extends:` this and override ONLY
+# testnet.binaries.ant_node — every other setting is shared here so the binary
+# under test is the sole variable. The `ant` CLIENT binary is pinned HERE (not
+# per-run) so both arms upload with an identical client.
+#
+# Topology: 14 node VMs (DO 7 + Vultr 7, one per region) x per_vm 15 = 210 nodes.
+# 500 GB volume/VM so heavy 24h uploads don't fill the disks and stall the
+# replication/audit path we're measuring. Monitoring (per-service procstat RSS
+# @10s) + Elasticsearch log-forwarding both ON. Default stable upgrade channel
+# (omitted) so neither arm pulls a pre-release.
+
+kind: testnet
+slack_post: true        # post a deployment summary to Slack once up (top-level key, valid for every kind)
+
+ssh_key_path: ~/.ssh/ant_deploy
+
+testnet:
+  mode: true
+
+  binaries:
+    ant: { version: 0.2.6-rc.2 }
+
+  bootstraps:
+    count: 7
+    port: 10000
+
+  nodes:
+    per_vm: 15
+    nat_percent: 30
+    attached_volume_size: 500
+    providers:
+      digital_ocean:
+        vm_count: 1
+        regions_list: [ams3, blr1, fra1, lon1, nyc1, sfo3, sgp1]   # sfo3 not syd1: syd1 lacks s-8vcpu-16gb
+        size: s-8vcpu-16gb
+      vultr:
+        vm_count: 1
+        regions_list: [ams, ord, lax, lhr, nrt, sgp, syd]   # ord (not ewr): ewr strands pending node VMs
+        size: vhp-8c-16gb-intel                          # vhp plan required for block storage
+
+  clients:
+    uploaders:
+      - { provider: vultr, region: ord, file_size_mb: 1024, vm_size: vc2-2c-4gb, payment: no-merkle, ant: 1000, eth: 0.1 }
+      - { provider: vultr, region: lax, file_size_mb: 500,  vm_size: vc2-2c-4gb, payment: no-merkle, ant: 1000, eth: 0.1 }
+    downloaders:
+      - { provider: digital_ocean, region: lon1 }
+      - { provider: digital_ocean, region: nyc1 }
+
+  elastic:
+    enabled: true
+    volume_size: 200        # 210 nodes x ~24h of upload churn; default 100 GB is tight
+    retention_days: 2       # only need the run window + a little buffer
+
+  monitoring:
+    enabled: true
