@@ -161,6 +161,39 @@ def test_prod_uploaders_keep_monitoring_emits_flag():
     assert "--keep-monitoring" in build_destroy_steps(m)[0].argv
 
 
+def test_prod_uploaders_allow_duplicate_files_emits_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "allow_duplicate_files": True,
+                "uploaders": [{"region": "lon1", "vm_size": "s-2vcpu-4gb", "urls": "/a.txt"}],
+            },
+        }
+    )
+    assert "--allow-duplicate-files" in build_deploy_steps(m)[0].argv
+
+
+def test_prod_uploaders_allow_duplicate_files_omitted_by_default():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [{"region": "lon1", "vm_size": "s-2vcpu-4gb", "urls": "/a.txt"}],
+            },
+        }
+    )
+    assert "--allow-duplicate-files" not in build_deploy_steps(m)[0].argv
+
+
 # --------------------------------------------------------------------------- #
 # prod-downloaders — reproduces runbooks/PROD_DL_01-versioned-deploy.sh
 # --------------------------------------------------------------------------- #

@@ -37,6 +37,8 @@ def _uploaders(manifest: Manifest) -> list[Step]:
     argv = ["prod", "uploaders", "deploy", "--name", manifest.name, "--purpose", manifest.purpose]
     for u in spec.uploaders:
         argv += ["--uploader", _prod_uploader_spec(u)]
+    if spec.allow_duplicate_files:
+        argv += ["--allow-duplicate-files"]
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]

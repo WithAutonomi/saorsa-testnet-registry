@@ -226,6 +226,8 @@ class ProdUploadersSpec(_Base):
     secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None  # destroy: --keep-monitoring when True
+    # deploy: --allow-duplicate-files — upload files already in the prod list
+    allow_duplicate_files: bool = False
     uploaders: list[ProdUploader]
 
     @model_validator(mode="after")
