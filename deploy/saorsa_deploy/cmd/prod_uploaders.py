@@ -38,6 +38,7 @@ from saorsa_deploy.provisioning.prod_uploader import (
     ProdUploaderProvisioner,
 )
 from saorsa_deploy.registry import (
+    get_repository,
     record_deployment_created,
     record_event,
     record_status,
@@ -181,6 +182,77 @@ def _extract_file_names(urls_content: str) -> list[str]:
         candidate = Path(parsed.path).name if parsed.path else ""
         names.append(candidate or line)
     return names
+
+
+def _check_for_duplicate_files(
+    parsed_specs: list[dict],
+    allow_duplicate_files: bool,
+    console: Console,
+) -> None:
+    """Refuse to deploy if a file to be uploaded shares its name with a file
+    already recorded as successfully uploaded to production.
+
+    Runs before any infrastructure is created. It reads the
+    ``deployment_prod_upload_results`` table (the same successful-upload data
+    that ``prod files`` prints) and compares each upload target's file name
+    — the last path segment of its source URL, exactly as ``prod files`` and
+    the uploader service record it — against the recorded set.
+
+    A collision aborts the deploy. ``allow_duplicate_files`` downgrades it to a
+    warning so an operator can deliberately re-upload missing chunks or
+    exercise the already-stored merkle fast path.
+
+    When no database is configured there is nothing to compare against, so the
+    check is skipped with a warning rather than blocking the deploy.
+    """
+    repo = get_repository()
+    if repo is None:
+        console.print(
+            "[yellow]Warning:[/yellow] No DATABASE_URL configured — skipping "
+            "the duplicate-file check against previously uploaded files."
+        )
+        return
+
+    existing_names = {
+        row.file_name
+        for row in repo.list_all_prod_upload_results(failed_only=False)
+        if row.file_name
+    }
+
+    # Track which uploader spec requested each colliding name so the error
+    # points the operator straight at the list that needs editing.
+    collisions: list[tuple[int, str]] = []
+    for index, spec in enumerate(parsed_specs, start=1):
+        for name in _extract_file_names(spec["_urls_file_content"]):
+            if name in existing_names:
+                collisions.append((index, name))
+
+    if not collisions:
+        return
+
+    if allow_duplicate_files:
+        console.print(
+            f"[yellow]Warning:[/yellow] {len(collisions)} file(s) to be uploaded "
+            "already exist in the prod uploads list; proceeding anyway "
+            "(--allow-duplicate-files)."
+        )
+        for index, name in collisions:
+            console.print(f"[yellow]  uploader #{index}: {name}[/yellow]")
+        return
+
+    console.print(
+        f"[bold red]Error:[/bold red] {len(collisions)} file(s) to be uploaded "
+        "already exist in the prod uploads list (same file name):"
+    )
+    for index, name in collisions:
+        console.print(f"[red]  uploader #{index}: {name}[/red]")
+    console.print(
+        "Refusing to deploy. Re-run with [bold]--allow-duplicate-files[/bold] to "
+        "override (e.g. to re-upload missing chunks or test that already-stored "
+        "chunks are not paid for again)."
+    )
+    console.print("[dim]See the full list with: saorsa-deploy prod files[/dim]")
+    sys.exit(1)
 
 
 def _resolve_secret_key(args, console: Console) -> str:
@@ -473,6 +545,14 @@ def cmd_prod_uploaders_deploy(args):
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
         parsed_specs.append(spec)
+
+    # Earliest possible gate: refuse before any infrastructure is created if a
+    # file to be uploaded is already present in the prod uploads list.
+    _check_for_duplicate_files(
+        parsed_specs,
+        getattr(args, "allow_duplicate_files", False),
+        console,
+    )
 
     console.print(f"[bold]prod uploaders deploy: {args.name}[/bold]")
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")

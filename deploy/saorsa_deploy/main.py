@@ -2672,6 +2672,17 @@ def main(argv=None):
         ),
     )
     prod_up_deploy_parser.add_argument(
+        "--allow-duplicate-files",
+        action="store_true",
+        help=(
+            "Proceed even if a file to be uploaded already exists in the prod "
+            "uploads list (matched by file name). By default the deploy is "
+            "refused before any infrastructure is created. Override this to "
+            "re-upload missing chunks or to test that already-stored chunks "
+            "are not paid for again."
+        ),
+    )
+    prod_up_deploy_parser.add_argument(
         "--secret-key",
         type=str,
         default=None,

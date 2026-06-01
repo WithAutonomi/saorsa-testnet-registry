@@ -862,6 +862,8 @@ uv run saorsa-deploy prod uploaders deploy \
   --uploader nyc1:s-4vcpu-8gb:concurrency=16:urls=./uploads-nyc1.txt
 ```
 
+Before any infrastructure is created, the command runs a **duplicate-file preflight**: it derives the file name of every upload target (the last path segment of each source URL, as recorded in the `deployment_prod_upload_results` table that `prod files` prints) and refuses to deploy if any of them already exists in the prod uploads list. This stops you from re-uploading — and being charged for, or merely re-verifying — a file that is already on the network. Pass `--allow-duplicate-files` to downgrade the collision to a warning and proceed anyway (e.g. to re-upload missing chunks, or to deliberately test that already-stored chunks are not paid for again). When no `DATABASE_URL` is configured there is nothing to compare against, so the check is skipped with a warning.
+
 Orchestrated sequence (each step is skipped when its state already exists, so the command is idempotent under reruns):
 
 1. `monitoring infra` + `monitoring provision` for an InfluxDB VM in `lon1` named identically to `--name`.
@@ -875,6 +877,7 @@ Arguments (for `prod uploaders deploy`):
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
 | `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=true]`. The first three parts are required. `clock_skew=true` disables time sync and shifts that VM's clock by a few hours (testing only). |
+| `--allow-duplicate-files` | flag | off | Skip the duplicate-file preflight and deploy even if an upload target already exists in the prod uploads list. Use to re-upload missing chunks or test the already-stored path. |
 | `--secret-key` | string | `$ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet secret key shared across all uploaders. Deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` — prod uploads cost real ETH. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
 | `--ant-version` | string | — | Optional explicit release version |

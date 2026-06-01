@@ -142,6 +142,7 @@ def _deploy_args(uploader_specs, **overrides):
         "monitoring_volume_size": 50,
         "ssh_key_path": "~/.ssh/id_rsa",
         "purpose": "test",
+        "allow_duplicate_files": False,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -187,6 +188,10 @@ def deploy_patches():
         patch(
             "saorsa_deploy.cmd.prod_uploaders._start_uploaders"
         ) as p_start,
+        patch(
+            "saorsa_deploy.cmd.prod_uploaders.get_repository",
+            return_value=None,
+        ) as p_repo,
     ):
         yield SimpleNamespace(
             record_create=p_create,
@@ -198,6 +203,7 @@ def deploy_patches():
             ensure_infra=p_infra,
             provision=p_prov,
             start=p_start,
+            get_repository=p_repo,
         )
 
 
@@ -292,6 +298,69 @@ class TestDeployFailure:
 
         final_status = deploy_patches.record_status.call_args_list[-1].args[1]
         assert final_status.value == "failed"
+
+
+class _FakeRepo:
+    """Minimal stand-in for the repository: only exposes the one method the
+    duplicate-file check calls, returning rows with a ``file_name`` attribute."""
+
+    def __init__(self, file_names):
+        self._rows = [SimpleNamespace(file_name=n) for n in file_names]
+
+    def list_all_prod_upload_results(self, failed_only=False):
+        assert failed_only is False  # the check only ever looks at successes
+        return self._rows
+
+
+class TestDuplicateFileCheck:
+    def test_aborts_before_any_infra_when_file_already_uploaded(
+        self, deploy_patches, urls_file
+    ):
+        # urls_file uploads a.bin and b.bin; a.bin is already in the list.
+        deploy_patches.get_repository.return_value = _FakeRepo(["a.bin"])
+        args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
+
+        with pytest.raises(SystemExit):
+            cmd_prod_uploaders_deploy(args)
+
+        # Earliest-possible gate: nothing downstream of the check ran.
+        deploy_patches.record_create.assert_not_called()
+        deploy_patches.ensure_mon.assert_not_called()
+        deploy_patches.ensure_infra.assert_not_called()
+        deploy_patches.provision.assert_not_called()
+
+    def test_allows_duplicates_with_override_flag(
+        self, deploy_patches, urls_file
+    ):
+        deploy_patches.get_repository.return_value = _FakeRepo(["a.bin", "b.bin"])
+        args = _deploy_args(
+            [f"lon1:s-2vcpu-4gb:urls={urls_file}"],
+            allow_duplicate_files=True,
+        )
+
+        cmd_prod_uploaders_deploy(args)
+
+        deploy_patches.record_create.assert_called_once()
+        deploy_patches.provision.assert_called_once()
+
+    def test_proceeds_when_no_name_collision(self, deploy_patches, urls_file):
+        deploy_patches.get_repository.return_value = _FakeRepo(["other.bin"])
+        args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
+
+        cmd_prod_uploaders_deploy(args)
+
+        deploy_patches.record_create.assert_called_once()
+        deploy_patches.provision.assert_called_once()
+
+    def test_skips_check_when_no_database(self, deploy_patches, urls_file):
+        # get_repository returns None (fixture default) → check is skipped.
+        deploy_patches.get_repository.return_value = None
+        args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
+
+        cmd_prod_uploaders_deploy(args)
+
+        deploy_patches.record_create.assert_called_once()
+        deploy_patches.provision.assert_called_once()
 
 
 @pytest.fixture
