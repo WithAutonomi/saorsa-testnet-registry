@@ -1,8 +1,8 @@
 """Provider-agnostic helpers for inspecting and resizing the single data
 volume attached to a node VM in a production inventory.
 
-The four supported providers (AWS, DigitalOcean, Hetzner, Vultr) each have
-their own block-storage API; this module hides those differences behind
+The five supported providers (AWS, DigitalOcean, Hetzner, OVH, Vultr) each
+have their own block-storage API; this module hides those differences behind
 ``get_attached_data_volume`` and ``resize_volume``.
 
 Both functions are idempotent: ``resize_volume`` is a no-op if the current
@@ -10,6 +10,8 @@ size is already at or above the target, and otherwise polls the relevant
 provider until the resize is reflected in the volume's reported size.
 """
 
+import hashlib
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -22,6 +24,11 @@ from saorsa_deploy.inventory import NodeVm
 DO_API_BASE = "https://api.digitalocean.com/v2"
 HETZNER_API_BASE = "https://api.hetzner.cloud/v1"
 VULTR_API_BASE = "https://api.vultr.com/v2"
+OVH_ENDPOINTS = {
+    "ovh-eu": "https://eu.api.ovh.com/1.0",
+    "ovh-ca": "https://ca.api.ovh.com/1.0",
+    "ovh-us": "https://api.us.ovhcloud.com/1.0",
+}
 
 REQUEST_TIMEOUT = 30
 POLL_INTERVAL_SECONDS = 5
@@ -34,8 +41,8 @@ def _raise_with_body(resp: requests.Response, context: str) -> None:
     ``requests.Response.raise_for_status`` only emits the status line, which
     swallows the structured error message most cloud APIs put in the body
     (Hetzner: ``error.code`` / ``error.message``; DO: ``message``; Vultr:
-    ``error``). For a tool that's interacting with four different providers
-    we want the actual reason surfaced.
+    ``error``; OVH: ``message``). For a tool that's interacting with five
+    different providers we want the actual reason surfaced.
     """
     if resp.ok:
         return
@@ -69,6 +76,8 @@ def get_attached_data_volume(vm: NodeVm) -> CloudVolume:
         return _do_get_data_volume(vm)
     if vm.provider == "hetzner":
         return _hetzner_get_data_volume(vm)
+    if vm.provider == "ovh":
+        return _ovh_get_data_volume(vm)
     if vm.provider == "vultr":
         return _vultr_get_data_volume(vm)
     raise ValueError(f"Unknown provider: {vm.provider!r}")
@@ -90,6 +99,8 @@ def resize_volume(volume: CloudVolume, target_gb: int) -> CloudVolume:
         return _do_resize(volume, target_gb)
     if volume.provider == "hetzner":
         return _hetzner_resize(volume, target_gb)
+    if volume.provider == "ovh":
+        return _ovh_resize(volume, target_gb)
     if volume.provider == "vultr":
         return _vultr_resize(volume, target_gb)
     raise ValueError(f"Unknown provider: {volume.provider!r}")
@@ -453,4 +464,109 @@ def _vultr_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(
         f"Timed out waiting for Vultr block {volume.id} resize to complete"
+    )
+
+
+# ---------- OVH ----------
+#
+# OVH Public Cloud volumes are OpenStack Cinder volumes fronted by OVH's own
+# REST API. Unlike the other providers there is no static bearer token: every
+# request is signed with the application key/secret + consumer key triple, and
+# the project ("service name") is supplied separately. An attached volume can
+# be grown online — POST .../upsize succeeds while the volume is ``in-use`` on
+# a running instance and the guest sees the new size without a reboot (verified
+# against a throwaway instance before this branch was written).
+
+
+def _ovh_env(name: str) -> str:
+    val = os.environ.get(name)
+    if not val:
+        raise RuntimeError(
+            f"{name} env var not set — required for OVH volume operations"
+        )
+    return val
+
+
+def _ovh_base() -> str:
+    endpoint = _ovh_env("OVH_ENDPOINT")
+    base = OVH_ENDPOINTS.get(endpoint)
+    if base is not None:
+        return base
+    if endpoint.startswith("http"):
+        return endpoint.rstrip("/")
+    raise RuntimeError(
+        f"Unknown OVH_ENDPOINT {endpoint!r}; expected one of "
+        f"{sorted(OVH_ENDPOINTS)} or a full https URL"
+    )
+
+
+def _ovh_call(method: str, path: str, body: dict | None = None):
+    """Make a signed call to the OVH API and return the parsed JSON body."""
+    app_key = _ovh_env("OVH_APPLICATION_KEY")
+    app_secret = _ovh_env("OVH_APPLICATION_SECRET")
+    consumer_key = _ovh_env("OVH_CONSUMER_KEY")
+    url = _ovh_base() + path
+    payload = json.dumps(body) if body is not None else ""
+    timestamp = str(int(time.time()))
+    to_sign = f"{app_secret}+{consumer_key}+{method}+{url}+{payload}+{timestamp}"
+    signature = "$1$" + hashlib.sha1(to_sign.encode()).hexdigest()
+    resp = requests.request(
+        method,
+        url,
+        headers={
+            "X-Ovh-Application": app_key,
+            "X-Ovh-Consumer": consumer_key,
+            "X-Ovh-Timestamp": timestamp,
+            "X-Ovh-Signature": signature,
+            "Content-Type": "application/json",
+        },
+        data=payload if payload else None,
+        timeout=REQUEST_TIMEOUT,
+    )
+    _raise_with_body(resp, f"OVH {method} {path}")
+    return resp.json()
+
+
+def _ovh_get_data_volume(vm: NodeVm) -> CloudVolume:
+    sn = _ovh_env("OVH_CLOUD_PROJECT_SERVICE")
+    volumes = _ovh_call("GET", f"/cloud/project/{sn}/volume")
+    candidates = [
+        v for v in volumes
+        if vm.provider_id in (v.get("attachedTo") or [])
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"Expected exactly one attached volume on OVH instance "
+            f"{vm.provider_id} ({vm.name}); found {len(candidates)}"
+        )
+    vol = candidates[0]
+    return CloudVolume(
+        provider="ovh",
+        id=vol["id"],
+        size_gb=int(vol["size"]),
+        region=vm.region,
+    )
+
+
+def _ovh_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
+    sn = _ovh_env("OVH_CLOUD_PROJECT_SERVICE")
+    _ovh_call(
+        "POST",
+        f"/cloud/project/{sn}/volume/{volume.id}/upsize",
+        {"size": target_gb},
+    )
+
+    deadline = time.time() + POLL_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        vol = _ovh_call("GET", f"/cloud/project/{sn}/volume/{volume.id}")
+        if int(vol.get("size", 0)) >= target_gb and vol.get("status") == "in-use":
+            return CloudVolume(
+                provider="ovh",
+                id=volume.id,
+                size_gb=int(vol["size"]),
+                region=volume.region,
+            )
+        time.sleep(POLL_INTERVAL_SECONDS)
+    raise TimeoutError(
+        f"Timed out waiting for OVH volume {volume.id} resize to complete"
     )
