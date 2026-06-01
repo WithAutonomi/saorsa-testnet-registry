@@ -149,6 +149,12 @@ For testnet/extension kinds, **monitoring (InfluxDB + Grafana) defaults ON**
 client upload/download metrics are captured; Elasticsearch log-forwarding stays
 opt-in.
 
+A top-level `slack_post: true` (valid for **every** kind) appends a final
+`deployments slack-post --name <name>` step to `up`, posting a deployment
+summary once it's up (webhook from `ANT_DEPLOY_SLACK_WEBHOOK_URL`). The step is
+**best-effort** (a Slack failure warns but never fails the run); `down` is
+unaffected.
+
 Reuse: `extends: <path>` (deep-merge a base profile; **lists replace, not
 append**), `--set dotted.key=value`, and `--name`. Secrets are never in a
 manifest — prod kinds name an env var (`secret_key_env`, default

@@ -64,10 +64,26 @@ def _execute(console: Console, steps: list[Step]) -> None:
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
             if code != 0:
+                if step.best_effort:
+                    console.print(
+                        f"[bold yellow]Warning:[/bold yellow] step {i}/{total} "
+                        f"({step.label}) exited {code}; continuing (best-effort)."
+                    )
+                    continue
                 console.print(
                     f"[bold red]Aborting:[/bold red] step {i}/{total} ({step.label}) exited {code}."
                 )
                 sys.exit(code)
+        except Exception as e:
+            # A best-effort step (e.g. the Slack post tail) must never fail the
+            # run; the real deployment work is already done by the time it runs.
+            if step.best_effort:
+                console.print(
+                    f"[bold yellow]Warning:[/bold yellow] step {i}/{total} "
+                    f"({step.label}) raised {type(e).__name__}: {e}; continuing (best-effort)."
+                )
+                continue
+            raise
 
 
 def _prepare_secret_env(manifest, console: Console) -> None:

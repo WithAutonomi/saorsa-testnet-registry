@@ -325,6 +325,35 @@ def _minimal(**overrides):
     return Manifest.model_validate(base)
 
 
+def test_slack_post_appends_final_step_for_testnet():
+    m = Manifest.model_validate(
+        {
+            "name": "DEV-01",
+            "kind": "testnet",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "slack_post": True,
+            "testnet": {
+                "binaries": {"ant_node": {"version": "1.0"}},
+                "bootstraps": {"count": 1},
+                "nodes": {
+                    "per_vm": 5,
+                    "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+                },
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[-1].argv == ["deployments", "slack-post", "--name", "DEV-01"]
+    # destroy never gets a slack-post step
+    assert all(s.argv[:2] != ["deployments", "slack-post"] for s in build_destroy_steps(m))
+
+
+def test_slack_post_omitted_by_default_for_testnet():
+    steps = build_deploy_steps(_minimal())
+    assert all(s.argv[:2] != ["deployments", "slack-post"] for s in steps)
+
+
 def test_single_bootstrap_omits_bootstraps_provision():
     steps = build_deploy_steps(_minimal())
     cmds = [tuple(s.argv[:2]) for s in steps]

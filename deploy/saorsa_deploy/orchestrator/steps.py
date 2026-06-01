@@ -16,6 +16,7 @@ from saorsa_deploy.config.models import Binary
 class Step:
     argv: list[str]  # e.g. ["bootstraps", "infra", "--name", "STG-01", ...]
     label: str  # human-readable description for `plan` output
+    best_effort: bool = False  # if True, a non-zero exit is warned about, not fatal
 
     def render(self) -> str:
         """Render as a copy-pasteable ``saorsa-deploy`` command line."""

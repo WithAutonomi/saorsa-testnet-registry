@@ -75,6 +75,7 @@ name: STG-01
 kind: testnet
 purpose: "RC sanity check"
 ssh_key_path: ~/.ssh/ant_deploy
+slack_post: true                       # optional (any kind): append a final `deployments slack-post` step to `up`
 extends: profiles/staging-rc.yaml      # optional: deep-merge a reusable base (lists REPLACE)
 testnet:
   mode: true                            # --testnet
@@ -110,6 +111,14 @@ and `--name NEW`. **Secrets** are never in a manifest — prod kinds name an env
 (`secret_key_env:`, default `ARBITRUM_ONE_SECRET_KEY`) and `up` fails fast if it's
 unset. The legacy bash runbooks and the primitive commands below remain fully
 supported.
+
+**Slack:** `slack_post: true` (top-level, valid for every kind) appends a final
+`deployments slack-post --name <name>` step to `up`, posting a summary of the
+deployment once it is up. The webhook URL is read from
+`ANT_DEPLOY_SLACK_WEBHOOK_URL` at that step. This step is **best-effort**: if the
+post fails (webhook unset, Slack rejects it, network error), the run logs a
+warning and still exits 0 — the deployment itself is already complete by then.
+`down` is unaffected.
 
 ## Usage
 

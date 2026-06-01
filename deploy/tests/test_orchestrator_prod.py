@@ -104,6 +104,46 @@ def test_prod_uploaders_clock_skew_omitted_by_default():
     assert "clock_skew" not in spec
 
 
+def test_prod_uploaders_slack_post_appends_final_step():
+    m = Manifest.model_validate(
+        {
+            "name": "PROD-UL-01",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "slack_post": True,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [{"region": "lon1", "vm_size": "s-2vcpu-4gb", "urls": "/a.txt"}],
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[-1].argv == ["deployments", "slack-post", "--name", "PROD-UL-01"]
+    assert steps[-1].best_effort is True  # a Slack failure must not fail the run
+    # only one slack-post step, and the deploy step still leads
+    assert sum(s.argv[:2] == ["deployments", "slack-post"] for s in steps) == 1
+    assert steps[0].argv[:3] == ["prod", "uploaders", "deploy"]
+    # destroy is unaffected by slack_post
+    assert all(s.argv[:2] != ["deployments", "slack-post"] for s in build_destroy_steps(m))
+
+
+def test_prod_uploaders_no_slack_post_by_default():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [{"region": "lon1", "vm_size": "s-2vcpu-4gb", "urls": "/a.txt"}],
+            },
+        }
+    )
+    assert all(s.argv[:2] != ["deployments", "slack-post"] for s in build_deploy_steps(m))
+
+
 def test_prod_uploaders_keep_monitoring_emits_flag():
     m = Manifest.model_validate(
         {

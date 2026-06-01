@@ -300,6 +300,7 @@ class Manifest(_Base):
     kind: str
     purpose: str
     ssh_key_path: str = "~/.ssh/id_rsa"
+    slack_post: bool = False  # append a final `deployments slack-post` step to `up`
 
     testnet: Optional[TestnetSpec] = None
     extension: Optional[ExtensionSpec] = None

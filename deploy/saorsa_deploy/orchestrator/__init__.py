@@ -27,12 +27,27 @@ __all__ = [
 def build_deploy_steps(manifest: Manifest) -> list[Step]:
     kind = manifest.kind
     if kind == "testnet":
-        return build_testnet_deploy_steps(manifest)
-    if kind == "testnet-extension":
-        return build_extension_deploy_steps(manifest)
-    from saorsa_deploy.orchestrator import prod
+        steps = build_testnet_deploy_steps(manifest)
+    elif kind == "testnet-extension":
+        steps = build_extension_deploy_steps(manifest)
+    else:
+        from saorsa_deploy.orchestrator import prod
 
-    return prod.build_deploy_steps(manifest)
+        steps = prod.build_deploy_steps(manifest)
+
+    # Universal tail: post a summary to Slack once the deployment is up. Applies
+    # to every kind, so it lives here at the dispatch chokepoint rather than in
+    # each per-kind builder. best_effort=True: the deploy is already complete by
+    # the time this runs, so a Slack failure must not fail the run.
+    if manifest.slack_post:
+        steps.append(
+            Step(
+                ["deployments", "slack-post", "--name", manifest.name],
+                "Post summary to Slack",
+                best_effort=True,
+            )
+        )
+    return steps
 
 
 def build_destroy_steps(
