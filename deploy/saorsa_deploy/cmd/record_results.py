@@ -287,18 +287,18 @@ def _record_file_ops(
         f"for deployment '{args.name}'.[/bold green]"
     )
 
-    _record_file_op_records(
+    op_records = _record_file_op_records(
         repo, deployment, args, console,
         influx_url, influx_token, influx_org, influx_bucket,
     )
 
-    return file_ops_result_blocks(aggregates)
+    return file_ops_result_blocks(aggregates, op_records=op_records)
 
 
 def _record_file_op_records(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
-) -> None:
+) -> list[dict]:
     """Persist every individual upload/download op as a row in
     ``deployment_upload_records`` / ``deployment_download_records``.
 
@@ -326,6 +326,7 @@ def _record_file_op_records(
     upload_recorded = 0
     download_recorded = 0
     skipped = 0
+    op_records: list[dict] = []
     for p in points:
         start_ns = p.get("start_ns")
         status_code = p.get("status")
@@ -367,11 +368,25 @@ def _record_file_op_records(
             repo.upsert_download_record(**kwargs)
             download_recorded += 1
 
+        # Collected for the optional --update-slack per-operation detail.
+        op_records.append(
+            {
+                "client_hostname": p["host"],
+                "op_type": measurement,
+                "status": status.value,
+                "file_size_bytes": file_size,
+                "duration_ms": duration_ms,
+                "started_at": started_at,
+            }
+        )
+
     console.print(
         f"[bold green]Recorded {upload_recorded} upload record(s) and "
         f"{download_recorded} download record(s) "
         f"({skipped} skipped) for deployment '{args.name}'.[/bold green]"
     )
+
+    return op_records
 
 
 # ---------------------------------------------------------------------------
