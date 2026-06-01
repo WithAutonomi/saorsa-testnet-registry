@@ -87,6 +87,14 @@ class DeploymentRepository(ABC):
         ...
 
     @abstractmethod
+    def set_slack_message(
+        self, deployment_id: int, channel: str, message_ts: str
+    ) -> Deployment:
+        """Record the Slack (channel, message ts) of the deployment's
+        ``slack-post`` so a later ``record-results`` can thread-reply to it."""
+        ...
+
+    @abstractmethod
     def add_event(
         self,
         deployment_id: int,
@@ -429,6 +437,18 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         # Reassign rather than mutate in place — SQLAlchemy's JSON column
         # does not track mutations on the underlying dict by default.
         deployment.deploy_args = {**(deployment.deploy_args or {}), **updates}
+        deployment.updated_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return deployment
+
+    def set_slack_message(
+        self, deployment_id: int, channel: str, message_ts: str
+    ) -> Deployment:
+        deployment = self.session.get(Deployment, deployment_id)
+        if deployment is None:
+            raise ValueError(f"Deployment {deployment_id} not found")
+        deployment.slack_channel = channel
+        deployment.slack_message_ts = message_ts
         deployment.updated_at = datetime.now(timezone.utc)
         self.session.commit()
         return deployment

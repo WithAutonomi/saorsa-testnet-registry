@@ -617,6 +617,7 @@ def record_results(
     influx_token: str | None = None,
     influx_org: str | None = None,
     influx_bucket: str | None = None,
+    update_slack: bool = False,
 ) -> str:
     """Record per-client upload/download results from InfluxDB to Postgres.
 
@@ -639,6 +640,11 @@ def record_results(
         influx_token: Override InfluxDB API token
         influx_org: Override InfluxDB organization
         influx_bucket: Override InfluxDB bucket
+        update_slack: After recording, post a per-kind results summary as a
+            threaded reply to the deployment's original slack-post message
+            (requires that post to have been made via the Web API so its
+            channel + ts were captured). Best-effort; a Slack failure does not
+            fail the recording.
     """
     cli_args = ["deployments", "record-results", "--name", name]
     if monitoring_name:
@@ -653,6 +659,8 @@ def record_results(
         cli_args.extend(["--influx-org", influx_org])
     if influx_bucket:
         cli_args.extend(["--influx-bucket", influx_bucket])
+    if update_slack:
+        cli_args.append("--update-slack")
 
     rc, stdout, stderr = _run_deploy(cli_args)
     if rc != 0:

@@ -151,9 +151,23 @@ opt-in.
 
 A top-level `slack_post: true` (valid for **every** kind) appends a final
 `deployments slack-post --name <name>` step to `up`, posting a deployment
-summary once it's up (webhook from `ANT_DEPLOY_SLACK_WEBHOOK_URL`). The step is
-**best-effort** (a Slack failure warns but never fails the run); `down` is
-unaffected.
+summary once it's up. `slack-post` has two paths: when
+`ANT_DEPLOY_SLACK_BOT_TOKEN` (+ channel via `--channel`/`ANT_DEPLOY_SLACK_CHANNEL`)
+is set it posts via the Slack Web API (`chat.postMessage`) and persists the
+message's `(channel, ts)` to the deployment (`slack_channel`/`slack_message_ts`
+columns); otherwise it falls back to the `ANT_DEPLOY_SLACK_WEBHOOK_URL` incoming
+webhook (which returns no message reference). The step is **best-effort** (a
+Slack failure warns but never fails the run); `down` is unaffected.
+
+`deployments record-results --update-slack` posts a per-kind results summary as
+a **threaded reply** to that original message — it needs the Web API path's
+captured `(channel, ts)` plus `ANT_DEPLOY_SLACK_BOT_TOKEN`, and is likewise
+best-effort (warns, never fails the recording). The reply is kind-dispatched
+(per-host file-op aggregates for testnet/downloader kinds; per-host + per-file
+detail for prod-uploaders; alive/pending/confirmed-lost + hours-to-loss
+histogram for prod-canary). Web API client lives in
+`deploy/saorsa_deploy/slack_api.py`; reply block builders in
+`deploy/saorsa_deploy/slack_results.py`.
 
 Reuse: `extends: <path>` (deep-merge a base profile; **lists replace, not
 append**), `--set dotted.key=value`, and `--name`. Secrets are never in a

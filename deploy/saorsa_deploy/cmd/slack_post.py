@@ -17,6 +17,7 @@ import requests
 from rich.console import Console
 
 from saorsa_deploy.registry import get_repository
+from saorsa_deploy.slack_api import SlackApiError, post_message
 from saorsa_deploy.state import (
     load_client_state,
     load_deployment_state,
@@ -580,12 +581,48 @@ def cmd_slack_post(args):
         print(render_payload_text(payload), end="")
         return
 
+    # Two posting paths. When a bot token is configured we post via the Web API
+    # (chat.postMessage), which returns the message's (channel, ts) — we persist
+    # that so `record-results --update-slack` can thread a results summary onto
+    # this post. Otherwise we fall back to the legacy incoming webhook, which
+    # returns no message reference (threading is then unavailable).
+    bot_token = os.environ.get("ANT_DEPLOY_SLACK_BOT_TOKEN")
+    if bot_token:
+        channel = getattr(args, "channel", None) or os.environ.get(
+            "ANT_DEPLOY_SLACK_CHANNEL"
+        )
+        if not channel:
+            console.print(
+                "[bold red]Error:[/bold red] ANT_DEPLOY_SLACK_BOT_TOKEN is set "
+                "but no channel was provided. Pass --channel or set "
+                "ANT_DEPLOY_SLACK_CHANNEL (a channel ID or name) so the Web API "
+                "knows where to post."
+            )
+            sys.exit(1)
+        try:
+            ref = post_message(
+                bot_token,
+                channel,
+                text=payload["text"],
+                blocks=payload["blocks"],
+            )
+        except SlackApiError as e:
+            console.print(f"[bold red]Slack post failed:[/bold red] {e}")
+            sys.exit(1)
+        repo.set_slack_message(deployment.id, ref.channel, ref.ts)
+        console.print(
+            f"[bold green]Posted '{args.name}' summary to Slack[/bold green] "
+            f"(channel={ref.channel}, ts={ref.ts}); recorded for threaded "
+            "result updates."
+        )
+        return
+
     webhook_url = os.environ.get("ANT_DEPLOY_SLACK_WEBHOOK_URL")
     if not webhook_url:
         console.print(
-            "[bold red]Error:[/bold red] ANT_DEPLOY_SLACK_WEBHOOK_URL is not set. "
-            "Export it before running this command, or pass --dry-run to "
-            "preview the payload without posting."
+            "[bold red]Error:[/bold red] Neither ANT_DEPLOY_SLACK_BOT_TOKEN nor "
+            "ANT_DEPLOY_SLACK_WEBHOOK_URL is set. Export one before running this "
+            "command, or pass --dry-run to preview the payload without posting."
         )
         sys.exit(1)
 
@@ -603,5 +640,7 @@ def cmd_slack_post(args):
         sys.exit(1)
 
     console.print(
-        f"[bold green]Posted '{args.name}' summary to Slack.[/bold green]"
+        f"[bold green]Posted '{args.name}' summary to Slack.[/bold green] "
+        "(via incoming webhook — no thread reference recorded; set "
+        "ANT_DEPLOY_SLACK_BOT_TOKEN to enable threaded result updates.)"
     )
