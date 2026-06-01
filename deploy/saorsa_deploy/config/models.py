@@ -218,6 +218,7 @@ class ProdUploader(_Base):
     vm_size: str
     urls: str  # path to URL list (uploaded with --public)
     payment: Optional[Payment] = None
+    clock_skew: bool = False  # disable time sync + shift this VM's clock (testing only)
 
 
 class ProdUploadersSpec(_Base):

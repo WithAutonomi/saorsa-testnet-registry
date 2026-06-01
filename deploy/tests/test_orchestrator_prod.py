@@ -60,6 +60,50 @@ def test_prod_uploaders_matches_runbook():
     ]
 
 
+def test_prod_uploaders_clock_skew_appends_token():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [
+                    {
+                        "region": "lon1",
+                        "vm_size": "s-2vcpu-4gb",
+                        "urls": "/a.txt",
+                        "payment": "merkle",
+                        "clock_skew": True,
+                    }
+                ],
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    spec = argv[argv.index("--uploader") + 1]
+    assert spec == "lon1:s-2vcpu-4gb:urls=/a.txt:payment=merkle:clock_skew=true"
+
+
+def test_prod_uploaders_clock_skew_omitted_by_default():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [{"region": "lon1", "vm_size": "s-2vcpu-4gb", "urls": "/a.txt"}],
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    spec = argv[argv.index("--uploader") + 1]
+    assert "clock_skew" not in spec
+
+
 def test_prod_uploaders_keep_monitoring_emits_flag():
     m = Manifest.model_validate(
         {

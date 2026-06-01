@@ -20,6 +20,8 @@ def _prod_uploader_spec(u) -> str:
     spec = f"{u.region}:{u.vm_size}:urls={u.urls}"
     if u.payment:
         spec += f":payment={u.payment}"
+    if u.clock_skew:
+        spec += ":clock_skew=true"
     return spec
 
 

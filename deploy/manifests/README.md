@@ -68,6 +68,7 @@ prod_uploaders:
   secret_key_env: ARBITRUM_ONE_SECRET_KEY   # env var name only; up fails fast if unset
   uploaders:
     - { region: lon1, vm_size: s-2vcpu-4gb, urls: /path/to/urls.txt, payment: merkle }
+    # optional per-uploader: clock_skew: true — disable time sync + shift that VM's clock (testing only)
 ```
 
 ```yaml
