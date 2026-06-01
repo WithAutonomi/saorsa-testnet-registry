@@ -1,12 +1,13 @@
-"""Extend the LVM-backed data volume on every node VM in a production
-inventory, sequentially, without stopping any ant-node service.
+"""Extend the data volume on every node VM in a production inventory,
+sequentially, without stopping any ant-node service.
 
 Per VM, the orchestrator:
   1. Looks up the single non-root volume attached to the VM (provider-specific
      API call) and grows it cloud-side if its current size is below ``--size``.
-  2. SSHes in via Pyinfra and runs a self-contained shell that pvresizes,
-     lvextends, resize2fs's, and asserts every ant-node-* service named in the
-     inventory is still ``active``.
+  2. SSHes in via Pyinfra and runs a self-contained shell that autodetects the
+     on-disk layout (LVM → pvresize/lvextend/resize2fs; raw ext4 → resize2fs
+     directly) and asserts every ant-node-* service named in the inventory is
+     still ``active``.
   3. Verifies the post-resize ``df`` reports at least ``--size`` GB at
      ``/mnt/ant-node-storage``.
 
@@ -69,7 +70,7 @@ def _post_resize_size_bytes(vm: NodeVm, ssh_key: str) -> int:
     return int(raw)
 
 
-def _run_in_vm_resize(vm: NodeVm, ssh_key: str) -> None:
+def _run_in_vm_resize(vm: NodeVm, ssh_key: str, target_gb: int) -> None:
     """Run the in-VM resize + verify Pyinfra op against a single host.
 
     Raises ``RuntimeError`` if Pyinfra reports the host as failed.
@@ -85,7 +86,9 @@ def _run_in_vm_resize(vm: NodeVm, ssh_key: str) -> None:
     pyinfra_state = State(inventory=inventory, config=Config())
     connect_all(pyinfra_state)
     try:
-        add_extend_volume_op(pyinfra_state, services=list(vm.services))
+        add_extend_volume_op(
+            pyinfra_state, services=list(vm.services), target_gb=target_gb
+        )
         run_ops(pyinfra_state)
     finally:
         disconnect_all(pyinfra_state)
@@ -136,7 +139,7 @@ def _extend_one_vm(
     clear_known_hosts([vm.ip], console)
 
     console.print("  In-VM: pvresize → lvextend → resize2fs → verify services…")
-    _run_in_vm_resize(vm, ssh_key)
+    _run_in_vm_resize(vm, ssh_key, target_gb)
 
     size_bytes = _post_resize_size_bytes(vm, ssh_key)
     target_bytes = target_gb * GIB_BYTES

@@ -3138,8 +3138,9 @@ def main(argv=None):
     # --- prod extend-unmanaged-volumes ---
     prod_euv_parser = prod_subparsers.add_parser(
         "extend-unmanaged-volumes",
-        help="Grow the LVM-backed data volume on every node VM in a production "
-        "inventory, sequentially and without stopping ant-node services.",
+        help="Grow the data volume (LVM or raw ext4) on every node VM in a "
+        "production inventory, sequentially and without stopping ant-node "
+        "services.",
     )
     prod_euv_parser.add_argument(
         "--inventory-path",
@@ -3157,7 +3158,7 @@ def main(argv=None):
         "--provider",
         type=str,
         default=None,
-        choices=["aws", "digitalocean", "hetzner", "vultr"],
+        choices=["aws", "digitalocean", "hetzner", "ovh", "vultr"],
         help="Restrict to a single provider (default: every provider in the inventory).",
     )
     prod_euv_parser.add_argument(
