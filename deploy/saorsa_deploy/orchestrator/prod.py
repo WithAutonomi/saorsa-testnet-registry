@@ -59,6 +59,8 @@ def _downloaders(manifest: Manifest) -> list[Step]:
     ]
     if spec.addresses_path is not None:
         argv += ["--addresses-path", spec.addresses_path]
+    if spec.clock_skew:
+        argv += ["--clock-skew"]
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
@@ -83,6 +85,8 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
         argv += ["--addresses-path", spec.addresses_path]
     if spec.sleep_interval_secs is not None:
         argv += ["--sleep-interval-secs", str(spec.sleep_interval_secs)]
+    if spec.clock_skew:
+        argv += ["--clock-skew"]
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]

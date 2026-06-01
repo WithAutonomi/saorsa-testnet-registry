@@ -81,6 +81,7 @@ prod_downloaders:
   spec: lon1:s-1vcpu-2gb                     # single VM: region[:vm_size]
   addresses_path: /path/to/addresses.txt
   binary: { version: 0.2.4 }
+  # optional: clock_skew: true — disable time sync + shift this VM's clock (testing only)
 ```
 
 ```yaml

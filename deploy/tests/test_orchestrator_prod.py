@@ -199,6 +199,60 @@ def test_prod_downloaders_matches_runbook():
     ]
 
 
+def test_prod_downloaders_clock_skew_appends_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "PROD-DL-01",
+            "kind": "prod-downloaders",
+            "purpose": "test clock skew",
+            "ssh_key_path": SSH,
+            "prod_downloaders": {
+                "spec": "lon1:s-2vcpu-4gb",
+                "addresses_path": "/a.txt",
+                "binary": {"version": "0.2.6-rc.2"},
+                "clock_skew": True,
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--clock-skew" in argv
+
+
+def test_prod_downloaders_clock_skew_omitted_by_default():
+    m = Manifest.model_validate(
+        {
+            "name": "PROD-DL-01",
+            "kind": "prod-downloaders",
+            "purpose": "no skew",
+            "ssh_key_path": SSH,
+            "prod_downloaders": {
+                "spec": "lon1",
+                "binary": {"version": "0.2.4"},
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--clock-skew" not in argv
+
+
+def test_prod_continuous_downloader_clock_skew_appends_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "CD",
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_continuous_downloader": {
+                "spec": "lon1",
+                "binary": {"version": "0.2.4"},
+                "clock_skew": True,
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--clock-skew" in argv
+
+
 def test_prod_continuous_downloader_sleep_interval():
     m = Manifest.model_validate(
         {

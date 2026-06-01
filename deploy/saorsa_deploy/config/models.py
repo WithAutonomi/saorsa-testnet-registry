@@ -241,6 +241,7 @@ class ProdDownloadersSpec(_Base):
     addresses_path: Optional[str] = None
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None
+    clock_skew: bool = False  # disable time sync + shift this VM's clock (testing only)
 
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
