@@ -42,6 +42,15 @@ class Deployment(Base):
         BigInteger, nullable=True
     )
     deploy_args: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Reference to the Slack message created by `deployments slack-post` via
+    # the Web API (chat.postMessage). Stored so `deployments record-results
+    # --update-slack` can post a results summary as a threaded reply. Both are
+    # null when the deployment was posted via the legacy incoming webhook (which
+    # returns no message reference) or never posted at all.
+    slack_channel: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    slack_message_ts: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

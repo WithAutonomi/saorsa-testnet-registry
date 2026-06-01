@@ -1058,13 +1058,28 @@ def main(argv=None):
         default="-30d",
         help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
     )
+    deployments_record_results_parser.add_argument(
+        "--update-slack",
+        action="store_true",
+        help=(
+            "After recording, post a per-kind results summary as a threaded "
+            "reply to the deployment's original `deployments slack-post` "
+            "message. Requires that the original post was made via the Web API "
+            "(ANT_DEPLOY_SLACK_BOT_TOKEN set) so its (channel, ts) was captured. "
+            "Best-effort: a Slack failure warns but never fails the run."
+        ),
+    )
 
     # deployments slack-post
     deployments_slack_post_parser = deployments_subparsers.add_parser(
         "slack-post",
         help=(
-            "Post a formatted summary of a deployment to a Slack incoming "
-            "webhook (URL read from ANT_DEPLOY_SLACK_WEBHOOK_URL)."
+            "Post a formatted summary of a deployment to Slack. With "
+            "ANT_DEPLOY_SLACK_BOT_TOKEN set, posts via the Web API "
+            "(chat.postMessage) and records the message (channel, ts) so "
+            "`record-results --update-slack` can thread a results summary onto "
+            "it; otherwise falls back to the incoming webhook "
+            "(ANT_DEPLOY_SLACK_WEBHOOK_URL, no threading)."
         ),
     )
     deployments_slack_post_parser.add_argument(
@@ -1072,6 +1087,16 @@ def main(argv=None):
         type=str,
         required=True,
         help="Deployment name (must exist in the registry).",
+    )
+    deployments_slack_post_parser.add_argument(
+        "--channel",
+        type=str,
+        default=None,
+        help=(
+            "Slack channel (ID or name) to post to via the Web API. Defaults to "
+            "ANT_DEPLOY_SLACK_CHANNEL. Only used when ANT_DEPLOY_SLACK_BOT_TOKEN "
+            "is set; ignored on the incoming-webhook path."
+        ),
     )
     deployments_slack_post_parser.add_argument(
         "--dry-run",

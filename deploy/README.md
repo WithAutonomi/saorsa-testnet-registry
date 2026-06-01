@@ -114,11 +114,14 @@ supported.
 
 **Slack:** `slack_post: true` (top-level, valid for every kind) appends a final
 `deployments slack-post --name <name>` step to `up`, posting a summary of the
-deployment once it is up. The webhook URL is read from
-`ANT_DEPLOY_SLACK_WEBHOOK_URL` at that step. This step is **best-effort**: if the
-post fails (webhook unset, Slack rejects it, network error), the run logs a
-warning and still exits 0 — the deployment itself is already complete by then.
-`down` is unaffected.
+deployment once it is up. If `ANT_DEPLOY_SLACK_BOT_TOKEN` (+ a channel via
+`ANT_DEPLOY_SLACK_CHANNEL`) is set the post goes via the Slack Web API and its
+message reference is recorded so a later `deployments record-results
+--update-slack` can thread a results summary onto it; otherwise it falls back to
+the `ANT_DEPLOY_SLACK_WEBHOOK_URL` incoming webhook (no threading). This step is
+**best-effort**: if the post fails (no token/webhook, Slack rejects it, network
+error), the run logs a warning and still exits 0 — the deployment itself is
+already complete by then. `down` is unaffected.
 
 ## Usage
 
@@ -340,15 +343,30 @@ any extension references them — `deployments unextend` each dependent first.
 
 ### `deployments slack-post`
 
-Post a formatted summary of a deployment to a Slack incoming webhook.
-Reads the webhook URL from the `ANT_DEPLOY_SLACK_WEBHOOK_URL` env var (no flag — keeps
-the URL out of shell history).
+Post a formatted summary of a deployment to Slack. There are two posting paths:
+
+- **Web API (preferred for threading).** When `ANT_DEPLOY_SLACK_BOT_TOKEN` is
+  set, the command posts via `chat.postMessage` and records the message's
+  `(channel, ts)` on the deployment row (`slack_channel` / `slack_message_ts`).
+  That reference is what `deployments record-results --update-slack` later
+  needs to post a results summary as a **threaded reply**. The channel comes
+  from `--channel` or `ANT_DEPLOY_SLACK_CHANNEL` (a channel ID or name); the bot
+  must be a member of it and have `chat:write`.
+- **Incoming webhook (legacy fallback).** When no bot token is set, the command
+  posts to `ANT_DEPLOY_SLACK_WEBHOOK_URL`. Incoming webhooks return no message
+  reference, so **threaded result updates are unavailable** on this path.
 
 ```bash
+# Web API path — enables threaded result updates:
+export ANT_DEPLOY_SLACK_BOT_TOKEN='xoxb-...'
+export ANT_DEPLOY_SLACK_CHANNEL='C0123456789'   # or pass --channel
+uv run saorsa-deploy deployments slack-post --name DEV-01
+
+# Legacy webhook path (no threading):
 export ANT_DEPLOY_SLACK_WEBHOOK_URL='https://hooks.slack.com/services/T.../B.../...'
 uv run saorsa-deploy deployments slack-post --name DEV-01
 
-# Preview the payload without posting:
+# Preview the payload without posting (neither var required):
 uv run saorsa-deploy deployments slack-post --name DEV-01 --dry-run
 ```
 
@@ -364,6 +382,22 @@ Purpose is captured at deploy time, not at post time: pass `--purpose
 continuous-downloader deploy`, or `prod uploaders deploy`. The Slack
 post renders `_(none recorded)_` if a deployment was created without the
 flag.
+
+#### `deployments record-results --update-slack`
+
+After recording results, `--update-slack` posts a per-kind results summary as a
+threaded reply to the original `slack-post` message. It requires that the
+original post was made on the Web API path (so its `(channel, ts)` was captured)
+and that `ANT_DEPLOY_SLACK_BOT_TOKEN` is still set. The reply content is
+kind-dispatched: per-host upload/download aggregates for testnet and downloader
+kinds; per-host plus per-file detail for `prod-uploaders`; an
+alive/pending/confirmed-lost summary with an hours-to-loss histogram for
+`prod-canary`. The reply is **best-effort** — a missing thread reference,
+missing token, or Slack error warns but never fails the recording.
+
+```bash
+uv run saorsa-deploy deployments record-results --name PROD-UP-01 --update-slack
+```
 
 ### Client VMs (uploaders / downloaders)
 

@@ -13,6 +13,7 @@ The CLI entry point ``cmd_record_results`` resolves the deployment's
   uploads/downloads write directly to Postgres at run time; there is
   nothing to record.
 """
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -26,6 +27,11 @@ from saorsa_deploy.influx import (
     fetch_prod_upload_points,
 )
 from saorsa_deploy.registry import get_repository
+from saorsa_deploy.slack_api import SlackApiError, post_reply
+from saorsa_deploy.slack_results import (
+    file_ops_result_blocks,
+    prod_upload_result_blocks,
+)
 from saorsa_deploy.state import load_monitoring_state
 
 _TESTNET_KIND = "testnet"
@@ -66,28 +72,82 @@ def cmd_record_results(args):
     influx_url, influx_token, influx_org, influx_bucket = creds
 
     if kind == "prod-uploaders":
-        _record_prod_upload(
+        results_blocks = _record_prod_upload(
             repo, deployment, args, console,
             influx_url, influx_token, influx_org, influx_bucket,
         )
-        return
-
-    if kind == "prod-canary":
+    elif kind == "prod-canary":
         from saorsa_deploy.cmd.prod_canary_results import (
             record_prod_canary_results,
         )
-        record_prod_canary_results(
+        results_blocks = record_prod_canary_results(
             repo, deployment, args, console,
             influx_url, influx_token, influx_org, influx_bucket,
         )
+    else:
+        # testnet, prod-continuous-downloader, prod-downloaders, and any
+        # unrecognised/empty kind fall through to the historical aggregate path.
+        results_blocks = _record_file_ops(
+            repo, deployment, args, console,
+            influx_url, influx_token, influx_org, influx_bucket,
+        )
+
+    if getattr(args, "update_slack", False):
+        _post_results_to_slack(repo, deployment, console, results_blocks)
+
+
+def _post_results_to_slack(repo, deployment, console, results_blocks) -> None:
+    """Post the per-kind results summary as a threaded reply to the
+    deployment's original ``slack-post`` message. Best-effort: any problem
+    (missing thread ref, missing token, Slack error) warns and returns without
+    failing the run — mirroring the ``slack_post`` manifest tail semantics."""
+    if not results_blocks:
+        console.print(
+            "[yellow]--update-slack: nothing was recorded, so there is no "
+            "results summary to post.[/yellow]"
+        )
         return
 
-    # testnet, prod-continuous-downloader, prod-downloaders, and any
-    # unrecognised/empty kind fall through to the historical aggregate path.
-    _record_file_ops(
-        repo, deployment, args, console,
-        influx_url, influx_token, influx_org, influx_bucket,
+    channel = deployment.slack_channel
+    thread_ts = deployment.slack_message_ts
+    if not (channel and thread_ts):
+        console.print(
+            "[yellow]--update-slack: no Slack thread reference is recorded for "
+            f"'{deployment.name}'. Post the original message with "
+            "`deployments slack-post` while ANT_DEPLOY_SLACK_BOT_TOKEN is set so "
+            "the (channel, ts) is captured, then re-run. Skipping.[/yellow]"
+        )
+        return
+
+    bot_token = os.environ.get("ANT_DEPLOY_SLACK_BOT_TOKEN")
+    if not bot_token:
+        console.print(
+            "[yellow]--update-slack: ANT_DEPLOY_SLACK_BOT_TOKEN is not set; "
+            "cannot post a threaded reply. Skipping.[/yellow]"
+        )
+        return
+
+    blocks = [_results_header_block(deployment)] + results_blocks
+    text = f"Results for {deployment.name}"
+    try:
+        post_reply(bot_token, channel, thread_ts, text=text, blocks=blocks)
+    except SlackApiError as e:
+        console.print(
+            f"[yellow]--update-slack: Slack reply failed: {e} "
+            "(results were still recorded).[/yellow]"
+        )
+        return
+    console.print(
+        f"[bold green]Posted results summary to the Slack thread for "
+        f"'{deployment.name}'.[/bold green]"
     )
+
+
+def _results_header_block(deployment) -> dict:
+    from saorsa_deploy.cmd.slack_post import _section
+
+    recorded_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return _section(f"*Results — {deployment.name}* _(recorded {recorded_at})_")
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +214,7 @@ def _resolve_influx(args, console: Console):
 def _record_file_ops(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
-) -> None:
+) -> list[dict] | None:
     console.print(
         f"[bold]Querying {influx_url} "
         f"(bucket={influx_bucket}, window={args.window})...[/bold]"
@@ -178,7 +238,7 @@ def _record_file_ops(
             f"'{args.name}' in window {args.window}. "
             f"Nothing to record.[/yellow]"
         )
-        return
+        return None
 
     for agg in aggregates:
         repo.upsert_file_result(
@@ -227,16 +287,18 @@ def _record_file_ops(
         f"for deployment '{args.name}'.[/bold green]"
     )
 
-    _record_file_op_records(
+    op_records = _record_file_op_records(
         repo, deployment, args, console,
         influx_url, influx_token, influx_org, influx_bucket,
     )
+
+    return file_ops_result_blocks(aggregates, op_records=op_records)
 
 
 def _record_file_op_records(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
-) -> None:
+) -> list[dict]:
     """Persist every individual upload/download op as a row in
     ``deployment_upload_records`` / ``deployment_download_records``.
 
@@ -264,6 +326,7 @@ def _record_file_op_records(
     upload_recorded = 0
     download_recorded = 0
     skipped = 0
+    op_records: list[dict] = []
     for p in points:
         start_ns = p.get("start_ns")
         status_code = p.get("status")
@@ -305,11 +368,25 @@ def _record_file_op_records(
             repo.upsert_download_record(**kwargs)
             download_recorded += 1
 
+        # Collected for the optional --update-slack per-operation detail.
+        op_records.append(
+            {
+                "client_hostname": p["host"],
+                "op_type": measurement,
+                "status": status.value,
+                "file_size_bytes": file_size,
+                "duration_ms": duration_ms,
+                "started_at": started_at,
+            }
+        )
+
     console.print(
         f"[bold green]Recorded {upload_recorded} upload record(s) and "
         f"{download_recorded} download record(s) "
         f"({skipped} skipped) for deployment '{args.name}'.[/bold green]"
     )
+
+    return op_records
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +414,7 @@ def _started_at(point: dict) -> datetime:
 def _record_prod_upload(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
-) -> None:
+) -> list[dict] | None:
     console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
     try:
         points = fetch_prod_upload_points(
@@ -355,7 +432,7 @@ def _record_prod_upload(
             f"[yellow]No prod_upload points found for deployment "
             f"'{args.name}'. Nothing to record.[/yellow]"
         )
-        return
+        return None
 
     recorded = 0
     skipped = 0
@@ -399,3 +476,5 @@ def _record_prod_upload(
         f"[bold green]Persisted {recorded} prod_upload row(s) "
         f"for deployment '{args.name}'.[/bold green]"
     )
+
+    return prod_upload_result_blocks(points)

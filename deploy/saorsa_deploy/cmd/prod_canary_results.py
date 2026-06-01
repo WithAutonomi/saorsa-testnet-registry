@@ -168,7 +168,7 @@ def record_prod_canary_results(
     influx_token: str,
     influx_org: str,
     influx_bucket: str,
-) -> None:
+) -> list[dict] | None:
     console.print(
         f"[bold]Querying canary measurements from {influx_url} "
         f"(bucket={influx_bucket})...[/bold]"
@@ -195,7 +195,7 @@ def record_prod_canary_results(
             f"[yellow]No prod_canary_upload points found for '{args.name}'. "
             "Nothing to record.[/yellow]"
         )
-        return
+        return None
 
     console.print(
         f"  uploads={len(upload_points)} chunks={len(chunk_points)} "
@@ -309,6 +309,70 @@ def record_prod_canary_results(
         str(upload_count), str(chunk_count), str(probe_count), str(len(losses))
     )
     console.print(table)
+
+    # Build the Slack results summary (alive/pending/confirmed + histogram),
+    # mirroring print_prod_canary_status. Returned for an optional threaded
+    # reply when record-results was invoked with --update-slack.
+    alive, pending = _alive_pending_counts(
+        db_uploads, probes_by_canary, set(losses.keys())
+    )
+    histogram = _hours_to_loss_histogram(losses.values())
+    from saorsa_deploy.slack_results import canary_result_blocks
+
+    return canary_result_blocks(
+        {
+            "upload_count": upload_count,
+            "chunk_count": chunk_count,
+            "probe_count": probe_count,
+            "total": len(db_uploads),
+            "alive": alive,
+            "pending": pending,
+            "confirmed_lost": len(losses),
+            "histogram": histogram,
+        }
+    )
+
+
+def _alive_pending_counts(uploads, probes_by_canary, lost_ids) -> tuple[int, int]:
+    """Count canaries that are alive vs pending-first-failure (excluding those
+    already confirmed lost), per the two-strike pending heuristic used by
+    ``print_prod_canary_status``."""
+    alive = 0
+    pending = 0
+    for u in uploads:
+        if u.canary_id in lost_ids:
+            continue
+        host_probes: dict = defaultdict(list)
+        for p in probes_by_canary.get(u.canary_id, []):
+            host_probes[p.probed_by_host].append(p)
+        any_pending = False
+        for probes in host_probes.values():
+            probes.sort(key=lambda p: p.probed_at)
+            last_failed_chunk: str | None = None
+            for probe in probes:
+                status = _effective_status(probe)
+                if status == PROBE_OK:
+                    last_failed_chunk = None
+                elif status == PROBE_FAILED:
+                    last_failed_chunk = probe.missing_chunk_address or ""
+            if last_failed_chunk:
+                any_pending = True
+        if any_pending:
+            pending += 1
+        else:
+            alive += 1
+    return alive, pending
+
+
+def _hours_to_loss_histogram(losses) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {label: 0 for label, *_ in _BUCKETS}
+    for loss in losses:
+        hrs = loss["hours_to_confirmed_loss"]
+        for label, lo, hi in _BUCKETS:
+            if lo <= hrs < hi:
+                counts[label] += 1
+                break
+    return [(label, counts[label]) for label, *_ in _BUCKETS]
 
 
 # ---------------------------------------------------------------------------
