@@ -69,7 +69,6 @@ class TestInfluxLine:
             download_secs=1.25,
             file_size=4096,
             start_ns=1700000000000000000,
-            timestamp_ns=1700000001000000000,
         )
         assert line.startswith("download,host=host-A,region=lon1 ")
         # Field order/types must stay the same as the legacy bash script
@@ -80,7 +79,10 @@ class TestInfluxLine:
         assert "download_secs=1.25," in line
         assert "file_size=4096i," in line
         assert "start_ns=1700000000000000000i" in line
-        assert line.endswith(" 1700000001000000000")
+        # No explicit line-protocol timestamp — InfluxDB stamps server-receive
+        # time so clock-skewed clients aren't written into the future. The line
+        # therefore ends with the last field, not a trailing nanosecond stamp.
+        assert line.endswith("start_ns=1700000000000000000i")
 
     def test_tag_escaping(self, service):
         line = service._build_line(
@@ -91,7 +93,6 @@ class TestInfluxLine:
             download_secs=0.0,
             file_size=0,
             start_ns=0,
-            timestamp_ns=0,
         )
         assert "host=host\\ with\\,space" in line
         assert "region=re\\=gion" in line

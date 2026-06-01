@@ -157,7 +157,6 @@ def _build_line(
     file_name: str,
     source_url: str,
     reason: str,
-    timestamp_ns: int,
 ) -> str:
     tag_set = f"host={_escape_tag(host)},region={_escape_tag(region)}"
     field_set = (
@@ -182,7 +181,13 @@ def _build_line(
         f'source_url="{_escape_field_string(source_url)}",'
         f'reason="{_escape_field_string(reason)}"'
     )
-    return f"{MEASUREMENT},{tag_set} {field_set} {timestamp_ns}"
+    # No explicit line-protocol timestamp: InfluxDB stamps each point with its
+    # own (correct) server-receive time. This is essential for clock-skewed
+    # clients — their wall clock can be hours off, and an explicit client
+    # timestamp would land the point in the future, hiding it behind the
+    # implicit `stop: now()` of every read query. The client's perceived
+    # upload-start time is still preserved in the `start_ns` field above.
+    return f"{MEASUREMENT},{tag_set} {field_set}"
 
 
 def _percentile(values: list[int], p: float) -> int:
@@ -400,13 +405,13 @@ def main() -> int:
         try:
             file_size = _download(url, local_path, timeout=download_timeout)
         except Exception as e:
-            download_end_ns = time.time_ns()
             print(f"  download FAILED: {e}", file=sys.stderr, flush=True)
             failures += 1
             if influx_enabled:
                 # No upload happened — total_ms is 0 so it doesn't poison
-                # upload-time aggregates. start_ns / timestamp still mark
-                # when this URL was attempted so it shows up on a timeline.
+                # upload-time aggregates. The point still lands on the timeline
+                # (InfluxDB server-receive time), and the `start_ns` field marks
+                # when this URL was attempted.
                 line = _build_line(
                     host=host, region=region,
                     status=STATUS_DOWNLOAD_FAILED,
@@ -421,7 +426,6 @@ def main() -> int:
                     store_duration_max_ms=0,
                     address="", file_name=file_name, source_url=url,
                     reason=str(e),
-                    timestamp_ns=download_end_ns,
                 )
                 _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
             try:
@@ -532,7 +536,6 @@ def main() -> int:
                 store_duration_max_ms=store_duration_max_ms,
                 address=address, file_name=file_name, source_url=url,
                 reason=reason,
-                timestamp_ns=end_ns,
             )
             _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
 

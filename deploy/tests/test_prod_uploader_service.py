@@ -100,17 +100,23 @@ class TestInfluxLine:
             file_name="file.bin",
             source_url="https://example.com/file.bin",
             reason="",
-            timestamp_ns=10**18 + 1,
         )
         defaults.update(overrides)
         return service._build_line(**defaults)
 
     def test_measurement_and_tags(self, service):
         line = self._line(service)
-        head, _, _ = line.split(" ")
+        head, _ = line.split(" ", 1)
         assert head.startswith("prod_upload,")
         assert "host=prodhost" in head
         assert "region=lon1" in head
+
+    def test_no_trailing_timestamp(self, service):
+        # InfluxDB stamps server-receive time so clock-skewed clients aren't
+        # written into the future. The line ends with the last field, not a
+        # trailing nanosecond timestamp.
+        line = self._line(service)
+        assert line.endswith('reason=""')
 
     def test_integer_fields_have_i_suffix(self, service):
         line = self._line(service)

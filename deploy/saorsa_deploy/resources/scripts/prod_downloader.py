@@ -141,7 +141,6 @@ def _build_line(
     download_secs: float,
     file_size: int,
     start_ns: int,
-    timestamp_ns: int,
 ) -> str:
     """Build a `download`-measurement Influx line.
 
@@ -158,7 +157,13 @@ def _build_line(
         f"file_size={file_size}i,"
         f"start_ns={start_ns}i"
     )
-    return f"{MEASUREMENT},{tag_set} {field_set} {timestamp_ns}"
+    # No explicit line-protocol timestamp: InfluxDB stamps each point with its
+    # own (correct) server-receive time. This is essential for clock-skewed
+    # clients — their wall clock can be hours off, and an explicit client
+    # timestamp would land the point in the future, hiding it behind the
+    # implicit `stop: now()` of every read query. The client's perceived
+    # download-start time is still preserved in the `start_ns` field above.
+    return f"{MEASUREMENT},{tag_set} {field_set}"
 
 
 def _parse_download_secs(stdout: str) -> float:
@@ -344,7 +349,6 @@ def main() -> int:
                         host=host, region=region,
                         status=1, total_ms=total_ms, download_secs=0.0,
                         file_size=0, start_ns=start_ns,
-                        timestamp_ns=end_ns,
                     )
                     _post_influx(
                         influx_url, influx_token, influx_org, influx_bucket,
@@ -394,7 +398,6 @@ def main() -> int:
                     download_secs=download_secs,
                     file_size=file_size,
                     start_ns=start_ns,
-                    timestamp_ns=end_ns,
                 )
                 _post_influx(
                     influx_url, influx_token, influx_org, influx_bucket, line,
