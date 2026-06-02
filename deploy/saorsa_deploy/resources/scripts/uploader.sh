@@ -192,8 +192,14 @@ PY
     # chunk_attempts_total / retries_round_N / store_duration_*_ms come from
     # the ant --json output and will be 0 against binaries that predate
     # WithAutonomi/ant-client PR #87 (the chunk-retry instrumentation).
-    timestamp_ns="$end_ns"
-    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,chunks_stored=${chunks_stored}i,chunks_failed=${chunks_failed}i,total_chunks=${total_chunks}i,chunk_attempts_total=${chunk_attempts_total}i,retries_round_0=${retries_round_0}i,retries_round_1=${retries_round_1}i,retries_round_2=${retries_round_2}i,retries_round_3=${retries_round_3}i,store_duration_p50_ms=${store_duration_p50_ms}i,store_duration_p95_ms=${store_duration_p95_ms}i,store_duration_max_ms=${store_duration_max_ms}i ${timestamp_ns}"
+    #
+    # No explicit line-protocol timestamp: InfluxDB stamps each point with its
+    # own (correct) server-receive time. This is essential for clock-skewed
+    # clients — their wall clock can be hours off, and an explicit client
+    # timestamp would land the point in the future, hiding it behind the
+    # implicit `stop: now()` of every read query. The client's perceived
+    # upload-start time is still preserved in the `start_ns` field.
+    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,chunks_stored=${chunks_stored}i,chunks_failed=${chunks_failed}i,total_chunks=${total_chunks}i,chunk_attempts_total=${chunk_attempts_total}i,retries_round_0=${retries_round_0}i,retries_round_1=${retries_round_1}i,retries_round_2=${retries_round_2}i,retries_round_3=${retries_round_3}i,store_duration_p50_ms=${store_duration_p50_ms}i,store_duration_p95_ms=${store_duration_p95_ms}i,store_duration_max_ms=${store_duration_max_ms}i"
     submit_metric "$line"
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"
