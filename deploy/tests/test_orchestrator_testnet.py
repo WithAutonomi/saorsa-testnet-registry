@@ -281,7 +281,7 @@ def test_stg01_deploy_sequence_matches_runbook():
 def test_stg01_destroy_sequence():
     manifest = Manifest.model_validate(STG_01)
     assert _argvs(build_destroy_steps(manifest)) == [
-        ["clients", "destroy", "--name", "STG-01", "--force"],
+        ["clients", "destroy", "--name", "STG-01", "--force", "--ssh-key-path", SSH],
         ["nodes", "destroy", "--name", "STG-01", "--force"],
         ["bootstraps", "destroy", "--name", "STG-01", "--force"],
         ["elastic", "destroy", "--name", "STG-01", "--force"],
@@ -296,7 +296,7 @@ def test_stg01_destroy_skip_drain_failures():
     steps = _argvs(build_destroy_steps(manifest, skip_drain_failures=True))
     assert steps[0] == [
         "clients", "destroy", "--name", "STG-01", "--force",
-        "--skip-drain-failures",
+        "--ssh-key-path", SSH, "--skip-drain-failures",
     ]
     assert steps[1:] == [
         ["nodes", "destroy", "--name", "STG-01", "--force"],

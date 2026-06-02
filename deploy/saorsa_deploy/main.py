@@ -464,6 +464,17 @@ def main(argv=None):
             "and the abandoned dust is acceptable."
         ),
     )
+    clients_destroy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help=(
+            "SSH key used to stop the ant-uploader service on each uploader VM "
+            "before draining its wallet, so the drain isn't racing a live "
+            "spender. Best-effort: unreachable VMs are skipped "
+            "(default: ~/.ssh/id_rsa)."
+        ),
+    )
 
     # clients infra
     clients_infra_parser = clients_subparsers.add_parser(

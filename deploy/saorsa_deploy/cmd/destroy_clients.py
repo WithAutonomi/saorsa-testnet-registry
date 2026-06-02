@@ -1,13 +1,20 @@
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
+from pyinfra.api import Config, Inventory, State
+from pyinfra.api.connect import connect_all, disconnect_all
+from pyinfra.api.operation import add_op
+from pyinfra.api.operations import run_ops
+from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.providers import CLIENT_PROVIDERS
 from saorsa_deploy.resources import get_resources_dir
+from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import (
     delete_client_addresses_prefix,
     delete_client_state,
@@ -95,6 +102,11 @@ def cmd_destroy_clients(args):
                 "can be drained back."
             )
             sys.exit(1)
+        _stop_uploader_services(
+            uploaders_with_wallet,
+            getattr(args, "ssh_key_path", "~/.ssh/id_rsa"),
+            console,
+        )
         _drain_uploader_wallets(
             uploaders_with_wallet,
             funding_secret_key,
@@ -210,6 +222,65 @@ def cmd_destroy_clients(args):
     console.print(
         f"[bold green]All {len(clients)} client VM(s) destroyed successfully.[/bold green]"
     )
+
+
+def _stop_uploader_services(
+    uploaders: list[dict],
+    ssh_key_path: str,
+    console: Console,
+) -> None:
+    """Best-effort: stop ``ant-uploader`` on each uploader VM before draining.
+
+    The uploader runs ``while true`` and pays for every upload from its own
+    per-uploader wallet, so draining while it's live races a spender that keeps
+    bumping the wallet's nonce ("nonce too low"). Stopping it first gives the
+    drain a stable nonce and a final balance to sweep. VMs that can't be reached
+    (e.g. already torn down on a retry) are skipped — the drain still works
+    against on-chain state without them.
+    """
+    host_ips = [u["ip"] for u in uploaders if u.get("ip")]
+    if not host_ips:
+        return
+    console.print(
+        f"[bold]Stopping ant-uploader on {len(host_ips)} uploader VM(s) "
+        "before draining...[/bold]"
+    )
+    clear_known_hosts(host_ips, console)
+    hosts_data = [
+        (ip, {"ssh_user": "root", "ssh_key": ssh_key_path}) for ip in host_ips
+    ]
+    state = State(inventory=Inventory((hosts_data, {})), config=Config())
+    try:
+        connect_all(state)
+        add_op(
+            state,
+            server.shell,
+            name="Stop ant-uploader service",
+            commands=[
+                "systemctl stop ant-uploader 2>/dev/null || true; "
+                "systemctl disable ant-uploader 2>/dev/null || true"
+            ],
+        )
+        run_ops(state)
+    except Exception as e:  # noqa: BLE001 — stopping is best-effort
+        console.print(
+            f"[yellow]Warning: could not stop uploader service(s); draining "
+            f"anyway: {e}[/yellow]"
+        )
+        return
+    finally:
+        try:
+            disconnect_all(state)
+        except Exception:
+            pass
+    unreachable = [h.name for h in state.failed_hosts]
+    if unreachable:
+        console.print(
+            f"[yellow]Could not reach {len(unreachable)} uploader VM(s) to stop "
+            "(already gone?); draining against on-chain state anyway.[/yellow]"
+        )
+    # Let any in-flight payment tx land before we read pending nonces.
+    time.sleep(5)
 
 
 def _drain_uploader_wallets(

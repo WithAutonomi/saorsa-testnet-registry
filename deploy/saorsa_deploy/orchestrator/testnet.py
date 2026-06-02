@@ -104,8 +104,10 @@ def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
     return argv
 
 
-def _clients_destroy_argv(name: str, skip_drain_failures: bool) -> list[str]:
-    argv = ["clients", "destroy", "--name", name, "--force"]
+def _clients_destroy_argv(
+    name: str, ssh_key: str, skip_drain_failures: bool
+) -> list[str]:
+    argv = ["clients", "destroy", "--name", name, "--force", "--ssh-key-path", ssh_key]
     if skip_drain_failures:
         argv.append("--skip-drain-failures")
     return argv
@@ -301,7 +303,9 @@ def build_testnet_destroy_steps(
     if spec.clients is not None:
         steps.append(
             Step(
-                _clients_destroy_argv(name, skip_drain_failures),
+                _clients_destroy_argv(
+                    name, manifest.ssh_key_path, skip_drain_failures
+                ),
                 "Destroy clients",
             )
         )
@@ -382,7 +386,9 @@ def build_extension_destroy_steps(
     if spec.clients is not None:
         steps.append(
             Step(
-                _clients_destroy_argv(name, skip_drain_failures),
+                _clients_destroy_argv(
+                    name, manifest.ssh_key_path, skip_drain_failures
+                ),
                 "Destroy clients",
             )
         )

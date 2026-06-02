@@ -14,9 +14,10 @@ only.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 from eth_account import Account
 from web3 import Web3
@@ -109,6 +110,62 @@ def _send_signed(w3: Web3, signed_tx) -> str:
     return tx_hash.hex()
 
 
+# Errors a node returns when the nonce we signed with is already spoken for —
+# typically a still-in-flight payment tx from an uploader that hasn't fully
+# quiesced, or a lagging RPC node behind a load balancer. The cure is always
+# the same: re-read the *pending* nonce and try again.
+_NONCE_ERROR_MARKERS = (
+    "nonce too low",
+    "nonce too high",
+    "already known",
+    "replacement transaction underpriced",
+)
+
+
+def _is_nonce_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _NONCE_ERROR_MARKERS)
+
+
+def _pending_nonce(w3: Web3, address: str) -> int:
+    """Next usable nonce *including* not-yet-mined txs in the mempool.
+
+    Uses the ``pending`` tag rather than web3.py's implicit ``latest`` default,
+    which only counts txs in sealed blocks and so hands back a nonce that an
+    in-flight transaction has already claimed.
+    """
+    return w3.eth.get_transaction_count(Web3.to_checksum_address(address), "pending")
+
+
+def _send_with_nonce_retry(
+    w3: Web3,
+    acct,
+    build_tx: Callable[[int], dict],
+    *,
+    attempts: int = 6,
+    delay_seconds: float = 4.0,
+) -> str:
+    """Build, sign and send a tx, re-reading the pending nonce and retrying on a
+    nonce collision.
+
+    ``build_tx(nonce)`` returns the tx dict; it is re-invoked each attempt so a
+    retry also refreshes any gas headroom computed inside the closure. Non-nonce
+    errors (e.g. a revert) propagate immediately; nonce collisions are retried
+    up to ``attempts`` times with a short delay to let the mempool settle.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        signed = acct.sign_transaction(build_tx(_pending_nonce(w3, acct.address)))
+        try:
+            return _send_signed(w3, signed)
+        except Exception as exc:  # noqa: BLE001 — re-raised below unless it's a nonce clash
+            if not _is_nonce_error(exc) or attempt == attempts - 1:
+                raise
+            last_exc = exc
+            time.sleep(delay_seconds)
+    raise last_exc  # pragma: no cover — loop always returns or raises above
+
+
 def _gas_fields(w3: Web3) -> dict:
     """Compute gas fields with headroom against base-fee fluctuations.
 
@@ -137,22 +194,23 @@ def transfer_eth(w3: Web3, from_secret_key: str, to_address: str, value_wei: int
     """Send `value_wei` of native ETH from `from_secret_key` to `to_address`."""
     acct = Account.from_key(_normalize_secret_key(from_secret_key))
     to_checksum = Web3.to_checksum_address(to_address)
-    nonce = w3.eth.get_transaction_count(acct.address)
     # Arbitrum's intrinsic-gas check for a plain ETH transfer can exceed the
     # mainnet 21000 because of the L1 calldata component, so ask the node.
     estimated = w3.eth.estimate_gas(
         {"from": acct.address, "to": to_checksum, "value": value_wei}
     )
-    tx = {
-        "to": to_checksum,
-        "value": value_wei,
-        "nonce": nonce,
-        "chainId": w3.eth.chain_id,
-        "gas": int(estimated * 12 // 10),
-        **_gas_fields(w3),
-    }
-    signed = acct.sign_transaction(tx)
-    return _send_signed(w3, signed)
+
+    def _build(nonce: int) -> dict:
+        return {
+            "to": to_checksum,
+            "value": value_wei,
+            "nonce": nonce,
+            "chainId": w3.eth.chain_id,
+            "gas": int(estimated * 12 // 10),
+            **_gas_fields(w3),
+        }
+
+    return _send_with_nonce_retry(w3, acct, _build)
 
 
 def transfer_token(
@@ -166,20 +224,21 @@ def transfer_token(
     `from_secret_key` to `to_address`."""
     acct = Account.from_key(_normalize_secret_key(from_secret_key))
     contract = _erc20(w3, token_address)
-    nonce = w3.eth.get_transaction_count(acct.address)
     fn = contract.functions.transfer(
         Web3.to_checksum_address(to_address), amount_units
     )
-    tx = fn.build_transaction(
-        {
-            "from": acct.address,
-            "nonce": nonce,
-            "chainId": w3.eth.chain_id,
-            **_gas_fields(w3),
-        }
-    )
-    signed = acct.sign_transaction(tx)
-    return _send_signed(w3, signed)
+
+    def _build(nonce: int) -> dict:
+        return fn.build_transaction(
+            {
+                "from": acct.address,
+                "nonce": nonce,
+                "chainId": w3.eth.chain_id,
+                **_gas_fields(w3),
+            }
+        )
+
+    return _send_with_nonce_retry(w3, acct, _build)
 
 
 def to_token_units(amount: Decimal | float | str | int, decimals: int) -> int:
@@ -256,18 +315,19 @@ def drain_wallet(
     eth_tx_cost = effective_gas_price * gas_limit
     sweep_amount = eth_balance - eth_tx_cost - gas_reserve_wei
     if sweep_amount > 0:
-        # Send manually so we can control gas without re-querying.
-        nonce = w3.eth.get_transaction_count(acct.address)
-        tx = {
-            "to": funding_checksum,
-            "value": sweep_amount,
-            "nonce": nonce,
-            "chainId": w3.eth.chain_id,
-            "gas": gas_limit,
-            **gas,
-        }
-        signed = acct.sign_transaction(tx)
-        result["eth_tx"] = _send_signed(w3, signed)
+        # Send manually so we control the (already-computed) gas budget; the
+        # nonce is read fresh per attempt and retried on a collision.
+        def _build(nonce: int) -> dict:
+            return {
+                "to": funding_checksum,
+                "value": sweep_amount,
+                "nonce": nonce,
+                "chainId": w3.eth.chain_id,
+                "gas": gas_limit,
+                **gas,
+            }
+
+        result["eth_tx"] = _send_with_nonce_retry(w3, acct, _build)
 
     return result
 

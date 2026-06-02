@@ -197,6 +197,73 @@ def test_drain_wallet_skips_eth_when_balance_below_reserve_plus_gas():
     p_send.assert_not_called()
 
 
+# --- _send_with_nonce_retry ----------------------------------------------
+
+_ADDR = "0x0000000000000000000000000000000000000001"
+
+
+def _mock_acct():
+    acct = MagicMock()
+    acct.address = _ADDR
+    acct.sign_transaction.side_effect = lambda tx: ("signed", tx)
+    return acct
+
+
+def test_send_with_nonce_retry_uses_pending_tag():
+    w3 = _mock_w3()
+    with patch.object(wallet, "_send_signed", return_value="0xok"):
+        wallet._send_with_nonce_retry(
+            w3, _mock_acct(), lambda n: {"nonce": n}, delay_seconds=0
+        )
+    # Nonce must be read with the 'pending' tag, not the implicit 'latest'.
+    assert w3.eth.get_transaction_count.call_args.args[1] == "pending"
+
+
+def test_send_with_nonce_retry_refetches_and_succeeds_on_nonce_too_low():
+    w3 = _mock_w3()
+    # An in-flight uploader payment lands between attempts: nonce climbs 179→180.
+    w3.eth.get_transaction_count.side_effect = [179, 180]
+    built: list[int] = []
+    attempts = {"n": 0}
+
+    def fake_send(_w3, _signed):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ValueError("nonce too low: address 0x.., tx: 179 state: 180")
+        return "0xok"
+
+    with patch.object(wallet, "_send_signed", side_effect=fake_send):
+        result = wallet._send_with_nonce_retry(
+            w3,
+            _mock_acct(),
+            lambda n: built.append(n) or {"nonce": n},
+            delay_seconds=0,
+        )
+
+    assert result == "0xok"
+    # Re-read the (now-advanced) pending nonce on the retry rather than reusing.
+    assert built == [179, 180]
+
+
+def test_send_with_nonce_retry_propagates_non_nonce_error():
+    w3 = _mock_w3()
+    with patch.object(wallet, "_send_signed", side_effect=RuntimeError("reverted")):
+        with pytest.raises(RuntimeError, match="reverted"):
+            wallet._send_with_nonce_retry(
+                w3, _mock_acct(), lambda n: {"nonce": n}, delay_seconds=0
+            )
+
+
+def test_send_with_nonce_retry_gives_up_after_attempts():
+    w3 = _mock_w3()
+    with patch.object(wallet, "_send_signed", side_effect=ValueError("nonce too low")):
+        with pytest.raises(ValueError, match="nonce too low"):
+            wallet._send_with_nonce_retry(
+                w3, _mock_acct(), lambda n: {"nonce": n}, attempts=3, delay_seconds=0
+            )
+    assert w3.eth.get_transaction_count.call_count == 3
+
+
 # --- _ensure_uploader_wallets (provision integration) --------------------
 
 def test_ensure_uploader_wallets_persists_before_funding_and_tops_up_deficit():
