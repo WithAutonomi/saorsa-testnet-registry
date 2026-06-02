@@ -18,7 +18,10 @@ from saorsa_deploy.cmd.prod_canary import (
     parse_probe_spec,
     parse_upload_spec,
 )
-from saorsa_deploy.cmd.prod_canary_results import derive_loss
+from saorsa_deploy.cmd.prod_canary_results import (
+    derive_loss,
+    derive_unavailability_episodes,
+)
 
 # ---------------------------------------------------------------------------
 # parse_upload_spec / parse_probe_spec
@@ -239,6 +242,67 @@ class TestDeriveLoss:
         }
         losses = derive_loss(uploads, probes)
         assert cid in losses
+
+
+class TestDeriveUnavailabilityEpisodes:
+    def test_recovered_episode_has_duration(self):
+        up = _ts(0)
+        probes = [
+            _probe(_ts(1), "ok"),
+            _probe(_ts(2), "failed", missing="A"),
+            _probe(_ts(3), "failed", missing="A"),  # confirmed at hour 3
+            _probe(_ts(8), "ok"),                     # recovered at hour 8
+        ]
+        eps = derive_unavailability_episodes(up, probes)
+        assert len(eps) == 1
+        e = eps[0]
+        assert e["recovered"] is True
+        assert e["confirmed_unavailable_at"] == _ts(3)
+        assert e["recovered_at"] == _ts(8)
+        assert e["unavailable_hours"] == pytest.approx(5.0)
+        assert e["hours_to_confirmed"] == pytest.approx(3.0)
+        assert e["episode_no"] == 1
+
+    def test_ongoing_episode_has_no_recovery(self):
+        up = _ts(0)
+        probes = [
+            _probe(_ts(2), "failed", missing="A"),
+            _probe(_ts(3), "failed", missing="A"),
+        ]
+        eps = derive_unavailability_episodes(up, probes)
+        assert len(eps) == 1
+        assert eps[0]["recovered"] is False
+        assert eps[0]["recovered_at"] is None
+        assert eps[0]["unavailable_hours"] is None
+
+    def test_two_separate_episodes(self):
+        up = _ts(0)
+        probes = [
+            _probe(_ts(1), "failed", missing="A"),
+            _probe(_ts(2), "failed", missing="A"),  # episode 1 confirmed
+            _probe(_ts(3), "ok"),                     # episode 1 recovered
+            _probe(_ts(5), "failed", missing="A"),
+            _probe(_ts(6), "failed", missing="A"),  # episode 2 confirmed
+            _probe(_ts(7), "ok"),                     # episode 2 recovered
+        ]
+        eps = derive_unavailability_episodes(up, probes)
+        assert len(eps) == 2
+        assert [e["episode_no"] for e in eps] == [1, 2]
+        assert all(e["recovered"] for e in eps)
+
+    def test_single_failure_is_not_an_episode(self):
+        up = _ts(0)
+        probes = [_probe(_ts(2), "failed", missing="A"), _probe(_ts(3), "ok")]
+        assert derive_unavailability_episodes(up, probes) == []
+
+    def test_timeout_dominated_does_not_open_episode(self):
+        up = _ts(0)
+        td = {"queried": 7, "not_found": 1, "timeout": 6}
+        probes = [
+            _probe(_ts(2), "failed", missing="A", peer_outcomes=td),
+            _probe(_ts(3), "failed", missing="A", peer_outcomes=td),
+        ]
+        assert derive_unavailability_episodes(up, probes) == []
 
 
 # ---------------------------------------------------------------------------

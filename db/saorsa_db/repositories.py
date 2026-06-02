@@ -21,6 +21,7 @@ from saorsa_db.models.prod_canary import (
     DeploymentProdCanaryChunk,
     DeploymentProdCanaryLoss,
     DeploymentProdCanaryProbe,
+    DeploymentProdCanaryUnavailability,
     DeploymentProdCanaryUpload,
     ProdCanaryChunkRole,
     ProdCanaryInitialVerifyStatus,
@@ -333,6 +334,18 @@ class DeploymentRepository(ABC):
     def list_prod_canary_loss_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentProdCanaryLoss]:
+        ...
+
+    @abstractmethod
+    def replace_prod_canary_unavailability(
+        self, canary_id, episodes: list[dict]
+    ) -> None:
+        ...
+
+    @abstractmethod
+    def list_prod_canary_unavailability_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryUnavailability]:
         ...
 
     @abstractmethod
@@ -1092,6 +1105,46 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .filter(DeploymentProdCanaryUpload.deployment_id == deployment_id)
             .order_by(DeploymentProdCanaryLoss.confirmed_lost_at)
+            .all()
+        )
+
+    def replace_prod_canary_unavailability(
+        self, canary_id, episodes: list[dict]
+    ) -> None:
+        """Replace all unavailability episodes for a canary with the given
+        derived set. Idempotent: record-results re-derives the full episode
+        list from the probe stream each run, so we delete-then-insert."""
+        self.session.query(DeploymentProdCanaryUnavailability).filter(
+            DeploymentProdCanaryUnavailability.canary_id == canary_id
+        ).delete(synchronize_session=False)
+        for ep in episodes:
+            self.session.add(
+                DeploymentProdCanaryUnavailability(
+                    canary_id=canary_id,
+                    episode_no=ep["episode_no"],
+                    missing_chunk_address=ep["missing_chunk_address"],
+                    first_failed_probe_at=ep["first_failed_probe_at"],
+                    confirmed_unavailable_at=ep["confirmed_unavailable_at"],
+                    recovered_at=ep.get("recovered_at"),
+                    hours_to_confirmed=ep["hours_to_confirmed"],
+                    unavailable_hours=ep.get("unavailable_hours"),
+                    recovered=ep["recovered"],
+                )
+            )
+        self.session.commit()
+
+    def list_prod_canary_unavailability_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentProdCanaryUnavailability]:
+        return (
+            self.session.query(DeploymentProdCanaryUnavailability)
+            .join(
+                DeploymentProdCanaryUpload,
+                DeploymentProdCanaryUpload.canary_id
+                == DeploymentProdCanaryUnavailability.canary_id,
+            )
+            .filter(DeploymentProdCanaryUpload.deployment_id == deployment_id)
+            .order_by(DeploymentProdCanaryUnavailability.confirmed_unavailable_at)
             .all()
         )
 

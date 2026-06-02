@@ -154,6 +154,74 @@ def derive_loss(
     return losses
 
 
+def derive_unavailability_episodes(
+    uploaded_at, probes: list
+) -> list[dict]:
+    """Walk a single canary's probe stream and return its unavailability
+    *episodes* (windows). Each episode is a maximal run during which the chunk
+    was confirmed unreachable (two consecutive same-chunk failures) and then
+    either recovered (an OK probe) or is still ongoing at the end of the
+    stream.
+
+    In practice a canary is probed by exactly one shard host, so a single
+    time-ordered walk is correct. Timeout-dominated failures are reclassified
+    inconclusive via _effective_status (a reachability artifact, not absence).
+
+    Returns a list of dicts (episode_no starting at 1) ready for
+    repo.replace_prod_canary_unavailability.
+    """
+    ordered = sorted(probes, key=lambda p: p.probed_at)
+    episodes: list[dict] = []
+    pending_at = None
+    pending_chunk = None
+    open_ep: dict | None = None  # currently-unavailable episode being built
+
+    def _hours(a, b) -> float:
+        return max(0.0, (b - a).total_seconds() / 3600.0)
+
+    for p in ordered:
+        status = _effective_status(p)
+        if status == PROBE_INCONCLUSIVE:
+            continue
+        if status == PROBE_OK:
+            if open_ep is not None:
+                open_ep["recovered_at"] = p.probed_at
+                open_ep["recovered"] = True
+                open_ep["unavailable_hours"] = _hours(
+                    open_ep["confirmed_unavailable_at"], p.probed_at
+                )
+                episodes.append(open_ep)
+                open_ep = None
+            pending_at = None
+            pending_chunk = None
+            continue
+        # status == failed
+        missing = p.missing_chunk_address or ""
+        if open_ep is not None:
+            # already in an unavailable episode for (typically) this chunk
+            continue
+        if pending_chunk is not None and pending_chunk == missing:
+            open_ep = {
+                "episode_no": len(episodes) + 1,
+                "missing_chunk_address": missing,
+                "first_failed_probe_at": pending_at,
+                "confirmed_unavailable_at": p.probed_at,
+                "recovered_at": None,
+                "hours_to_confirmed": _hours(uploaded_at, p.probed_at),
+                "unavailable_hours": None,
+                "recovered": False,
+            }
+            pending_at = None
+            pending_chunk = None
+        else:
+            pending_at = p.probed_at
+            pending_chunk = missing
+
+    if open_ep is not None:
+        episodes.append(open_ep)  # ongoing, recovered=False
+    return episodes
+
+
 # ---------------------------------------------------------------------------
 # record-results entry point (kind=prod-canary)
 # ---------------------------------------------------------------------------
@@ -298,15 +366,31 @@ def record_prod_canary_results(
     for cid in existing_loss.keys() - losses.keys():
         repo.delete_prod_canary_loss(cid)
 
+    # Re-derive the richer unavailability-episode (window) view: every episode
+    # of confirmed unreachability and whether/when it recovered. This is the
+    # successor to the binary loss view — it captures the transient-then-
+    # recovered behaviour the loss table cannot represent.
+    episode_total = 0
+    ongoing_total = 0
+    for cid in uploads_map:
+        episodes = derive_unavailability_episodes(
+            uploads_map[cid], probes_by_canary.get(cid, [])
+        )
+        repo.replace_prod_canary_unavailability(cid, episodes)
+        episode_total += len(episodes)
+        ongoing_total += sum(1 for e in episodes if not e["recovered"])
+
     table = Table(
         title=f"Canary results recorded for '{args.name}' (id={deployment.id})"
     )
     table.add_column("Uploads", justify="right")
     table.add_column("Chunks", justify="right")
     table.add_column("Probes", justify="right")
-    table.add_column("Losses (derived)", justify="right")
+    table.add_column("Unavail. episodes", justify="right")
+    table.add_column("Ongoing now", justify="right")
     table.add_row(
-        str(upload_count), str(chunk_count), str(probe_count), str(len(losses))
+        str(upload_count), str(chunk_count), str(probe_count),
+        str(episode_total), str(ongoing_total),
     )
     console.print(table)
 
@@ -556,6 +640,79 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
     else:
         console.print(
             "[dim]No confirmed losses yet — keep probing.[/dim]"
+        )
+
+    # Unavailability windows — the richer view: chunks go unreachable then
+    # mostly recover, so report episode counts + how long they stayed down,
+    # plus the genuinely-never-recovered tail.
+    episodes = repo.list_prod_canary_unavailability_for_deployment(deployment.id)
+    if episodes:
+        recovered = [e for e in episodes if e.recovered]
+        ongoing = [e for e in episodes if not e.recovered]
+        now = datetime.now(timezone.utc)
+
+        ep_summary = Table(title="Unavailability episodes")
+        ep_summary.add_column("Total episodes", justify="right")
+        ep_summary.add_column("Recovered", justify="right")
+        ep_summary.add_column("Ongoing", justify="right")
+        ep_summary.add_column("Canaries affected", justify="right")
+        ep_summary.add_row(
+            str(len(episodes)),
+            str(len(recovered)),
+            str(len(ongoing)),
+            str(len({e.canary_id for e in episodes})),
+        )
+        console.print(ep_summary)
+
+        if recovered:
+            durs = sorted(
+                e.unavailable_hours for e in recovered
+                if e.unavailable_hours is not None
+            )
+            if durs:
+                n = len(durs)
+                median = durs[n // 2]
+                p95 = durs[min(n - 1, int(round(0.95 * (n - 1))))]
+                console.print(
+                    f"[dim]Recovered-episode unavailability: "
+                    f"median {median:.1f}h, p95 {p95:.1f}h, "
+                    f"max {durs[-1]:.1f}h (n={n}).[/dim]"
+                )
+            dur_buckets = [
+                ("<6h", 0, 6), ("6-24h", 6, 24), ("1-3d", 24, 72),
+                ("3-7d", 72, 168), (">7d", 168, float("inf")),
+            ]
+            counts = {lbl: 0 for lbl, *_ in dur_buckets}
+            for e in recovered:
+                h = e.unavailable_hours or 0.0
+                for lbl, lo, hi in dur_buckets:
+                    if lo <= h < hi:
+                        counts[lbl] += 1
+                        break
+            hist = Table(title="Recovered unavailability-duration histogram")
+            hist.add_column("Window")
+            hist.add_column("Count", justify="right")
+            for lbl, *_ in dur_buckets:
+                hist.add_row(lbl, str(counts[lbl]))
+            console.print(hist)
+
+        if ongoing:
+            # The genuinely-concerning tail: still unreachable, and for how
+            # long. A long-ongoing episode is the closest thing to real loss.
+            ot = Table(title="Currently-unavailable (ongoing) episodes")
+            ot.add_column("Chunk")
+            ot.add_column("Unavailable for", justify="right")
+            for e in sorted(ongoing, key=lambda x: x.confirmed_unavailable_at):
+                down_h = (now - e.confirmed_unavailable_at).total_seconds() / 3600.0
+                ot.add_row(
+                    (e.missing_chunk_address or "?")[:12] + "…",
+                    f"{down_h:.1f}h",
+                )
+            console.print(ot)
+    else:
+        console.print(
+            "[dim]No unavailability episodes recorded — nothing has gone "
+            "unreachable.[/dim]"
         )
 
     # Quick-look: when did the first / last upload land?
