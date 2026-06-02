@@ -8,6 +8,7 @@ from decimal import Decimal
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -98,6 +99,12 @@ class DeploymentProdCanaryUpload(Base):
         back_populates="upload",
         cascade="all, delete-orphan",
         uselist=False,
+    )
+    unavailability_episodes: Mapped[
+        list["DeploymentProdCanaryUnavailability"]
+    ] = relationship(
+        back_populates="upload",
+        cascade="all, delete-orphan",
     )
 
     def to_dict(self):
@@ -251,4 +258,61 @@ class DeploymentProdCanaryLoss(Base):
             "missing_chunk_address": self.missing_chunk_address,
             "hours_to_first_failure": self.hours_to_first_failure,
             "hours_to_confirmed_loss": self.hours_to_confirmed_loss,
+        }
+
+
+class DeploymentProdCanaryUnavailability(Base):
+    """One unavailability *episode* of a canary — a maximal run during which
+    the chunk was confirmed unreachable (two-strike) and then either recovered
+    or is still ongoing. Derived from the probe stream; the richer successor
+    to the binary ``prod_canary_loss`` view."""
+
+    __tablename__ = "prod_canary_unavailability"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    canary_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(),
+        ForeignKey("prod_canary_uploads.canary_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    episode_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    missing_chunk_address: Mapped[str] = mapped_column(String(128), nullable=False)
+    first_failed_probe_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    confirmed_unavailable_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recovered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    hours_to_confirmed: Mapped[float] = mapped_column(Float, nullable=False)
+    unavailable_hours: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    recovered: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    upload: Mapped["DeploymentProdCanaryUpload"] = relationship(
+        back_populates="unavailability_episodes"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "canary_id", "episode_no", name="uq_canary_unavail_episode"
+        ),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "canary_id": str(self.canary_id),
+            "episode_no": self.episode_no,
+            "missing_chunk_address": self.missing_chunk_address,
+            "first_failed_probe_at": self.first_failed_probe_at.isoformat(),
+            "confirmed_unavailable_at": self.confirmed_unavailable_at.isoformat(),
+            "recovered_at": (
+                self.recovered_at.isoformat() if self.recovered_at else None
+            ),
+            "hours_to_confirmed": self.hours_to_confirmed,
+            "unavailable_hours": self.unavailable_hours,
+            "recovered": self.recovered,
         }
