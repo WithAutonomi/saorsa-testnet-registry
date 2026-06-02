@@ -152,7 +152,7 @@ def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -
         nat_value = "0"
 
     # Clock skew spans both tiers: node VMs (selected by --clock-skew-count,
-    # persisted to state) and client VMs (clock_skew=true on their spec).
+    # persisted to state) and client VMs (a clock_skew duration on their spec).
     node_skew = len(state.get("clock_skew_vm_ips") or [])
     client_skew = sum(
         1 for c in ((client_state or {}).get("clients") or []) if c.get("clock_skew")

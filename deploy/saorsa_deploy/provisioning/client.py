@@ -16,7 +16,7 @@ from saorsa_deploy.provisioning.apt import (
 )
 from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
-    skew_direction_for_ip,
+    format_skew_offset,
 )
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
@@ -223,25 +223,29 @@ class AntClientProvisioner:
                         host=[host],
                     )
 
-            # Inject clock skew on any client whose spec sets clock_skew=true.
-            # Each selected host shifts by a fixed magnitude in a per-host
-            # direction, so we add one op per host.
-            skew_ips = {c["ip"] for c in self.clients if c.get("ip") and c.get("clock_skew")}
-            if skew_ips:
+            # Inject clock skew on any client whose spec sets a clock_skew
+            # duration. Each such host shifts by its own explicit signed offset,
+            # so we add one op per host.
+            skew_by_ip = {
+                c["ip"]: c["clock_skew"]
+                for c in self.clients
+                if c.get("ip") and c.get("clock_skew")
+            }
+            if skew_by_ip:
                 self.console.print(
-                    f"[cyan]Clock skew enabled on {len(skew_ips)}/"
+                    f"[cyan]Clock skew enabled on {len(skew_by_ip)}/"
                     f"{len(host_ips)} client host(s).[/cyan]"
                 )
                 active_hosts = list(state.inventory.get_active_hosts())
                 for host in active_hosts:
-                    if host.name not in skew_ips:
+                    offset = skew_by_ip.get(host.name)
+                    if not offset:
                         continue
-                    direction = skew_direction_for_ip(host.name)
                     add_op(
                         state,
                         server.shell,
-                        name=f"Inject clock skew ({'fast' if direction >= 0 else 'slow'})",
-                        commands=[build_clock_skew_command(direction)],
+                        name=f"Inject clock skew ({format_skew_offset(offset)})",
+                        commands=[build_clock_skew_command(offset)],
                         host=[host],
                     )
 

@@ -484,14 +484,15 @@ def main(argv=None):
         default=[],
         help="Uploader VM spec: "
         "'provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]"
-        "[:clock_skew=true]'. "
+        "[:clock_skew=DURATION]'. "
         "provider is mandatory: digital_ocean, vultr, hetzner, or ovh. "
         "Region names and VM sizes vary per provider and are passed through "
         "verbatim (supply valid strings). Repeat for multiple uploaders. "
         "Default vm_size=s-2vcpu-4gb (DO). Optional payment=merkle|no-merkle "
         "forces the payment mode for that uploader's `ant file upload` calls; "
-        "omit for ant's default. clock_skew=true disables time sync and shifts "
-        "that VM's clock by a few hours (testing only). "
+        "omit for ant's default. clock_skew=DURATION disables time sync and "
+        "shifts that VM's clock by a signed Go-style duration (e.g. 2h, -2h, "
+        "30m; testing only). "
         "Example: --uploader 'digital_ocean:lon1:50' "
         "--uploader 'hetzner:fsn1:100:cpx32:payment=merkle'",
     )
@@ -500,13 +501,14 @@ def main(argv=None):
         type=str,
         action="append",
         default=[],
-        help="Downloader VM spec: 'provider:region[:vm_size][:clock_skew=true]'. "
+        help="Downloader VM spec: 'provider:region[:vm_size][:clock_skew=DURATION]'. "
         "provider is "
         "mandatory: digital_ocean, vultr, hetzner, or ovh. Repeat for "
-        "multiple downloaders. Default vm_size=s-2vcpu-4gb (DO). clock_skew=true "
-        "disables time sync and shifts that VM's clock by a few hours (testing "
-        "only). Example: --downloader 'digital_ocean:lon1' "
-        "--downloader 'vultr:nrt:vc2-4c-8gb:clock_skew=true'",
+        "multiple downloaders. Default vm_size=s-2vcpu-4gb (DO). "
+        "clock_skew=DURATION disables time sync and shifts that VM's clock by a "
+        "signed Go-style duration (e.g. 2h, -2h, 30m; testing only). "
+        "Example: --downloader 'digital_ocean:lon1' "
+        "--downloader 'vultr:nrt:vc2-4c-8gb:clock_skew=-2h'",
     )
     clients_infra_parser.add_argument(
         "--force",
@@ -2454,10 +2456,12 @@ def main(argv=None):
     )
     prod_cd_deploy_parser.add_argument(
         "--clock-skew",
-        action="store_true",
+        type=str,
+        default=None,
+        metavar="DURATION",
         help="Inject intentional clock skew on the downloader VM: disable time "
-        "sync and shift the system clock by a few hours (direction varies "
-        "per host). For testing clock-independence of the network.",
+        "sync and shift the system clock by a signed Go-style duration (e.g. "
+        "2h, -2h, 30m). For testing clock-independence of the network.",
     )
     prod_cd_deploy_parser.add_argument(
         "--addresses-path",
@@ -2564,10 +2568,12 @@ def main(argv=None):
     )
     prod_dl_deploy_parser.add_argument(
         "--clock-skew",
-        action="store_true",
+        type=str,
+        default=None,
+        metavar="DURATION",
         help="Inject intentional clock skew on the downloader VM: disable time "
-        "sync and shift the system clock by a few hours (direction varies "
-        "per host). For testing clock-independence of the network.",
+        "sync and shift the system clock by a signed Go-style duration (e.g. "
+        "2h, -2h, 30m). For testing clock-independence of the network.",
     )
     prod_dl_deploy_parser.add_argument(
         "--addresses-path",
@@ -2662,13 +2668,14 @@ def main(argv=None):
         "--uploader",
         action="append",
         default=[],
-        metavar="REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=true]",
+        metavar="REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION]",
         help=(
             "Uploader spec, repeatable. Example: "
             "lon1:s-2vcpu-4gb:urls=/path/to/list.txt:payment=merkle. "
             "payment=merkle|no-merkle is optional and applies per-uploader; "
-            "omit to let ant pick its default. clock_skew=true disables time "
-            "sync and shifts that VM's clock by a few hours (testing only)."
+            "omit to let ant pick its default. clock_skew=DURATION disables time "
+            "sync and shifts that VM's clock by a signed Go-style duration "
+            "(e.g. 2h, -2h, 30m; testing only)."
         ),
     )
     prod_up_deploy_parser.add_argument(

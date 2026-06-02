@@ -12,6 +12,7 @@ from saorsa_deploy.provisioning.apt import (
 )
 from saorsa_deploy.provisioning.bootstrap import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.clock_skew import (
+    SKEW_HOURS,
     build_clock_skew_command,
     skew_direction_for_ip,
 )
@@ -293,11 +294,12 @@ class AntNodeProvisioner:
             # magnitude in a per-host direction, so we add one op per host.
             for host in skew_hosts:
                 direction = skew_direction_for_ip(host.name)
+                offset_seconds = direction * SKEW_HOURS * 3600
                 add_op(
                     state,
                     server.shell,
                     name=f"Inject clock skew ({'fast' if direction >= 0 else 'slow'})",
-                    commands=[build_clock_skew_command(direction)],
+                    commands=[build_clock_skew_command(offset_seconds)],
                     host=[host],
                 )
 

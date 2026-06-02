@@ -38,7 +38,7 @@ from saorsa_deploy.provisioning.apt import (
 )
 from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
-    skew_direction_for_ip,
+    format_skew_offset,
 )
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
@@ -208,28 +208,30 @@ class ProdDownloaderProvisioner:
             )
 
     def _add_clock_skew_ops(self, state: State) -> None:
-        """Inject clock skew on any downloader whose spec sets clock_skew=true.
+        """Inject clock skew on any downloader whose spec sets a clock_skew duration.
 
-        Each selected host shifts by a fixed magnitude in a per-host direction,
-        so we add one op per host.
+        Each such host shifts by its own explicit signed offset, so we add one op
+        per host.
         """
-        skew_ips = {
-            d["ip"] for d in self.downloaders if d.get("ip") and d.get("clock_skew")
+        skew_by_ip = {
+            d["ip"]: d["clock_skew"]
+            for d in self.downloaders
+            if d.get("ip") and d.get("clock_skew")
         }
-        if not skew_ips:
+        if not skew_by_ip:
             return
         self.console.print(
-            f"[cyan]Clock skew enabled on {len(skew_ips)} downloader host(s).[/cyan]"
+            f"[cyan]Clock skew enabled on {len(skew_by_ip)} downloader host(s).[/cyan]"
         )
         for host in state.inventory.get_active_hosts():
-            if host.name not in skew_ips:
+            offset = skew_by_ip.get(host.name)
+            if not offset:
                 continue
-            direction = skew_direction_for_ip(host.name)
             add_op(
                 state,
                 server.shell,
-                name=f"Inject clock skew ({'fast' if direction >= 0 else 'slow'})",
-                commands=[build_clock_skew_command(direction)],
+                name=f"Inject clock skew ({format_skew_offset(offset)})",
+                commands=[build_clock_skew_command(offset)],
                 host=[host],
             )
 

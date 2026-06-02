@@ -38,10 +38,10 @@ testnet:
       - { provider: vultr, region: sgp, file_size_mb: 25,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.04 }
       - { provider: ovh,   region: DE1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04 }
       - { provider: ovh,   region: BHS5,file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04 }
-      - { provider: ovh, clock_skew: true,   region: UK1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04 }
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04 }
     downloaders:
       - { provider: digital_ocean, region: tor1 }
-      - { provider: digital_ocean, clock_skew: true, region: lon1 }
+      - { provider: digital_ocean, clock_skew: -2h, region: lon1 }
 
   elastic:
     enabled: true

@@ -11,9 +11,26 @@ for a real cloud deployment.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
+
+from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
+
+
+def _validate_clock_skew(value: str) -> str:
+    """Validate a client ``clock_skew`` value as a Go-style signed duration.
+
+    Stores the (normalized) string form; the resolved signed seconds are derived
+    again at provisioning time. Raises if the string is not a valid duration.
+    """
+    parse_skew_duration(value)
+    return str(value)
+
+
+# A signed Go-style duration (e.g. "2h", "-2h", "30m"). `coerce_numbers_to_str`
+# on `_Base` turns a bare YAML number into a string before this runs.
+ClockSkew = Annotated[str, AfterValidator(_validate_clock_skew)]
 
 # kind string (hyphenated, as stored in deploy_args["kind"]) -> manifest block attr
 KIND_TO_BLOCK: dict[str, str] = {
@@ -131,14 +148,14 @@ class Uploader(_Base):
     payment: Optional[Payment] = None
     ant: Optional[str] = None  # wallet funding (ANT tokens)
     eth: Optional[str] = None  # wallet funding (ETH)
-    clock_skew: bool = False  # inject intentional clock skew on this VM
+    clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
 
 
 class Downloader(_Base):
     provider: str
     region: str
     vm_size: Optional[str] = None
-    clock_skew: bool = False  # inject intentional clock skew on this VM
+    clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
 
 
 class Clients(_Base):
@@ -218,7 +235,8 @@ class ProdUploader(_Base):
     vm_size: str
     urls: str  # path to URL list (uploaded with --public)
     payment: Optional[Payment] = None
-    clock_skew: bool = False  # disable time sync + shift this VM's clock (testing only)
+    # signed duration skew on this VM (e.g. "2h", "-2h"); disables time sync (testing only)
+    clock_skew: Optional[ClockSkew] = None
 
 
 class ProdUploadersSpec(_Base):
@@ -243,7 +261,8 @@ class ProdDownloadersSpec(_Base):
     addresses_path: Optional[str] = None
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None
-    clock_skew: bool = False  # disable time sync + shift this VM's clock (testing only)
+    # signed duration skew on this VM (e.g. "2h", "-2h"); disables time sync (testing only)
+    clock_skew: Optional[ClockSkew] = None
 
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):

@@ -134,9 +134,14 @@ while true; do
         echo "[$(date -u +%H:%M:%S)] Download FAILED: ${address} exit_code=${exit_code} total=${total_ms}ms"
     fi
 
-    # Submit to InfluxDB
-    timestamp_ns="$end_ns"
-    line="download,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,download_secs=${download_secs},file_size=${file_bytes}i,start_ns=${start_ns}i ${timestamp_ns}"
+    # Submit to InfluxDB.
+    # No explicit line-protocol timestamp: InfluxDB stamps each point with its
+    # own (correct) server-receive time. This is essential for clock-skewed
+    # clients — their wall clock can be hours off, and an explicit client
+    # timestamp would land the point in the future, hiding it behind the
+    # implicit `stop: now()` of every read query. The client's perceived
+    # download-start time is still preserved in the `start_ns` field.
+    line="download,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,download_secs=${download_secs},file_size=${file_bytes}i,start_ns=${start_ns}i"
     submit_metric "$line"
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"

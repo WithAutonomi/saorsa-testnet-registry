@@ -8,11 +8,16 @@ deliberately skew clocks to prove that dependence is gone.
 
 Design notes:
 
-- **Fixed magnitude, random direction.** Every skewed host shifts by the same
-  number of hours; whether it runs fast or slow is decided by
-  :func:`skew_direction_for_ip`, a deterministic hash of the host IP. This
-  spreads both directions across a deployment while staying reproducible — a
-  re-provision picks the same direction for the same host.
+- **Two callers, two ways of choosing the offset.**
+  - *Clients* (uploaders/downloaders, testnet and prod) supply an **explicit
+    signed duration** (e.g. ``2h``, ``-2h``, ``30m``) per VM via
+    :func:`parse_skew_duration`; the sign is the direction and the magnitude is
+    exact.
+  - *Nodes* keep the original **fixed magnitude, random direction** behaviour:
+    every selected node shifts by ``SKEW_HOURS`` in a per-host direction decided
+    by :func:`skew_direction_for_ip` (a deterministic hash of the host IP).
+  Both paths funnel into :func:`build_clock_skew_command`, which takes a single
+  signed-seconds offset.
 - **Idempotent.** :func:`build_clock_skew_command` guards on a marker file so a
   re-run never *compounds* another offset onto an already-skewed clock.
 - **Persistent.** Time sync is disabled before the clock is moved, so the skew
@@ -26,14 +31,79 @@ are skewed.
 from __future__ import annotations
 
 import hashlib
+import re
 
-# Magnitude of the injected skew. "A few hours" — large enough to break any
-# naive UTC assumption, small enough to stay sane. Tune here if needed.
+# Default magnitude of the *node-side* random skew. "A few hours" — large enough
+# to break any naive UTC assumption, small enough to stay sane. Clients set their
+# own magnitude explicitly via the duration value, so this only governs nodes.
 SKEW_HOURS = 3
 
 # Marker file written once the skew has been applied; its presence makes the
 # setup command a no-op on subsequent provision runs (prevents compounding).
 SKEW_MARKER = "/etc/ant-clock-skew-applied"
+
+# A Go-style duration body: one or more <int><unit> tokens, unit in h/m/s.
+_DURATION_TOKEN_RE = re.compile(r"(\d+)([hms])")
+_DURATION_BODY_RE = re.compile(r"(?:\d+[hms])+")
+_UNIT_SECONDS = {"h": 3600, "m": 60, "s": 1}
+
+
+def parse_skew_duration(value) -> int:
+    """Parse a Go-style signed duration into a signed number of seconds.
+
+    Accepts an optional leading ``-`` (clock runs slow) or ``+``, followed by one
+    or more ``<int><unit>`` tokens where unit is ``h``, ``m`` or ``s`` — e.g.
+    ``2h`` → ``7200``, ``-2h`` → ``-7200``, ``30m`` → ``1800``, ``1h30m`` →
+    ``5400``, ``90s`` → ``90``.
+
+    Raises :class:`ValueError` on empty input, a zero-magnitude duration, a
+    boolean-ish value (``true``/``false`` — the old form, deliberately rejected),
+    or any otherwise malformed string.
+    """
+    if value is None:
+        raise ValueError("clock_skew duration is required (e.g. '2h' or '-30m').")
+    text = str(value).strip().lower()
+    if not text:
+        raise ValueError("clock_skew duration cannot be empty (e.g. '2h' or '-30m').")
+
+    negative = False
+    body = text
+    if text[0] in "+-":
+        negative = text[0] == "-"
+        body = text[1:]
+
+    if not _DURATION_BODY_RE.fullmatch(body):
+        raise ValueError(
+            f"Invalid clock_skew '{value}': expected a Go-style duration such as "
+            f"'2h', '-2h', '30m' or '1h30m' (units h/m/s, optional leading '-')."
+        )
+
+    total = sum(
+        int(n) * _UNIT_SECONDS[u] for n, u in _DURATION_TOKEN_RE.findall(body)
+    )
+    if total == 0:
+        raise ValueError(
+            f"Invalid clock_skew '{value}': the duration must be non-zero."
+        )
+    return -total if negative else total
+
+
+def format_skew_offset(offset_seconds: int) -> str:
+    """Render a signed-seconds offset as a compact label like ``+2h`` / ``-1h30m``."""
+    sign = "-" if offset_seconds < 0 else "+"
+    remaining = abs(int(offset_seconds))
+    hours, remaining = divmod(remaining, 3600)
+    minutes, seconds = divmod(remaining, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds:
+        parts.append(f"{seconds}s")
+    if not parts:
+        parts.append("0s")
+    return sign + "".join(parts)
 
 
 def skew_direction_for_ip(ip: str) -> int:
@@ -79,21 +149,24 @@ def select_skew_ips(
     return ordered[:target]
 
 
-def build_clock_skew_command(direction: int, hours: int = SKEW_HOURS) -> str:
-    """Return the shell command that skews a host's clock.
+def build_clock_skew_command(offset_seconds: int) -> str:
+    """Return the shell command that skews a host's clock by ``offset_seconds``.
 
-    ``direction`` is +1 (fast) or -1 (slow). The command:
+    ``offset_seconds`` is a signed number of seconds — positive makes the clock
+    run fast, negative makes it run slow. The command:
 
     1. Short-circuits with ``ANT_SKEW:ALREADY`` if the marker file exists.
     2. Disables NTP and stops/disables every common time-sync service.
-    3. Jumps the system clock by ``±hours`` using ``date -s``.
-    4. Records the applied offset in the marker file and prints
-       ``ANT_SKEW:APPLIED:<offset>``.
+    3. Jumps the system clock by the offset using ``date -s``.
+    4. Records the applied offset (compact label, e.g. ``+2h``) in the marker
+       file and prints ``ANT_SKEW:APPLIED:<offset>``.
 
     Idempotent via the marker file — re-running never compounds the offset.
     """
-    sign = "+" if direction >= 0 else "-"
-    offset = f"{sign}{hours} hours"
+    sign = "+" if offset_seconds >= 0 else "-"
+    magnitude = abs(int(offset_seconds))
+    date_offset = f"{sign}{magnitude} seconds"
+    label = format_skew_offset(offset_seconds)
     # Runs under /bin/sh (dash on Ubuntu) via pyinfra's server.shell, so no
     # bashisms / pipefail. `date -d 'now <offset>'` is GNU coreutils (present
     # on the Ubuntu images we provision).
@@ -109,8 +182,8 @@ for svc in systemd-timesyncd chrony chronyd ntp ntpsec; do
     systemctl stop "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
 done
-NEW_TIME=$(date -d 'now {offset}' '+%Y-%m-%d %H:%M:%S')
+NEW_TIME=$(date -d 'now {date_offset}' '+%Y-%m-%d %H:%M:%S')
 date -s "$NEW_TIME" >/dev/null
-echo "{offset}" > "$MARKER"
-echo "ANT_SKEW:APPLIED:{offset}"
+echo "{label}" > "$MARKER"
+echo "ANT_SKEW:APPLIED:{label}"
 """

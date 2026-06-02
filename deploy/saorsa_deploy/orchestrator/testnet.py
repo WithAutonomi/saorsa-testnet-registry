@@ -54,7 +54,7 @@ def _uploader_spec(u) -> str:
     if u.eth is not None:
         parts.append(f"eth={u.eth}")
     if u.clock_skew:
-        parts.append("clock_skew=true")
+        parts.append(f"clock_skew={u.clock_skew}")
     return ":".join(parts)
 
 
@@ -63,7 +63,7 @@ def _downloader_spec(d) -> str:
     if d.vm_size:
         parts.append(d.vm_size)
     if d.clock_skew:
-        parts.append("clock_skew=true")
+        parts.append(f"clock_skew={d.clock_skew}")
     return ":".join(parts)
 
 
