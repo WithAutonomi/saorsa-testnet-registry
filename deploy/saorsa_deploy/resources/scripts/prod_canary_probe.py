@@ -70,6 +70,14 @@ PROBE_FAILED = "failed"
 PROBE_INCONCLUSIVE = "inconclusive"
 
 STATUS_ALIVE = "alive"
+# A canary that has been confirmed unavailable (two-strike) but which we KEEP
+# probing, so that recovery can be observed and the unavailability window
+# measured. Replaces the old terminal STATUS_LOST sink, which stopped probing
+# and made the canary blind to recovery — chunks were found to go unreachable
+# for hours-to-days and then come back, which the old design could never see.
+STATUS_UNAVAILABLE = "unavailable"
+# Retained only so an upgraded probe can re-activate canaries left in the old
+# terminal state by a previous version of this script.
 STATUS_LOST = "lost"
 
 DEFAULT_WORK_DIR = "/var/lib/ant-prod-canary/probe-files"
@@ -116,7 +124,8 @@ CREATE TABLE IF NOT EXISTS canary_state (
   status                       TEXT NOT NULL,
   first_failed_probe_at        TEXT,
   first_failed_missing_chunk   TEXT,
-  added_at                     TEXT NOT NULL
+  added_at                     TEXT NOT NULL,
+  unavailable_since            TEXT
 );
 """
 
@@ -125,6 +134,17 @@ def _open_state(state_path: Path) -> sqlite3.Connection:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(state_path))
     conn.executescript(_SCHEMA)
+    # Migrate state DBs created by an older probe script: add the
+    # unavailable_since column and re-activate any canaries stuck in the old
+    # terminal STATUS_LOST so they get probed again (recovery observation).
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(canary_state)")}
+    if "unavailable_since" not in cols:
+        conn.execute("ALTER TABLE canary_state ADD COLUMN unavailable_since TEXT")
+    conn.execute(
+        "UPDATE canary_state SET status = ?, unavailable_since = COALESCE("
+        "unavailable_since, first_failed_probe_at, added_at) WHERE status = ?",
+        (STATUS_UNAVAILABLE, STATUS_LOST),
+    )
     conn.commit()
     return conn
 
@@ -132,7 +152,8 @@ def _open_state(state_path: Path) -> sqlite3.Connection:
 def _state_row(conn: sqlite3.Connection, canary_id: str) -> tuple | None:
     cur = conn.execute(
         "SELECT canary_id, top_address, status, first_failed_probe_at, "
-        "first_failed_missing_chunk, added_at FROM canary_state WHERE canary_id = ?",
+        "first_failed_missing_chunk, added_at, unavailable_since "
+        "FROM canary_state WHERE canary_id = ?",
         (canary_id,),
     )
     return cur.fetchone()
@@ -149,11 +170,14 @@ def _insert_state(
     conn.commit()
 
 
-def _alive_canaries(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+def _probeable_canaries(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Every canary we should probe this cycle — both healthy (alive) and
+    currently-unavailable ones. We deliberately keep probing unavailable
+    canaries so recovery is observed and the unavailability window measured."""
     cur = conn.execute(
-        "SELECT canary_id, top_address FROM canary_state WHERE status = ? "
-        "ORDER BY added_at",
-        (STATUS_ALIVE,),
+        "SELECT canary_id, top_address FROM canary_state "
+        "WHERE status IN (?, ?) ORDER BY added_at",
+        (STATUS_ALIVE, STATUS_UNAVAILABLE),
     )
     return [(row[0], row[1]) for row in cur.fetchall()]
 
@@ -165,24 +189,41 @@ def _apply_two_strike(
     status: str,
     missing_chunk: str,
     probed_at_iso: str,
-) -> None:
-    """Update local state per the two-strike rule.
+) -> tuple[str, str] | None:
+    """Update local state per the two-strike rule and report transitions.
 
-    - status=ok:           clear first_failed_*
-    - status=failed:       if the previous failure had the same missing
-                           chunk address, mark lost; otherwise record
-                           this as the new first_failed_*
-    - status=inconclusive: leave state unchanged
+    State machine (local bookkeeping; the authoritative availability timeline
+    is the full probe stream in Influx):
+
+    - status=ok:
+        * if currently unavailable -> RECOVERED: back to alive, clear markers.
+        * else clear any pending first-failure.
+    - status=failed:
+        * second consecutive failure on the same missing chunk -> UNAVAILABLE
+          (but keep probing); stamp unavailable_since.
+        * otherwise record this as the new first-failure.
+    - status=inconclusive: leave state unchanged.
+
+    Returns ("unavailable", chunk) or ("recovered", "") when a transition
+    happens, else None — so the caller can log it.
     """
     if status == PROBE_INCONCLUSIVE:
-        return
+        return None
     row = _state_row(conn, canary_id)
     if row is None:
-        return
-    _, _, current_status, prev_failed_at, prev_failed_chunk, _ = row
-    if current_status == STATUS_LOST:
-        return
+        return None
+    _, _, current_status, prev_failed_at, prev_failed_chunk, _, _ = row
+
     if status == PROBE_OK:
+        if current_status == STATUS_UNAVAILABLE:
+            conn.execute(
+                "UPDATE canary_state SET status = ?, first_failed_probe_at = NULL, "
+                "first_failed_missing_chunk = NULL, unavailable_since = NULL "
+                "WHERE canary_id = ?",
+                (STATUS_ALIVE, canary_id),
+            )
+            conn.commit()
+            return ("recovered", "")
         if prev_failed_at is not None or prev_failed_chunk is not None:
             conn.execute(
                 "UPDATE canary_state SET first_failed_probe_at = NULL, "
@@ -190,20 +231,28 @@ def _apply_two_strike(
                 (canary_id,),
             )
             conn.commit()
-        return
+        return None
+
     if status == PROBE_FAILED:
+        if current_status == STATUS_UNAVAILABLE:
+            # Already known unavailable; keep probing, nothing to transition.
+            return None
         if prev_failed_chunk and prev_failed_chunk == missing_chunk:
             conn.execute(
-                "UPDATE canary_state SET status = ? WHERE canary_id = ?",
-                (STATUS_LOST, canary_id),
+                "UPDATE canary_state SET status = ?, unavailable_since = ? "
+                "WHERE canary_id = ?",
+                (STATUS_UNAVAILABLE, prev_failed_at or probed_at_iso, canary_id),
             )
-        else:
-            conn.execute(
-                "UPDATE canary_state SET first_failed_probe_at = ?, "
-                "first_failed_missing_chunk = ? WHERE canary_id = ?",
-                (probed_at_iso, missing_chunk, canary_id),
-            )
+            conn.commit()
+            return ("unavailable", missing_chunk)
+        conn.execute(
+            "UPDATE canary_state SET first_failed_probe_at = ?, "
+            "first_failed_missing_chunk = ? WHERE canary_id = ?",
+            (probed_at_iso, missing_chunk, canary_id),
+        )
         conn.commit()
+        return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -511,11 +560,11 @@ async def _run_cycle(
     concurrency: int,
     cycle_budget_secs: int,
 ) -> None:
-    alive = _alive_canaries(conn)
-    if not alive:
-        print("cycle: no alive canaries to probe", flush=True)
+    probeable = _probeable_canaries(conn)
+    if not probeable:
+        print("cycle: no canaries to probe", flush=True)
         return
-    print(f"cycle: probing {len(alive)} canaries", flush=True)
+    print(f"cycle: probing {len(probeable)} canaries", flush=True)
     sem = asyncio.Semaphore(concurrency)
 
     async def _one(canary_id: str, top_address: str) -> None:
@@ -541,14 +590,24 @@ async def _run_cycle(
         )
         _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
         probed_at_iso = datetime.now(timezone.utc).isoformat()
-        _apply_two_strike(
+        transition = _apply_two_strike(
             conn,
             canary_id=canary_id,
             status=status,
             missing_chunk=missing,
             probed_at_iso=probed_at_iso,
         )
-        if status != PROBE_OK:
+        if transition is not None:
+            kind, chunk = transition
+            if kind == "unavailable":
+                print(
+                    f"  {canary_id} UNAVAILABLE (confirmed) missing={chunk} "
+                    "-- will keep probing for recovery",
+                    flush=True,
+                )
+            elif kind == "recovered":
+                print(f"  {canary_id} RECOVERED -- available again", flush=True)
+        elif status != PROBE_OK:
             print(
                 f"  {canary_id} {status} missing={missing or '-'} "
                 f"exit={exit_code} duration_ms={duration_ms}",
@@ -561,7 +620,7 @@ async def _run_cycle(
     # the reporter silent for ~2.5 days.
     try:
         await asyncio.wait_for(
-            asyncio.gather(*[_one(cid, addr) for cid, addr in alive]),
+            asyncio.gather(*[_one(cid, addr) for cid, addr in probeable]),
             timeout=cycle_budget_secs,
         )
     except asyncio.TimeoutError:

@@ -416,7 +416,25 @@ class TestProbeLocalTwoStrike:
         probe_mod._insert_state(conn, cid, "topaddr")
         return conn, cid
 
-    def test_failed_then_failed_same_chunk_marks_lost(self, probe_mod, tmp_path):
+    def test_failed_then_failed_same_chunk_marks_unavailable(
+        self, probe_mod, tmp_path
+    ):
+        conn, cid = self._setup(probe_mod, tmp_path)
+        probe_mod._apply_two_strike(
+            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
+            missing_chunk="A", probed_at_iso="t1",
+        )
+        t = probe_mod._apply_two_strike(
+            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
+            missing_chunk="A", probed_at_iso="t2",
+        )
+        row = probe_mod._state_row(conn, cid)
+        assert row[2] == probe_mod.STATUS_UNAVAILABLE
+        # unavailable_since stamped from the first failure, transition reported
+        assert row[6] == "t1"
+        assert t == ("unavailable", "A")
+
+    def test_unavailable_then_ok_recovers(self, probe_mod, tmp_path):
         conn, cid = self._setup(probe_mod, tmp_path)
         probe_mod._apply_two_strike(
             conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
@@ -426,8 +444,30 @@ class TestProbeLocalTwoStrike:
             conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
             missing_chunk="A", probed_at_iso="t2",
         )
+        # recovery: an OK probe after being unavailable returns it to alive
+        t = probe_mod._apply_two_strike(
+            conn, canary_id=cid, status=probe_mod.PROBE_OK,
+            missing_chunk="", probed_at_iso="t3",
+        )
         row = probe_mod._state_row(conn, cid)
-        assert row[2] == probe_mod.STATUS_LOST
+        assert row[2] == probe_mod.STATUS_ALIVE
+        assert row[6] is None  # unavailable_since cleared
+        assert t == ("recovered", "")
+
+    def test_unavailable_canary_still_probeable(self, probe_mod, tmp_path):
+        conn, cid = self._setup(probe_mod, tmp_path)
+        probe_mod._apply_two_strike(
+            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
+            missing_chunk="A", probed_at_iso="t1",
+        )
+        probe_mod._apply_two_strike(
+            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
+            missing_chunk="A", probed_at_iso="t2",
+        )
+        # An unavailable canary must remain in the probe set (so we can see
+        # recovery) — the old design dropped it here.
+        ids = [c for c, _ in probe_mod._probeable_canaries(conn)]
+        assert cid in ids
 
     def test_failed_then_ok_resets(self, probe_mod, tmp_path):
         conn, cid = self._setup(probe_mod, tmp_path)
