@@ -33,6 +33,7 @@ from saorsa_deploy.prod_bootstraps import (
     ProdBootstrapsError,
     fetch_prod_bootstraps,
 )
+from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
 from saorsa_deploy.provisioning.prod_uploader import (
     SERVICE_NAME,
     ProdUploaderProvisioner,
@@ -54,17 +55,15 @@ _KNOWN_SPEC_KEYS = ("urls", "payment", "clock_skew")
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
 
 
-def _parse_clock_skew_token(spec: str, value: str) -> bool:
-    """Validate and parse a ``clock_skew=`` uploader-spec token into a bool."""
-    lowered = value.strip().lower()
-    if lowered in ("true", "1", "yes"):
-        return True
-    if lowered in ("false", "0", "no"):
-        return False
-    raise ValueError(
-        f"Invalid uploader spec '{spec}': clock_skew must be true or false, "
-        f"got '{value}'."
-    )
+def _parse_clock_skew_token(spec: str, value: str) -> int:
+    """Validate a ``clock_skew=`` uploader-spec token into signed seconds.
+
+    Accepts a Go-style signed duration (e.g. ``2h``, ``-2h``, ``30m``).
+    """
+    try:
+        return parse_skew_duration(value)
+    except ValueError as e:
+        raise ValueError(f"Invalid uploader spec '{spec}': {e}")
 
 
 def parse_prod_uploader_spec(spec: str) -> dict:
@@ -140,7 +139,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     clock_skew = (
         _parse_clock_skew_token(spec, options["clock_skew"])
         if "clock_skew" in options
-        else False
+        else None
     )
 
     return {

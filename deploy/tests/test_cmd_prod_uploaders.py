@@ -55,7 +55,7 @@ class TestParseSpec:
             "vm_size": "s-2vcpu-4gb",
             "urls_file": str(urls_file),
             "payment_type": None,
-            "clock_skew": False,
+            "clock_skew": None,
         }
 
     def test_missing_urls_rejected(self):

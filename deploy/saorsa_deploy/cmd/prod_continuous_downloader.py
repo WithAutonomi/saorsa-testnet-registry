@@ -43,6 +43,7 @@ from saorsa_deploy.prod_bootstraps import (
     ProdBootstrapsError,
     fetch_prod_bootstraps,
 )
+from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
 from saorsa_deploy.provisioning.prod_downloader import (
     SERVICE_NAME as PROD_DOWNLOADER_SERVICE_NAME,
 )
@@ -217,7 +218,7 @@ def _provision_prod_downloader(
             "ip": c["ip"],
             "region": c.get("region", "unknown"),
             "addresses_file_content": addresses_file_content,
-            "clock_skew": getattr(args, "clock_skew", False),
+            "clock_skew": _resolve_clock_skew(args),
         }
         for c in clients
         if c.get("ip")
@@ -319,6 +320,17 @@ def _systemctl_action(
         sys.exit(1)
 
 
+def _resolve_clock_skew(args):
+    """Resolve ``--clock-skew DURATION`` to signed seconds (or None when unset).
+
+    Raises :class:`ValueError` for a malformed duration.
+    """
+    raw = getattr(args, "clock_skew", None)
+    if not raw:
+        return None
+    return parse_skew_duration(raw)
+
+
 def cmd_prod_continuous_downloader_deploy(args):
     """Deploy a prod continuous-downloader testbed against the Autonomi prod network."""
     console = Console()
@@ -327,6 +339,12 @@ def cmd_prod_continuous_downloader_deploy(args):
         console.print(
             "[bold red]Error:[/bold red] --sleep-interval-secs must be >= 0."
         )
+        sys.exit(1)
+
+    try:
+        clock_skew_seconds = _resolve_clock_skew(args)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
     addresses_file = args.addresses_path or get_default_prod_addresses_path()
@@ -365,7 +383,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         "addresses": addresses_list,
         "monitoring_name": args.name,
         "spec": args.spec,
-        "clock_skew": getattr(args, "clock_skew", False),
+        "clock_skew": clock_skew_seconds,
         "purpose": args.purpose,
         "sleep_interval_secs": args.sleep_interval_secs,
         "ant_binary": build_binary_descriptor(

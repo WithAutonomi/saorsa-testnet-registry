@@ -6,6 +6,7 @@ from rich.console import Console
 
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import CLIENT_PROVIDERS, resolve_client_provider
+from saorsa_deploy.provisioning.clock_skew import format_skew_offset, parse_skew_duration
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
@@ -28,16 +29,15 @@ DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
 
 
-def _parse_clock_skew(spec: str, value: str) -> bool:
-    """Validate and parse a ``clock_skew=`` spec option into a bool."""
-    lowered = value.strip().lower()
-    if lowered in ("true", "1", "yes"):
-        return True
-    if lowered in ("false", "0", "no"):
-        return False
-    raise ValueError(
-        f"Invalid spec '{spec}': clock_skew must be true or false, got '{value}'."
-    )
+def _parse_clock_skew(spec: str, value: str) -> int:
+    """Validate a ``clock_skew=`` spec option into signed seconds.
+
+    Accepts a Go-style signed duration (e.g. ``2h``, ``-2h``, ``30m``).
+    """
+    try:
+        return parse_skew_duration(value)
+    except ValueError as e:
+        raise ValueError(f"Invalid spec '{spec}': {e}")
 
 
 def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
@@ -63,7 +63,7 @@ def parse_uploader_spec(spec: str) -> dict:
     """Parse an uploader spec.
 
     Format:
-    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=true]``
+    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION]``
 
     ``provider`` is mandatory and must be one of digital_ocean, vultr,
     hetzner, ovh. Region names and VM sizes vary per provider and are passed
@@ -134,7 +134,7 @@ def parse_uploader_spec(spec: str) -> dict:
     clock_skew = (
         _parse_clock_skew(spec, options["clock_skew"])
         if "clock_skew" in options
-        else False
+        else None
     )
 
     return {
@@ -151,11 +151,11 @@ def parse_uploader_spec(spec: str) -> dict:
 
 
 def parse_downloader_spec(spec: str) -> dict:
-    """Parse a downloader spec: 'provider:region[:vm_size][:clock_skew=true]'.
+    """Parse a downloader spec: 'provider:region[:vm_size][:clock_skew=DURATION]'.
 
     ``provider`` is mandatory (digital_ocean, vultr, hetzner, ovh). Returns a
     dict with keys: role=download, provider (canonical internal name), region,
-    vm_size, clock_skew (bool, default False).
+    vm_size, clock_skew (signed seconds int, or None when unset).
     """
     raw_parts = spec.split(":")
     positional: list[str] = []
@@ -178,7 +178,7 @@ def parse_downloader_spec(spec: str) -> dict:
     if len(positional) < 2 or len(positional) > 3:
         raise ValueError(
             f"Invalid downloader spec '{spec}'. "
-            f"Expected format: provider:region[:vm_size][:clock_skew=true]"
+            f"Expected format: provider:region[:vm_size][:clock_skew=DURATION]"
         )
     try:
         provider = resolve_client_provider(positional[0]).name
@@ -191,7 +191,7 @@ def parse_downloader_spec(spec: str) -> dict:
     clock_skew = (
         _parse_clock_skew(spec, options["clock_skew"])
         if "clock_skew" in options
-        else False
+        else None
     )
     return {
         "role": ROLE_DOWNLOAD,
@@ -214,7 +214,7 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("payment_type"),
         spec.get("ant_funding"),
         spec.get("eth_funding"),
-        bool(spec.get("clock_skew")),
+        spec.get("clock_skew"),
     )
 
 
@@ -256,7 +256,11 @@ def cmd_infra_clients(args):
 
     console.print(f"[bold]Creating {len(client_specs)} client VM(s) for {args.name}...[/bold]")
     for spec in client_specs:
-        skew_str = ", clock-skew" if spec.get("clock_skew") else ""
+        skew_str = (
+            f", clock-skew {format_skew_offset(spec['clock_skew'])}"
+            if spec.get("clock_skew")
+            else ""
+        )
         if spec["role"] == ROLE_UPLOAD:
             payment = spec.get("payment_type")
             payment_str = f", payment={payment}" if payment else ""
@@ -295,7 +299,11 @@ def cmd_infra_clients(args):
             )
             for spec in existing_clients:
                 label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
-                skew_str = ", clock-skew" if spec.get("clock_skew") else ""
+                skew_str = (
+            f", clock-skew {format_skew_offset(spec['clock_skew'])}"
+            if spec.get("clock_skew")
+            else ""
+        )
                 console.print(
                     f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
                     f"({spec.get('provider', 'digitalocean')}:{spec['region']}, "

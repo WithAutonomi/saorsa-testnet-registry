@@ -75,7 +75,7 @@ def test_prod_uploaders_clock_skew_appends_token():
                         "vm_size": "s-2vcpu-4gb",
                         "urls": "/a.txt",
                         "payment": "merkle",
-                        "clock_skew": True,
+                        "clock_skew": "2h",
                     }
                 ],
             },
@@ -83,7 +83,7 @@ def test_prod_uploaders_clock_skew_appends_token():
     )
     argv = build_deploy_steps(m)[0].argv
     spec = argv[argv.index("--uploader") + 1]
-    assert spec == "lon1:s-2vcpu-4gb:urls=/a.txt:payment=merkle:clock_skew=true"
+    assert spec == "lon1:s-2vcpu-4gb:urls=/a.txt:payment=merkle:clock_skew=2h"
 
 
 def test_prod_uploaders_clock_skew_omitted_by_default():
@@ -243,12 +243,13 @@ def test_prod_downloaders_clock_skew_appends_flag():
                 "spec": "lon1:s-2vcpu-4gb",
                 "addresses_path": "/a.txt",
                 "binary": {"version": "0.2.6-rc.2"},
-                "clock_skew": True,
+                "clock_skew": "2h",
             },
         }
     )
     argv = build_deploy_steps(m)[0].argv
     assert "--clock-skew" in argv
+    assert argv[argv.index("--clock-skew") + 1] == "2h"
 
 
 def test_prod_downloaders_clock_skew_omitted_by_default():
@@ -278,12 +279,13 @@ def test_prod_continuous_downloader_clock_skew_appends_flag():
             "prod_continuous_downloader": {
                 "spec": "lon1",
                 "binary": {"version": "0.2.4"},
-                "clock_skew": True,
+                "clock_skew": "-90m",
             },
         }
     )
     argv = build_deploy_steps(m)[0].argv
     assert "--clock-skew" in argv
+    assert argv[argv.index("--clock-skew") + 1] == "-90m"
 
 
 def test_prod_continuous_downloader_sleep_interval():

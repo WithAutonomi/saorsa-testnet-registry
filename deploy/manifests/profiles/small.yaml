@@ -33,7 +33,7 @@ testnet:
   clients:
     uploaders:
       - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.04 }
-      - { provider: digital_ocean, clock_skew: true, region: nyc1, file_size_mb: 10, ant: 200, eth: 0.04 }
+      - { provider: digital_ocean, clock_skew: 2h, region: nyc1, file_size_mb: 10, ant: 200, eth: 0.04 }
     downloaders:
       - { provider: digital_ocean, region: lon1 }
-      - { provider: digital_ocean, clock_skew: true, region: lon1 }
+      - { provider: digital_ocean, clock_skew: -2h, region: lon1 }

@@ -11,9 +11,66 @@ from saorsa_deploy.orchestrator.testnet import _downloader_spec, _uploader_spec
 from saorsa_deploy.provisioning.clock_skew import (
     SKEW_MARKER,
     build_clock_skew_command,
+    format_skew_offset,
+    parse_skew_duration,
     select_skew_ips,
     skew_direction_for_ip,
 )
+
+
+class TestParseSkewDuration:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("2h", 7200),
+            ("-2h", -7200),
+            ("+2h", 7200),
+            ("30m", 1800),
+            ("-30m", -1800),
+            ("90s", 90),
+            ("1h30m", 5400),
+            ("-1h30m", -5400),
+            ("1h30m15s", 5415),
+            (" 2H ", 7200),  # whitespace + case-insensitive
+        ],
+    )
+    def test_valid_durations(self, value, expected):
+        assert parse_skew_duration(value) == expected
+
+    def test_accepts_numeric_string(self):
+        # YAML may coerce a bare number; only valid if it carries a unit.
+        assert parse_skew_duration("45s") == 45
+
+    @pytest.mark.parametrize(
+        "value",
+        ["", "   ", "true", "false", "yes", "0", "0h", "0m0s", "2", "2x", "h", "-", "2h30", "1.5h"],
+    )
+    def test_invalid_durations_raise(self, value):
+        with pytest.raises(ValueError):
+            parse_skew_duration(value)
+
+    def test_none_raises(self):
+        with pytest.raises(ValueError):
+            parse_skew_duration(None)
+
+
+class TestFormatSkewOffset:
+    @pytest.mark.parametrize(
+        "seconds,expected",
+        [
+            (7200, "+2h"),
+            (-7200, "-2h"),
+            (1800, "+30m"),
+            (-1800, "-30m"),
+            (5400, "+1h30m"),
+            (-5415, "-1h30m15s"),
+            (90, "+1m30s"),
+            (45, "+45s"),
+            (0, "+0s"),
+        ],
+    )
+    def test_formats(self, seconds, expected):
+        assert format_skew_offset(seconds) == expected
 
 
 class TestSelectSkewIps:
@@ -74,52 +131,59 @@ class TestSkewDirectionForIp:
 
 class TestBuildClockSkewCommand:
     def test_has_marker_guard(self):
-        cmd = build_clock_skew_command(1)
+        cmd = build_clock_skew_command(7200)
         assert SKEW_MARKER in cmd
         assert "ANT_SKEW:ALREADY" in cmd
         assert "ANT_SKEW:APPLIED" in cmd
 
     def test_disables_time_sync(self):
-        cmd = build_clock_skew_command(1)
+        cmd = build_clock_skew_command(7200)
         assert "timedatectl set-ntp false" in cmd
         assert "systemd-timesyncd" in cmd
         assert "chrony" in cmd
 
-    def test_positive_direction_is_ahead(self):
-        cmd = build_clock_skew_command(1)
-        assert "+3 hours" in cmd
-        assert "-3 hours" not in cmd
+    def test_positive_offset_is_ahead(self):
+        cmd = build_clock_skew_command(7200)
+        assert "+7200 seconds" in cmd
+        assert "ANT_SKEW:APPLIED:+2h" in cmd
 
-    def test_negative_direction_is_behind(self):
-        cmd = build_clock_skew_command(-1)
-        assert "-3 hours" in cmd
+    def test_negative_offset_is_behind(self):
+        cmd = build_clock_skew_command(-7200)
+        assert "-7200 seconds" in cmd
+        assert "ANT_SKEW:APPLIED:-2h" in cmd
 
-    def test_custom_hours(self):
-        assert "+6 hours" in build_clock_skew_command(1, hours=6)
+    def test_sub_hour_offset(self):
+        cmd = build_clock_skew_command(1800)
+        assert "+1800 seconds" in cmd
+        assert "ANT_SKEW:APPLIED:+30m" in cmd
 
     def test_sets_clock(self):
-        assert "date -s" in build_clock_skew_command(1)
+        assert "date -s" in build_clock_skew_command(7200)
 
 
 class TestUploaderSpecClockSkew:
-    def test_default_false(self):
-        assert parse_uploader_spec("digital_ocean:lon1:50")["clock_skew"] is False
+    def test_default_none(self):
+        assert parse_uploader_spec("digital_ocean:lon1:50")["clock_skew"] is None
 
-    def test_true(self):
-        spec = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=true")
-        assert spec["clock_skew"] is True
+    def test_positive_duration(self):
+        spec = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=2h")
+        assert spec["clock_skew"] == 7200
 
-    def test_false_explicit(self):
-        spec = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=false")
-        assert spec["clock_skew"] is False
+    def test_negative_duration(self):
+        spec = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=-2h")
+        assert spec["clock_skew"] == -7200
 
     def test_with_vm_size_and_payment(self):
         spec = parse_uploader_spec(
-            "hetzner:fsn1:100:cpx32:payment=merkle:clock_skew=true"
+            "hetzner:fsn1:100:cpx32:payment=merkle:clock_skew=30m"
         )
-        assert spec["clock_skew"] is True
+        assert spec["clock_skew"] == 1800
         assert spec["vm_size"] == "cpx32"
         assert spec["payment_type"] == "merkle"
+
+    def test_boolean_value_now_rejected(self):
+        with pytest.raises(ValueError, match="clock_skew"):
+            parse_uploader_spec("digital_ocean:lon1:50:clock_skew=true")
 
     def test_invalid_value_raises(self):
         with pytest.raises(ValueError, match="clock_skew"):
@@ -127,21 +191,25 @@ class TestUploaderSpecClockSkew:
 
 
 class TestDownloaderSpecClockSkew:
-    def test_default_false(self):
-        assert parse_downloader_spec("digital_ocean:lon1")["clock_skew"] is False
+    def test_default_none(self):
+        assert parse_downloader_spec("digital_ocean:lon1")["clock_skew"] is None
 
-    def test_true(self):
-        spec = parse_downloader_spec("digital_ocean:lon1:clock_skew=true")
-        assert spec["clock_skew"] is True
+    def test_positive_duration(self):
+        spec = parse_downloader_spec("digital_ocean:lon1:clock_skew=2h")
+        assert spec["clock_skew"] == 7200
 
-    def test_with_vm_size(self):
-        spec = parse_downloader_spec("vultr:nrt:vc2-4c-8gb:clock_skew=true")
-        assert spec["clock_skew"] is True
+    def test_negative_with_vm_size(self):
+        spec = parse_downloader_spec("vultr:nrt:vc2-4c-8gb:clock_skew=-2h")
+        assert spec["clock_skew"] == -7200
         assert spec["vm_size"] == "vc2-4c-8gb"
 
     def test_unknown_key_raises(self):
         with pytest.raises(ValueError, match="unknown key"):
             parse_downloader_spec("digital_ocean:lon1:bogus=1")
+
+    def test_boolean_value_now_rejected(self):
+        with pytest.raises(ValueError, match="clock_skew"):
+            parse_downloader_spec("digital_ocean:lon1:clock_skew=true")
 
     def test_invalid_value_raises(self):
         with pytest.raises(ValueError, match="clock_skew"):
@@ -151,20 +219,35 @@ class TestDownloaderSpecClockSkew:
 class TestSpecSignatureIncludesClockSkew:
     def test_signature_differs_on_clock_skew(self):
         base = parse_uploader_spec("digital_ocean:lon1:50")
-        skewed = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=true")
+        skewed = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=2h")
         assert _spec_signature(base) != _spec_signature(skewed)
+
+    def test_signature_differs_on_direction(self):
+        fast = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=2h")
+        slow = parse_uploader_spec("digital_ocean:lon1:50:clock_skew=-2h")
+        assert _spec_signature(fast) != _spec_signature(slow)
 
 
 class TestProdUploaderSpecClockSkew:
-    def test_default_false(self):
+    def test_default_none(self):
         spec = parse_prod_uploader_spec("lon1:s-2vcpu-4gb:urls=/x.txt")
-        assert spec["clock_skew"] is False
+        assert spec["clock_skew"] is None
 
-    def test_true(self):
+    def test_positive_duration(self):
         spec = parse_prod_uploader_spec(
-            "lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=true"
+            "lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=2h"
         )
-        assert spec["clock_skew"] is True
+        assert spec["clock_skew"] == 7200
+
+    def test_negative_duration(self):
+        spec = parse_prod_uploader_spec(
+            "lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=-90m"
+        )
+        assert spec["clock_skew"] == -5400
+
+    def test_boolean_value_now_rejected(self):
+        with pytest.raises(ValueError, match="clock_skew"):
+            parse_prod_uploader_spec("lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=true")
 
     def test_invalid_value_raises(self):
         with pytest.raises(ValueError, match="clock_skew"):
@@ -172,24 +255,44 @@ class TestProdUploaderSpecClockSkew:
 
 
 class TestOrchestratorEmitsClockSkew:
-    def test_uploader_spec_appends_token(self):
-        u = Uploader(provider="vultr", region="syd", file_size_mb=1000, clock_skew=True)
-        assert _uploader_spec(u).endswith("clock_skew=true")
+    def test_uploader_spec_appends_duration(self):
+        u = Uploader(provider="vultr", region="syd", file_size_mb=1000, clock_skew="2h")
+        assert _uploader_spec(u).endswith("clock_skew=2h")
 
-    def test_uploader_spec_omits_when_false(self):
+    def test_uploader_spec_omits_when_unset(self):
         u = Uploader(provider="vultr", region="syd", file_size_mb=1000)
         assert "clock_skew" not in _uploader_spec(u)
 
-    def test_downloader_spec_appends_token(self):
-        d = Downloader(provider="digital_ocean", region="lon1", clock_skew=True)
-        assert _downloader_spec(d).endswith("clock_skew=true")
+    def test_downloader_spec_appends_duration(self):
+        d = Downloader(provider="digital_ocean", region="lon1", clock_skew="-2h")
+        assert _downloader_spec(d).endswith("clock_skew=-2h")
 
-    def test_downloader_spec_omits_when_false(self):
+    def test_downloader_spec_omits_when_unset(self):
         d = Downloader(provider="digital_ocean", region="lon1")
         assert "clock_skew" not in _downloader_spec(d)
 
 
 class TestManifestModels:
+    def test_uploader_accepts_duration(self):
+        u = Uploader(provider="vultr", region="syd", file_size_mb=10, clock_skew="-2h")
+        assert u.clock_skew == "-2h"
+
+    def test_uploader_clock_skew_optional(self):
+        u = Uploader(provider="vultr", region="syd", file_size_mb=10)
+        assert u.clock_skew is None
+
+    def test_uploader_rejects_boolean(self):
+        with pytest.raises(ValueError):
+            Uploader(provider="vultr", region="syd", file_size_mb=10, clock_skew=True)
+
+    def test_uploader_rejects_bad_duration(self):
+        with pytest.raises(ValueError):
+            Uploader(provider="vultr", region="syd", file_size_mb=10, clock_skew="nope")
+
+    def test_downloader_accepts_duration(self):
+        d = Downloader(provider="digital_ocean", region="lon1", clock_skew="30m")
+        assert d.clock_skew == "30m"
+
     def test_nodes_accepts_clock_skew(self):
         n = Nodes(
             per_vm=15,
