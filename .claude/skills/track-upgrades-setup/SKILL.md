@@ -189,9 +189,13 @@ uv run saorsa-deploy track-upgrades init \
 # --- 2. Verify the pipeline is flowing ---
 # The permanent pipeline is already live, so no settling sleep is needed.
 # `elastic info` prints a Rich box with │ borders, so strip those first.
-ES_INFO=$(uv run saorsa-deploy elastic info --name "$NAME" 2>&1 | sed 's/│//g')
+# COLUMNS=200 pins the Rich render width — Rich otherwise probes the real
+# terminal (via stdin, even inside $(...)), and at wide widths the API key
+# lands on the same line as its label instead of wrapping. The awk handles
+# both layouts: same-line base64 token if present, else the next line.
+ES_INFO=$(COLUMNS=200 uv run saorsa-deploy elastic info --name "$NAME" 2>&1 | sed 's/│//g')
 ES_URL=$(echo "$ES_INFO" | awk '/URL:/{for(i=1;i<=NF;i++) if($i ~ /^http/) {print $i; exit}}')
-ES_KEY=$(echo "$ES_INFO" | awk '/API Key:/{getline; gsub(/[[:space:]]/,""); print; exit}')
+ES_KEY=$(echo "$ES_INFO" | awk '/API Key:/{ if (match($0, /[A-Za-z0-9+\/=]{20,}/)) { print substr($0, RSTART, RLENGTH); exit }; getline; gsub(/[[:space:]]/,""); print; exit }')
 NAME_LOWER=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
 INDEX="telegraf-ant-nodes-${NAME_LOWER}-*"
 
@@ -312,10 +316,13 @@ uv run saorsa-deploy track-upgrades init \
 # tag, or wrong index pattern.
 # `elastic info` prints a Rich box with │ borders, so strip those first.
 # URL: pick the http(s) token on the URL line.
-# API Key: value lives on the line *after* "API Key:".
-ES_INFO=$(uv run saorsa-deploy elastic info --name "$NAME" 2>&1 | sed 's/│//g')
+# API Key: same line as the label at wide render widths, the line after it
+# at narrow widths. COLUMNS=200 pins the Rich render width (Rich otherwise
+# probes the real terminal via stdin, even inside $(...)), and the awk
+# handles both layouts anyway.
+ES_INFO=$(COLUMNS=200 uv run saorsa-deploy elastic info --name "$NAME" 2>&1 | sed 's/│//g')
 ES_URL=$(echo "$ES_INFO" | awk '/URL:/{for(i=1;i<=NF;i++) if($i ~ /^http/) {print $i; exit}}')
-ES_KEY=$(echo "$ES_INFO" | awk '/API Key:/{getline; gsub(/[[:space:]]/,""); print; exit}')
+ES_KEY=$(echo "$ES_INFO" | awk '/API Key:/{ if (match($0, /[A-Za-z0-9+\/=]{20,}/)) { print substr($0, RSTART, RLENGTH); exit }; getline; gsub(/[[:space:]]/,""); print; exit }')
 NAME_LOWER=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
 INDEX="telegraf-ant-nodes-${NAME_LOWER}-*"
 
@@ -403,6 +410,7 @@ echo "Tracker DB at ~/.saorsa-deploy/upgrades/${NAME}.db is untouched; remove it
 - **Bootstrap docs in the shared index.** On the permanent pipeline the bootstrap VMs forward into the same index (`tag.host_role=BOOTSTRAP`, non-numeric service identifiers). The tracker only seeds rows for `node_vms[]`, so sync counts bootstrap docs as `skipped_unknown` — that counter being non-zero is expected, not a bug.
 - **Don't emit `--drop-targets`.** That flag was removed from `provision-telegraf` upstream. Calling it is an instant `unrecognized arguments` failure. Volume filtering now relies on `--drop-log-levels DEBUG,TRACE` (the default) — emit no flag at all, and only pass `--drop-log-levels '<value>'` if the user explicitly overrode the default in §6. Skipping log-level filtering at prod scale silently breaks tracking: ES looks fine for the first hour, then telegraf buffers fill, upgrade events get evicted, and `summary` shows everything stuck on `pending`.
 - **Verification index may not exist yet.** Telegraf typically needs 60–120s after provisioning to install, start, and ship its first batch. Until then, ES returns 404 for the index pattern and the verification JSON has no `hits` key. The runbook handles this by passing `ignore_unavailable=true&allow_no_indices=true` and defending the python parser; don't strip these.
+- **Rich render width is terminal-dependent — even inside `$(...)`.** Rich probes `os.get_terminal_size()` on stdin as well as stdout, and stdin is still the user's TTY under command substitution. On a wide terminal the API key renders on the *same* line as `API Key:`; on a narrow one (or with no TTY at all, e.g. agent sandboxes) it wraps to the next line. A getline-only parse silently feeds the *Index Pattern* line to ES as the key → `security_exception`, seen in production 2026-06-03. The templates pin `COLUMNS=200` on the `elastic info` call *and* use a dual-layout awk (same-line base64 token first, getline fallback); keep both.
 - **Wrong inventory file.** This skill targets `~/.autonomi/testnets/<name>/inventory.json` (the regular node inventory). The bootstrap inventory is a different file (`bootstrap-inventory.json`) and bootstrap nodes are tracked separately via SSH, not via the ES pipeline. Don't conflate them.
 - **`--node-version` is a static tag.** It gets stamped onto every log line as `tag.node_version` for ad-hoc queries; it has no effect on Telegraf or the tracker. The tracker reads the actual running version from `tail.version` on the `"ant-node starting"` log line, which the binary self-reports. Don't worry about updating it mid-rollout.
 - **Don't add retry loops or sleeps to the runbook.** If a command fails the user wants to see it and decide what to do — `set -e` is the contract. The verification block has one `sleep 90` to let telegraf flush its first batch; that's the only timing-related thing in the script.
