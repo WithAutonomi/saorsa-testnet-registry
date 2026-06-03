@@ -3,6 +3,13 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.cmd.obs_provider import (
+    default_elastic_size,
+    default_region,
+    require_ovh_service_name,
+    resolve_provider,
+    state_key_abbrev,
+)
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
@@ -18,15 +25,20 @@ def cmd_elastic_infra(args):
     """Create Elasticsearch VM infrastructure using Terraform."""
     console = Console()
 
-    region = getattr(args, "region", "lon1") or "lon1"
-    volume_size = getattr(args, "volume_size", 100) or 100
-    droplet_size = getattr(args, "droplet_size", "s-4vcpu-8gb") or "s-4vcpu-8gb"
+    provider = resolve_provider(args)
+    region = getattr(args, "region", None) or default_region(provider)
+    volume_size = getattr(args, "volume_size", None) or 100
+    droplet_size = (
+        getattr(args, "droplet_size", None) or default_elastic_size(provider)
+    )
+    volume_type = getattr(args, "volume_type", None) or "high-speed"
 
     resources_dir = get_resources_dir()
-    tf_source = resources_dir / "digitalocean-elastic"
+    tf_source = resources_dir / f"{provider}-elastic"
+    abbrev = state_key_abbrev(provider)
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
-    workspace_dir = workspace_base / f"digitalocean-elastic-{args.name}-{region}"
-    state_key = f"saorsa-deploy/do-elastic-{args.name}-{region}.tfstate"
+    workspace_dir = workspace_base / f"{provider}-elastic-{args.name}-{region}"
+    state_key = f"saorsa-deploy/{abbrev}-elastic-{args.name}-{region}.tfstate"
 
     # Idempotent reuse: if we already have an elastic VM recorded for this
     # deployment in the same region, skip the terraform apply and treat the
@@ -69,23 +81,37 @@ def cmd_elastic_infra(args):
         )
         delete_terraform_state(state_key)
 
-    config = TerraformRunConfig(
-        provider="digitalocean",
-        region=region,
-        tf_source_dir=tf_source,
-        workspace_dir=workspace_dir,
-        state_key=state_key,
-        variables={
+    if provider == "ovh":
+        service_name = require_ovh_service_name(console)
+        variables = {
+            "name": args.name,
+            "region": region,
+            "service_name": service_name,
+            "flavor_name": droplet_size,
+            "attached_volume_size": str(volume_size),
+            "volume_type": volume_type,
+        }
+    else:
+        variables = {
             "name": args.name,
             "region": region,
             "volume_size": str(volume_size),
             "droplet_size": droplet_size,
-        },
+        }
+
+    config = TerraformRunConfig(
+        provider=provider,
+        region=region,
+        tf_source_dir=tf_source,
+        workspace_dir=workspace_dir,
+        state_key=state_key,
+        variables=variables,
     )
 
     console.print(
-        f"[bold]Creating Elasticsearch VM for '{args.name}' in {region} "
-        f"(size: {droplet_size}, volume: {volume_size}GB)...[/bold]"
+        f"[bold]Creating Elasticsearch VM for '{args.name}' on "
+        f"{provider}/{region} (size: {droplet_size}, volume: {volume_size}GB)..."
+        f"[/bold]"
     )
     console.print()
 
@@ -108,6 +134,7 @@ def cmd_elastic_infra(args):
             name=args.name,
             region=region,
             vm_ip=elastic_ip,
+            provider=provider,
         )
         console.print("[dim]Elasticsearch state saved to S3.[/dim]")
     except Exception as e:

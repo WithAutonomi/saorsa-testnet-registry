@@ -3,6 +3,14 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.cmd.obs_provider import (
+    default_grafana_size,
+    default_influxdb_size,
+    default_region,
+    require_ovh_service_name,
+    resolve_provider,
+    state_key_abbrev,
+)
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
@@ -18,15 +26,23 @@ def cmd_monitoring_infra(args):
     """Create monitoring VM infrastructure using Terraform."""
     console = Console()
 
-    region = getattr(args, "region", "lon1") or "lon1"
-    volume_size = getattr(args, "volume_size", 50) or 50
-    droplet_size = getattr(args, "droplet_size", "s-2vcpu-4gb") or "s-2vcpu-4gb"
+    provider = resolve_provider(args)
+    region = getattr(args, "region", None) or default_region(provider)
+    volume_size = getattr(args, "volume_size", None) or 50
+    droplet_size = (
+        getattr(args, "droplet_size", None) or default_influxdb_size(provider)
+    )
+    grafana_size = (
+        getattr(args, "grafana_size", None) or default_grafana_size(provider)
+    )
+    volume_type = getattr(args, "volume_type", None) or "high-speed"
 
     resources_dir = get_resources_dir()
-    tf_source = resources_dir / "digitalocean-monitoring"
+    tf_source = resources_dir / f"{provider}-monitoring"
+    abbrev = state_key_abbrev(provider)
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
-    workspace_dir = workspace_base / f"digitalocean-monitoring-{args.name}-{region}"
-    state_key = f"saorsa-deploy/do-monitoring-{args.name}-{region}.tfstate"
+    workspace_dir = workspace_base / f"{provider}-monitoring-{args.name}-{region}"
+    state_key = f"saorsa-deploy/{abbrev}-monitoring-{args.name}-{region}.tfstate"
 
     # Idempotent reuse: skip the apply if we already have a monitoring VM
     # recorded for this deployment. Mirrors `bootstraps infra` so re-running
@@ -64,23 +80,39 @@ def cmd_monitoring_infra(args):
         )
         delete_terraform_state(state_key)
 
-    config = TerraformRunConfig(
-        provider="digitalocean",
-        region=region,
-        tf_source_dir=tf_source,
-        workspace_dir=workspace_dir,
-        state_key=state_key,
-        variables={
+    if provider == "ovh":
+        service_name = require_ovh_service_name(console)
+        variables = {
+            "name": args.name,
+            "region": region,
+            "service_name": service_name,
+            "flavor_name": droplet_size,
+            "grafana_flavor_name": grafana_size,
+            "attached_volume_size": str(volume_size),
+            "volume_type": volume_type,
+        }
+    else:
+        variables = {
             "name": args.name,
             "region": region,
             "volume_size": str(volume_size),
             "droplet_size": droplet_size,
-        },
+            "grafana_droplet_size": grafana_size,
+        }
+
+    config = TerraformRunConfig(
+        provider=provider,
+        region=region,
+        tf_source_dir=tf_source,
+        workspace_dir=workspace_dir,
+        state_key=state_key,
+        variables=variables,
     )
 
     console.print(
-        f"[bold]Creating monitoring VM for '{args.name}' in {region} "
-        f"(size: {droplet_size}, volume: {volume_size}GB)...[/bold]"
+        f"[bold]Creating monitoring VMs for '{args.name}' on {provider}/{region} "
+        f"(InfluxDB: {droplet_size}, Grafana: {grafana_size}, "
+        f"volume: {volume_size}GB)...[/bold]"
     )
     console.print()
 
@@ -92,8 +124,10 @@ def cmd_monitoring_infra(args):
         sys.exit(1)
 
     monitoring_ip = results[0].outputs.get("monitoring_ip", "")
+    grafana_ip = results[0].outputs.get("grafana_ip", "")
     console.print(
-        f"[bold green]Monitoring VM created: {monitoring_ip}[/bold green]"
+        f"[bold green]Monitoring VMs created — InfluxDB: {monitoring_ip}, "
+        f"Grafana: {grafana_ip}[/bold green]"
     )
 
     try:
@@ -101,6 +135,8 @@ def cmd_monitoring_infra(args):
             name=args.name,
             region=region,
             vm_ip=monitoring_ip,
+            grafana_ip=grafana_ip,
+            provider=provider,
         )
         console.print("[dim]Monitoring state saved to S3.[/dim]")
     except Exception as e:

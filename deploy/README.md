@@ -506,16 +506,34 @@ uv run saorsa-deploy elastic provision-telegraf --name DEV-01 \
 
 ## Monitoring
 
-Optional per-testnet monitoring stack: InfluxDB 2.x + Grafana on a single VM, with Telegraf forwarding host-level metrics (CPU, memory, disk, network) from testnet nodes.
+Optional per-testnet monitoring stack: InfluxDB 2.x and Grafana on **two
+separate VMs**, with Telegraf forwarding host-level metrics (CPU, memory, disk,
+network) from testnet nodes. Grafana runs on its own (small) VM so its panel
+rendering does not compete with InfluxDB ingest/query for CPU and RAM — the
+cause of large dashboards (e.g. the per-node RSS panels) failing to render when
+both shared one box. The InfluxDB VM carries the data volume; Grafana reaches
+it over the public `:8086` endpoint.
 
-The monitoring stack is standalone — it can be used by deployments from this repository or external setups.
+The monitoring stack is standalone — it can be used by deployments from this
+repository or external setups, and runs on **DigitalOcean (default) or OVH**.
+OVH is markedly cheaper for compute, storage, and (unmetered) bandwidth; it
+needs `OVH_CLOUD_PROJECT_SERVICE` plus the `OVH_APPLICATION_KEY` /
+`OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` / `OVH_ENDPOINT` credentials and
+an `ant_deploy` SSH key registered in the OVH project (same prerequisites as
+`clients infra` for OVH).
 
 ### `monitoring infra` command
 
-Create a monitoring VM with attached storage using Terraform.
+Create the InfluxDB VM (with attached storage) and the Grafana VM using
+Terraform.
 
 ```bash
+# DigitalOcean (default)
 uv run saorsa-deploy monitoring infra --name DEV-01
+
+# OVH
+uv run saorsa-deploy monitoring infra --name PROD-MON --provider ovh \
+  --region GRA9 --droplet-size b3-8 --volume-size 200
 ```
 
 #### Arguments
@@ -524,16 +542,23 @@ uv run saorsa-deploy monitoring infra --name DEV-01
 |----------|------|----------|---------|-------------|
 | `--force` | flag | No | - | Delete stale Terraform state and proceed |
 | `--name` | string | Yes | - | Monitoring stack name |
-| `--region` | string | No | `lon1` | Region for the monitoring VM |
-| `--volume-size` | int | No | 50 | Attached volume size in GB (for InfluxDB data) |
-| `--droplet-size` | string | No | `s-2vcpu-4gb` | Droplet size slug; bump for large testnets with many metric-forwarding VMs |
+| `--provider` | string | No | `digitalocean` | `digitalocean` or `ovh` |
+| `--region` | string | No | `lon1` (do) / `GRA9` (ovh) | Region for the monitoring VMs |
+| `--volume-size` | int | No | 50 | InfluxDB data volume size in GB |
+| `--volume-type` | string | No | `high-speed` | OVH block storage type (ignored for digitalocean) |
+| `--droplet-size` | string | No | `s-4vcpu-8gb` (do) / `b3-8` (ovh) | InfluxDB VM size; bump for production fleets with many metric-forwarding VMs |
+| `--grafana-size` | string | No | `s-1vcpu-2gb` (do) / `d2-4` (ovh) | Grafana VM size (it only renders panels, so it stays small) |
 
 ### `monitoring provision` command
 
-Install and configure InfluxDB 2.x and Grafana on the monitoring VM.
+Install and configure InfluxDB 2.x on the InfluxDB VM and Grafana on the
+Grafana VM (pointing Grafana's datasource at the InfluxDB VM).
 
 ```bash
 uv run saorsa-deploy monitoring provision --name DEV-01
+
+# Production: cap retention so the data volume doesn't grow without bound
+uv run saorsa-deploy monitoring provision --name PROD-MON --retention-days 14
 ```
 
 #### Arguments
@@ -542,6 +567,7 @@ uv run saorsa-deploy monitoring provision --name DEV-01
 |----------|------|----------|---------|-------------|
 | `--name` | string | Yes | - | Monitoring stack name (must match `monitoring infra`) |
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
+| `--retention-days` | int | No | 0 | InfluxDB bucket retention in days (`0` = keep forever, the dev default). Applied to both buckets at first provision |
 
 On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `monitoring provision-telegraf` command.
 

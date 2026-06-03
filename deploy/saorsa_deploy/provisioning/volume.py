@@ -14,8 +14,6 @@ VOLUME_DEVICE_GLOBS = [
     # unambiguous for data volumes.
     "/dev/disk/by-id/scsi-SQEMU_QEMU_HARDDISK_*",
 ]
-# DO-only alias used by monitoring/elastic (which remain DO-only)
-VOLUME_DEVICE_GLOB = VOLUME_DEVICE_GLOBS[0]
 STRIPE_VG_NAME = "ant_storage_vg"
 STRIPE_LV_NAME = "ant_storage_lv"
 

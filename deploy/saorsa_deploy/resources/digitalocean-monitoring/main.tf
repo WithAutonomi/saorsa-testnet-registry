@@ -6,6 +6,16 @@ resource "digitalocean_droplet" "monitoring" {
   ssh_keys = var.ssh_key_ids
 }
 
+# Grafana runs on its own (small) VM so its panel rendering doesn't compete
+# with InfluxDB for CPU/RAM. No data volume — it queries InfluxDB over :8086.
+resource "digitalocean_droplet" "grafana" {
+  name     = "${var.name}-ant-grafana-${var.region}"
+  region   = var.region
+  size     = var.grafana_droplet_size
+  image    = "ubuntu-24-04-x64"
+  ssh_keys = var.ssh_key_ids
+}
+
 resource "digitalocean_volume" "monitoring_storage" {
   region                  = var.region
   name                    = "${lower(var.name)}-ant-monitoring-storage-${var.region}"
@@ -30,17 +40,48 @@ resource "digitalocean_firewall" "monitoring" {
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
-  # Grafana
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "3000"
-    source_addresses = ["0.0.0.0/0", "::/0"]
-  }
-
   # InfluxDB
   inbound_rule {
     protocol         = "tcp"
     port_range       = "8086"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # Allow all outbound
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  outbound_rule {
+    protocol              = "icmp"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+}
+
+resource "digitalocean_firewall" "grafana" {
+  name = "${lower(var.name)}-ant-grafana-fw-${var.region}"
+
+  droplet_ids = [digitalocean_droplet.grafana.id]
+
+  # SSH
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # Grafana
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "3000"
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 

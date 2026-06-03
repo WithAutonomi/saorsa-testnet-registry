@@ -222,7 +222,12 @@ class TestMountVolumeOp:
         commands = call_kwargs.kwargs.get("commands", call_kwargs[1].get("commands", []))
         mount_cmd = commands[0]
         assert ELASTIC_MOUNT_POINT in mount_cmd
-        assert "ELASTIC_VOLUME:" in mount_cmd
+        # Shared multi-provider mount command: must try every provider's
+        # device glob (the old DO-only glob broke OVH) and format raw volumes.
+        assert "ANT_VOLUME:" in mount_cmd
+        assert "scsi-0DO_Volume_" in mount_cmd
+        assert "scsi-SQEMU_QEMU_HARDDISK_" in mount_cmd
+        assert "mkfs.ext4" in mount_cmd
 
 
 class TestInstallElasticsearchOps:

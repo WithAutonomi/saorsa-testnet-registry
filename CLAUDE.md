@@ -304,22 +304,36 @@ When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) 
 
 ## Monitoring
 
-Optional per-testnet monitoring stack (InfluxDB 2.x + Grafana) on a single VM. Standalone — usable by this repo or external setups.
+Optional per-testnet monitoring stack: InfluxDB 2.x and Grafana on **two
+separate VMs**. Standalone — usable by this repo or external setups. Runs on
+**DigitalOcean (default) or OVH** (`--provider ovh`).
+
+Grafana is split onto its own small VM so its panel rendering doesn't compete
+with InfluxDB for CPU/RAM (the cause of large dashboards like the per-node RSS
+panels failing to render on a single shared box). The InfluxDB VM carries the
+data volume; Grafana reaches it over the public `:8086` endpoint. The
+`monitoring infra`/`provision` flow (and `monitoring destroy`) manage both VMs
+in one Terraform state. Legacy single-VM stacks (state without `grafana_ip`)
+still re-provision by co-locating Grafana on the InfluxDB VM.
 
 ### Commands
 
-- `monitoring infra` — create monitoring VM via Terraform
-- `monitoring provision` — install InfluxDB + Grafana, prints connection details
-- `monitoring provision-telegraf` — install Telegraf on nodes for host metrics (CPU, mem, disk, net) → InfluxDB
+- `monitoring infra` — create the InfluxDB VM + Grafana VM via Terraform. `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (InfluxDB VM; default `s-4vcpu-8gb` do / `b3-8` ovh), `--grafana-size` (default `s-1vcpu-2gb` do / `d2-4` ovh), `--volume-size`, `--volume-type` (ovh). OVH needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an `ant_deploy` SSH key in the project.
+- `monitoring provision` — install InfluxDB (InfluxDB VM) + Grafana (Grafana VM), prints connection details. `--retention-days N` caps InfluxDB bucket retention (default `0` = infinite, the dev default; set e.g. 14 for prod). Retention is applied to both buckets at first provision.
+- `monitoring provision-telegraf` — install Telegraf on nodes for host metrics (CPU, mem, disk, net) → InfluxDB. Retrofit path (`--inventory-path`/`--host-ips-file`) provisions Tier-1 host+procstat metrics only; the Prometheus app-metrics scrape is only wired on the `--name` path with `node_count > 0`.
 - `monitoring info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
-- `monitoring destroy` — tear down monitoring infrastructure
+- `monitoring destroy` — tear down monitoring infrastructure (both VMs)
+
+The prod client flows (canary / uploaders / downloaders) pin the InfluxDB VM to
+`s-2vcpu-4gb` (a single client VM forwards little) but still get the split
+Grafana VM.
 
 ### Architecture
 
-- Terraform manifests: `deploy/saorsa_deploy/resources/digitalocean-monitoring/`
-- Provisioners: `deploy/saorsa_deploy/provisioning/monitoring.py` (InfluxDB+Grafana), `telegraf_metrics.py` (Telegraf)
+- Terraform manifests: `deploy/saorsa_deploy/resources/{digitalocean,ovh}-monitoring/` (OVH is OpenStack-backed: it mints an `ovh_cloud_project_user` and uses `openstack_compute_volume_attach_v2` for the InfluxDB data volume, like the `ovh` node module). Provider selection lives in `cmd/obs_provider.py`.
+- Provisioners: `deploy/saorsa_deploy/provisioning/monitoring.py` (InfluxDB on `influxdb_ip`, Grafana on `grafana_ip` in two pyinfra sessions), `telegraf_metrics.py` (Telegraf)
 - CLI commands: `deploy/saorsa_deploy/cmd/monitoring_infra.py`, `provision_monitoring.py`, `provision_telegraf_metrics.py`, `monitoring_info.py`, `destroy_monitoring.py`
-- State: separate S3 key prefix `saorsa-deploy/monitoring/{name}.json` (independent of deployment state)
+- State: separate S3 key prefix `saorsa-deploy/monitoring/{name}.json` (independent of deployment state); records `provider`, `vm_ip` (InfluxDB) and `grafana_ip`. tfstate key prefix is `do-monitoring`/`ovh-monitoring` per provider.
 - Telegraf metrics runs as a separate systemd service (`telegraf-ant-metrics`) alongside the existing log forwarding (`telegraf-ant-elasticsearch`)
 
 ### Buckets (node vs client isolation)
@@ -352,20 +366,23 @@ dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
 
 Optional per-testnet Elasticsearch instance on a dedicated VM. Enabled via `enable_log_forwarding` in deployment config. Telegraf forwards node JSON logs to the instance.
 
+Runs on **DigitalOcean (default) or OVH** (`--provider ovh`, same OVH env-var /
+SSH-key prerequisites as monitoring).
+
 ### Commands
 
-- `elastic infra` — create Elasticsearch VM via Terraform; `--droplet-size` for large testnets
-- `elastic provision` — install Elasticsearch 8.x, create index template, user + API key
+- `elastic infra` — create Elasticsearch VM via Terraform. `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (default `s-4vcpu-8gb` do / `b3-8` ovh; bump for large testnets), `--volume-size`, `--volume-type` (ovh)
+- `elastic provision` — install Elasticsearch 8.x, create index template, user + API key. `--retention-days` (default 7, ILM) + `--shards`
 - `elastic info` — print connection details (URL, user, password, API key)
 - `elastic destroy` — tear down Elasticsearch infrastructure
 - `elastic provision-telegraf` — install Telegraf on nodes for log forwarding → Elasticsearch (auto-loads ES credentials from state)
 
 ### Architecture
 
-- Terraform manifests: `deploy/saorsa_deploy/resources/digitalocean-elastic/`
+- Terraform manifests: `deploy/saorsa_deploy/resources/{digitalocean,ovh}-elastic/` (OVH is OpenStack-backed, like the monitoring/node modules; provider selection in `cmd/obs_provider.py`)
 - Provisioner: `deploy/saorsa_deploy/provisioning/elastic.py`
 - CLI commands: `deploy/saorsa_deploy/cmd/elastic_infra.py`, `provision_elastic.py`, `elastic_info.py`, `destroy_elastic.py`
-- State: separate S3 key prefix `saorsa-deploy/elastic/{name}.json`
+- State: separate S3 key prefix `saorsa-deploy/elastic/{name}.json` (records `provider`); tfstate key prefix `do-elastic`/`ovh-elastic` per provider
 - Security: user `ant-log-writer` (read/write) + read-only API key for queries
 - Index pattern: `telegraf-ant-nodes-{testnet_lower}-%Y.%m.%d`
 

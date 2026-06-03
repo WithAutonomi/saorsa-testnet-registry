@@ -129,17 +129,26 @@ def save_monitoring_state(
     name: str,
     region: str,
     vm_ip: str,
+    grafana_ip: str = "",
+    provider: str = "digitalocean",
     influxdb_url: str = "",
     influxdb_token: str = "",
     influxdb_org: str = "",
     influxdb_bucket: str = "",
     grafana_url: str = "",
 ) -> None:
-    """Save monitoring stack metadata to S3."""
+    """Save monitoring stack metadata to S3.
+
+    ``vm_ip`` is the InfluxDB VM; ``grafana_ip`` is the separate Grafana VM
+    (empty for legacy single-VM stacks). ``provider`` records which cloud the
+    stack runs on so destroy can select the right Terraform module.
+    """
     state = {
         "name": name,
         "region": region,
+        "provider": provider,
         "vm_ip": vm_ip,
+        "grafana_ip": grafana_ip,
         "influxdb_url": influxdb_url,
         "influxdb_token": influxdb_token,
         "influxdb_org": influxdb_org,
@@ -203,16 +212,22 @@ def save_elastic_state(
     name: str,
     region: str,
     vm_ip: str,
+    provider: str = "digitalocean",
     elasticsearch_url: str = "",
     elasticsearch_username: str = "",
     elasticsearch_password: str = "",
     elasticsearch_api_key: str = "",
     elasticsearch_index_pattern: str = "",
 ) -> None:
-    """Save Elasticsearch stack metadata to S3."""
+    """Save Elasticsearch stack metadata to S3.
+
+    ``provider`` records which cloud the stack runs on so destroy can select
+    the right Terraform module.
+    """
     state = {
         "name": name,
         "region": region,
+        "provider": provider,
         "vm_ip": vm_ip,
         "elasticsearch_url": elasticsearch_url,
         "elasticsearch_username": elasticsearch_username,

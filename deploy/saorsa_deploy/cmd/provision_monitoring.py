@@ -87,7 +87,12 @@ def cmd_provision_monitoring(args):
         )
         sys.exit(1)
 
-    console.print(f"  Monitoring VM: {vm_ip}")
+    # Grafana now runs on its own VM. Older single-VM stacks (no grafana_ip in
+    # state) fall back to co-locating on the InfluxDB VM, preserving them.
+    grafana_ip = state.get("grafana_ip") or vm_ip
+
+    console.print(f"  InfluxDB VM: {vm_ip}")
+    console.print(f"  Grafana VM:  {grafana_ip}")
     console.print()
 
     grafana_password = os.environ.get("ANT_DEPLOY_GRAFANA_DEV_PASSWORD")
@@ -98,14 +103,20 @@ def cmd_provision_monitoring(args):
         )
         sys.exit(1)
 
-    _wait_for_ssh(vm_ip, args.ssh_key_path, console)
-    clear_known_hosts([vm_ip], console)
+    retention_days = getattr(args, "retention_days", 0) or 0
+
+    ssh_targets = [vm_ip] if grafana_ip == vm_ip else [vm_ip, grafana_ip]
+    for ip in ssh_targets:
+        _wait_for_ssh(ip, args.ssh_key_path, console)
+    clear_known_hosts(ssh_targets, console)
 
     try:
         provisioner = MonitoringProvisioner(
-            host_ip=vm_ip,
+            influxdb_ip=vm_ip,
+            grafana_ip=grafana_ip,
             ssh_key_path=args.ssh_key_path,
             grafana_password=grafana_password,
+            retention_days=retention_days,
             console=console,
         )
         connection_details = provisioner.execute()

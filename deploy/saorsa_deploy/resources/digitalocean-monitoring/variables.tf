@@ -13,7 +13,12 @@ variable "region" {
 
 variable "droplet_size" {
   type    = string
-  default = "s-2vcpu-4gb"
+  default = "s-4vcpu-8gb"
+}
+
+variable "grafana_droplet_size" {
+  type    = string
+  default = "s-1vcpu-2gb"
 }
 
 variable "volume_size" {

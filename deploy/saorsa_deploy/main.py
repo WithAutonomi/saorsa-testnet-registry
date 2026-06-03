@@ -1248,23 +1248,40 @@ def main(argv=None):
         help="Elasticsearch stack name (used as prefix in VM names)",
     )
     elastic_infra_parser.add_argument(
+        "--provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "ovh"],
+        help="Cloud provider for the Elasticsearch VM (default: digitalocean). "
+        "'ovh' requires OVH_CLOUD_PROJECT_SERVICE + OVH API credentials.",
+    )
+    elastic_infra_parser.add_argument(
         "--region",
         type=str,
-        default="lon1",
-        help="Region for the Elasticsearch VM (default: lon1)",
+        default=None,
+        help="Region for the Elasticsearch VM (default: lon1 for "
+        "digitalocean, GRA9 for ovh)",
     )
     elastic_infra_parser.add_argument(
         "--volume-size",
         type=int,
-        default=100,
+        default=None,
         help="Size of attached volume in GB for Elasticsearch data (default: 100)",
+    )
+    elastic_infra_parser.add_argument(
+        "--volume-type",
+        type=str,
+        default=None,
+        help="OVH block storage type for the Elasticsearch volume (default: "
+        "high-speed). Ignored for digitalocean.",
     )
     elastic_infra_parser.add_argument(
         "--droplet-size",
         type=str,
-        default="s-4vcpu-8gb",
-        help="Droplet size slug (default: s-4vcpu-8gb). "
-        "Use s-8vcpu-16gb or larger for 5000+ node testnets.",
+        default=None,
+        help="VM size for the Elasticsearch VM (default: s-4vcpu-8gb for "
+        "digitalocean, b3-8 for ovh). Use a larger size for 5000+ node "
+        "fleets.",
     )
 
     # elastic provision
@@ -1380,6 +1397,15 @@ def main(argv=None):
         default=None,
         help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
         "from each entry in the node_vms array.",
+    )
+    elastic_provision_telegraf_parser.add_argument(
+        "--host-role",
+        type=str,
+        default=None,
+        choices=["GENESIS", "BOOTSTRAP", "WAN_NODE", "CLIENT"],
+        help="Force this host_role tag for every targeted host. Use with "
+        "auxiliary inventories like bootstrap-inventory.json, whose entries "
+        "sit under node_vms and would otherwise be labelled WAN_NODE.",
     )
     elastic_provision_telegraf_parser.add_argument(
         "--ant-log-dir",
@@ -1557,24 +1583,47 @@ def main(argv=None):
         help="Monitoring stack name (used as prefix in VM names)",
     )
     monitoring_infra_parser.add_argument(
+        "--provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "ovh"],
+        help="Cloud provider for the monitoring VMs (default: digitalocean). "
+        "'ovh' requires OVH_CLOUD_PROJECT_SERVICE + OVH API credentials.",
+    )
+    monitoring_infra_parser.add_argument(
         "--region",
         type=str,
-        default="lon1",
-        help="Region for the monitoring VM (default: lon1)",
+        default=None,
+        help="Region for the monitoring VMs (default: lon1 for digitalocean, "
+        "GRA9 for ovh)",
     )
     monitoring_infra_parser.add_argument(
         "--volume-size",
         type=int,
-        default=50,
+        default=None,
         help="Size of attached volume in GB for InfluxDB data (default: 50)",
+    )
+    monitoring_infra_parser.add_argument(
+        "--volume-type",
+        type=str,
+        default=None,
+        help="OVH block storage type for the InfluxDB volume (default: "
+        "high-speed). Ignored for digitalocean.",
     )
     monitoring_infra_parser.add_argument(
         "--droplet-size",
         type=str,
-        default="s-2vcpu-4gb",
-        help="Droplet size slug (default: s-2vcpu-4gb). "
-        "Use s-4vcpu-8gb or larger for large testnets with many "
-        "metric-forwarding VMs.",
+        default=None,
+        help="VM size for the InfluxDB VM (default: s-4vcpu-8gb for "
+        "digitalocean, b3-8 for ovh). Use a larger size for production "
+        "fleets with many metric-forwarding VMs.",
+    )
+    monitoring_infra_parser.add_argument(
+        "--grafana-size",
+        type=str,
+        default=None,
+        help="VM size for the (separate) Grafana VM (default: s-1vcpu-2gb "
+        "for digitalocean, d2-4 for ovh).",
     )
 
     # monitoring provision
@@ -1592,6 +1641,17 @@ def main(argv=None):
         type=str,
         default="~/.ssh/id_rsa",
         help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+    monitoring_provision_parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=0,
+        help=(
+            "InfluxDB bucket retention in days before data is dropped "
+            "(default: 0 = keep forever, the dev default). Applied to both "
+            "the node-tier and client-tier buckets at first provision; set "
+            "e.g. 14 for a long-running production stack."
+        ),
     )
 
     # monitoring provision-telegraf (was monitoring provision-telegraf)
@@ -1653,6 +1713,17 @@ def main(argv=None):
         default=None,
         help="Path to a text file containing one IP address per line "
         "(alternative to --host-ips or loading IPs from deployment state)",
+    )
+    monitoring_provision_telegraf_parser.add_argument(
+        "--host-role",
+        type=str,
+        default=None,
+        choices=["GENESIS", "BOOTSTRAP", "WAN_NODE", "CLIENT"],
+        help="Force this host_role tag for every targeted host. Use with "
+        "auxiliary inventories like bootstrap-inventory.json, whose entries "
+        "sit under node_vms and would otherwise be labelled WAN_NODE. "
+        "CLIENT additionally routes host metrics to the client-metrics "
+        "bucket.",
     )
     monitoring_provision_telegraf_parser.add_argument(
         "--inventory-path",

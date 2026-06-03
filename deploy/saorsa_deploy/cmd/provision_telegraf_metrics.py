@@ -307,6 +307,12 @@ def cmd_provision_telegraf_metrics(args):
         "console": console,
     }
 
+    host_role_override = getattr(args, "host_role", None)
+    # A CLIENT override implies the client-tier bucket in the --host-ips /
+    # --host-ips-file paths (the inventory path already routes per group).
+    if host_role_override == "CLIENT":
+        common_kwargs["influxdb_bucket"] = INFLUXDB_CLIENT_BUCKET
+
     # Resolve host IPs and node counts
     if args.inventory_path:
         try:
@@ -314,6 +320,13 @@ def cmd_provision_telegraf_metrics(args):
         except (OSError, ValueError, KeyError) as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
+
+        # --host-role forces a single role for every targeted host. Needed for
+        # auxiliary inventories like bootstrap-inventory.json whose entries
+        # live under node_vms (and would otherwise be labelled WAN_NODE).
+        if host_role_override:
+            for entry in entries:
+                entry["role"] = host_role_override
 
         all_ips = [e["ip"] for e in entries]
         console.print(
@@ -382,7 +395,7 @@ def cmd_provision_telegraf_metrics(args):
             TelegrafMetricsProvisioner(
                 host_ips=all_ips,
                 node_count=0,
-                host_role="WAN_NODE",
+                host_role=host_role_override or "WAN_NODE",
                 **common_kwargs,
             ).execute()
         except Exception as e:
@@ -402,7 +415,7 @@ def cmd_provision_telegraf_metrics(args):
             TelegrafMetricsProvisioner(
                 host_ips=all_ips,
                 node_count=0,
-                host_role="WAN_NODE",
+                host_role=host_role_override or "WAN_NODE",
                 **common_kwargs,
             ).execute()
         except Exception as e:

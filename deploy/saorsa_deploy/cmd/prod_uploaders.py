@@ -341,6 +341,9 @@ def _ensure_monitoring(args, console: Console) -> None:
         name=args.name,
         region=MONITORING_REGION,
         volume_size=args.monitoring_volume_size,
+        # A single client VM forwards little; keep the InfluxDB box small
+        # rather than the larger testnet default.
+        droplet_size="s-2vcpu-4gb",
         force=False,
     ))
 

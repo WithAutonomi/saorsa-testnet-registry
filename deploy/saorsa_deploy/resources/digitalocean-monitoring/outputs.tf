@@ -2,8 +2,16 @@ output "monitoring_ip" {
   value = digitalocean_droplet.monitoring.ipv4_address
 }
 
+output "grafana_ip" {
+  value = digitalocean_droplet.grafana.ipv4_address
+}
+
 output "monitoring_droplet_id" {
   value = digitalocean_droplet.monitoring.id
+}
+
+output "grafana_droplet_id" {
+  value = digitalocean_droplet.grafana.id
 }
 
 output "monitoring_volume_id" {

@@ -11,7 +11,8 @@ from saorsa_deploy.provisioning.monitoring import (
 
 def _make_provisioner(**overrides):
     defaults = {
-        "host_ip": "10.0.0.1",
+        "influxdb_ip": "10.0.0.1",
+        "grafana_ip": "10.0.0.2",
         "ssh_key_path": "~/.ssh/id_rsa",
         "grafana_password": "secret",
     }
@@ -173,14 +174,47 @@ class TestInfluxDbSetupScript:
 
 class TestConnectionDetailsExposeClientBucket:
     def test_client_bucket_in_returned_details(self):
-        # _retrieve_connection_details SSHes to the VM; patch subprocess so we
-        # can assert the client bucket is surfaced for monitoring state.
+        # _retrieve_telegraf_token SSHes to the InfluxDB VM; patch subprocess
+        # so we can assert the client bucket is surfaced for monitoring state.
         prov = _make_provisioner()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="tok\n")
-            details = prov._retrieve_connection_details()
+            token = prov._retrieve_telegraf_token()
+        details = prov._connection_details(token)
+        assert details["influxdb_token"] == "tok"
+        assert details["influxdb_url"] == "http://10.0.0.1:8086"
+        assert details["grafana_url"] == "http://10.0.0.2:3000"
         assert details["influxdb_bucket"] == INFLUXDB_BUCKET
         assert details["influxdb_client_bucket"] == INFLUXDB_CLIENT_BUCKET
+
+
+class TestRetention:
+    def test_default_retention_is_infinite(self):
+        script = _make_provisioner()._build_influxdb_setup_py()
+        assert 'RETENTION_SECONDS = int("0")' in script
+
+    def test_retention_days_converted_to_seconds(self):
+        script = _make_provisioner(
+            retention_days=14
+        )._build_influxdb_setup_py()
+        assert f'RETENTION_SECONDS = int("{14 * 86400}")' in script
+
+    def test_no_placeholder_left_in_script(self):
+        script = _make_provisioner(
+            retention_days=7
+        )._build_influxdb_setup_py()
+        assert "{{INFLUXDB_RETENTION_SECONDS}}" not in script
+
+
+class TestGrafanaDatasource:
+    def test_datasource_points_at_influxdb_vm_with_token(self):
+        yaml = _make_provisioner()._build_grafana_datasource_yaml(
+            influxdb_url="http://10.0.0.1:8086", influx_token="tok-123"
+        )
+        assert "url: http://10.0.0.1:8086" in yaml
+        assert "token: tok-123" in yaml
+        assert "{{INFLUXDB_URL}}" not in yaml
+        assert "{{INFLUX_TOKEN}}" not in yaml
 
 
 class TestProvisioningWiresClientDashboard:
@@ -189,7 +223,11 @@ class TestProvisioningWiresClientDashboard:
     def test_configure_grafana_writes_client_dashboard(
         self, _mock_server, mock_add_op
     ):
-        _make_provisioner()._add_configure_grafana_ops(MagicMock())
+        _make_provisioner()._add_configure_grafana_ops(
+            MagicMock(),
+            influxdb_url="http://10.0.0.1:8086",
+            influx_token="tok",
+        )
 
         op_names = [call.kwargs["name"] for call in mock_add_op.call_args_list]
         assert "Write client host metrics dashboard" in op_names

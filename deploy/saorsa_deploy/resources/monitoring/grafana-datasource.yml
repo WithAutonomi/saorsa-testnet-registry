@@ -5,10 +5,10 @@ datasources:
     uid: influxdb
     type: influxdb
     access: proxy
-    url: http://localhost:8086
+    url: {{INFLUXDB_URL}}
     jsonData:
       version: Flux
       organization: ant
       defaultBucket: testnet-metrics
     secureJsonData:
-      token: ${INFLUX_TOKEN}
+      token: {{INFLUX_TOKEN}}

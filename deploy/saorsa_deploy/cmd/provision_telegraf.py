@@ -217,6 +217,8 @@ def cmd_provision_telegraf(args):
     """Provision Telegraf for Elasticsearch log forwarding on all VMs."""
     console = Console()
 
+    host_role_override = getattr(args, "host_role", None)
+
     if args.inventory_path:
         # Inventory mode: read VMs from inventory JSON
         try:
@@ -224,6 +226,13 @@ def cmd_provision_telegraf(args):
         except (OSError, ValueError, KeyError) as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
+
+        # --host-role forces a single role for every targeted host. Needed for
+        # auxiliary inventories like bootstrap-inventory.json whose entries
+        # live under node_vms (and would otherwise be labelled WAN_NODE).
+        if host_role_override:
+            for entry in entries:
+                entry["role"] = host_role_override
 
         all_ips = [e["ip"] for e in entries]
         console.print(
@@ -304,7 +313,7 @@ def cmd_provision_telegraf(args):
         try:
             TelegrafProvisioner(
                 host_ips=all_ips,
-                host_role="WAN_NODE",
+                host_role=host_role_override or "WAN_NODE",
                 ssh_key_path=args.ssh_key_path,
                 ssh_user=args.ssh_user,
                 testnet_name=testnet_name,

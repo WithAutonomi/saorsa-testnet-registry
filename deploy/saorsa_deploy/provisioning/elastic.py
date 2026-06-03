@@ -14,7 +14,7 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
-from saorsa_deploy.provisioning.volume import VOLUME_DEVICE_GLOB
+from saorsa_deploy.provisioning.volume import build_mount_volume_command
 
 ELASTIC_MOUNT_POINT = "/mnt/elastic-storage"
 ELASTIC_DATA_DIR = f"{ELASTIC_MOUNT_POINT}/elasticsearch"
@@ -117,27 +117,15 @@ class ElasticProvisioner:
         return connection_details
 
     def _add_mount_volume_op(self, state: State):
-        mount_cmd = (
-            f"if mountpoint -q {ELASTIC_MOUNT_POINT}; then "
-            f"echo 'ELASTIC_VOLUME:ALREADY_MOUNTED'; "
-            f"else "
-            f"DEVICE=$(ls {VOLUME_DEVICE_GLOB} 2>/dev/null | head -n1); "
-            f'if [ -z "$DEVICE" ]; then '
-            f"echo 'ELASTIC_VOLUME:NO_DEVICE'; exit 1; "
-            f"fi; "
-            f"mkdir -p {ELASTIC_MOUNT_POINT} && "
-            f"mount -o defaults,nofail,discard $DEVICE {ELASTIC_MOUNT_POINT} && "
-            f"grep -q '{ELASTIC_MOUNT_POINT}' /etc/fstab || "
-            f'echo "$DEVICE {ELASTIC_MOUNT_POINT} ext4 defaults,nofail,discard 0 2"'
-            f" >> /etc/fstab && "
-            f"echo 'ELASTIC_VOLUME:MOUNTED'; "
-            f"fi"
-        )
+        # Shared multi-provider mount: tries every provider's device glob
+        # (DO / Hetzner / Vultr / OVH) and formats the volume if it has no
+        # filesystem yet — OVH Cinder volumes arrive raw, unlike DO volumes
+        # which Terraform pre-formats ext4.
         add_op(
             state,
             server.shell,
             name="Mount Elasticsearch storage volume",
-            commands=[mount_cmd],
+            commands=[build_mount_volume_command(ELASTIC_MOUNT_POINT)],
         )
 
     def _add_install_elasticsearch_ops(self, state: State):

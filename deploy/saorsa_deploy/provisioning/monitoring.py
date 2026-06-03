@@ -14,7 +14,7 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
-from saorsa_deploy.provisioning.volume import VOLUME_DEVICE_GLOB
+from saorsa_deploy.provisioning.volume import build_mount_volume_command
 from saorsa_deploy.resources import get_resources_dir
 
 MONITORING_MOUNT_POINT = "/mnt/monitoring-storage"
@@ -38,95 +38,127 @@ GRAFANA_NODE_TABLE_PATH = f"{GRAFANA_DASHBOARD_DIR}/node-overview.json"
 
 
 class MonitoringProvisioner:
-    """Provisions InfluxDB 2.x and Grafana on a monitoring VM."""
+    """Provisions InfluxDB 2.x and Grafana on separate VMs.
+
+    InfluxDB (and its data volume) live on ``influxdb_ip``; Grafana runs on its
+    own ``grafana_ip`` and reaches InfluxDB over the public ``:8086`` endpoint.
+    Splitting the two means Grafana's panel rendering no longer competes with
+    InfluxDB ingest/query for CPU and RAM — the cause of the RSS panels failing
+    to render when both shared one small VM. Pass the same IP for both to keep
+    the legacy co-located layout.
+    """
 
     def __init__(
         self,
-        host_ip: str,
+        influxdb_ip: str,
+        grafana_ip: str,
         ssh_key_path: str,
         grafana_password: str,
+        retention_days: int = 0,
         console: Console | None = None,
     ):
-        self.host_ip = host_ip
+        self.influxdb_ip = influxdb_ip
+        self.grafana_ip = grafana_ip
         self.ssh_key_path = ssh_key_path
         self.grafana_password = grafana_password
+        # 0 == infinite retention (the historical behaviour, kept for dev).
+        self.retention_days = retention_days
         self.console = console or Console()
         self._admin_password = secrets.token_urlsafe(24)
 
     def execute(self) -> dict:
-        """Install and configure InfluxDB + Grafana.
+        """Install and configure InfluxDB + Grafana across the two VMs.
 
         Returns a dict with connection details:
-            influxdb_url, influxdb_token, influxdb_org, influxdb_bucket, grafana_url
+            influxdb_url, influxdb_token, influxdb_org, influxdb_bucket,
+            influxdb_client_bucket, grafana_url, grafana_password
+        """
+        # Phase 1: InfluxDB on its own VM. Provision, then read back the
+        # Telegraf token so Grafana's datasource can be wired to it.
+        self._run_session(
+            self.influxdb_ip,
+            "InfluxDB",
+            [
+                self._add_preamble_ops,
+                self._add_mount_volume_op,
+                self._add_install_influxdb_ops,
+                self._add_setup_influxdb_ops,
+                self._add_influxdb_start_ops,
+            ],
+        )
+        token = self._retrieve_telegraf_token()
+
+        # Phase 2: Grafana on its own VM, pointed at the InfluxDB VM.
+        influxdb_url = f"http://{self.influxdb_ip}:8086"
+        self._run_session(
+            self.grafana_ip,
+            "Grafana",
+            [
+                self._add_preamble_ops,
+                self._add_install_grafana_ops,
+                lambda state: self._add_configure_grafana_ops(
+                    state, influxdb_url=influxdb_url, influx_token=token
+                ),
+                self._add_grafana_start_ops,
+            ],
+        )
+
+        return self._connection_details(token)
+
+    def _run_session(self, host_ip: str, label: str, op_adders: list) -> None:
+        """Connect to a single host, add + run the given ops, then disconnect.
+
+        ``op_adders`` is a list of callables each taking the pyinfra ``state``
+        and registering operations via ``add_op``; they run in order.
         """
         hosts_data = [
-            (self.host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})
+            (host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})
         ]
         inventory = Inventory((hosts_data, {}))
         state = State(inventory=inventory, config=Config())
 
-        self.console.print(f"Connecting to {self.host_ip}...")
+        self.console.print(f"Connecting to {label} VM {host_ip}...")
         connect_all(state)
 
         try:
-            add_op(
-                state,
-                server.shell,
-                name="Wait for cloud-init to finish",
-                commands=["cloud-init status --wait || true"],
+            for adder in op_adders:
+                adder(state)
+            self.console.print(
+                f"Running {label} provisioning operations..."
             )
-
-            add_op(
-                state,
-                server.shell,
-                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
-                commands=[build_disable_unattended_upgrades_command()],
-            )
-
-            self._add_mount_volume_op(state)
-            self._add_install_influxdb_ops(state)
-            self._add_setup_influxdb_ops(state)
-            self._add_install_grafana_ops(state)
-            self._add_configure_grafana_ops(state)
-            self._add_start_services_ops(state)
-
-            self.console.print("Running monitoring provisioning operations...")
             run_ops(state)
         finally:
             disconnect_all(state)
 
-        failed = state.failed_hosts
-        if failed:
-            for host in failed:
+        if state.failed_hosts:
+            for host in state.failed_hosts:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError("Monitoring provisioning failed")
+            raise RuntimeError(f"{label} provisioning failed")
 
-        # Retrieve the API token from the remote host
-        connection_details = self._retrieve_connection_details()
-        return connection_details
-
-    def _add_mount_volume_op(self, state: State):
-        mount_cmd = (
-            f"if mountpoint -q {MONITORING_MOUNT_POINT}; then "
-            f"echo 'MONITORING_VOLUME:ALREADY_MOUNTED'; "
-            f"else "
-            f"DEVICE=$(ls {VOLUME_DEVICE_GLOB} 2>/dev/null | head -n1); "
-            f'if [ -z "$DEVICE" ]; then '
-            f"echo 'MONITORING_VOLUME:NO_DEVICE'; exit 1; "
-            f"fi; "
-            f"mkdir -p {MONITORING_MOUNT_POINT} && "
-            f"mount -o defaults,nofail,discard $DEVICE {MONITORING_MOUNT_POINT} && "
-            f"grep -q '{MONITORING_MOUNT_POINT}' /etc/fstab || "
-            f'echo "$DEVICE {MONITORING_MOUNT_POINT} ext4 defaults,nofail,discard 0 2"'
-            f" >> /etc/fstab && "
-            f"echo 'MONITORING_VOLUME:MOUNTED'; "
-            f"fi"
+    def _add_preamble_ops(self, state: State):
+        add_op(
+            state,
+            server.shell,
+            name="Wait for cloud-init to finish",
+            commands=["cloud-init status --wait || true"],
         )
         add_op(
             state,
             server.shell,
+            name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+            commands=[build_disable_unattended_upgrades_command()],
+        )
+
+    def _add_mount_volume_op(self, state: State):
+        # Shared multi-provider mount: tries every provider's device glob
+        # (DO / Hetzner / Vultr / OVH) and formats the volume if it has no
+        # filesystem yet — OVH Cinder volumes arrive raw, unlike DO volumes
+        # which Terraform pre-formats ext4.
+        add_op(
+            state,
+            server.shell,
             name="Mount monitoring storage volume",
-            commands=[mount_cmd],
+            commands=[build_mount_volume_command(MONITORING_MOUNT_POINT)],
         )
 
     def _add_install_influxdb_ops(self, state: State):
@@ -144,20 +176,46 @@ class MonitoringProvisioner:
             ],
         )
 
+        # NB: the guard must check for OUR data dir, not just "bolt-path" —
+        # the influxdb2 deb ships a default config.toml that already contains
+        # `bolt-path = "/var/lib/influxdb/..."`, so a bare bolt-path grep
+        # always matches and the volume-pointing config never gets written
+        # (data then lands on the root disk and the volume sits empty). If a
+        # previous run already started influxd against /var/lib/influxdb, the
+        # existing bolt + engine are migrated onto the volume so the org,
+        # buckets, and minted tokens survive.
+        configure_cmd = (
+            f'if grep -q "{INFLUXDB_DATA_DIR}" /etc/influxdb/config.toml '
+            f"2>/dev/null; then "
+            f"echo 'INFLUXDB_CONFIG:SKIP'; "
+            f"else "
+            f"systemctl stop influxdb 2>/dev/null || true; "
+            f"mkdir -p {INFLUXDB_DATA_DIR}; "
+            f"if [ -f /var/lib/influxdb/influxd.bolt ] && "
+            f"[ ! -f {INFLUXDB_DATA_DIR}/influxd.bolt ]; then "
+            f"mv /var/lib/influxdb/influxd.bolt {INFLUXDB_DATA_DIR}/ && "
+            f"echo 'INFLUXDB_CONFIG:MIGRATED_BOLT'; "
+            f"fi; "
+            f"if [ -d /var/lib/influxdb/engine ] && "
+            f"[ ! -d {INFLUXDB_DATA_DIR}/engine ]; then "
+            f"mv /var/lib/influxdb/engine {INFLUXDB_DATA_DIR}/ && "
+            f"echo 'INFLUXDB_CONFIG:MIGRATED_ENGINE'; "
+            f"fi; "
+            f"cat > /etc/influxdb/config.toml << 'CONF_EOF'\n"
+            f'bolt-path = "{INFLUXDB_DATA_DIR}/influxd.bolt"\n'
+            f'engine-path = "{INFLUXDB_DATA_DIR}/engine"\n'
+            f"CONF_EOF\n"
+            f"chown -R influxdb:influxdb {INFLUXDB_DATA_DIR}; "
+            f"echo 'INFLUXDB_CONFIG:WRITTEN'; "
+            f"fi"
+        )
         add_op(
             state,
             server.shell,
             name="Configure InfluxDB storage on volume",
             commands=[
-                f"mkdir -p {INFLUXDB_DATA_DIR}",
-                f"chown influxdb:influxdb {INFLUXDB_DATA_DIR}",
                 "mkdir -p /etc/influxdb2",
-                f'grep -q "bolt-path" /etc/influxdb/config.toml 2>/dev/null && '
-                f"echo 'INFLUXDB_CONFIG:SKIP' || "
-                f'cat > /etc/influxdb/config.toml << \'CONF_EOF\'\n'
-                f'bolt-path = "{INFLUXDB_DATA_DIR}/influxd.bolt"\n'
-                f'engine-path = "{INFLUXDB_DATA_DIR}/engine"\n'
-                f"CONF_EOF",
+                configure_cmd,
             ],
         )
 
@@ -210,17 +268,23 @@ class MonitoringProvisioner:
             ],
         )
 
-    def _add_configure_grafana_ops(self, state: State):
-        # Datasource config is written via shell script that reads the token
-        # at runtime, since it's generated in a prior step
+    def _add_configure_grafana_ops(
+        self, state: State, *, influxdb_url: str, influx_token: str
+    ):
+        # Grafana runs on its own VM and cannot read the InfluxDB VM's local
+        # token file, so the URL + token are substituted here and written with
+        # a quoted heredoc (no shell expansion of the already-resolved values).
+        datasource_yaml = self._build_grafana_datasource_yaml(
+            influxdb_url=influxdb_url, influx_token=influx_token
+        )
         add_op(
             state,
             server.shell,
             name="Write Grafana datasource provisioning",
             commands=[
-                "INFLUX_TOKEN=$(cat /etc/influxdb2/telegraf-token) && "
-                f"cat > {GRAFANA_DATASOURCE_PATH} << DS_EOF\n"
-                f"{self._build_grafana_datasource_yaml()}DS_EOF",
+                "mkdir -p /etc/grafana/provisioning/datasources",
+                f"cat > {GRAFANA_DATASOURCE_PATH} << 'DS_EOF'\n"
+                f"{datasource_yaml}DS_EOF",
             ],
         )
 
@@ -268,16 +332,37 @@ class MonitoringProvisioner:
             ],
         )
 
-    def _add_start_services_ops(self, state: State):
+    def _add_influxdb_start_ops(self, state: State):
         add_op(
             state,
             server.shell,
-            name="Enable and start services",
+            name="Enable and start InfluxDB",
+            commands=[
+                "systemctl daemon-reload",
+                "systemctl enable influxdb",
+                "systemctl restart influxdb",
+            ],
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Verify InfluxDB is running",
+            commands=[
+                "systemctl is-active --quiet influxdb "
+                "|| (echo 'VERIFY:INFLUXDB_FAILED'; "
+                "journalctl -u influxdb --no-pager -n 20; exit 1)",
+            ],
+        )
+
+    def _add_grafana_start_ops(self, state: State):
+        add_op(
+            state,
+            server.shell,
+            name="Enable and start Grafana",
             commands=[
                 "systemctl daemon-reload",
                 "systemctl enable grafana-server",
                 "systemctl restart grafana-server",
-                "systemctl restart influxdb",
             ],
         )
 
@@ -299,19 +384,16 @@ class MonitoringProvisioner:
         add_op(
             state,
             server.shell,
-            name="Verify services are running",
+            name="Verify Grafana is running",
             commands=[
-                "systemctl is-active --quiet influxdb "
-                "|| (echo 'VERIFY:INFLUXDB_FAILED'; "
-                "journalctl -u influxdb --no-pager -n 20; exit 1)",
                 "systemctl is-active --quiet grafana-server "
                 "|| (echo 'VERIFY:GRAFANA_FAILED'; "
                 "journalctl -u grafana-server --no-pager -n 20; exit 1)",
             ],
         )
 
-    def _retrieve_connection_details(self) -> dict:
-        """SSH back in to read the generated Telegraf token."""
+    def _retrieve_telegraf_token(self) -> str:
+        """SSH into the InfluxDB VM to read the generated Telegraf token."""
         import subprocess
 
         result = subprocess.run(
@@ -323,7 +405,7 @@ class MonitoringProvisioner:
                 "UserKnownHostsFile=/dev/null",
                 "-i",
                 self.ssh_key_path,
-                f"root@{self.host_ip}",
+                f"root@{self.influxdb_ip}",
                 "cat /etc/influxdb2/telegraf-token",
             ],
             capture_output=True,
@@ -333,15 +415,16 @@ class MonitoringProvisioner:
             raise RuntimeError(
                 f"Failed to retrieve Telegraf token: {result.stderr}"
             )
+        return result.stdout.strip()
 
-        token = result.stdout.strip()
+    def _connection_details(self, token: str) -> dict:
         return {
-            "influxdb_url": f"http://{self.host_ip}:8086",
+            "influxdb_url": f"http://{self.influxdb_ip}:8086",
             "influxdb_token": token,
             "influxdb_org": INFLUXDB_ORG,
             "influxdb_bucket": INFLUXDB_BUCKET,
             "influxdb_client_bucket": INFLUXDB_CLIENT_BUCKET,
-            "grafana_url": f"http://{self.host_ip}:3000",
+            "grafana_url": f"http://{self.grafana_ip}:3000",
             "grafana_password": self.grafana_password,
         }
 
@@ -353,16 +436,23 @@ class MonitoringProvisioner:
     def _build_influxdb_setup_py(self) -> str:
         """Read the InfluxDB setup script and substitute placeholders."""
         template = self._read_resource("influxdb_setup.py")
+        retention_seconds = max(0, self.retention_days) * 86400
         return (
             template.replace("{{INFLUXDB_ADMIN_USER}}", INFLUXDB_ADMIN_USER)
             .replace("{{INFLUXDB_ADMIN_PASSWORD}}", self._admin_password)
             .replace("{{INFLUXDB_ORG}}", INFLUXDB_ORG)
             .replace("{{INFLUXDB_BUCKET}}", INFLUXDB_BUCKET)
             .replace("{{INFLUXDB_CLIENT_BUCKET}}", INFLUXDB_CLIENT_BUCKET)
+            .replace("{{INFLUXDB_RETENTION_SECONDS}}", str(retention_seconds))
         )
 
-    def _build_grafana_datasource_yaml(self) -> str:
-        return self._read_resource("grafana-datasource.yml")
+    def _build_grafana_datasource_yaml(
+        self, *, influxdb_url: str, influx_token: str
+    ) -> str:
+        template = self._read_resource("grafana-datasource.yml")
+        return template.replace(
+            "{{INFLUXDB_URL}}", influxdb_url
+        ).replace("{{INFLUX_TOKEN}}", influx_token)
 
     def _build_grafana_dashboard_provider_yaml(self) -> str:
         template = self._read_resource("grafana-dashboard-provider.yml")
@@ -883,8 +973,13 @@ class MonitoringProvisioner:
         has 50 nodes or 900. The Host / Role template variables still scope
         which nodes are included.
 
-        Per timestamp: downsample each node to the window, group all nodes
-        at the same time, then reduce across nodes with `agg`.
+        All matching series are merged with ``group()`` and reduced in a
+        single ``aggregateWindow`` pass — the aggregate is taken over every
+        raw point in each window across all nodes. The previous shape
+        (per-series window, then ``group(columns: ["_time"])`` + reduce)
+        created one table group per timestamp, which is the classic slow
+        path in Flux and degrades linearly with the number of windows; on a
+        ~1000-process production fleet it made the RSS panels crawl.
         """
         return (
             f'from(bucket: "{bucket}")\n'
@@ -893,11 +988,9 @@ class MonitoringProvisioner:
             f'  |> filter(fn: (r) => r["_field"] == "{field}")\n'
             '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
             '  |> filter(fn: (r) => r["host_role"] =~ /^$host_role$/)\n'
-            "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
-            "createEmpty: false)\n"
-            '  |> group(columns: ["_time"])\n'
-            f"  |> {agg}()\n"
             "  |> group()\n"
+            f"  |> aggregateWindow(every: v.windowPeriod, fn: {agg}, "
+            "createEmpty: false)\n"
             '  |> keep(columns: ["_time", "_value"])\n'
             # Rename the value column so Grafana labels the series "max" /
             # "mean" / "min" instead of three identical "Value" entries (the

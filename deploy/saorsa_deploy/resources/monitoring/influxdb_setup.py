@@ -9,6 +9,7 @@ Placeholder values (replaced at deploy time):
   {{INFLUXDB_ORG}}          - organisation name
   {{INFLUXDB_BUCKET}}       - node-tier bucket name
   {{INFLUXDB_CLIENT_BUCKET}} - client-tier bucket name
+  {{INFLUXDB_RETENTION_SECONDS}} - bucket retention in seconds (0 = infinite)
 """
 
 import json
@@ -19,6 +20,11 @@ import urllib.request
 
 TOKEN_FILE = "/etc/influxdb2/telegraf-token"
 ADMIN_TOKEN_FILE = "/etc/influxdb2/admin-token"
+
+# Bucket retention in seconds; 0 means keep data forever. Applied identically
+# to both the node-tier and client-tier buckets at creation time. The
+# placeholder is wrapped in int("...") so the template stays valid Python.
+RETENTION_SECONDS = int("{{INFLUXDB_RETENTION_SECONDS}}")
 
 if os.path.exists(TOKEN_FILE) and os.path.getsize(TOKEN_FILE) > 1:
     print("INFLUXDB_SETUP:SKIP")
@@ -47,17 +53,25 @@ setup = api("POST", "/api/v2/setup", {
     "password": "{{INFLUXDB_ADMIN_PASSWORD}}",
     "org": "{{INFLUXDB_ORG}}",
     "bucket": "{{INFLUXDB_BUCKET}}",
-    "retentionPeriodSeconds": 0,
+    "retentionPeriodSeconds": RETENTION_SECONDS,
 })
 admin_token = setup["auth"]["token"]
 org_id = setup["org"]["id"]
 
 # Step 2: Create the client-tier bucket. Client host metrics land here so the
 # Client Host Statistics dashboard is physically isolated from node data.
+# An empty retentionRules list means infinite retention; a positive
+# RETENTION_SECONDS installs an expire rule so the client bucket ages out on
+# the same schedule as the node-tier bucket.
+client_retention_rules = (
+    []
+    if RETENTION_SECONDS == 0
+    else [{"type": "expire", "everySeconds": RETENTION_SECONDS}]
+)
 api("POST", "/api/v2/buckets", {
     "orgID": org_id,
     "name": "{{INFLUXDB_CLIENT_BUCKET}}",
-    "retentionRules": [],
+    "retentionRules": client_retention_rules,
 }, token=admin_token)
 
 # Step 3: Create a read/write token for Telegraf. Scoped at the org level so it

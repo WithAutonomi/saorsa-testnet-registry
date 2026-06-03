@@ -4,6 +4,10 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.cmd.obs_provider import (
+    require_ovh_service_name,
+    state_key_abbrev,
+)
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
@@ -31,7 +35,10 @@ def cmd_destroy_elastic(args):
         return
 
     region = state["region"]
-    console.print(f"  Elasticsearch VM in: digitalocean/{region}")
+    # provider defaults to digitalocean for stacks created before the field
+    # existed.
+    provider = state.get("provider", "digitalocean")
+    console.print(f"  Elasticsearch VM in: {provider}/{region}")
     console.print()
 
     if not args.force:
@@ -45,28 +52,38 @@ def cmd_destroy_elastic(args):
         console.print()
 
     resources_dir = get_resources_dir()
-    tf_source = resources_dir / "digitalocean-elastic"
+    tf_source = resources_dir / f"{provider}-elastic"
+    abbrev = state_key_abbrev(provider)
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
-    workspace_dir = workspace_base / f"digitalocean-elastic-{args.name}-{region}"
-    state_key = f"saorsa-deploy/do-elastic-{args.name}-{region}.tfstate"
+    workspace_dir = workspace_base / f"{provider}-elastic-{args.name}-{region}"
+    state_key = f"saorsa-deploy/{abbrev}-elastic-{args.name}-{region}.tfstate"
 
-    # Pull the actual volume_size and droplet_size from tfstate so Terraform's
-    # plan doesn't try to shrink or resize — DO refuses volume shrinks and
-    # droplet resize under some conditions, breaking destroy.
-    tfstate_vars = _destroy_vars_from_tfstate(state_key)
-
-    config = TerraformRunConfig(
-        provider="digitalocean",
-        region=region,
-        tf_source_dir=tf_source,
-        workspace_dir=workspace_dir,
-        state_key=state_key,
-        variables={
+    if provider == "ovh":
+        service_name = require_ovh_service_name(console)
+        variables = {
+            "name": args.name,
+            "region": region,
+            "service_name": service_name,
+        }
+    else:
+        # Pull the actual volume_size and droplet_size from tfstate so
+        # Terraform's plan doesn't try to shrink or resize — DO refuses volume
+        # shrinks and droplet resize under some conditions, breaking destroy.
+        tfstate_vars = _destroy_vars_from_tfstate(state_key)
+        variables = {
             "name": args.name,
             "region": region,
             "volume_size": tfstate_vars.get("volume_size", "100"),
             "droplet_size": tfstate_vars.get("droplet_size", "s-4vcpu-8gb"),
-        },
+        }
+
+    config = TerraformRunConfig(
+        provider=provider,
+        region=region,
+        tf_source_dir=tf_source,
+        workspace_dir=workspace_dir,
+        state_key=state_key,
+        variables=variables,
     )
 
     console.print("[bold]Destroying Elasticsearch infrastructure...[/bold]")
