@@ -17,6 +17,23 @@ from saorsa_deploy.cmd.slack_post import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_slack(monkeypatch):
+    """Never let a test post to the real Slack workspace.
+
+    ``cmd_slack_post`` checks ``ANT_DEPLOY_SLACK_BOT_TOKEN`` before the webhook,
+    so a developer running pytest with those vars exported (e.g. from .env)
+    could otherwise fire a real ``chat.postMessage``. Clear all three for every
+    test in this module.
+    """
+    for var in (
+        "ANT_DEPLOY_SLACK_BOT_TOKEN",
+        "ANT_DEPLOY_SLACK_CHANNEL",
+        "ANT_DEPLOY_SLACK_WEBHOOK_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture()
 def repo():
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
