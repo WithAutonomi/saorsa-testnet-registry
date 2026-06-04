@@ -6,6 +6,12 @@ S3_BUCKET = "maidsafe-org-infra-tfstate"
 S3_REGION = "eu-west-2"
 S3_KEY_PREFIX = "saorsa-deploy/deployments"
 
+# Client address lists live in their own PUBLIC-READ bucket (they contain only
+# testnet content addresses) so downloaders can fetch them with unsigned HTTP —
+# SigV4 rejects requests from clock-skewed client VMs. Deliberately NOT the
+# tfstate bucket above: that one must keep Block Public Access intact.
+S3_ADDRESSES_BUCKET = "saorsa-testnet-addresses"
+
 
 def _get_s3_client():
     return boto3.client("s3", region_name=S3_REGION)
@@ -399,12 +405,12 @@ def delete_client_addresses_prefix(name: str) -> int:
     prefix = f"{S3_CLIENT_ADDRESSES_PREFIX}/{name}/"
     paginator = client.get_paginator("list_objects_v2")
     deleted = 0
-    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+    for page in paginator.paginate(Bucket=S3_ADDRESSES_BUCKET, Prefix=prefix):
         objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if not objects:
             continue
         client.delete_objects(
-            Bucket=S3_BUCKET,
+            Bucket=S3_ADDRESSES_BUCKET,
             Delete={"Objects": objects},
         )
         deleted += len(objects)

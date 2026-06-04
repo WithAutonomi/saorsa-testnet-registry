@@ -17,6 +17,7 @@ from saorsa_deploy.cmd.infra_clients import (
     parse_uploader_spec,
 )
 from saorsa_deploy.state import (
+    S3_ADDRESSES_BUCKET,
     S3_BUCKET,
     S3_CLIENT_ADDRESSES_PREFIX,
     S3_CLIENT_KEY_PREFIX,
@@ -330,13 +331,13 @@ class TestDeleteClientAddressesPrefix:
 
         assert deleted == 3
         paginator.paginate.assert_called_once_with(
-            Bucket=S3_BUCKET,
+            Bucket=S3_ADDRESSES_BUCKET,
             Prefix=f"{S3_CLIENT_ADDRESSES_PREFIX}/DEV-01/",
         )
         # Two batch deletes (one per non-empty page)
         assert mock_s3.delete_objects.call_count == 2
         first_call = mock_s3.delete_objects.call_args_list[0].kwargs
-        assert first_call["Bucket"] == S3_BUCKET
+        assert first_call["Bucket"] == S3_ADDRESSES_BUCKET
         assert len(first_call["Delete"]["Objects"]) == 2
 
     def test_empty_prefix_returns_zero(self, mock_s3):

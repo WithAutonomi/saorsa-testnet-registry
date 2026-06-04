@@ -2,6 +2,8 @@
 import base64
 from pathlib import PurePosixPath
 
+import boto3
+from botocore.config import Config as BotoConfig
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
 from pyinfra.api.operation import add_op
@@ -157,6 +159,38 @@ class AntClientProvisioner:
         self.wallet_secret_key = wallet_secret_key
         self.addresses_file_content = addresses_file_content
         self.heaptrack_targets = heaptrack_targets
+
+    def _presigned_put_url(self, region: str, client_index) -> str:
+        """Mint a presigned PUT URL for one uploader's address-list object.
+
+        The uploader flushes its address list with a plain curl PUT against
+        this URL: presigned URLs carry the controller's signature, so the
+        flush keeps working on clock-skewed VMs whose own SigV4 requests are
+        rejected (~15min tolerance). Expiry is the SigV4 maximum of 7 days —
+        re-run `clients provision` to refresh on longer-lived testnets.
+        """
+        if not (self.aws_access_key_id and self.aws_secret_access_key):
+            return ""
+        # Pin the regional endpoint: presigning via the global s3.amazonaws.com
+        # endpoint yields 307 redirects on younger buckets, which curl -f does
+        # not treat as failure — the flush would silently no-op.
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=self.aws_access_key_id,
+            aws_secret_access_key=self.aws_secret_access_key,
+            region_name=self.aws_region,
+            endpoint_url=f"https://s3.{self.aws_region}.amazonaws.com",
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "virtual"},
+            ),
+        )
+        key = f"{self.addresses_s3_prefix}/upload-{region}-{client_index}.txt"
+        return s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self.addresses_s3_bucket, "Key": key},
+            ExpiresIn=7 * 24 * 3600,
+        )
 
     def execute(self) -> None:
         """Provision all client hosts with uploader/downloader services."""
@@ -397,6 +431,9 @@ class AntClientProvisioner:
                         "secret_key": per_uploader_key or fallback_secret,
                         "heaptrack": heap,
                         "bootstrap_cache": bootstrap_cache,
+                        "upload_presigned_url": self._presigned_put_url(
+                            c["region"], c["client_index"]
+                        ),
                     }
                 else:
                     ip_to_env[c["ip"]] = {
@@ -408,6 +445,7 @@ class AntClientProvisioner:
                         "secret_key": fallback_secret,
                         "heaptrack": heap,
                         "bootstrap_cache": bootstrap_cache,
+                        "upload_presigned_url": "",
                     }
 
             case_entries = []
@@ -420,7 +458,8 @@ class AntClientProvisioner:
                     f'PAYMENT_TYPE="{env["payment_type"]}"; '
                     f'SECRET_KEY="{env["secret_key"]}"; '
                     f'HEAPTRACK={env["heaptrack"]}; '
-                    f'BOOTSTRAP_CACHE={env["bootstrap_cache"]} ;;'
+                    f'BOOTSTRAP_CACHE={env["bootstrap_cache"]}; '
+                    f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}" ;;'
                 )
             case_block = "\n".join(case_entries)
 
@@ -445,7 +484,8 @@ MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
     *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
-PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true ;;
+PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true; \
+UPLOAD_PRESIGNED_URL="" ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -467,6 +507,7 @@ AWS_SECRET_ACCESS_KEY={self.aws_secret_access_key}
 AWS_DEFAULT_REGION={self.aws_region}
 ADDRESSES_S3_BUCKET={self.addresses_s3_bucket}
 ADDRESSES_S3_PREFIX={self.addresses_s3_prefix}
+UPLOAD_PRESIGNED_URL=$UPLOAD_PRESIGNED_URL
 ADDRESSES_TAIL_SIZE=10000
 S3_FLUSH_INTERVAL_SECS=30
 S3_FLUSH_EVERY_N=50"""

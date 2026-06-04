@@ -164,6 +164,15 @@ never overwritten). `bootstrap_cache: false` restores the legacy explicit
 is surfaced by `deployments slack-post`, `print-uploads`/`print-downloads`,
 and `generate-inventory`.
 
+Testnet client address lists live in the dedicated **public-read**
+`saorsa-testnet-addresses` bucket (NOT the tfstate bucket, which keeps Block
+Public Access intact; bucket + IAM managed by the `aws-client-s3` Terraform
+module). Downloaders list+fetch them with **unsigned HTTPS** and uploaders
+flush through **presigned PUT URLs** minted by `clients provision` (7-day
+SigV4 max expiry) — both paths avoid the VM signing anything, so clock-skewed
+clients (whose own SigV4 requests S3 rejects at ~±15min) keep publishing and
+consuming addresses.
+
 A top-level `slack_post: true` (valid for **every** kind) appends a final
 `deployments slack-post --name <name>` step to `up`, posting a deployment
 summary once it's up. `slack-post` has two paths: when

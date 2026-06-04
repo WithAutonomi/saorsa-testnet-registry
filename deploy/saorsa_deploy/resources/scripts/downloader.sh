@@ -40,8 +40,14 @@ dl_seq=0
 CLIENT_HOST=$(hostname)
 if [ -n "$ADDRESSES_S3_BUCKET" ] && [ -n "$ADDRESSES_S3_PREFIX" ]; then
     S3_URI_PREFIX="s3://${ADDRESSES_S3_BUCKET}/${ADDRESSES_S3_PREFIX}/"
+    # The addresses bucket is public-read, so list + fetch go over plain
+    # unsigned HTTPS. SigV4-signed `aws s3` calls are rejected from
+    # clock-skewed VMs (~15min tolerance), which silently starved skewed
+    # downloaders of addresses.
+    S3_HTTP_BASE="https://${ADDRESSES_S3_BUCKET}.s3.${AWS_DEFAULT_REGION:-eu-west-2}.amazonaws.com"
 else
     S3_URI_PREFIX=""
+    S3_HTTP_BASE=""
 fi
 
 submit_metric() {
@@ -59,16 +65,20 @@ pick_random_address() {
     # Prefer a locally-provisioned static address list (e.g. from
     # prod-continuous-downloader) when present and non-empty. Falls back to
     # listing S3 uploader-emitted objects when no local file is available
-    # (the standard testnet flow).
-    local listing key s3_uri address
+    # (the standard testnet flow). The S3 path uses unsigned public HTTPS so
+    # it keeps working on clock-skewed VMs.
+    local listing key address
     if [ -s "$ADDRESSES_FILE" ]; then
         shuf -n 1 "$ADDRESSES_FILE" || true
         return 0
     fi
-    if [ -z "$S3_URI_PREFIX" ]; then
+    if [ -z "$S3_HTTP_BASE" ]; then
         return 0
     fi
-    listing=$(aws s3 ls "$S3_URI_PREFIX" 2>/dev/null | awk '{print $NF}' | grep '^upload-' || true)
+    listing=$(curl -sf "${S3_HTTP_BASE}/?list-type=2&prefix=${ADDRESSES_S3_PREFIX}/" 2>/dev/null \
+        | grep -o '<Key>[^<]*</Key>' \
+        | sed -e 's|<Key>||' -e 's|</Key>||' -e "s|^${ADDRESSES_S3_PREFIX}/||" \
+        | grep '^upload-' || true)
     if [ -z "$listing" ]; then
         return 0
     fi
@@ -76,8 +86,7 @@ pick_random_address() {
     if [ -z "$key" ]; then
         return 0
     fi
-    s3_uri="${S3_URI_PREFIX}${key}"
-    address=$(aws s3 cp --quiet "$s3_uri" - 2>/dev/null | shuf -n 1 || true)
+    address=$(curl -sf "${S3_HTTP_BASE}/${ADDRESSES_S3_PREFIX}/${key}" 2>/dev/null | shuf -n 1 || true)
     echo "$address"
 }
 

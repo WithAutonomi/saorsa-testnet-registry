@@ -28,6 +28,7 @@ fi
 : "${PAYMENT_TYPE:=}"
 : "${HEAPTRACK:=0}"
 : "${HEAPTRACK_DIR:=/var/log/ant-heaptrack}"
+: "${UPLOAD_PRESIGNED_URL:=}"
 
 # Translate PAYMENT_TYPE into the matching ant flag (or nothing).
 PAYMENT_FLAG=()
@@ -62,12 +63,32 @@ submit_metric() {
 flush_to_s3() {
     # Rotate local buffer to last ADDRESSES_TAIL_SIZE lines, then upload.
     # If upload fails we keep the buffer and try again next flush window.
+    #
+    # The upload goes through a presigned PUT URL when one was provisioned:
+    # the signature is the controller's, so the flush keeps working on
+    # clock-skewed VMs whose own SigV4 requests are rejected (~15min
+    # tolerance). Falls back to the signed aws CLI path when no URL is set.
     if [ ! -s "$ADDRESSES_FILE" ]; then
         return 0
     fi
     local tmp="${ADDRESSES_FILE}.tail"
     tail -n "$ADDRESSES_TAIL_SIZE" "$ADDRESSES_FILE" > "$tmp"
     mv "$tmp" "$ADDRESSES_FILE"
+    if [ -n "$UPLOAD_PRESIGNED_URL" ]; then
+        # Insist on a literal 200: curl -f only fails on >=400, so a 307
+        # redirect (e.g. presigned against the wrong endpoint) would
+        # otherwise pass while storing nothing.
+        local put_status
+        put_status=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X PUT -T "$ADDRESSES_FILE" "$UPLOAD_PRESIGNED_URL" || echo 000)
+        if [ "$put_status" = "200" ]; then
+            echo "[$(date -u +%H:%M:%S)] Flushed $(wc -l < "$ADDRESSES_FILE") addresses to ${S3_URI} (presigned)"
+            return 0
+        else
+            echo "[$(date -u +%H:%M:%S)] WARN: S3 flush failed (presigned PUT http=${put_status}, ${S3_URI})"
+            return 1
+        fi
+    fi
     if aws s3 cp --quiet "$ADDRESSES_FILE" "$S3_URI"; then
         echo "[$(date -u +%H:%M:%S)] Flushed $(wc -l < "$ADDRESSES_FILE") addresses to ${S3_URI}"
         return 0

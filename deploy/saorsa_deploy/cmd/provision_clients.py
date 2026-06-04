@@ -9,6 +9,7 @@ from saorsa_deploy.provisioning.client import AntClientProvisioner
 from saorsa_deploy.registry import record_deploy_args_update
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import (
+    S3_ADDRESSES_BUCKET,
     load_client_state,
     load_deployment_state,
     update_client_wallet,
@@ -462,7 +463,7 @@ def cmd_provision_clients(args):
         bootstrap_peers=bootstrap_peers,
         aws_access_key_id=aws_access_key_id,
         aws_secret_access_key=aws_secret_access_key,
-        addresses_s3_bucket="maidsafe-org-infra-tfstate",
+        addresses_s3_bucket=S3_ADDRESSES_BUCKET,
         addresses_s3_prefix=f"saorsa-deploy/addresses/{args.name}",
         ssh_key_path=args.ssh_key_path,
         console=console,

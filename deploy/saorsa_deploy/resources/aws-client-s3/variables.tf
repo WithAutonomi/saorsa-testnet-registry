@@ -5,9 +5,9 @@ variable "aws_region" {
 }
 
 variable "bucket_name" {
-  description = "Name of the S3 bucket that holds the addresses folder"
+  description = "Name of the S3 bucket that holds the addresses folder. Managed by this module: public-read so downloaders can fetch address lists with unsigned HTTPS (clock-skewed VMs can't sign SigV4 requests). Must NOT be the tfstate bucket."
   type        = string
-  default     = "maidsafe-org-infra-tfstate"
+  default     = "saorsa-testnet-addresses"
 }
 
 variable "addresses_prefix" {
