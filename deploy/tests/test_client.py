@@ -43,6 +43,7 @@ class TestParseUploaderSpec:
             "ant_funding": "100",
             "eth_funding": "0.5",
             "clock_skew": None,
+            "bootstrap_cache": True,
         }
 
     def test_provider_region_file_size_and_vm_size(self):
@@ -57,6 +58,7 @@ class TestParseUploaderSpec:
             "ant_funding": "100",
             "eth_funding": "0.5",
             "clock_skew": None,
+            "bootstrap_cache": True,
         }
 
     @pytest.mark.parametrize(
@@ -144,6 +146,7 @@ class TestParseDownloaderSpec:
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
             "clock_skew": None,
+            "bootstrap_cache": True,
         }
 
     def test_provider_region_and_vm_size(self):
@@ -154,6 +157,7 @@ class TestParseDownloaderSpec:
             "region": "nrt",
             "vm_size": "vc2-4c-8gb",
             "clock_skew": None,
+            "bootstrap_cache": True,
         }
 
     def test_missing_provider_rejected(self):
@@ -433,3 +437,42 @@ class TestGetAntReleaseUrl:
 
         with pytest.raises(RuntimeError, match="Could not find asset"):
             get_ant_release_url()
+
+
+class TestParseBootstrapCache:
+    def test_uploader_defaults_to_true(self):
+        result = parse_uploader_spec("digital_ocean:lon1:50")
+        assert result["bootstrap_cache"] is True
+
+    def test_downloader_defaults_to_true(self):
+        result = parse_downloader_spec("digital_ocean:lon1")
+        assert result["bootstrap_cache"] is True
+
+    def test_uploader_explicit_false(self):
+        result = parse_uploader_spec("digital_ocean:lon1:50:bootstrap_cache=false")
+        assert result["bootstrap_cache"] is False
+
+    def test_uploader_explicit_true(self):
+        result = parse_uploader_spec("digital_ocean:lon1:50:bootstrap_cache=true")
+        assert result["bootstrap_cache"] is True
+
+    def test_downloader_explicit_false(self):
+        result = parse_downloader_spec("vultr:syd:bootstrap_cache=false")
+        assert result["bootstrap_cache"] is False
+
+    def test_combines_with_other_options(self):
+        result = parse_uploader_spec(
+            "vultr:syd:1000:vc2-2c-4gb:payment=no-merkle:bootstrap_cache=false"
+        )
+        assert result["bootstrap_cache"] is False
+        assert result["payment_type"] == "no-merkle"
+
+    def test_invalid_value_rejected(self):
+        with pytest.raises(ValueError, match="bootstrap_cache must be 'true' or 'false'"):
+            parse_uploader_spec("digital_ocean:lon1:50:bootstrap_cache=yes")
+
+    def test_duplicate_rejected(self):
+        with pytest.raises(ValueError, match="duplicate key"):
+            parse_downloader_spec(
+                "digital_ocean:lon1:bootstrap_cache=true:bootstrap_cache=false"
+            )

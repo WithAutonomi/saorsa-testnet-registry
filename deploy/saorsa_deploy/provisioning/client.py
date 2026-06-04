@@ -1,5 +1,6 @@
 
 import base64
+from pathlib import PurePosixPath
 
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
@@ -8,6 +9,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.prod_bootstraps import (
+    REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
+    render_bootstrap_peers_toml,
+)
 from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     SET_HOSTNAME_OP_NAME,
@@ -378,6 +383,9 @@ class AntClientProvisioner:
                     or (role == "download" and "downloader" in self.heaptrack_targets)
                     else "0"
                 )
+                bootstrap_cache = (
+                    "true" if c.get("bootstrap_cache", True) else "false"
+                )
                 if role == "upload":
                     per_uploader_key = _normalize_secret(c.get("wallet_secret_key", ""))
                     ip_to_env[c["ip"]] = {
@@ -388,6 +396,7 @@ class AntClientProvisioner:
                         "payment_type": c.get("payment_type") or "",
                         "secret_key": per_uploader_key or fallback_secret,
                         "heaptrack": heap,
+                        "bootstrap_cache": bootstrap_cache,
                     }
                 else:
                     ip_to_env[c["ip"]] = {
@@ -398,6 +407,7 @@ class AntClientProvisioner:
                         "payment_type": "",
                         "secret_key": fallback_secret,
                         "heaptrack": heap,
+                        "bootstrap_cache": bootstrap_cache,
                     }
 
             case_entries = []
@@ -409,9 +419,25 @@ class AntClientProvisioner:
                     f'CLIENT_INDEX={env["client_index"]}; '
                     f'PAYMENT_TYPE="{env["payment_type"]}"; '
                     f'SECRET_KEY="{env["secret_key"]}"; '
-                    f'HEAPTRACK={env["heaptrack"]} ;;'
+                    f'HEAPTRACK={env["heaptrack"]}; '
+                    f'BOOTSTRAP_CACHE={env["bootstrap_cache"]} ;;'
                 )
             case_block = "\n".join(case_entries)
+
+            # The peers file is written unconditionally: ant only reads it when
+            # invoked without --bootstrap (i.e. BOOTSTRAP_CACHE=true), so it is
+            # inert on cache-disabled hosts.
+            peers_toml = render_bootstrap_peers_toml(self.bootstrap_peers)
+            add_op(
+                state,
+                server.shell,
+                name="Write ant bootstrap_peers.toml",
+                commands=[
+                    f"mkdir -p {PurePosixPath(REMOTE_BOOTSTRAP_PEERS_TOML_PATH).parent} && "
+                    f"cat > {REMOTE_BOOTSTRAP_PEERS_TOML_PATH} << 'PEERS_EOF'\n"
+                    f"{peers_toml}PEERS_EOF",
+                ],
+            )
 
             bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
             env_script = f"""\
@@ -419,7 +445,7 @@ MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
     *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
-PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0 ;;
+PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -427,6 +453,7 @@ ROLE=$ROLE
 REGION=$REGION
 CLIENT_INDEX=$CLIENT_INDEX
 BOOTSTRAP_ARGS="{bootstrap_args}"
+BOOTSTRAP_CACHE=$BOOTSTRAP_CACHE
 FILE_SIZE_KB=$FILE_SIZE_KB
 PAYMENT_TYPE=$PAYMENT_TYPE
 SECRET_KEY=$SECRET_KEY

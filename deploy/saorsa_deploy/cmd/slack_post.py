@@ -211,6 +211,17 @@ def _format_binary(descriptor: dict | None) -> str:
     return "_unknown_"
 
 
+def _bootstrap_cache_marker(value) -> str:
+    """Inline per-client marker for the ant peer-cache mode.
+
+    ``None`` (records predating the option) renders nothing; otherwise an
+    explicit on/off so a mixed deployment is readable at a glance.
+    """
+    if value is None:
+        return ""
+    return " — bootstrap-cache: on" if value else " — bootstrap-cache: off"
+
+
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     blocks: list[dict] = [
         _section(
@@ -228,7 +239,10 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
         payment = u.get("payment_type") or "default"
         file_names = u.get("file_names") or []
         skew_str = " — ⏰ clock-skew" if u.get("clock_skew") else ""
-        lines.append(f"• {region} ({vm_size}) — payment: {payment}{skew_str}")
+        cache_str = _bootstrap_cache_marker(u.get("bootstrap_cache"))
+        lines.append(
+            f"• {region} ({vm_size}) — payment: {payment}{cache_str}{skew_str}"
+        )
         if file_names:
             for name in file_names:
                 lines.append(f"    • `{name}`")
@@ -261,6 +275,13 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
         _section(f"*File count:* {file_count_str}"),
         _section(f"*Payment:* {payment}"),
     ]
+    if "bootstrap_cache" in deploy_args:
+        blocks.append(
+            _section(
+                "*Bootstrap cache:* "
+                + ("on" if deploy_args["bootstrap_cache"] else "off")
+            )
+        )
     files = deploy_args.get("files") or []
     if not files and deploy_args.get("input_mode") == "local-dir":
         # The deployment was recorded by an older version of the command
@@ -311,6 +332,13 @@ def _prod_local_downloads_blocks(deploy_args: dict) -> list[dict]:
         _section(f"*Address count:* {count_str}"),
         _section(f"*Output mode:* {output_mode} ({output_dir})"),
     ]
+    if "bootstrap_cache" in deploy_args:
+        blocks.append(
+            _section(
+                "*Bootstrap cache:* "
+                + ("on" if deploy_args["bootstrap_cache"] else "off")
+            )
+        )
     addresses = deploy_args.get("addresses") or []
     if addresses:
         lines = [f"• `{addr}`" for addr in addresses]
@@ -332,6 +360,11 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
 
     if deploy_args.get("clock_skew"):
         fields.append(("Clock skew", "enabled ⏰"))
+
+    if "bootstrap_cache" in deploy_args:
+        fields.append(
+            ("Bootstrap cache", "on" if deploy_args["bootstrap_cache"] else "off")
+        )
 
     if "sleep_interval_secs" in deploy_args:
         sleep_interval_secs = deploy_args.get("sleep_interval_secs")
@@ -369,6 +402,7 @@ def _clients_block(clients: list[dict]) -> dict:
         region = c.get("region", "?")
         vm_size = c.get("vm_size", "?")
         skew_str = " — ⏰ clock-skew" if c.get("clock_skew") else ""
+        cache_str = _bootstrap_cache_marker(c.get("bootstrap_cache"))
         if role == "upload":
             file_size = c.get("file_size_mb")
             # file_size_mb is 0 for prod uploaders (real files of arbitrary
@@ -377,10 +411,11 @@ def _clients_block(clients: list[dict]) -> dict:
             size_str = f", {file_size}MB files" if file_size else ""
             payment = c.get("payment_type") or "default"
             lines.append(
-                f"• upload — {region} ({vm_size}{size_str}) — payment: {payment}{skew_str}"
+                f"• upload — {region} ({vm_size}{size_str}) — "
+                f"payment: {payment}{cache_str}{skew_str}"
             )
         else:
-            lines.append(f"• download — {region} ({vm_size}){skew_str}")
+            lines.append(f"• download — {region} ({vm_size}){cache_str}{skew_str}")
     return _section("*Clients:*\n" + "\n".join(lines))
 
 
@@ -467,6 +502,13 @@ def build_slack_blocks(
         blocks.extend(_prod_local_uploads_blocks(deploy_args))
     elif kind_raw == "prod-local-downloads":
         blocks.extend(_prod_local_downloads_blocks(deploy_args))
+    elif kind_raw == "prod-canary" and "bootstrap_cache" in deploy_args:
+        blocks.append(
+            _section(
+                "*Bootstrap cache:* "
+                + ("on" if deploy_args["bootstrap_cache"] else "off")
+            )
+        )
 
     if client_state:
         clients = client_state.get("clients") or []

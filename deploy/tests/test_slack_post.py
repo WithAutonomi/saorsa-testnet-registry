@@ -941,3 +941,127 @@ def test_prod_downloader_omits_clock_skew_field_when_unset():
     )
     text = _all_text(build_slack_blocks(deployment, None, None))
     assert "Clock skew" not in text
+
+
+# --------------------------------------------------------------------------- #
+# bootstrap_cache rendering
+# --------------------------------------------------------------------------- #
+def test_testnet_clients_render_bootstrap_cache_markers():
+    deployment = _deployment(
+        deploy_args={"bootstrap_count": 3, "vm_count": 6, "nodes_per_vm": 25},
+    )
+    client_state = {
+        "clients": [
+            {
+                "role": "upload",
+                "region": "lon1",
+                "vm_size": "s-2vcpu-4gb",
+                "file_size_mb": 50,
+                "bootstrap_cache": True,
+            },
+            {
+                "role": "download",
+                "region": "fra1",
+                "vm_size": "s-2vcpu-4gb",
+                "bootstrap_cache": False,
+            },
+            {
+                # predates the option — no marker at all
+                "role": "download",
+                "region": "ams3",
+                "vm_size": "s-2vcpu-4gb",
+            },
+        ]
+    }
+    text = _all_text(build_slack_blocks(deployment, {}, client_state))
+    lon_line = next(line for line in text.splitlines() if "lon1" in line)
+    fra_line = next(line for line in text.splitlines() if "fra1" in line)
+    ams_line = next(line for line in text.splitlines() if "ams3" in line)
+    assert "bootstrap-cache: on" in lon_line
+    assert "bootstrap-cache: off" in fra_line
+    assert "bootstrap-cache" not in ams_line
+
+
+def test_prod_uploaders_render_bootstrap_cache_per_uploader():
+    deployment = _deployment(
+        name="PROD-UL-01",
+        deploy_args={
+            "kind": "prod-uploaders",
+            "ant_binary": {"kind": "release", "version": "0.2.4"},
+            "uploaders": [
+                {"region": "lon1", "vm_size": "s-2vcpu-4gb", "bootstrap_cache": True},
+                {"region": "nyc1", "vm_size": "s-2vcpu-4gb", "bootstrap_cache": False},
+            ],
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    lon_line = next(line for line in text.splitlines() if "lon1" in line)
+    nyc_line = next(line for line in text.splitlines() if "nyc1" in line)
+    assert "bootstrap-cache: on" in lon_line
+    assert "bootstrap-cache: off" in nyc_line
+
+
+def test_prod_downloader_renders_bootstrap_cache_field():
+    deployment = _deployment(
+        name="PROD-DL-01",
+        deploy_args={
+            "kind": "prod-downloaders",
+            "spec": "lon1",
+            "bootstrap_cache": False,
+            "ant_binary": {"kind": "release", "version": "0.2.4"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "Bootstrap cache" in text
+    assert "off" in text
+
+
+def test_prod_local_kinds_render_bootstrap_cache():
+    deployment = _deployment(
+        name="LOCAL-UL-01",
+        deploy_args={
+            "kind": "prod-local-uploads",
+            "input_mode": "urls",
+            "input_path": "/tmp/l.txt",
+            "file_count": 2,
+            "bootstrap_cache": True,
+            "ant_binary": {"kind": "release", "version": "0.2.4"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "*Bootstrap cache:* on" in text
+
+    deployment = _deployment(
+        name="LOCAL-DL-01",
+        deploy_args={
+            "kind": "prod-local-downloads",
+            "addresses_path": "/tmp/a.txt",
+            "address_count": 3,
+            "bootstrap_cache": False,
+            "ant_binary": {"kind": "release", "version": "0.2.4"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "*Bootstrap cache:* off" in text
+
+
+def test_prod_canary_renders_bootstrap_cache():
+    deployment = _deployment(
+        name="PROD-CAN-01",
+        deploy_args={"kind": "prod-canary", "bootstrap_cache": False},
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "*Bootstrap cache:* off" in text
+
+
+def test_bootstrap_cache_omitted_for_old_records():
+    deployment = _deployment(
+        name="PROD-DL-OLD",
+        deploy_args={
+            "kind": "prod-downloaders",
+            "spec": "lon1",
+            "ant_binary": {"kind": "release", "version": "0.2.4"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "Bootstrap cache" not in text

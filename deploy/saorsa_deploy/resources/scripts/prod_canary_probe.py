@@ -23,7 +23,8 @@ If the SQLite file is missing on startup, it is rebuilt from Influx so a
 redeployed shard can pick up exactly where its predecessor left off.
 
 Required env:
-    BOOTSTRAP_ARGS       Space-separated ``--bootstrap host:port`` pairs.
+    BOOTSTRAP_ARGS       Space-separated ``--bootstrap host:port`` pairs. Only
+                         required (and only used) when BOOTSTRAP_CACHE=false.
     DEPLOYMENT_NAME      Tag value pinning every Influx record to this
                          deployment.
     REGION               Tag value for Influx metrics.
@@ -661,8 +662,21 @@ def _seconds_until_next_cycle(interval_secs: int) -> int:
     return max(1, next_boundary - now)
 
 
+def _resolve_bootstrap_args() -> list:
+    """Resolve the --bootstrap argv fragment from the environment.
+
+    With the bootstrap cache enabled (default), ant is invoked WITHOUT
+    --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml and maintains
+    its peer cache. BOOTSTRAP_CACHE=false restores the legacy explicit
+    --bootstrap invocation, which disables the cache.
+    """
+    if os.environ.get("BOOTSTRAP_CACHE", "true") == "true":
+        return []
+    return _require_env("BOOTSTRAP_ARGS").split()
+
+
 def main() -> int:
-    bootstrap_arg_str = _require_env("BOOTSTRAP_ARGS")
+    bootstrap_args = _resolve_bootstrap_args()
     deployment_name = _require_env("DEPLOYMENT_NAME")
     region = _require_env("REGION")  # noqa: F841 - kept for parity with upload service
     influx_url = _require_env("INFLUX_URL")
@@ -691,7 +705,6 @@ def main() -> int:
         os.environ.get("CYCLE_BUDGET_SECS", str(max(timeout_secs * 2, interval_secs - 60)))
     )
 
-    bootstrap_args = bootstrap_arg_str.split()
     work_dir.mkdir(parents=True, exist_ok=True)
     host = socket.gethostname()
     conn = _open_state(state_file)

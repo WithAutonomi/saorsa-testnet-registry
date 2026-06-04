@@ -149,6 +149,9 @@ class Uploader(_Base):
     ant: Optional[str] = None  # wallet funding (ANT tokens)
     eth: Optional[str] = None  # wallet funding (ETH)
     clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
+    # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
+    bootstrap_cache: Optional[bool] = None
 
 
 class Downloader(_Base):
@@ -156,6 +159,9 @@ class Downloader(_Base):
     region: str
     vm_size: Optional[str] = None
     clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
+    # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
+    bootstrap_cache: Optional[bool] = None
 
 
 class Clients(_Base):
@@ -237,6 +243,9 @@ class ProdUploader(_Base):
     payment: Optional[Payment] = None
     # signed duration skew on this VM (e.g. "2h", "-2h"); disables time sync (testing only)
     clock_skew: Optional[ClockSkew] = None
+    # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
+    # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
+    bootstrap_cache: Optional[bool] = None
 
 
 class ProdUploadersSpec(_Base):
@@ -263,6 +272,9 @@ class ProdDownloadersSpec(_Base):
     keep_monitoring: Optional[bool] = None
     # signed duration skew on this VM (e.g. "2h", "-2h"); disables time sync (testing only)
     clock_skew: Optional[ClockSkew] = None
+    # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
+    # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
+    bootstrap_cache: Optional[bool] = None
 
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
@@ -285,6 +297,9 @@ class ProdCanarySpec(_Base):
     probe_concurrency: Optional[int] = None
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None
+    # ant peer cache (upload + probe VMs): True (default) invokes ant WITHOUT
+    # --bootstrap and ships a bootstrap_peers.toml instead.
+    bootstrap_cache: Optional[bool] = None
 
     @model_validator(mode="after")
     def _at_least_one_probe(self) -> "ProdCanarySpec":
@@ -300,6 +315,9 @@ class ProdLocalUploadsSpec(_Base):
     local_dir: Optional[str] = None
     payment: Optional[Payment] = None
     verbose: int = 0
+    # ant peer cache: True (default) invokes ant WITHOUT --bootstrap; the
+    # operator's ~/.config/ant/bootstrap_peers.toml is written only if missing.
+    bootstrap_cache: Optional[bool] = None
 
     @model_validator(mode="after")
     def _input_mode(self) -> "ProdLocalUploadsSpec":
@@ -312,6 +330,9 @@ class ProdLocalDownloadsSpec(_Base):
     binary: Binary
     addresses_path: str
     keep_output_dir: Optional[str] = None
+    # ant peer cache: True (default) invokes ant WITHOUT --bootstrap; the
+    # operator's ~/.config/ant/bootstrap_peers.toml is written only if missing.
+    bootstrap_cache: Optional[bool] = None
 
 
 # --------------------------------------------------------------------------- #

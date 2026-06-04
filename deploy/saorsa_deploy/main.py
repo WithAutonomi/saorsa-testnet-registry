@@ -495,7 +495,7 @@ def main(argv=None):
         default=[],
         help="Uploader VM spec: "
         "'provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]"
-        "[:clock_skew=DURATION]'. "
+        "[:clock_skew=DURATION][:bootstrap_cache=BOOL]'. "
         "provider is mandatory: digital_ocean, vultr, hetzner, or ovh. "
         "Region names and VM sizes vary per provider and are passed through "
         "verbatim (supply valid strings). Repeat for multiple uploaders. "
@@ -503,7 +503,10 @@ def main(argv=None):
         "forces the payment mode for that uploader's `ant file upload` calls; "
         "omit for ant's default. clock_skew=DURATION disables time sync and "
         "shifts that VM's clock by a signed Go-style duration (e.g. 2h, -2h, "
-        "30m; testing only). "
+        "30m; testing only). bootstrap_cache=true|false (default true) — when "
+        "true ant runs WITHOUT --bootstrap (peer cache enabled, peers read from "
+        "a provisioned bootstrap_peers.toml); false restores the legacy "
+        "--bootstrap invocation. "
         "Example: --uploader 'digital_ocean:lon1:50' "
         "--uploader 'hetzner:fsn1:100:cpx32:payment=merkle'",
     )
@@ -512,12 +515,16 @@ def main(argv=None):
         type=str,
         action="append",
         default=[],
-        help="Downloader VM spec: 'provider:region[:vm_size][:clock_skew=DURATION]'. "
+        help="Downloader VM spec: 'provider:region[:vm_size][:clock_skew=DURATION]"
+        "[:bootstrap_cache=BOOL]'. "
         "provider is "
         "mandatory: digital_ocean, vultr, hetzner, or ovh. Repeat for "
         "multiple downloaders. Default vm_size=s-2vcpu-4gb (DO). "
         "clock_skew=DURATION disables time sync and shifts that VM's clock by a "
         "signed Go-style duration (e.g. 2h, -2h, 30m; testing only). "
+        "bootstrap_cache=true|false (default true) — when true ant runs WITHOUT "
+        "--bootstrap (peer cache enabled, peers read from a provisioned "
+        "bootstrap_peers.toml); false restores the legacy --bootstrap invocation. "
         "Example: --downloader 'digital_ocean:lon1' "
         "--downloader 'vultr:nrt:vc2-4c-8gb:clock_skew=-2h'",
     )
@@ -2546,6 +2553,14 @@ def main(argv=None):
         "2h, -2h, 30m). For testing clock-independence of the network.",
     )
     prod_cd_deploy_parser.add_argument(
+        "--bootstrap-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the ant peer cache (default): ant runs WITHOUT --bootstrap "
+        "and reads a provisioned bootstrap_peers.toml. --no-bootstrap-cache "
+        "restores the legacy --bootstrap invocation (cache disabled).",
+    )
+    prod_cd_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -2658,6 +2673,14 @@ def main(argv=None):
         "2h, -2h, 30m). For testing clock-independence of the network.",
     )
     prod_dl_deploy_parser.add_argument(
+        "--bootstrap-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the ant peer cache (default): ant runs WITHOUT --bootstrap "
+        "and reads a provisioned bootstrap_peers.toml. --no-bootstrap-cache "
+        "restores the legacy --bootstrap invocation (cache disabled).",
+    )
+    prod_dl_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -2750,14 +2773,20 @@ def main(argv=None):
         "--uploader",
         action="append",
         default=[],
-        metavar="REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION]",
+        metavar=(
+            "REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION]"
+            "[:bootstrap_cache=BOOL]"
+        ),
         help=(
             "Uploader spec, repeatable. Example: "
             "lon1:s-2vcpu-4gb:urls=/path/to/list.txt:payment=merkle. "
             "payment=merkle|no-merkle is optional and applies per-uploader; "
             "omit to let ant pick its default. clock_skew=DURATION disables time "
             "sync and shifts that VM's clock by a signed Go-style duration "
-            "(e.g. 2h, -2h, 30m; testing only)."
+            "(e.g. 2h, -2h, 30m; testing only). bootstrap_cache=true|false "
+            "(default true) — when true ant runs WITHOUT --bootstrap (peer "
+            "cache enabled, peers read from a provisioned bootstrap_peers.toml); "
+            "false restores the legacy --bootstrap invocation."
         ),
     )
     prod_up_deploy_parser.add_argument(
@@ -2917,6 +2946,15 @@ def main(argv=None):
             "Sized so 3 concurrent ~500 MB downloads fit in an s-2vcpu-4gb "
             "probe VM without OOM."
         ),
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--bootstrap-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the ant peer cache on the upload + probe VMs (default): "
+        "ant runs WITHOUT --bootstrap and reads a provisioned "
+        "bootstrap_peers.toml. --no-bootstrap-cache restores the legacy "
+        "--bootstrap invocation (cache disabled).",
     )
     prod_canary_deploy_parser.add_argument(
         "--branch-name",
@@ -3167,6 +3205,16 @@ def main(argv=None):
         help="Free-text description of what this deployment is for. "
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
     )
+    prod_lu_parser.add_argument(
+        "--bootstrap-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the ant peer cache (default): ant runs WITHOUT --bootstrap "
+        "and reads ~/.config/ant/bootstrap_peers.toml (created from the fetched "
+        "prod list only when missing — an existing file is never overwritten). "
+        "--no-bootstrap-cache restores the legacy --bootstrap invocation "
+        "(cache disabled).",
+    )
 
     # --- prod local-downloads ---
     prod_ld_parser = prod_subparsers.add_parser(
@@ -3222,6 +3270,16 @@ def main(argv=None):
         required=True,
         help="Free-text description of what this deployment is for. "
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
+    prod_ld_parser.add_argument(
+        "--bootstrap-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the ant peer cache (default): ant runs WITHOUT --bootstrap "
+        "and reads ~/.config/ant/bootstrap_peers.toml (created from the fetched "
+        "prod list only when missing — an existing file is never overwritten). "
+        "--no-bootstrap-cache restores the legacy --bootstrap invocation "
+        "(cache disabled).",
     )
 
     # --- prod extend-unmanaged-volumes ---

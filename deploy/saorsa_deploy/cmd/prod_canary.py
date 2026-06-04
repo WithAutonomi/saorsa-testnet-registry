@@ -233,13 +233,21 @@ def _ensure_client_infra(
     # prod canary VMs are Digital Ocean only (the upload/probe specs carry no
     # provider field), so synthesise client specs with the digital_ocean
     # provider that parse_uploader_spec / parse_downloader_spec now require.
+    # bootstrap_cache is carried through so client_state records the real
+    # per-VM cache mode (the print/slack surfaces read it from there).
+    cache_token = (
+        f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
+    )
     synth_uploader = [
         f"digital_ocean:{upload_spec['region']}:0:{upload_spec['vm_size']}"
+        f":{cache_token}"
     ]
     synth_downloaders: list[str] = []
     for ps in probe_specs:
         for _ in range(ps["count"]):
-            synth_downloaders.append(f"digital_ocean:{ps['region']}:{ps['vm_size']}")
+            synth_downloaders.append(
+                f"digital_ocean:{ps['region']}:{ps['vm_size']}:{cache_token}"
+            )
 
     console.print(
         f"[bold cyan]Step 3/5: creating 1 upload VM + "
@@ -343,6 +351,7 @@ def _provision_canary(args, urls_content: str, console: Console) -> None:
         wallet_secret_key=secret_key,
         urls_file_content=urls_content,
         upload_sleep_secs=args.upload_sleep_secs,
+        bootstrap_cache=getattr(args, "bootstrap_cache", True),
         ssh_key_path=args.ssh_key_path,
         binary_url=binary_url,
         binary_is_archive=binary_is_archive,
@@ -368,6 +377,7 @@ def _provision_canary(args, urls_content: str, console: Console) -> None:
         deployment_name=args.name,
         bootstrap_peers=bootstrap_peers,
         probe_concurrency=args.probe_concurrency,
+        bootstrap_cache=getattr(args, "bootstrap_cache", True),
         ssh_key_path=args.ssh_key_path,
         binary_url=binary_url,
         binary_is_archive=binary_is_archive,
@@ -491,6 +501,7 @@ def cmd_prod_canary_deploy(args):
         "probe_shard_count": total_probes,
         "probe_concurrency": args.probe_concurrency,
         "upload_sleep_secs": args.upload_sleep_secs,
+        "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         "purpose": getattr(args, "purpose", None),
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version

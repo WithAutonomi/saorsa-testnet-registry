@@ -226,3 +226,118 @@ def test_testnet_clients_require_ant_binary(tmp_path):
     """
     with pytest.raises(ManifestError, match="binaries.ant is required"):
         load_manifest(_write(tmp_path, "t.yaml", body))
+
+
+# --------------------------------------------------------------------------- #
+# bootstrap_cache
+# --------------------------------------------------------------------------- #
+def test_bootstrap_cache_defaults_to_none_everywhere(tmp_path):
+    m = load_manifest(_write(tmp_path, "ul.yaml", PROD_UL))
+    assert m.prod_uploaders.uploaders[0].bootstrap_cache is None
+
+    body = """\
+        name: T
+        kind: testnet
+        purpose: p
+        testnet:
+          binaries: { ant_node: { version: "1" }, ant: { version: "1" } }
+          nodes:
+            per_vm: 5
+            providers: { digital_ocean: { vm_count: 1 } }
+          clients:
+            uploaders:
+              - { provider: vultr, region: ewr, file_size_mb: 10 }
+            downloaders:
+              - { provider: digital_ocean, region: lon1 }
+    """
+    m = load_manifest(_write(tmp_path, "t.yaml", body))
+    assert m.testnet.clients.uploaders[0].bootstrap_cache is None
+    assert m.testnet.clients.downloaders[0].bootstrap_cache is None
+
+
+def test_bootstrap_cache_parsed_on_testnet_clients(tmp_path):
+    body = """\
+        name: T
+        kind: testnet
+        purpose: p
+        testnet:
+          binaries: { ant_node: { version: "1" }, ant: { version: "1" } }
+          nodes:
+            per_vm: 5
+            providers: { digital_ocean: { vm_count: 1 } }
+          clients:
+            uploaders:
+              - { provider: vultr, region: ewr, file_size_mb: 10, bootstrap_cache: false }
+            downloaders:
+              - { provider: digital_ocean, region: lon1, bootstrap_cache: true }
+    """
+    m = load_manifest(_write(tmp_path, "t.yaml", body))
+    assert m.testnet.clients.uploaders[0].bootstrap_cache is False
+    assert m.testnet.clients.downloaders[0].bootstrap_cache is True
+
+
+def test_bootstrap_cache_parsed_on_prod_kinds(tmp_path):
+    body = """\
+        name: PROD-UL-01
+        kind: prod-uploaders
+        purpose: p
+        prod_uploaders:
+          binary: { version: "0.2.4" }
+          uploaders:
+            - { region: lon1, vm_size: s-2vcpu-4gb, urls: /tmp/l.txt, bootstrap_cache: false }
+    """
+    m = load_manifest(_write(tmp_path, "ul.yaml", body))
+    assert m.prod_uploaders.uploaders[0].bootstrap_cache is False
+
+    body = """\
+        name: PROD-DL-01
+        kind: prod-downloaders
+        purpose: p
+        prod_downloaders:
+          spec: lon1
+          binary: { version: "0.2.4" }
+          bootstrap_cache: false
+    """
+    m = load_manifest(_write(tmp_path, "dl.yaml", body))
+    assert m.prod_downloaders.bootstrap_cache is False
+
+    body = """\
+        name: PROD-CAN-01
+        kind: prod-canary
+        purpose: p
+        prod_canary:
+          binary: { version: "0.2.4" }
+          upload_spec: lon1
+          probes:
+            - { region: lon1, count: 4 }
+          urls_file: /tmp/urls.txt
+          bootstrap_cache: false
+    """
+    m = load_manifest(_write(tmp_path, "can.yaml", body))
+    assert m.prod_canary.bootstrap_cache is False
+
+
+def test_bootstrap_cache_parsed_on_local_kinds(tmp_path):
+    body = """\
+        name: LOCAL-UL-01
+        kind: prod-local-uploads
+        purpose: p
+        prod_local_uploads:
+          binary: { version: "0.2.4" }
+          urls: /tmp/l.txt
+          bootstrap_cache: false
+    """
+    m = load_manifest(_write(tmp_path, "lu.yaml", body))
+    assert m.prod_local_uploads.bootstrap_cache is False
+
+    body = """\
+        name: LOCAL-DL-01
+        kind: prod-local-downloads
+        purpose: p
+        prod_local_downloads:
+          binary: { version: "0.2.4" }
+          addresses_path: /tmp/a.txt
+          bootstrap_cache: false
+    """
+    m = load_manifest(_write(tmp_path, "ld.yaml", body))
+    assert m.prod_local_downloads.bootstrap_cache is False

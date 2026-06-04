@@ -95,7 +95,7 @@ testnet:
     uploaders:
       - { provider: vultr, region: syd, file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1 }
     downloaders:
-      - { provider: digital_ocean, region: tor1 }
+      - { provider: digital_ocean, region: tor1, bootstrap_cache: false }  # per-client ant peer cache (default true)
   elastic:    { enabled: true, droplet_size: s-8vcpu-16gb, volume_size: 500, shards: 8 }  # opt-in (default off)
   monitoring: { enabled: true }   # InfluxDB + Grafana — ON by default; set `enabled: false` to opt out
 ```
@@ -104,6 +104,18 @@ testnet:
 omitted entirely). Client upload/download metrics need an InfluxDB to land in, and
 `deployments print-uploads` / `record-results` read from it — so it's opt-out, not
 opt-in. Elasticsearch log-forwarding stays opt-in.
+
+**Bootstrap cache:** every client kind accepts `bootstrap_cache` (default **true**) —
+per-entry on testnet `clients.uploaders[]` / `clients.downloaders[]` and
+`prod_uploaders.uploaders[]`, spec-level on `prod_downloaders` /
+`prod_continuous_downloader` / `prod_canary` / `prod_local_uploads` /
+`prod_local_downloads`. When true the service invokes `ant` **without**
+`--bootstrap`, which enables the client's peer cache; the peers come from a
+`bootstrap_peers.toml` placed in ant's config dir (the testnet's bootstrap
+addresses for testnet kinds, the production list for prod kinds; on the
+operator's machine the file is only written when missing). `bootstrap_cache:
+false` restores the legacy explicit `--bootstrap` invocation, which disables
+the cache.
 
 **Reuse:** `extends:` (deep-merge a base; lists replace wholesale), `--set
 dotted.key=value` (override one value, e.g. `--set testnet.nodes.nat_percent=0`),
@@ -407,7 +419,7 @@ Client VMs run the ant binary as long-running upload-or-download workers against
 
 Commands:
 
-- `clients infra --name <testnet> --uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION] [--uploader ...] --downloader provider:region[:vm_size][:clock_skew=DURATION] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required. `provider` is **mandatory** and must be one of `digital_ocean`, `vultr`, `hetzner`, `ovh` — different uploaders/downloaders may target different providers (e.g. cheap-egress providers for the upload-heavy VMs). **Region names and VM sizes vary per provider and are passed through verbatim** — supply valid strings for the chosen provider (DO `s-2vcpu-4gb` / Vultr `vc2-2c-4gb` / Hetzner `cpx22` / OVH `b3-8`, regions like DO `lon1` / Vultr `lhr` / Hetzner `fsn1` / OVH `GRA9`); there is no per-provider validation. The optional `ant=` / `eth=` keys set per-uploader funding amounts (defaults: 100 ANT, 0.5 ETH). The optional `payment=` key sets the storage-payment mode (`merkle` or `no-merkle`). The optional `clock_skew=DURATION` key makes `clients provision` disable time sync and shift that VM's clock by a **signed Go-style duration** (e.g. `2h`, `-2h`, `30m`; a leading `-` runs the clock slow) — for testing the network's clock-independence; idempotent via a `/etc/ant-clock-skew-applied` marker. OVH requires `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` env vars; Vultr requires `VULTR_API_KEY`; Hetzner requires `HCLOUD_TOKEN`; DigitalOcean requires `DO_TOKEN`.
+- `clients infra --name <testnet> --uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL] [--uploader ...] --downloader provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required. `provider` is **mandatory** and must be one of `digital_ocean`, `vultr`, `hetzner`, `ovh` — different uploaders/downloaders may target different providers (e.g. cheap-egress providers for the upload-heavy VMs). **Region names and VM sizes vary per provider and are passed through verbatim** — supply valid strings for the chosen provider (DO `s-2vcpu-4gb` / Vultr `vc2-2c-4gb` / Hetzner `cpx22` / OVH `b3-8`, regions like DO `lon1` / Vultr `lhr` / Hetzner `fsn1` / OVH `GRA9`); there is no per-provider validation. The optional `ant=` / `eth=` keys set per-uploader funding amounts (defaults: 100 ANT, 0.5 ETH). The optional `payment=` key sets the storage-payment mode (`merkle` or `no-merkle`). The optional `clock_skew=DURATION` key makes `clients provision` disable time sync and shift that VM's clock by a **signed Go-style duration** (e.g. `2h`, `-2h`, `30m`; a leading `-` runs the clock slow) — for testing the network's clock-independence; idempotent via a `/etc/ant-clock-skew-applied` marker. The optional `bootstrap_cache=true|false` key (default **true**) controls the ant peer cache per VM: when true the service invokes `ant` **without** `--bootstrap` (the cache is enabled; peers come from a `bootstrap_peers.toml` written to `/root/.config/ant/` by `clients provision`, containing the testnet's bootstrap addresses), and `bootstrap_cache=false` restores the legacy explicit `--bootstrap` invocation, which disables the cache. OVH requires `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` env vars; Vultr requires `VULTR_API_KEY`; Hetzner requires `HCLOUD_TOKEN`; DigitalOcean requires `DO_TOKEN`.
 - `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM). For each uploader, generates a fresh Arbitrum Sepolia EOA wallet, transfers the configured ANT + ETH from the funding wallet (`--wallet-secret-key` / `ANT_DEPLOY_SECRET_KEY`), persists wallet info in S3 client state, and writes the per-uploader secret key into `/etc/ant-client.env`. Idempotent: re-runs reuse wallets already recorded in client state. Skipped under `--prod`.
 - `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
 - `clients destroy` — drains every per-uploader wallet (ANT + ETH back to the funding wallet on Arbitrum Sepolia, less a small ETH gas reserve), then tears down VMs and wipes the per-testnet addresses folder at `s3://maidsafe-org-infra-tfstate/saorsa-deploy/addresses/<testnet>/`. Drain failures abort the destroy so VMs and state remain available for retry — pass `--wallet-secret-key` (or set `ANT_DEPLOY_SECRET_KEY`) so funds know where to return.
@@ -827,6 +839,7 @@ Arguments (for `prod continuous-downloader deploy`):
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
 | `--spec` | string | — | Downloader VM `region[:vm_size]` (single VM) |
 | `--clock-skew` | `DURATION` | off | Disable time sync and shift the downloader VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`) — for testing clock-independence |
+| `--bootstrap-cache` / `--no-bootstrap-cache` | flag | on | Ant peer cache mode. On (default): `ant` runs **without** `--bootstrap` and reads a `bootstrap_peers.toml` (production list) written to `/root/.config/ant/` by the provisioner — the cache is enabled. Off: legacy explicit `--bootstrap` invocation (cache disabled). |
 | `--purpose` | string | — | Free-text description; persisted into `deploy_args` and shown by `deployments slack-post` |
 | `--addresses-path` | path | shipped default | Local file of newline-separated addresses |
 | `--sleep-interval-secs` | int | `900` | Seconds to sleep at the **end of each full pass** through the address list before starting the next cycle. `0` disables the sleep (back-to-back cycling). Persisted in `deploy_args.sleep_interval_secs`. |
@@ -904,7 +917,7 @@ Arguments (for `prod uploaders deploy`):
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
-| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION]`. The first three parts are required. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). |
+| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION][:bootstrap_cache=BOOL]`. The first three parts are required. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). `bootstrap_cache=true|false` (default true) — when true `ant` runs **without** `--bootstrap` (peer cache enabled, peers read from a provisioned `bootstrap_peers.toml`); false restores the legacy `--bootstrap` invocation. |
 | `--allow-duplicate-files` | flag | off | Skip the duplicate-file preflight and deploy even if an upload target already exists in the prod uploads list. Use to re-upload missing chunks or test the already-stored path. |
 | `--secret-key` | string | `$ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet secret key shared across all uploaders. Deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` — prod uploads cost real ETH. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
@@ -964,6 +977,7 @@ Arguments (for `prod local-uploads`):
 | `--branch-name BRANCH` + `--repo-owner OWNER` | no | Pull a custom-built `ant` binary from S3 (must be paired). |
 | `--ant-version VERSION` | no | Pin a specific released `ant` version. Mutually exclusive with `--branch-name`. |
 | `--payment MODE` | no | `merkle` or `no-merkle`. Omit to let `ant` choose. |
+| `--bootstrap-cache` / `--no-bootstrap-cache` | no | Ant peer cache mode (default on): `ant` runs **without** `--bootstrap` and reads `~/.config/ant/bootstrap_peers.toml`, which is created from the fetched prod list **only when missing** — an existing operator file is never overwritten. `--no-bootstrap-cache` restores the legacy explicit `--bootstrap` invocation (cache disabled). |
 | `-v` / `-vv` | no | Verbosity passed to the `ant` subprocess. Default `-v`. |
 
 The command resolves the live prod bootstrap peers from upstream at startup, downloads the resolved `ant` binary into `~/.cache/saorsa-deploy/ant-binaries/<key>/ant` (pinned releases are cached across runs; `latest` and branch builds are re-fetched), and registers a row in the `deployments` table with `deploy_args.kind = "prod-local-uploads"`. On completion the deployment is marked `stopped` regardless of per-file failures — failures live in the per-row Postgres records.
@@ -992,6 +1006,7 @@ Arguments (for `prod local-downloads`):
 | `--purpose TEXT` | yes | Free-text description, persisted to `deploy_args` and surfaced by `deployments slack-post`. |
 | `--addresses-path FILE` | yes | Newline-separated list of addresses. `#`-prefixed and blank lines are ignored. No default — the operator must supply the list explicitly. |
 | `--keep-output-dir DIR` | no | When set, downloaded files are written into `DIR` and kept on disk. When omitted, each download goes to a per-run temp directory and is deleted immediately after the result row is recorded. |
+| `--bootstrap-cache` / `--no-bootstrap-cache` | no | Ant peer cache mode (default on): `ant` runs **without** `--bootstrap` and reads `~/.config/ant/bootstrap_peers.toml`, which is created from the fetched prod list **only when missing** — an existing operator file is never overwritten. `--no-bootstrap-cache` restores the legacy explicit `--bootstrap` invocation (cache disabled). |
 | `--branch-name BRANCH` + `--repo-owner OWNER` | no | Pull a custom-built `ant` binary from S3 (must be paired). |
 | `--ant-version VERSION` | no | Pin a specific released `ant` version. Mutually exclusive with `--branch-name`. |
 
@@ -1136,6 +1151,7 @@ saorsa-deploy prod canary deploy \
 | `--urls-file` | yes | — | Local newline-separated list of public source URLs. Comments (`#`) and blank lines ignored. |
 | `--upload-sleep-secs` | no | `0` | Sleep between successive uploads. |
 | `--probe-concurrency` | no | `4` | Concurrent ant download invocations per probe VM. |
+| `--bootstrap-cache` / `--no-bootstrap-cache` | no | on | Ant peer cache mode on the upload **and** probe VMs. On (default): `ant` runs **without** `--bootstrap` and reads a provisioned `bootstrap_peers.toml` (cache enabled). Off: legacy explicit `--bootstrap` invocation (cache disabled). |
 | `--monitoring-volume-size` | no | `50` | Monitoring VM volume size in GB. |
 | `--branch-name`, `--repo-owner`, `--ant-version` | no | latest release | Same binary-resolution flags as `prod uploaders`. |
 | `--purpose` | yes | — | Free-text description, persisted in `deploy_args.purpose`. |

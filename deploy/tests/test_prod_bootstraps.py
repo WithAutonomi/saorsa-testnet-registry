@@ -7,6 +7,7 @@ from saorsa_deploy.prod_bootstraps import (
     PROD_BOOTSTRAPS_URL,
     ProdBootstrapsError,
     fetch_prod_bootstraps,
+    render_bootstrap_peers_toml,
 )
 
 _VALID_TOML = """\
@@ -93,3 +94,61 @@ def test_fetch_prod_bootstraps_accepts_custom_url():
         mock_get.return_value = _mock_response(_VALID_TOML)
         fetch_prod_bootstraps(url=custom_url)
     assert mock_get.call_args.args[0] == custom_url
+
+
+def test_render_bootstrap_peers_toml_round_trips_through_loader():
+    import tomllib
+
+    peers = ["207.148.94.42:10000", "45.77.50.10:10000"]
+    rendered = render_bootstrap_peers_toml(peers)
+    assert tomllib.loads(rendered) == {"peers": peers}
+
+
+def test_render_bootstrap_peers_toml_empty_list_renders_empty_array():
+    import tomllib
+
+    rendered = render_bootstrap_peers_toml([])
+    assert tomllib.loads(rendered) == {"peers": []}
+
+
+def test_render_bootstrap_peers_toml_ends_with_newline():
+    assert render_bootstrap_peers_toml(["1.2.3.4:10000"]).endswith("]\n")
+
+
+class TestEnsureLocalBootstrapPeersFile:
+    def test_existing_file_is_never_overwritten(self, tmp_path):
+        from saorsa_deploy.prod_bootstraps import ensure_local_bootstrap_peers_file
+
+        peers_file = tmp_path / "bootstrap_peers.toml"
+        peers_file.write_text('peers = ["9.9.9.9:10000"]\n')
+        with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
+            path, created = ensure_local_bootstrap_peers_file(peers_file)
+        assert path == peers_file
+        assert created is False
+        mock_get.assert_not_called()
+        assert peers_file.read_text() == 'peers = ["9.9.9.9:10000"]\n'
+
+    def test_missing_file_created_from_fetched_list(self, tmp_path):
+        import tomllib
+
+        from saorsa_deploy.prod_bootstraps import ensure_local_bootstrap_peers_file
+
+        peers_file = tmp_path / "ant" / "bootstrap_peers.toml"
+        with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
+            mock_get.return_value = _mock_response(_VALID_TOML)
+            path, created = ensure_local_bootstrap_peers_file(peers_file)
+        assert path == peers_file
+        assert created is True
+        assert tomllib.loads(peers_file.read_text()) == {
+            "peers": ["207.148.94.42:10000", "45.77.50.10:10000"]
+        }
+
+    def test_missing_file_and_failed_fetch_raises(self, tmp_path):
+        from saorsa_deploy.prod_bootstraps import ensure_local_bootstrap_peers_file
+
+        peers_file = tmp_path / "bootstrap_peers.toml"
+        with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
+            mock_get.return_value = _mock_response("nope", status=500)
+            with pytest.raises(ProdBootstrapsError):
+                ensure_local_bootstrap_peers_file(peers_file)
+        assert not peers_file.exists()

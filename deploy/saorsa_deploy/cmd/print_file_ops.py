@@ -198,6 +198,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
     payment_by_host = (
         _build_payment_map(args.name) if op_type == "upload" else {}
     )
+    cache_by_host = _build_bootstrap_cache_map(args.name)
 
     for host in sorted(by_host.keys()):
         ops = sorted(
@@ -216,6 +217,9 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         if op_type == "upload":
             payment = payment_by_host.get(host, "default")
             title_parts.append(f"payment={payment}")
+        cache = cache_by_host.get(host)
+        if cache is not None:
+            title_parts.append(f"bootstrap-cache={'on' if cache else 'off'}")
         if skew_label:
             title_parts.append(f"clock skew {skew_label}")
         title = " — ".join(title_parts) + f" ({title_count})"
@@ -261,6 +265,29 @@ def _build_payment_map(name: str) -> dict[str, str]:
             f"{name}-ant-client-{c['role']}-{c['region']}-{c['client_index']}"
         )
         out[host] = c.get("payment_type") or "default"
+    return out
+
+
+def _build_bootstrap_cache_map(name: str) -> dict[str, bool]:
+    """Map hostname → bootstrap_cache flag for every client in the deployment.
+
+    Covers both roles (the cache mode applies to uploaders and downloaders
+    alike). Hosts whose client-state entry predates the option are simply
+    absent from the map — the caller omits the label rather than guessing.
+    """
+    try:
+        state = load_client_state(name)
+    except RuntimeError:
+        return {}
+    out: dict[str, bool] = {}
+    for c in state.get("clients", []):
+        if c.get("bootstrap_cache") is None:
+            continue
+        host = (
+            f"{name}-ant-client-{c.get('role', 'upload')}-"
+            f"{c['region']}-{c['client_index']}"
+        )
+        out[host] = bool(c["bootstrap_cache"])
     return out
 
 
@@ -444,26 +471,36 @@ def _run_prod_uploads(args, console: Console) -> None:
         by_host.setdefault(p["host"], []).append(p)
 
     payment_by_host = _build_prod_payment_map(args.name)
+    cache_by_host = _build_bootstrap_cache_map(args.name)
 
     if getattr(args, "details", False):
-        _prod_print_details(by_host, payment_by_host, console)
+        _prod_print_details(by_host, payment_by_host, cache_by_host, console)
     else:
-        _prod_print_table(by_host, payment_by_host, console)
+        _prod_print_table(by_host, payment_by_host, cache_by_host, console)
+
+
+def _bootstrap_cache_segment(cache_by_host: dict[str, bool], host: str) -> str:
+    cache = cache_by_host.get(host)
+    if cache is None:
+        return ""
+    return f" — bootstrap-cache={'on' if cache else 'off'}"
 
 
 def _prod_print_table(
     by_host: dict[str, list[dict]],
     payment_by_host: dict[str, str],
+    cache_by_host: dict[str, bool],
     console: Console,
 ) -> None:
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
         payment = payment_by_host.get(host, "default")
+        cache_seg = _bootstrap_cache_segment(cache_by_host, host)
         skew_label = _clock_skew_label(ops)
         skew_seg = f" — clock skew {skew_label}" if skew_label else ""
         table = Table(
             title=(
-                f"prod_upload — {host} — payment={payment}"
+                f"prod_upload — {host} — payment={payment}{cache_seg}"
                 f"{skew_seg} ({len(ops)} record(s))"
             ),
             title_style="bold",
@@ -492,15 +529,18 @@ def _prod_print_table(
 def _prod_print_details(
     by_host: dict[str, list[dict]],
     payment_by_host: dict[str, str],
+    cache_by_host: dict[str, bool],
     console: Console,
 ) -> None:
     for host in sorted(by_host.keys()):
         ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
         payment = payment_by_host.get(host, "default")
+        cache_seg = _bootstrap_cache_segment(cache_by_host, host)
         skew_label = _clock_skew_label(ops)
         skew_seg = f" — clock skew {skew_label}" if skew_label else ""
         console.rule(
-            f"[bold]{host} — payment={payment}{skew_seg} — {len(ops)} record(s)[/bold]"
+            f"[bold]{host} — payment={payment}{cache_seg}{skew_seg} — "
+            f"{len(ops)} record(s)[/bold]"
         )
         for i, op in enumerate(ops, start=1):
             console.print(f"[bold]#{i}[/bold]")

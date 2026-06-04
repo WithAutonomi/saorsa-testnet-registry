@@ -140,3 +140,21 @@ class TestSleepEnvSemantics:
         # The default lives in main(); we just verify the fallback string
         # is what we expect downstream code to use when env is missing.
         assert int(os.environ.get("SLEEP_INTERVAL_SECS", "900")) == 900
+
+
+class TestResolveBootstrapArgs:
+    def test_cache_enabled_by_default_returns_empty(self, service, monkeypatch):
+        monkeypatch.delenv("BOOTSTRAP_CACHE", raising=False)
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
+        assert service._resolve_bootstrap_args() == []
+
+    def test_cache_disabled_splits_bootstrap_args(self, service, monkeypatch):
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
+        assert service._resolve_bootstrap_args() == ["--bootstrap", "1.2.3.4:10000"]
+
+    def test_cache_disabled_requires_bootstrap_args(self, service, monkeypatch):
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
+        monkeypatch.delenv("BOOTSTRAP_ARGS", raising=False)
+        with pytest.raises(SystemExit):
+            service._resolve_bootstrap_args()

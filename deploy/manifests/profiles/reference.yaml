@@ -56,13 +56,13 @@ testnet:
         size: vhp-8c-16gb-intel                         # → --vultr-plan
 
   clients:                   # optional. Needs >=1 uploader AND >=1 downloader. Remove the block for no clients.
-    uploaders:               # one --uploader per entry: provider:region:file_size_mb[:vm_size][:payment][:ant][:eth][:clock_skew]
+    uploaders:               # one --uploader per entry: provider:region:file_size_mb[:vm_size][:payment][:ant][:eth][:clock_skew][:bootstrap_cache]
       - { provider: vultr,         region: syd,  file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle,    ant: 1000, eth: 0.1, clock_skew: 2h }  # disable timesync + shift this VM's clock by a signed Go-style duration (e.g. 2h, -2h, 30m)
-      - { provider: ovh,           region: UK1,  file_size_mb: 500,  vm_size: b3-8,       payment: no-merkle, ant: 500,  eth: 0.1 }
-      - { provider: digital_ocean, region: nyc1, file_size_mb: 100,  vm_size: s-2vcpu-4gb }   # payment/ant/eth omitted => CLI defaults
-    downloaders:             # one --downloader per entry: provider:region[:vm_size][:clock_skew]
+      - { provider: ovh,           region: UK1,  file_size_mb: 500,  vm_size: b3-8,       payment: no-merkle, ant: 500,  eth: 0.1, bootstrap_cache: false }  # bootstrap_cache: false → legacy --bootstrap invocation (ant peer cache disabled); default true = no --bootstrap + provisioned bootstrap_peers.toml
+      - { provider: digital_ocean, region: nyc1, file_size_mb: 100,  vm_size: s-2vcpu-4gb }   # payment/ant/eth/bootstrap_cache omitted => CLI defaults
+    downloaders:             # one --downloader per entry: provider:region[:vm_size][:clock_skew][:bootstrap_cache]
       - { provider: digital_ocean, region: tor1, vm_size: s-2vcpu-4gb }
-      - { provider: digital_ocean, region: lon1, clock_skew: -2h }   # clock_skew applies to downloaders too (negative = clock runs slow)
+      - { provider: digital_ocean, region: lon1, clock_skew: -2h, bootstrap_cache: false }   # clock_skew applies to downloaders too (negative = clock runs slow); bootstrap_cache likewise per-downloader
 
   elastic:                   # optional log-forwarding stack. Remove the block (or set enabled: false) to skip.
     enabled: true

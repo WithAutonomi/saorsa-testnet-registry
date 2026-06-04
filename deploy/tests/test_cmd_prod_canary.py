@@ -563,3 +563,36 @@ class TestProbeLocalTwoStrike:
         row = probe_mod._state_row(conn, cid)
         assert row[2] == probe_mod.STATUS_ALIVE
         assert row[4] == "B"
+
+
+# --- Bootstrap-cache gating -------------------------------------------------
+
+
+class TestResolveBootstrapArgs:
+    @pytest.mark.parametrize("fixture_name", ["probe_mod", "upload_mod"])
+    def test_cache_enabled_by_default_returns_empty(
+        self, fixture_name, request, monkeypatch
+    ):
+        mod = request.getfixturevalue(fixture_name)
+        monkeypatch.delenv("BOOTSTRAP_CACHE", raising=False)
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
+        assert mod._resolve_bootstrap_args() == []
+
+    @pytest.mark.parametrize("fixture_name", ["probe_mod", "upload_mod"])
+    def test_cache_disabled_splits_bootstrap_args(
+        self, fixture_name, request, monkeypatch
+    ):
+        mod = request.getfixturevalue(fixture_name)
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
+        assert mod._resolve_bootstrap_args() == ["--bootstrap", "1.2.3.4:10000"]
+
+    @pytest.mark.parametrize("fixture_name", ["probe_mod", "upload_mod"])
+    def test_cache_disabled_requires_bootstrap_args(
+        self, fixture_name, request, monkeypatch
+    ):
+        mod = request.getfixturevalue(fixture_name)
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
+        monkeypatch.delenv("BOOTSTRAP_ARGS", raising=False)
+        with pytest.raises(SystemExit):
+            mod._resolve_bootstrap_args()

@@ -16,7 +16,10 @@ the EnvironmentFile= directive on the systemd unit). Cycle behaviour:
 
 Required env:
     BOOTSTRAP_ARGS  Space-separated `--bootstrap host:port` pairs for the prod
-                    Autonomi bootstraps.
+                    Autonomi bootstraps. Only required (and only used) when
+                    BOOTSTRAP_CACHE=false; with the cache enabled (default)
+                    ant runs WITHOUT --bootstrap and reads
+                    ~/.config/ant/bootstrap_peers.toml instead.
     REGION          Tag value for Influx metrics.
     ADDRESSES_FILE  Path to a newline-separated list of public file addresses.
 
@@ -271,8 +274,21 @@ def _run_ant(
     return exit_code, "".join(stdout_chunks), "".join(stderr_chunks)
 
 
+def _resolve_bootstrap_args() -> list[str]:
+    """Resolve the --bootstrap argv fragment from the environment.
+
+    With the bootstrap cache enabled (default), ant is invoked WITHOUT
+    --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml and maintains
+    its peer cache. BOOTSTRAP_CACHE=false restores the legacy explicit
+    --bootstrap invocation, which disables the cache.
+    """
+    if os.environ.get("BOOTSTRAP_CACHE", "true") == "true":
+        return []
+    return _require_env("BOOTSTRAP_ARGS").split()
+
+
 def main() -> int:
-    bootstrap_arg_str = _require_env("BOOTSTRAP_ARGS")
+    bootstrap_args = _resolve_bootstrap_args()
     region = _require_env("REGION")
     addresses_file = _require_env("ADDRESSES_FILE")
 
@@ -288,7 +304,6 @@ def main() -> int:
     influx_org = os.environ.get("INFLUX_ORG", "ant")
     influx_bucket = os.environ.get("INFLUX_BUCKET", "testnet-metrics")
 
-    bootstrap_args = bootstrap_arg_str.split()
     download_dir.mkdir(parents=True, exist_ok=True)
     log_dir = Path(LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)

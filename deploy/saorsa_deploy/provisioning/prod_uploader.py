@@ -20,6 +20,7 @@ Services are NOT started here. Use the start helper in
 """
 
 import base64
+from pathlib import PurePosixPath
 
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
@@ -28,6 +29,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.prod_bootstraps import (
+    REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
+    render_bootstrap_peers_toml,
+)
 from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
@@ -291,12 +296,14 @@ class ProdUploaderProvisioner:
                 u["urls_file_content"].encode("utf-8")
             ).decode("ascii")
             payment_type = u.get("payment_type") or ""
+            bootstrap_cache = "true" if u.get("bootstrap_cache", True) else "false"
             case_entries.append(
                 f'    "{u["ip"]}") '
                 f'REGION={u["region"]}; '
                 f'CLIENT_INDEX={u["client_index"]}; '
                 f'URLS_B64="{urls_b64}"; '
-                f'PAYMENT_TYPE="{payment_type}" ;;'
+                f'PAYMENT_TYPE="{payment_type}"; '
+                f"BOOTSTRAP_CACHE={bootstrap_cache} ;;"
             )
         case_block = "\n".join(case_entries)
 
@@ -309,19 +316,30 @@ class ProdUploaderProvisioner:
                 f"INFLUX_BUCKET={self.influx_bucket}\n"
             )
 
+        # The peers file is written unconditionally: ant only reads it when
+        # invoked without --bootstrap (BOOTSTRAP_CACHE=true), so it is inert
+        # on cache-disabled hosts.
+        peers_toml = render_bootstrap_peers_toml(self.bootstrap_peers)
+        peers_dir = PurePosixPath(REMOTE_BOOTSTRAP_PEERS_TOML_PATH).parent
+
         env_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
-    *) REGION=unknown; CLIENT_INDEX=0; URLS_B64=""; PAYMENT_TYPE="" ;;
+    *) REGION=unknown; CLIENT_INDEX=0; URLS_B64=""; PAYMENT_TYPE=""; \
+BOOTSTRAP_CACHE=true ;;
 esac
 mkdir -p {DATA_DIR}
 echo "$URLS_B64" | base64 -d > {URLS_PATH}
+mkdir -p {peers_dir}
+cat > {REMOTE_BOOTSTRAP_PEERS_TOML_PATH} << 'PEERS_EOF'
+{peers_toml}PEERS_EOF
 cat > {ENV_PATH} << ENV_EOF
 HOME=/root
 REGION=$REGION
 CLIENT_INDEX=$CLIENT_INDEX
 BOOTSTRAP_ARGS="{bootstrap_args}"
+BOOTSTRAP_CACHE=$BOOTSTRAP_CACHE
 SECRET_KEY={secret_key}
 ANT={ANT_INSTALL_PATH}
 URLS_FILE={URLS_PATH}

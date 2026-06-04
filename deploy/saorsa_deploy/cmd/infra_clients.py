@@ -23,10 +23,13 @@ ROLE_DOWNLOAD = "download"
 
 
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
-_VALID_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew")
-_VALID_DOWNLOADER_KEYS = ("clock_skew",)
+_VALID_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew", "bootstrap_cache")
+_VALID_DOWNLOADER_KEYS = ("clock_skew", "bootstrap_cache")
 DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
+# ant peer cache default: invoke ant WITHOUT --bootstrap, shipping a
+# bootstrap_peers.toml instead. bootstrap_cache=false restores --bootstrap.
+DEFAULT_BOOTSTRAP_CACHE = True
 
 
 def _parse_clock_skew(spec: str, value: str) -> int:
@@ -38,6 +41,17 @@ def _parse_clock_skew(spec: str, value: str) -> int:
         return parse_skew_duration(value)
     except ValueError as e:
         raise ValueError(f"Invalid spec '{spec}': {e}")
+
+
+def _parse_bootstrap_cache(spec: str, value: str) -> bool:
+    """Validate a ``bootstrap_cache=`` spec option into a bool."""
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(
+        f"Invalid spec '{spec}': bootstrap_cache must be 'true' or 'false', got '{value}'."
+    )
 
 
 def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
@@ -63,7 +77,7 @@ def parse_uploader_spec(spec: str) -> dict:
     """Parse an uploader spec.
 
     Format:
-    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION]``
+    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL]``
 
     ``provider`` is mandatory and must be one of digital_ocean, vultr,
     hetzner, ovh. Region names and VM sizes vary per provider and are passed
@@ -72,7 +86,8 @@ def parse_uploader_spec(spec: str) -> dict:
     Returns a dict with keys: role=upload, provider (canonical internal name),
     region, file_size_mb, vm_size, payment_type (None unless ``payment=merkle``
     or ``payment=no-merkle``), ant_funding (str numeric, default "100"),
-    eth_funding (str numeric, default "0.5").
+    eth_funding (str numeric, default "0.5"), bootstrap_cache (bool, default
+    True — invoke ant without --bootstrap, shipping a bootstrap_peers.toml).
     """
     raw_parts = spec.split(":")
     positional: list[str] = []
@@ -136,6 +151,11 @@ def parse_uploader_spec(spec: str) -> dict:
         if "clock_skew" in options
         else None
     )
+    bootstrap_cache = (
+        _parse_bootstrap_cache(spec, options["bootstrap_cache"])
+        if "bootstrap_cache" in options
+        else DEFAULT_BOOTSTRAP_CACHE
+    )
 
     return {
         "role": ROLE_UPLOAD,
@@ -147,15 +167,18 @@ def parse_uploader_spec(spec: str) -> dict:
         "ant_funding": ant_funding,
         "eth_funding": eth_funding,
         "clock_skew": clock_skew,
+        "bootstrap_cache": bootstrap_cache,
     }
 
 
 def parse_downloader_spec(spec: str) -> dict:
-    """Parse a downloader spec: 'provider:region[:vm_size][:clock_skew=DURATION]'.
+    """Parse a downloader spec:
+    'provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL]'.
 
     ``provider`` is mandatory (digital_ocean, vultr, hetzner, ovh). Returns a
     dict with keys: role=download, provider (canonical internal name), region,
-    vm_size, clock_skew (signed seconds int, or None when unset).
+    vm_size, clock_skew (signed seconds int, or None when unset),
+    bootstrap_cache (bool, default True).
     """
     raw_parts = spec.split(":")
     positional: list[str] = []
@@ -193,12 +216,18 @@ def parse_downloader_spec(spec: str) -> dict:
         if "clock_skew" in options
         else None
     )
+    bootstrap_cache = (
+        _parse_bootstrap_cache(spec, options["bootstrap_cache"])
+        if "bootstrap_cache" in options
+        else DEFAULT_BOOTSTRAP_CACHE
+    )
     return {
         "role": ROLE_DOWNLOAD,
         "provider": provider,
         "region": region,
         "vm_size": vm_size,
         "clock_skew": clock_skew,
+        "bootstrap_cache": bootstrap_cache,
     }
 
 
@@ -215,6 +244,7 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("ant_funding"),
         spec.get("eth_funding"),
         spec.get("clock_skew"),
+        spec.get("bootstrap_cache", DEFAULT_BOOTSTRAP_CACHE),
     )
 
 

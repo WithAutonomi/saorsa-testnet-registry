@@ -56,6 +56,7 @@ class TestParseSpec:
             "urls_file": str(urls_file),
             "payment_type": None,
             "clock_skew": None,
+            "bootstrap_cache": True,
         }
 
     def test_missing_urls_rejected(self):
@@ -106,6 +107,31 @@ class TestParseSpec:
             parse_prod_uploader_spec(
                 f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=merkle:payment=no-merkle"
             )
+
+
+    def test_bootstrap_cache_defaults_to_true(self, urls_file):
+        spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}")
+        assert spec["bootstrap_cache"] is True
+
+    @pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
+    def test_bootstrap_cache_key_accepted(self, urls_file, value, expected):
+        spec = parse_prod_uploader_spec(
+            f"lon1:s-2vcpu-4gb:urls={urls_file}:bootstrap_cache={value}"
+        )
+        assert spec["bootstrap_cache"] is expected
+
+    def test_bootstrap_cache_invalid_value_rejected(self, urls_file):
+        with pytest.raises(ValueError, match="bootstrap_cache"):
+            parse_prod_uploader_spec(
+                f"lon1:s-2vcpu-4gb:urls={urls_file}:bootstrap_cache=yes"
+            )
+
+    def test_bootstrap_cache_combines_with_payment(self, urls_file):
+        spec = parse_prod_uploader_spec(
+            f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=merkle:bootstrap_cache=false"
+        )
+        assert spec["payment_type"] == "merkle"
+        assert spec["bootstrap_cache"] is False
 
 
 class TestReadUrlsFile:
@@ -282,6 +308,18 @@ class TestDeployHappyPath:
         assert [u["payment_type"] for u in payload["uploaders"]] == [
             "merkle", None, "no-merkle",
         ]
+
+
+    def test_deploy_records_per_uploader_bootstrap_cache(
+        self, deploy_patches, urls_file
+    ):
+        args = _deploy_args([
+            f"lon1:s-2vcpu-4gb:urls={urls_file}:bootstrap_cache=false",
+            f"nyc1:s-4vcpu-8gb:urls={urls_file}",
+        ])
+        cmd_prod_uploaders_deploy(args)
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert [u["bootstrap_cache"] for u in payload["uploaders"]] == [False, True]
 
 
 class TestDeployFailure:

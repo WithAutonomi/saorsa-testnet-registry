@@ -2,7 +2,11 @@
 set -euo pipefail
 
 # --- Configuration (set via environment) ---
-: "${BOOTSTRAP_ARGS:?BOOTSTRAP_ARGS must be set}"
+: "${BOOTSTRAP_CACHE:=true}"
+if [ "$BOOTSTRAP_CACHE" != "true" ]; then
+    : "${BOOTSTRAP_ARGS:?BOOTSTRAP_ARGS must be set when BOOTSTRAP_CACHE=false}"
+fi
+: "${BOOTSTRAP_ARGS:=}"
 : "${FILE_SIZE_KB:?FILE_SIZE_KB must be set (e.g. 51200 for 50MB)}"
 : "${SECRET_KEY:?SECRET_KEY must be set}"
 : "${ADDRESSES_S3_BUCKET:?ADDRESSES_S3_BUCKET must be set}"
@@ -31,6 +35,14 @@ case "$PAYMENT_TYPE" in
     merkle)    PAYMENT_FLAG=(--merkle) ;;
     no-merkle) PAYMENT_FLAG=(--no-merkle) ;;
 esac
+
+# With the bootstrap cache enabled (default), ant is invoked WITHOUT
+# --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml (written by the
+# provisioner) and maintains its peer cache. BOOTSTRAP_CACHE=false restores
+# the legacy explicit --bootstrap invocation, which disables the cache.
+if [ "$BOOTSTRAP_CACHE" = "true" ]; then
+    BOOTSTRAP_ARGS=""
+fi
 
 CLIENT_HOST=$(hostname)
 S3_KEY="${ADDRESSES_S3_PREFIX}/upload-${REGION}-${CLIENT_INDEX}.txt"

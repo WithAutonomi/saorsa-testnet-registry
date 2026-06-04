@@ -51,8 +51,20 @@ MONITORING_REGION = "lon1"
 DEFAULT_MONITORING_VOLUME_SIZE = 50
 
 
-_KNOWN_SPEC_KEYS = ("urls", "payment", "clock_skew")
+_KNOWN_SPEC_KEYS = ("urls", "payment", "clock_skew", "bootstrap_cache")
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
+
+
+def _parse_bootstrap_cache_token(spec: str, value: str) -> bool:
+    """Validate a ``bootstrap_cache=`` uploader-spec token into a bool."""
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(
+        f"Invalid uploader spec '{spec}': bootstrap_cache must be 'true' or "
+        f"'false', got '{value}'."
+    )
 
 
 def _parse_clock_skew_token(spec: str, value: str) -> int:
@@ -69,10 +81,12 @@ def _parse_clock_skew_token(spec: str, value: str) -> int:
 def parse_prod_uploader_spec(spec: str) -> dict:
     """Parse a ``--uploader`` spec.
 
-    Format: ``REGION:VM_SIZE:urls=PATH[:payment=MODE]``. Tail tokens are
-    key=value; ``urls`` is required, ``payment`` is optional and must be
-    ``merkle`` or ``no-merkle``. Returns a dict with keys ``region``,
-    ``vm_size``, ``urls_file`` (str), and ``payment_type`` (str | None).
+    Format: ``REGION:VM_SIZE:urls=PATH[:payment=MODE][:bootstrap_cache=BOOL]``.
+    Tail tokens are key=value; ``urls`` is required, ``payment`` is optional
+    and must be ``merkle`` or ``no-merkle``. Returns a dict with keys
+    ``region``, ``vm_size``, ``urls_file`` (str), ``payment_type``
+    (str | None), and ``bootstrap_cache`` (bool, default True — invoke ant
+    without --bootstrap, shipping a bootstrap_peers.toml).
     """
     parts = spec.split(":")
     if len(parts) < 3:
@@ -141,6 +155,11 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         if "clock_skew" in options
         else None
     )
+    bootstrap_cache = (
+        _parse_bootstrap_cache_token(spec, options["bootstrap_cache"])
+        if "bootstrap_cache" in options
+        else True
+    )
 
     return {
         "region": region,
@@ -148,6 +167,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "urls_file": urls_file,
         "payment_type": payment_type,
         "clock_skew": clock_skew,
+        "bootstrap_cache": bootstrap_cache,
     }
 
 
@@ -373,8 +393,11 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
         )
         return
 
+    # bootstrap_cache is carried through so client_state records the real
+    # per-VM cache mode (the print/slack surfaces read it from there).
     synth_uploader_specs = [
         f"digital_ocean:{s['region']}:0:{s['vm_size']}"
+        f":bootstrap_cache={str(s.get('bootstrap_cache', True)).lower()}"
         for s in parsed_specs
     ]
     console.print(
@@ -429,6 +452,7 @@ def _provision_uploaders(
             "urls_file_content": spec["_urls_file_content"],
             "payment_type": spec.get("payment_type"),
             "clock_skew": spec.get("clock_skew", False),
+            "bootstrap_cache": spec.get("bootstrap_cache", True),
         })
 
     secret_key = _resolve_secret_key(args, console)
@@ -581,6 +605,7 @@ def cmd_prod_uploaders_deploy(args):
                 "file_names": _extract_file_names(s["_urls_file_content"]),
                 "payment_type": s.get("payment_type"),
                 "clock_skew": s.get("clock_skew", False),
+                "bootstrap_cache": s.get("bootstrap_cache", True),
             }
             for s in parsed_specs
         ],

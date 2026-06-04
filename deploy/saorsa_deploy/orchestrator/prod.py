@@ -22,7 +22,16 @@ def _prod_uploader_spec(u) -> str:
         spec += f":payment={u.payment}"
     if u.clock_skew:
         spec += f":clock_skew={u.clock_skew}"
+    if u.bootstrap_cache is not None:
+        spec += f":bootstrap_cache={str(u.bootstrap_cache).lower()}"
     return spec
+
+
+def _bootstrap_cache_flag(spec) -> list[str]:
+    """argparse BooleanOptionalAction flag for spec-level bootstrap_cache."""
+    if spec.bootstrap_cache is None:
+        return []
+    return ["--bootstrap-cache"] if spec.bootstrap_cache else ["--no-bootstrap-cache"]
 
 
 def _probe_spec(p) -> str:
@@ -63,6 +72,7 @@ def _downloaders(manifest: Manifest) -> list[Step]:
         argv += ["--addresses-path", spec.addresses_path]
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
+    argv += _bootstrap_cache_flag(spec)
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
@@ -89,6 +99,7 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
         argv += ["--sleep-interval-secs", str(spec.sleep_interval_secs)]
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
+    argv += _bootstrap_cache_flag(spec)
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
@@ -116,6 +127,7 @@ def _canary(manifest: Manifest) -> list[Step]:
         argv += ["--upload-sleep-secs", str(spec.upload_sleep_secs)]
     if spec.probe_concurrency is not None:
         argv += ["--probe-concurrency", str(spec.probe_concurrency)]
+    argv += _bootstrap_cache_flag(spec)
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
@@ -133,6 +145,7 @@ def _local_uploads(manifest: Manifest) -> list[Step]:
     if spec.payment is not None:
         argv += ["--payment", spec.payment]
     argv += ["--verbose"] * spec.verbose
+    argv += _bootstrap_cache_flag(spec)
     argv += ant_binary_flags(spec.binary)
     return [Step(argv, "Run prod uploads from the local machine")]
 
@@ -151,6 +164,7 @@ def _local_downloads(manifest: Manifest) -> list[Step]:
     ]
     if spec.keep_output_dir is not None:
         argv += ["--keep-output-dir", spec.keep_output_dir]
+    argv += _bootstrap_cache_flag(spec)
     argv += ant_binary_flags(spec.binary)
     return [Step(argv, "Run prod downloads from the local machine")]
 

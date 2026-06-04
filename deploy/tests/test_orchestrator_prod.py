@@ -384,3 +384,134 @@ def test_prod_local_downloads_keep_output_dir():
     assert argv[argv.index("--addresses-path") + 1] == "/addrs.txt"
     assert argv[argv.index("--keep-output-dir") + 1] == "/out"
     assert build_destroy_steps(m) == []
+
+
+# --------------------------------------------------------------------------- #
+# bootstrap_cache
+# --------------------------------------------------------------------------- #
+def test_prod_uploaders_bootstrap_cache_appends_token():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [
+                    {
+                        "region": "lon1",
+                        "vm_size": "s-2vcpu-4gb",
+                        "urls": "/a.txt",
+                        "bootstrap_cache": False,
+                    }
+                ],
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    spec = argv[argv.index("--uploader") + 1]
+    assert spec == "lon1:s-2vcpu-4gb:urls=/a.txt:bootstrap_cache=false"
+
+
+def test_prod_downloaders_bootstrap_cache_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "D",
+            "kind": "prod-downloaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_downloaders": {
+                "spec": "lon1",
+                "binary": {"version": "1"},
+                "bootstrap_cache": False,
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--no-bootstrap-cache" in argv
+    assert "--bootstrap-cache" not in argv
+
+
+def test_prod_continuous_downloader_bootstrap_cache_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "D",
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_continuous_downloader": {
+                "spec": "lon1",
+                "binary": {"version": "1"},
+                "bootstrap_cache": True,
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--bootstrap-cache" in argv
+    assert "--no-bootstrap-cache" not in argv
+
+
+def test_prod_canary_bootstrap_cache_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "C",
+            "kind": "prod-canary",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_canary": {
+                "binary": {"version": "1"},
+                "upload_spec": "lon1",
+                "probes": [{"region": "lon1", "count": 4}],
+                "urls_file": "/u.txt",
+                "bootstrap_cache": False,
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--no-bootstrap-cache" in argv
+
+
+def test_prod_local_kinds_bootstrap_cache_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "LU",
+            "kind": "prod-local-uploads",
+            "purpose": "p",
+            "prod_local_uploads": {
+                "binary": {"version": "1"},
+                "urls": "/l.txt",
+                "bootstrap_cache": False,
+            },
+        }
+    )
+    assert "--no-bootstrap-cache" in build_deploy_steps(m)[0].argv
+
+    m = Manifest.model_validate(
+        {
+            "name": "LD",
+            "kind": "prod-local-downloads",
+            "purpose": "p",
+            "prod_local_downloads": {
+                "binary": {"version": "1"},
+                "addresses_path": "/a.txt",
+                "bootstrap_cache": True,
+            },
+        }
+    )
+    assert "--bootstrap-cache" in build_deploy_steps(m)[0].argv
+
+
+def test_bootstrap_cache_flag_omitted_when_unset():
+    m = Manifest.model_validate(
+        {
+            "name": "D",
+            "kind": "prod-downloaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_downloaders": {"spec": "lon1", "binary": {"version": "1"}},
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--bootstrap-cache" not in argv
+    assert "--no-bootstrap-cache" not in argv

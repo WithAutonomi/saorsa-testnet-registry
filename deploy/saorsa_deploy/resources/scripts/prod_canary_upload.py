@@ -21,7 +21,8 @@ the operator destroys it. A second invocation against the same URL list is
 a no-op (position-file plus belt-and-braces Influx existence check).
 
 Required env:
-    BOOTSTRAP_ARGS    Space-separated ``--bootstrap host:port`` pairs.
+    BOOTSTRAP_ARGS    Space-separated ``--bootstrap host:port`` pairs. Only
+                      required (and only used) when BOOTSTRAP_CACHE=false.
     SECRET_KEY        Wallet secret key (Arbitrum One funded; with or
                       without the ``0x`` prefix).
     REGION            Tag value for Influx metrics.
@@ -425,8 +426,21 @@ def _write_position(path: Path, value: int) -> None:
     tmp.replace(path)
 
 
+def _resolve_bootstrap_args() -> list:
+    """Resolve the --bootstrap argv fragment from the environment.
+
+    With the bootstrap cache enabled (default), ant is invoked WITHOUT
+    --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml and maintains
+    its peer cache. BOOTSTRAP_CACHE=false restores the legacy explicit
+    --bootstrap invocation, which disables the cache.
+    """
+    if os.environ.get("BOOTSTRAP_CACHE", "true") == "true":
+        return []
+    return _require_env("BOOTSTRAP_ARGS").split()
+
+
 def main() -> int:
-    bootstrap_arg_str = _require_env("BOOTSTRAP_ARGS")
+    bootstrap_args = _resolve_bootstrap_args()
     secret_key = _require_env("SECRET_KEY")
     region = _require_env("REGION")
     deployment_name = _require_env("DEPLOYMENT_NAME")
@@ -447,7 +461,6 @@ def main() -> int:
     if not secret_key.startswith("0x"):
         secret_key = "0x" + secret_key
 
-    bootstrap_args = bootstrap_arg_str.split()
     work_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     host = socket.gethostname()

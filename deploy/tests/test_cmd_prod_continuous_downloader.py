@@ -159,6 +159,16 @@ class TestDeployHappyPath:
         assert payload["kind"] == "prod-continuous-downloader"
         assert payload["spec"] == "lon1"
 
+    def test_deploy_records_bootstrap_cache_default_true(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(_deploy_args())
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["bootstrap_cache"] is True
+
+    def test_deploy_records_bootstrap_cache_false(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(_deploy_args(bootstrap_cache=False))
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["bootstrap_cache"] is False
+
     def test_deploy_persists_parsed_addresses_list(
         self, deploy_patches, tmp_path
     ):
@@ -198,7 +208,9 @@ class TestDeployHappyPath:
 
         infra_args = deploy_patches.infra_clients.call_args.args[0]
         assert infra_args.uploader == []
-        assert infra_args.downloader == ["digital_ocean:nyc1:s-4vcpu-8gb"]
+        assert infra_args.downloader == [
+            "digital_ocean:nyc1:s-4vcpu-8gb:bootstrap_cache=true"
+        ]
 
 
 class TestDeployFailure:

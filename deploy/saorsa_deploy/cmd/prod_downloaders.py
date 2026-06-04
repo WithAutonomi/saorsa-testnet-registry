@@ -113,10 +113,15 @@ def _ensure_client_infra(args, console: Console) -> None:
     console.print(f"[bold cyan]Step 3/5: creating downloader VM ({args.spec})[/bold cyan]")
     # prod downloaders are Digital Ocean only (--spec carries no provider
     # field); prefix the provider parse_downloader_spec now requires.
+    # bootstrap_cache is carried through so client_state records the real
+    # per-VM cache mode (the print/slack surfaces read it from there).
+    cache_token = (
+        f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
+    )
     infra_args = SimpleNamespace(
         name=args.name,
         uploader=[],
-        downloader=[f"digital_ocean:{args.spec}"],
+        downloader=[f"digital_ocean:{args.spec}:{cache_token}"],
         force=False,
     )
     cmd_infra_clients(infra_args)
@@ -205,6 +210,7 @@ def _provision_prod_downloader(
             "region": c.get("region", "unknown"),
             "addresses_file_content": addresses_file_content,
             "clock_skew": _resolve_clock_skew(args),
+            "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         }
         for c in clients
         if c.get("ip")
@@ -356,6 +362,7 @@ def cmd_prod_downloaders_deploy(args):
         "monitoring_name": args.name,
         "spec": args.spec,
         "clock_skew": clock_skew_seconds,
+        "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         "purpose": args.purpose,
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version

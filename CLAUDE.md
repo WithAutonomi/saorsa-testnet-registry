@@ -149,6 +149,21 @@ For testnet/extension kinds, **monitoring (InfluxDB + Grafana) defaults ON**
 client upload/download metrics are captured; Elasticsearch log-forwarding stays
 opt-in.
 
+Every client kind accepts a **`bootstrap_cache`** option (default **true**) —
+per-entry on testnet `clients.uploaders[]`/`clients.downloaders[]` and
+`prod_uploaders.uploaders[]` (spec token `bootstrap_cache=true|false`),
+spec-level on the downloader/canary/local kinds (CLI flag
+`--bootstrap-cache/--no-bootstrap-cache`). When true the service invokes `ant`
+**without** `--bootstrap`, which enables the client's peer cache; the peers
+come from a `bootstrap_peers.toml` written to ant's config dir
+(`/root/.config/ant/` on client VMs — testnet bootstrap addresses for testnet
+kinds, the production list for prod kinds; for local-uploads/downloads the
+operator's `~/.config/ant/bootstrap_peers.toml` is written only when missing,
+never overwritten). `bootstrap_cache: false` restores the legacy explicit
+`--bootstrap` invocation, which disables the cache. The cache state per client
+is surfaced by `deployments slack-post`, `print-uploads`/`print-downloads`,
+and `generate-inventory`.
+
 A top-level `slack_post: true` (valid for **every** kind) appends a final
 `deployments slack-post --name <name>` step to `up`, posting a deployment
 summary once it's up. `slack-post` has two paths: when

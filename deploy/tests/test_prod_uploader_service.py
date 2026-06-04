@@ -196,3 +196,26 @@ class TestInfluxLineReason:
     def test_empty_reason_emits_empty_string(self, service):
         line = TestInfluxLine()._line(service)
         assert 'reason=""' in line
+
+
+class TestResolveBootstrapArgs:
+    def test_cache_enabled_by_default_returns_empty(self, service, monkeypatch):
+        monkeypatch.delenv("BOOTSTRAP_CACHE", raising=False)
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
+        assert service._resolve_bootstrap_args() == []
+
+    def test_cache_enabled_explicit_returns_empty(self, service, monkeypatch):
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "true")
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
+        assert service._resolve_bootstrap_args() == []
+
+    def test_cache_disabled_splits_bootstrap_args(self, service, monkeypatch):
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
+        assert service._resolve_bootstrap_args() == ["--bootstrap", "1.2.3.4:10000"]
+
+    def test_cache_disabled_requires_bootstrap_args(self, service, monkeypatch):
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
+        monkeypatch.delenv("BOOTSTRAP_ARGS", raising=False)
+        with pytest.raises(SystemExit):
+            service._resolve_bootstrap_args()

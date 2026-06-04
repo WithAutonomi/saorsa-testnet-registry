@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from saorsa_deploy.cmd.print_file_ops import (
+    _build_bootstrap_cache_map,
     _build_payment_map,
     _clock_skew_label,
     _clock_skew_seconds,
@@ -211,3 +212,40 @@ def test_fmt_started_is_completion_minus_duration_not_skewed_start():
     assert _fmt_started(op) == "2026-04-23 11:57:00"
     assert _fmt_started({"_time": NOW, "total_ms": None}) == "2026-04-23 12:00:00"
     assert _fmt_started({"_time": None, "total_ms": 1000}) == "-"
+
+
+def test_build_bootstrap_cache_map_covers_both_roles():
+    state = {
+        "clients": [
+            {
+                "role": "upload", "region": "tor1", "client_index": 9,
+                "bootstrap_cache": True,
+            },
+            {
+                "role": "download", "region": "fra1", "client_index": 2,
+                "bootstrap_cache": False,
+            },
+            {
+                # predates the option — absent from the map
+                "role": "download", "region": "ams3", "client_index": 3,
+            },
+        ]
+    }
+    with patch(
+        "saorsa_deploy.cmd.print_file_ops.load_client_state",
+        return_value=state,
+    ):
+        m = _build_bootstrap_cache_map("STG-01")
+
+    assert m == {
+        "STG-01-ant-client-upload-tor1-9": True,
+        "STG-01-ant-client-download-fra1-2": False,
+    }
+
+
+def test_build_bootstrap_cache_map_returns_empty_when_state_missing():
+    with patch(
+        "saorsa_deploy.cmd.print_file_ops.load_client_state",
+        side_effect=RuntimeError("no state"),
+    ):
+        assert _build_bootstrap_cache_map("MISSING-01") == {}

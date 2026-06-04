@@ -502,3 +502,46 @@ def test_extension_destroy_ends_with_unextend():
     steps = build_destroy_steps(_extension())
     assert steps[0].argv[:2] == ["nodes", "destroy"]
     assert steps[-1].argv == ["deployments", "unextend", "--name", "DEV-02", "--force"]
+
+
+def test_clients_bootstrap_cache_token_in_specs():
+    m = _minimal(
+        binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "1.0"}},
+        nodes={"per_vm": 5, "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}}},
+        clients={
+            "uploaders": [
+                {
+                    "provider": "vultr",
+                    "region": "syd",
+                    "file_size_mb": 100,
+                    "bootstrap_cache": False,
+                }
+            ],
+            "downloaders": [
+                {"provider": "digital_ocean", "region": "lon1", "bootstrap_cache": True}
+            ],
+        },
+    )
+    steps = build_deploy_steps(m)
+    cinfra = next(s for s in steps if s.argv[:2] == ["clients", "infra"])
+    up = cinfra.argv[cinfra.argv.index("--uploader") + 1]
+    dl = cinfra.argv[cinfra.argv.index("--downloader") + 1]
+    assert up.endswith("bootstrap_cache=false")
+    assert dl.endswith("bootstrap_cache=true")
+
+
+def test_clients_bootstrap_cache_token_omitted_when_unset():
+    m = _minimal(
+        binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "1.0"}},
+        nodes={"per_vm": 5, "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}}},
+        clients={
+            "uploaders": [{"provider": "vultr", "region": "syd", "file_size_mb": 100}],
+            "downloaders": [{"provider": "digital_ocean", "region": "lon1"}],
+        },
+    )
+    steps = build_deploy_steps(m)
+    cinfra = next(s for s in steps if s.argv[:2] == ["clients", "infra"])
+    up = cinfra.argv[cinfra.argv.index("--uploader") + 1]
+    dl = cinfra.argv[cinfra.argv.index("--downloader") + 1]
+    assert "bootstrap_cache" not in up
+    assert "bootstrap_cache" not in dl

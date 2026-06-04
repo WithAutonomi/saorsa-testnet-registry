@@ -46,6 +46,7 @@ from saorsa_deploy.binary_source import (
 from saorsa_deploy.prod_bootstraps import (
     PROD_BOOTSTRAPS_URL,
     ProdBootstrapsError,
+    ensure_local_bootstrap_peers_file,
     fetch_prod_bootstraps,
 )
 from saorsa_deploy.registry import (
@@ -170,6 +171,47 @@ def _resolve_ant_binary(
 
 
 # ---------- ant invocation + parsing -----------------------------------------
+
+
+def _resolve_bootstrap_args(args, console: Console) -> list[str]:
+    """Resolve the --bootstrap argv fragment for the local ant invocations.
+
+    With the bootstrap cache enabled (default), ant is invoked WITHOUT
+    --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml and maintains its
+    peer cache. The file is created from the fetched prod list only when
+    missing — an existing operator file is never overwritten.
+    --no-bootstrap-cache restores the legacy explicit --bootstrap invocation.
+    """
+    if getattr(args, "bootstrap_cache", True):
+        try:
+            peers_path, created = ensure_local_bootstrap_peers_file()
+        except ProdBootstrapsError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
+        if created:
+            console.print(
+                f"[bold]Bootstrap cache enabled:[/bold] wrote {peers_path} "
+                f"from {PROD_BOOTSTRAPS_URL}"
+            )
+        else:
+            console.print(
+                f"[bold]Bootstrap cache enabled:[/bold] using existing {peers_path}"
+            )
+        return []
+
+    console.print(
+        f"[bold]Resolving prod bootstraps from {PROD_BOOTSTRAPS_URL}...[/bold]"
+    )
+    try:
+        peers = fetch_prod_bootstraps()
+    except ProdBootstrapsError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    bootstrap_args: list[str] = []
+    for peer in peers:
+        bootstrap_args.extend(["--bootstrap", peer])
+    return bootstrap_args
 
 
 def _parse_download_secs(stdout: str) -> float:
@@ -323,16 +365,7 @@ def cmd_prod_local_downloads(args) -> None:
         )
         sys.exit(1)
 
-    console.print(f"[bold]Resolving prod bootstraps from {PROD_BOOTSTRAPS_URL}...[/bold]")
-    try:
-        peers = fetch_prod_bootstraps()
-    except ProdBootstrapsError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
-
-    bootstrap_args: list[str] = []
-    for peer in peers:
-        bootstrap_args.extend(["--bootstrap", peer])
+    bootstrap_args = _resolve_bootstrap_args(args, console)
 
     ant_path, resolved_version = _resolve_ant_binary(
         branch_name=args.branch_name,
@@ -368,6 +401,7 @@ def cmd_prod_local_downloads(args) -> None:
         "addresses_path": str(addresses_path),
         "addresses": addresses,
         "address_count": len(addresses),
+        "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         "output_mode": "keep" if keep_output else "temp",
         "output_dir": str(output_root),
         "host": host,

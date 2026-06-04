@@ -18,6 +18,10 @@ PROD_BOOTSTRAPS_URL = (
 
 DEFAULT_PROD_BOOTSTRAPS_PATH = "~/.config/ant/bootstrap_peers.toml"
 
+# Client VMs run every ant service as root, so this is where the ant client
+# resolves its config dir when no --bootstrap argument is supplied.
+REMOTE_BOOTSTRAP_PEERS_TOML_PATH = "/root/.config/ant/bootstrap_peers.toml"
+
 _FETCH_TIMEOUT_SECONDS = 15
 
 
@@ -55,6 +59,42 @@ def fetch_prod_bootstraps(url: str = PROD_BOOTSTRAPS_URL) -> list[str]:
             f"Prod bootstraps TOML at {url} contains non-string entries in 'peers'."
         )
     return list(peers)
+
+
+def render_bootstrap_peers_toml(peers: list[str]) -> str:
+    """Render a ``bootstrap_peers.toml`` document from bare ``ip:port`` strings.
+
+    This is the file the ant client loads from its config dir when invoked
+    without ``--bootstrap`` (which is also what enables its peer cache).
+    """
+    lines = ["peers = ["]
+    lines.extend(f'    "{peer}",' for peer in peers)
+    lines.append("]")
+    return "\n".join(lines) + "\n"
+
+
+def ensure_local_bootstrap_peers_file(
+    path: str | Path | None = None,
+) -> tuple[Path, bool]:
+    """Ensure the operator's ``bootstrap_peers.toml`` exists, returning
+    ``(path, created)``.
+
+    Used by the local-uploads/downloads commands when the bootstrap cache is
+    enabled: ant (invoked without ``--bootstrap``) reads this file from its
+    config dir. An existing file is NEVER overwritten — it is the operator's
+    own machine config; only a missing file is created, from the fetched
+    production peers list.
+
+    Raises ``ProdBootstrapsError`` if the file is missing and the fetch fails.
+    """
+    raw_path = path if path is not None else DEFAULT_PROD_BOOTSTRAPS_PATH
+    peers_path = Path(raw_path).expanduser()
+    if peers_path.exists():
+        return peers_path, False
+    peers = fetch_prod_bootstraps()
+    peers_path.parent.mkdir(parents=True, exist_ok=True)
+    peers_path.write_text(render_bootstrap_peers_toml(peers))
+    return peers_path, True
 
 
 def load_prod_bootstraps_from_file(

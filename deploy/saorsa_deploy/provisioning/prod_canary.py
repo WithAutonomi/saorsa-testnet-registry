@@ -15,6 +15,7 @@ Services ARE started by both provisioners (no separate start step).
 """
 
 import base64
+from pathlib import PurePosixPath
 
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
@@ -23,6 +24,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.prod_bootstraps import (
+    REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
+    render_bootstrap_peers_toml,
+)
 from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
@@ -158,12 +163,14 @@ class ProdCanaryUploadProvisioner:
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
         evm_network: str = "arbitrum-one",
+        bootstrap_cache: bool = True,
         console: Console | None = None,
     ):
         self.host_ip = host_ip
         self.region = region
         self.deployment_name = deployment_name
         self.bootstrap_peers = bootstrap_peers
+        self.bootstrap_cache = bootstrap_cache
         self.wallet_secret_key = wallet_secret_key
         self.urls_file_content = urls_file_content
         self.upload_sleep_secs = upload_sleep_secs
@@ -290,6 +297,7 @@ class ProdCanaryUploadProvisioner:
             "REGION": self.region,
             "DEPLOYMENT_NAME": self.deployment_name,
             "BOOTSTRAP_ARGS": f'"{bootstrap_args}"',
+            "BOOTSTRAP_CACHE": "true" if self.bootstrap_cache else "false",
             "SECRET_KEY": secret_key,
             "ANT": ANT_INSTALL_PATH,
             "URLS_FILE": UPLOAD_URLS_PATH,
@@ -305,9 +313,18 @@ class ProdCanaryUploadProvisioner:
         }
         env_lines = _format_env_lines(env)
 
+        # The peers file is written unconditionally: ant only reads it when
+        # invoked without --bootstrap (BOOTSTRAP_CACHE=true), so it is inert
+        # on cache-disabled hosts.
+        peers_toml = render_bootstrap_peers_toml(self.bootstrap_peers)
+        peers_dir = PurePosixPath(REMOTE_BOOTSTRAP_PEERS_TOML_PATH).parent
+
         script = (
             f"mkdir -p {DATA_DIR}\n"
             f'echo "{urls_b64}" | base64 -d > {UPLOAD_URLS_PATH}\n'
+            f"mkdir -p {peers_dir}\n"
+            f"cat > {REMOTE_BOOTSTRAP_PEERS_TOML_PATH} << 'PEERS_EOF'\n"
+            f"{peers_toml}PEERS_EOF\n"
             f"cat > {ENV_PATH} << 'ENV_EOF'\n"
             f"{env_lines}ENV_EOF"
         )
@@ -342,12 +359,14 @@ class ProdCanaryProbeProvisioner:
         influx_token: str = "",
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
+        bootstrap_cache: bool = True,
         console: Console | None = None,
     ):
         self.probes = probes
         self.shard_count = shard_count
         self.deployment_name = deployment_name
         self.bootstrap_peers = bootstrap_peers
+        self.bootstrap_cache = bootstrap_cache
         self.probe_concurrency = probe_concurrency
         self.ssh_key_path = ssh_key_path
         self.binary_url = binary_url
@@ -478,6 +497,7 @@ class ProdCanaryProbeProvisioner:
             "HOME": "/root",
             "DEPLOYMENT_NAME": self.deployment_name,
             "BOOTSTRAP_ARGS": f'"{bootstrap_args}"',
+            "BOOTSTRAP_CACHE": "true" if self.bootstrap_cache else "false",
             "ANT": ANT_INSTALL_PATH,
             "WORK_DIR": f"{DATA_DIR}/probe-files",
             "STATE_FILE": PROBE_STATE_PATH,
@@ -489,6 +509,12 @@ class ProdCanaryProbeProvisioner:
             "INFLUX_BUCKET": self.influx_bucket,
         })
 
+        # The peers file is written unconditionally: ant only reads it when
+        # invoked without --bootstrap (BOOTSTRAP_CACHE=true), so it is inert
+        # on cache-disabled hosts.
+        peers_toml = render_bootstrap_peers_toml(self.bootstrap_peers)
+        peers_dir = PurePosixPath(REMOTE_BOOTSTRAP_PEERS_TOML_PATH).parent
+
         script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
@@ -496,6 +522,9 @@ case "$MY_IP" in
     *) REGION=unknown; SHARD_INDEX=0 ;;
 esac
 mkdir -p {DATA_DIR}
+mkdir -p {peers_dir}
+cat > {REMOTE_BOOTSTRAP_PEERS_TOML_PATH} << 'PEERS_EOF'
+{peers_toml}PEERS_EOF
 cat > {ENV_PATH} << 'ENV_EOF'
 {env_lines}ENV_EOF
 echo "REGION=$REGION" >> {ENV_PATH}

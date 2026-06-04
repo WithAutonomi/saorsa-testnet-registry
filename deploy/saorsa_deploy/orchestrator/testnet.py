@@ -55,6 +55,8 @@ def _uploader_spec(u) -> str:
         parts.append(f"eth={u.eth}")
     if u.clock_skew:
         parts.append(f"clock_skew={u.clock_skew}")
+    if u.bootstrap_cache is not None:
+        parts.append(f"bootstrap_cache={str(u.bootstrap_cache).lower()}")
     return ":".join(parts)
 
 
@@ -64,6 +66,8 @@ def _downloader_spec(d) -> str:
         parts.append(d.vm_size)
     if d.clock_skew:
         parts.append(f"clock_skew={d.clock_skew}")
+    if d.bootstrap_cache is not None:
+        parts.append(f"bootstrap_cache={str(d.bootstrap_cache).lower()}")
     return ":".join(parts)
 
 

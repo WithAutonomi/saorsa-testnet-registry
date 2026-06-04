@@ -2,7 +2,11 @@
 set -euo pipefail
 
 # --- Configuration (set via environment) ---
-: "${BOOTSTRAP_ARGS:?BOOTSTRAP_ARGS must be set}"
+: "${BOOTSTRAP_CACHE:=true}"
+if [ "$BOOTSTRAP_CACHE" != "true" ]; then
+    : "${BOOTSTRAP_ARGS:?BOOTSTRAP_ARGS must be set when BOOTSTRAP_CACHE=false}"
+fi
+: "${BOOTSTRAP_ARGS:=}"
 : "${REGION:?REGION must be set}"
 : "${ADDRESSES_FILE:=/var/lib/ant-client/addresses.txt}"
 : "${ADDRESSES_S3_BUCKET:=}"
@@ -21,6 +25,14 @@ set -euo pipefail
 if [ "$HEAPTRACK" = "1" ]; then
     mkdir -p "$HEAPTRACK_DIR"
     echo "Heaptrack enabled: profiles will be written under ${HEAPTRACK_DIR}"
+fi
+
+# With the bootstrap cache enabled (default), ant is invoked WITHOUT
+# --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml (written by the
+# provisioner) and maintains its peer cache. BOOTSTRAP_CACHE=false restores
+# the legacy explicit --bootstrap invocation, which disables the cache.
+if [ "$BOOTSTRAP_CACHE" = "true" ]; then
+    BOOTSTRAP_ARGS=""
 fi
 
 dl_seq=0
