@@ -19,7 +19,6 @@ DEVNET_DATA_DIR = f"{MOUNT_POINT}/data"
 DEVNET_EVM_NETWORK = "arbitrum-sepolia"
 
 FIREWALL_PLACEHOLDER = "managed by terraform"
-CLIENT_SERVICES = ("ant-uploader", "ant-downloader")
 
 
 def _default_output_path(name: str) -> Path:
@@ -123,27 +122,38 @@ def _build_client_vms_field(
     if not clients:
         return []
     name = state["name"]
-    services = list(CLIENT_SERVICES)
-    nodes = [{"service_name": svc} for svc in services]
 
     entries = []
     for client in sorted(clients, key=lambda c: c.get("client_index", 0)):
         index = client["client_index"]
         region = client["region"]
+        # client_index is assigned PER ROLE (uploaders 1..N and downloaders
+        # 1..N independently), so the role must be part of the name or an
+        # uploader and downloader sharing a region collide. This also matches
+        # the VM's actual hostname (set by the client provisioner), which is
+        # what the InfluxDB `host` tag carries.
+        role = client.get("role", "upload")
+        service = "ant-uploader" if role == "upload" else "ant-downloader"
         entries.append(
             {
-                "name": f"{name}-ant-client-{region}-{index}",
-                "provider": "digitalocean",
+                "name": f"{name}-ant-client-{role}-{region}-{index}",
+                "provider": client.get("provider", "digitalocean"),
                 "provider_id": client.get("provider_id", ""),
                 "region": region,
                 "ip": client.get("ip", ""),
+                "role": role,
                 "client_index": index,
                 "file_size_mb": client.get("file_size_mb"),
                 "vm_size": client.get("vm_size", ""),
+                # ant peer cache mode: true → no --bootstrap (cache enabled);
+                # null for client state predating the option.
+                "bootstrap_cache": client.get("bootstrap_cache"),
                 "ssh_user": DEFAULT_SSH_USER,
                 "ssh_key": ssh_key,
-                "nodes": list(nodes),
-                "services": list(services),
+                # Each client VM runs exactly one role's service — the other
+                # unit is never installed on it.
+                "nodes": [{"service_name": service}],
+                "services": [service],
             }
         )
     return entries

@@ -372,9 +372,11 @@ class TestClientVmsField:
             "provider_id",
             "region",
             "ip",
+            "role",
             "client_index",
             "file_size_mb",
             "vm_size",
+            "bootstrap_cache",
             "ssh_user",
             "ssh_key",
             "nodes",
@@ -389,18 +391,83 @@ class TestClientVmsField:
             _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
         )
         names = [c["name"] for c in inv["client_vms"]]
-        assert names == ["DEV-02-ant-client-nyc1-1", "DEV-02-ant-client-lon1-2"]
+        assert names == [
+            "DEV-02-ant-client-upload-nyc1-1",
+            "DEV-02-ant-client-upload-lon1-2",
+        ]
 
-    def test_services_are_uploader_and_downloader(self):
+    def test_bootstrap_cache_passed_through(self):
+        clients = self._clients()
+        clients[0]["bootstrap_cache"] = False
+        clients[1]["bootstrap_cache"] = True
+        inv = build_inventory(
+            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
+        )
+        # entries are sorted by client_index: [1 (nyc1), 2 (lon1)]
+        assert [c["bootstrap_cache"] for c in inv["client_vms"]] == [True, False]
+
+    def test_bootstrap_cache_none_for_legacy_state(self):
         inv = build_inventory(
             _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
         )
-        for entry in inv["client_vms"]:
-            assert entry["services"] == ["ant-uploader", "ant-downloader"]
-            assert entry["nodes"] == [
-                {"service_name": "ant-uploader"},
-                {"service_name": "ant-downloader"},
-            ]
+        assert [c["bootstrap_cache"] for c in inv["client_vms"]] == [None, None]
+
+    def test_services_match_the_vm_role(self):
+        clients = self._clients()
+        clients[0]["role"] = "download"
+        inv = build_inventory(
+            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
+        )
+        # sorted by client_index: [1 (nyc1, upload default), 2 (lon1, download)]
+        upload_entry, download_entry = inv["client_vms"]
+        assert upload_entry["services"] == ["ant-uploader"]
+        assert upload_entry["nodes"] == [{"service_name": "ant-uploader"}]
+        assert download_entry["services"] == ["ant-downloader"]
+        assert download_entry["nodes"] == [{"service_name": "ant-downloader"}]
+
+    def test_same_region_and_index_across_roles_do_not_collide(self):
+        # client_index is assigned per role (uploaders 1..N, downloaders 1..N),
+        # so an uploader and downloader sharing a region+index must still get
+        # distinct inventory names. Regression for the DEV-01 duplicate
+        # "ant-client-lon1-1" pair.
+        clients = [
+            {
+                "role": "upload",
+                "region": "lon1",
+                "file_size_mb": 10,
+                "vm_size": "s-2vcpu-4gb",
+                "client_index": 1,
+                "ip": "1.1.1.1",
+            },
+            {
+                "role": "download",
+                "region": "lon1",
+                "vm_size": "s-2vcpu-4gb",
+                "client_index": 1,
+                "ip": "2.2.2.2",
+            },
+        ]
+        inv = build_inventory(
+            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
+        )
+        names = [c["name"] for c in inv["client_vms"]]
+        assert names == [
+            "DEV-02-ant-client-upload-lon1-1",
+            "DEV-02-ant-client-download-lon1-1",
+        ]
+        assert len(set(names)) == 2
+
+    def test_provider_passed_through_from_client_state(self):
+        clients = self._clients()
+        clients[0]["provider"] = "vultr"
+        inv = build_inventory(
+            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
+        )
+        # sorted by client_index: [1 (nyc1, default digitalocean), 2 (lon1, vultr)]
+        assert [c["provider"] for c in inv["client_vms"]] == [
+            "digitalocean",
+            "vultr",
+        ]
 
     def test_file_size_and_vm_size_propagate(self):
         inv = build_inventory(
@@ -482,7 +549,7 @@ class TestCmdGenerateInventory:
         data = json.loads(Path(args.output).read_text())
         assert len(data["client_vms"]) == 1
         assert data["client_vms"][0]["ip"] == "7.7.7.7"
-        assert data["client_vms"][0]["name"] == "DEV-02-ant-client-lon1-1"
+        assert data["client_vms"][0]["name"] == "DEV-02-ant-client-upload-lon1-1"
 
     def test_writes_devnet_manifest_alongside_inventory(self, tmp_path):
         from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
