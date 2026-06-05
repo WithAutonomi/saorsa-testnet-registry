@@ -5,6 +5,11 @@ own infra/monitoring orchestration), so most builders emit exactly one step. The
 value here is the same as for testnets: the manifest is the reusable, diffable
 record and ``plan`` shows precisely what will run.
 
+A branch-sourced ``binary`` additionally prepends a ``build ant`` step (mirroring
+the testnet orchestrator): every prod command — the local-* kinds included —
+resolves branch binaries from the name-scoped S3 custom build, which only
+``build ant`` populates.
+
 Secrets are never embedded in argv. The underlying prod commands read the wallet
 key from the environment (``ARBITRUM_ONE_SECRET_KEY``); see ``deploy_cmds`` for
 the env-bridge that honours a custom ``secret_key_env``.
@@ -13,7 +18,7 @@ the env-bridge that honours a custom ``secret_key_env``.
 from __future__ import annotations
 
 from saorsa_deploy.config.models import Manifest
-from saorsa_deploy.orchestrator.steps import Step, ant_binary_flags
+from saorsa_deploy.orchestrator.steps import Step, ant_binary_flags, ant_build_steps
 
 
 def _prod_uploader_spec(u) -> str:
@@ -192,7 +197,11 @@ def build_deploy_steps(manifest: Manifest) -> list[Step]:
         builder = _DEPLOY_BUILDERS[manifest.kind]
     except KeyError:
         raise ValueError(f"no prod orchestrator for kind '{manifest.kind}'")
-    return builder(manifest)
+    # A branch-sourced binary must be built (and uploaded to the name-scoped
+    # S3 key) before any prod command tries to resolve it — every kind,
+    # including the local-* ones, fetches the custom build from S3.
+    steps = ant_build_steps(manifest.name, manifest.ssh_key_path, manifest.spec.binary)
+    return steps + builder(manifest)
 
 
 def build_destroy_steps(manifest: Manifest) -> list[Step]:

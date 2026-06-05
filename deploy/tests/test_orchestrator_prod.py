@@ -302,7 +302,10 @@ def test_prod_continuous_downloader_sleep_interval():
             },
         }
     )
-    argv = build_deploy_steps(m)[0].argv
+    steps = build_deploy_steps(m)
+    # branch binary -> a `build ant` step precedes the deploy
+    assert steps[0].argv[:2] == ["build", "ant"]
+    argv = steps[1].argv
     assert argv[:3] == ["prod", "continuous-downloader", "deploy"]
     assert "--sleep-interval-secs" in argv and argv[argv.index("--sleep-interval-secs") + 1] == "0"
     # branch binary -> --branch-name/--repo-owner, not --ant-version
@@ -384,6 +387,132 @@ def test_prod_local_downloads_keep_output_dir():
     assert argv[argv.index("--addresses-path") + 1] == "/addrs.txt"
     assert argv[argv.index("--keep-output-dir") + 1] == "/out"
     assert build_destroy_steps(m) == []
+
+
+# --------------------------------------------------------------------------- #
+# branch binaries — a `build ant` step must precede the deploy (the prod
+# commands resolve branch binaries from the name-scoped S3 custom build, which
+# only `build ant` populates; reproduces the PROD-DL-02 failure)
+# --------------------------------------------------------------------------- #
+def test_prod_downloaders_branch_binary_prepends_build_step():
+    m = Manifest.model_validate(
+        {
+            "name": "PROD-DL-02",
+            "kind": "prod-downloaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_downloaders": {
+                "spec": "lon1:s-2vcpu-4gb",
+                "addresses_path": "/a.txt",
+                "binary": {
+                    "branch": "codex/remove-bootstrap-cache",
+                    "repo_owner": "WithAutonomi",
+                },
+                "bootstrap_cache": True,
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[0].argv == [
+        "build",
+        "ant",
+        "--name",
+        "PROD-DL-02",
+        "--branch-name",
+        "codex/remove-bootstrap-cache",
+        "--repo-owner",
+        "WithAutonomi",
+        "--ssh-key-path",
+        SSH,
+    ]
+    assert steps[1].argv[:3] == ["prod", "downloaders", "deploy"]
+    # destroy is unaffected
+    assert all(s.argv[:2] != ["build", "ant"] for s in build_destroy_steps(m))
+
+
+def test_prod_uploaders_branch_binary_prepends_build_step_with_validation():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"branch": "feat-x", "repo_owner": "me", "validation": "marker"},
+                "uploaders": [{"region": "lon1", "vm_size": "s-2vcpu-4gb", "urls": "/a.txt"}],
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[0].argv[:2] == ["build", "ant"]
+    assert steps[0].argv[steps[0].argv.index("--validation-string") + 1] == "marker"
+    assert steps[1].argv[:3] == ["prod", "uploaders", "deploy"]
+
+
+def test_prod_canary_branch_binary_prepends_build_step():
+    m = Manifest.model_validate(
+        {
+            "name": "C",
+            "kind": "prod-canary",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_canary": {
+                "binary": {"branch": "feat-x", "repo_owner": "me"},
+                "upload_spec": "lon1",
+                "probes": [{"region": "lon1", "count": 4}],
+                "urls_file": "/u.txt",
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[0].argv[:2] == ["build", "ant"]
+    assert steps[1].argv[:3] == ["prod", "canary", "deploy"]
+
+
+def test_prod_local_kinds_branch_binary_prepends_build_step():
+    # local kinds also fetch branch binaries from the name-scoped S3 build
+    m = Manifest.model_validate(
+        {
+            "name": "LU",
+            "kind": "prod-local-uploads",
+            "purpose": "p",
+            "prod_local_uploads": {
+                "binary": {"branch": "feat-x", "repo_owner": "me"},
+                "urls": "/l.txt",
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[0].argv[:2] == ["build", "ant"]
+    assert steps[1].argv[:2] == ["prod", "local-uploads"]
+
+    m = Manifest.model_validate(
+        {
+            "name": "LD",
+            "kind": "prod-local-downloads",
+            "purpose": "p",
+            "prod_local_downloads": {
+                "binary": {"branch": "feat-x", "repo_owner": "me"},
+                "addresses_path": "/a.txt",
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[0].argv[:2] == ["build", "ant"]
+    assert steps[1].argv[:2] == ["prod", "local-downloads"]
+
+
+def test_prod_version_binary_has_no_build_step():
+    m = Manifest.model_validate(
+        {
+            "name": "D",
+            "kind": "prod-downloaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_downloaders": {"spec": "lon1", "binary": {"version": "0.2.6"}},
+        }
+    )
+    assert all(s.argv[:2] != ["build", "ant"] for s in build_deploy_steps(m))
 
 
 # --------------------------------------------------------------------------- #
