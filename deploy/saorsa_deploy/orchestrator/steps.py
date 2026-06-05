@@ -44,6 +44,27 @@ def ant_binary_flags(b: Binary) -> list[str]:
     return ["--ant-version", b.version]
 
 
+def ant_build_steps(name: str, ssh_key: str, ant: Binary | None) -> list[Step]:
+    """`build ant` step, only when the client binary is sourced from a branch."""
+    if ant is None or not ant.is_branch:
+        return []
+    argv = [
+        "build",
+        "ant",
+        "--name",
+        name,
+        "--branch-name",
+        ant.branch,
+        "--repo-owner",
+        ant.repo_owner or "maidsafe",
+        "--ssh-key-path",
+        ssh_key,
+    ]
+    if ant.validation:
+        argv += ["--validation-string", ant.validation]
+    return [Step(argv, "Build ant client from branch")]
+
+
 def build_steps_for_branches(
     name: str, ssh_key: str, ant_node: Binary, ant: Binary | None
 ) -> list[Step]:
@@ -65,20 +86,5 @@ def build_steps_for_branches(
         if ant_node.validation:
             argv += ["--validation-string", ant_node.validation]
         steps.append(Step(argv, "Build ant-node from branch"))
-    if ant is not None and ant.is_branch:
-        argv = [
-            "build",
-            "ant",
-            "--name",
-            name,
-            "--branch-name",
-            ant.branch,
-            "--repo-owner",
-            ant.repo_owner or "maidsafe",
-            "--ssh-key-path",
-            ssh_key,
-        ]
-        if ant.validation:
-            argv += ["--validation-string", ant.validation]
-        steps.append(Step(argv, "Build ant client from branch"))
+    steps += ant_build_steps(name, ssh_key, ant)
     return steps
