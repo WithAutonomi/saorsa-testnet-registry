@@ -1152,6 +1152,16 @@ def main(argv=None):
         action="store_true",
         help="Print the deploy plan without executing it.",
     )
+    deployments_up_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "If a step journal exists from a previous failed run, skip the "
+            "steps it records as completed without prompting (for "
+            "non-interactive use; interactively a prompt offers the same "
+            "choice)."
+        ),
+    )
 
     # =========================================================================
     # === elastic group (clean, destroy, info, infra, provision, provision-telegraf) ===

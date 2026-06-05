@@ -417,6 +417,55 @@ def delete_client_addresses_prefix(name: str) -> int:
     return deleted
 
 
+S3_JOURNAL_KEY_PREFIX = "saorsa-deploy/journals"
+
+
+def save_step_journal(name: str, journal: dict) -> None:
+    """Save a ``deployments up`` step journal to S3.
+
+    The journal records the steps that have completed so far in a manifest
+    deploy run, so a re-run after a mid-sequence failure can offer to resume
+    instead of re-executing everything (notably the slow binary builds).
+    """
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_JOURNAL_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(journal, indent=2),
+        ContentType="application/json",
+    )
+
+
+def load_step_journal(name: str) -> dict | None:
+    """Load a ``deployments up`` step journal from S3.
+
+    Returns ``None`` when no journal exists — unlike the other state loaders,
+    absence is the normal case (a fresh run, or a previous run that completed
+    and cleaned up after itself), not an error.
+    """
+    client = _get_s3_client()
+    try:
+        resp = client.get_object(
+            Bucket=S3_BUCKET,
+            Key=f"{S3_JOURNAL_KEY_PREFIX}/{name}.json",
+        )
+        return json.loads(resp["Body"].read())
+    except client.exceptions.NoSuchKey:
+        return None
+
+
+def delete_step_journal(name: str) -> None:
+    """Delete a ``deployments up`` step journal from S3.
+
+    Safe to call when no journal exists (S3 deletes are idempotent).
+    """
+    client = _get_s3_client()
+    client.delete_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_JOURNAL_KEY_PREFIX}/{name}.json",
+    )
+
+
 def check_terraform_state_exists(state_key: str) -> bool:
     """Check if a Terraform state file already exists in S3."""
     client = _get_s3_client()

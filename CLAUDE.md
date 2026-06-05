@@ -144,6 +144,19 @@ ordering/flag-coupling invariants that previously lived in the `deploy-runbook`
 skill's prose — it is the single source of truth. `up` executes each step by
 re-entering the CLI in-process (`main(argv)`); a failing step halts the run.
 
+`up` is **resumable**: each completed step is recorded in a step journal
+(`saorsa-deploy/journals/{name}.json` in the tfstate bucket; logic in
+`orchestrator/journal.py`, persistence in `state.py`), so a re-run after a
+mid-sequence failure can skip the already-done steps — most valuably the
+~10-minute binary builds. A journal hit never silently skips: interactively
+`up` prompts [r]esume / [d]elete / [a]bort; non-interactively (agents, the MCP
+server) pass **`--resume`** to skip the completed steps — without it a non-TTY
+journal hit refuses with guidance rather than hanging. If the journal doesn't
+match the computed plan (manifest edited, name reused, kind changed) a diff is
+shown and resume means "from the longest matching prefix". A fully successful
+`up` — or a successful `down` (either path) — deletes the journal;
+`plan`/`up --dry-run` never touch it.
+
 For testnet/extension kinds, **monitoring (InfluxDB + Grafana) defaults ON**
 (omit the `monitoring:` block, or `monitoring: {enabled: false}` to opt out) so
 client upload/download metrics are captured; Elasticsearch log-forwarding stays

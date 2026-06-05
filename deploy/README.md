@@ -67,6 +67,45 @@ on all three node-provision commands, telegraf after `nodes start`, destroy in
 reverse) so they can't be got wrong by hand. `up` executes each step by
 re-entering the CLI in-process, so a failing step halts the run.
 
+### Resumable runs (the step journal)
+
+`up` records every completed step in a **journal** at
+`s3://maidsafe-org-infra-tfstate/saorsa-deploy/journals/<name>.json`. When a
+run fails partway, re-running `up` with the same manifest can skip the steps
+that already succeeded — most valuably the 8–10 minute `build ant-node` /
+`build ant` steps — and resume at the step that failed.
+
+A journal hit **never silently skips**: journals can outlive their deployment
+(a failed run torn down via the primitive destroy commands, or simply
+abandoned) and names are reused, so resuming against stale history would fake
+a deploy. Instead, when `up` finds a journal it prints what the journal
+recorded (creation time, completed steps) and asks:
+
+```
+Journal found for DEV-01 (created 2026-06-04T14:02:11+00:00, 8/19 steps completed):
+   1. ✓ Build ant-node from branch
+   ...
+   8. ✓ Bootstraps provision
+[r]esume (skip completed steps) / [d]elete journal and run all steps / [a]bort?
+```
+
+If the journal doesn't match the freshly computed plan (manifest edited, name
+reused with a different config, saorsa-deploy itself changed the step list), a
+diff at the first divergence is shown and "resume" means *resume from the
+longest matching prefix*. A manifest `kind` change invalidates the journal
+outright.
+
+For unattended runs (AI agents, the MCP server, cron) there is no prompt: pass
+`--resume` to pre-answer it. With a journal present, no TTY, and no `--resume`,
+`up` refuses with guidance rather than hanging — the operator (or agent)
+re-runs with `--resume`, or a human runs `up` interactively to delete the
+journal.
+
+Lifecycle: a fully successful `up` deletes the journal, as does a successful
+`down` (either path). Best-effort steps that fail-but-continue (e.g. the Slack
+post) are journaled as done so a resume doesn't re-run them. `plan` and
+`up --dry-run` never read or write the journal.
+
 See [`manifests/README.md`](manifests/) for worked examples. Schema sketch
 (`testnet` kind):
 
