@@ -130,6 +130,7 @@ testnet:
     providers:                          # vm_count is PER REGION; total = vm_count × regions
       digital_ocean: { vm_count: 5, regions_list: [ams3, lon1, nyc1], size: s-8vcpu-16gb }
       vultr:         { vm_count: 5, regions: 3, size: vhp-8c-16gb-intel }
+      ovh:           { vm_count: 2, regions_list: [GRA9, UK1], size: b3-16 }  # needs OVH env vars (see `nodes infra`)
   clients:                              # need ≥1 uploader AND ≥1 downloader
     uploaders:
       - { provider: vultr, region: syd, file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1 }
@@ -181,7 +182,7 @@ A deployment is built up in phases. Each phase has its own `infra-*` /
 
 ```
 bootstraps infra   →  creates bootstrap VMs (Digital Ocean)
-nodes infra        →  creates node VMs (DO / Hetzner / Vultr) — requires bootstraps
+nodes infra        →  creates node VMs (DO / Hetzner / Vultr / OVH) — requires bootstraps
 nodes provision-genesis  →  starts the genesis node on bootstrap #1
 bootstraps provision (optional) — starts extra bootstrap nodes #2..N
 nodes provision    →  installs ant-node binary + writes systemd units + enables services (does NOT start them)
@@ -223,20 +224,31 @@ uv run saorsa-deploy bootstraps infra --name DEV-01 \
 
 ### `nodes infra`
 
-Create the node (main) VMs across one or more providers. Requires
-`bootstraps infra` to have run first (errors out otherwise). Runs
-availability preflights against Hetzner (server-type capacity) and Vultr
-(plan-region offering) before touching Terraform, and records the resolved
-regions in deployment state **before** `terraform apply` — so a partial
-failure still leaves something destroyable.
+Create the node (main) VMs across one or more providers (DigitalOcean,
+Hetzner, Vultr, OVH). Requires `bootstraps infra` to have run first (errors
+out otherwise). Runs availability preflights against Hetzner (server-type
+capacity) and Vultr (plan-region offering) before touching Terraform, and
+records the resolved regions in deployment state **before** `terraform
+apply` — so a partial failure still leaves something destroyable.
 
 ```bash
 uv run saorsa-deploy nodes infra --name DEV-01 \
     --attached-volume-size 50 \
     --do-vm-count 10 --do-regions 3 --do-droplet-size s-8vcpu-16gb \
     --vultr-vm-count 5 --vultr-regions 3 --vultr-plan vhp-8c-16gb-intel \
-    --hetzner-vm-count 2 --hetzner-regions 3 --hetzner-server-type cpx42
+    --hetzner-vm-count 2 --hetzner-regions 3 --hetzner-server-type cpx42 \
+    --ovh-vm-count 2 --ovh-regions 3 --ovh-flavor b3-16
 ```
+
+OVH (regions like `GRA9`, `UK1`, `DE1`; default flavor `b3-16`) reuses the
+node Terraform module proven by the prod migration flow and has **no
+availability preflight** (the OVH API doesn't pre-validate flavor/region
+offerings). It needs `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project
+ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` /
+`OVH_CONSUMER_KEY` env vars and an `ant_deploy` SSH key registered in the
+OVH project — the same prerequisites as `clients infra` for OVH. The env
+vars are also required at `nodes destroy` time (Terraform re-reads the
+module's data sources on destroy).
 
 Each provider has a `--<provider>-regions-list` flag that pins exact regions
 (comma-separated) instead of relying on the default top-of-list ordering.

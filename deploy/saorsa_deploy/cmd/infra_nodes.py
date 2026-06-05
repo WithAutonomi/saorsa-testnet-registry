@@ -57,6 +57,12 @@ def _build_provider_specs(args) -> list[ProviderSpec]:
         specs.append(
             ProviderSpec("vultr", args.vultr_vm_count, count, override)
         )
+    if getattr(args, "ovh_vm_count", 0) > 0:
+        override = _parse_regions_list(getattr(args, "ovh_regions_list", None))
+        count = len(override) if override else args.ovh_regions
+        specs.append(
+            ProviderSpec("ovh", args.ovh_vm_count, count, override)
+        )
     return specs
 
 
@@ -65,6 +71,7 @@ def _build_provider_state(
     do_droplet_size: str,
     hetzner_server_type: str,
     vultr_plan: str,
+    ovh_flavor: str,
 ) -> dict:
     providers_state = {}
     for spec in provider_specs:
@@ -75,8 +82,39 @@ def _build_provider_state(
             entry["server_type"] = hetzner_server_type
         elif spec.name == "vultr":
             entry["plan"] = vultr_plan
+        elif spec.name == "ovh":
+            entry["flavor_name"] = ovh_flavor
         providers_state[spec.name] = entry
     return providers_state
+
+
+# Env vars the OVH + OpenStack Terraform providers need. The ovh module mints
+# its own project-scoped OpenStack user for volume attach, so only the OVH API
+# credentials and the Public Cloud project id are required here. Mirrors the
+# migration flow's OVH profile (cmd/migration_infra.py).
+OVH_REQUIRED_ENV_VARS = (
+    "OVH_APPLICATION_KEY",
+    "OVH_APPLICATION_SECRET",
+    "OVH_CONSUMER_KEY",
+    "OVH_CLOUD_PROJECT_SERVICE",
+)
+
+
+def _check_ovh_env(provider_specs: list[ProviderSpec]) -> str | None:
+    """Fail fast when OVH is requested without the env vars Terraform needs.
+
+    Returns the OVH Public Cloud project id (``service_name``) when an OVH
+    spec is present, ``None`` otherwise.
+    """
+    if not any(s.name == "ovh" for s in provider_specs):
+        return None
+    missing = [v for v in OVH_REQUIRED_ENV_VARS if not os.environ.get(v)]
+    if missing:
+        raise RuntimeError(
+            f"OVH nodes requested but required environment variable(s) not "
+            f"set: {', '.join(missing)}"
+        )
+    return os.environ["OVH_CLOUD_PROJECT_SERVICE"]
 
 
 def cmd_infra_nodes(args):
@@ -92,7 +130,7 @@ def cmd_infra_nodes(args):
     if not provider_specs:
         console.print(
             "[bold red]Error:[/bold red] At least one provider must have vm_count > 0. "
-            "Use --do-vm-count, --hetzner-vm-count, or --vultr-vm-count."
+            "Use --do-vm-count, --hetzner-vm-count, --vultr-vm-count, or --ovh-vm-count."
         )
         sys.exit(1)
 
@@ -120,6 +158,7 @@ def cmd_infra_nodes(args):
     do_droplet_size = getattr(args, "do_droplet_size", "s-2vcpu-4gb")
     hetzner_server_type = getattr(args, "hetzner_server_type", "cpx22")
     vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
+    ovh_flavor = getattr(args, "ovh_flavor", "b3-16")
     force = getattr(args, "force", False)
 
     record_event(args.name, "infra_nodes_started")
@@ -137,6 +176,14 @@ def cmd_infra_nodes(args):
         providers_for_resolve = _apply_vultr_preflight(
             provider_specs, vultr_plan, providers_for_resolve, console
         )
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    # OVH has no availability preflight (parity with the migration flow);
+    # just validate credentials before any Terraform runs.
+    try:
+        ovh_service_name = _check_ovh_env(provider_specs)
     except RuntimeError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -196,6 +243,13 @@ def cmd_infra_nodes(args):
             variables["server_type"] = hetzner_server_type
         elif provider_name == "vultr":
             variables["plan"] = vultr_plan
+        elif provider_name == "ovh":
+            variables["flavor_name"] = ovh_flavor
+            variables["service_name"] = ovh_service_name
+            # The module's name_template default ("ovh") serves the migration
+            # flow; testnet node VMs follow the NAME-ant-node-REGION-N
+            # convention used by the other providers.
+            variables["name_template"] = "ant-node"
 
         configs.append(
             TerraformRunConfig(
@@ -245,7 +299,7 @@ def cmd_infra_nodes(args):
     # total failure. Previously we saved regions only after a successful
     # apply, which left orphans invisible to destroy.
     providers_state = _build_provider_state(
-        provider_specs, do_droplet_size, hetzner_server_type, vultr_plan
+        provider_specs, do_droplet_size, hetzner_server_type, vultr_plan, ovh_flavor
     )
     terraform_variables = {
         "name": args.name,

@@ -2253,6 +2253,33 @@ def main(argv=None):
         "(e.g. ewr,ord,lax). Overrides --vultr-regions and the default "
         "ordering; no fallback substitution.",
     )
+    nodes_infra_parser.add_argument(
+        "--ovh-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on OVH (default: 0, provider not used)",
+    )
+    nodes_infra_parser.add_argument(
+        "--ovh-flavor",
+        type=str,
+        default="b3-16",
+        help="OVH instance flavor (default: b3-16)",
+    )
+    nodes_infra_parser.add_argument(
+        "--ovh-regions",
+        type=int,
+        default=3,
+        help="Number of OVH regions to use (default: 3). "
+        "Ignored if --ovh-regions-list is set.",
+    )
+    nodes_infra_parser.add_argument(
+        "--ovh-regions-list",
+        type=str,
+        default=None,
+        help="Comma-separated list of specific OVH regions to use "
+        "(e.g. GRA9,UK1,DE1). Overrides --ovh-regions and the default "
+        "ordering; no fallback substitution.",
+    )
 
     # nodes provision
     nodes_provision_parser = nodes_subparsers.add_parser(

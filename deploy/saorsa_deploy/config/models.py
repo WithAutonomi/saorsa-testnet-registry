@@ -104,7 +104,8 @@ class ProviderNodes(_Base):
 
     Provider total = ``vm_count`` × number-of-regions. Supply regions either as
     an explicit ``regions_list`` or a ``regions`` count (not both). ``size`` maps
-    to the provider's size flag (DO droplet-size / Hetzner server-type / Vultr plan).
+    to the provider's size flag (DO droplet-size / Hetzner server-type / Vultr
+    plan / OVH flavor).
     """
 
     vm_count: int
@@ -128,7 +129,7 @@ class Nodes(_Base):
 
     @model_validator(mode="after")
     def _known_providers(self) -> "Nodes":
-        allowed = {"digital_ocean", "hetzner", "vultr"}
+        allowed = {"digital_ocean", "hetzner", "vultr", "ovh"}
         unknown = set(self.providers) - allowed
         if unknown:
             raise ValueError(

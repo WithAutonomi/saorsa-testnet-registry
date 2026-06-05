@@ -162,6 +162,15 @@ For testnet/extension kinds, **monitoring (InfluxDB + Grafana) defaults ON**
 client upload/download metrics are captured; Elasticsearch log-forwarding stays
 opt-in.
 
+Testnet node VMs can be placed on **DigitalOcean, Hetzner, Vultr, or OVH**
+(`nodes.providers.<name>` in a manifest; `--<provider>-vm-count` etc. on
+`nodes infra`). OVH (regions like `GRA9`/`UK1`/`DE1`, default flavor `b3-16`,
+`size:` → `--ovh-flavor`) reuses the prod-migration node module; it needs
+`OVH_APPLICATION_KEY`/`OVH_APPLICATION_SECRET`/`OVH_CONSUMER_KEY`/
+`OVH_CLOUD_PROJECT_SERVICE` at both create AND destroy time, and has no
+availability preflight (unlike Hetzner/Vultr). Clients support the same four
+providers.
+
 Every client kind accepts a **`bootstrap_cache`** option (default **true**) —
 per-entry on testnet `clients.uploaders[]`/`clients.downloaders[]` and
 `prod_uploaders.uploaders[]` (spec token `bootstrap_cache=true|false`),

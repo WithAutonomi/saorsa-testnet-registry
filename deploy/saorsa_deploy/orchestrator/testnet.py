@@ -39,8 +39,9 @@ _PROVIDER_FLAGS = {
         "--hetzner-server-type",
     ),
     "vultr": ("--vultr-vm-count", "--vultr-regions", "--vultr-regions-list", "--vultr-plan"),
+    "ovh": ("--ovh-vm-count", "--ovh-regions", "--ovh-regions-list", "--ovh-flavor"),
 }
-_PROVIDER_ORDER = ["digital_ocean", "hetzner", "vultr"]
+_PROVIDER_ORDER = ["digital_ocean", "hetzner", "vultr", "ovh"]
 
 
 def _uploader_spec(u) -> str:

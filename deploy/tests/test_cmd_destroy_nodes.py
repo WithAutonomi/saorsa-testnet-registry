@@ -165,3 +165,63 @@ class TestBeltAndBraces:
         configs = patches.execute.call_args.args[0]
         regions = sorted(c.region for c in configs)
         assert regions == ["lon1", "nyc1"]
+
+
+class TestOvhDestroy:
+    OVH_ENV = {
+        "OVH_APPLICATION_KEY": "ak",
+        "OVH_APPLICATION_SECRET": "as",
+        "OVH_CONSUMER_KEY": "ck",
+        "OVH_CLOUD_PROJECT_SERVICE": "project-id",
+    }
+
+    def _ovh_state(self):
+        return {
+            "name": "DEV-02",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [["ovh", "GRA9"]],
+            "terraform_variables": {
+                "name": "DEV-02",
+                "attached_volume_size": "50",
+                "providers": {
+                    "ovh": {
+                        "vm_count": 2,
+                        "regions": 1,
+                        "flavor_name": "b3-32",
+                    }
+                },
+            },
+            "vm_ips": {"ovh/GRA9": ["10.0.0.9"]},
+        }
+
+    def test_missing_env_vars_error_out_before_terraform(self, patches, monkeypatch):
+        patches.load_state.return_value = self._ovh_state()
+        for var in self.OVH_ENV:
+            monkeypatch.delenv(var, raising=False)
+
+        with pytest.raises(SystemExit):
+            cmd_destroy_nodes(_args())
+
+        patches.execute.assert_not_called()
+
+    def test_destroy_variables_include_flavor_and_service_name(
+        self, patches, monkeypatch
+    ):
+        patches.load_state.return_value = self._ovh_state()
+        for var, value in self.OVH_ENV.items():
+            monkeypatch.setenv(var, value)
+        patches.execute.return_value = [
+            TerraformResult(success=True, provider="ovh", region="GRA9"),
+        ]
+
+        cmd_destroy_nodes(_args())
+
+        configs = patches.execute.call_args.args[0]
+        assert len(configs) == 1
+        cfg = configs[0]
+        assert cfg.state_key == "saorsa-deploy/ovh-DEV-02-GRA9.tfstate"
+        assert cfg.variables["flavor_name"] == "b3-32"
+        assert cfg.variables["service_name"] == "project-id"
+        assert cfg.variables["name_template"] == "ant-node"

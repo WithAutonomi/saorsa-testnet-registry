@@ -54,6 +54,10 @@ testnet:
         vm_count: 5
         regions_list: [ams, ewr, lax, lhr, nrt]
         size: vhp-8c-16gb-intel                         # → --vultr-plan
+      ovh:
+        vm_count: 2
+        regions_list: [GRA9, UK1, DE1]                  # OVH region names are uppercase
+        size: b3-16                                     # → --ovh-flavor; needs OVH_APPLICATION_KEY/SECRET, OVH_CONSUMER_KEY, OVH_CLOUD_PROJECT_SERVICE
 
   clients:                   # optional. Needs >=1 uploader AND >=1 downloader. Remove the block for no clients.
     uploaders:               # one --uploader per entry: provider:region:file_size_mb[:vm_size][:payment][:ant][:eth][:clock_skew][:bootstrap_cache]

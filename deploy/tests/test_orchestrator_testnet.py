@@ -5,6 +5,8 @@ The deploy sequence MUST match the hand-written reference runbook
 ordering and flag-coupling invariants so a refactor can't silently drift.
 """
 
+import pytest
+
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
 
@@ -545,3 +547,28 @@ def test_clients_bootstrap_cache_token_omitted_when_unset():
     dl = cinfra.argv[cinfra.argv.index("--downloader") + 1]
     assert "bootstrap_cache" not in up
     assert "bootstrap_cache" not in dl
+
+
+def test_ovh_nodes_provider_emits_ovh_flags():
+    m = _minimal(
+        nodes={
+            "per_vm": 5,
+            "providers": {
+                "digital_ocean": {"vm_count": 2, "regions": 3},
+                "ovh": {"vm_count": 2, "regions_list": ["GRA9", "UK1"], "size": "b3-32"},
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    infra = next(s for s in steps if s.argv[:2] == ["nodes", "infra"])
+    assert "--ovh-vm-count" in infra.argv
+    assert infra.argv[infra.argv.index("--ovh-vm-count") + 1] == "2"
+    assert infra.argv[infra.argv.index("--ovh-regions-list") + 1] == "GRA9,UK1"
+    assert infra.argv[infra.argv.index("--ovh-flavor") + 1] == "b3-32"
+
+
+def test_unknown_nodes_provider_rejected():
+    with pytest.raises(ValueError, match="unknown provider"):
+        _minimal(
+            nodes={"per_vm": 5, "providers": {"linode": {"vm_count": 1, "regions": 1}}}
+        )

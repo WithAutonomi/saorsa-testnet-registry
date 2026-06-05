@@ -1,9 +1,11 @@
+import os
 import shutil
 import sys
 from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.cmd.infra_nodes import OVH_REQUIRED_ENV_VARS
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.registry import record_event, record_status
@@ -16,6 +18,46 @@ from saorsa_deploy.state import (
     update_deployment_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
+
+
+def _apply_provider_size_vars(
+    variables: dict, provider_name: str, p_cfg: dict | None = None
+) -> None:
+    """Populate the provider-specific Terraform variables for a destroy run.
+
+    Falls back to each provider's default size when the recorded provider
+    config (``terraform_variables.providers``) is missing or incomplete.
+    """
+    p_cfg = p_cfg or {}
+    if provider_name == "digitalocean":
+        variables["droplet_size"] = p_cfg.get("droplet_size", "s-2vcpu-4gb")
+    elif provider_name == "hetzner":
+        variables["server_type"] = p_cfg.get("server_type", "cpx22")
+    elif provider_name == "vultr":
+        variables["plan"] = p_cfg.get("plan", "vc2-2c-4gb")
+    elif provider_name == "ovh":
+        variables["flavor_name"] = p_cfg.get("flavor_name", "b3-16")
+        variables["service_name"] = os.environ.get("OVH_CLOUD_PROJECT_SERVICE", "")
+        variables["name_template"] = "ant-node"
+
+
+def _check_ovh_destroy_env(
+    provider_names: list[str], console: Console
+) -> None:
+    """Exit early when OVH regions are present but the env lacks credentials.
+
+    Terraform re-reads the module's data sources on destroy, so the OVH API
+    credentials and project id are needed just like on create.
+    """
+    if "ovh" not in provider_names:
+        return
+    missing = [v for v in OVH_REQUIRED_ENV_VARS if not os.environ.get(v)]
+    if missing:
+        console.print(
+            f"[bold red]Error:[/bold red] OVH node region(s) present but "
+            f"required environment variable(s) not set: {', '.join(missing)}"
+        )
+        sys.exit(1)
 
 
 def cmd_destroy_nodes(args):
@@ -64,6 +106,10 @@ def cmd_destroy_nodes(args):
             console.print(f"  [dim]{key}[/dim]")
     console.print()
 
+    _check_ovh_destroy_env(
+        [p for p, _ in region_pairs] + [p for p, _ in orphan_main_keys], console
+    )
+
     if not args.force:
         confirm = input(
             f"This will destroy all node VMs for '{args.name}'. Type 'yes' to "
@@ -107,21 +153,9 @@ def cmd_destroy_nodes(args):
             "vm_count": vm_count,
             "attached_volume_size": terraform_variables.get("attached_volume_size", "20"),
         }
-        if provider_name in providers_config:
-            p_cfg = providers_config[provider_name]
-            if provider_name == "digitalocean":
-                variables["droplet_size"] = p_cfg.get("droplet_size", "s-2vcpu-4gb")
-            elif provider_name == "hetzner":
-                variables["server_type"] = p_cfg.get("server_type", "cpx22")
-            elif provider_name == "vultr":
-                variables["plan"] = p_cfg.get("plan", "vc2-2c-4gb")
-        else:
-            if provider_name == "digitalocean":
-                variables["droplet_size"] = "s-2vcpu-4gb"
-            elif provider_name == "hetzner":
-                variables["server_type"] = "cpx22"
-            elif provider_name == "vultr":
-                variables["plan"] = "vc2-2c-4gb"
+        _apply_provider_size_vars(
+            variables, provider_name, providers_config.get(provider_name)
+        )
 
         configs.append(
             TerraformRunConfig(
@@ -149,12 +183,7 @@ def cmd_destroy_nodes(args):
             "vm_count": "1",
             "attached_volume_size": "20",
         }
-        if provider_name == "digitalocean":
-            variables["droplet_size"] = "s-2vcpu-4gb"
-        elif provider_name == "hetzner":
-            variables["server_type"] = "cpx22"
-        elif provider_name == "vultr":
-            variables["plan"] = "vc2-2c-4gb"
+        _apply_provider_size_vars(variables, provider_name)
         configs.append(
             TerraformRunConfig(
                 provider=provider_name,
@@ -269,6 +298,8 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
         console.print(f"  [dim]{key}[/dim]")
     console.print()
 
+    _check_ovh_destroy_env([p for p, _ in orphans], console)
+
     if not force:
         confirm = input(
             f"Destroy orphaned node resources for '{name}'? Type 'yes' to "
@@ -294,12 +325,7 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
             "vm_count": "1",
             "attached_volume_size": "20",
         }
-        if provider_name == "digitalocean":
-            variables["droplet_size"] = "s-2vcpu-4gb"
-        elif provider_name == "hetzner":
-            variables["server_type"] = "cpx22"
-        elif provider_name == "vultr":
-            variables["plan"] = "vc2-2c-4gb"
+        _apply_provider_size_vars(variables, provider_name)
         configs.append(
             TerraformRunConfig(
                 provider=provider_name,

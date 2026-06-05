@@ -23,6 +23,10 @@ def _args(**overrides):
         "vultr_regions": 0,
         "vultr_regions_list": None,
         "vultr_plan": "vc2-2c-4gb",
+        "ovh_vm_count": 0,
+        "ovh_regions": 0,
+        "ovh_regions_list": None,
+        "ovh_flavor": "b3-16",
         "force": False,
     }
     defaults.update(overrides)
@@ -252,6 +256,89 @@ class TestRegionsOverride:
             )
 
         patches.execute.assert_not_called()
+
+
+OVH_ENV = {
+    "OVH_APPLICATION_KEY": "ak",
+    "OVH_APPLICATION_SECRET": "as",
+    "OVH_CONSUMER_KEY": "ck",
+    "OVH_CLOUD_PROJECT_SERVICE": "project-id",
+}
+
+
+class TestOvhProvider:
+    def test_missing_env_vars_error_out_before_terraform(self, patches, monkeypatch):
+        patches.load_state.return_value = _state_with_bootstraps()
+        for var in OVH_ENV:
+            monkeypatch.delenv(var, raising=False)
+
+        with pytest.raises(SystemExit):
+            cmd_infra_nodes(
+                _args(do_vm_count=0, ovh_vm_count=2, ovh_regions_list="GRA9,UK1")
+            )
+
+        patches.execute.assert_not_called()
+
+    def test_variables_include_flavor_service_name_and_name_template(
+        self, patches, monkeypatch
+    ):
+        patches.load_state.return_value = _state_with_bootstraps()
+        for var, value in OVH_ENV.items():
+            monkeypatch.setenv(var, value)
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="ovh",
+                region="GRA9",
+                outputs={"vm_ips": ["10.0.0.9"], "vm_ids": ["uuid-1"]},
+            ),
+        ]
+
+        cmd_infra_nodes(
+            _args(
+                do_vm_count=0,
+                ovh_vm_count=2,
+                ovh_regions_list="GRA9",
+                ovh_flavor="b3-32",
+            )
+        )
+
+        configs = patches.execute.call_args.args[0]
+        assert len(configs) == 1
+        cfg = configs[0]
+        assert cfg.provider == "ovh"
+        assert cfg.state_key == "saorsa-deploy/ovh-DEV-02-GRA9.tfstate"
+        assert cfg.variables["flavor_name"] == "b3-32"
+        assert cfg.variables["service_name"] == "project-id"
+        # Testnet node VMs follow the NAME-ant-node-REGION-N convention, not
+        # the module's migration-oriented "ovh" default.
+        assert cfg.variables["name_template"] == "ant-node"
+
+    def test_state_records_flavor_name(self, patches, monkeypatch):
+        patches.load_state.return_value = _state_with_bootstraps()
+        for var, value in OVH_ENV.items():
+            monkeypatch.setenv(var, value)
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="ovh",
+                region="GRA9",
+                outputs={"vm_ips": ["10.0.0.9"], "vm_ids": ["uuid-1"]},
+            ),
+        ]
+
+        cmd_infra_nodes(
+            _args(do_vm_count=0, ovh_vm_count=1, ovh_regions_list="GRA9")
+        )
+
+        first_update = patches.update_state.call_args_list[0].args[1]
+        assert first_update["regions"] == [["ovh", "GRA9"]]
+        providers_state = first_update["terraform_variables"]["providers"]
+        assert providers_state["ovh"] == {
+            "vm_count": 1,
+            "regions": 1,
+            "flavor_name": "b3-16",
+        }
 
 
 class TestPartialFailureRecordsVmIps:
