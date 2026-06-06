@@ -21,6 +21,7 @@ fi
 : "${RUN_ONCE:=false}"
 : "${HEAPTRACK:=0}"
 : "${HEAPTRACK_DIR:=/var/log/ant-heaptrack}"
+: "${FAILURE_LOG_DIR:=/var/log/ant-downloader}"
 
 if [ "$HEAPTRACK" = "1" ]; then
     mkdir -p "$HEAPTRACK_DIR"
@@ -59,6 +60,23 @@ submit_metric() {
         -H "Authorization: Token ${INFLUX_TOKEN}" \
         -H "Content-Type: text/plain" \
         --data-binary "$line_protocol" || echo "WARN: failed to submit metric to InfluxDB"
+}
+
+preserve_failure_logs() {
+    # Keep the full ant stdout/stderr for a FAILED download under
+    # FAILURE_LOG_DIR, mirroring the prod downloader's
+    # {idx:04d}-{addr16}.{stdout,stderr} per-op layout. Successes keep
+    # nothing — a testnet run produces thousands of downloads and only the
+    # failures need diagnosing. Prints the kept file stem.
+    local seq="$1" address="$2" stdout_file="$3" stderr_file="$4"
+    local safe stem
+    safe=$(printf '%s' "${address:0:16}" | tr -c 'A-Za-z0-9._-' '_')
+    safe="${safe:-unnamed}"
+    stem=$(printf '%04d-%s' "$seq" "$safe")
+    mkdir -p "$FAILURE_LOG_DIR"
+    mv -f "$stdout_file" "${FAILURE_LOG_DIR}/${stem}.stdout"
+    mv -f "$stderr_file" "${FAILURE_LOG_DIR}/${stem}.stderr"
+    echo "${FAILURE_LOG_DIR}/${stem}"
 }
 
 pick_random_address() {
@@ -116,7 +134,8 @@ while true; do
     fi
 
     output_path="${DOWNLOAD_DIR}/${address}"
-    output_file="/tmp/ant-download-${address:0:16}.txt"
+    stdout_file="/tmp/ant-download-${address:0:16}.stdout"
+    stderr_file="/tmp/ant-download-${address:0:16}.stderr"
 
     echo "[$(date -u +%H:%M:%S)] Downloading: ${address}"
 
@@ -132,7 +151,7 @@ while true; do
     # shellcheck disable=SC2086
     set +e
     "${HEAPTRACK_PREFIX[@]}" "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file download "$address" \
-        -o "$output_path" > "$output_file" 2>&1
+        -o "$output_path" > "$stdout_file" 2> "$stderr_file"
     exit_code=$?
     set -e
 
@@ -140,7 +159,7 @@ while true; do
     total_ms=$(( (end_ns - start_ns) / 1000000 ))
 
     # Parse the Time: field (download-only time, excludes peer discovery)
-    download_secs=$(grep -oP 'Time:\s+\K[0-9.]+' "$output_file" 2>/dev/null | head -1 || true)
+    download_secs=$(grep -oP 'Time:\s+\K[0-9.]+' "$stdout_file" 2>/dev/null | head -1 || true)
     download_secs="${download_secs:-0}"
 
     # Get downloaded file size
@@ -152,7 +171,8 @@ while true; do
     if [ "$exit_code" -eq 0 ]; then
         echo "[$(date -u +%H:%M:%S)] Download OK: ${address} total=${total_ms}ms download_time=${download_secs}s size=${file_bytes}"
     else
-        echo "[$(date -u +%H:%M:%S)] Download FAILED: ${address} exit_code=${exit_code} total=${total_ms}ms"
+        kept_stem=$(preserve_failure_logs "$dl_seq" "$address" "$stdout_file" "$stderr_file")
+        echo "[$(date -u +%H:%M:%S)] Download FAILED: ${address} exit_code=${exit_code} total=${total_ms}ms logs=${kept_stem}.{stdout,stderr}"
     fi
 
     # Submit to InfluxDB.
@@ -168,8 +188,9 @@ while true; do
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"
     fi
 
-    # Clean up downloaded file
-    rm -f "$output_file" "$output_path"
+    # Clean up downloaded file. On failure the tmp output files were already
+    # moved into FAILURE_LOG_DIR, so the rm is a no-op for them.
+    rm -f "$stdout_file" "$stderr_file" "$output_path"
 
     if [ "$RUN_ONCE" = "true" ]; then
         echo "RUN_ONCE=true, exiting after first download."
