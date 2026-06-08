@@ -40,6 +40,8 @@ testnet:
     per_vm: 15               # nodes provision --node-count (services per VM)
     nat_percent: 30          # % of node VMs behind simulated port-restricted NAT; omit/0 to disable
     clock_skew: 1            # inject intentional clock skew on N random node VMs (disable timesync + shift clock a few hours); omit/0 to disable
+    full_percent: 20         # % of NON-NAT node VMs to make storage-full (pre-fill data volume so nodes reject stores); randomly chosen (not region-spread) so full nodes scatter across the keyspace; always disjoint from nat_percent; omit/0 to disable
+    full_headroom_mb: 100    # free space (MiB) to leave when filling; only meaningful with full_percent > 0
     attached_volume_size: 100
     providers:               # vm_count is PER REGION; provider total = vm_count × number-of-regions
       digital_ocean:

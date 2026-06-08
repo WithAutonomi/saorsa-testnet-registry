@@ -2383,6 +2383,33 @@ def main(argv=None):
         "even if deployment state already has one recorded. Use with caution — "
         "this can flip a VM between skewed and un-skewed between runs.",
     )
+    nodes_provision_parser.add_argument(
+        "--full-percent",
+        type=int,
+        default=0,
+        help="Percentage of node VMs to make storage-full by pre-filling their "
+        "data volume (0-100, default: 0 = disabled), so every ant-node on the "
+        "VM sees no free space and behaves as full. The percentage is taken of "
+        "the non-NAT VMs — the selection is always disjoint from --nat-percent. "
+        "Selection is uniform random (NOT region-spread, so full nodes scatter "
+        "across the keyspace), seeded by deployment name, and is persisted to "
+        "deployment state on first run.",
+    )
+    nodes_provision_parser.add_argument(
+        "--force-full-reselect",
+        action="store_true",
+        help="Re-compute the storage-full VM selection from --full-percent even "
+        "if deployment state already has one recorded. Use with caution — this "
+        "can flip a VM between full and non-full between runs.",
+    )
+    nodes_provision_parser.add_argument(
+        "--full-headroom-mb",
+        type=int,
+        default=100,  # mirrors full_nodes.DEFAULT_FULL_HEADROOM_MB (kept literal
+        # here to avoid importing pyinfra-heavy provisioning code at parse time)
+        help="Free space (MiB) to leave on the data volume when making a VM "
+        "storage-full (default: 100). Only meaningful with --full-percent > 0.",
+    )
 
     # nodes provision-genesis
     nodes_provision_genesis_parser = nodes_subparsers.add_parser(

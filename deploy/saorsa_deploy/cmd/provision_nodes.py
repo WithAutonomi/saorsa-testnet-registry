@@ -5,6 +5,7 @@ from rich.console import Console
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
 from saorsa_deploy.provisioning.clock_skew import select_skew_ips
+from saorsa_deploy.provisioning.full_nodes import DEFAULT_FULL_HEADROOM_MB, select_full_ips
 from saorsa_deploy.provisioning.nat import select_nat_ips
 from saorsa_deploy.provisioning.node import AntNodeProvisioner
 from saorsa_deploy.registry import (
@@ -64,6 +65,7 @@ def cmd_provision_nodes(args):
 
     nat_ips = _resolve_nat_ips(args, state, vm_ips, console)
     clock_skew_ips = _resolve_clock_skew_ips(args, state, vm_ips, console)
+    full_ips = _resolve_full_ips(args, state, vm_ips, nat_ips, console)
 
     if args.region:
         if args.region not in vm_ips:
@@ -111,6 +113,8 @@ def cmd_provision_nodes(args):
         "rewards_address": args.rewards_address,
         "nat_ips": nat_ips,
         "clock_skew_ips": clock_skew_ips,
+        "full_ips": full_ips,
+        "full_headroom_mb": getattr(args, "full_headroom_mb", DEFAULT_FULL_HEADROOM_MB),
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel
@@ -163,6 +167,8 @@ def cmd_provision_nodes(args):
     try:
         nat_percent_value = getattr(args, "nat_percent", 0) or 0
         clock_skew_count_value = getattr(args, "clock_skew_count", 0) or 0
+        full_percent_value = getattr(args, "full_percent", 0) or 0
+        full_headroom_mb_value = getattr(args, "full_headroom_mb", DEFAULT_FULL_HEADROOM_MB)
         node_binary = build_binary_descriptor(
             getattr(args, "branch_name", None),
             getattr(args, "repo_owner", None),
@@ -174,6 +180,8 @@ def cmd_provision_nodes(args):
                 "nodes_per_vm": args.node_count,
                 "nat_percent": nat_percent_value,
                 "clock_skew_count": clock_skew_count_value,
+                "full_percent": full_percent_value,
+                "full_headroom_mb": full_headroom_mb_value,
                 "node_binary": node_binary,
             },
         )
@@ -219,6 +227,55 @@ def _resolve_nat_ips(args, state, vm_ips_by_region, console) -> set[str]:
         )
     elif locked:
         console.print(f"  NAT VMs: {len(locked)} from state")
+    return locked
+
+
+def _resolve_full_ips(args, state, vm_ips_by_region, nat_ips, console) -> set[str]:
+    """Determine which VM IPs should be storage-full (data volume pre-filled).
+
+    Mirrors :func:`_resolve_nat_ips`: uses the persisted selection from
+    deployment state when available so re-running nodes provision never flips a
+    VM between full and non-full unless ``--force-full-reselect`` is passed.
+
+    The selection is always disjoint from NAT: ``nat_ips`` are excluded from the
+    candidate pool at selection time, and subtracted from a locked-from-state
+    selection as a belt-and-suspenders guard (so a later ``--force-nat-reselect``
+    can never cause a NAT host to be filled).
+    """
+    full_percent = getattr(args, "full_percent", 0) or 0
+    force_reselect = getattr(args, "force_full_reselect", False)
+    existing = state.get("full_vm_ips")
+
+    if existing is None or force_reselect:
+        new_list = (
+            select_full_ips(
+                vm_ips_by_region, full_percent, exclude=nat_ips, seed=args.name
+            )
+            if full_percent > 0
+            else []
+        )
+        if new_list or existing is not None:
+            try:
+                update_deployment_state(args.name, {"full_vm_ips": new_list})
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: failed to persist full_vm_ips to state: {e}[/yellow]"
+                )
+        if new_list:
+            console.print(
+                f"  Storage-full VMs: {len(new_list)} selected at {full_percent}% "
+                "of non-NAT VMs (persisted to state)"
+            )
+        return set(new_list)
+
+    locked = set(existing) - set(nat_ips)
+    if full_percent > 0 and locked:
+        console.print(
+            f"  Storage-full VMs: {len(locked)} locked from state "
+            "(--full-percent ignored; pass --force-full-reselect to recompute)"
+        )
+    elif locked:
+        console.print(f"  Storage-full VMs: {len(locked)} from state")
     return locked
 
 

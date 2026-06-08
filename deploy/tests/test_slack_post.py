@@ -803,6 +803,36 @@ def test_cmd_slack_post_loads_monitoring_and_elastic_state(repo):
 # --------------------------------------------------------------------------- #
 # clock skew rendering
 # --------------------------------------------------------------------------- #
+def test_testnet_renders_storage_full_nodes():
+    deployment = _deployment(
+        deploy_args={
+            "bootstrap_count": 3,
+            "vm_count": 6,
+            "nodes_per_vm": 25,
+            "full_percent": 33,
+            "node_binary": {"kind": "release", "version": "0.4.1"},
+        },
+    )
+    state = {"full_vm_ips": ["1.1.1.1", "2.2.2.2"]}
+    text = _all_text(build_slack_blocks(deployment, state, None))
+    assert "Storage-full nodes" in text
+    # 2 full VMs × 25/VM = 50 full nodes, at 33%.
+    assert "50 (2 VMs (33%))" in text
+
+
+def test_testnet_storage_full_zero_when_unset():
+    deployment = _deployment(
+        deploy_args={
+            "bootstrap_count": 3,
+            "vm_count": 6,
+            "nodes_per_vm": 25,
+            "node_binary": {"kind": "release", "version": "0.4.1"},
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, {}, None))
+    assert "Storage-full nodes" in text
+
+
 def test_testnet_clients_render_clock_skew():
     deployment = _deployment(
         deploy_args={

@@ -61,6 +61,7 @@ def _build_node_vms_field(state: dict, ssh_key: str, node_count: int) -> list[di
     vm_ips = state.get("vm_ips") or {}
     vm_ids = state.get("vm_ids") or {}
     nat_ips = set(state.get("nat_vm_ips") or [])
+    full_ips = set(state.get("full_vm_ips") or [])
     services = [f"ant-node-{i + 1}" for i in range(node_count)]
 
     entries = []
@@ -71,6 +72,7 @@ def _build_node_vms_field(state: dict, ssh_key: str, node_count: int) -> list[di
         for index, ip in enumerate(ips):
             provider_id = ids[index] if index < len(ids) else ""
             is_nat = ip in nat_ips
+            is_full = ip in full_ips
             entries.append(
                 {
                     "name": f"{name}-ant-node-{region}-{index + 1}",
@@ -81,8 +83,13 @@ def _build_node_vms_field(state: dict, ssh_key: str, node_count: int) -> list[di
                     "ssh_user": DEFAULT_SSH_USER,
                     "ssh_key": ssh_key,
                     "nat_simulated": is_nat,
+                    "storage_full": is_full,
                     "nodes": [
-                        {"service_name": svc, "nat_simulated": is_nat}
+                        {
+                            "service_name": svc,
+                            "nat_simulated": is_nat,
+                            "storage_full": is_full,
+                        }
                         for svc in services
                     ],
                     "services": list(services),

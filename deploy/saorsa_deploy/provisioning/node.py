@@ -16,6 +16,10 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     skew_direction_for_ip,
 )
+from saorsa_deploy.provisioning.full_nodes import (
+    DEFAULT_FULL_HEADROOM_MB,
+    build_fill_storage_command,
+)
 from saorsa_deploy.provisioning.nat import NAT_IP_EXEC_PREFIX, build_nat_setup_command
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
@@ -138,6 +142,8 @@ class AntNodeProvisioner:
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         nat_ips: set[str] | None = None,
         clock_skew_ips: set[str] | None = None,
+        full_ips: set[str] | None = None,
+        full_headroom_mb: int = DEFAULT_FULL_HEADROOM_MB,
         evm_network: str | None = "arbitrum-sepolia",
         restart_policy: str = "on-success",
         restart_sec: int = 5,
@@ -157,6 +163,8 @@ class AntNodeProvisioner:
         self.rewards_address = rewards_address
         self.nat_ips = set(nat_ips) if nat_ips else set()
         self.clock_skew_ips = set(clock_skew_ips) if clock_skew_ips else set()
+        self.full_ips = set(full_ips) if full_ips else set()
+        self.full_headroom_mb = full_headroom_mb
         self.evm_network = evm_network
         self.restart_policy = restart_policy
         self.restart_sec = restart_sec
@@ -217,6 +225,13 @@ class AntNodeProvisioner:
                 f"{len(self.host_ips)} host(s).[/cyan]"
             )
 
+        if self.full_ips:
+            self.console.print(
+                f"[cyan]Storage-full simulation enabled on {len(self.full_ips)}/"
+                f"{len(self.host_ips)} host(s) "
+                f"(headroom {self.full_headroom_mb} MiB).[/cyan]"
+            )
+
         hosts_data = [
             (ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
@@ -238,6 +253,7 @@ class AntNodeProvisioner:
             nat_hosts = [h for h in active_hosts if h.name in self.nat_ips]
             plain_hosts = [h for h in active_hosts if h.name not in self.nat_ips]
             skew_hosts = [h for h in active_hosts if h.name in self.clock_skew_ips]
+            full_hosts = [h for h in active_hosts if h.name in self.full_ips]
 
             add_op(
                 state,
@@ -301,6 +317,18 @@ class AntNodeProvisioner:
                     name=f"Inject clock skew ({'fast' if direction >= 0 else 'slow'})",
                     commands=[build_clock_skew_command(offset_seconds)],
                     host=[host],
+                )
+
+            # Pre-fill the data volume on storage-full hosts. Must run AFTER the
+            # "Mount attached storage volume" op so it consumes the volume, not
+            # the root disk. Orthogonal to NAT/skew — unit files are unchanged.
+            if full_hosts:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Pre-fill data volume (storage-full simulation)",
+                    commands=[build_fill_storage_command(self.full_headroom_mb)],
+                    host=full_hosts,
                 )
 
             if nat_hosts:

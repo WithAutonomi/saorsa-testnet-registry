@@ -205,6 +205,13 @@ def _provision_and_start_steps(
         # keep --clock-skew-count adjacent to other nodes-provision flags
         idx = nodes_argv.index("--ssh-key-path")
         nodes_argv[idx:idx] = ["--clock-skew-count", str(nodes.clock_skew)]
+    if nodes.full_percent is not None:
+        # keep --full-percent adjacent to other nodes-provision flags
+        idx = nodes_argv.index("--ssh-key-path")
+        nodes_argv[idx:idx] = ["--full-percent", str(nodes.full_percent)]
+    if nodes.full_headroom_mb is not None:
+        idx = nodes_argv.index("--ssh-key-path")
+        nodes_argv[idx:idx] = ["--full-headroom-mb", str(nodes.full_headroom_mb)]
     steps.append(Step(nodes_argv, "Provision nodes"))
 
     steps.append(Step(["nodes", "start", "--name", name, "--ssh-key-path", ssh_key], "Start nodes"))

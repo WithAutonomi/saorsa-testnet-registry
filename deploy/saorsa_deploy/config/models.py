@@ -142,6 +142,8 @@ class Nodes(_Base):
     per_vm: int  # nodes provision --node-count
     nat_percent: Optional[int] = None
     clock_skew: Optional[int] = None  # nodes provision --clock-skew-count (N random hosts)
+    full_percent: Optional[int] = None  # nodes provision --full-percent (% of non-NAT VMs)
+    full_headroom_mb: Optional[int] = None  # nodes provision --full-headroom-mb
     attached_volume_size: Optional[int] = None
     providers: dict[str, ProviderNodes]
 

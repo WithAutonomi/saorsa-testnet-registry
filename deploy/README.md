@@ -341,6 +341,38 @@ magnitude** instead of the node-side fixed-3h/random-direction behaviour — see
 the `clock_skew=DURATION` spec token under "Deploying clients" and the prod
 client commands below.
 
+#### Storage-full simulation
+
+`nodes provision` can make a configurable percentage of VMs behave as
+storage-full by pre-filling their data volume. On a selected VM the provisioner
+writes a single filler file (`/mnt/ant-node-storage/.ant_full_filler`, created
+with `fallocate`, `dd` fallback) sized to consume all free space minus a small
+headroom, so every ant-node sharing that volume sees no space and rejects new
+records. Useful for modelling a network with full nodes.
+
+```bash
+uv run saorsa-deploy nodes provision --name DEV-01 --node-count 25 --full-percent 20
+uv run saorsa-deploy nodes start --name DEV-01
+```
+
+`--full-percent` is taken as a percentage of the **non-NAT** VMs — the selection
+is always disjoint from `--nat-percent`, so a NAT VM is never also filled.
+Selection is **uniform random** (seeded by deployment name), *not*
+region-distributed like `--nat-percent`: a chunk PUT only exercises a full node
+when that node is among the closest nodes to the chunk's keyspace address, so
+full nodes must be scattered rather than clustered. The draw is recorded in
+deployment state on first run; subsequent runs honour the locked selection
+unless you pass `--force-full-reselect`. `--full-headroom-mb` (default 100)
+tunes how much free space to leave. The fill is idempotent (guarded by the
+filler file existing), so re-running `nodes provision` never double-fills.
+
+Verify on a full VM:
+
+```bash
+ssh root@<VM> "df -h /mnt/ant-node-storage"        # Avail near zero
+ssh root@<VM> "ls -lh /mnt/ant-node-storage/.ant_full_filler"
+```
+
 #### Binary version selection
 
 By default provisioning uses the latest GitHub release. Override with:

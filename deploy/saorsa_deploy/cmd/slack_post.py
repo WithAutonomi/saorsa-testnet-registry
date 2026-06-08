@@ -151,6 +151,17 @@ def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -
     else:
         nat_value = "0"
 
+    full_ips = state.get("full_vm_ips") or []
+    full_percent = deploy_args.get("full_percent")
+    if full_ips and nodes_per_vm is not None:
+        full_nodes = len(full_ips) * nodes_per_vm
+        pct_str = f" ({full_percent}%)" if full_percent else ""
+        full_value = f"{full_nodes} ({len(full_ips)} VMs{pct_str})"
+    elif full_ips:
+        full_value = f"_unknown_ ({len(full_ips)} full VMs)"
+    else:
+        full_value = "0"
+
     # Clock skew spans both tiers: node VMs (selected by --clock-skew-count,
     # persisted to state) and client VMs (a clock_skew duration on their spec).
     node_skew = len(state.get("clock_skew_vm_ips") or [])
@@ -172,6 +183,7 @@ def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -
             [
                 ("Total nodes", node_value),
                 ("NAT-simulated nodes", nat_value),
+                ("Storage-full nodes", full_value),
                 ("Clock-skewed VMs", skew_value),
             ]
         )

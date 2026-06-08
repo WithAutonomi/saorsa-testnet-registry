@@ -390,6 +390,43 @@ def test_clock_skew_omitted_when_unset():
     assert "--clock-skew-count" not in nprov.argv
 
 
+def test_full_percent_omitted_when_unset():
+    steps = build_deploy_steps(_minimal())
+    nprov = next(s for s in steps if s.argv[:2] == ["nodes", "provision"])
+    assert "--full-percent" not in nprov.argv
+    assert "--full-headroom-mb" not in nprov.argv
+
+
+def test_full_percent_emitted_when_set():
+    m = _minimal(
+        nodes={
+            "per_vm": 5,
+            "full_percent": 25,
+            "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+        }
+    )
+    steps = build_deploy_steps(m)
+    nprov = next(s for s in steps if s.argv[:2] == ["nodes", "provision"])
+    assert "--full-percent" in nprov.argv
+    assert nprov.argv[nprov.argv.index("--full-percent") + 1] == "25"
+    # emitted before the ssh-key flag, like the other simulation flags
+    assert nprov.argv.index("--full-percent") < nprov.argv.index("--ssh-key-path")
+
+
+def test_full_headroom_mb_emitted_when_set():
+    m = _minimal(
+        nodes={
+            "per_vm": 5,
+            "full_percent": 25,
+            "full_headroom_mb": 512,
+            "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+        }
+    )
+    steps = build_deploy_steps(m)
+    nprov = next(s for s in steps if s.argv[:2] == ["nodes", "provision"])
+    assert nprov.argv[nprov.argv.index("--full-headroom-mb") + 1] == "512"
+
+
 def test_clock_skew_count_emitted_when_set():
     m = _minimal(
         nodes={

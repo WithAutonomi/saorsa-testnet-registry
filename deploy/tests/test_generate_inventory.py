@@ -140,12 +140,14 @@ class TestBuildInventory:
             "ssh_user",
             "ssh_key",
             "nat_simulated",
+            "storage_full",
             "nodes",
             "services",
         }
         assert first["ssh_user"] == DEFAULT_SSH_USER
         assert first["ssh_key"] == DEFAULT_SSH_KEY
         assert first["nat_simulated"] is False
+        assert first["storage_full"] is False
 
     def test_node_vm_name_is_deterministic(self):
         inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
@@ -175,9 +177,9 @@ class TestBuildInventory:
         vm = inv["node_vms"][0]
         assert vm["services"] == ["ant-node-1", "ant-node-2", "ant-node-3"]
         assert vm["nodes"] == [
-            {"service_name": "ant-node-1", "nat_simulated": False},
-            {"service_name": "ant-node-2", "nat_simulated": False},
-            {"service_name": "ant-node-3", "nat_simulated": False},
+            {"service_name": "ant-node-1", "nat_simulated": False, "storage_full": False},
+            {"service_name": "ant-node-2", "nat_simulated": False, "storage_full": False},
+            {"service_name": "ant-node-3", "nat_simulated": False, "storage_full": False},
         ]
 
     def test_explicit_node_count_overrides_state(self):
@@ -209,6 +211,27 @@ class TestBuildInventory:
         # Legacy deployments pre-dating NAT support have no `nat_vm_ips` key.
         inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
         assert all(vm["nat_simulated"] is False for vm in inv["node_vms"])
+
+    def test_storage_full_flag_on_matching_ips(self):
+        state = _state(full_vm_ips=["10.0.0.2", "10.1.0.1"])
+        inv = build_inventory(state, created_at="2026-04-16T18:00:00Z")
+        by_ip = {vm["ip"]: vm for vm in inv["node_vms"]}
+        assert by_ip["10.0.0.2"]["storage_full"] is True
+        assert by_ip["10.1.0.1"]["storage_full"] is True
+        assert by_ip["10.0.0.1"]["storage_full"] is False
+
+    def test_storage_full_propagates_into_nodes_list(self):
+        state = _state(full_vm_ips=["10.0.0.1"])
+        inv = build_inventory(state, created_at="2026-04-16T18:00:00Z")
+        by_ip = {vm["ip"]: vm for vm in inv["node_vms"]}
+        full_vm = by_ip["10.0.0.1"]
+        assert all(n["storage_full"] is True for n in full_vm["nodes"])
+        plain_vm = by_ip["10.0.0.2"]
+        assert all(n["storage_full"] is False for n in plain_vm["nodes"])
+
+    def test_storage_full_defaults_false_when_state_missing_key(self):
+        inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
+        assert all(vm["storage_full"] is False for vm in inv["node_vms"])
 
     def test_raises_when_node_count_missing(self):
         state = _state()
