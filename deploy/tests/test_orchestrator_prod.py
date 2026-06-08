@@ -4,6 +4,9 @@ The uploaders/downloaders cases reproduce the real reference runbooks
 (``runbooks/PROD_UL_01-deploy.sh`` and ``runbooks/PROD_DL_01-versioned-deploy.sh``).
 """
 
+import pytest
+from pydantic import ValidationError
+
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
 
@@ -102,6 +105,72 @@ def test_prod_uploaders_clock_skew_omitted_by_default():
     argv = build_deploy_steps(m)[0].argv
     spec = argv[argv.index("--uploader") + 1]
     assert "clock_skew" not in spec
+
+
+def test_prod_uploaders_log_level_appends_token():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [
+                    {
+                        "region": "lon1",
+                        "vm_size": "s-2vcpu-4gb",
+                        "urls": "/a.txt",
+                        "log_level": "debug",
+                    }
+                ],
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    spec = argv[argv.index("--uploader") + 1]
+    assert spec == "lon1:s-2vcpu-4gb:urls=/a.txt:log_level=debug"
+
+
+def test_prod_uploaders_log_level_omitted_by_default():
+    m = Manifest.model_validate(
+        {
+            "name": "U",
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_uploaders": {
+                "binary": {"version": "1"},
+                "uploaders": [{"region": "lon1", "vm_size": "s-2vcpu-4gb", "urls": "/a.txt"}],
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    spec = argv[argv.index("--uploader") + 1]
+    assert "log_level" not in spec
+
+
+def test_prod_uploaders_log_level_invalid_value_rejected():
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(
+            {
+                "name": "U",
+                "kind": "prod-uploaders",
+                "purpose": "p",
+                "ssh_key_path": SSH,
+                "prod_uploaders": {
+                    "binary": {"version": "1"},
+                    "uploaders": [
+                        {
+                            "region": "lon1",
+                            "vm_size": "s-2vcpu-4gb",
+                            "urls": "/a.txt",
+                            "log_level": "verbose",
+                        }
+                    ],
+                },
+            }
+        )
 
 
 def test_prod_uploaders_slack_post_appends_final_step():
@@ -365,8 +434,62 @@ def test_prod_local_uploads_local_dir_and_verbose():
     assert "--local-dir-path" in argv and argv[argv.index("--local-dir-path") + 1] == "/data/files"
     assert "--urls" not in argv
     assert argv.count("--verbose") == 2
+    assert "--log-level" not in argv
     assert "--ssh-key-path" not in argv  # runs locally
     assert build_destroy_steps(m) == []  # nothing to tear down
+
+
+def test_prod_local_uploads_log_level_emits_flag():
+    m = Manifest.model_validate(
+        {
+            "name": "LU",
+            "kind": "prod-local-uploads",
+            "purpose": "p",
+            "prod_local_uploads": {
+                "binary": {"version": "1"},
+                "urls": "/data/urls.txt",
+                "log_level": "debug",
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert argv[argv.index("--log-level") + 1] == "debug"
+    assert "--verbose" not in argv
+
+
+def test_prod_local_uploads_log_level_wins_over_verbose():
+    m = Manifest.model_validate(
+        {
+            "name": "LU",
+            "kind": "prod-local-uploads",
+            "purpose": "p",
+            "prod_local_uploads": {
+                "binary": {"version": "1"},
+                "urls": "/data/urls.txt",
+                "log_level": "trace",
+                "verbose": 2,
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert argv[argv.index("--log-level") + 1] == "trace"
+    assert "--verbose" not in argv  # deprecated alias suppressed when log_level set
+
+
+def test_prod_local_uploads_log_level_invalid_value_rejected():
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(
+            {
+                "name": "LU",
+                "kind": "prod-local-uploads",
+                "purpose": "p",
+                "prod_local_uploads": {
+                    "binary": {"version": "1"},
+                    "urls": "/data/urls.txt",
+                    "log_level": "loud",
+                },
+            }
+        )
 
 
 def test_prod_local_downloads_keep_output_dir():

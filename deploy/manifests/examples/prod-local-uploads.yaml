@@ -1,0 +1,39 @@
+# Example / reference: prod-local-uploads — upload to PRODUCTION Autonomi from
+# THIS machine (no VMs provisioned; real ETH). Intended for testing uploads
+# from a real home internet connection. Per-file results go straight to
+# Postgres; there is no Influx, no monitoring VM, and no destroy command.
+#
+# A standalone, copy-me template showing EVERY available field. Required fields
+# are live; optional fields are shown commented with their defaults. Copy into
+# ../runs/ (git-ignored), rename, and edit. Validate with:
+#   saorsa-deploy deployments config validate --config deploy/manifests/examples/prod-local-uploads.yaml
+
+# --- top-level envelope (common to every kind) ---
+name: PROD-LOCAL-UL-01
+kind: prod-local-uploads
+purpose: "Smoke-test prod uploads from home connection"
+# ssh_key_path: ~/.ssh/ant_deploy          # unused for local-uploads (nothing is provisioned); may be omitted
+slack_post: true                           # default false; append a `deployments slack-post` step to `up`
+# extends: ../profiles/some-base.yaml      # optional loader directive: deep-merge a base manifest (lists REPLACE)
+
+prod_local_uploads:
+  # Binary: a pinned release ({ version }) OR a branch build ({ branch, repo_owner }).
+  binary:
+    version: 0.2.5                          # release form
+    # branch: my-feature-branch             # branch form — mutually exclusive with version
+    # repo_owner: jacderida                  # branch builds only; default maidsafe
+    # validation: "string-baked-into-binary" # optional --validation-string (branch builds only)
+
+  secret_key_env: ARBITRUM_ONE_SECRET_KEY   # env var NAME only (default ARBITRUM_ONE_SECRET_KEY); up fails fast if unset
+  payment: merkle                           # optional: merkle | no-merkle; omit to let ant choose
+
+  # Exactly ONE input mode is required:
+  urls: /home/chris/downloads/panama_racing_links20.txt   # download each URL, upload, delete the temp copy
+  # local_dir: /home/chris/data/files        # OR recursively upload every file under a dir (sources untouched)
+
+  # ant log verbosity: info (default → -v), debug (-vv), trace (-vvv).
+  # `log_level` is the documented knob.
+  log_level: debug
+  # verbose: 0                               # DEPRECATED raw -v repeat count; kept for back-compat. log_level wins if both set.
+
+  bootstrap_cache: true                      # optional (default true): true → ant WITHOUT --bootstrap, reading ~/.config/ant/bootstrap_peers.toml (written only if missing); false → legacy --bootstrap

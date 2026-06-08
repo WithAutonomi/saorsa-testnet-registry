@@ -28,6 +28,7 @@ from rich.console import Console
 from saorsa_db.models import DeploymentStatus
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.config.models import VALID_LOG_LEVELS
 from saorsa_deploy.prod_bootstraps import (
     PROD_BOOTSTRAPS_URL,
     ProdBootstrapsError,
@@ -51,7 +52,7 @@ MONITORING_REGION = "lon1"
 DEFAULT_MONITORING_VOLUME_SIZE = 50
 
 
-_KNOWN_SPEC_KEYS = ("urls", "payment", "clock_skew", "bootstrap_cache")
+_KNOWN_SPEC_KEYS = ("urls", "payment", "log_level", "clock_skew", "bootstrap_cache")
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
 
 
@@ -65,6 +66,16 @@ def _parse_bootstrap_cache_token(spec: str, value: str) -> bool:
         f"Invalid uploader spec '{spec}': bootstrap_cache must be 'true' or "
         f"'false', got '{value}'."
     )
+
+
+def _parse_log_level_token(spec: str, value: str) -> str:
+    """Validate a ``log_level=`` uploader-spec token (info|debug|trace)."""
+    if value not in VALID_LOG_LEVELS:
+        raise ValueError(
+            f"Invalid uploader spec '{spec}': log_level must be one of "
+            f"{', '.join(VALID_LOG_LEVELS)}, got '{value}'."
+        )
+    return value
 
 
 def _parse_clock_skew_token(spec: str, value: str) -> int:
@@ -81,12 +92,15 @@ def _parse_clock_skew_token(spec: str, value: str) -> int:
 def parse_prod_uploader_spec(spec: str) -> dict:
     """Parse a ``--uploader`` spec.
 
-    Format: ``REGION:VM_SIZE:urls=PATH[:payment=MODE][:bootstrap_cache=BOOL]``.
+    Format:
+    ``REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:bootstrap_cache=BOOL]``.
     Tail tokens are key=value; ``urls`` is required, ``payment`` is optional
-    and must be ``merkle`` or ``no-merkle``. Returns a dict with keys
-    ``region``, ``vm_size``, ``urls_file`` (str), ``payment_type``
-    (str | None), and ``bootstrap_cache`` (bool, default True — invoke ant
-    without --bootstrap, shipping a bootstrap_peers.toml).
+    and must be ``merkle`` or ``no-merkle``, ``log_level`` is optional and must
+    be ``info``/``debug``/``trace`` (omitted → info on the VM). Returns a dict
+    with keys ``region``, ``vm_size``, ``urls_file`` (str), ``payment_type``
+    (str | None), ``log_level`` (str | None), and ``bootstrap_cache`` (bool,
+    default True — invoke ant without --bootstrap, shipping a
+    bootstrap_peers.toml).
     """
     parts = spec.split(":")
     if len(parts) < 3:
@@ -150,6 +164,11 @@ def parse_prod_uploader_spec(spec: str) -> dict:
             f"{', '.join(_VALID_PAYMENT_VALUES)}."
         )
 
+    log_level = (
+        _parse_log_level_token(spec, options["log_level"])
+        if "log_level" in options
+        else None
+    )
     clock_skew = (
         _parse_clock_skew_token(spec, options["clock_skew"])
         if "clock_skew" in options
@@ -166,6 +185,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "vm_size": vm_size,
         "urls_file": urls_file,
         "payment_type": payment_type,
+        "log_level": log_level,
         "clock_skew": clock_skew,
         "bootstrap_cache": bootstrap_cache,
     }
@@ -451,6 +471,7 @@ def _provision_uploaders(
             "client_index": client["client_index"],
             "urls_file_content": spec["_urls_file_content"],
             "payment_type": spec.get("payment_type"),
+            "log_level": spec.get("log_level"),
             "clock_skew": spec.get("clock_skew", False),
             "bootstrap_cache": spec.get("bootstrap_cache", True),
         })

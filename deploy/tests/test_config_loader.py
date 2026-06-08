@@ -5,6 +5,26 @@ import textwrap
 import pytest
 
 from saorsa_deploy.config import ManifestError, load_manifest, merge_manifest_dict
+from saorsa_deploy.config.models import (
+    DEFAULT_LOG_LEVEL,
+    VALID_LOG_LEVELS,
+    log_level_to_v_flag,
+    log_level_to_verbosity,
+)
+
+
+@pytest.mark.parametrize(
+    ("level", "verbosity", "flag"),
+    [("info", 1, "-v"), ("debug", 2, "-vv"), ("trace", 3, "-vvv")],
+)
+def test_log_level_helpers(level, verbosity, flag):
+    assert log_level_to_verbosity(level) == verbosity
+    assert log_level_to_v_flag(level) == flag
+
+
+def test_log_level_defaults_and_valid_set():
+    assert DEFAULT_LOG_LEVEL == "info"
+    assert VALID_LOG_LEVELS == ("info", "debug", "trace")
 
 
 def _write(tmp_path, name, body):

@@ -54,9 +54,12 @@ abandoned dust is reported but no longer blocks the destroy. Without it, a
 drain failure aborts `down` at step 1 so funds aren't silently lost.
 
 Reusable profiles are committed under `deploy/manifests/profiles/`
-(`reference.yaml` shows every option); your concrete run manifests live in the
-git-ignored `deploy/manifests/runs/` — they pin versions/branches and churn per
-run, so like the bash `runbooks/` they stay local.
+(`reference.yaml` shows every option); copy-me starting points for the prod
+kinds are committed under `deploy/manifests/examples/`. Your concrete run
+manifests live in the git-ignored `deploy/manifests/runs/` — they pin
+versions/branches and churn per run, so like the bash `runbooks/` they stay
+local. (Profiles are deep-merge bases for `extends:`; examples are standalone
+templates to copy into `runs/`.)
 
 One manifest describes one deployment's full desired state, tagged by `kind`
 (`testnet`, `testnet-extension`, `prod-uploaders`, `prod-canary`,
@@ -968,7 +971,7 @@ Arguments (for `prod uploaders deploy`):
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
-| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION][:bootstrap_cache=BOOL]`. The first three parts are required. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). `bootstrap_cache=true|false` (default true) — when true `ant` runs **without** `--bootstrap` (peer cache enabled, peers read from a provisioned `bootstrap_peers.toml`); false restores the legacy `--bootstrap` invocation. |
+| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:clock_skew=DURATION][:bootstrap_cache=BOOL]`. The first three parts are required. `log_level=LEVEL` sets the `ant` upload verbosity for that VM — `info` (default → `-v`), `debug` (`-vv`), or `trace` (`-vvv`); omit for info. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). `bootstrap_cache=true|false` (default true) — when true `ant` runs **without** `--bootstrap` (peer cache enabled, peers read from a provisioned `bootstrap_peers.toml`); false restores the legacy `--bootstrap` invocation. |
 | `--allow-duplicate-files` | flag | off | Skip the duplicate-file preflight and deploy even if an upload target already exists in the prod uploads list. Use to re-upload missing chunks or test the already-stored path. |
 | `--secret-key` | string | `$ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet secret key shared across all uploaders. Deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` — prod uploads cost real ETH. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
@@ -1029,7 +1032,7 @@ Arguments (for `prod local-uploads`):
 | `--ant-version VERSION` | no | Pin a specific released `ant` version. Mutually exclusive with `--branch-name`. |
 | `--payment MODE` | no | `merkle` or `no-merkle`. Omit to let `ant` choose. |
 | `--bootstrap-cache` / `--no-bootstrap-cache` | no | Ant peer cache mode (default on): `ant` runs **without** `--bootstrap` and reads `~/.config/ant/bootstrap_peers.toml`, which is created from the fetched prod list **only when missing** — an existing operator file is never overwritten. `--no-bootstrap-cache` restores the legacy explicit `--bootstrap` invocation (cache disabled). |
-| `-v` / `-vv` | no | Verbosity passed to the `ant` subprocess. Default `-v`. |
+| `--log-level LEVEL` | no | `ant` upload verbosity: `info` (default → `-v`), `debug` (`-vv`), or `trace` (`-vvv`). This is the documented knob; it supersedes the deprecated, hidden `-v`/`--verbose` count flag when both are given. |
 
 The command resolves the live prod bootstrap peers from upstream at startup, downloads the resolved `ant` binary into `~/.cache/saorsa-deploy/ant-binaries/<key>/ant` (pinned releases are cached across runs; `latest` and branch builds are re-fetched), and registers a row in the `deployments` table with `deploy_args.kind = "prod-local-uploads"`. On completion the deployment is marked `stopped` regardless of per-file failures — failures live in the per-row Postgres records.
 

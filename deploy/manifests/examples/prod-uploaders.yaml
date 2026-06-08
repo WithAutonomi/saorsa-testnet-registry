@@ -1,0 +1,46 @@
+# Example / reference: prod-uploaders — upload public files to PRODUCTION
+# Autonomi (real ETH on Arbitrum One). Provisions one client VM per uploader.
+#
+# A standalone, copy-me template showing EVERY available field. Required fields
+# are live; optional fields are shown commented with their defaults. Copy into
+# ../runs/ (git-ignored), rename, and edit. Validate with:
+#   saorsa-deploy deployments config validate --config deploy/manifests/examples/prod-uploaders.yaml
+#
+# This is NOT a profile — prod kinds are single-command deployments written
+# standalone (no `extends:` base).
+
+# --- top-level envelope (common to every kind) ---
+name: PROD-UL-01
+kind: prod-uploaders
+purpose: "Merkle uploads after node update + deferred-retry change"
+ssh_key_path: ~/.ssh/ant_deploy           # absolute or ~; default ~/.ssh/id_rsa
+slack_post: true                           # default false; append a `deployments slack-post` step to `up`
+# extends: ../profiles/some-base.yaml      # optional loader directive: deep-merge a base manifest (lists REPLACE)
+
+prod_uploaders:
+  # Binary: choose EITHER a pinned release ({ version }) OR a branch build
+  # ({ branch, repo_owner }). Branch builds add a `build ant` step to `up`.
+  binary:
+    branch: feat-deferred_retry_for_merkle_uploads
+    repo_owner: jacderida                  # branch builds only; default maidsafe
+    # validation: "string-baked-into-binary"   # optional --validation-string sanity check (branch builds only)
+    # version: 0.2.5                        # release form — mutually exclusive with branch/repo_owner
+
+  secret_key_env: ARBITRUM_ONE_SECRET_KEY  # env var NAME only (default ARBITRUM_ONE_SECRET_KEY); up fails fast if unset
+  # monitoring_volume_size: 50             # GB attached volume on the paired InfluxDB VM (default 50)
+  # keep_monitoring: false                 # destroy: preserve InfluxDB+Grafana when true (default false → torn down)
+  # allow_duplicate_files: false           # skip the duplicate-file preflight to re-upload existing files (default false)
+
+  uploaders:                               # >= 1 required; one client VM per entry
+    # First entry shows every per-uploader field.
+    - region: lon1                         # required (provider region string, passed through verbatim)
+      vm_size: s-2vcpu-4gb                 # required (provider VM size string)
+      urls: /home/chris/downloads/panama_racing_links20.txt   # required: path to a newline-separated URL list
+      payment: merkle                      # optional: merkle | no-merkle; omit to let ant choose
+      log_level: debug                     # optional: info (default → -v) | debug (-vv) | trace (-vvv)
+      bootstrap_cache: true                # optional (default true): true → ant WITHOUT --bootstrap + provisioned bootstrap_peers.toml; false → legacy --bootstrap
+      # clock_skew: 2h                      # optional, TESTING ONLY: disable time sync + shift this VM's clock by a signed Go duration (e.g. 2h, -2h, 30m)
+    # Second entry: only the required fields → all optionals fall back to defaults (info-level, ant's default payment, cache on).
+    - region: nyc1
+      vm_size: s-2vcpu-4gb
+      urls: /home/chris/downloads/more_links.txt

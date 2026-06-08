@@ -30,6 +30,8 @@ Optional env:
     DOWNLOAD_TIMEOUT   urllib HTTP timeout in seconds (default 600).
     PAYMENT_TYPE       Force ant payment mode: `merkle` adds --merkle, `no-merkle`
                        adds --no-merkle. Unset → no flag, ant picks its default.
+    LOG_LEVEL          ant verbosity: `info` (default → -v), `debug` (-vv),
+                       `trace` (-vvv). An unrecognised value falls back to info.
     BOOTSTRAP_CACHE    `true` (default) invokes ant WITHOUT --bootstrap so it
                        reads ~/.config/ant/bootstrap_peers.toml (written by the
                        provisioner) and keeps its peer cache enabled. `false`
@@ -234,28 +236,40 @@ def _payment_flag(payment_type: str | None) -> list[str]:
     return []
 
 
+# ant verbosity: -v=info, -vv=debug, -vvv=trace. Kept as a self-contained map
+# because this script is intentionally saorsa_deploy-import-free (it is copied
+# verbatim onto the uploader VM). Mirrors LOG_LEVEL_VERBOSITY in config/models.py.
+_LOG_LEVEL_VERBOSITY = {"info": 1, "debug": 2, "trace": 3}
+
+
+def _verbosity_flag(log_level: str) -> str:
+    """Map a LOG_LEVEL name to ant's repeated-``-v`` flag; unknown → info."""
+    return "-" + ("v" * _LOG_LEVEL_VERBOSITY.get(log_level, 1))
+
+
 def _run_ant(
     *, ant_path: str, bootstrap_args: list[str], evm_network: str,
     secret_key: str, file_path: Path, payment_type: str | None,
-    stderr_log_path: Path, stdout_log_path: Path,
+    log_level: str, stderr_log_path: Path, stdout_log_path: Path,
 ) -> tuple[int, str, str]:
     """Run ant and tee its streams to plain-text log files in real time.
 
     ``--json`` makes the result a single JSON record on stdout.
-    ``-v`` turns on info-level tracing on stderr — kept separate from the
-    JSON stream so it never breaks parsing. Both streams are written
-    line-by-line to per-upload log files so a slow run is observable on
-    the VM via ``tail -f`` and so the diagnostic survives even if systemd
-    kills the service mid-upload. Returns ``(exit_code, stdout, stderr)``;
-    the captured stderr is also kept in memory so the failure branch can
-    forward a tail to the journal without re-reading from disk.
+    The verbosity flag (``-v`` info / ``-vv`` debug / ``-vvv`` trace, from
+    ``LOG_LEVEL``) turns on tracing on stderr — kept separate from the JSON
+    stream so it never breaks parsing. Both streams are written line-by-line
+    to per-upload log files so a slow run is observable on the VM via
+    ``tail -f`` and so the diagnostic survives even if systemd kills the
+    service mid-upload. Returns ``(exit_code, stdout, stderr)``; the captured
+    stderr is also kept in memory so the failure branch can forward a tail to
+    the journal without re-reading from disk.
     """
     cmd = [
         ant_path,
         *bootstrap_args,
         "--evm-network", evm_network,
         "--json",
-        "-v",
+        _verbosity_flag(log_level),
         "file", "upload", "--public", *_payment_flag(payment_type),
         str(file_path),
     ]
@@ -390,6 +404,7 @@ def main() -> int:
     influx_bucket = os.environ.get("INFLUX_BUCKET", "testnet-metrics")
     download_timeout = int(os.environ.get("DOWNLOAD_TIMEOUT", "600"))
     payment_type = os.environ.get("PAYMENT_TYPE") or None
+    log_level = os.environ.get("LOG_LEVEL") or "info"
 
     if not secret_key.startswith("0x"):
         secret_key = "0x" + secret_key
@@ -472,6 +487,7 @@ def main() -> int:
             secret_key=secret_key,
             file_path=local_path,
             payment_type=payment_type,
+            log_level=log_level,
             stderr_log_path=stderr_log_path,
             stdout_log_path=stdout_log_path,
         )

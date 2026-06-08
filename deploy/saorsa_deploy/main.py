@@ -3227,13 +3227,25 @@ def main(argv=None):
         help="Payment mode passed through to the ant CLI (e.g. 'merkle', "
         "'no-merkle'). Omit to let ant pick its default.",
     )
+    from saorsa_deploy.config.models import VALID_LOG_LEVELS
+
     prod_lu_parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        choices=VALID_LOG_LEVELS,
+        metavar="LEVEL",
+        help="ant log verbosity: info (default), debug, trace. Supersedes the "
+        "deprecated -v/--verbose flag if both are given.",
+    )
+    prod_lu_parser.add_argument(
+        # Deprecated alias for --log-level, kept for backwards compatibility.
+        # Hidden from help; --log-level is the documented knob.
         "-v",
         "--verbose",
         action="count",
         default=0,
-        help="Verbosity for the ant subprocess. Default and minimum: -v. "
-        "Pass -vv or -vvv for more detail.",
+        help=argparse.SUPPRESS,
     )
     prod_lu_parser.add_argument(
         "--purpose",

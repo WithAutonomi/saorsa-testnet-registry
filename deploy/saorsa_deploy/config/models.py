@@ -47,6 +47,24 @@ KIND_TO_BLOCK: dict[str, str] = {
 Payment = Literal["merkle", "no-merkle"]
 UpgradeChannel = Literal["beta", "stable"]
 
+# ant log level → repeated `-v` verbosity. ant treats `-v`=info, `-vv`=debug,
+# `-vvv`=trace; info is the established floor for every upload/download path, so
+# it maps to a single `-v` (never "no flag", which would drop to warn/error).
+LogLevel = Literal["info", "debug", "trace"]
+DEFAULT_LOG_LEVEL: LogLevel = "info"
+LOG_LEVEL_VERBOSITY: dict[str, int] = {"info": 1, "debug": 2, "trace": 3}
+VALID_LOG_LEVELS: tuple[str, ...] = tuple(LOG_LEVEL_VERBOSITY)
+
+
+def log_level_to_verbosity(level: str) -> int:
+    """Map a log-level name to ant's repeated-`-v` count (info=1, …, trace=3)."""
+    return LOG_LEVEL_VERBOSITY[level]
+
+
+def log_level_to_v_flag(level: str) -> str:
+    """Map a log-level name to ant's verbosity flag (e.g. 'debug' → '-vv')."""
+    return "-" + ("v" * LOG_LEVEL_VERBOSITY[level])
+
 
 class _Base(BaseModel):
     # extra="forbid": a mistyped key is a loud error, not a silent no-op.
@@ -242,6 +260,9 @@ class ProdUploader(_Base):
     vm_size: str
     urls: str  # path to URL list (uploaded with --public)
     payment: Optional[Payment] = None
+    # ant log verbosity for this VM's uploads; None omits the token (defaults
+    # to info on the VM). info=-v, debug=-vv, trace=-vvv.
+    log_level: Optional[LogLevel] = None
     # signed duration skew on this VM (e.g. "2h", "-2h"); disables time sync (testing only)
     clock_skew: Optional[ClockSkew] = None
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
@@ -315,6 +336,10 @@ class ProdLocalUploadsSpec(_Base):
     urls: Optional[str] = None
     local_dir: Optional[str] = None
     payment: Optional[Payment] = None
+    # ant log verbosity (info=default, debug, trace). The documented knob.
+    log_level: Optional[LogLevel] = None
+    # DEPRECATED alias for log_level (a raw `-v` repeat count). Retained for
+    # backwards compatibility; log_level wins when both are set.
     verbose: int = 0
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap; the
     # operator's ~/.config/ant/bootstrap_peers.toml is written only if missing.

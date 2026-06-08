@@ -25,6 +25,8 @@ def _prod_uploader_spec(u) -> str:
     spec = f"{u.region}:{u.vm_size}:urls={u.urls}"
     if u.payment:
         spec += f":payment={u.payment}"
+    if u.log_level:
+        spec += f":log_level={u.log_level}"
     if u.clock_skew:
         spec += f":clock_skew={u.clock_skew}"
     if u.bootstrap_cache is not None:
@@ -149,7 +151,12 @@ def _local_uploads(manifest: Manifest) -> list[Step]:
         argv += ["--local-dir-path", spec.local_dir]
     if spec.payment is not None:
         argv += ["--payment", spec.payment]
-    argv += ["--verbose"] * spec.verbose
+    # log_level is the documented knob; --verbose is the deprecated alias and is
+    # only emitted when log_level is unset (log_level wins if both are given).
+    if spec.log_level is not None:
+        argv += ["--log-level", spec.log_level]
+    else:
+        argv += ["--verbose"] * spec.verbose
     argv += _bootstrap_cache_flag(spec)
     argv += ant_binary_flags(spec.binary)
     return [Step(argv, "Run prod uploads from the local machine")]

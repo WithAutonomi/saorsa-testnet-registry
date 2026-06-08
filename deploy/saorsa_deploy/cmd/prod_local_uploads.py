@@ -45,6 +45,7 @@ from saorsa_deploy.binary_source import (
     get_ant_custom_build_url,
     get_ant_release_url,
 )
+from saorsa_deploy.config.models import log_level_to_verbosity
 from saorsa_deploy.prod_bootstraps import (
     PROD_BOOTSTRAPS_URL,
     ProdBootstrapsError,
@@ -446,6 +447,15 @@ def cmd_prod_local_uploads(args) -> None:
         )
         sys.exit(1)
 
+    # Resolve the effective ant verbosity. --log-level is the documented knob;
+    # the deprecated -v/--verbose count is honoured only when --log-level is
+    # unset (log_level wins when both are supplied).
+    verbose = (
+        log_level_to_verbosity(args.log_level)
+        if args.log_level is not None
+        else args.verbose
+    )
+
     repo = get_repository()
     if repo is None:
         console.print(
@@ -592,7 +602,7 @@ def cmd_prod_local_uploads(args) -> None:
                         bootstrap_args=bootstrap_args,
                         secret_key=secret_key,
                         payment_type=args.payment,
-                        verbose=args.verbose,
+                        verbose=verbose,
                         console=console,
                         started_at=started_at,
                         start_ns=start_ns,
@@ -637,7 +647,7 @@ def cmd_prod_local_uploads(args) -> None:
                 bootstrap_args=bootstrap_args,
                 secret_key=secret_key,
                 payment_type=args.payment,
-                verbose=args.verbose,
+                verbose=verbose,
                 console=console,
                 started_at=started_at,
                 start_ns=start_ns,

@@ -12,11 +12,18 @@ deploy/manifests/
   profiles/        # COMMITTED — reusable base profiles + the reference template
     reference.yaml
     staging-rc.yaml
+  examples/        # COMMITTED — standalone copy-me templates (mainly the prod kinds)
+    prod-uploaders.yaml
+    prod-local-uploads.yaml
   runs/            # GIT-IGNORED — your concrete deployment manifests live here
 ```
 
 - **`profiles/`** is in version control. These are the reusable *shapes* — they change
   rarely. A profile has no per-run identity; a run `extends:` it.
+- **`examples/`** is in version control too, but serves a different purpose: each file is a
+  complete, standalone manifest meant to be **copied** into `runs/` and edited — not a
+  deep-merge base for `extends:`. The prod kinds are single-command deployments usually
+  written standalone, so they live here rather than as profiles.
 - **`runs/`** is git-ignored (same rationale as `runbooks/`). A concrete manifest like
   `runs/STG-01.yaml` pins specific versions/branches and churns every deployment, so it
   stays local and is never committed. Create your run manifests here.
@@ -39,6 +46,8 @@ saorsa-deploy deployments down --name STG-01                                # de
 | `profiles/reference.yaml` | testnet | Every available option, populated. Copy it into `runs/` and delete what you don't need. |
 | `profiles/staging-rc.yaml` | testnet | Reusable base profile (no `name`). A run `extends:` it. |
 | `profiles/small.yaml` | testnet | Small base profile (~100 nodes, a couple of 10 MB uploaders). |
+| `examples/prod-uploaders.yaml` | prod-uploaders | Standalone template: multi-VM prod upload run; shows per-uploader `log_level`. Copy into `runs/`. |
+| `examples/prod-local-uploads.yaml` | prod-local-uploads | Standalone template: upload to prod from the local machine; shows `log_level`. Copy into `runs/`. |
 
 ## Writing a run manifest
 
@@ -68,6 +77,7 @@ prod_uploaders:
   secret_key_env: ARBITRUM_ONE_SECRET_KEY   # env var name only; up fails fast if unset
   uploaders:
     - { region: lon1, vm_size: s-2vcpu-4gb, urls: /path/to/urls.txt, payment: merkle }
+    # optional per-uploader: log_level: debug — ant verbosity (info=default, debug, trace); see examples/prod-uploaders.yaml
     # optional per-uploader: clock_skew: 2h — disable time sync + shift that VM's clock by a signed Go-style duration (e.g. 2h, -2h, 30m; testing only)
 ```
 

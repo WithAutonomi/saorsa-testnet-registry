@@ -186,6 +186,21 @@ class TestPaymentFlag:
         assert service._payment_flag("garbage") == []
 
 
+class TestVerbosityFlag:
+    @pytest.mark.parametrize(
+        ("level", "expected"),
+        [("info", "-v"), ("debug", "-vv"), ("trace", "-vvv")],
+    )
+    def test_known_levels(self, service, level, expected):
+        assert service._verbosity_flag(level) == expected
+
+    def test_unknown_level_falls_back_to_info(self, service):
+        assert service._verbosity_flag("garbage") == "-v"
+
+    def test_empty_falls_back_to_info(self, service):
+        assert service._verbosity_flag("") == "-v"
+
+
 class TestInfluxLineReason:
     def test_reason_field_appears_in_line(self, service):
         line = TestInfluxLine()._line(

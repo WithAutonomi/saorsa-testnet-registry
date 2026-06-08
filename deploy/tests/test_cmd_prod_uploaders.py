@@ -55,6 +55,7 @@ class TestParseSpec:
             "vm_size": "s-2vcpu-4gb",
             "urls_file": str(urls_file),
             "payment_type": None,
+            "log_level": None,
             "clock_skew": None,
             "bootstrap_cache": True,
         }
@@ -108,6 +109,32 @@ class TestParseSpec:
                 f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=merkle:payment=no-merkle"
             )
 
+
+    def test_log_level_optional(self, urls_file):
+        spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}")
+        assert spec["log_level"] is None
+
+    @pytest.mark.parametrize("level", ["info", "debug", "trace"])
+    def test_log_level_accepted(self, urls_file, level):
+        spec = parse_prod_uploader_spec(
+            f"lon1:s-2vcpu-4gb:urls={urls_file}:log_level={level}"
+        )
+        assert spec["log_level"] == level
+
+    def test_log_level_invalid_value_rejected(self, urls_file):
+        with pytest.raises(ValueError, match="log_level"):
+            parse_prod_uploader_spec(
+                f"lon1:s-2vcpu-4gb:urls={urls_file}:log_level=verbose"
+            )
+
+    def test_log_level_combines_with_payment_and_cache(self, urls_file):
+        spec = parse_prod_uploader_spec(
+            f"lon1:s-2vcpu-4gb:urls={urls_file}"
+            ":payment=merkle:log_level=debug:bootstrap_cache=false"
+        )
+        assert spec["payment_type"] == "merkle"
+        assert spec["log_level"] == "debug"
+        assert spec["bootstrap_cache"] is False
 
     def test_bootstrap_cache_defaults_to_true(self, urls_file):
         spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}")
