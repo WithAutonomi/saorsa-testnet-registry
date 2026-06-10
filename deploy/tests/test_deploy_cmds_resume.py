@@ -59,7 +59,7 @@ def harness(monkeypatch):
 
     monkeypatch.setattr(deploy_cmds, "Console", lambda: Console(file=record.output))
     monkeypatch.setattr(deploy_cmds, "load_manifest", lambda *a, **k: _manifest())
-    monkeypatch.setattr(deploy_cmds, "build_deploy_steps", lambda m: record.plan)
+    monkeypatch.setattr(deploy_cmds, "build_deploy_steps", lambda m, **k: record.plan)
     monkeypatch.setattr(
         deploy_cmds, "build_destroy_steps", lambda m, **k: record.plan
     )

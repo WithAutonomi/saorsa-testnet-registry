@@ -876,6 +876,11 @@ def main(argv=None):
         help="Print the deploy command sequence for a manifest (never executes).",
     )
     _add_manifest_args(deployments_plan_parser)
+    deployments_plan_parser.add_argument(
+        "--skip-builds",
+        action="store_true",
+        help="Omit the binary build steps from the printed sequence (see `up --skip-builds`).",
+    )
 
     # deployments print-downloads
     deployments_print_downloads_parser = deployments_subparsers.add_parser(
@@ -1160,6 +1165,16 @@ def main(argv=None):
             "steps it records as completed without prompting (for "
             "non-interactive use; interactively a prompt offers the same "
             "choice)."
+        ),
+    )
+    deployments_up_parser.add_argument(
+        "--skip-builds",
+        action="store_true",
+        help=(
+            "Omit the binary build steps (build ant-node / build ant from "
+            "branch) from the sequence. Use when the branch binaries were "
+            "already built and uploaded to S3 by a previous deployment, to "
+            "skip the ~10-minute rebuild."
         ),
     )
 

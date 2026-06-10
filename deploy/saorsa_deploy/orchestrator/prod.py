@@ -222,15 +222,20 @@ _DESTROY = {
 }
 
 
-def build_deploy_steps(manifest: Manifest) -> list[Step]:
+def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list[Step]:
     try:
         builder = _DEPLOY_BUILDERS[manifest.kind]
     except KeyError:
         raise ValueError(f"no prod orchestrator for kind '{manifest.kind}'")
     # A branch-sourced binary must be built (and uploaded to the name-scoped
     # S3 key) before any prod command tries to resolve it — every kind,
-    # including the local-* ones, fetches the custom build from S3.
-    steps = ant_build_steps(manifest.name, manifest.ssh_key_path, manifest.spec.binary)
+    # including the local-* ones, fetches the custom build from S3. With
+    # --skip-builds the operator asserts the build already exists in S3.
+    steps: list[Step] = []
+    if not skip_builds:
+        steps = ant_build_steps(
+            manifest.name, manifest.ssh_key_path, manifest.spec.binary
+        )
     return steps + builder(manifest)
 
 

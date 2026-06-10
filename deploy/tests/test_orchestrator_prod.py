@@ -381,6 +381,28 @@ def test_prod_continuous_downloader_sleep_interval():
     assert "--branch-name" in argv and "--ant-version" not in argv
 
 
+def test_prod_skip_builds_omits_branch_build_step():
+    m = Manifest.model_validate(
+        {
+            "name": "CD",
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_continuous_downloader": {
+                "spec": "lon1",
+                "binary": {"branch": "feat-x", "repo_owner": "me"},
+            },
+        }
+    )
+    default = build_deploy_steps(m)
+    assert default[0].argv[:2] == ["build", "ant"]
+
+    skipped = build_deploy_steps(m, skip_builds=True)
+    assert skipped[0].argv[:2] != ["build", "ant"]
+    # The deploy step(s) after the build are untouched.
+    assert _argvs(skipped) == _argvs(default)[1:]
+
+
 # --------------------------------------------------------------------------- #
 # prod-canary
 # --------------------------------------------------------------------------- #

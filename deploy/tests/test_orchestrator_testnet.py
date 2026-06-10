@@ -472,6 +472,35 @@ def test_branch_binary_adds_build_step_and_uses_branch_flags():
     assert "--node-version" not in genesis.argv
 
 
+def test_skip_builds_omits_branch_build_steps():
+    # Both binaries sourced from a branch ⇒ two build steps by default.
+    m = _minimal(
+        binaries={
+            "ant_node": {"branch": "feat-x", "repo_owner": "me"},
+            "ant": {"branch": "feat-y", "repo_owner": "me"},
+        }
+    )
+    default = build_deploy_steps(m)
+    assert [s.label for s in default[:2]] == [
+        "Build ant-node from branch",
+        "Build ant client from branch",
+    ]
+
+    skipped = build_deploy_steps(m, skip_builds=True)
+    assert "Build ant-node from branch" not in [s.label for s in skipped]
+    assert "Build ant client from branch" not in [s.label for s in skipped]
+    # Everything after the two build steps is untouched.
+    assert _argvs(skipped) == _argvs(default)[2:]
+
+
+def test_skip_builds_noop_when_no_branch_binaries():
+    # Version-pinned binaries emit no build steps, so the flag changes nothing.
+    m = _minimal()
+    assert _argvs(build_deploy_steps(m, skip_builds=True)) == _argvs(
+        build_deploy_steps(m)
+    )
+
+
 def test_no_upgrade_channel_by_default_but_emitted_when_set():
     plain = build_deploy_steps(_minimal())
     genesis = next(s for s in plain if s.argv[:2] == ["nodes", "provision-genesis"])

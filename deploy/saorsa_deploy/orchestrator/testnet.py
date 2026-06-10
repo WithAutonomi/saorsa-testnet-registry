@@ -269,13 +269,18 @@ def _provision_and_start_steps(
     return steps
 
 
-def build_testnet_deploy_steps(manifest: Manifest) -> list[Step]:
+def build_testnet_deploy_steps(
+    manifest: Manifest, *, skip_builds: bool = False
+) -> list[Step]:
     spec: TestnetSpec = manifest.testnet
     name = manifest.name
     ssh_key = manifest.ssh_key_path
 
     steps: list[Step] = []
-    steps += build_steps_for_branches(name, ssh_key, spec.binaries.ant_node, spec.binaries.ant)
+    if not skip_builds:
+        steps += build_steps_for_branches(
+            name, ssh_key, spec.binaries.ant_node, spec.binaries.ant
+        )
 
     # --- infra ---
     boot_argv = [
@@ -355,13 +360,18 @@ def build_testnet_destroy_steps(
 # --------------------------------------------------------------------------- #
 # extension (reuses another testnet's bootstraps; no bootstrap/genesis tier)
 # --------------------------------------------------------------------------- #
-def build_extension_deploy_steps(manifest: Manifest) -> list[Step]:
+def build_extension_deploy_steps(
+    manifest: Manifest, *, skip_builds: bool = False
+) -> list[Step]:
     spec: ExtensionSpec = manifest.extension
     name = manifest.name
     ssh_key = manifest.ssh_key_path
 
     steps: list[Step] = []
-    steps += build_steps_for_branches(name, ssh_key, spec.binaries.ant_node, spec.binaries.ant)
+    if not skip_builds:
+        steps += build_steps_for_branches(
+            name, ssh_key, spec.binaries.ant_node, spec.binaries.ant
+        )
 
     steps.append(
         Step(

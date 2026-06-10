@@ -24,16 +24,16 @@ __all__ = [
 ]
 
 
-def build_deploy_steps(manifest: Manifest) -> list[Step]:
+def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list[Step]:
     kind = manifest.kind
     if kind == "testnet":
-        steps = build_testnet_deploy_steps(manifest)
+        steps = build_testnet_deploy_steps(manifest, skip_builds=skip_builds)
     elif kind == "testnet-extension":
-        steps = build_extension_deploy_steps(manifest)
+        steps = build_extension_deploy_steps(manifest, skip_builds=skip_builds)
     else:
         from saorsa_deploy.orchestrator import prod
 
-        steps = prod.build_deploy_steps(manifest)
+        steps = prod.build_deploy_steps(manifest, skip_builds=skip_builds)
 
     # Universal tail: post a summary to Slack once the deployment is up. Applies
     # to every kind, so it lives here at the dispatch chokepoint rather than in

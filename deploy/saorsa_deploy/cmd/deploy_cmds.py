@@ -212,7 +212,9 @@ def _prepare_secret_env(manifest, console: Console) -> None:
 def cmd_up(args):
     console = Console()
     manifest = _load(args, console)
-    steps = build_deploy_steps(manifest)
+    steps = build_deploy_steps(
+        manifest, skip_builds=getattr(args, "skip_builds", False)
+    )
     if getattr(args, "dry_run", False):
         _print_plan(console, manifest.name, manifest.kind, steps, "Deploy")
         return
@@ -282,5 +284,9 @@ def cmd_plan(args):
     console = Console()
     manifest = _load(args, console)
     _print_plan(
-        console, manifest.name, manifest.kind, build_deploy_steps(manifest), "Deploy"
+        console,
+        manifest.name,
+        manifest.kind,
+        build_deploy_steps(manifest, skip_builds=getattr(args, "skip_builds", False)),
+        "Deploy",
     )
