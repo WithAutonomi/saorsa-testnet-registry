@@ -119,6 +119,7 @@ class ProdDownloaderProvisioner:
         influx_bucket: str = "testnet-metrics",
         evm_network: str = "arbitrum-one",
         one_shot: bool = False,
+        rust_log: str | None = None,
         console: Console | None = None,
     ):
         self.downloaders = downloaders
@@ -133,6 +134,7 @@ class ProdDownloaderProvisioner:
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
         self.evm_network = evm_network
+        self.rust_log = rust_log
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -350,6 +352,7 @@ DOWNLOAD_DIR={DOWNLOAD_DIR}
 EVM_NETWORK={self.evm_network}
 SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
 ONE_SHOT={'true' if self.one_shot else 'false'}
+RUST_LOG={self.rust_log or ''}
 {influx_lines}ENV_EOF"""
 
         add_op(

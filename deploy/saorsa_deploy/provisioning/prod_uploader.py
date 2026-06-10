@@ -298,6 +298,7 @@ class ProdUploaderProvisioner:
             payment_type = u.get("payment_type") or ""
             log_level = u.get("log_level") or "info"
             bootstrap_cache = "true" if u.get("bootstrap_cache", True) else "false"
+            rust_log = u.get("rust_log") or ""
             case_entries.append(
                 f'    "{u["ip"]}") '
                 f'REGION={u["region"]}; '
@@ -305,6 +306,7 @@ class ProdUploaderProvisioner:
                 f'URLS_B64="{urls_b64}"; '
                 f'PAYMENT_TYPE="{payment_type}"; '
                 f'LOG_LEVEL="{log_level}"; '
+                f'RUST_LOG="{rust_log}"; '
                 f"BOOTSTRAP_CACHE={bootstrap_cache} ;;"
             )
         case_block = "\n".join(case_entries)
@@ -329,7 +331,7 @@ MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
     *) REGION=unknown; CLIENT_INDEX=0; URLS_B64=""; PAYMENT_TYPE=""; \
-LOG_LEVEL="info"; BOOTSTRAP_CACHE=true ;;
+LOG_LEVEL="info"; RUST_LOG=""; BOOTSTRAP_CACHE=true ;;
 esac
 mkdir -p {DATA_DIR}
 echo "$URLS_B64" | base64 -d > {URLS_PATH}
@@ -349,6 +351,7 @@ WORK_DIR={DATA_DIR}/files
 EVM_NETWORK={self.evm_network}
 PAYMENT_TYPE=$PAYMENT_TYPE
 LOG_LEVEL=$LOG_LEVEL
+RUST_LOG=$RUST_LOG
 {influx_lines}ENV_EOF"""
 
         add_op(

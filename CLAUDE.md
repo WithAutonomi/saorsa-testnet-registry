@@ -186,6 +186,32 @@ never overwritten). `bootstrap_cache: false` restores the legacy explicit
 is surfaced by `deployments slack-post`, `print-uploads`/`print-downloads`,
 and `generate-inventory`.
 
+Every VM-backed client kind also accepts **`forward_logs`** (default off) and
+**`rust_log`** (per-entry on testnet `clients.uploaders[]`/`downloaders[]` and
+`prod_uploaders.uploaders[]`; spec-level on `prod_downloaders` /
+`prod_continuous_downloader` / `prod_canary`; **not** the local-* kinds).
+`forward_logs: true` forwards the client `ant` process's stdout+stderr to
+Elasticsearch as raw lines (`message` field, tagged `role`/`stream`) in a
+**separate** index `telegraf-ant-clients-<name>`. Testnet/extension kinds reuse
+the deployment's **own** ES instance and so **require `elastic.enabled: true`**
+(validation error otherwise); prod kinds have no node-tier ES, so the deploy
+command stands up a **dedicated** small ES instance and tears it down on destroy
+unless `--keep-elastic` / `keep_elastic: true`. `rust_log` sets `RUST_LOG` on the
+client service, **overriding** the `-v` verbosity flag; in a colon-delimited
+spec it must be the **last** token (its value may contain `::`). The client
+forwarder is a separate `telegraf-ant-client-elasticsearch` systemd unit
+(`provisioning/telegraf_client.py`); the ES `telegraf-ant-clients-*` index
+template is created by `elastic provision`. Both options are surfaced by
+`deployments slack-post`.
+
+Separately, the testnet/extension **`nodes.rust_log`** option sets `RUST_LOG`
+(as `Environment=RUST_LOG=`) on **every** node-tier service — WAN nodes, genesis,
+**and** bootstraps — via a `--rust-log` flag on `nodes provision` /
+`nodes provision-genesis` / `bootstraps provision`. The node `--log-level` /
+`--enable-logging` flags are kept (without them logging never initialises), so
+RUST_LOG is additive there (unlike the client side, where it replaces `-v`). This
+lets one deployment run nodes and clients at different RUST_LOG levels.
+
 Testnet client address lists live in the dedicated **public-read**
 `saorsa-testnet-addresses` bucket (NOT the tfstate bucket, which keeps Block
 Public Access intact; bucket + IAM managed by the `aws-client-s3` Terraform

@@ -31,6 +31,11 @@ def _prod_uploader_spec(u) -> str:
         spec += f":clock_skew={u.clock_skew}"
     if u.bootstrap_cache is not None:
         spec += f":bootstrap_cache={str(u.bootstrap_cache).lower()}"
+    if u.forward_logs is not None:
+        spec += f":forward_logs={str(u.forward_logs).lower()}"
+    # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
+    if u.rust_log is not None:
+        spec += f":rust_log={u.rust_log}"
     return spec
 
 
@@ -39,6 +44,18 @@ def _bootstrap_cache_flag(spec) -> list[str]:
     if spec.bootstrap_cache is None:
         return []
     return ["--bootstrap-cache"] if spec.bootstrap_cache else ["--no-bootstrap-cache"]
+
+
+def _forward_logs_flag(spec) -> list[str]:
+    """argparse BooleanOptionalAction flag for spec-level forward_logs."""
+    if spec.forward_logs is None:
+        return []
+    return ["--forward-logs"] if spec.forward_logs else ["--no-forward-logs"]
+
+
+def _rust_log_flag(spec) -> list[str]:
+    """Spec-level --rust-log flag (whole-string value; '::' safe)."""
+    return ["--rust-log", spec.rust_log] if spec.rust_log else []
 
 
 def _probe_spec(p) -> str:
@@ -80,6 +97,8 @@ def _downloaders(manifest: Manifest) -> list[Step]:
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
     argv += _bootstrap_cache_flag(spec)
+    argv += _forward_logs_flag(spec)
+    argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
@@ -107,6 +126,8 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
     argv += _bootstrap_cache_flag(spec)
+    argv += _forward_logs_flag(spec)
+    argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
@@ -135,6 +156,8 @@ def _canary(manifest: Manifest) -> list[Step]:
     if spec.probe_concurrency is not None:
         argv += ["--probe-concurrency", str(spec.probe_concurrency)]
     argv += _bootstrap_cache_flag(spec)
+    argv += _forward_logs_flag(spec)
+    argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
@@ -221,4 +244,6 @@ def build_destroy_steps(manifest: Manifest) -> list[Step]:
     argv = [*base, "--name", manifest.name, "--ssh-key-path", manifest.ssh_key_path]
     if getattr(manifest.spec, "keep_monitoring", None):
         argv.append("--keep-monitoring")
+    if getattr(manifest.spec, "keep_elastic", None):
+        argv.append("--keep-elastic")
     return [Step(argv, f"Destroy {manifest.kind}")]

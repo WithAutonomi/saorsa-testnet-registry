@@ -352,6 +352,7 @@ def _provision_canary(args, urls_content: str, console: Console) -> None:
         urls_file_content=urls_content,
         upload_sleep_secs=args.upload_sleep_secs,
         bootstrap_cache=getattr(args, "bootstrap_cache", True),
+        rust_log=getattr(args, "rust_log", None),
         ssh_key_path=args.ssh_key_path,
         binary_url=binary_url,
         binary_is_archive=binary_is_archive,
@@ -378,6 +379,7 @@ def _provision_canary(args, urls_content: str, console: Console) -> None:
         bootstrap_peers=bootstrap_peers,
         probe_concurrency=args.probe_concurrency,
         bootstrap_cache=getattr(args, "bootstrap_cache", True),
+        rust_log=getattr(args, "rust_log", None),
         ssh_key_path=args.ssh_key_path,
         binary_url=binary_url,
         binary_is_archive=binary_is_archive,
@@ -502,6 +504,8 @@ def cmd_prod_canary_deploy(args):
         "probe_concurrency": args.probe_concurrency,
         "upload_sleep_secs": args.upload_sleep_secs,
         "bootstrap_cache": getattr(args, "bootstrap_cache", True),
+        "forward_logs": getattr(args, "forward_logs", False),
+        "rust_log": getattr(args, "rust_log", None),
         "purpose": getattr(args, "purpose", None),
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version
@@ -520,6 +524,45 @@ def cmd_prod_canary_deploy(args):
         provision_client_telegraf_best_effort(
             args.name, args.ssh_key_path, console=console
         )
+        if getattr(args, "forward_logs", False):
+            from saorsa_deploy.cmd.prod_log_forwarding import (
+                PROD_CANARY_GLOBS,
+                ensure_client_elastic,
+                install_client_forwarder,
+            )
+
+            es_creds = ensure_client_elastic(
+                args.name, args.ssh_key_path, console
+            )
+            can_state = load_client_state(args.name)
+            up_ips = [
+                c["ip"]
+                for c in can_state.get("clients", [])
+                if c.get("ip") and c.get("role", "upload") == "upload"
+            ]
+            probe_ips = [
+                c["ip"]
+                for c in can_state.get("clients", [])
+                if c.get("ip") and c.get("role") == "download"
+            ]
+            install_client_forwarder(
+                name=args.name,
+                role="canary-upload",
+                host_ips=up_ips,
+                tail_globs=PROD_CANARY_GLOBS,
+                es_creds=es_creds,
+                ssh_key_path=args.ssh_key_path,
+                console=console,
+            )
+            install_client_forwarder(
+                name=args.name,
+                role="canary-probe",
+                host_ips=probe_ips,
+                tail_globs=PROD_CANARY_GLOBS,
+                es_creds=es_creds,
+                ssh_key_path=args.ssh_key_path,
+                console=console,
+            )
     except SystemExit:
         record_event(args.name, "prod_canary_deploy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
@@ -586,6 +629,12 @@ def cmd_prod_canary_destroy(args):
             console.print(
                 f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
             )
+
+        from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
+
+        destroy_client_elastic(
+            args.name, getattr(args, "keep_elastic", False), console
+        )
     except SystemExit:
         record_event(args.name, "prod_canary_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)

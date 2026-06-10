@@ -164,6 +164,7 @@ class ProdCanaryUploadProvisioner:
         influx_bucket: str = "testnet-metrics",
         evm_network: str = "arbitrum-one",
         bootstrap_cache: bool = True,
+        rust_log: str | None = None,
         console: Console | None = None,
     ):
         self.host_ip = host_ip
@@ -182,6 +183,7 @@ class ProdCanaryUploadProvisioner:
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
         self.evm_network = evm_network
+        self.rust_log = rust_log
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -311,6 +313,8 @@ class ProdCanaryUploadProvisioner:
             "INFLUX_ORG": self.influx_org,
             "INFLUX_BUCKET": self.influx_bucket,
         }
+        if self.rust_log:
+            env["RUST_LOG"] = self.rust_log
         env_lines = _format_env_lines(env)
 
         # The peers file is written unconditionally: ant only reads it when
@@ -360,6 +364,7 @@ class ProdCanaryProbeProvisioner:
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
         bootstrap_cache: bool = True,
+        rust_log: str | None = None,
         console: Console | None = None,
     ):
         self.probes = probes
@@ -375,6 +380,7 @@ class ProdCanaryProbeProvisioner:
         self.influx_token = influx_token
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
+        self.rust_log = rust_log
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -493,7 +499,7 @@ class ProdCanaryProbeProvisioner:
             )
         case_block = "\n".join(case_entries)
 
-        env_lines = _format_env_lines({
+        probe_env = {
             "HOME": "/root",
             "DEPLOYMENT_NAME": self.deployment_name,
             "BOOTSTRAP_ARGS": f'"{bootstrap_args}"',
@@ -501,13 +507,17 @@ class ProdCanaryProbeProvisioner:
             "ANT": ANT_INSTALL_PATH,
             "WORK_DIR": f"{DATA_DIR}/probe-files",
             "STATE_FILE": PROBE_STATE_PATH,
+            "LOG_DIR": LOG_DIR,
             "PROBE_CONCURRENCY": str(self.probe_concurrency),
             "PROBE_SHARD_COUNT": str(self.shard_count),
             "INFLUX_URL": self.influx_url,
             "INFLUX_TOKEN": self.influx_token,
             "INFLUX_ORG": self.influx_org,
             "INFLUX_BUCKET": self.influx_bucket,
-        })
+        }
+        if self.rust_log:
+            probe_env["RUST_LOG"] = self.rust_log
+        env_lines = _format_env_lines(probe_env)
 
         # The peers file is written unconditionally: ant only reads it when
         # invoked without --bootstrap (BOOTSTRAP_CACHE=true), so it is inert

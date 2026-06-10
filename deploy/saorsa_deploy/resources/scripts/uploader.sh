@@ -29,6 +29,11 @@ fi
 : "${HEAPTRACK:=0}"
 : "${HEAPTRACK_DIR:=/var/log/ant-heaptrack}"
 : "${UPLOAD_PRESIGNED_URL:=}"
+: "${FORWARD_LOGS:=false}"
+: "${RUST_LOG:=}"
+: "${FORWARD_LOG_DIR:=/var/log/ant-client-forward}"
+# Coarse disk guard for the append-only forward logs (truncate beyond this).
+: "${FORWARD_LOG_MAX_BYTES:=1073741824}"
 
 # Translate PAYMENT_TYPE into the matching ant flag (or nothing).
 PAYMENT_FLAG=()
@@ -36,6 +41,30 @@ case "$PAYMENT_TYPE" in
     merkle)    PAYMENT_FLAG=(--merkle) ;;
     no-merkle) PAYMENT_FLAG=(--no-merkle) ;;
 esac
+
+# RUST_LOG overrides ant's -v verbosity: when set, export it for the ant
+# subprocess and drop -v (otherwise -v would re-set the tracing filter).
+VERBOSITY_FLAG=(-v)
+if [ -n "$RUST_LOG" ]; then
+    export RUST_LOG
+    VERBOSITY_FLAG=()
+fi
+
+if [ "$FORWARD_LOGS" = "true" ]; then
+    mkdir -p "$FORWARD_LOG_DIR"
+fi
+
+# Append a captured per-op log to its persistent, telegraf-tailed aggregate.
+# Per-op /tmp files are deleted on success, so without this the forwarder would
+# race the cleanup; appending to a stable file avoids that entirely.
+append_forward_log() {
+    [ "$FORWARD_LOGS" = "true" ] || return 0
+    local src="$1" dst="${FORWARD_LOG_DIR}/$2"
+    cat "$src" >> "$dst" 2>/dev/null || true
+    if [ "$(stat -c%s "$dst" 2>/dev/null || echo 0)" -gt "$FORWARD_LOG_MAX_BYTES" ]; then
+        : > "$dst"
+    fi
+}
 
 # With the bootstrap cache enabled (default), ant is invoked WITHOUT
 # --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml (written by the
@@ -137,7 +166,7 @@ while true; do
 
     # shellcheck disable=SC2086
     set +e
-    "${HEAPTRACK_PREFIX[@]}" "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia --json \
+    "${HEAPTRACK_PREFIX[@]}" "$ANT" "${VERBOSITY_FLAG[@]}" $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia --json \
         file upload --public "${PAYMENT_FLAG[@]}" "$file_path" \
         > "$output_file" 2> "$stderr_file"
     exit_code=$?
@@ -237,6 +266,11 @@ PY
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"
     fi
+
+    # Forward this op's stdout+stderr to the persistent aggregate logs (when
+    # enabled) BEFORE the success-path cleanup deletes the per-op files.
+    append_forward_log "$output_file" "uploader.stdout.log"
+    append_forward_log "$stderr_file" "uploader.stderr.log"
 
     # Clean up (preserve output on failure for diagnosis)
     if [ "$exit_code" -ne 0 ]; then

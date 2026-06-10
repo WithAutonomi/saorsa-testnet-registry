@@ -84,6 +84,28 @@ STATUS_LOST = "lost"
 DEFAULT_WORK_DIR = "/var/lib/ant-prod-canary/probe-files"
 DEFAULT_STATE_FILE = "/var/lib/ant-prod-canary/probe-state.db"
 
+#: Aggregate forward-log files the probe appends each op's stdout/stderr to so
+#: the client telegraf forwarder can tail them (the probe keeps no per-op
+#: files). Coarse size cap guards against unbounded growth on long runs.
+PROBE_LOG_DIR = os.environ.get("LOG_DIR", "/var/log/ant-prod-canary")
+_PROBE_LOG_MAX_BYTES = 1 << 30  # 1 GiB
+
+
+def _append_probe_log(stream: str, text: str) -> None:
+    """Append ``text`` to ``{PROBE_LOG_DIR}/probe.{stream}`` (best-effort)."""
+    if not text:
+        return
+    try:
+        d = Path(PROBE_LOG_DIR)
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"probe.{stream}"
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(text if text.endswith("\n") else text + "\n")
+        if p.stat().st_size > _PROBE_LOG_MAX_BYTES:
+            p.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+
 
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
@@ -495,15 +517,20 @@ async def _probe_one(
     async with sem:
         target = work_dir / f"probe-{canary_id}.bin"
         target.unlink(missing_ok=True)
+        # RUST_LOG (set on the systemd unit, inherited by the ant subprocess)
+        # overrides the verbosity flag: when present drop -v so RUST_LOG drives
+        # the tracing filter instead.
+        verbosity = [] if os.environ.get("RUST_LOG") else ["-v"]
         cmd = [
             ant_path,
             *bootstrap_args,
             "--json",
-            "-v",
+            *verbosity,
             "file", "download", top_address, "-o", str(target),
         ]
         started_ns = time.time_ns()
         proc: asyncio.subprocess.Process | None = None
+        stdout_text = ""
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -516,6 +543,7 @@ async def _probe_one(
                 )
                 exit_code = proc.returncode if proc.returncode is not None else -1
                 stderr_text = stderr.decode("utf-8", errors="replace")
+                stdout_text = _stdout.decode("utf-8", errors="replace")
             except asyncio.TimeoutError:
                 exit_code = -1
                 stderr_text = f"TIMEOUT after {timeout_secs}s"
@@ -539,6 +567,11 @@ async def _probe_one(
         size = target.stat().st_size if target.exists() else 0
         target.unlink(missing_ok=True)
         duration_ms = (finished_ns - started_ns) // 1_000_000
+        # The probe keeps no per-op files, so append each op's stdout/stderr to
+        # the aggregate forward logs the client telegraf forwarder tails (no-op
+        # unless those files are being forwarded; cheap otherwise).
+        _append_probe_log("stdout", stdout_text)
+        _append_probe_log("stderr", stderr_text)
         status, missing, peer_outcomes = _parse_probe_outcome(
             exit_code=exit_code, stderr_text=stderr_text, downloaded_bytes=size
         )

@@ -254,6 +254,7 @@ def _provision_prod_downloader(
         influx_token=influx_token,
         influx_org=influx_org,
         influx_bucket=influx_bucket,
+        rust_log=getattr(args, "rust_log", None),
         console=console,
     )
     provisioner.execute()
@@ -394,6 +395,8 @@ def cmd_prod_continuous_downloader_deploy(args):
         "spec": args.spec,
         "clock_skew": clock_skew_seconds,
         "bootstrap_cache": getattr(args, "bootstrap_cache", True),
+        "forward_logs": getattr(args, "forward_logs", False),
+        "rust_log": getattr(args, "rust_log", None),
         "purpose": args.purpose,
         "sleep_interval_secs": args.sleep_interval_secs,
         "ant_binary": build_binary_descriptor(
@@ -414,6 +417,31 @@ def cmd_prod_continuous_downloader_deploy(args):
         provision_client_telegraf_best_effort(
             args.name, args.ssh_key_path, console=console
         )
+        if getattr(args, "forward_logs", False):
+            from saorsa_deploy.cmd.prod_log_forwarding import (
+                PROD_DOWNLOADER_GLOBS,
+                ensure_client_elastic,
+                install_client_forwarder,
+            )
+
+            es_creds = ensure_client_elastic(
+                args.name, args.ssh_key_path, console
+            )
+            dl_state = load_client_state(args.name)
+            dl_ips = [
+                c["ip"]
+                for c in dl_state.get("clients", [])
+                if c.get("ip")
+            ]
+            install_client_forwarder(
+                name=args.name,
+                role="downloader",
+                host_ips=dl_ips,
+                tail_globs=PROD_DOWNLOADER_GLOBS,
+                es_creds=es_creds,
+                ssh_key_path=args.ssh_key_path,
+                console=console,
+            )
     except SystemExit:
         record_event(args.name, "prod_downloader_deploy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
@@ -483,6 +511,12 @@ def cmd_prod_continuous_downloader_destroy(args):
             console.print(
                 f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
             )
+
+        from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
+
+        destroy_client_elastic(
+            args.name, getattr(args, "keep_elastic", False), console
+        )
     except SystemExit:
         record_event(args.name, "prod_downloader_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)

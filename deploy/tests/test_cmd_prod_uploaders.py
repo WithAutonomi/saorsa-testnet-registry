@@ -58,6 +58,8 @@ class TestParseSpec:
             "log_level": None,
             "clock_skew": None,
             "bootstrap_cache": True,
+            "forward_logs": None,
+            "rust_log": None,
         }
 
     def test_missing_urls_rejected(self):

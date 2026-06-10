@@ -22,11 +22,40 @@ fi
 : "${HEAPTRACK:=0}"
 : "${HEAPTRACK_DIR:=/var/log/ant-heaptrack}"
 : "${FAILURE_LOG_DIR:=/var/log/ant-downloader}"
+: "${FORWARD_LOGS:=false}"
+: "${RUST_LOG:=}"
+: "${FORWARD_LOG_DIR:=/var/log/ant-client-forward}"
+# Coarse disk guard for the append-only forward logs (truncate beyond this).
+: "${FORWARD_LOG_MAX_BYTES:=1073741824}"
 
 if [ "$HEAPTRACK" = "1" ]; then
     mkdir -p "$HEAPTRACK_DIR"
     echo "Heaptrack enabled: profiles will be written under ${HEAPTRACK_DIR}"
 fi
+
+# RUST_LOG overrides ant's -v verbosity: when set, export it for the ant
+# subprocess and drop -v (otherwise -v would re-set the tracing filter).
+VERBOSITY_FLAG=(-v)
+if [ -n "$RUST_LOG" ]; then
+    export RUST_LOG
+    VERBOSITY_FLAG=()
+fi
+
+if [ "$FORWARD_LOGS" = "true" ]; then
+    mkdir -p "$FORWARD_LOG_DIR"
+fi
+
+# Append a captured per-op log to its persistent, telegraf-tailed aggregate.
+# Runs for every op (success and failure) before the per-op files are moved to
+# FAILURE_LOG_DIR or removed.
+append_forward_log() {
+    [ "$FORWARD_LOGS" = "true" ] || return 0
+    local src="$1" dst="${FORWARD_LOG_DIR}/$2"
+    cat "$src" >> "$dst" 2>/dev/null || true
+    if [ "$(stat -c%s "$dst" 2>/dev/null || echo 0)" -gt "$FORWARD_LOG_MAX_BYTES" ]; then
+        : > "$dst"
+    fi
+}
 
 # With the bootstrap cache enabled (default), ant is invoked WITHOUT
 # --bootstrap: it reads ~/.config/ant/bootstrap_peers.toml (written by the
@@ -150,7 +179,7 @@ while true; do
 
     # shellcheck disable=SC2086
     set +e
-    "${HEAPTRACK_PREFIX[@]}" "$ANT" -v $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file download "$address" \
+    "${HEAPTRACK_PREFIX[@]}" "$ANT" "${VERBOSITY_FLAG[@]}" $BOOTSTRAP_ARGS --evm-network arbitrum-sepolia file download "$address" \
         -o "$output_path" > "$stdout_file" 2> "$stderr_file"
     exit_code=$?
     set -e
@@ -167,6 +196,12 @@ while true; do
     if [ -f "$output_path" ]; then
         file_bytes=$(stat -c %s "$output_path" 2>/dev/null || echo "0")
     fi
+
+    # Forward this op's stdout+stderr to the persistent aggregate logs (when
+    # enabled) BEFORE preserve_failure_logs moves them or the cleanup removes
+    # them. Runs for every op, success or failure.
+    append_forward_log "$stdout_file" "downloader.stdout.log"
+    append_forward_log "$stderr_file" "downloader.stderr.log"
 
     if [ "$exit_code" -eq 0 ]; then
         echo "[$(date -u +%H:%M:%S)] Download OK: ${address} total=${total_ms}ms download_time=${download_secs}s size=${file_bytes}"

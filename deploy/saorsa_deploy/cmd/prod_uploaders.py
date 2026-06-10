@@ -52,7 +52,17 @@ MONITORING_REGION = "lon1"
 DEFAULT_MONITORING_VOLUME_SIZE = 50
 
 
-_KNOWN_SPEC_KEYS = ("urls", "payment", "log_level", "clock_skew", "bootstrap_cache")
+# `rust_log` is a known key so the tail-rejoin below keeps its value intact even
+# when it contains ':' (RUST_LOG module paths use '::'); keep it last in a spec.
+_KNOWN_SPEC_KEYS = (
+    "urls",
+    "payment",
+    "log_level",
+    "clock_skew",
+    "bootstrap_cache",
+    "forward_logs",
+    "rust_log",
+)
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
 
 
@@ -64,6 +74,18 @@ def _parse_bootstrap_cache_token(spec: str, value: str) -> bool:
         return False
     raise ValueError(
         f"Invalid uploader spec '{spec}': bootstrap_cache must be 'true' or "
+        f"'false', got '{value}'."
+    )
+
+
+def _parse_forward_logs_token(spec: str, value: str) -> bool:
+    """Validate a ``forward_logs=`` uploader-spec token into a bool."""
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(
+        f"Invalid uploader spec '{spec}': forward_logs must be 'true' or "
         f"'false', got '{value}'."
     )
 
@@ -93,14 +115,17 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     """Parse a ``--uploader`` spec.
 
     Format:
-    ``REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:bootstrap_cache=BOOL]``.
+    ``REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=VALUE]``.
     Tail tokens are key=value; ``urls`` is required, ``payment`` is optional
     and must be ``merkle`` or ``no-merkle``, ``log_level`` is optional and must
-    be ``info``/``debug``/``trace`` (omitted → info on the VM). Returns a dict
-    with keys ``region``, ``vm_size``, ``urls_file`` (str), ``payment_type``
-    (str | None), ``log_level`` (str | None), and ``bootstrap_cache`` (bool,
-    default True — invoke ant without --bootstrap, shipping a
-    bootstrap_peers.toml).
+    be ``info``/``debug``/``trace`` (omitted → info on the VM). ``forward_logs``
+    forwards this VM's ant stdout+stderr to a dedicated Elasticsearch instance;
+    ``rust_log`` (keep it last) sets RUST_LOG, overriding the verbosity flag.
+    Returns a dict with keys ``region``, ``vm_size``, ``urls_file`` (str),
+    ``payment_type`` (str | None), ``log_level`` (str | None),
+    ``bootstrap_cache`` (bool, default True — invoke ant without --bootstrap,
+    shipping a bootstrap_peers.toml), ``forward_logs`` (bool | None), and
+    ``rust_log`` (str | None).
     """
     parts = spec.split(":")
     if len(parts) < 3:
@@ -179,6 +204,12 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         if "bootstrap_cache" in options
         else True
     )
+    forward_logs = (
+        _parse_forward_logs_token(spec, options["forward_logs"])
+        if "forward_logs" in options
+        else None
+    )
+    rust_log = options.get("rust_log") or None
 
     return {
         "region": region,
@@ -188,6 +219,8 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "log_level": log_level,
         "clock_skew": clock_skew,
         "bootstrap_cache": bootstrap_cache,
+        "forward_logs": forward_logs,
+        "rust_log": rust_log,
     }
 
 
@@ -474,6 +507,8 @@ def _provision_uploaders(
             "log_level": spec.get("log_level"),
             "clock_skew": spec.get("clock_skew", False),
             "bootstrap_cache": spec.get("bootstrap_cache", True),
+            "forward_logs": spec.get("forward_logs"),
+            "rust_log": spec.get("rust_log"),
         })
 
     secret_key = _resolve_secret_key(args, console)
@@ -627,6 +662,8 @@ def cmd_prod_uploaders_deploy(args):
                 "payment_type": s.get("payment_type"),
                 "clock_skew": s.get("clock_skew", False),
                 "bootstrap_cache": s.get("bootstrap_cache", True),
+                "forward_logs": s.get("forward_logs"),
+                "rust_log": s.get("rust_log"),
             }
             for s in parsed_specs
         ],
@@ -649,6 +686,43 @@ def cmd_prod_uploaders_deploy(args):
         provision_client_telegraf_best_effort(
             args.name, args.ssh_key_path, console=console
         )
+        # Client log forwarding (opt-in per uploader): stand up a dedicated ES
+        # and install the forwarder on the uploader VMs.
+        if any(s.get("forward_logs") for s in parsed_specs):
+            from saorsa_deploy.cmd.prod_log_forwarding import (
+                PROD_UPLOADER_GLOBS,
+                ensure_client_elastic,
+                install_client_forwarder,
+            )
+
+            es_creds = ensure_client_elastic(
+                args.name, args.ssh_key_path, console
+            )
+            up_state = load_client_state(args.name)
+            up_clients = sorted(
+                (
+                    c
+                    for c in up_state.get("clients", [])
+                    if c.get("ip") and c.get("role", "upload") == "upload"
+                ),
+                key=lambda c: c["client_index"],
+            )
+            # forward_logs is per-uploader; only install on the opted-in VMs.
+            # parsed_specs and up_clients are both client_index-ordered 1..N.
+            up_ips = [
+                c["ip"]
+                for spec, c in zip(parsed_specs, up_clients)
+                if spec.get("forward_logs")
+            ]
+            install_client_forwarder(
+                name=args.name,
+                role="uploader",
+                host_ips=up_ips,
+                tail_globs=PROD_UPLOADER_GLOBS,
+                es_creds=es_creds,
+                ssh_key_path=args.ssh_key_path,
+                console=console,
+            )
     except SystemExit:
         record_event(args.name, "prod_uploaders_deploy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
@@ -721,6 +795,12 @@ def cmd_prod_uploaders_destroy(args):
                 f"[dim]No monitoring stack found for '{args.name}' — "
                 "skipping.[/dim]"
             )
+
+        from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
+
+        destroy_client_elastic(
+            args.name, getattr(args, "keep_elastic", False), console
+        )
     except SystemExit:
         record_event(args.name, "prod_uploaders_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)

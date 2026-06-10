@@ -134,12 +134,13 @@ testnet:
       digital_ocean: { vm_count: 5, regions_list: [ams3, lon1, nyc1], size: s-8vcpu-16gb }
       vultr:         { vm_count: 5, regions: 3, size: vhp-8c-16gb-intel }
       ovh:           { vm_count: 2, regions_list: [GRA9, UK1], size: b3-16 }  # needs OVH env vars (see `nodes infra`)
+    rust_log: "info,saorsa_core::dht_network_manager=debug"  # optional: RUST_LOG on EVERY node-tier service (nodes+genesis+bootstraps), kept alongside --log-level
   clients:                              # need ≥1 uploader AND ≥1 downloader
     uploaders:
-      - { provider: vultr, region: syd, file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1 }
+      - { provider: vultr, region: syd, file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1, forward_logs: true, rust_log: "ant_cli=info,saorsa_core::x=debug" }  # forward_logs needs elastic.enabled; rust_log overrides -v
     downloaders:
       - { provider: digital_ocean, region: tor1, bootstrap_cache: false }  # per-client ant peer cache (default true)
-  elastic:    { enabled: true, droplet_size: s-8vcpu-16gb, volume_size: 500, shards: 8 }  # opt-in (default off)
+  elastic:    { enabled: true, droplet_size: s-8vcpu-16gb, volume_size: 500, shards: 8 }  # opt-in (default off); REQUIRED when any client sets forward_logs
   monitoring: { enabled: true }   # InfluxDB + Grafana — ON by default; set `enabled: false` to opt out
 ```
 
@@ -159,6 +160,32 @@ addresses for testnet kinds, the production list for prod kinds; on the
 operator's machine the file is only written when missing). `bootstrap_cache:
 false` restores the legacy explicit `--bootstrap` invocation, which disables
 the cache.
+
+**Client log forwarding & RUST_LOG:** every VM-backed client kind also accepts
+`forward_logs` and `rust_log` (testnet `clients.uploaders[]`/`downloaders[]` and
+`prod_uploaders.uploaders[]` per-entry; `prod_downloaders` /
+`prod_continuous_downloader` / `prod_canary` spec-level; **not** the local-* kinds).
+`forward_logs: true` forwards the client `ant` process's **stdout + stderr** to
+Elasticsearch as raw lines (a `message` field, tagged `role`/`stream`) in a
+**separate** index `telegraf-ant-clients-<name>` so client logs never mingle with
+node logs. For testnet/extension kinds it reuses the deployment's **own** ES
+instance and therefore **requires `elastic.enabled: true`** (a validation error
+otherwise). The prod kinds have no node-tier ES, so the deploy command stands up a
+small **dedicated** ES instance for the client logs and tears it down on destroy
+unless `--keep-elastic` (manifest `keep_elastic: true`) is given. `rust_log:
+"<spec>"` sets `RUST_LOG` on the client service, which **overrides** the `-v`
+verbosity flag (the service drops `-v` and exports `RUST_LOG` instead). In a
+colon-delimited CLI/spec form `rust_log` must be the **last** token because its
+value may contain `:` (RUST_LOG module paths use `::`).
+
+**Node-tier RUST_LOG:** the testnet/extension `nodes` block accepts a **separate**
+`rust_log` applied to **every** node-tier service — the WAN nodes, the genesis
+node, *and* the bootstraps — as `Environment=RUST_LOG=<spec>` on each systemd unit.
+Unlike the client side, the node `--log-level`/`--enable-logging` flags are kept
+(drop them and logging never initialises), and a dedicated `--rust-log` flag (on
+`nodes provision`, `nodes provision-genesis`, `bootstraps provision`) carries the
+full RUST_LOG syntax including `::`. This lets a single deployment run nodes and
+clients at different RUST_LOG levels.
 
 **Reuse:** `extends:` (deep-merge a base; lists replace wholesale), `--set
 dotted.key=value` (override one value, e.g. `--set testnet.nodes.nat_percent=0`),
@@ -505,7 +532,7 @@ Client VMs run the ant binary as long-running upload-or-download workers against
 
 Commands:
 
-- `clients infra --name <testnet> --uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL] [--uploader ...] --downloader provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL] [--downloader ...]` — create the VMs. Each flag is repeatable; at least one of either is required. `provider` is **mandatory** and must be one of `digital_ocean`, `vultr`, `hetzner`, `ovh` — different uploaders/downloaders may target different providers (e.g. cheap-egress providers for the upload-heavy VMs). **Region names and VM sizes vary per provider and are passed through verbatim** — supply valid strings for the chosen provider (DO `s-2vcpu-4gb` / Vultr `vc2-2c-4gb` / Hetzner `cpx22` / OVH `b3-8`, regions like DO `lon1` / Vultr `lhr` / Hetzner `fsn1` / OVH `GRA9`); there is no per-provider validation. The optional `ant=` / `eth=` keys set per-uploader funding amounts (defaults: 100 ANT, 0.5 ETH). The optional `payment=` key sets the storage-payment mode (`merkle` or `no-merkle`). The optional `clock_skew=DURATION` key makes `clients provision` disable time sync and shift that VM's clock by a **signed Go-style duration** (e.g. `2h`, `-2h`, `30m`; a leading `-` runs the clock slow) — for testing the network's clock-independence; idempotent via a `/etc/ant-clock-skew-applied` marker. The optional `bootstrap_cache=true|false` key (default **true**) controls the ant peer cache per VM: when true the service invokes `ant` **without** `--bootstrap` (the cache is enabled; peers come from a `bootstrap_peers.toml` written to `/root/.config/ant/` by `clients provision`, containing the testnet's bootstrap addresses), and `bootstrap_cache=false` restores the legacy explicit `--bootstrap` invocation, which disables the cache. OVH requires `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` env vars; Vultr requires `VULTR_API_KEY`; Hetzner requires `HCLOUD_TOKEN`; DigitalOcean requires `DO_TOKEN`.
+- `clients infra --name <testnet> --uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=SPEC] [--uploader ...] --downloader provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=SPEC] [--downloader ...]` — create the VMs. The optional `forward_logs=true` key forwards that VM's `ant` stdout+stderr to the deployment's Elasticsearch (index `telegraf-ant-clients-<name>`; needs `elastic provision`); `rust_log=SPEC` sets `RUST_LOG` on the service (overriding `-v`) and **must be the last token** in the spec (its value may contain `:`). Each flag is repeatable; at least one of either is required. `provider` is **mandatory** and must be one of `digital_ocean`, `vultr`, `hetzner`, `ovh` — different uploaders/downloaders may target different providers (e.g. cheap-egress providers for the upload-heavy VMs). **Region names and VM sizes vary per provider and are passed through verbatim** — supply valid strings for the chosen provider (DO `s-2vcpu-4gb` / Vultr `vc2-2c-4gb` / Hetzner `cpx22` / OVH `b3-8`, regions like DO `lon1` / Vultr `lhr` / Hetzner `fsn1` / OVH `GRA9`); there is no per-provider validation. The optional `ant=` / `eth=` keys set per-uploader funding amounts (defaults: 100 ANT, 0.5 ETH). The optional `payment=` key sets the storage-payment mode (`merkle` or `no-merkle`). The optional `clock_skew=DURATION` key makes `clients provision` disable time sync and shift that VM's clock by a **signed Go-style duration** (e.g. `2h`, `-2h`, `30m`; a leading `-` runs the clock slow) — for testing the network's clock-independence; idempotent via a `/etc/ant-clock-skew-applied` marker. The optional `bootstrap_cache=true|false` key (default **true**) controls the ant peer cache per VM: when true the service invokes `ant` **without** `--bootstrap` (the cache is enabled; peers come from a `bootstrap_peers.toml` written to `/root/.config/ant/` by `clients provision`, containing the testnet's bootstrap addresses), and `bootstrap_cache=false` restores the legacy explicit `--bootstrap` invocation, which disables the cache. OVH requires `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` env vars; Vultr requires `VULTR_API_KEY`; Hetzner requires `HCLOUD_TOKEN`; DigitalOcean requires `DO_TOKEN`.
 - `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM). For each uploader, generates a fresh Arbitrum Sepolia EOA wallet, transfers the configured ANT + ETH from the funding wallet (`--wallet-secret-key` / `ANT_DEPLOY_SECRET_KEY`), persists wallet info in S3 client state, and writes the per-uploader secret key into `/etc/ant-client.env`. Idempotent: re-runs reuse wallets already recorded in client state. Skipped under `--prod`.
 - `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
 - `clients destroy` — drains every per-uploader wallet (ANT + ETH back to the funding wallet on Arbitrum Sepolia, less a small ETH gas reserve), then tears down VMs and wipes the per-testnet addresses folder at `s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<testnet>/`. Drain failures abort the destroy so VMs and state remain available for retry — pass `--wallet-secret-key` (or set `ANT_DEPLOY_SECRET_KEY`) so funds know where to return.
@@ -1003,7 +1030,10 @@ Arguments (for `prod uploaders deploy`):
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
-| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:clock_skew=DURATION][:bootstrap_cache=BOOL]`. The first three parts are required. `log_level=LEVEL` sets the `ant` upload verbosity for that VM — `info` (default → `-v`), `debug` (`-vv`), or `trace` (`-vvv`); omit for info. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). `bootstrap_cache=true|false` (default true) — when true `ant` runs **without** `--bootstrap` (peer cache enabled, peers read from a provisioned `bootstrap_peers.toml`); false restores the legacy `--bootstrap` invocation. |
+| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=SPEC]`. The first three parts are required. `log_level=LEVEL` sets the `ant` upload verbosity for that VM — `info` (default → `-v`), `debug` (`-vv`), or `trace` (`-vvv`); omit for info. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). `bootstrap_cache=true|false` (default true) — when true `ant` runs **without** `--bootstrap` (peer cache enabled, peers read from a provisioned `bootstrap_peers.toml`); false restores the legacy `--bootstrap` invocation. `forward_logs=true` forwards that VM's `ant` stdout+stderr to a **dedicated** Elasticsearch instance stood up by this deploy (index `telegraf-ant-clients-<name>`; torn down on destroy unless `--keep-elastic`). `rust_log=SPEC` sets `RUST_LOG` (overriding the verbosity flag) and must be the **last** token (value may contain `:`). |
+| `--forward-logs` / `--no-forward-logs` | flag | off | (`prod downloaders`/`continuous-downloader`/`canary` deploy) Forward the client `ant` stdout+stderr to a dedicated Elasticsearch instance (index `telegraf-ant-clients-<name>`), stood up by the command and torn down on destroy unless `--keep-elastic`. |
+| `--rust-log SPEC` | flag | — | (`prod downloaders`/`continuous-downloader`/`canary` deploy) Set `RUST_LOG` on the client service, overriding the `ant` verbosity flag. Full RUST_LOG syntax incl `::`. |
+| `--keep-elastic` | flag | off | (prod destroy) Leave the dedicated client-log Elasticsearch VM running. Default: it is destroyed alongside the client/monitoring. |
 | `--allow-duplicate-files` | flag | off | Skip the duplicate-file preflight and deploy even if an upload target already exists in the prod uploads list. Use to re-upload missing chunks or test the already-stored path. |
 | `--secret-key` | string | `$ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet secret key shared across all uploaders. Deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` — prod uploads cost real ETH. |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |

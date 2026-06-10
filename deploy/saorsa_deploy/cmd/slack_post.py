@@ -204,6 +204,10 @@ def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -
             )
         blocks.append(_section("*Providers & regions:*\n" + "\n".join(lines)))
 
+    node_rust_log = deploy_args.get("node_rust_log")
+    if node_rust_log:
+        blocks.append(_section(f"*Node RUST_LOG:* `{node_rust_log}`"))
+
     return blocks
 
 
@@ -234,6 +238,20 @@ def _bootstrap_cache_marker(value) -> str:
     return " — bootstrap-cache: on" if value else " — bootstrap-cache: off"
 
 
+def _forward_logs_marker(value) -> str:
+    """Inline per-client marker for client→Elasticsearch log forwarding.
+
+    Only rendered when on (the common case is off / unset, which would be
+    noise on every line).
+    """
+    return " — 📤 forward-logs" if value else ""
+
+
+def _rust_log_marker(value) -> str:
+    """Inline per-client marker showing a custom RUST_LOG, if set."""
+    return f" — RUST_LOG=`{value}`" if value else ""
+
+
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     blocks: list[dict] = [
         _section(
@@ -252,8 +270,11 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
         file_names = u.get("file_names") or []
         skew_str = " — ⏰ clock-skew" if u.get("clock_skew") else ""
         cache_str = _bootstrap_cache_marker(u.get("bootstrap_cache"))
+        fwd_str = _forward_logs_marker(u.get("forward_logs"))
+        rust_str = _rust_log_marker(u.get("rust_log"))
         lines.append(
-            f"• {region} ({vm_size}) — payment: {payment}{cache_str}{skew_str}"
+            f"• {region} ({vm_size}) — payment: {payment}"
+            f"{cache_str}{skew_str}{fwd_str}{rust_str}"
         )
         if file_names:
             for name in file_names:
@@ -378,6 +399,11 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
             ("Bootstrap cache", "on" if deploy_args["bootstrap_cache"] else "off")
         )
 
+    if deploy_args.get("forward_logs"):
+        fields.append(("Log forwarding", "Elasticsearch 📤"))
+    if deploy_args.get("rust_log"):
+        fields.append(("RUST_LOG", f"`{deploy_args['rust_log']}`"))
+
     if "sleep_interval_secs" in deploy_args:
         sleep_interval_secs = deploy_args.get("sleep_interval_secs")
         if sleep_interval_secs is None:
@@ -415,6 +441,8 @@ def _clients_block(clients: list[dict]) -> dict:
         vm_size = c.get("vm_size", "?")
         skew_str = " — ⏰ clock-skew" if c.get("clock_skew") else ""
         cache_str = _bootstrap_cache_marker(c.get("bootstrap_cache"))
+        fwd_str = _forward_logs_marker(c.get("forward_logs"))
+        rust_str = _rust_log_marker(c.get("rust_log"))
         if role == "upload":
             file_size = c.get("file_size_mb")
             # file_size_mb is 0 for prod uploaders (real files of arbitrary
@@ -424,10 +452,13 @@ def _clients_block(clients: list[dict]) -> dict:
             payment = c.get("payment_type") or "default"
             lines.append(
                 f"• upload — {region} ({vm_size}{size_str}) — "
-                f"payment: {payment}{cache_str}{skew_str}"
+                f"payment: {payment}{cache_str}{skew_str}{fwd_str}{rust_str}"
             )
         else:
-            lines.append(f"• download — {region} ({vm_size}){cache_str}{skew_str}")
+            lines.append(
+                f"• download — {region} ({vm_size})"
+                f"{cache_str}{skew_str}{fwd_str}{rust_str}"
+            )
     return _section("*Clients:*\n" + "\n".join(lines))
 
 
@@ -514,13 +545,18 @@ def build_slack_blocks(
         blocks.extend(_prod_local_uploads_blocks(deploy_args))
     elif kind_raw == "prod-local-downloads":
         blocks.extend(_prod_local_downloads_blocks(deploy_args))
-    elif kind_raw == "prod-canary" and "bootstrap_cache" in deploy_args:
-        blocks.append(
-            _section(
-                "*Bootstrap cache:* "
-                + ("on" if deploy_args["bootstrap_cache"] else "off")
+    elif kind_raw == "prod-canary":
+        if "bootstrap_cache" in deploy_args:
+            blocks.append(
+                _section(
+                    "*Bootstrap cache:* "
+                    + ("on" if deploy_args["bootstrap_cache"] else "off")
+                )
             )
-        )
+        if deploy_args.get("forward_logs"):
+            blocks.append(_section("*Log forwarding:* Elasticsearch 📤"))
+        if deploy_args.get("rust_log"):
+            blocks.append(_section(f"*RUST_LOG:* `{deploy_args['rust_log']}`"))
 
     if client_state:
         clients = client_state.get("clients") or []

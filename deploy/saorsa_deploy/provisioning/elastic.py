@@ -27,6 +27,10 @@ ES_DEB_URL = (
 )
 
 INDEX_PATTERN = "telegraf-ant-nodes-*"
+# Client (uploader/downloader/canary) ant logs forward to a SEPARATE index so
+# they never mingle with node logs even on a shared ES instance. Plain-text
+# stdout/stderr lines land in a `message` field (no JSON structure to parse).
+CLIENT_INDEX_PATTERN = "telegraf-ant-clients-*"
 ES_USERNAME = "ant-log-writer"
 ILM_POLICY_NAME = "ant-logs-policy"
 DEFAULT_RETENTION_DAYS = 7
@@ -256,6 +260,7 @@ class ElasticProvisioner:
             f"USERNAME = '{ES_USERNAME}'\n"
             f"PASSWORD = '{self._es_password}'\n"
             f"INDEX_PATTERN = '{INDEX_PATTERN}'\n"
+            f"CLIENT_INDEX_PATTERN = '{CLIENT_INDEX_PATTERN}'\n"
             f"ILM_POLICY_NAME = '{ILM_POLICY_NAME}'\n"
             f"RETENTION_DAYS = {self.retention_days}\n"
             f"NUMBER_OF_SHARDS = {self.shards}\n"
@@ -377,11 +382,39 @@ class ElasticProvisioner:
             "print('Index template created.')\n"
             "\n"
             "\n"
-            "# 3. Create a role with read/write access to the log index\n"
+            "# 2c. Create index template for ant CLIENT logs (raw stdout/stderr\n"
+            "# lines as `message`; tagged host/role/stream). Shares the ILM policy.\n"
+            "print('Creating client index template...')\n"
+            "es_auth_request('PUT', '/_index_template/ant-client-logs', {\n"
+            "    'index_patterns': [CLIENT_INDEX_PATTERN],\n"
+            "    'template': {\n"
+            "        'settings': {\n"
+            "            'number_of_shards': NUMBER_OF_SHARDS,\n"
+            "            'number_of_replicas': 0,\n"
+            "            'index.lifecycle.name': ILM_POLICY_NAME,\n"
+            "        },\n"
+            "        'mappings': {\n"
+            "            'properties': {\n"
+            "                'timestamp': {'type': 'date'},\n"
+            "                'message': {'type': 'text'},\n"
+            "                'host': {'type': 'keyword'},\n"
+            "                'role': {'type': 'keyword'},\n"
+            "                'stream': {'type': 'keyword'},\n"
+            "                'client_index': {'type': 'keyword'},\n"
+            "                'testnet_name': {'type': 'keyword'},\n"
+            "                'host_role': {'type': 'keyword'},\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "})\n"
+            "print('Client index template created.')\n"
+            "\n"
+            "\n"
+            "# 3. Create a role with read/write access to the node + client indices\n"
             "print('Creating log writer role...')\n"
             "es_auth_request('PUT', '/_security/role/ant_log_writer', {\n"
             "    'indices': [{\n"
-            "        'names': [INDEX_PATTERN],\n"
+            "        'names': [INDEX_PATTERN, CLIENT_INDEX_PATTERN],\n"
             "        'privileges': ['create_index', 'write', 'read', 'view_index_metadata',\n"
             "                       'monitor', 'manage'],\n"
             "    }]\n"
@@ -406,7 +439,7 @@ class ElasticProvisioner:
             "    'role_descriptors': {\n"
             "        'ant_log_reader': {\n"
             "            'indices': [{\n"
-            "                'names': [INDEX_PATTERN],\n"
+            "                'names': [INDEX_PATTERN, CLIENT_INDEX_PATTERN],\n"
             "                'privileges': ['read', 'view_index_metadata'],\n"
             "            }]\n"
             "        }\n"
@@ -460,5 +493,8 @@ class ElasticProvisioner:
             "elasticsearch_api_key": api_key,
             "elasticsearch_index_pattern": (
                 f"telegraf-ant-nodes-{testnet_lower}-%Y.%m.%d"
+            ),
+            "elasticsearch_client_index_pattern": (
+                f"telegraf-ant-clients-{testnet_lower}-%Y.%m.%d"
             ),
         }

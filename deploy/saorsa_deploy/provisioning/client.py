@@ -139,6 +139,9 @@ class AntClientProvisioner:
         addresses_file_content: str | None = None,
         heaptrack_targets: frozenset[str] = frozenset(),
         deployment_name: str = "",
+        elasticsearch_url: str = "",
+        elasticsearch_username: str = "",
+        elasticsearch_password: str = "",
     ):
         self.clients = clients
         self.deployment_name = deployment_name
@@ -159,6 +162,78 @@ class AntClientProvisioner:
         self.wallet_secret_key = wallet_secret_key
         self.addresses_file_content = addresses_file_content
         self.heaptrack_targets = heaptrack_targets
+        self.elasticsearch_url = elasticsearch_url
+        self.elasticsearch_username = elasticsearch_username
+        self.elasticsearch_password = elasticsearch_password
+
+    #: Per-role aggregate log files that uploader.sh/downloader.sh append to
+    #: when FORWARD_LOGS=true, and the role label tagged on forwarded lines.
+    _FORWARD_ROLE_FILES = {
+        "upload": (
+            [
+                "/var/log/ant-client-forward/uploader.stdout.log",
+                "/var/log/ant-client-forward/uploader.stderr.log",
+            ],
+            "uploader",
+        ),
+        "download": (
+            [
+                "/var/log/ant-client-forward/downloader.stdout.log",
+                "/var/log/ant-client-forward/downloader.stderr.log",
+            ],
+            "downloader",
+        ),
+    }
+
+    def provision_log_forwarders(self) -> None:
+        """Install the client→Elasticsearch telegraf forwarder on opted-in VMs.
+
+        Groups opted-in clients by role and installs the forwarder against the
+        per-role aggregate stdout/stderr files. No-op unless at least one client
+        has ``forward_logs`` set; raises if one does but no ES creds are known.
+        """
+        forwarding = [
+            c for c in self.clients if c.get("ip") and c.get("forward_logs")
+        ]
+        if not forwarding:
+            return
+        if not (
+            self.elasticsearch_url
+            and self.elasticsearch_username
+            and self.elasticsearch_password
+        ):
+            raise RuntimeError(
+                "forward_logs is set on one or more clients but no Elasticsearch "
+                "credentials are available — ensure elastic is enabled and "
+                "provisioned for this deployment before provisioning clients."
+            )
+        from saorsa_deploy.provisioning.telegraf_client import (
+            ClientTelegrafProvisioner,
+        )
+
+        for role_key, (globs, role_label) in self._FORWARD_ROLE_FILES.items():
+            ips = [
+                c["ip"]
+                for c in forwarding
+                if c.get("role", "upload") == role_key
+            ]
+            if not ips:
+                continue
+            self.console.print(
+                f"Installing client log forwarder on {len(ips)} {role_label} "
+                f"host(s)..."
+            )
+            ClientTelegrafProvisioner(
+                host_ips=ips,
+                ssh_key_path=self.ssh_key_path,
+                testnet_name=self.deployment_name,
+                elasticsearch_url=self.elasticsearch_url,
+                elasticsearch_username=self.elasticsearch_username,
+                elasticsearch_password=self.elasticsearch_password,
+                role=role_label,
+                tail_globs=globs,
+                console=self.console,
+            ).execute()
 
     def _presigned_put_url(self, region: str, client_index) -> str:
         """Mint a presigned PUT URL for one uploader's address-list object.
@@ -420,6 +495,8 @@ class AntClientProvisioner:
                 bootstrap_cache = (
                     "true" if c.get("bootstrap_cache", True) else "false"
                 )
+                forward_logs = "true" if c.get("forward_logs") else "false"
+                rust_log = c.get("rust_log") or ""
                 if role == "upload":
                     per_uploader_key = _normalize_secret(c.get("wallet_secret_key", ""))
                     ip_to_env[c["ip"]] = {
@@ -431,6 +508,8 @@ class AntClientProvisioner:
                         "secret_key": per_uploader_key or fallback_secret,
                         "heaptrack": heap,
                         "bootstrap_cache": bootstrap_cache,
+                        "forward_logs": forward_logs,
+                        "rust_log": rust_log,
                         "upload_presigned_url": self._presigned_put_url(
                             c["region"], c["client_index"]
                         ),
@@ -445,6 +524,8 @@ class AntClientProvisioner:
                         "secret_key": fallback_secret,
                         "heaptrack": heap,
                         "bootstrap_cache": bootstrap_cache,
+                        "forward_logs": forward_logs,
+                        "rust_log": rust_log,
                         "upload_presigned_url": "",
                     }
 
@@ -459,6 +540,8 @@ class AntClientProvisioner:
                     f'SECRET_KEY="{env["secret_key"]}"; '
                     f'HEAPTRACK={env["heaptrack"]}; '
                     f'BOOTSTRAP_CACHE={env["bootstrap_cache"]}; '
+                    f'FORWARD_LOGS={env["forward_logs"]}; '
+                    f'RUST_LOG="{env["rust_log"]}"; '
                     f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}" ;;'
                 )
             case_block = "\n".join(case_entries)
@@ -485,7 +568,7 @@ case "$MY_IP" in
 {case_block}
     *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
 PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true; \
-UPLOAD_PRESIGNED_URL="" ;;
+FORWARD_LOGS=false; RUST_LOG=""; UPLOAD_PRESIGNED_URL="" ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -494,6 +577,8 @@ REGION=$REGION
 CLIENT_INDEX=$CLIENT_INDEX
 BOOTSTRAP_ARGS="{bootstrap_args}"
 BOOTSTRAP_CACHE=$BOOTSTRAP_CACHE
+FORWARD_LOGS=$FORWARD_LOGS
+RUST_LOG=$RUST_LOG
 FILE_SIZE_KB=$FILE_SIZE_KB
 PAYMENT_TYPE=$PAYMENT_TYPE
 SECRET_KEY=$SECRET_KEY

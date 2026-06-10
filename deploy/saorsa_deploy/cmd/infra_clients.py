@@ -23,8 +23,11 @@ ROLE_DOWNLOAD = "download"
 
 
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
-_VALID_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew", "bootstrap_cache")
-_VALID_DOWNLOADER_KEYS = ("clock_skew", "bootstrap_cache")
+# NB: `rust_log` is NOT in these key sets — it is extracted as a trailing
+# remainder token before the `:`-split (its value may contain `:` via RUST_LOG
+# module paths like `a::b=trace`), so the `key=value` loop never sees it.
+_VALID_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew", "bootstrap_cache", "forward_logs")
+_VALID_DOWNLOADER_KEYS = ("clock_skew", "bootstrap_cache", "forward_logs")
 DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
 # ant peer cache default: invoke ant WITHOUT --bootstrap, shipping a
@@ -54,6 +57,39 @@ def _parse_bootstrap_cache(spec: str, value: str) -> bool:
     )
 
 
+def _parse_forward_logs(spec: str, value: str) -> bool:
+    """Validate a ``forward_logs=`` spec option into a bool."""
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(
+        f"Invalid spec '{spec}': forward_logs must be 'true' or 'false', got '{value}'."
+    )
+
+
+def _extract_rust_log(spec: str) -> tuple[str, str | None]:
+    """Split off a trailing ``rust_log=...`` token from a client spec.
+
+    ``rust_log`` must be the LAST option in the spec because its value can
+    contain ``:`` (RUST_LOG module paths use ``::``), which would otherwise
+    collide with the ``:`` spec delimiter. Everything after the first
+    ``:rust_log=`` is taken verbatim as the value. Returns
+    ``(spec_without_rust_log, rust_log_or_None)``.
+    """
+    marker = ":rust_log="
+    idx = spec.find(marker)
+    if idx == -1:
+        if spec.startswith("rust_log="):
+            idx, marker = 0, "rust_log="
+        else:
+            return spec, None
+    value = spec[idx + len(marker):]
+    if not value:
+        raise ValueError(f"Invalid spec '{spec}': rust_log cannot be empty.")
+    return spec[:idx], value
+
+
 def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
     """Validate a numeric uploader-spec option and return it as a normalized string."""
     from decimal import Decimal, InvalidOperation
@@ -77,19 +113,23 @@ def parse_uploader_spec(spec: str) -> dict:
     """Parse an uploader spec.
 
     Format:
-    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL]``
+    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=VALUE]``
 
     ``provider`` is mandatory and must be one of digital_ocean, vultr,
     hetzner, ovh. Region names and VM sizes vary per provider and are passed
     through verbatim — the user is responsible for supplying valid strings.
+    ``rust_log``, if present, MUST be the final token (its value may contain
+    ``:``).
 
     Returns a dict with keys: role=upload, provider (canonical internal name),
     region, file_size_mb, vm_size, payment_type (None unless ``payment=merkle``
     or ``payment=no-merkle``), ant_funding (str numeric, default "100"),
     eth_funding (str numeric, default "0.5"), bootstrap_cache (bool, default
-    True — invoke ant without --bootstrap, shipping a bootstrap_peers.toml).
+    True — invoke ant without --bootstrap, shipping a bootstrap_peers.toml),
+    forward_logs (bool or None), rust_log (str or None).
     """
-    raw_parts = spec.split(":")
+    spec_body, rust_log = _extract_rust_log(spec)
+    raw_parts = spec_body.split(":")
     positional: list[str] = []
     options: dict[str, str] = {}
     for part in raw_parts:
@@ -156,6 +196,11 @@ def parse_uploader_spec(spec: str) -> dict:
         if "bootstrap_cache" in options
         else DEFAULT_BOOTSTRAP_CACHE
     )
+    forward_logs = (
+        _parse_forward_logs(spec, options["forward_logs"])
+        if "forward_logs" in options
+        else None
+    )
 
     return {
         "role": ROLE_UPLOAD,
@@ -168,19 +213,24 @@ def parse_uploader_spec(spec: str) -> dict:
         "eth_funding": eth_funding,
         "clock_skew": clock_skew,
         "bootstrap_cache": bootstrap_cache,
+        "forward_logs": forward_logs,
+        "rust_log": rust_log,
     }
 
 
 def parse_downloader_spec(spec: str) -> dict:
     """Parse a downloader spec:
-    'provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL]'.
+    'provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=VALUE]'.
 
-    ``provider`` is mandatory (digital_ocean, vultr, hetzner, ovh). Returns a
+    ``provider`` is mandatory (digital_ocean, vultr, hetzner, ovh). ``rust_log``,
+    if present, MUST be the final token (its value may contain ``:``). Returns a
     dict with keys: role=download, provider (canonical internal name), region,
     vm_size, clock_skew (signed seconds int, or None when unset),
-    bootstrap_cache (bool, default True).
+    bootstrap_cache (bool, default True), forward_logs (bool or None), rust_log
+    (str or None).
     """
-    raw_parts = spec.split(":")
+    spec_body, rust_log = _extract_rust_log(spec)
+    raw_parts = spec_body.split(":")
     positional: list[str] = []
     options: dict[str, str] = {}
     for part in raw_parts:
@@ -221,6 +271,11 @@ def parse_downloader_spec(spec: str) -> dict:
         if "bootstrap_cache" in options
         else DEFAULT_BOOTSTRAP_CACHE
     )
+    forward_logs = (
+        _parse_forward_logs(spec, options["forward_logs"])
+        if "forward_logs" in options
+        else None
+    )
     return {
         "role": ROLE_DOWNLOAD,
         "provider": provider,
@@ -228,6 +283,8 @@ def parse_downloader_spec(spec: str) -> dict:
         "vm_size": vm_size,
         "clock_skew": clock_skew,
         "bootstrap_cache": bootstrap_cache,
+        "forward_logs": forward_logs,
+        "rust_log": rust_log,
     }
 
 
@@ -245,6 +302,8 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("eth_funding"),
         spec.get("clock_skew"),
         spec.get("bootstrap_cache", DEFAULT_BOOTSTRAP_CACHE),
+        spec.get("forward_logs"),
+        spec.get("rust_log"),
     )
 
 

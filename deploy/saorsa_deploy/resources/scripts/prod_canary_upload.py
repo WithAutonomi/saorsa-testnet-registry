@@ -519,12 +519,16 @@ def main() -> int:
         upload_started_ns = time.time_ns()
         upload_stdout_log = log_dir / f"upload-{canary_id}.stdout"
         upload_stderr_log = log_dir / f"upload-{canary_id}.stderr"
+        # RUST_LOG (set on the systemd unit, inherited by the ant subprocess)
+        # overrides the verbosity flag: when present drop -v so RUST_LOG drives
+        # the tracing filter instead.
+        verbosity = [] if os.environ.get("RUST_LOG") else ["-v"]
         upload_cmd = [
             ant_path,
             *bootstrap_args,
             "--evm-network", evm_network,
             "--json",
-            "-v",
+            *verbosity,
             "file", "upload", "--public",
             str(local_path),
         ]
@@ -569,7 +573,7 @@ def main() -> int:
             ant_path,
             *bootstrap_args,
             "--json",
-            "-v",
+            *verbosity,
             "file", "download", top_address, "-o", str(verify_path),
         ]
         verify_stdout_log = log_dir / f"verify-{canary_id}.stdout"

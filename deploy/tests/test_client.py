@@ -45,6 +45,8 @@ class TestParseUploaderSpec:
             "eth_funding": "0.5",
             "clock_skew": None,
             "bootstrap_cache": True,
+            "forward_logs": None,
+            "rust_log": None,
         }
 
     def test_provider_region_file_size_and_vm_size(self):
@@ -60,6 +62,8 @@ class TestParseUploaderSpec:
             "eth_funding": "0.5",
             "clock_skew": None,
             "bootstrap_cache": True,
+            "forward_logs": None,
+            "rust_log": None,
         }
 
     @pytest.mark.parametrize(
@@ -148,6 +152,8 @@ class TestParseDownloaderSpec:
             "vm_size": "s-2vcpu-4gb",
             "clock_skew": None,
             "bootstrap_cache": True,
+            "forward_logs": None,
+            "rust_log": None,
         }
 
     def test_provider_region_and_vm_size(self):
@@ -159,6 +165,8 @@ class TestParseDownloaderSpec:
             "vm_size": "vc2-4c-8gb",
             "clock_skew": None,
             "bootstrap_cache": True,
+            "forward_logs": None,
+            "rust_log": None,
         }
 
     def test_missing_provider_rejected(self):

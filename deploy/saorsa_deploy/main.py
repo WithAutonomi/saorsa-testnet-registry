@@ -271,6 +271,16 @@ def main(argv=None):
         help="Upgrade channel for ant-node (beta or stable)",
     )
     bootstraps_provision_parser.add_argument(
+        "--rust-log",
+        type=str,
+        default=None,
+        metavar="SPEC",
+        help="Set RUST_LOG on the bootstrap node services (e.g. "
+        "'info,saorsa_core::dht_network_manager=debug'). Applied as "
+        "Environment=RUST_LOG=<spec> on the systemd unit, IN ADDITION to "
+        "--log-level/--enable-logging (which stay).",
+    )
+    bootstraps_provision_parser.add_argument(
         "--rewards-address",
         type=str,
         default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
@@ -2296,6 +2306,17 @@ def main(argv=None):
         help="Logging level the nodes will run with",
     )
     nodes_provision_parser.add_argument(
+        "--rust-log",
+        type=str,
+        default=None,
+        metavar="SPEC",
+        help="Set RUST_LOG on the node services (e.g. "
+        "'info,saorsa_core::dht_network_manager=debug'). Applied as "
+        "Environment=RUST_LOG=<spec> on each systemd unit, IN ADDITION to "
+        "--log-level/--enable-logging (which stay — without them logging is "
+        "never initialised).",
+    )
+    nodes_provision_parser.add_argument(
         "--name",
         type=str,
         required=True,
@@ -2424,6 +2445,16 @@ def main(argv=None):
         "--log-level",
         type=str,
         help="Logging level the node will run with",
+    )
+    nodes_provision_genesis_parser.add_argument(
+        "--rust-log",
+        type=str,
+        default=None,
+        metavar="SPEC",
+        help="Set RUST_LOG on the genesis node service (e.g. "
+        "'info,saorsa_core::dht_network_manager=debug'). Applied as "
+        "Environment=RUST_LOG=<spec> on the systemd unit, IN ADDITION to "
+        "--log-level/--enable-logging (which stay).",
     )
     nodes_provision_genesis_parser.add_argument(
         "--name",
@@ -2625,6 +2656,23 @@ def main(argv=None):
         "restores the legacy --bootstrap invocation (cache disabled).",
     )
     prod_cd_deploy_parser.add_argument(
+        "--forward-logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Forward the downloader's ant stdout+stderr to a dedicated "
+        "Elasticsearch instance stood up by this command (index "
+        "telegraf-ant-clients-<name>). Default off (current behaviour).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--rust-log",
+        type=str,
+        default=None,
+        metavar="SPEC",
+        help="Set RUST_LOG on the downloader service (e.g. "
+        "'info,saorsa_core::dht_network_manager=debug'). Overrides the ant "
+        "verbosity flag.",
+    )
+    prod_cd_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -2695,6 +2743,13 @@ def main(argv=None):
         "Default: the monitoring VM is destroyed alongside the client.",
     )
     prod_cd_destroy_parser.add_argument(
+        "--keep-elastic",
+        action="store_true",
+        help="Leave the dedicated client-log Elasticsearch VM running (only "
+        "created when the deploy used --forward-logs). Default: it is destroyed "
+        "alongside the client.",
+    )
+    prod_cd_destroy_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
@@ -2743,6 +2798,23 @@ def main(argv=None):
         help="Enable the ant peer cache (default): ant runs WITHOUT --bootstrap "
         "and reads a provisioned bootstrap_peers.toml. --no-bootstrap-cache "
         "restores the legacy --bootstrap invocation (cache disabled).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--forward-logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Forward the downloader's ant stdout+stderr to a dedicated "
+        "Elasticsearch instance stood up by this command (index "
+        "telegraf-ant-clients-<name>). Default off (current behaviour).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--rust-log",
+        type=str,
+        default=None,
+        metavar="SPEC",
+        help="Set RUST_LOG on the downloader service (e.g. "
+        "'info,saorsa_core::dht_network_manager=debug'). Overrides the ant "
+        "verbosity flag.",
     )
     prod_dl_deploy_parser.add_argument(
         "--addresses-path",
@@ -2803,6 +2875,13 @@ def main(argv=None):
         help="Leave the paired monitoring VM running so recorded metrics "
         "remain queryable after the client VM is gone. "
         "Default: the monitoring VM is destroyed alongside the client.",
+    )
+    prod_dl_destroy_parser.add_argument(
+        "--keep-elastic",
+        action="store_true",
+        help="Leave the dedicated client-log Elasticsearch VM running (only "
+        "created when the deploy used --forward-logs). Default: it is destroyed "
+        "alongside the client.",
     )
     prod_dl_destroy_parser.add_argument(
         "--ssh-key-path",
@@ -2932,6 +3011,13 @@ def main(argv=None):
         ),
     )
     prod_up_destroy_parser.add_argument(
+        "--keep-elastic",
+        action="store_true",
+        help="Leave the dedicated client-log Elasticsearch VM running (only "
+        "created when the deploy used a forward_logs uploader). Default: it is "
+        "destroyed alongside the uploaders.",
+    )
+    prod_up_destroy_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
@@ -3021,6 +3107,23 @@ def main(argv=None):
         "--bootstrap invocation (cache disabled).",
     )
     prod_canary_deploy_parser.add_argument(
+        "--forward-logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Forward the canary upload + probe VMs' ant stdout+stderr to a "
+        "dedicated Elasticsearch instance stood up by this command (index "
+        "telegraf-ant-clients-<name>). Default off (current behaviour).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--rust-log",
+        type=str,
+        default=None,
+        metavar="SPEC",
+        help="Set RUST_LOG on the canary services (e.g. "
+        "'info,saorsa_core::dht_network_manager=debug'). Overrides the ant "
+        "verbosity flag.",
+    )
+    prod_canary_deploy_parser.add_argument(
         "--branch-name",
         type=str,
         help="Use custom-built ant binary from this branch (requires --repo-owner).",
@@ -3091,6 +3194,13 @@ def main(argv=None):
             "This is the default; the flag is retained for explicitness "
             "and back-compat with scripts."
         ),
+    )
+    prod_canary_destroy_parser.add_argument(
+        "--keep-elastic",
+        action="store_true",
+        help="Leave the dedicated client-log Elasticsearch VM running (only "
+        "created when the deploy used --forward-logs). Default: it is destroyed "
+        "alongside the canary VMs.",
     )
     prod_canary_destroy_parser.add_argument(
         "--ssh-key-path",

@@ -210,11 +210,15 @@ def _run_ant(
     pumping threads, files written line-by-line so a slow run is observable
     via ``tail -f`` and so the diagnostic survives a hard kill.
     """
+    # RUST_LOG (set on the systemd unit, inherited by the ant subprocess)
+    # overrides the verbosity flag: when present we drop -v so RUST_LOG drives
+    # the tracing filter instead.
+    verbosity = [] if os.environ.get("RUST_LOG") else ["-v"]
     cmd = [
         ant_path,
         *bootstrap_args,
         "--evm-network", evm_network,
-        "-v",
+        *verbosity,
         "file", "download", address,
         "-o", str(output_path),
     ]

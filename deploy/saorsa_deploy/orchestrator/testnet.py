@@ -58,6 +58,11 @@ def _uploader_spec(u) -> str:
         parts.append(f"clock_skew={u.clock_skew}")
     if u.bootstrap_cache is not None:
         parts.append(f"bootstrap_cache={str(u.bootstrap_cache).lower()}")
+    if u.forward_logs is not None:
+        parts.append(f"forward_logs={str(u.forward_logs).lower()}")
+    # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
+    if u.rust_log is not None:
+        parts.append(f"rust_log={u.rust_log}")
     return ":".join(parts)
 
 
@@ -69,6 +74,11 @@ def _downloader_spec(d) -> str:
         parts.append(f"clock_skew={d.clock_skew}")
     if d.bootstrap_cache is not None:
         parts.append(f"bootstrap_cache={str(d.bootstrap_cache).lower()}")
+    if d.forward_logs is not None:
+        parts.append(f"forward_logs={str(d.forward_logs).lower()}")
+    # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
+    if d.rust_log is not None:
+        parts.append(f"rust_log={d.rust_log}")
     return ":".join(parts)
 
 
@@ -118,13 +128,19 @@ def _clients_destroy_argv(
     return argv
 
 
-def _node_provision_common(binary, mode: bool, upgrade_channel, ssh_key) -> list[str]:
+def _node_provision_common(
+    binary, mode: bool, upgrade_channel, ssh_key, rust_log=None
+) -> list[str]:
     """Flags shared by genesis / bootstraps / nodes provision."""
     argv = list(node_binary_flags(binary))
     if mode:
         argv.append("--testnet")
     if upgrade_channel:
         argv += ["--upgrade-channel", upgrade_channel]
+    # RUST_LOG applies uniformly to every node-tier service (genesis, bootstraps,
+    # and regular nodes), so it rides the shared common flags.
+    if rust_log:
+        argv += ["--rust-log", rust_log]
     argv += ["--ssh-key-path", ssh_key]
     return argv
 
@@ -163,7 +179,9 @@ def _provision_and_start_steps(
             )
         )
 
-    common = _node_provision_common(binaries.ant_node, mode, upgrade_channel, ssh_key)
+    common = _node_provision_common(
+        binaries.ant_node, mode, upgrade_channel, ssh_key, nodes.rust_log
+    )
 
     if include_genesis:
         steps.append(

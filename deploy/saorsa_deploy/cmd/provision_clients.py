@@ -74,6 +74,44 @@ def _resolve_influx_config(args, console):
     return ("", "", "ant", "testnet-metrics")
 
 
+def _resolve_elastic_config(clients, name, console):
+    """Resolve Elasticsearch creds for client log forwarding.
+
+    Returns ``(url, username, password)``. Empty strings when no client opted
+    into ``forward_logs``. When at least one did, the deployment's own elastic
+    state must exist (testnet log-forwarding ES) — exits if it doesn't.
+    """
+    wants = [c for c in clients if c.get("forward_logs")]
+    if not wants:
+        return "", "", ""
+    from saorsa_deploy.state import load_elastic_state
+
+    try:
+        es_state = load_elastic_state(name)
+    except RuntimeError:
+        console.print(
+            "[bold red]Error:[/bold red] forward_logs is set on one or more "
+            f"clients but no Elasticsearch instance exists for '{name}'. "
+            "Enable elastic (elastic.enabled: true) so client logs have an "
+            "index to forward to."
+        )
+        sys.exit(1)
+    url = es_state.get("elasticsearch_url", "")
+    username = es_state.get("elasticsearch_username", "")
+    password = es_state.get("elasticsearch_password", "")
+    if not (url and username and password):
+        console.print(
+            "[bold red]Error:[/bold red] Elasticsearch state for "
+            f"'{name}' is missing connection details — run elastic provision."
+        )
+        sys.exit(1)
+    console.print(
+        f"  Client log forwarding: {url} (index telegraf-ant-clients-"
+        f"{name.lower()}-*)"
+    )
+    return url, username, password
+
+
 def _resolve_ant_binary(args, console):
     """Resolve the ant binary source. Returns (url, is_archive) or (None, True)."""
     if args.branch_name:
@@ -438,6 +476,14 @@ def cmd_provision_clients(args):
         },
     )
     influx_url, influx_token, influx_org, influx_bucket = _resolve_influx_config(args, console)
+    # Client log forwarding (testnet path): reuse the deployment's own elastic
+    # instance, different index. prod_mode flows forward via their own commands.
+    if prod_mode:
+        es_url, es_username, es_password = "", "", ""
+    else:
+        es_url, es_username, es_password = _resolve_elastic_config(
+            clients, args.name, console
+        )
 
     host_ips = [c["ip"] for c in clients if c.get("ip")]
     console.print(f"  Bootstrap peers: {', '.join(bootstrap_peers)}")
@@ -477,10 +523,16 @@ def cmd_provision_clients(args):
         addresses_file_content=addresses_file_content,
         heaptrack_targets=heaptrack_targets,
         deployment_name=args.name,
+        elasticsearch_url=es_url,
+        elasticsearch_username=es_username,
+        elasticsearch_password=es_password,
     )
 
     try:
         provisioner.execute()
+        # Install the client→Elasticsearch log forwarder on opted-in VMs (no-op
+        # when no client set forward_logs). Runs after the service env exists.
+        provisioner.provision_log_forwarders()
         console.print()
         console.print("[bold green]All clients provisioned successfully.[/bold green]")
     except Exception as e:

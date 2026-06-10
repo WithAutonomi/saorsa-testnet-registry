@@ -81,6 +81,7 @@ def _build_node_unit_file(
     restart_policy="on-success",
     restart_sec=5,
     limit_nofile=None,
+    rust_log=None,
 ):
     """Build the systemd unit file content for a node service.
 
@@ -100,6 +101,9 @@ def _build_node_unit_file(
         f"{NAT_IP_EXEC_PREFIX}{exec_start}" if is_nat else exec_start
     )
     limit_line = f"\nLimitNOFILE={limit_nofile}" if limit_nofile else ""
+    # RUST_LOG is set IN ADDITION to ant-node's --log-level/--enable-logging
+    # flags (which must stay — without them logging is never initialised).
+    rust_log_line = f"\nEnvironment=RUST_LOG={rust_log}" if rust_log else ""
     return f"""\
 [Unit]
 Description=Ant Node ({service_name}){description_suffix}
@@ -110,7 +114,7 @@ Wants=network-online.target
 Type=simple
 ExecStart={wrapped_exec_start}
 Restart={restart_policy}
-RestartSec={restart_sec}{limit_line}
+RestartSec={restart_sec}{limit_line}{rust_log_line}
 
 [Install]
 WantedBy=multi-user.target
@@ -148,6 +152,7 @@ class AntNodeProvisioner:
         restart_policy: str = "on-success",
         restart_sec: int = 5,
         limit_nofile: int | None = None,
+        rust_log: str | None = None,
     ):
         self.host_ips = host_ips
         self.bootstrap_peers = bootstrap_peers
@@ -169,6 +174,7 @@ class AntNodeProvisioner:
         self.restart_policy = restart_policy
         self.restart_sec = restart_sec
         self.limit_nofile = limit_nofile
+        self.rust_log = rust_log
 
     def _build_unit_commands(self, is_nat: bool) -> list[str]:
         """Build the list of `cat > unit-file` commands for one host variant."""
@@ -198,6 +204,7 @@ class AntNodeProvisioner:
                 restart_policy=self.restart_policy,
                 restart_sec=self.restart_sec,
                 limit_nofile=self.limit_nofile,
+                rust_log=self.rust_log,
             )
             unit_path = f"/etc/systemd/system/{service_name}.service"
             commands.append(f"cat > {unit_path} << 'UNIT_EOF'\n{unit_content}UNIT_EOF")

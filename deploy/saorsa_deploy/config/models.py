@@ -145,6 +145,11 @@ class Nodes(_Base):
     full_percent: Optional[int] = None  # nodes provision --full-percent (% of non-NAT VMs)
     full_headroom_mb: Optional[int] = None  # nodes provision --full-headroom-mb
     attached_volume_size: Optional[int] = None
+    # RUST_LOG to set on the node systemd services (nodes + genesis + bootstraps).
+    # Applied as `Environment=RUST_LOG=<value>` IN ADDITION to ant-node's own
+    # `--log-level`/`--enable-logging` flags (which stay — without them logging is
+    # never initialised). Independent of the client-side `rust_log`.
+    rust_log: Optional[str] = None  # nodes/genesis/bootstraps provision --rust-log
     providers: dict[str, ProviderNodes]
 
     @model_validator(mode="after")
@@ -173,6 +178,12 @@ class Uploader(_Base):
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
+    # Forward this client's ant stdout+stderr to the deployment's Elasticsearch
+    # instance (index telegraf-ant-clients-{name}). Requires elastic.enabled.
+    forward_logs: Optional[bool] = None
+    # RUST_LOG to set on this client's service; when set it OVERRIDES the `-v`
+    # verbosity flag (the service drops `-v` and exports RUST_LOG instead).
+    rust_log: Optional[str] = None
 
 
 class Downloader(_Base):
@@ -183,6 +194,12 @@ class Downloader(_Base):
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
+    # Forward this client's ant stdout+stderr to the deployment's Elasticsearch
+    # instance (index telegraf-ant-clients-{name}). Requires elastic.enabled.
+    forward_logs: Optional[bool] = None
+    # RUST_LOG to set on this client's service; when set it OVERRIDES the `-v`
+    # verbosity flag (the service drops `-v` and exports RUST_LOG instead).
+    rust_log: Optional[str] = None
 
 
 class Clients(_Base):
@@ -199,6 +216,22 @@ class Clients(_Base):
                 "(downloaders consume addresses uploaders publish)"
             )
         return self
+
+
+def _require_elastic_for_forward_logs(clients, elastic, kind: str) -> None:
+    """Refuse `forward_logs` on a testnet/extension client unless elastic is on.
+
+    Client logs forward to the deployment's OWN Elasticsearch instance (a
+    distinct index from the node logs), so there must be one to forward to.
+    """
+    if clients is None or (elastic is not None and elastic.enabled):
+        return
+    wants = [c for c in (clients.uploaders + clients.downloaders) if c.forward_logs]
+    if wants:
+        raise ValueError(
+            f"{kind}: forward_logs requires elastic.enabled: true "
+            "(client logs forward to the deployment's Elasticsearch instance)"
+        )
 
 
 class Elastic(_Base):
@@ -234,6 +267,11 @@ class TestnetSpec(_Base):
             raise ValueError("testnet.binaries.ant is required when clients are configured")
         return self
 
+    @model_validator(mode="after")
+    def _forward_logs_needs_elastic(self) -> "TestnetSpec":
+        _require_elastic_for_forward_logs(self.clients, self.elastic, "testnet")
+        return self
+
 
 class ExtensionSpec(_Base):
     """An extension testnet reuses another testnet's bootstraps (no bootstrap tier)."""
@@ -253,6 +291,11 @@ class ExtensionSpec(_Base):
             raise ValueError("extension.binaries.ant is required when clients are configured")
         return self
 
+    @model_validator(mode="after")
+    def _forward_logs_needs_elastic(self) -> "ExtensionSpec":
+        _require_elastic_for_forward_logs(self.clients, self.elastic, "extension")
+        return self
+
 
 # --------------------------------------------------------------------------- #
 # prod kinds
@@ -270,6 +313,11 @@ class ProdUploader(_Base):
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
+    # Forward this uploader's ant stdout+stderr to a dedicated Elasticsearch
+    # instance stood up by the deploy command (index telegraf-ant-clients-{name}).
+    forward_logs: Optional[bool] = None
+    # RUST_LOG to set on this uploader's service; OVERRIDES the verbosity flag.
+    rust_log: Optional[str] = None
 
 
 class ProdUploadersSpec(_Base):
@@ -277,6 +325,7 @@ class ProdUploadersSpec(_Base):
     secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None  # destroy: --keep-monitoring when True
+    keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
     # deploy: --allow-duplicate-files — upload files already in the prod list
     allow_duplicate_files: bool = False
     uploaders: list[ProdUploader]
@@ -294,11 +343,17 @@ class ProdDownloadersSpec(_Base):
     addresses_path: Optional[str] = None
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None
+    keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
     # signed duration skew on this VM (e.g. "2h", "-2h"); disables time sync (testing only)
     clock_skew: Optional[ClockSkew] = None
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
+    # Forward the downloader's ant stdout+stderr to a dedicated Elasticsearch
+    # instance stood up by the deploy command (index telegraf-ant-clients-{name}).
+    forward_logs: Optional[bool] = None
+    # RUST_LOG to set on the downloader service; OVERRIDES the verbosity flag.
+    rust_log: Optional[str] = None
 
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
@@ -321,9 +376,16 @@ class ProdCanarySpec(_Base):
     probe_concurrency: Optional[int] = None
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None
+    keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
     # ant peer cache (upload + probe VMs): True (default) invokes ant WITHOUT
     # --bootstrap and ships a bootstrap_peers.toml instead.
     bootstrap_cache: Optional[bool] = None
+    # Forward the canary upload + probe VMs' ant stdout+stderr to a dedicated
+    # Elasticsearch instance stood up by the deploy command (index
+    # telegraf-ant-clients-{name}).
+    forward_logs: Optional[bool] = None
+    # RUST_LOG to set on the canary services; OVERRIDES the verbosity flag.
+    rust_log: Optional[str] = None
 
     @model_validator(mode="after")
     def _at_least_one_probe(self) -> "ProdCanarySpec":
