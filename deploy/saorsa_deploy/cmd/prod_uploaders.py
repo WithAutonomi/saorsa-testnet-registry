@@ -390,6 +390,22 @@ def _monitoring_stack_exists(name: str) -> bool:
         return False
 
 
+def _monitoring_has_influx(name: str) -> bool:
+    """True only when monitoring state carries usable InfluxDB creds.
+
+    A monitoring VM whose ``monitoring provision`` never finished leaves state
+    with a ``vm_ip`` but no ``influxdb_url``/``influxdb_token``. That is NOT
+    "fully provisioned": ``_ensure_monitoring`` must re-provision it rather than
+    silently skip (which would later fail with "monitoring state has no Influx
+    URL/token").
+    """
+    try:
+        state = load_monitoring_state(name)
+    except RuntimeError:
+        return False
+    return bool(state.get("influxdb_url") and state.get("influxdb_token"))
+
+
 def _client_stack_exists(name: str) -> bool:
     try:
         state = load_client_state(name)
@@ -403,10 +419,24 @@ def _ensure_monitoring(args, console: Console) -> None:
     from saorsa_deploy.cmd.provision_monitoring import cmd_provision_monitoring
 
     if _monitoring_stack_exists(args.name):
+        if _monitoring_has_influx(args.name):
+            console.print(
+                f"[dim]Monitoring stack '{args.name}' already exists — skipping "
+                "monitoring infra / monitoring provision.[/dim]"
+            )
+            return
+        # Infra VM exists but a prior provision never wrote the Influx creds —
+        # re-provision (the VM is already there) instead of skipping and later
+        # failing the uploader provisioning.
         console.print(
-            f"[dim]Monitoring stack '{args.name}' already exists — skipping "
-            "monitoring infra / monitoring provision.[/dim]"
+            f"[yellow]Monitoring VM for '{args.name}' exists but has no "
+            "InfluxDB creds (a prior provision didn't finish) — "
+            "re-provisioning.[/yellow]"
         )
+        cmd_provision_monitoring(SimpleNamespace(
+            name=args.name,
+            ssh_key_path=args.ssh_key_path,
+        ))
         return
 
     console.print("[bold cyan]Step 1/5: creating monitoring VM[/bold cyan]")

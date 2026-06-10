@@ -62,6 +62,10 @@ def deploy_patches():
             return_value=False,
         ) as p_mon_exists,
         patch(
+            "saorsa_deploy.cmd.prod_continuous_downloader._monitoring_has_influx",
+            return_value=True,
+        ) as p_mon_has_influx,
+        patch(
             "saorsa_deploy.cmd.prod_continuous_downloader._client_stack_exists",
             return_value=False,
         ) as p_client_exists,
@@ -86,6 +90,7 @@ def deploy_patches():
             record_event=p_event,
             record_status=p_status,
             mon_exists=p_mon_exists,
+            mon_has_influx=p_mon_has_influx,
             client_exists=p_client_exists,
             mon_infra=p_mon_infra,
             prov_mon=p_prov_mon,
@@ -122,6 +127,20 @@ class TestDeployHappyPath:
         deploy_patches.infra_clients.assert_called_once()
         deploy_patches.prov_clients.assert_called_once()
         deploy_patches.start_clients.assert_called_once()
+
+    def test_deploy_reprovisions_monitoring_when_influx_creds_missing(
+        self, deploy_patches
+    ):
+        # Monitoring VM exists (infra ran) but a prior provision never wrote the
+        # Influx creds — re-provision rather than skip-and-fail.
+        deploy_patches.mon_exists.return_value = True
+        deploy_patches.mon_has_influx.return_value = False
+
+        cmd_prod_continuous_downloader_deploy(_deploy_args())
+
+        deploy_patches.mon_infra.assert_not_called()  # VM already there
+        deploy_patches.prov_mon.assert_called_once()  # but re-provisioned
+        deploy_patches.infra_clients.assert_called_once()
 
     def test_deploy_skips_infra_clients_when_client_state_exists(self, deploy_patches):
         deploy_patches.client_exists.return_value = True
