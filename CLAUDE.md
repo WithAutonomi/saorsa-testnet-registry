@@ -420,7 +420,22 @@ rather than relying on a mutable `host_role` dropdown:
   cpu/mem/disk/net/procstat), the `prometheus` per-node measurement, and all
   application measurements (`download`, `prod_upload`, `prod_canary_*`, …).
 - **`client-metrics`** — client-tier host metrics only (uploader / downloader /
-  canary client VMs, tagged `host_role=CLIENT`).
+  canary client VMs, tagged `host_role=CLIENT`), **plus** the client `ant`
+  service's memory (see below).
+
+On CLIENT-role hosts, `monitoring provision-telegraf` appends two extra inputs
+(from `resources/monitoring/telegraf_metrics_client.conf`, gated on
+`host_role=="CLIENT"` so node configs stay byte-identical and the cgroup input's
+"path missing" error never fires on the node fleet): a `procstat` keyed on
+`system.slice/ant-*.service` (per-process RSS, tagged `metric_source=ant-client`,
+2s interval) and a `cgroup` input reading `memory.current` + `memory.peak`
+(whole-service live + high-water peak, 2s) for the same glob. The single `ant-*`
+glob matches whichever client unit a VM runs (`ant-uploader`, `ant-downloader`,
+`ant-prod-uploader`, `ant-prod-downloader`, `ant-prod-canary-upload`,
+`ant-prod-canary-probe`) and nothing else. This covers testnet and prod
+uploads/downloads/canary; the local-* prod kinds run no systemd unit and are not
+covered. `memory.peak` is the reliable high-water companion when a sub-2s
+terminal spike clips the discretely-sampled procstat RSS.
 
 `monitoring provision` creates both buckets and mints an **org-scoped** Telegraf
 token (read+write on every bucket, so adding a bucket never requires reminting

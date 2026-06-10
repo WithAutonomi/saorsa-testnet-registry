@@ -180,7 +180,9 @@ class TelegrafMetricsProvisioner:
         )
 
     def _build_telegraf_config(self) -> str:
-        return build_telegraf_metrics_config()
+        return build_telegraf_metrics_config(
+            include_client_services=self.host_role == "CLIENT"
+        )
 
     def _build_prometheus_config(self) -> str:
         """Build the prometheus scraping config with per-node tagged blocks.
@@ -230,10 +232,19 @@ def _read_resource(filename: str) -> str:
     return path.read_text()
 
 
-def build_telegraf_metrics_config() -> str:
+def build_telegraf_metrics_config(include_client_services: bool = False) -> str:
     """Read the Telegraf metrics config from the resources directory.
 
     Uses environment variables for connection details, making the config
     portable across hosts. Can also be used standalone with monitoring info --telegraf-config.
+
+    When ``include_client_services`` is True (CLIENT-role hosts), the per-process
+    procstat + whole-service cgroup memory inputs for the client `ant` services
+    (uploader/downloader/canary) are appended. They are gated to CLIENT hosts so
+    node-tier configs stay byte-identical and the cgroup input's "path missing"
+    error never fires on the node fleet.
     """
-    return _read_resource("telegraf_metrics.conf")
+    config = _read_resource("telegraf_metrics.conf")
+    if include_client_services:
+        config += "\n" + _read_resource("telegraf_metrics_client.conf")
+    return config
