@@ -197,20 +197,22 @@ the deployment's **own** ES instance and so **require `elastic.enabled: true`**
 (validation error otherwise); prod kinds have no node-tier ES, so the deploy
 command stands up a **dedicated** small ES instance and tears it down on destroy
 unless `--keep-elastic` / `keep_elastic: true`. `rust_log` sets `RUST_LOG` on the
-client service, **overriding** the `-v` verbosity flag; in a colon-delimited
-spec it must be the **last** token (its value may contain `::`). The client
-forwarder is a separate `telegraf-ant-client-elasticsearch` systemd unit
-(`provisioning/telegraf_client.py`); the ES `telegraf-ant-clients-*` index
-template is created by `elastic provision`. Both options are surfaced by
-`deployments slack-post`.
+client service: the client `ant` reads `RUST_LOG` via its tracing `EnvFilter`
+(full per-module filters like `a::b=debug` work), but only with logging enabled,
+so the service still passes `-v` (installs the subscriber) AND exports `RUST_LOG`
+(which overrides the `-v` level). In a colon-delimited spec `rust_log` must be the
+**last** token (its value may contain `::`). The client forwarder is a separate
+`telegraf-ant-client-elasticsearch` systemd unit (`provisioning/telegraf_client.py`);
+the ES `telegraf-ant-clients-*` index template is created by `elastic provision`.
+Both options are surfaced by `deployments slack-post`.
 
-Separately, the testnet/extension **`nodes.rust_log`** option sets `RUST_LOG`
-(as `Environment=RUST_LOG=`) on **every** node-tier service — WAN nodes, genesis,
-**and** bootstraps — via a `--rust-log` flag on `nodes provision` /
-`nodes provision-genesis` / `bootstraps provision`. The node `--log-level` /
-`--enable-logging` flags are kept (without them logging never initialises), so
-RUST_LOG is additive there (unlike the client side, where it replaces `-v`). This
-lets one deployment run nodes and clients at different RUST_LOG levels.
+Separately, the testnet/extension **`nodes.log_level`** option (`info`/`debug`/
+`trace`) sets ant-node `--log-level` on **every** node-tier service — WAN nodes,
+genesis, **and** bootstraps. **ant-node has NO env-filter / per-module logging**:
+its `--log-level` is bound to the `RUST_LOG` env var and accepts a *single* level
+only (a multi-target `RUST_LOG` makes ant-node exit `INVALIDARGUMENT`), so nodes
+get one global level while only the client side gets the full `rust_log`
+env-filter — letting one deployment run nodes and clients at different levels.
 
 Testnet client address lists live in the dedicated **public-read**
 `saorsa-testnet-addresses` bucket (NOT the tfstate bucket, which keeps Block

@@ -204,9 +204,9 @@ def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -
             )
         blocks.append(_section("*Providers & regions:*\n" + "\n".join(lines)))
 
-    node_rust_log = deploy_args.get("node_rust_log")
-    if node_rust_log:
-        blocks.append(_section(f"*Node RUST_LOG:* `{node_rust_log}`"))
+    node_log_level = deploy_args.get("node_log_level")
+    if node_log_level:
+        blocks.append(_section(f"*Node log level:* `{node_log_level}`"))
 
     return blocks
 

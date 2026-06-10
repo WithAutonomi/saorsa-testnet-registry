@@ -42,7 +42,7 @@ testnet:
     clock_skew: 1            # inject intentional clock skew on N random node VMs (disable timesync + shift clock a few hours); omit/0 to disable
     full_percent: 20         # % of NON-NAT node VMs to make storage-full (pre-fill data volume so nodes reject stores); randomly chosen (not region-spread) so full nodes scatter across the keyspace; always disjoint from nat_percent; omit/0 to disable
     full_headroom_mb: 100    # free space (MiB) to leave when filling; only meaningful with full_percent > 0
-    rust_log: "info,saorsa_core::dht_network_manager=debug"   # set RUST_LOG on EVERY node-tier service (genesis + bootstraps + WAN nodes), as Environment=RUST_LOG=…, IN ADDITION to --log-level/--enable-logging (which stay — drop them and logging never starts); full RUST_LOG syntax incl `::` is fine. Independent of the per-client rust_log below.
+    log_level: info          # single ant-node --log-level for EVERY node-tier service (genesis + bootstraps + WAN nodes): info | debug | trace. ant-node has NO per-module / env-filter logging (its --log-level is bound to RUST_LOG and takes one level only) — distinct from the per-client `rust_log` env-filter below.
     attached_volume_size: 100
     providers:               # vm_count is PER REGION; provider total = vm_count × number-of-regions
       digital_ocean:

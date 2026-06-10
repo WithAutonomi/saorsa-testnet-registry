@@ -33,12 +33,13 @@ if [ "$HEAPTRACK" = "1" ]; then
     echo "Heaptrack enabled: profiles will be written under ${HEAPTRACK_DIR}"
 fi
 
-# RUST_LOG overrides ant's -v verbosity: when set, export it for the ant
-# subprocess and drop -v (otherwise -v would re-set the tracing filter).
+# Client ant emits NO logs unless -v is passed (it gates the tracing subscriber
+# behind -v — "privacy by design"). RUST_LOG, when set, is read by that
+# subscriber's EnvFilter and overrides the -v level. So ALWAYS pass -v, and
+# additionally export RUST_LOG.
 VERBOSITY_FLAG=(-v)
 if [ -n "$RUST_LOG" ]; then
     export RUST_LOG
-    VERBOSITY_FLAG=()
 fi
 
 if [ "$FORWARD_LOGS" = "true" ]; then

@@ -115,7 +115,6 @@ def cmd_provision_nodes(args):
         "clock_skew_ips": clock_skew_ips,
         "full_ips": full_ips,
         "full_headroom_mb": getattr(args, "full_headroom_mb", DEFAULT_FULL_HEADROOM_MB),
-        "rust_log": getattr(args, "rust_log", None),
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel
@@ -184,7 +183,7 @@ def cmd_provision_nodes(args):
                 "full_percent": full_percent_value,
                 "full_headroom_mb": full_headroom_mb_value,
                 "node_binary": node_binary,
-                "node_rust_log": getattr(args, "rust_log", None),
+                "node_log_level": getattr(args, "log_level", None),
             },
         )
     except Exception as e:

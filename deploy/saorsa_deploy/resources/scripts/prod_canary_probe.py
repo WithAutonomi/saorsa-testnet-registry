@@ -517,10 +517,10 @@ async def _probe_one(
     async with sem:
         target = work_dir / f"probe-{canary_id}.bin"
         target.unlink(missing_ok=True)
-        # RUST_LOG (set on the systemd unit, inherited by the ant subprocess)
-        # overrides the verbosity flag: when present drop -v so RUST_LOG drives
-        # the tracing filter instead.
-        verbosity = [] if os.environ.get("RUST_LOG") else ["-v"]
+        # -v installs ant's tracing subscriber (no -v = no logs). RUST_LOG, when
+        # set on the unit (inherited by the subprocess), is read by that
+        # subscriber's EnvFilter and overrides the -v level — so always pass -v.
+        verbosity = ["-v"]
         cmd = [
             ant_path,
             *bootstrap_args,

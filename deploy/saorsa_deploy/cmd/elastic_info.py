@@ -21,6 +21,9 @@ def cmd_elastic_info(args):
     es_pass = state.get("elasticsearch_password", "")
     es_api_key = state.get("elasticsearch_api_key", "")
     es_index = state.get("elasticsearch_index_pattern", "")
+    # Client (uploader/downloader/canary) logs land in a separate index; older
+    # state predating client log forwarding won't carry it.
+    es_client_index = state.get("elasticsearch_client_index_pattern", "")
 
     if not es_url:
         console.print(
@@ -30,12 +33,16 @@ def cmd_elastic_info(args):
         sys.exit(1)
 
     lines = [
-        f"  [bold]URL:[/bold]           {es_url}",
-        f"  [bold]Username:[/bold]      {es_user}",
-        f"  [bold]Password:[/bold]      {es_pass}",
-        f"  [bold]API Key:[/bold]       {es_api_key}",
-        f"  [bold]Index Pattern:[/bold] {es_index}",
+        f"  [bold]URL:[/bold]                  {es_url}",
+        f"  [bold]Username:[/bold]             {es_user}",
+        f"  [bold]Password:[/bold]             {es_pass}",
+        f"  [bold]API Key:[/bold]              {es_api_key}",
+        f"  [bold]Node index pattern:[/bold]   {es_index}",
     ]
+    if es_client_index:
+        lines.append(
+            f"  [bold]Client index pattern:[/bold] {es_client_index}"
+        )
 
     console.print(
         Panel(

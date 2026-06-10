@@ -519,10 +519,10 @@ def main() -> int:
         upload_started_ns = time.time_ns()
         upload_stdout_log = log_dir / f"upload-{canary_id}.stdout"
         upload_stderr_log = log_dir / f"upload-{canary_id}.stderr"
-        # RUST_LOG (set on the systemd unit, inherited by the ant subprocess)
-        # overrides the verbosity flag: when present drop -v so RUST_LOG drives
-        # the tracing filter instead.
-        verbosity = [] if os.environ.get("RUST_LOG") else ["-v"]
+        # -v installs ant's tracing subscriber (no -v = no logs). RUST_LOG, when
+        # set on the unit (inherited by the subprocess), is read by that
+        # subscriber's EnvFilter and overrides the -v level — so always pass -v.
+        verbosity = ["-v"]
         upload_cmd = [
             ant_path,
             *bootstrap_args,

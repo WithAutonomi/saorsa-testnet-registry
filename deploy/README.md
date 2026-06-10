@@ -134,7 +134,7 @@ testnet:
       digital_ocean: { vm_count: 5, regions_list: [ams3, lon1, nyc1], size: s-8vcpu-16gb }
       vultr:         { vm_count: 5, regions: 3, size: vhp-8c-16gb-intel }
       ovh:           { vm_count: 2, regions_list: [GRA9, UK1], size: b3-16 }  # needs OVH env vars (see `nodes infra`)
-    rust_log: "info,saorsa_core::dht_network_manager=debug"  # optional: RUST_LOG on EVERY node-tier service (nodes+genesis+bootstraps), kept alongside --log-level
+    log_level: debug         # optional: single ant-node --log-level for EVERY node-tier service (nodes+genesis+bootstraps); info|debug|trace (ant-node has no per-module logging)
   clients:                              # need ≥1 uploader AND ≥1 downloader
     uploaders:
       - { provider: vultr, region: syd, file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1, forward_logs: true, rust_log: "ant_cli=info,saorsa_core::x=debug" }  # forward_logs needs elastic.enabled; rust_log overrides -v
@@ -173,19 +173,23 @@ instance and therefore **requires `elastic.enabled: true`** (a validation error
 otherwise). The prod kinds have no node-tier ES, so the deploy command stands up a
 small **dedicated** ES instance for the client logs and tears it down on destroy
 unless `--keep-elastic` (manifest `keep_elastic: true`) is given. `rust_log:
-"<spec>"` sets `RUST_LOG` on the client service, which **overrides** the `-v`
-verbosity flag (the service drops `-v` and exports `RUST_LOG` instead). In a
-colon-delimited CLI/spec form `rust_log` must be the **last** token because its
-value may contain `:` (RUST_LOG module paths use `::`).
+"<spec>"` sets `RUST_LOG` on the client service: the client `ant` binary reads
+`RUST_LOG` via its tracing `EnvFilter` (so a full per-module filter like
+`a::b=debug` works), but only once logging is enabled — the service therefore
+still passes `-v` (which installs the subscriber) and exports `RUST_LOG`
+alongside it, where `RUST_LOG` overrides the `-v` level. In a colon-delimited
+CLI/spec form `rust_log` must be the **last** token because its value may contain
+`:` (RUST_LOG module paths use `::`).
 
-**Node-tier RUST_LOG:** the testnet/extension `nodes` block accepts a **separate**
-`rust_log` applied to **every** node-tier service — the WAN nodes, the genesis
-node, *and* the bootstraps — as `Environment=RUST_LOG=<spec>` on each systemd unit.
-Unlike the client side, the node `--log-level`/`--enable-logging` flags are kept
-(drop them and logging never initialises), and a dedicated `--rust-log` flag (on
-`nodes provision`, `nodes provision-genesis`, `bootstraps provision`) carries the
-full RUST_LOG syntax including `::`. This lets a single deployment run nodes and
-clients at different RUST_LOG levels.
+**Node-tier log level:** the testnet/extension `nodes` block accepts a
+**`log_level`** (`info`/`debug`/`trace`) applied to **every** node-tier service —
+the WAN nodes, the genesis node, *and* the bootstraps — as ant-node `--log-level`.
+Unlike the client `ant`, **ant-node has no env-filter / per-module logging**: its
+`--log-level` is bound to the `RUST_LOG` env var and accepts a *single* level
+only (setting a multi-target `RUST_LOG` makes ant-node exit `INVALIDARGUMENT`).
+So nodes get one global level (`debug` captures everything, including the modules
+you might want), while the client side keeps the full `rust_log` env-filter —
+letting a deployment run nodes and clients at different levels.
 
 **Reuse:** `extends:` (deep-merge a base; lists replace wholesale), `--set
 dotted.key=value` (override one value, e.g. `--set testnet.nodes.nat_percent=0`),

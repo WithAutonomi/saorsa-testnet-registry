@@ -70,15 +70,8 @@ def _build_exec_start(
     return " ".join(parts)
 
 
-def _build_unit_file(
-    service_name: str, exec_start: str, rust_log: str | None = None
-) -> str:
-    """Build the systemd unit file content for a bootstrap node.
-
-    ``rust_log`` (when set) adds ``Environment=RUST_LOG=`` IN ADDITION to the
-    ant-node ``--log-level``/``--enable-logging`` flags, which must stay.
-    """
-    rust_log_line = f"\nEnvironment=RUST_LOG={rust_log}" if rust_log else ""
+def _build_unit_file(service_name: str, exec_start: str) -> str:
+    """Build the systemd unit file content for a bootstrap node."""
     return f"""\
 [Unit]
 Description=Ant Bootstrap Node ({service_name})
@@ -89,7 +82,7 @@ Wants=network-online.target
 Type=simple
 ExecStart={exec_start}
 Restart=on-success
-RestartSec=5{rust_log_line}
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -118,7 +111,6 @@ class AntBootstrapNodeProvisioner:
         upgrade_channel: str | None = None,
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         testnet_name: str | None = None,
-        rust_log: str | None = None,
     ):
         self.ip = ip
         self.bootstrap_index = bootstrap_index
@@ -133,7 +125,6 @@ class AntBootstrapNodeProvisioner:
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
         self.testnet_name = testnet_name
-        self.rust_log = rust_log
 
     @property
     def hostname(self) -> str | None:
@@ -165,9 +156,7 @@ class AntBootstrapNodeProvisioner:
             upgrade_channel=self.upgrade_channel,
             rewards_address=self.rewards_address,
         )
-        unit_content = _build_unit_file(
-            self.service_name, exec_start, rust_log=self.rust_log
-        )
+        unit_content = _build_unit_file(self.service_name, exec_start)
         unit_file_path = f"/etc/systemd/system/{self.service_name}.service"
 
         self.console.print(f"Connecting to {self.ip} as root...")

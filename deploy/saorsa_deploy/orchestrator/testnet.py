@@ -129,7 +129,7 @@ def _clients_destroy_argv(
 
 
 def _node_provision_common(
-    binary, mode: bool, upgrade_channel, ssh_key, rust_log=None
+    binary, mode: bool, upgrade_channel, ssh_key, log_level=None
 ) -> list[str]:
     """Flags shared by genesis / bootstraps / nodes provision."""
     argv = list(node_binary_flags(binary))
@@ -137,10 +137,10 @@ def _node_provision_common(
         argv.append("--testnet")
     if upgrade_channel:
         argv += ["--upgrade-channel", upgrade_channel]
-    # RUST_LOG applies uniformly to every node-tier service (genesis, bootstraps,
-    # and regular nodes), so it rides the shared common flags.
-    if rust_log:
-        argv += ["--rust-log", rust_log]
+    # A single ant-node --log-level applies uniformly to every node-tier service
+    # (genesis, bootstraps, regular nodes), so it rides the shared common flags.
+    if log_level:
+        argv += ["--log-level", log_level]
     argv += ["--ssh-key-path", ssh_key]
     return argv
 
@@ -180,7 +180,7 @@ def _provision_and_start_steps(
         )
 
     common = _node_provision_common(
-        binaries.ant_node, mode, upgrade_channel, ssh_key, nodes.rust_log
+        binaries.ant_node, mode, upgrade_channel, ssh_key, nodes.log_level
     )
 
     if include_genesis:

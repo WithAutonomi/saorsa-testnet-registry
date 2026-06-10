@@ -271,16 +271,6 @@ def main(argv=None):
         help="Upgrade channel for ant-node (beta or stable)",
     )
     bootstraps_provision_parser.add_argument(
-        "--rust-log",
-        type=str,
-        default=None,
-        metavar="SPEC",
-        help="Set RUST_LOG on the bootstrap node services (e.g. "
-        "'info,saorsa_core::dht_network_manager=debug'). Applied as "
-        "Environment=RUST_LOG=<spec> on the systemd unit, IN ADDITION to "
-        "--log-level/--enable-logging (which stay).",
-    )
-    bootstraps_provision_parser.add_argument(
         "--rewards-address",
         type=str,
         default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
@@ -2306,17 +2296,6 @@ def main(argv=None):
         help="Logging level the nodes will run with",
     )
     nodes_provision_parser.add_argument(
-        "--rust-log",
-        type=str,
-        default=None,
-        metavar="SPEC",
-        help="Set RUST_LOG on the node services (e.g. "
-        "'info,saorsa_core::dht_network_manager=debug'). Applied as "
-        "Environment=RUST_LOG=<spec> on each systemd unit, IN ADDITION to "
-        "--log-level/--enable-logging (which stay — without them logging is "
-        "never initialised).",
-    )
-    nodes_provision_parser.add_argument(
         "--name",
         type=str,
         required=True,
@@ -2445,16 +2424,6 @@ def main(argv=None):
         "--log-level",
         type=str,
         help="Logging level the node will run with",
-    )
-    nodes_provision_genesis_parser.add_argument(
-        "--rust-log",
-        type=str,
-        default=None,
-        metavar="SPEC",
-        help="Set RUST_LOG on the genesis node service (e.g. "
-        "'info,saorsa_core::dht_network_manager=debug'). Applied as "
-        "Environment=RUST_LOG=<spec> on the systemd unit, IN ADDITION to "
-        "--log-level/--enable-logging (which stay).",
     )
     nodes_provision_genesis_parser.add_argument(
         "--name",

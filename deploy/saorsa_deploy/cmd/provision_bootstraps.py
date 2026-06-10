@@ -78,7 +78,6 @@ def cmd_provision_bootstraps(args):
             "console": console,
             "rewards_address": args.rewards_address,
             "testnet_name": args.name,
-            "rust_log": getattr(args, "rust_log", None),
         }
         if args.upgrade_channel:
             kwargs["upgrade_channel"] = args.upgrade_channel

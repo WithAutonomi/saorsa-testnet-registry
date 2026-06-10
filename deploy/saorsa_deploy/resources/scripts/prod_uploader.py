@@ -264,10 +264,11 @@ def _run_ant(
     stderr is also kept in memory so the failure branch can forward a tail to
     the journal without re-reading from disk.
     """
-    # RUST_LOG (set on the systemd unit) overrides the verbosity flag: when
-    # present we drop -v and let RUST_LOG drive the tracing filter, otherwise
-    # -v would re-set it. RUST_LOG itself flows through `env` from os.environ.
-    verbosity = [] if os.environ.get("RUST_LOG") else [_verbosity_flag(log_level)]
+    # The verbosity flag is what installs ant's tracing subscriber (no -v = no
+    # logs). RUST_LOG (when set on the unit, inherited via `env`) is read by
+    # that subscriber's EnvFilter and overrides the -v level — so ALWAYS pass
+    # the verbosity flag.
+    verbosity = [_verbosity_flag(log_level)]
     cmd = [
         ant_path,
         *bootstrap_args,

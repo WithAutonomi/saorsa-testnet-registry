@@ -145,11 +145,12 @@ class Nodes(_Base):
     full_percent: Optional[int] = None  # nodes provision --full-percent (% of non-NAT VMs)
     full_headroom_mb: Optional[int] = None  # nodes provision --full-headroom-mb
     attached_volume_size: Optional[int] = None
-    # RUST_LOG to set on the node systemd services (nodes + genesis + bootstraps).
-    # Applied as `Environment=RUST_LOG=<value>` IN ADDITION to ant-node's own
-    # `--log-level`/`--enable-logging` flags (which stay — without them logging is
-    # never initialised). Independent of the client-side `rust_log`.
-    rust_log: Optional[str] = None  # nodes/genesis/bootstraps provision --rust-log
+    # Single log level for the node systemd services (nodes + genesis +
+    # bootstraps), passed as ant-node `--log-level`. ant-node has NO env-filter
+    # / per-module logging — its `--log-level` is bound to the RUST_LOG env var
+    # and accepts ONE level only — so this is a single level (info/debug/trace),
+    # distinct from the client-side `rust_log` (a full RUST_LOG env-filter).
+    log_level: Optional[LogLevel] = None  # nodes/genesis/bootstraps provision --log-level
     providers: dict[str, ProviderNodes]
 
     @model_validator(mode="after")

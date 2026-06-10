@@ -210,10 +210,10 @@ def _run_ant(
     pumping threads, files written line-by-line so a slow run is observable
     via ``tail -f`` and so the diagnostic survives a hard kill.
     """
-    # RUST_LOG (set on the systemd unit, inherited by the ant subprocess)
-    # overrides the verbosity flag: when present we drop -v so RUST_LOG drives
-    # the tracing filter instead.
-    verbosity = [] if os.environ.get("RUST_LOG") else ["-v"]
+    # -v installs ant's tracing subscriber (no -v = no logs). RUST_LOG, when
+    # set on the unit (inherited by the subprocess), is read by that
+    # subscriber's EnvFilter and overrides the -v level — so always pass -v.
+    verbosity = ["-v"]
     cmd = [
         ant_path,
         *bootstrap_args,

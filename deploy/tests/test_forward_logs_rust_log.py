@@ -131,7 +131,7 @@ class TestOrchestratorEmission:
 
         nodes = Nodes(
             per_vm=15,
-            rust_log="info,saorsa_core::dht_network_manager=debug",
+            log_level="debug",
             providers={"digital_ocean": {"vm_count": 1}},
         )
         u = Uploader(
@@ -159,13 +159,14 @@ class TestOrchestratorEmission:
         clients_infra = next(a for a in argvs if "clients infra" in a)
         assert f"rust_log={RUST_LOG_WITH_COLONS}" in clients_infra
         assert "forward_logs=true" in clients_infra
-        # node rust_log on genesis + nodes provision
+        # node log_level -> --log-level on genesis + nodes provision (NOT rust-log)
         node_steps = [
             a for a in argvs if "nodes provision" in a or "provision-genesis" in a
         ]
         assert node_steps
         for step in node_steps:
-            assert "--rust-log info,saorsa_core::dht_network_manager=debug" in step
+            assert "--log-level debug" in step
+            assert "--rust-log" not in step
 
     def test_prod_canary_emits_flags(self):
         from saorsa_deploy.orchestrator.prod import (
@@ -195,36 +196,37 @@ class TestOrchestratorEmission:
 
 
 # --------------------------------------------------------------------------- #
-# node systemd unit RUST_LOG
+# node systemd units must NOT set RUST_LOG (ant-node binds --log-level to it and
+# rejects a multi-target value); node level rides ant-node --log-level instead.
 # --------------------------------------------------------------------------- #
-class TestNodeUnitRustLog:
-    def test_node_unit_sets_rust_log_and_keeps_exec(self):
-        from saorsa_deploy.provisioning.node import _build_node_unit_file
-
-        unit = _build_node_unit_file(
-            "ant-node-1", "EXE --enable-logging --log-level info", rust_log="debug"
-        )
-        assert "Environment=RUST_LOG=debug" in unit
-        assert "ExecStart=EXE --enable-logging --log-level info" in unit
-
-    def test_node_unit_no_rust_log_no_env(self):
-        from saorsa_deploy.provisioning.node import _build_node_unit_file
-
-        unit = _build_node_unit_file("ant-node-1", "EXE")
-        assert "Environment=" not in unit
-
-    def test_genesis_and_bootstrap_units_set_rust_log(self):
+class TestNodeUnitsNoRustLog:
+    def test_node_genesis_bootstrap_units_have_no_environment(self):
         from saorsa_deploy.provisioning.bootstrap import (
             _build_unit_file as boot_unit,
         )
         from saorsa_deploy.provisioning.genesis import (
             _build_unit_file as gen_unit,
         )
+        from saorsa_deploy.provisioning.node import _build_node_unit_file
 
-        assert "Environment=RUST_LOG=debug" in gen_unit("EXE", rust_log="debug")
-        assert "Environment=RUST_LOG=debug" in boot_unit(
-            "ant-bootstrap-2", "EXE", rust_log="debug"
+        for unit in (
+            _build_node_unit_file("ant-node-1", "EXE"),
+            gen_unit("EXE"),
+            boot_unit("ant-bootstrap-2", "EXE"),
+        ):
+            assert "Environment=" not in unit
+            assert "RUST_LOG" not in unit
+
+    def test_node_exec_start_carries_log_level(self):
+        # The single node log level is a --log-level flag on the ant-node
+        # command line (built by _build_node_exec_start), not a RUST_LOG env.
+        from saorsa_deploy.provisioning.node import _build_node_exec_start
+
+        exec_start = _build_node_exec_start(
+            bootstrap_peers=["1.2.3.4:10000"], root_dir="/d", log_level="debug"
         )
+        assert "--enable-logging" in exec_start
+        assert "--log-level debug" in exec_start
 
 
 # --------------------------------------------------------------------------- #
@@ -325,14 +327,12 @@ class TestSlackMarkers:
         assert "forward-logs" in text
         assert "RUST_LOG=`debug`" in text
 
-    def test_testnet_block_renders_node_rust_log(self):
+    def test_testnet_block_renders_node_log_level(self):
         from saorsa_deploy.cmd.slack_post import _testnet_blocks
 
-        blocks = _testnet_blocks(
-            {"node_rust_log": "info,saorsa_core::x=debug"}, {}, None
-        )
+        blocks = _testnet_blocks({"node_log_level": "debug"}, {}, None)
         joined = "\n".join(
             b.get("text", {}).get("text", "") for b in blocks if "text" in b
         )
-        assert "Node RUST_LOG" in joined
-        assert "info,saorsa_core::x=debug" in joined
+        assert "Node log level" in joined
+        assert "debug" in joined
