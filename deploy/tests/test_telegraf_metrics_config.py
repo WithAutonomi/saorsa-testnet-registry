@@ -5,6 +5,7 @@ while node-tier configs stay byte-identical (no regression / no node-fleet noise
 """
 
 from saorsa_deploy.provisioning.telegraf_metrics import (
+    TelegrafMetricsProvisioner,
     build_telegraf_metrics_config,
 )
 
@@ -46,3 +47,22 @@ class TestClientConfig:
         # Node procstat stanzas still present on a client host (they just match
         # nothing there).
         assert 'cgroup = "system.slice/ant-node-*.service"' in client
+
+
+class TestUnitFile:
+    def _provisioner(self):
+        return TelegrafMetricsProvisioner(
+            host_ips=["198.51.100.1"],
+            ssh_key_path="/dev/null",
+            influxdb_url="http://localhost:8086",
+            influxdb_token="token",
+            influxdb_org="org",
+            influxdb_bucket="testnet-metrics",
+        )
+
+    def test_unit_grants_dac_read_search_for_num_fds(self):
+        # telegraf runs as User=telegraf but ant services run as root; without
+        # CAP_DAC_READ_SEARCH it cannot read /proc/<pid>/fd, so procstat omits
+        # num_fds.
+        unit = self._provisioner()._build_unit_file()
+        assert "AmbientCapabilities=CAP_DAC_READ_SEARCH" in unit

@@ -7,6 +7,7 @@ After=network.target
 Type=notify
 EnvironmentFile=-{{TELEGRAF_ENV_PATH}}
 User=telegraf
+AmbientCapabilities=CAP_DAC_READ_SEARCH
 ExecStart=/usr/bin/telegraf --config-directory {{TELEGRAF_CONFIG_DIR}}
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
