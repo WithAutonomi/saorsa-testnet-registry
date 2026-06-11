@@ -21,6 +21,16 @@ variable "grafana_droplet_size" {
   default = "s-1vcpu-2gb"
 }
 
+variable "enable_grafana" {
+  type        = bool
+  default     = true
+  description = <<EOT
+Whether to create the separate Grafana VM. Defaults to true so direct
+terraform usage is unchanged; saorsa-deploy passes an explicit value (off by
+default — opt in with `monitoring infra --grafana`).
+EOT
+}
+
 variable "volume_size" {
   type    = number
   default = 50

@@ -3,7 +3,7 @@ output "monitoring_ip" {
 }
 
 output "grafana_ip" {
-  value = digitalocean_droplet.grafana.ipv4_address
+  value = var.enable_grafana ? digitalocean_droplet.grafana[0].ipv4_address : ""
 }
 
 output "monitoring_droplet_id" {
@@ -11,7 +11,7 @@ output "monitoring_droplet_id" {
 }
 
 output "grafana_droplet_id" {
-  value = digitalocean_droplet.grafana.id
+  value = var.enable_grafana ? digitalocean_droplet.grafana[0].id : ""
 }
 
 output "monitoring_volume_id" {

@@ -6,8 +6,10 @@ data "ovh_cloud_project_flavors" "influxdb" {
   name_filter  = var.flavor_name
 }
 
-# Look up the (small) Grafana flavor by name in the target region.
+# Look up the (small) Grafana flavor by name in the target region. Only read
+# when the optional Grafana VM is enabled.
 data "ovh_cloud_project_flavors" "grafana" {
+  count        = var.enable_grafana ? 1 : 0
   service_name = var.service_name
   region       = var.region
   name_filter  = var.grafana_flavor_name
@@ -23,7 +25,7 @@ data "ovh_cloud_project_images" "linux" {
 
 locals {
   influxdb_flavor_id = one(data.ovh_cloud_project_flavors.influxdb.flavors).id
-  grafana_flavor_id  = one(data.ovh_cloud_project_flavors.grafana.flavors).id
+  grafana_flavor_id  = var.enable_grafana ? one(data.ovh_cloud_project_flavors.grafana[0].flavors).id : ""
 
   ubuntu_images = [
     for img in data.ovh_cloud_project_images.linux.images :
@@ -101,7 +103,9 @@ resource "openstack_compute_volume_attach_v2" "monitoring_storage_attach" {
 }
 
 # Grafana VM — no data volume; queries InfluxDB over the public :8086 endpoint.
+# Optional: created only when enable_grafana is set (off by default via the CLI).
 resource "ovh_cloud_project_instance" "grafana" {
+  count          = var.enable_grafana ? 1 : 0
   service_name   = var.service_name
   region         = var.region
   billing_period = "hourly"
@@ -123,4 +127,11 @@ resource "ovh_cloud_project_instance" "grafana" {
   network {
     public = true
   }
+}
+
+# Existing 2-VM stacks created before Grafana was count-gated keep their instance
+# at index [0] instead of being destroyed and recreated.
+moved {
+  from = ovh_cloud_project_instance.grafana
+  to   = ovh_cloud_project_instance.grafana[0]
 }

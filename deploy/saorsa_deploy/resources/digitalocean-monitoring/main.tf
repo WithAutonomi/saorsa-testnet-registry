@@ -8,12 +8,21 @@ resource "digitalocean_droplet" "monitoring" {
 
 # Grafana runs on its own (small) VM so its panel rendering doesn't compete
 # with InfluxDB for CPU/RAM. No data volume — it queries InfluxDB over :8086.
+# Optional: created only when enable_grafana is set (off by default via the CLI).
 resource "digitalocean_droplet" "grafana" {
+  count    = var.enable_grafana ? 1 : 0
   name     = "${var.name}-ant-grafana-${var.region}"
   region   = var.region
   size     = var.grafana_droplet_size
   image    = "ubuntu-24-04-x64"
   ssh_keys = var.ssh_key_ids
+}
+
+# Existing 2-VM stacks created before Grafana was count-gated keep their droplet
+# at index [0] instead of being destroyed and recreated.
+moved {
+  from = digitalocean_droplet.grafana
+  to   = digitalocean_droplet.grafana[0]
 }
 
 resource "digitalocean_volume" "monitoring_storage" {
@@ -66,10 +75,16 @@ resource "digitalocean_firewall" "monitoring" {
   }
 }
 
-resource "digitalocean_firewall" "grafana" {
-  name = "${lower(var.name)}-ant-grafana-fw-${var.region}"
+moved {
+  from = digitalocean_firewall.grafana
+  to   = digitalocean_firewall.grafana[0]
+}
 
-  droplet_ids = [digitalocean_droplet.grafana.id]
+resource "digitalocean_firewall" "grafana" {
+  count = var.enable_grafana ? 1 : 0
+  name  = "${lower(var.name)}-ant-grafana-fw-${var.region}"
+
+  droplet_ids = [digitalocean_droplet.grafana[0].id]
 
   # SSH
   inbound_rule {

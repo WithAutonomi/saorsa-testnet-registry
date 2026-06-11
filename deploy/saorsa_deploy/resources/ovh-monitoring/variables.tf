@@ -28,6 +28,16 @@ modest flavor (default d2-4: 2 vCPU / 4 GB) is plenty.
 EOT
 }
 
+variable "enable_grafana" {
+  type        = bool
+  default     = true
+  description = <<EOT
+Whether to create the separate Grafana VM. Defaults to true so direct
+terraform usage is unchanged; saorsa-deploy passes an explicit value (off by
+default — opt in with `monitoring infra --grafana`).
+EOT
+}
+
 variable "attached_volume_size" {
   type        = number
   default     = 50

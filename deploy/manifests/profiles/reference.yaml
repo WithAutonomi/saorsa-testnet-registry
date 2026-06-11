@@ -87,5 +87,9 @@ testnet:
     drop_log_levels: DEBUG,TRACE # node forwarder drops these levels before shipping to ES. OMIT to auto-derive from nodes.log_level (trace→keep all, debug→drop only TRACE, info→DEBUG,TRACE). Set explicitly to override — e.g. "" force-keeps everything; "DEBUG,TRACE" keeps verbose logs on disk but out of ES.
     buffer_limit: 2000000        # telegraf output buffer (lines); applied to BOTH the node forwarder and (via clients provision --forward-buffer-limit) the client forwarder — bump for high-volume TRACE runs
 
-  monitoring:                # InfluxDB + Grafana stack. ON by default — set
+  monitoring:                # InfluxDB metrics stack. ON by default — set
     enabled: true            # `enabled: false` to opt out.
+    grafana: false           # Separate Grafana VM for dashboards. OFF by
+                             # default (InfluxDB only); set `true` to also
+                             # stand up a Grafana VM. Data stays queryable via
+                             # InfluxDB/Flux regardless.

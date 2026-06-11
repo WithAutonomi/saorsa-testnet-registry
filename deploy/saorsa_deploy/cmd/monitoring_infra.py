@@ -35,6 +35,9 @@ def cmd_monitoring_infra(args):
     grafana_size = (
         getattr(args, "grafana_size", None) or default_grafana_size(provider)
     )
+    # Grafana is opt-in (off by default). The Terraform module still receives a
+    # grafana size; it's simply ignored when enable_grafana is false.
+    enable_grafana = bool(getattr(args, "grafana", False))
     volume_type = getattr(args, "volume_type", None) or "high-speed"
 
     resources_dir = get_resources_dir()
@@ -90,6 +93,7 @@ def cmd_monitoring_infra(args):
             "grafana_flavor_name": grafana_size,
             "attached_volume_size": str(volume_size),
             "volume_type": volume_type,
+            "enable_grafana": "true" if enable_grafana else "false",
         }
     else:
         variables = {
@@ -98,6 +102,7 @@ def cmd_monitoring_infra(args):
             "volume_size": str(volume_size),
             "droplet_size": droplet_size,
             "grafana_droplet_size": grafana_size,
+            "enable_grafana": "true" if enable_grafana else "false",
         }
 
     config = TerraformRunConfig(
@@ -109,9 +114,10 @@ def cmd_monitoring_infra(args):
         variables=variables,
     )
 
+    grafana_desc = grafana_size if enable_grafana else "disabled"
     console.print(
         f"[bold]Creating monitoring VMs for '{args.name}' on {provider}/{region} "
-        f"(InfluxDB: {droplet_size}, Grafana: {grafana_size}, "
+        f"(InfluxDB: {droplet_size}, Grafana: {grafana_desc}, "
         f"volume: {volume_size}GB)...[/bold]"
     )
     console.print()
@@ -124,10 +130,11 @@ def cmd_monitoring_infra(args):
         sys.exit(1)
 
     monitoring_ip = results[0].outputs.get("monitoring_ip", "")
-    grafana_ip = results[0].outputs.get("grafana_ip", "")
+    grafana_ip = results[0].outputs.get("grafana_ip", "") if enable_grafana else ""
+    grafana_report = grafana_ip if enable_grafana else "disabled"
     console.print(
         f"[bold green]Monitoring VMs created — InfluxDB: {monitoring_ip}, "
-        f"Grafana: {grafana_ip}[/bold green]"
+        f"Grafana: {grafana_report}[/bold green]"
     )
 
     try:
@@ -137,6 +144,7 @@ def cmd_monitoring_infra(args):
             vm_ip=monitoring_ip,
             grafana_ip=grafana_ip,
             provider=provider,
+            grafana_enabled=enable_grafana,
         )
         console.print("[dim]Monitoring state saved to S3.[/dim]")
     except Exception as e:

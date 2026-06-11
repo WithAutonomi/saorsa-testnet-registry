@@ -46,12 +46,15 @@ class MonitoringProvisioner:
     InfluxDB ingest/query for CPU and RAM — the cause of the RSS panels failing
     to render when both shared one small VM. Pass the same IP for both to keep
     the legacy co-located layout.
+
+    ``grafana_ip`` may be ``None`` to provision InfluxDB only (no Grafana VM,
+    no dashboards) — the default since Grafana became opt-in.
     """
 
     def __init__(
         self,
         influxdb_ip: str,
-        grafana_ip: str,
+        grafana_ip: str | None,
         ssh_key_path: str,
         grafana_password: str,
         retention_days: int = 0,
@@ -88,20 +91,26 @@ class MonitoringProvisioner:
         )
         token = self._retrieve_telegraf_token()
 
-        # Phase 2: Grafana on its own VM, pointed at the InfluxDB VM.
-        influxdb_url = f"http://{self.influxdb_ip}:8086"
-        self._run_session(
-            self.grafana_ip,
-            "Grafana",
-            [
-                self._add_preamble_ops,
-                self._add_install_grafana_ops,
-                lambda state: self._add_configure_grafana_ops(
-                    state, influxdb_url=influxdb_url, influx_token=token
-                ),
-                self._add_grafana_start_ops,
-            ],
-        )
+        # Phase 2: Grafana on its own VM, pointed at the InfluxDB VM. Skipped
+        # entirely when Grafana is disabled (grafana_ip is None) — InfluxDB-only.
+        if self.grafana_ip:
+            influxdb_url = f"http://{self.influxdb_ip}:8086"
+            self._run_session(
+                self.grafana_ip,
+                "Grafana",
+                [
+                    self._add_preamble_ops,
+                    self._add_install_grafana_ops,
+                    lambda state: self._add_configure_grafana_ops(
+                        state, influxdb_url=influxdb_url, influx_token=token
+                    ),
+                    self._add_grafana_start_ops,
+                ],
+            )
+        else:
+            self.console.print(
+                "[dim]Grafana disabled — provisioning InfluxDB only.[/dim]"
+            )
 
         return self._connection_details(token)
 
@@ -418,14 +427,16 @@ class MonitoringProvisioner:
         return result.stdout.strip()
 
     def _connection_details(self, token: str) -> dict:
+        # Keep grafana_* keys present (empty when disabled) so downstream
+        # consumers can use plain dict access without KeyErrors.
         return {
             "influxdb_url": f"http://{self.influxdb_ip}:8086",
             "influxdb_token": token,
             "influxdb_org": INFLUXDB_ORG,
             "influxdb_bucket": INFLUXDB_BUCKET,
             "influxdb_client_bucket": INFLUXDB_CLIENT_BUCKET,
-            "grafana_url": f"http://{self.grafana_ip}:3000",
-            "grafana_password": self.grafana_password,
+            "grafana_url": f"http://{self.grafana_ip}:3000" if self.grafana_ip else "",
+            "grafana_password": self.grafana_password if self.grafana_ip else "",
         }
 
     def _read_resource(self, filename: str) -> str:
