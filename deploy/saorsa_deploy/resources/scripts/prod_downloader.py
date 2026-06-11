@@ -35,6 +35,10 @@ Optional env:
     INFLUX_TOKEN         InfluxDB v2 token. If unset, metrics are skipped.
     INFLUX_ORG           InfluxDB org (default ant).
     INFLUX_BUCKET        InfluxDB bucket (default testnet-metrics).
+    MEMORY_PROFILING     `true` wraps each ant invocation with heaptrack
+                         (default `false`). Profiles → HEAPTRACK_DIR.
+    HEAPTRACK_DIR        Output dir for heaptrack profiles (default
+                         /var/log/ant-heaptrack); only used when MEMORY_PROFILING.
 """
 from __future__ import annotations
 
@@ -194,6 +198,20 @@ def _tail_lines(text: str, n: int) -> str:
     return out
 
 
+def _maybe_wrap_heaptrack(
+    cmd: list[str], *, memory_profiling: bool, output_base: str | None
+) -> list[str]:
+    """Prepend a ``heaptrack -o <base>`` wrapper when profiling is enabled.
+
+    heaptrack writes ``<base>.<pid>.zst`` incrementally, so even an OOM/SIGKILL
+    leaves an analysable trace. heaptrack's own diagnostics go to stderr, so the
+    ``ant -v`` JSON/log streams this script tees are unaffected. No-op when off.
+    """
+    if not memory_profiling or not output_base:
+        return cmd
+    return ["heaptrack", "-o", output_base, *cmd]
+
+
 def _run_ant(
     *,
     ant_path: str,
@@ -203,6 +221,8 @@ def _run_ant(
     output_path: Path,
     stderr_log_path: Path,
     stdout_log_path: Path,
+    memory_profiling: bool = False,
+    heaptrack_output_base: str | None = None,
 ) -> tuple[int, str, str]:
     """Run ant and tee its streams to plain-text log files in real time.
 
@@ -222,6 +242,11 @@ def _run_ant(
         "file", "download", address,
         "-o", str(output_path),
     ]
+    cmd = _maybe_wrap_heaptrack(
+        cmd,
+        memory_profiling=memory_profiling,
+        output_base=heaptrack_output_base,
+    )
 
     stderr_log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -307,10 +332,14 @@ def main() -> int:
     influx_token = os.environ.get("INFLUX_TOKEN", "")
     influx_org = os.environ.get("INFLUX_ORG", "ant")
     influx_bucket = os.environ.get("INFLUX_BUCKET", "testnet-metrics")
+    memory_profiling = os.environ.get("MEMORY_PROFILING", "false").lower() == "true"
+    heaptrack_dir = Path(os.environ.get("HEAPTRACK_DIR", "/var/log/ant-heaptrack"))
 
     download_dir.mkdir(parents=True, exist_ok=True)
     log_dir = Path(LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
+    if memory_profiling:
+        heaptrack_dir.mkdir(parents=True, exist_ok=True)
     host = socket.gethostname()
 
     addresses = _read_addresses(addresses_file)
@@ -341,6 +370,11 @@ def main() -> int:
             stderr_log_path = log_dir / f"{log_basename}.stderr"
             stdout_log_path = log_dir / f"{log_basename}.stdout"
             output_path = download_dir / address
+            heaptrack_output_base = (
+                str(heaptrack_dir / f"download-{op_counter:06d}-{log_basename}")
+                if memory_profiling
+                else None
+            )
 
             print(f"[{idx}/{len(addresses)}] cycle={cycle} {address}", flush=True)
             start_ns = time.time_ns()
@@ -353,6 +387,8 @@ def main() -> int:
                     output_path=output_path,
                     stderr_log_path=stderr_log_path,
                     stdout_log_path=stdout_log_path,
+                    memory_profiling=memory_profiling,
+                    heaptrack_output_base=heaptrack_output_base,
                 )
             except Exception as e:  # noqa: BLE001 — keep the loop alive
                 end_ns = time.time_ns()

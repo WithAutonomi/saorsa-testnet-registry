@@ -27,6 +27,8 @@ testnet:
       branch: my-feature-branch
       repo_owner: WithAutonomi
       validation: "expected-string-baked-into-the-binary"   # optional --validation-string build sanity check
+      debug: true            # optional (branch form only): build WITHOUT --release — a larger,
+                             # slower binary with full debug info, for memory profiling. Default off.
     ant:                     # release form (prebuilt GitHub release); required when `clients` is present
       version: 0.2.5-rc.4
 

@@ -24,6 +24,7 @@ prod_uploaders:
     branch: feat-deferred_retry_for_merkle_uploads
     repo_owner: jacderida                  # branch builds only; default maidsafe
     # validation: "string-baked-into-binary"   # optional --validation-string sanity check (branch builds only)
+    # debug: true                          # optional (branch builds only): build WITHOUT --release — larger/slower binary with full debug info, for memory profiling. Default off.
     # version: 0.2.5                        # release form — mutually exclusive with branch/repo_owner
 
   secret_key_env: ARBITRUM_ONE_SECRET_KEY  # env var NAME only (default ARBITRUM_ONE_SECRET_KEY); up fails fast if unset
@@ -41,6 +42,7 @@ prod_uploaders:
       log_level: debug                     # optional: info (default → -v) | debug (-vv) | trace (-vvv)
       bootstrap_cache: true                # optional (default true): true → ant WITHOUT --bootstrap + provisioned bootstrap_peers.toml; false → legacy --bootstrap
       forward_logs: true                   # optional (default false): forward this VM's ant stdout+stderr to a dedicated Elasticsearch instance stood up by this deploy (index telegraf-ant-clients-<name>)
+      memory_profiling: true               # optional (default false): wrap this VM's ant invocation with heaptrack (installs the heaptrack apt package); profiles → /var/log/ant-heaptrack/ on the VM (scp off before destroy)
       rust_log: "ant_cli=info,saorsa_core::dht_network_manager=debug"   # optional: set RUST_LOG on this uploader's service, OVERRIDING the verbosity flag; full RUST_LOG syntax incl `::` allowed
       # clock_skew: 2h                      # optional, TESTING ONLY: disable time sync + shift this VM's clock by a signed Go duration (e.g. 2h, -2h, 30m)
     # Second entry: only the required fields → all optionals fall back to defaults (info-level, ant's default payment, cache on).

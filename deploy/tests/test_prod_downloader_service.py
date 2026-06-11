@@ -158,3 +158,31 @@ class TestResolveBootstrapArgs:
         monkeypatch.delenv("BOOTSTRAP_ARGS", raising=False)
         with pytest.raises(SystemExit):
             service._resolve_bootstrap_args()
+
+
+class TestHeaptrackWrap:
+    def test_wraps_when_enabled(self, service):
+        cmd = ["/root/.local/bin/ant", "file", "download", "addr"]
+        out = service._maybe_wrap_heaptrack(
+            cmd, memory_profiling=True,
+            output_base="/var/log/ant-heaptrack/download-000001-0001-addr",
+        )
+        assert out[:3] == [
+            "heaptrack", "-o",
+            "/var/log/ant-heaptrack/download-000001-0001-addr",
+        ]
+        assert out[3:] == cmd
+
+    def test_noop_when_disabled(self, service):
+        cmd = ["/root/.local/bin/ant", "file", "download", "addr"]
+        out = service._maybe_wrap_heaptrack(
+            cmd, memory_profiling=False, output_base="/var/log/ant-heaptrack/x"
+        )
+        assert out == cmd
+
+    def test_noop_when_no_output_base(self, service):
+        cmd = ["/root/.local/bin/ant", "file", "download", "addr"]
+        out = service._maybe_wrap_heaptrack(
+            cmd, memory_profiling=True, output_base=None
+        )
+        assert out == cmd

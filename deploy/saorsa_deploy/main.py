@@ -334,6 +334,13 @@ def main(argv=None):
         action="store_true",
         help="Build against the x86_64-unknown-linux-musl target (statically linked)",
     )
+    build_ant_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Build without --release (a debug build: larger, slower, but with full "
+        "debug info — intended for memory profiling). The artifact overwrites the "
+        "deployment's S3 build key as usual.",
+    )
 
     # build ant-node
     build_ant_node_parser = build_subparsers.add_parser(
@@ -379,6 +386,13 @@ def main(argv=None):
         "--musl",
         action="store_true",
         help="Build against the x86_64-unknown-linux-musl target (statically linked)",
+    )
+    build_ant_node_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Build without --release (a debug build: larger, slower, but with full "
+        "debug info — intended for memory profiling). The artifact overwrites the "
+        "deployment's S3 build key as usual.",
     )
 
     # =========================================================================
@@ -2657,6 +2671,14 @@ def main(argv=None):
         "verbosity flag.",
     )
     prod_cd_deploy_parser.add_argument(
+        "--memory-profiling",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Wrap the downloader's ant invocation with heaptrack (installs the "
+        "heaptrack apt package); profiles → /var/log/ant-heaptrack/ on the VM. "
+        "Default off.",
+    )
+    prod_cd_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -2677,6 +2699,14 @@ def main(argv=None):
         "--ant-version",
         type=str,
         help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Informational: record that the resolved branch binary is a debug "
+        "build (built without --release) so `deployments slack-post` surfaces it. "
+        "The actual debug build is driven by the manifest's binary `debug: true` "
+        "via the separate `build ant` step; this flag does not change the fetch.",
     )
     prod_cd_deploy_parser.add_argument(
         "--monitoring-volume-size",
@@ -2801,6 +2831,14 @@ def main(argv=None):
         "verbosity flag.",
     )
     prod_dl_deploy_parser.add_argument(
+        "--memory-profiling",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Wrap the downloader's ant invocation with heaptrack (installs the "
+        "heaptrack apt package); profiles → /var/log/ant-heaptrack/ on the VM. "
+        "Default off.",
+    )
+    prod_dl_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -2821,6 +2859,14 @@ def main(argv=None):
         "--ant-version",
         type=str,
         help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Informational: record that the resolved branch binary is a debug "
+        "build (built without --release) so `deployments slack-post` surfaces it. "
+        "The actual debug build is driven by the manifest's binary `debug: true` "
+        "via the separate `build ant` step; this flag does not change the fetch.",
     )
     prod_dl_deploy_parser.add_argument(
         "--monitoring-volume-size",
@@ -2952,6 +2998,14 @@ def main(argv=None):
         "--ant-version",
         type=str,
         help="Specific release version of ant to install (e.g., 0.3.0).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Informational: record that the resolved branch binary is a debug "
+        "build (built without --release) so `deployments slack-post` surfaces it. "
+        "The actual debug build is driven by the manifest's binary `debug: true` "
+        "via the separate `build ant` step; this flag does not change the fetch.",
     )
     prod_up_deploy_parser.add_argument(
         "--monitoring-volume-size",

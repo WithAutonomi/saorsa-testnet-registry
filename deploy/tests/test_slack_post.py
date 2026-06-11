@@ -268,6 +268,58 @@ def test_prod_uploaders_renders_ant_binary_branch():
     assert "branch `myorg/feature-x`" in text
 
 
+def test_prod_uploaders_renders_debug_build():
+    deployment = _deployment(
+        name="PROD-UP-DBG",
+        deploy_args={
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ant_binary": {
+                "kind": "branch",
+                "branch": "feature-x",
+                "repo_owner": "myorg",
+                "debug": True,
+            },
+            "uploaders": [],
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "branch `myorg/feature-x`" in text
+    assert "debug build" in text
+
+
+def test_prod_uploaders_renders_memory_profiling():
+    deployment = _deployment(
+        name="PROD-UP-PROF",
+        deploy_args={
+            "kind": "prod-uploaders",
+            "purpose": "p",
+            "ant_binary": {"kind": "latest"},
+            "uploaders": [
+                {"region": "lon1", "vm_size": "s-4vcpu-8gb", "memory_profiling": True},
+                {"region": "nyc1", "vm_size": "s-4vcpu-8gb"},
+            ],
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "heaptrack" in text
+
+
+def test_prod_downloader_renders_memory_profiling():
+    deployment = _deployment(
+        name="PROD-DL-PROF",
+        deploy_args={
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "spec": "lon1",
+            "ant_binary": {"kind": "latest"},
+            "memory_profiling": True,
+        },
+    )
+    text = _all_text(build_slack_blocks(deployment, None, None))
+    assert "heaptrack" in text
+
+
 def test_prod_uploaders_renders_ant_binary_latest():
     deployment = _deployment(
         name="PROD-UP-L",

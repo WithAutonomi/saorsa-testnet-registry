@@ -33,6 +33,8 @@ def _prod_uploader_spec(u) -> str:
         spec += f":bootstrap_cache={str(u.bootstrap_cache).lower()}"
     if u.forward_logs is not None:
         spec += f":forward_logs={str(u.forward_logs).lower()}"
+    if u.memory_profiling is not None:
+        spec += f":memory_profiling={str(u.memory_profiling).lower()}"
     # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
     if u.rust_log is not None:
         spec += f":rust_log={u.rust_log}"
@@ -58,6 +60,24 @@ def _rust_log_flag(spec) -> list[str]:
     return ["--rust-log", spec.rust_log] if spec.rust_log else []
 
 
+def _memory_profiling_flag(spec) -> list[str]:
+    """argparse BooleanOptionalAction flag for spec-level memory_profiling."""
+    if getattr(spec, "memory_profiling", None) is None:
+        return []
+    return ["--memory-profiling"] if spec.memory_profiling else ["--no-memory-profiling"]
+
+
+def _binary_debug_flag(binary) -> list[str]:
+    """Informational ``--debug`` on the deploy step when the binary is a debug build.
+
+    The deploy command itself only fetches the (already-built) binary; this flag
+    is recorded into ``deploy_args`` so ``deployments slack-post`` can show that
+    the binary is a debug build. The actual no-``--release`` build is driven by
+    the separate ``build`` step's own ``--debug`` (see orchestrator/steps.py).
+    """
+    return ["--debug"] if getattr(binary, "debug", None) else []
+
+
 def _probe_spec(p) -> str:
     parts = [p.region]
     if p.vm_size:
@@ -73,6 +93,7 @@ def _uploaders(manifest: Manifest) -> list[Step]:
     if spec.allow_duplicate_files:
         argv += ["--allow-duplicate-files"]
     argv += ant_binary_flags(spec.binary)
+    argv += _binary_debug_flag(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
     argv += ["--ssh-key-path", manifest.ssh_key_path]
@@ -98,8 +119,10 @@ def _downloaders(manifest: Manifest) -> list[Step]:
         argv += ["--clock-skew", spec.clock_skew]
     argv += _bootstrap_cache_flag(spec)
     argv += _forward_logs_flag(spec)
+    argv += _memory_profiling_flag(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
+    argv += _binary_debug_flag(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
     argv += ["--ssh-key-path", manifest.ssh_key_path]
@@ -127,8 +150,10 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
         argv += ["--clock-skew", spec.clock_skew]
     argv += _bootstrap_cache_flag(spec)
     argv += _forward_logs_flag(spec)
+    argv += _memory_profiling_flag(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
+    argv += _binary_debug_flag(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
     argv += ["--ssh-key-path", manifest.ssh_key_path]

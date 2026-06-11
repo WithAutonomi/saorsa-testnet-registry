@@ -62,6 +62,8 @@ def ant_build_steps(name: str, ssh_key: str, ant: Binary | None) -> list[Step]:
     ]
     if ant.validation:
         argv += ["--validation-string", ant.validation]
+    if ant.debug:
+        argv.append("--debug")
     return [Step(argv, "Build ant client from branch")]
 
 
@@ -85,6 +87,8 @@ def build_steps_for_branches(
         ]
         if ant_node.validation:
             argv += ["--validation-string", ant_node.validation]
+        if ant_node.debug:
+            argv.append("--debug")
         steps.append(Step(argv, "Build ant-node from branch"))
     steps += ant_build_steps(name, ssh_key, ant)
     return steps

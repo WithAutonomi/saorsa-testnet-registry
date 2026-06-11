@@ -61,6 +61,7 @@ _KNOWN_SPEC_KEYS = (
     "clock_skew",
     "bootstrap_cache",
     "forward_logs",
+    "memory_profiling",
     "rust_log",
 )
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
@@ -86,6 +87,18 @@ def _parse_forward_logs_token(spec: str, value: str) -> bool:
         return False
     raise ValueError(
         f"Invalid uploader spec '{spec}': forward_logs must be 'true' or "
+        f"'false', got '{value}'."
+    )
+
+
+def _parse_memory_profiling_token(spec: str, value: str) -> bool:
+    """Validate a ``memory_profiling=`` uploader-spec token into a bool."""
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(
+        f"Invalid uploader spec '{spec}': memory_profiling must be 'true' or "
         f"'false', got '{value}'."
     )
 
@@ -209,6 +222,11 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         if "forward_logs" in options
         else None
     )
+    memory_profiling = (
+        _parse_memory_profiling_token(spec, options["memory_profiling"])
+        if "memory_profiling" in options
+        else None
+    )
     rust_log = options.get("rust_log") or None
 
     return {
@@ -220,6 +238,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "clock_skew": clock_skew,
         "bootstrap_cache": bootstrap_cache,
         "forward_logs": forward_logs,
+        "memory_profiling": memory_profiling,
         "rust_log": rust_log,
     }
 
@@ -538,6 +557,7 @@ def _provision_uploaders(
             "clock_skew": spec.get("clock_skew", False),
             "bootstrap_cache": spec.get("bootstrap_cache", True),
             "forward_logs": spec.get("forward_logs"),
+            "memory_profiling": spec.get("memory_profiling"),
             "rust_log": spec.get("rust_log"),
         })
 
@@ -693,13 +713,15 @@ def cmd_prod_uploaders_deploy(args):
                 "clock_skew": s.get("clock_skew", False),
                 "bootstrap_cache": s.get("bootstrap_cache", True),
                 "forward_logs": s.get("forward_logs"),
+                "memory_profiling": s.get("memory_profiling"),
                 "rust_log": s.get("rust_log"),
             }
             for s in parsed_specs
         ],
         "purpose": args.purpose,
         "ant_binary": build_binary_descriptor(
-            args.branch_name, args.repo_owner, args.ant_version
+            args.branch_name, args.repo_owner, args.ant_version,
+            debug=getattr(args, "debug", False),
         ),
     }
     record_deployment_created(args.name, deploy_args_payload)

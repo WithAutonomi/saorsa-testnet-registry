@@ -59,6 +59,7 @@ class TestParseSpec:
             "clock_skew": None,
             "bootstrap_cache": True,
             "forward_logs": None,
+            "memory_profiling": None,
             "rust_log": None,
         }
 

@@ -28,6 +28,7 @@ class AntNodeBuilder:
         console: Console | None = None,
         validation_string: str | None = None,
         musl: bool = False,
+        debug: bool = False,
     ):
         self.name = name
         self.ip = ip
@@ -37,9 +38,14 @@ class AntNodeBuilder:
         self.console = console or Console()
         self.validation_string = validation_string
         self.musl = musl
+        self.debug = debug
         self.s3_key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/ant-node"
-        self._target_subdir = "x86_64-unknown-linux-musl/release" if musl else "release"
+        profile = "debug" if debug else "release"
+        self._target_subdir = (
+            f"x86_64-unknown-linux-musl/{profile}" if musl else profile
+        )
         self._cargo_target_flag = " --target x86_64-unknown-linux-musl" if musl else ""
+        self._cargo_release_flag = "" if debug else " --release"
 
     def execute(self) -> str:
         """Build ant-node and upload to S3. Returns the S3 URL of the uploaded binary."""
@@ -138,10 +144,11 @@ class AntNodeBuilder:
             add_op(
                 state,
                 server.shell,
-                name="Build ant-node (release)",
+                name=f"Build ant-node ({'debug' if self.debug else 'release'})",
                 commands=[
                     "cd /root/ant-node && "
-                    f"/root/.cargo/bin/cargo build --release{self._cargo_target_flag} "
+                    f"/root/.cargo/bin/cargo build"
+                    f"{self._cargo_release_flag}{self._cargo_target_flag} "
                     "--bin ant-node"
                 ],
             )

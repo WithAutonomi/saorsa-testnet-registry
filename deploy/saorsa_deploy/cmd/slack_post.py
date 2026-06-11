@@ -221,7 +221,8 @@ def _format_binary(descriptor: dict | None) -> str:
     if kind == "branch":
         owner = descriptor.get("repo_owner", "?")
         branch = descriptor.get("branch", "?")
-        return f"branch `{owner}/{branch}`"
+        debug_str = " — 🐞 debug build" if descriptor.get("debug") else ""
+        return f"branch `{owner}/{branch}`{debug_str}"
     if kind == "latest":
         return "latest release"
     return "_unknown_"
@@ -252,6 +253,11 @@ def _rust_log_marker(value) -> str:
     return f" — RUST_LOG=`{value}`" if value else ""
 
 
+def _memory_profiling_marker(value) -> str:
+    """Inline per-client marker for heaptrack memory profiling, if enabled."""
+    return " — 🧠 heaptrack" if value else ""
+
+
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     blocks: list[dict] = [
         _section(
@@ -272,9 +278,10 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
         cache_str = _bootstrap_cache_marker(u.get("bootstrap_cache"))
         fwd_str = _forward_logs_marker(u.get("forward_logs"))
         rust_str = _rust_log_marker(u.get("rust_log"))
+        prof_str = _memory_profiling_marker(u.get("memory_profiling"))
         lines.append(
             f"• {region} ({vm_size}) — payment: {payment}"
-            f"{cache_str}{skew_str}{fwd_str}{rust_str}"
+            f"{cache_str}{skew_str}{fwd_str}{rust_str}{prof_str}"
         )
         if file_names:
             for name in file_names:
@@ -403,6 +410,8 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
         fields.append(("Log forwarding", "Elasticsearch 📤"))
     if deploy_args.get("rust_log"):
         fields.append(("RUST_LOG", f"`{deploy_args['rust_log']}`"))
+    if deploy_args.get("memory_profiling"):
+        fields.append(("Memory profiling", "heaptrack 🧠"))
 
     if "sleep_interval_secs" in deploy_args:
         sleep_interval_secs = deploy_args.get("sleep_interval_secs")

@@ -206,6 +206,30 @@ so the service still passes `-v` (installs the subscriber) AND exports `RUST_LOG
 the ES `telegraf-ant-clients-*` index template is created by `elastic provision`.
 Both options are surfaced by `deployments slack-post`.
 
+Two profiling options were added on the `feat-debug_builds` branch. **Debug
+builds**: a binary spec accepts **`debug: true`** (`binaries.<ant|ant_node>` on
+testnet/extension kinds, `prod_*.binary` on prod kinds; branch builds only —
+release versions ship prebuilt). It builds the binary **without** `--release`
+(`build ant`/`build ant-node` gain a `--debug` flag; cargo drops the release
+flag and the artifact comes from `target/debug`). The S3 build key is unchanged:
+it is already namespaced by deployment `--name` and the builder always
+overwrites, so `up` rebuilds when the manifest toggles `debug` (the `--debug`
+token in the build step makes the journal re-run it) — no fetch-side flag is
+needed. **heaptrack memory profiling**: prod uploaders/downloaders accept
+**`memory_profiling: true`** (per-entry `prod_uploaders.uploaders[]` spec token
+`memory_profiling=true|false`; spec-level CLI flag
+`--memory-profiling/--no-memory-profiling` on `prod downloaders` /
+`prod continuous-downloader`). When set the provisioner installs the `heaptrack`
+apt package and the Python service wraps the `ant` invocation with
+`heaptrack -o /var/log/ant-heaptrack/<upload|download>-<idx>` (helper
+`_maybe_wrap_heaptrack` in `resources/scripts/prod_uploader.py` /
+`prod_downloader.py`); heaptrack writes `<base>.<pid>.zst` incrementally so even
+an OOM/SIGKILL leaves an analysable trace. heaptrack's own output is on stderr,
+so the `ant --json` result parse (which walks stdout from the end) is
+unaffected. Reuses the same `/var/log/ant-heaptrack/` path as the existing
+testnet-only `clients provision --heaptrack` flag. NOT wired to testnet clients
+(use `--heaptrack`), the prod-canary kind, or the local-* kinds.
+
 Separately, the testnet/extension **`nodes.log_level`** option (`info`/`debug`/
 `trace`) sets ant-node `--log-level` on **every** node-tier service — WAN nodes,
 genesis, **and** bootstraps. **ant-node has NO env-filter / per-module logging**:

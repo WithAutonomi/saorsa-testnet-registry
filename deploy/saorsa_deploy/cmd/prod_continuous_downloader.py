@@ -280,6 +280,7 @@ def _provision_prod_downloader(
         influx_org=influx_org,
         influx_bucket=influx_bucket,
         rust_log=getattr(args, "rust_log", None),
+        memory_profiling=getattr(args, "memory_profiling", False),
         console=console,
     )
     provisioner.execute()
@@ -422,10 +423,12 @@ def cmd_prod_continuous_downloader_deploy(args):
         "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         "forward_logs": getattr(args, "forward_logs", False),
         "rust_log": getattr(args, "rust_log", None),
+        "memory_profiling": getattr(args, "memory_profiling", False),
         "purpose": args.purpose,
         "sleep_interval_secs": args.sleep_interval_secs,
         "ant_binary": build_binary_descriptor(
-            args.branch_name, args.repo_owner, args.ant_version
+            args.branch_name, args.repo_owner, args.ant_version,
+            debug=getattr(args, "debug", False),
         ),
     }
     record_deployment_created(args.name, deploy_args_payload)

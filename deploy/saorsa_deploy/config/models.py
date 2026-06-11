@@ -84,6 +84,7 @@ class Binary(_Base):
     branch: Optional[str] = None
     repo_owner: Optional[str] = None
     validation: Optional[str] = None  # --validation-string (branch builds only)
+    debug: Optional[bool] = None  # build without --release (branch builds only)
 
     @model_validator(mode="after")
     def _exclusive(self) -> "Binary":
@@ -95,6 +96,11 @@ class Binary(_Base):
             raise ValueError("binary: `repo_owner` is only valid with `branch`")
         if self.validation and not self.branch:
             raise ValueError("binary: `validation` is only valid with `branch`")
+        if self.debug and not self.branch:
+            raise ValueError(
+                "binary: `debug` is only valid with `branch` "
+                "(release versions ship prebuilt, optimised binaries)"
+            )
         return self
 
     @property
@@ -317,6 +323,9 @@ class ProdUploader(_Base):
     # Forward this uploader's ant stdout+stderr to a dedicated Elasticsearch
     # instance stood up by the deploy command (index telegraf-ant-clients-{name}).
     forward_logs: Optional[bool] = None
+    # Wrap this uploader's ant invocation with heaptrack (installs the heaptrack
+    # apt package); profiles → /var/log/ant-heaptrack/ on the VM.
+    memory_profiling: Optional[bool] = None
     # RUST_LOG to set on this uploader's service; OVERRIDES the verbosity flag.
     rust_log: Optional[str] = None
 
@@ -353,6 +362,9 @@ class ProdDownloadersSpec(_Base):
     # Forward the downloader's ant stdout+stderr to a dedicated Elasticsearch
     # instance stood up by the deploy command (index telegraf-ant-clients-{name}).
     forward_logs: Optional[bool] = None
+    # Wrap the downloader's ant invocation with heaptrack (installs the heaptrack
+    # apt package); profiles → /var/log/ant-heaptrack/ on the VM.
+    memory_profiling: Optional[bool] = None
     # RUST_LOG to set on the downloader service; OVERRIDES the verbosity flag.
     rust_log: Optional[str] = None
 

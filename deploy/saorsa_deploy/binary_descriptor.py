@@ -14,6 +14,7 @@ def build_binary_descriptor(
     branch_name: str | None,
     repo_owner: str | None,
     version: str | None,
+    debug: bool = False,
 ) -> dict:
     """Produce a JSON-friendly record of the resolved binary source.
 
@@ -21,12 +22,17 @@ def build_binary_descriptor(
     ``binary_source.py`` and the per-command ``_resolve_*`` helpers. When
     ``branch_name`` is set without ``repo_owner``, the owner defaults to
     ``maidsafe`` to match those resolvers.
+
+    ``debug`` records that the branch was built WITHOUT ``--release`` (only
+    meaningful for branch builds — release binaries ship prebuilt/optimised);
+    it is surfaced by ``deployments slack-post``.
     """
     if branch_name:
         return {
             "kind": "branch",
             "branch": branch_name,
             "repo_owner": repo_owner or "maidsafe",
+            "debug": bool(debug),
         }
     if version:
         return {"kind": "release", "version": version}

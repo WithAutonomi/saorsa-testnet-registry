@@ -192,6 +192,7 @@ class TestCmdBuild:
                 console=mock_builder_cls.call_args[1]["console"],
                 validation_string="v0.42.0",
                 musl=False,
+                debug=False,
             )
         finally:
             os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)

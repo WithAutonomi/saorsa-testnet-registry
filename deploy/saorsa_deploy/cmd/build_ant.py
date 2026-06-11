@@ -63,6 +63,7 @@ def cmd_build_ant(args):
             console=console,
             validation_string=args.validation_string,
             musl=args.musl,
+            debug=getattr(args, "debug", False),
         )
         s3_url = builder.execute()
 

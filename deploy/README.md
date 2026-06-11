@@ -588,11 +588,13 @@ uv run saorsa-deploy build ant-node --branch-name feature-x --repo-owner myorg
 | `--branch-name` | string | Yes | - | Git branch to build from |
 | `--repo-owner` | string | Yes | - | GitHub repository owner |
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning the build VM |
+| `--musl` | flag | No | off | Build against the static `x86_64-unknown-linux-musl` target |
+| `--debug` | flag | No | off | Build **without** `--release` — a larger, slower binary with full debug info, intended for memory profiling. The artifact overwrites the deployment's S3 build key as usual (the key is namespaced by `--name`, and `up` rebuilds when the manifest toggles `debug`), so no separate fetch flag is needed. The same flag exists on `build ant`. Manifests set it per binary via `binaries.<ant|ant_node>.debug: true`. |
 
 This command:
 1. Creates a `c-16` (16 vCPU, 32GB RAM) DO droplet in lon1
-2. Installs Rust, clones the repo, builds in release mode
-3. Uploads the binary to `s3://ant-node-builds/builds/{owner}/{branch}/ant-node`
+2. Installs Rust, clones the repo, builds in release mode (or debug mode with `--debug`)
+3. Uploads the binary to `s3://ant-node-builds/builds/{name}/{owner}/{branch}/ant-node`
 4. Destroys the droplet (even on failure)
 
 Requires `ANT_BUILD_AWS_ACCESS_KEY_ID` and `ANT_BUILD_AWS_SECRET_ACCESS_KEY`.
@@ -1036,8 +1038,9 @@ Arguments (for `prod uploaders deploy`):
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--name` | string | — | Deployment name; also used for the paired monitoring stack |
-| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=SPEC]`. The first three parts are required. `log_level=LEVEL` sets the `ant` upload verbosity for that VM — `info` (default → `-v`), `debug` (`-vv`), or `trace` (`-vvv`); omit for info. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). `bootstrap_cache=true|false` (default true) — when true `ant` runs **without** `--bootstrap` (peer cache enabled, peers read from a provisioned `bootstrap_peers.toml`); false restores the legacy `--bootstrap` invocation. `forward_logs=true` forwards that VM's `ant` stdout+stderr to a **dedicated** Elasticsearch instance stood up by this deploy (index `telegraf-ant-clients-<name>`; torn down on destroy unless `--keep-elastic`). `rust_log=SPEC` sets `RUST_LOG` (overriding the verbosity flag) and must be the **last** token (value may contain `:`). |
+| `--uploader` | repeatable | — | Per-VM spec `REGION:VM_SIZE:urls=PATH[:payment=MODE][:log_level=LEVEL][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:memory_profiling=BOOL][:rust_log=SPEC]`. The first three parts are required. `log_level=LEVEL` sets the `ant` upload verbosity for that VM — `info` (default → `-v`), `debug` (`-vv`), or `trace` (`-vvv`); omit for info. `clock_skew=DURATION` disables time sync and shifts that VM's clock by a signed Go-style duration (e.g. `2h`, `-2h`, `30m`; testing only). `bootstrap_cache=true|false` (default true) — when true `ant` runs **without** `--bootstrap` (peer cache enabled, peers read from a provisioned `bootstrap_peers.toml`); false restores the legacy `--bootstrap` invocation. `forward_logs=true` forwards that VM's `ant` stdout+stderr to a **dedicated** Elasticsearch instance stood up by this deploy (index `telegraf-ant-clients-<name>`; torn down on destroy unless `--keep-elastic`). `memory_profiling=true` wraps that VM's `ant` invocation with `heaptrack` (installs the `heaptrack` apt package); profiles → `/var/log/ant-heaptrack/upload-<idx>.<pid>.zst` on the VM (scp off before destroy). `rust_log=SPEC` sets `RUST_LOG` (overriding the verbosity flag) and must be the **last** token (value may contain `:`). |
 | `--forward-logs` / `--no-forward-logs` | flag | off | (`prod downloaders`/`continuous-downloader`/`canary` deploy) Forward the client `ant` stdout+stderr to a dedicated Elasticsearch instance (index `telegraf-ant-clients-<name>`), stood up by the command and torn down on destroy unless `--keep-elastic`. |
+| `--memory-profiling` / `--no-memory-profiling` | flag | off | (`prod downloaders`/`continuous-downloader` deploy) Wrap the client `ant` invocation with `heaptrack` (installs the `heaptrack` apt package); profiles → `/var/log/ant-heaptrack/download-<seq>.<pid>.zst` on the VM. scp them off before destroy. |
 | `--rust-log SPEC` | flag | — | (`prod downloaders`/`continuous-downloader`/`canary` deploy) Set `RUST_LOG` on the client service, overriding the `ant` verbosity flag. Full RUST_LOG syntax incl `::`. |
 | `--keep-elastic` | flag | off | (prod destroy) Leave the dedicated client-log Elasticsearch VM running. Default: it is destroyed alongside the client/monitoring. |
 | `--allow-duplicate-files` | flag | off | Skip the duplicate-file preflight and deploy even if an upload target already exists in the prod uploads list. Use to re-upload missing chunks or test the already-stored path. |

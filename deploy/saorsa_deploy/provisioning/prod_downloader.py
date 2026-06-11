@@ -60,6 +60,8 @@ ADDRESSES_PATH = f"{DATA_DIR}/addresses.txt"
 DOWNLOAD_DIR = f"{DATA_DIR}/downloads"
 SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ENV_PATH = "/etc/ant-prod-downloader.env"
+# heaptrack memory-profile output dir (shared with the testnet --heaptrack path).
+HEAPTRACK_DIR = "/var/log/ant-heaptrack"
 
 
 def _build_systemd_unit(one_shot: bool = False) -> str:
@@ -120,6 +122,7 @@ class ProdDownloaderProvisioner:
         evm_network: str = "arbitrum-one",
         one_shot: bool = False,
         rust_log: str | None = None,
+        memory_profiling: bool = False,
         console: Console | None = None,
     ):
         self.downloaders = downloaders
@@ -135,6 +138,7 @@ class ProdDownloaderProvisioner:
         self.influx_bucket = influx_bucket
         self.evm_network = evm_network
         self.rust_log = rust_log
+        self.memory_profiling = memory_profiling
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -171,16 +175,18 @@ class ProdDownloaderProvisioner:
 
             self._add_clock_skew_ops(state)
 
+            heaptrack_dirs = f" {HEAPTRACK_DIR}" if self.memory_profiling else ""
             add_op(
                 state,
                 server.shell,
                 name="Create prod-downloader directories",
                 commands=[
                     f"mkdir -p {DATA_DIR} {DOWNLOAD_DIR} {SCRIPTS_DIR} "
-                    f"{LOG_DIR} /root/.local/bin",
+                    f"{LOG_DIR} /root/.local/bin{heaptrack_dirs}",
                 ],
             )
 
+            self._add_install_heaptrack_op(state)
             self._add_install_ant_op(state)
             self._add_deploy_service_script_op(state)
             self._add_env_and_addresses_op(state)
@@ -241,6 +247,22 @@ class ProdDownloaderProvisioner:
                 commands=[build_clock_skew_command(offset)],
                 host=[host],
             )
+
+    def _add_install_heaptrack_op(self, state: State) -> None:
+        """Install the heaptrack apt package when memory profiling is enabled."""
+        if not self.memory_profiling:
+            return
+        add_op(
+            state,
+            server.shell,
+            name="Install heaptrack",
+            commands=[
+                "command -v heaptrack >/dev/null && echo 'HEAPTRACK:SKIP' || "
+                "(DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                "heaptrack && echo 'HEAPTRACK:INSTALLED')"
+            ],
+        )
 
     def _add_install_ant_op(self, state: State) -> None:
         if self.binary_url:
@@ -353,6 +375,8 @@ EVM_NETWORK={self.evm_network}
 SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
 ONE_SHOT={'true' if self.one_shot else 'false'}
 RUST_LOG={self.rust_log or ''}
+MEMORY_PROFILING={'true' if self.memory_profiling else 'false'}
+HEAPTRACK_DIR={HEAPTRACK_DIR}
 {influx_lines}ENV_EOF"""
 
         add_op(

@@ -36,6 +36,10 @@ Optional env:
                        reads ~/.config/ant/bootstrap_peers.toml (written by the
                        provisioner) and keeps its peer cache enabled. `false`
                        restores the legacy --bootstrap invocation.
+    MEMORY_PROFILING   `true` wraps each ant invocation with heaptrack (default
+                       `false`). Profiles are written to HEAPTRACK_DIR.
+    HEAPTRACK_DIR      Output dir for heaptrack profiles (default
+                       /var/log/ant-heaptrack); only used when MEMORY_PROFILING.
 """
 from __future__ import annotations
 
@@ -247,10 +251,26 @@ def _verbosity_flag(log_level: str) -> str:
     return "-" + ("v" * _LOG_LEVEL_VERBOSITY.get(log_level, 1))
 
 
+def _maybe_wrap_heaptrack(
+    cmd: list[str], *, memory_profiling: bool, output_base: str | None
+) -> list[str]:
+    """Prepend a ``heaptrack -o <base>`` wrapper when profiling is enabled.
+
+    heaptrack writes ``<base>.<pid>.zst`` incrementally, so even an OOM/SIGKILL
+    leaves an analysable trace. heaptrack's own diagnostics go to stderr and any
+    summary line is skipped by the from-the-end JSON parse, so the ``--json``
+    result on stdout is unaffected. A no-op when profiling is off.
+    """
+    if not memory_profiling or not output_base:
+        return cmd
+    return ["heaptrack", "-o", output_base, *cmd]
+
+
 def _run_ant(
     *, ant_path: str, bootstrap_args: list[str], evm_network: str,
     secret_key: str, file_path: Path, payment_type: str | None,
     log_level: str, stderr_log_path: Path, stdout_log_path: Path,
+    memory_profiling: bool = False, heaptrack_output_base: str | None = None,
 ) -> tuple[int, str, str]:
     """Run ant and tee its streams to plain-text log files in real time.
 
@@ -278,6 +298,11 @@ def _run_ant(
         "file", "upload", "--public", *_payment_flag(payment_type),
         str(file_path),
     ]
+    cmd = _maybe_wrap_heaptrack(
+        cmd,
+        memory_profiling=memory_profiling,
+        output_base=heaptrack_output_base,
+    )
     env = dict(os.environ)
     env["SECRET_KEY"] = secret_key
 
@@ -410,6 +435,8 @@ def main() -> int:
     download_timeout = int(os.environ.get("DOWNLOAD_TIMEOUT", "600"))
     payment_type = os.environ.get("PAYMENT_TYPE") or None
     log_level = os.environ.get("LOG_LEVEL") or "info"
+    memory_profiling = os.environ.get("MEMORY_PROFILING", "false").lower() == "true"
+    heaptrack_dir = Path(os.environ.get("HEAPTRACK_DIR", "/var/log/ant-heaptrack"))
 
     if not secret_key.startswith("0x"):
         secret_key = "0x" + secret_key
@@ -417,6 +444,8 @@ def main() -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
     log_dir = Path(LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
+    if memory_profiling:
+        heaptrack_dir.mkdir(parents=True, exist_ok=True)
     host = socket.gethostname()
 
     urls = _read_urls(urls_file)
@@ -485,6 +514,11 @@ def main() -> int:
         log_basename = f"{idx:04d}-{safe_log_name}"
         stderr_log_path = log_dir / f"{log_basename}.stderr"
         stdout_log_path = log_dir / f"{log_basename}.stdout"
+        heaptrack_output_base = (
+            str(heaptrack_dir / f"upload-{log_basename}")
+            if memory_profiling
+            else None
+        )
         exit_code, stdout, stderr_text = _run_ant(
             ant_path=ant_path,
             bootstrap_args=bootstrap_args,
@@ -495,6 +529,8 @@ def main() -> int:
             log_level=log_level,
             stderr_log_path=stderr_log_path,
             stdout_log_path=stdout_log_path,
+            memory_profiling=memory_profiling,
+            heaptrack_output_base=heaptrack_output_base,
         )
         end_ns = time.time_ns()
         total_ms = (end_ns - upload_start_ns) // 1_000_000

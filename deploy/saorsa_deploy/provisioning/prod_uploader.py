@@ -52,6 +52,8 @@ SERVICE_NAME = "ant-prod-uploader"
 DATA_DIR = "/var/lib/ant-prod-uploader"
 SCRIPTS_DIR = "/root/ant-prod-uploader"
 LOG_DIR = "/var/log/ant-prod-uploader"
+# heaptrack memory-profile output dir (shared with the testnet --heaptrack path).
+HEAPTRACK_DIR = "/var/log/ant-heaptrack"
 URLS_PATH = f"{DATA_DIR}/urls.txt"
 SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ENV_PATH = "/etc/ant-prod-uploader.env"
@@ -154,16 +156,18 @@ class ProdUploaderProvisioner:
 
             self._add_clock_skew_ops(state)
 
+            heaptrack_dirs = f" {HEAPTRACK_DIR}" if self._any_memory_profiling() else ""
             add_op(
                 state,
                 server.shell,
                 name="Create prod-uploader directories",
                 commands=[
                     f"mkdir -p {DATA_DIR} {DATA_DIR}/files {SCRIPTS_DIR} "
-                    f"{LOG_DIR} /root/.local/bin",
+                    f"{LOG_DIR} /root/.local/bin{heaptrack_dirs}",
                 ],
             )
 
+            self._add_install_heaptrack_op(state)
             self._add_install_ant_op(state)
             self._add_deploy_service_script_op(state)
             self._add_env_and_urls_op(state)
@@ -224,6 +228,30 @@ class ProdUploaderProvisioner:
                 commands=[build_clock_skew_command(offset)],
                 host=[host],
             )
+
+    def _any_memory_profiling(self) -> bool:
+        return any(u.get("memory_profiling") for u in self.uploaders)
+
+    def _add_install_heaptrack_op(self, state: State) -> None:
+        """Install the heaptrack apt package — only when a host opts into profiling.
+
+        Installed across the whole inventory (cheap, idempotent) rather than
+        per-host; the service script only wraps ant with heaptrack on hosts whose
+        MEMORY_PROFILING env is true, so installing everywhere is harmless.
+        """
+        if not self._any_memory_profiling():
+            return
+        add_op(
+            state,
+            server.shell,
+            name="Install heaptrack",
+            commands=[
+                "command -v heaptrack >/dev/null && echo 'HEAPTRACK:SKIP' || "
+                "(DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                "heaptrack && echo 'HEAPTRACK:INSTALLED')"
+            ],
+        )
 
     def _add_install_ant_op(self, state: State) -> None:
         if self.binary_url:
@@ -299,6 +327,7 @@ class ProdUploaderProvisioner:
             log_level = u.get("log_level") or "info"
             bootstrap_cache = "true" if u.get("bootstrap_cache", True) else "false"
             rust_log = u.get("rust_log") or ""
+            memory_profiling = "true" if u.get("memory_profiling") else "false"
             case_entries.append(
                 f'    "{u["ip"]}") '
                 f'REGION={u["region"]}; '
@@ -307,6 +336,7 @@ class ProdUploaderProvisioner:
                 f'PAYMENT_TYPE="{payment_type}"; '
                 f'LOG_LEVEL="{log_level}"; '
                 f'RUST_LOG="{rust_log}"; '
+                f"MEMORY_PROFILING={memory_profiling}; "
                 f"BOOTSTRAP_CACHE={bootstrap_cache} ;;"
             )
         case_block = "\n".join(case_entries)
@@ -331,7 +361,7 @@ MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
     *) REGION=unknown; CLIENT_INDEX=0; URLS_B64=""; PAYMENT_TYPE=""; \
-LOG_LEVEL="info"; RUST_LOG=""; BOOTSTRAP_CACHE=true ;;
+LOG_LEVEL="info"; RUST_LOG=""; MEMORY_PROFILING=false; BOOTSTRAP_CACHE=true ;;
 esac
 mkdir -p {DATA_DIR}
 echo "$URLS_B64" | base64 -d > {URLS_PATH}
@@ -352,6 +382,8 @@ EVM_NETWORK={self.evm_network}
 PAYMENT_TYPE=$PAYMENT_TYPE
 LOG_LEVEL=$LOG_LEVEL
 RUST_LOG=$RUST_LOG
+MEMORY_PROFILING=$MEMORY_PROFILING
+HEAPTRACK_DIR={HEAPTRACK_DIR}
 {influx_lines}ENV_EOF"""
 
         add_op(
