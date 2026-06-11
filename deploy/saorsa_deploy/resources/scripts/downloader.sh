@@ -36,10 +36,15 @@ fi
 # Client ant emits NO logs unless -v is passed (it gates the tracing subscriber
 # behind -v — "privacy by design"). RUST_LOG, when set, is read by that
 # subscriber's EnvFilter and overrides the -v level. So ALWAYS pass -v, and
-# additionally export RUST_LOG.
+# additionally export RUST_LOG. The systemd EnvironmentFile always defines
+# RUST_LOG (empty when none configured), and an EMPTY RUST_LOG sets ant's
+# EnvFilter to an empty filter that silences ALL output, overriding -v — so it
+# MUST be unset (not merely left unexported, since systemd already exported it).
 VERBOSITY_FLAG=(-v)
 if [ -n "$RUST_LOG" ]; then
     export RUST_LOG
+else
+    unset RUST_LOG
 fi
 
 if [ "$FORWARD_LOGS" = "true" ]; then

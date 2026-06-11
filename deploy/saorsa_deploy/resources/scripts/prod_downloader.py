@@ -248,6 +248,15 @@ def _run_ant(
         output_base=heaptrack_output_base,
     )
 
+    # The systemd EnvironmentFile always defines RUST_LOG (empty when no
+    # rust_log was configured). An EMPTY RUST_LOG in ant's environment sets its
+    # tracing EnvFilter to an empty filter, which silences ALL output and
+    # overrides -v — leaving the .stderr log blank. Only let RUST_LOG reach ant
+    # when it actually carries a filter; otherwise -v drives the verbosity.
+    env = dict(os.environ)
+    if not env.get("RUST_LOG"):
+        env.pop("RUST_LOG", None)
+
     stderr_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     stdout_chunks: list[str] = []
@@ -257,6 +266,7 @@ def _run_ant(
 
     proc = subprocess.Popen(
         cmd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

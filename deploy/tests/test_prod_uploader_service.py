@@ -260,3 +260,57 @@ class TestHeaptrackWrap:
             cmd, memory_profiling=True, output_base=None
         )
         assert out == cmd
+
+
+class TestRunAntRustLogEnv:
+    """_run_ant must not hand ant an EMPTY RUST_LOG.
+
+    The systemd EnvironmentFile always defines RUST_LOG (empty when no rust_log
+    was configured). An empty RUST_LOG sets ant's tracing EnvFilter to an empty
+    filter, silencing ALL output and overriding -v — which blanked the .stderr
+    upload log. _run_ant strips an empty RUST_LOG so -v drives the verbosity,
+    and preserves a non-empty one so per-module filters still work.
+    """
+
+    def _capture_env(self, service, monkeypatch, tmp_path):
+        captured = {}
+
+        class _FakeProc:
+            stdout = iter(())
+            stderr = iter(())
+
+            def wait(self):
+                return 0
+
+        def _fake_popen(cmd, *, env, **kwargs):
+            captured["env"] = env
+            return _FakeProc()
+
+        monkeypatch.setattr(service.subprocess, "Popen", _fake_popen)
+        service._run_ant(
+            ant_path="/root/.local/bin/ant",
+            bootstrap_args=[],
+            evm_network="arbitrum-one",
+            secret_key="sk",
+            file_path=tmp_path / "f.bin",
+            payment_type="no-merkle",
+            log_level="info",
+            stderr_log_path=tmp_path / "op.stderr",
+            stdout_log_path=tmp_path / "op.stdout",
+        )
+        return captured["env"]
+
+    def test_empty_rust_log_is_stripped(self, service, monkeypatch, tmp_path):
+        monkeypatch.setenv("RUST_LOG", "")
+        env = self._capture_env(service, monkeypatch, tmp_path)
+        assert "RUST_LOG" not in env
+
+    def test_absent_rust_log_stays_absent(self, service, monkeypatch, tmp_path):
+        monkeypatch.delenv("RUST_LOG", raising=False)
+        env = self._capture_env(service, monkeypatch, tmp_path)
+        assert "RUST_LOG" not in env
+
+    def test_nonempty_rust_log_is_preserved(self, service, monkeypatch, tmp_path):
+        monkeypatch.setenv("RUST_LOG", "ant=info,saorsa_core::dht=debug")
+        env = self._capture_env(service, monkeypatch, tmp_path)
+        assert env["RUST_LOG"] == "ant=info,saorsa_core::dht=debug"
