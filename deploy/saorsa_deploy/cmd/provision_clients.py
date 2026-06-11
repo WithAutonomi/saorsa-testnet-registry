@@ -526,6 +526,7 @@ def cmd_provision_clients(args):
         elasticsearch_url=es_url,
         elasticsearch_username=es_username,
         elasticsearch_password=es_password,
+        forward_buffer_limit=getattr(args, "forward_buffer_limit", None),
     )
 
     try:

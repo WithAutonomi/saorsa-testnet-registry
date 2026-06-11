@@ -646,6 +646,17 @@ def main(argv=None):
         "on each matching VM (named upload-<seq>.gz / download-<seq>.gz). "
         "Fetch via scp before destroying the client VMs.",
     )
+    clients_provision_parser.add_argument(
+        "--forward-buffer-limit",
+        type=int,
+        default=None,
+        help="Size (in lines) of the client→Elasticsearch log forwarder's "
+        "Telegraf output buffer (metric_buffer_limit), for clients with "
+        "forward_logs set. Defaults to 200,000 — bump it (e.g. to match the "
+        "node forwarder's --buffer-limit) when a client logs at TRACE so a "
+        "high-volume run doesn't overflow the buffer and drop forwarded lines. "
+        "No effect unless at least one client opted into log forwarding.",
+    )
 
     # clients start
     clients_start_parser = clients_subparsers.add_parser(

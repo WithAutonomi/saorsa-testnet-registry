@@ -44,7 +44,7 @@ testnet:
     clock_skew: 1            # inject intentional clock skew on N random node VMs (disable timesync + shift clock a few hours); omit/0 to disable
     full_percent: 20         # % of NON-NAT node VMs to make storage-full (pre-fill data volume so nodes reject stores); randomly chosen (not region-spread) so full nodes scatter across the keyspace; always disjoint from nat_percent; omit/0 to disable
     full_headroom_mb: 100    # free space (MiB) to leave when filling; only meaningful with full_percent > 0
-    log_level: info          # single ant-node --log-level for EVERY node-tier service (genesis + bootstraps + WAN nodes): info | debug | trace. ant-node has NO per-module / env-filter logging (its --log-level is bound to RUST_LOG and takes one level only) — distinct from the per-client `rust_log` env-filter below.
+    log_level: info          # single ant-node --log-level for EVERY node-tier service (genesis + bootstraps + WAN nodes): info | debug | trace. ant-node has NO per-module / env-filter logging (its --log-level is bound to RUST_LOG and takes one level only) — distinct from the per-client `rust_log` env-filter below. Also auto-lifts the node→ES drop filter (see elastic.drop_log_levels) so debug/trace reaches Elasticsearch, not just disk.
     attached_volume_size: 100
     providers:               # vm_count is PER REGION; provider total = vm_count × number-of-regions
       digital_ocean:
@@ -84,8 +84,8 @@ testnet:
     volume_size: 500             # GB; bump for large/long testnets
     shards: 8                    # primary shards per daily index (match the ES droplet's vCPU count)
     retention_days: 7            # ILM retention before deletion
-    drop_log_levels: DEBUG,TRACE # telegraf drops these levels before shipping
-    buffer_limit: 2000000        # telegraf output buffer (lines)
+    drop_log_levels: DEBUG,TRACE # node forwarder drops these levels before shipping to ES. OMIT to auto-derive from nodes.log_level (trace→keep all, debug→drop only TRACE, info→DEBUG,TRACE). Set explicitly to override — e.g. "" force-keeps everything; "DEBUG,TRACE" keeps verbose logs on disk but out of ES.
+    buffer_limit: 2000000        # telegraf output buffer (lines); applied to BOTH the node forwarder and (via clients provision --forward-buffer-limit) the client forwarder — bump for high-volume TRACE runs
 
   monitoring:                # InfluxDB + Grafana stack. ON by default — set
     enabled: true            # `enabled: false` to opt out.

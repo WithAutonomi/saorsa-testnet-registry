@@ -638,3 +638,107 @@ def test_unknown_nodes_provider_rejected():
         _minimal(
             nodes={"per_vm": 5, "providers": {"linode": {"vm_count": 1, "regions": 1}}}
         )
+
+
+# --------------------------------------------------------------------------- #
+# Node ES forwarder drop-log-levels derived from nodes.log_level
+# --------------------------------------------------------------------------- #
+def _es_telegraf_step(m):
+    steps = build_deploy_steps(m)
+    return next(s for s in steps if s.argv[:2] == ["elastic", "provision-telegraf"])
+
+
+def _nodes(**extra):
+    base = {"per_vm": 5, "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}}}
+    base.update(extra)
+    return base
+
+
+def test_es_drop_log_levels_omitted_for_info_or_unset():
+    # No nodes.log_level + no explicit elastic.drop_log_levels -> the flag is
+    # omitted entirely so the CLI default (DEBUG,TRACE) applies and the argv
+    # stays byte-identical to before this feature (journal-hash stability).
+    step = _es_telegraf_step(_minimal(elastic={"enabled": True}))
+    assert "--drop-log-levels" not in step.argv
+
+    step_info = _es_telegraf_step(
+        _minimal(elastic={"enabled": True}, nodes=_nodes(log_level="info"))
+    )
+    assert "--drop-log-levels" not in step_info.argv
+
+
+def test_es_drop_log_levels_empty_for_trace():
+    # nodes.log_level: trace -> forward EVERYTHING (drop nothing) so the trace
+    # the operator asked for actually reaches Elasticsearch.
+    step = _es_telegraf_step(
+        _minimal(elastic={"enabled": True}, nodes=_nodes(log_level="trace"))
+    )
+    assert "--drop-log-levels" in step.argv
+    assert step.argv[step.argv.index("--drop-log-levels") + 1] == ""
+
+
+def test_es_drop_log_levels_trace_only_for_debug():
+    # nodes.log_level: debug -> keep DEBUG, drop only the noisier TRACE.
+    step = _es_telegraf_step(
+        _minimal(elastic={"enabled": True}, nodes=_nodes(log_level="debug"))
+    )
+    assert step.argv[step.argv.index("--drop-log-levels") + 1] == "TRACE"
+
+
+def test_es_explicit_drop_log_levels_overrides_log_level():
+    # An explicit elastic.drop_log_levels always wins, even when log_level would
+    # otherwise widen the set — the volume escape hatch.
+    step = _es_telegraf_step(
+        _minimal(
+            elastic={"enabled": True, "drop_log_levels": "DEBUG,TRACE"},
+            nodes=_nodes(log_level="trace"),
+        )
+    )
+    assert step.argv[step.argv.index("--drop-log-levels") + 1] == "DEBUG,TRACE"
+
+
+def test_es_explicit_empty_drop_log_levels_is_kept():
+    # drop_log_levels: "" with an info node level still emits the empty flag
+    # (force-keep everything), distinct from the omit-the-flag default case.
+    step = _es_telegraf_step(
+        _minimal(elastic={"enabled": True, "drop_log_levels": ""})
+    )
+    assert "--drop-log-levels" in step.argv
+    assert step.argv[step.argv.index("--drop-log-levels") + 1] == ""
+
+
+# --------------------------------------------------------------------------- #
+# Client forwarder buffer wiring (elastic.buffer_limit -> clients provision)
+# --------------------------------------------------------------------------- #
+_CLIENTS = {
+    "uploaders": [
+        {"provider": "digital_ocean", "region": "lon1", "file_size_mb": 100,
+         "forward_logs": True}
+    ],
+    "downloaders": [{"provider": "digital_ocean", "region": "tor1"}],
+}
+
+
+def test_client_forward_buffer_limit_emitted_when_buffer_set():
+    m = _minimal(
+        binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "1.0"}},
+        elastic={"enabled": True, "buffer_limit": 2000000},
+        clients=_CLIENTS,
+    )
+    steps = build_deploy_steps(m)
+    cprov = next(s for s in steps if s.argv[:2] == ["clients", "provision"])
+    assert cprov.argv[cprov.argv.index("--forward-buffer-limit") + 1] == "2000000"
+    # and the node forwarder still gets its own --buffer-limit
+    es = next(s for s in steps if s.argv[:2] == ["elastic", "provision-telegraf"])
+    assert es.argv[es.argv.index("--buffer-limit") + 1] == "2000000"
+
+
+def test_client_forward_buffer_limit_omitted_when_unset():
+    m = _minimal(
+        binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "1.0"}},
+        elastic={"enabled": True},
+        clients=_CLIENTS,
+    )
+    steps = build_deploy_steps(m)
+    cprov = next(s for s in steps if s.argv[:2] == ["clients", "provision"])
+    assert "--forward-buffer-limit" not in cprov.argv

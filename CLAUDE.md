@@ -238,6 +238,25 @@ only (a multi-target `RUST_LOG` makes ant-node exit `INVALIDARGUMENT`), so nodes
 get one global level while only the client side gets the full `rust_log`
 env-filter — letting one deployment run nodes and clients at different levels.
 
+`nodes.log_level` also **lifts the node→ES Telegraf drop filter** so verbose node
+logs actually reach Elasticsearch. The forwarder drops any line whose level is in
+`elastic provision-telegraf --drop-log-levels` (CLI default `DEBUG,TRACE`); left
+alone that silently strips the very trace/debug the operator asked for (nodes
+write it to disk, ES shows only INFO/WARN). The orchestrator therefore derives the
+drop set from `nodes.log_level` (drop only levels strictly *more verbose* than the
+configured one): `trace` → `--drop-log-levels ""` (keep everything), `debug` →
+`--drop-log-levels TRACE`, `info`/unset → omit the flag (CLI default `DEBUG,TRACE`,
+so existing manifests' step argv — and `up` journal hashes — stay byte-identical).
+An explicit **`elastic.drop_log_levels`** in the manifest always wins: set it to
+`"DEBUG,TRACE"` to keep verbose logs on disk but out of ES (volume), or `""` to
+force-keep everything regardless of node level. The **client** forwarder has no
+level filter (it ships raw stderr lines unconditionally), so `rust_log` trace
+already reaches ES; its only knob is buffer size — **`elastic.buffer_limit`** is
+now threaded to the client forwarder too (via `clients provision
+--forward-buffer-limit`) so a high-volume trace uploader doesn't overflow the
+client forwarder's small default buffer and drop forwarded lines. Logic lives in
+`orchestrator/testnet.py` (`_resolve_elastic_drop_log_levels`).
+
 Testnet client address lists live in the dedicated **public-read**
 `saorsa-testnet-addresses` bucket (NOT the tfstate bucket, which keeps Block
 Public Access intact; bucket + IAM managed by the `aws-client-s3` Terraform

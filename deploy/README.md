@@ -191,6 +191,21 @@ So nodes get one global level (`debug` captures everything, including the module
 you might want), while the client side keeps the full `rust_log` env-filter —
 letting a deployment run nodes and clients at different levels.
 
+`nodes.log_level` additionally **lifts the node→Elasticsearch drop filter** so the
+verbose lines reach ES, not just disk. The node forwarder drops any line whose
+level is in `--drop-log-levels` (default `DEBUG,TRACE`); without this coupling a
+`log_level: trace` testnet would write trace to disk but ES would still show only
+INFO/WARN. The orchestrator derives the drop set from `nodes.log_level` — dropping
+only the levels *more verbose* than the one configured: `trace` keeps everything
+(`--drop-log-levels ""`), `debug` drops just `TRACE`, and `info`/unset leaves the
+default in place. An explicit **`elastic.drop_log_levels`** always overrides this:
+set `"DEBUG,TRACE"` to keep verbose logs on disk but out of ES for volume reasons,
+or `""` to force-keep everything regardless of node level. The **client** forwarder
+has no level filter (it ships every raw stderr line), so `rust_log` trace already
+reaches ES; for high-volume trace runs, **`elastic.buffer_limit`** is now also
+applied to the client forwarder (via `clients provision --forward-buffer-limit`) so
+its small default output buffer doesn't overflow and drop forwarded lines.
+
 **Reuse:** `extends:` (deep-merge a base; lists replace wholesale), `--set
 dotted.key=value` (override one value, e.g. `--set testnet.nodes.nat_percent=0`),
 and `--name NEW`. **Secrets** are never in a manifest — prod kinds name an env var

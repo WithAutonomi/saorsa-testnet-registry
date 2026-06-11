@@ -142,6 +142,7 @@ class AntClientProvisioner:
         elasticsearch_url: str = "",
         elasticsearch_username: str = "",
         elasticsearch_password: str = "",
+        forward_buffer_limit: int | None = None,
     ):
         self.clients = clients
         self.deployment_name = deployment_name
@@ -165,6 +166,7 @@ class AntClientProvisioner:
         self.elasticsearch_url = elasticsearch_url
         self.elasticsearch_username = elasticsearch_username
         self.elasticsearch_password = elasticsearch_password
+        self.forward_buffer_limit = forward_buffer_limit
 
     #: Per-role aggregate log files that uploader.sh/downloader.sh append to
     #: when FORWARD_LOGS=true, and the role label tagged on forwarded lines.
@@ -223,6 +225,13 @@ class AntClientProvisioner:
                 f"Installing client log forwarder on {len(ips)} {role_label} "
                 f"host(s)..."
             )
+            # Only override the forwarder's buffer when explicitly sized — leave
+            # ClientTelegrafProvisioner's default in place otherwise.
+            buffer_kwargs = (
+                {"metric_buffer_limit": self.forward_buffer_limit}
+                if self.forward_buffer_limit is not None
+                else {}
+            )
             ClientTelegrafProvisioner(
                 host_ips=ips,
                 ssh_key_path=self.ssh_key_path,
@@ -233,6 +242,7 @@ class AntClientProvisioner:
                 role=role_label,
                 tail_globs=globs,
                 console=self.console,
+                **buffer_kwargs,
             ).execute()
 
     def _presigned_put_url(self, region: str, client_index) -> str:

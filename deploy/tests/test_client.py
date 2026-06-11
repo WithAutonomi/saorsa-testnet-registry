@@ -485,3 +485,50 @@ class TestParseBootstrapCache:
             parse_downloader_spec(
                 "digital_ocean:lon1:bootstrap_cache=true:bootstrap_cache=false"
             )
+
+
+# --- Client log-forwarder buffer wiring ---
+
+
+class TestProvisionLogForwardersBuffer:
+    """forward_buffer_limit threads into ClientTelegrafProvisioner's buffer."""
+
+    def _provisioner(self, forward_buffer_limit):
+        from saorsa_deploy.provisioning.client import AntClientProvisioner
+
+        return AntClientProvisioner(
+            clients=[
+                {
+                    "ip": "1.2.3.4",
+                    "role": "upload",
+                    "forward_logs": True,
+                    "region": "lon1",
+                    "client_index": 0,
+                }
+            ],
+            bootstrap_peers=["9.9.9.9:10000"],
+            aws_access_key_id="ak",
+            aws_secret_access_key="sk",
+            addresses_s3_bucket="bucket",
+            addresses_s3_prefix="prefix",
+            deployment_name="DEV-01",
+            elasticsearch_url="http://es:9200",
+            elasticsearch_username="u",
+            elasticsearch_password="p",
+            forward_buffer_limit=forward_buffer_limit,
+        )
+
+    @patch("saorsa_deploy.provisioning.telegraf_client.ClientTelegrafProvisioner")
+    def test_buffer_limit_passed_when_set(self, mock_forwarder):
+        self._provisioner(2000000).provision_log_forwarders()
+        # One forwarder pass for the upload role.
+        assert mock_forwarder.call_count == 1
+        kwargs = mock_forwarder.call_args.kwargs
+        assert kwargs["metric_buffer_limit"] == 2000000
+
+    @patch("saorsa_deploy.provisioning.telegraf_client.ClientTelegrafProvisioner")
+    def test_buffer_limit_omitted_when_unset(self, mock_forwarder):
+        self._provisioner(None).provision_log_forwarders()
+        kwargs = mock_forwarder.call_args.kwargs
+        # Falls through to ClientTelegrafProvisioner's own default.
+        assert "metric_buffer_limit" not in kwargs

@@ -101,6 +101,41 @@ def _nodes_infra_argv(name: str, nodes: Nodes) -> list[str]:
     return argv
 
 
+def _resolve_elastic_drop_log_levels(elastic: Elastic, log_level) -> str | None:
+    """Resolve the ``--drop-log-levels`` value for the node→ES forwarder.
+
+    The node Telegraf forwarder drops any log line whose level is in
+    ``--drop-log-levels`` (CLI default ``DEBUG,TRACE``). Left alone that silently
+    contradicts a manifest that asked for verbose node logs via
+    ``nodes.log_level``: ant-node writes trace/debug to disk but the forwarder
+    strips it before Elasticsearch, so only INFO/WARN land in ES.
+
+    So derive the drop set from ``nodes.log_level`` — verbosity ordering is
+    TRACE > DEBUG > INFO, and we drop only the levels strictly MORE verbose than
+    the configured one (i.e. levels ant-node never even emits at that setting):
+
+    - ``trace``      -> ``""``      (drop nothing; forward everything)
+    - ``debug``      -> ``"TRACE"`` (keep DEBUG, drop the noisier TRACE)
+    - ``info``/unset -> ``None``    (omit the flag; CLI default ``DEBUG,TRACE``)
+
+    An explicit ``elastic.drop_log_levels`` always wins — the escape hatch for
+    "keep verbose logs on disk but out of ES" (set it to ``"DEBUG,TRACE"``) or
+    "force-keep everything regardless of node level" (set it to ``""``).
+
+    Returning ``None`` for the info/unset case keeps the generated step argv
+    byte-identical to before this change, so existing manifests' ``up`` journal
+    and plan hashes still match (no spurious re-runs / resume mismatches).
+    """
+    if elastic.drop_log_levels is not None:
+        return elastic.drop_log_levels
+    level = (log_level or "").strip().lower()
+    if level == "trace":
+        return ""
+    if level == "debug":
+        return "TRACE"
+    return None
+
+
 def _elastic_infra_argv(name: str, elastic: Elastic) -> list[str]:
     argv = ["elastic", "infra", "--name", name]
     if elastic.droplet_size is not None:
@@ -236,8 +271,12 @@ def _provision_and_start_steps(
 
     if elastic.enabled:
         argv = ["elastic", "provision-telegraf", "--name", name]
-        if elastic.drop_log_levels is not None:
-            argv += ["--drop-log-levels", elastic.drop_log_levels]
+        # Derive the node forwarder's drop set from nodes.log_level so that
+        # `log_level: trace`/`debug` actually reaches ES (an explicit
+        # elastic.drop_log_levels still overrides). See helper docstring.
+        drop = _resolve_elastic_drop_log_levels(elastic, nodes.log_level)
+        if drop is not None:
+            argv += ["--drop-log-levels", drop]
         if elastic.buffer_limit is not None:
             argv += ["--buffer-limit", str(elastic.buffer_limit)]
         argv += ["--ssh-key-path", ssh_key]
@@ -254,6 +293,11 @@ def _provision_and_start_steps(
         argv = ["clients", "provision", "--name", name, *ant_binary_flags(binaries.ant)]
         if monitoring.enabled:
             argv += ["--monitoring-name", name]
+        # Scale the client→ES log forwarder's buffer with the same knob the node
+        # forwarder uses, so a high-volume trace uploader doesn't overflow the
+        # client forwarder's small default buffer and silently drop lines.
+        if elastic.buffer_limit is not None:
+            argv += ["--forward-buffer-limit", str(elastic.buffer_limit)]
         argv += ["--ssh-key-path", ssh_key]
         steps.append(Step(argv, "Provision clients"))
         steps.append(
