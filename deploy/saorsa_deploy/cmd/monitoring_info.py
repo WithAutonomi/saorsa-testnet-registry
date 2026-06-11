@@ -45,9 +45,10 @@ def cmd_monitoring_info(args):
         return
 
     grafana_login = f"  (admin / {grafana_password})" if grafana_password else ""
+    grafana_line = f"{grafana_url}{grafana_login}" if grafana_url else "disabled"
     lines = [
         f"  [bold]InfluxDB:[/bold]  {influxdb_url}",
-        f"  [bold]Grafana:[/bold]   {grafana_url}{grafana_login}",
+        f"  [bold]Grafana:[/bold]   {grafana_line}",
         f"  [bold]Org:[/bold]       {influxdb_org}",
         f"  [bold]Bucket:[/bold]    {influxdb_bucket}  (node host metrics)",
     ]

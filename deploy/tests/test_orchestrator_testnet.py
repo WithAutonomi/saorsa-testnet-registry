@@ -529,6 +529,64 @@ def test_monitoring_opt_out():
     assert ["monitoring", "provision-telegraf"] not in cmds
 
 
+def _monitoring_infra_argv(steps):
+    return next(s.argv for s in steps if s.argv[:2] == ["monitoring", "infra"])
+
+
+def test_grafana_off_by_default():
+    # No `grafana` key, and an explicit `enabled: true` with no grafana key:
+    # the infra step must NOT carry --grafana (keeps argv/journal byte-identical).
+    assert _monitoring_infra_argv(build_deploy_steps(_minimal())) == [
+        "monitoring",
+        "infra",
+        "--name",
+        "DEV-01",
+    ]
+    enabled_only = build_deploy_steps(_minimal(monitoring={"enabled": True}))
+    assert "--grafana" not in _monitoring_infra_argv(enabled_only)
+
+
+def test_grafana_opt_in_appends_flag():
+    steps = build_deploy_steps(
+        _minimal(monitoring={"enabled": True, "grafana": True})
+    )
+    assert _monitoring_infra_argv(steps) == [
+        "monitoring",
+        "infra",
+        "--name",
+        "DEV-01",
+        "--grafana",
+    ]
+
+
+def test_grafana_opt_in_extension():
+    m = Manifest.model_validate(
+        {
+            "name": "DEV-02",
+            "kind": "testnet-extension",
+            "purpose": "compat test",
+            "ssh_key_path": SSH,
+            "extension": {
+                "source": "DEV-01",
+                "mode": True,
+                "binaries": {"ant_node": {"version": "2.0"}},
+                "nodes": {
+                    "per_vm": 10,
+                    "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+                },
+                "monitoring": {"enabled": True, "grafana": True},
+            },
+        }
+    )
+    assert _monitoring_infra_argv(build_deploy_steps(m)) == [
+        "monitoring",
+        "infra",
+        "--name",
+        "DEV-02",
+        "--grafana",
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # extension kind
 # --------------------------------------------------------------------------- #

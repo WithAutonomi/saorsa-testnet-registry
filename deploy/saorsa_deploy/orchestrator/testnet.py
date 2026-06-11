@@ -145,6 +145,15 @@ def _elastic_infra_argv(name: str, elastic: Elastic) -> list[str]:
     return argv
 
 
+def _monitoring_infra_argv(name: str, monitoring: Monitoring) -> list[str]:
+    argv = ["monitoring", "infra", "--name", name]
+    # Grafana is opt-in; only append the flag when requested so existing
+    # manifests' step argv (and `up` journal hashes) stay byte-identical.
+    if monitoring.grafana:
+        argv += ["--grafana"]
+    return argv
+
+
 def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
     argv = ["clients", "infra", "--name", name]
     for u in clients.uploaders:
@@ -350,7 +359,10 @@ def build_testnet_deploy_steps(
         )
     if spec.monitoring.enabled:
         steps.append(
-            Step(["monitoring", "infra", "--name", name], "Create monitoring infrastructure")
+            Step(
+                _monitoring_infra_argv(name, spec.monitoring),
+                "Create monitoring infrastructure",
+            )
         )
     if spec.clients is not None:
         steps.append(Step(_clients_infra_argv(name, spec.clients), "Create client infrastructure"))
@@ -439,7 +451,10 @@ def build_extension_deploy_steps(
         )
     if spec.monitoring.enabled:
         steps.append(
-            Step(["monitoring", "infra", "--name", name], "Create monitoring infrastructure")
+            Step(
+                _monitoring_infra_argv(name, spec.monitoring),
+                "Create monitoring infrastructure",
+            )
         )
     if spec.clients is not None:
         steps.append(Step(_clients_infra_argv(name, spec.clients), "Create client infrastructure"))

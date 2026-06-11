@@ -1680,7 +1680,14 @@ def main(argv=None):
         type=str,
         default=None,
         help="VM size for the (separate) Grafana VM (default: s-1vcpu-2gb "
-        "for digitalocean, d2-4 for ovh).",
+        "for digitalocean, d2-4 for ovh). Only used with --grafana.",
+    )
+    monitoring_infra_parser.add_argument(
+        "--grafana",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Create the separate Grafana VM (default: off — InfluxDB only). "
+        "Pass --grafana to opt in; --no-grafana is the explicit default.",
     )
 
     # monitoring provision
@@ -2726,6 +2733,13 @@ def main(argv=None):
         help="Monitoring VM attached volume size in GB (default: 50).",
     )
     prod_cd_deploy_parser.add_argument(
+        "--grafana",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also create a Grafana VM for dashboards (default: off — "
+        "InfluxDB only).",
+    )
+    prod_cd_deploy_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
@@ -2886,6 +2900,13 @@ def main(argv=None):
         help="Monitoring VM attached volume size in GB (default: 50).",
     )
     prod_dl_deploy_parser.add_argument(
+        "--grafana",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also create a Grafana VM for dashboards (default: off — "
+        "InfluxDB only).",
+    )
+    prod_dl_deploy_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default="~/.ssh/id_rsa",
@@ -3023,6 +3044,13 @@ def main(argv=None):
         type=int,
         default=50,
         help="Monitoring VM attached volume size in GB (default: 50).",
+    )
+    prod_up_deploy_parser.add_argument(
+        "--grafana",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also create a Grafana VM for dashboards (default: off — "
+        "InfluxDB only).",
     )
     prod_up_deploy_parser.add_argument(
         "--ssh-key-path",
@@ -3192,6 +3220,14 @@ def main(argv=None):
         type=int,
         default=50,
         help="Monitoring VM attached volume size in GB (default: 50).",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--grafana",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also create a Grafana VM for dashboards (default: off — "
+        "InfluxDB only). Canary datasets are usually inspected via Grafana, "
+        "so consider --grafana for long-lived canary runs.",
     )
     prod_canary_deploy_parser.add_argument(
         "--ssh-key-path",

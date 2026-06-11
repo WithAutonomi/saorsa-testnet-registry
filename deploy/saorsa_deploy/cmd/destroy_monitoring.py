@@ -58,12 +58,18 @@ def cmd_destroy_monitoring(args):
     workspace_dir = workspace_base / f"{provider}-monitoring-{args.name}-{region}"
     state_key = f"saorsa-deploy/{abbrev}-monitoring-{args.name}-{region}.tfstate"
 
+    # Must match what was created so Terraform's count expressions line up with
+    # state. Legacy stacks (no grafana_enabled key) default True → the existing
+    # Grafana VM is included in the destroy plan.
+    enable_grafana = "true" if state.get("grafana_enabled", True) else "false"
+
     if provider == "ovh":
         service_name = require_ovh_service_name(console)
         variables = {
             "name": args.name,
             "region": region,
             "service_name": service_name,
+            "enable_grafana": enable_grafana,
         }
     else:
         # Pull the actual volume_size from tfstate so Terraform's plan doesn't
@@ -74,6 +80,7 @@ def cmd_destroy_monitoring(args):
             "name": args.name,
             "region": region,
             "volume_size": volume_size,
+            "enable_grafana": enable_grafana,
         }
 
     config = TerraformRunConfig(

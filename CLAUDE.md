@@ -157,10 +157,13 @@ shown and resume means "from the longest matching prefix". A fully successful
 `up` — or a successful `down` (either path) — deletes the journal;
 `plan`/`up --dry-run` never touch it.
 
-For testnet/extension kinds, **monitoring (InfluxDB + Grafana) defaults ON**
+For testnet/extension kinds, **monitoring (InfluxDB) defaults ON**
 (omit the `monitoring:` block, or `monitoring: {enabled: false}` to opt out) so
 client upload/download metrics are captured; Elasticsearch log-forwarding stays
-opt-in.
+opt-in. The **Grafana** dashboard VM is itself **opt-in and OFF by default** —
+add `grafana: true` under `monitoring:` (CLI: `monitoring infra --grafana`) to
+also stand up a Grafana VM; without it only InfluxDB is created (metrics stay
+queryable via InfluxDB/Flux).
 
 Testnet node VMs can be placed on **DigitalOcean, Hetzner, Vultr, or OVH**
 (`nodes.providers.<name>` in a manifest; `--<provider>-vm-count` etc. on
@@ -421,22 +424,34 @@ When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) 
 
 ## Monitoring
 
-Optional per-testnet monitoring stack: InfluxDB 2.x and Grafana on **two
-separate VMs**. Standalone — usable by this repo or external setups. Runs on
+Optional per-testnet monitoring stack: InfluxDB 2.x (always) plus an **optional**
+Grafana VM. Standalone — usable by this repo or external setups. Runs on
 **DigitalOcean (default) or OVH** (`--provider ovh`).
 
-Grafana is split onto its own small VM so its panel rendering doesn't compete
-with InfluxDB for CPU/RAM (the cause of large dashboards like the per-node RSS
-panels failing to render on a single shared box). The InfluxDB VM carries the
-data volume; Grafana reaches it over the public `:8086` endpoint. The
-`monitoring infra`/`provision` flow (and `monitoring destroy`) manage both VMs
-in one Terraform state. Legacy single-VM stacks (state without `grafana_ip`)
-still re-provision by co-locating Grafana on the InfluxDB VM.
+**Grafana is opt-in and OFF by default**: `monitoring infra` creates only the
+InfluxDB VM unless `--grafana` is passed (manifest `monitoring: { grafana: true }`).
+The choice is recorded as `grafana_enabled` in the monitoring S3 state. The
+Terraform `grafana` resources are `count`-gated on an `enable_grafana` variable
+(with `moved` blocks so pre-existing 2-VM stacks migrate to index `[0]` in place
+rather than being recreated), and `monitoring destroy` passes `enable_grafana`
+back from state so the destroy plan matches what was created.
+
+When enabled, Grafana is split onto its own small VM so its panel rendering
+doesn't compete with InfluxDB for CPU/RAM (the cause of large dashboards like the
+per-node RSS panels failing to render on a single shared box). The InfluxDB VM
+carries the data volume; Grafana reaches it over the public `:8086` endpoint. The
+`monitoring infra`/`provision` flow (and `monitoring destroy`) manage both VMs in
+one Terraform state. Three provision-time cases, keyed off `grafana_enabled`:
+disabled (default) → InfluxDB only; enabled with its own `grafana_ip` → Grafana on
+that VM; legacy single-VM stacks (no `grafana_enabled` key, no `grafana_ip`) →
+co-locate Grafana on the InfluxDB VM. Prod client flows (canary/uploaders/
+downloaders) likewise default Grafana off; pass `--grafana` to those deploy
+commands to opt in.
 
 ### Commands
 
-- `monitoring infra` — create the InfluxDB VM + Grafana VM via Terraform. `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (InfluxDB VM; default `s-4vcpu-8gb` do / `b3-8` ovh), `--grafana-size` (default `s-1vcpu-2gb` do / `d2-4` ovh), `--volume-size`, `--volume-type` (ovh). OVH needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an `ant_deploy` SSH key in the project.
-- `monitoring provision` — install InfluxDB (InfluxDB VM) + Grafana (Grafana VM), prints connection details. `--retention-days N` caps InfluxDB bucket retention (default `0` = infinite, the dev default; set e.g. 14 for prod). Retention is applied to both buckets at first provision.
+- `monitoring infra` — create the InfluxDB VM via Terraform (and the Grafana VM only with `--grafana`). `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (InfluxDB VM; default `s-4vcpu-8gb` do / `b3-8` ovh), `--grafana`/`--no-grafana` (default off), `--grafana-size` (default `s-1vcpu-2gb` do / `d2-4` ovh; only used with `--grafana`), `--volume-size`, `--volume-type` (ovh). OVH needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an `ant_deploy` SSH key in the project.
+- `monitoring provision` — install InfluxDB (InfluxDB VM) and, when Grafana was enabled, Grafana (Grafana VM); prints connection details. `--retention-days N` caps InfluxDB bucket retention (default `0` = infinite, the dev default; set e.g. 14 for prod). Retention is applied to both buckets at first provision.
 - `monitoring provision-telegraf` — install Telegraf on nodes for host metrics (CPU, mem, disk, net) → InfluxDB. Retrofit path (`--inventory-path`/`--host-ips-file`) provisions Tier-1 host+procstat metrics only; the Prometheus app-metrics scrape is only wired on the `--name` path with `node_count > 0`.
 - `monitoring info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
 - `monitoring destroy` — tear down monitoring infrastructure (both VMs)

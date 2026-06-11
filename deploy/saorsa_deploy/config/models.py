@@ -256,6 +256,9 @@ class Monitoring(_Base):
     # to land in, and `deployments print-uploads`/`record-results` read from it.
     # Opt out explicitly with `monitoring: { enabled: false }`.
     enabled: bool = True
+    # The separate Grafana VM is opt-in (off by default — InfluxDB only). Enable
+    # dashboards with `monitoring: { enabled: true, grafana: true }`.
+    grafana: bool = False
 
 
 class TestnetSpec(_Base):

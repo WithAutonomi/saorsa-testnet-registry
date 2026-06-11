@@ -467,6 +467,7 @@ def _ensure_monitoring(args, console: Console) -> None:
         # rather than the larger testnet default.
         droplet_size="s-2vcpu-4gb",
         force=False,
+        grafana=getattr(args, "grafana", False),
     ))
 
     console.print("[bold cyan]Step 2/5: provisioning InfluxDB + Grafana[/bold cyan]")

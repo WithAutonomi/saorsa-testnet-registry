@@ -142,12 +142,17 @@ def save_monitoring_state(
     influxdb_org: str = "",
     influxdb_bucket: str = "",
     grafana_url: str = "",
+    grafana_enabled: bool = True,
 ) -> None:
     """Save monitoring stack metadata to S3.
 
     ``vm_ip`` is the InfluxDB VM; ``grafana_ip`` is the separate Grafana VM
     (empty for legacy single-VM stacks). ``provider`` records which cloud the
     stack runs on so destroy can select the right Terraform module.
+    ``grafana_enabled`` records whether the optional Grafana VM was created, so
+    provision/destroy can tell a deliberately Grafana-less stack apart from a
+    legacy single-VM stack (which has no ``grafana_enabled`` key and defaults
+    to True → co-locate Grafana on the InfluxDB VM).
     """
     state = {
         "name": name,
@@ -155,6 +160,7 @@ def save_monitoring_state(
         "provider": provider,
         "vm_ip": vm_ip,
         "grafana_ip": grafana_ip,
+        "grafana_enabled": grafana_enabled,
         "influxdb_url": influxdb_url,
         "influxdb_token": influxdb_token,
         "influxdb_org": influxdb_org,

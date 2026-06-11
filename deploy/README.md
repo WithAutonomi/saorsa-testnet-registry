@@ -652,9 +652,14 @@ uv run saorsa-deploy elastic provision-telegraf --name DEV-01 \
 
 ## Monitoring
 
-Optional per-testnet monitoring stack: InfluxDB 2.x and Grafana on **two
-separate VMs**, with Telegraf forwarding host-level metrics (CPU, memory, disk,
-network) from testnet nodes. Grafana runs on its own (small) VM so its panel
+Optional per-testnet monitoring stack: InfluxDB 2.x (always) plus an **optional**
+Grafana VM, with Telegraf forwarding host-level metrics (CPU, memory, disk,
+network) from testnet nodes.
+
+**Grafana is opt-in and OFF by default** — by default only the InfluxDB VM is
+created (metrics stay fully queryable via InfluxDB/Flux). Enable dashboards with
+`monitoring infra --grafana` (manifest: `monitoring: { enabled: true, grafana:
+true }`). When enabled, Grafana runs on its **own (small) VM** so its panel
 rendering does not compete with InfluxDB ingest/query for CPU and RAM — the
 cause of large dashboards (e.g. the per-node RSS panels) failing to render when
 both shared one box. The InfluxDB VM carries the data volume; Grafana reaches
@@ -670,12 +675,15 @@ an `ant_deploy` SSH key registered in the OVH project (same prerequisites as
 
 ### `monitoring infra` command
 
-Create the InfluxDB VM (with attached storage) and the Grafana VM using
-Terraform.
+Create the InfluxDB VM (with attached storage) using Terraform, plus the
+optional Grafana VM when `--grafana` is passed.
 
 ```bash
-# DigitalOcean (default)
+# DigitalOcean (default) — InfluxDB only
 uv run saorsa-deploy monitoring infra --name DEV-01
+
+# InfluxDB + Grafana dashboards
+uv run saorsa-deploy monitoring infra --name DEV-01 --grafana
 
 # OVH
 uv run saorsa-deploy monitoring infra --name PROD-MON --provider ovh \
@@ -693,7 +701,8 @@ uv run saorsa-deploy monitoring infra --name PROD-MON --provider ovh \
 | `--volume-size` | int | No | 50 | InfluxDB data volume size in GB |
 | `--volume-type` | string | No | `high-speed` | OVH block storage type (ignored for digitalocean) |
 | `--droplet-size` | string | No | `s-4vcpu-8gb` (do) / `b3-8` (ovh) | InfluxDB VM size; bump for production fleets with many metric-forwarding VMs |
-| `--grafana-size` | string | No | `s-1vcpu-2gb` (do) / `d2-4` (ovh) | Grafana VM size (it only renders panels, so it stays small) |
+| `--grafana` / `--no-grafana` | flag | No | `--no-grafana` | Also create the separate Grafana VM. Off by default (InfluxDB only) |
+| `--grafana-size` | string | No | `s-1vcpu-2gb` (do) / `d2-4` (ovh) | Grafana VM size (only used with `--grafana`; it only renders panels, so it stays small) |
 
 ### `monitoring provision` command
 
