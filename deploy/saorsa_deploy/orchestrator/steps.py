@@ -17,11 +17,90 @@ class Step:
     argv: list[str]  # e.g. ["bootstraps", "infra", "--name", "STG-01", ...]
     label: str  # human-readable description for `plan` output
     best_effort: bool = False  # if True, a non-zero exit is warned about, not fatal
+    # Parallel-group markers. Steps sharing the same ``group`` (and appearing
+    # contiguously in the plan) are collapsed by :func:`iter_units` into one
+    # :class:`StepGroup` that executes its lanes concurrently. Within a group,
+    # steps sharing the same ``lane`` run sequentially (e.g. bootstraps→nodes,
+    # which share state); different lanes run in parallel. Both default to None,
+    # so an unmarked step is its own sequential unit and the byte-for-byte argv
+    # output of the builders (and the journal contract) is unchanged.
+    group: str | None = None
+    lane: str | None = None
 
     def render(self) -> str:
         """Render as a copy-pasteable ``saorsa-deploy`` command line."""
         parts = ["saorsa-deploy", *self.argv]
         return " ".join(_quote(p) for p in parts)
+
+
+@dataclass(frozen=True)
+class StepGroup:
+    """A contiguous run of plan steps that execute concurrently as one unit.
+
+    ``lanes`` is a list of step-lanes; the steps inside a lane run sequentially,
+    and the lanes themselves run in parallel. The whole group is treated as a
+    single resumable unit in the step journal: it is recorded as done only once
+    every lane has succeeded, so a resumed run re-executes the entire group
+    (each underlying command is idempotent) rather than half of it.
+    """
+
+    name: str
+    lanes: list[list[Step]]
+    label: str
+
+    @property
+    def steps(self) -> list[Step]:
+        return [s for lane in self.lanes for s in lane]
+
+    def render(self) -> str:
+        """One-line summary of the parallel commands, for divergence output."""
+        return "  |  ".join(
+            " && ".join(s.render() for s in lane) for lane in self.lanes
+        )
+
+
+def _group_label(group_id: str) -> str:
+    if group_id == "infra":
+        return "Create infrastructure (parallel)"
+    return f"{group_id} (parallel)"
+
+
+def iter_units(steps: list[Step]) -> list[Step | StepGroup]:
+    """Collapse a flat plan into execution units.
+
+    A run of consecutive steps carrying the same non-None ``group`` id becomes a
+    single :class:`StepGroup`; everything else stays a bare :class:`Step`. So an
+    ungrouped plan yields one unit per step (units 1:1 with steps), which keeps
+    the journal/resume index space and all existing behaviour unchanged.
+    """
+    units: list[Step | StepGroup] = []
+    i = 0
+    n = len(steps)
+    while i < n:
+        step = steps[i]
+        if step.group is None:
+            units.append(step)
+            i += 1
+            continue
+        gid = step.group
+        run: list[Step] = []
+        while i < n and steps[i].group == gid:
+            run.append(steps[i])
+            i += 1
+        lane_order: list[object] = []
+        lane_map: dict[object, list[Step]] = {}
+        for idx, s in enumerate(run):
+            # A step with no explicit lane gets its own lane (keyed uniquely so
+            # it never merges with another); explicitly-laned steps merge by name.
+            key: object = s.lane if s.lane is not None else (idx, id(s))
+            if key not in lane_map:
+                lane_map[key] = []
+                lane_order.append(key)
+            lane_map[key].append(s)
+        units.append(
+            StepGroup(name=gid, lanes=[lane_map[k] for k in lane_order], label=_group_label(gid))
+        )
+    return units
 
 
 def _quote(token: str) -> str:

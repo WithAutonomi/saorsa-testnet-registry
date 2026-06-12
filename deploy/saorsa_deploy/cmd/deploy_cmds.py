@@ -24,6 +24,7 @@ from saorsa_deploy.orchestrator import (
     build_destroy_steps_from_state,
 )
 from saorsa_deploy.orchestrator import journal as step_journal
+from saorsa_deploy.orchestrator.steps import StepGroup, iter_units
 from saorsa_deploy.state import (
     delete_step_journal,
     load_step_journal,
@@ -49,14 +50,39 @@ def _load(args, console: Console):
 def _print_plan(
     console: Console, name: str, kind: str, steps: list[Step], verb: str, done: int = 0
 ) -> None:
+    """Print the numbered command sequence.
+
+    ``done`` counts completed *units* (a parallel group is one unit), used to
+    flag already-done commands on a resumed run. Every underlying command is
+    still listed and numbered continuously; commands inside a parallel group are
+    annotated and grouped under a header.
+    """
+    units = iter_units(steps)
     console.print(
         f"[bold]{verb} plan for {name}[/bold] "
         f"([bold]{kind}[/bold]) — {len(steps)} step(s):"
     )
-    for i, step in enumerate(steps, 1):
-        marker = " [green]✓ done previously[/green]" if i <= done else ""
-        console.print(f"  [cyan]{i:>2}.[/cyan] {step.label}{marker}")
-        console.print(f"      [dim]$ {step.render()}[/dim]")
+    n = 0
+    for unit_idx, unit in enumerate(units):
+        unit_done = unit_idx < done
+        marker = " [green]✓ done previously[/green]" if unit_done else ""
+        if isinstance(unit, StepGroup):
+            console.print(
+                f"  [magenta]┌ {unit.label} — "
+                f"{len(unit.lanes)} lane(s) run concurrently:[/magenta]{marker}"
+            )
+            for lane in unit.lanes:
+                for step in lane:
+                    n += 1
+                    console.print(
+                        f"  [cyan]{n:>2}.[/cyan] {step.label} "
+                        f"[magenta](parallel)[/magenta]{marker}"
+                    )
+                    console.print(f"      [dim]$ {step.render()}[/dim]")
+        else:
+            n += 1
+            console.print(f"  [cyan]{n:>2}.[/cyan] {unit.label}{marker}")
+            console.print(f"      [dim]$ {unit.render()}[/dim]")
 
 
 def _record_step(journal: dict | None, step: Step, status: str) -> None:
@@ -67,13 +93,32 @@ def _record_step(journal: dict | None, step: Step, status: str) -> None:
     save_step_journal(journal["name"], journal)
 
 
+def _record_group(journal: dict | None, group: StepGroup) -> None:
+    """Record a fully-completed parallel group as one journal unit and persist."""
+    if journal is None:
+        return
+    step_journal.record_group(journal, group, step_journal.STATUS_SUCCEEDED)
+    save_step_journal(journal["name"], journal)
+
+
 def _execute(
     console: Console, steps: list[Step], journal: dict | None = None, start: int = 0
 ) -> None:
+    from saorsa_deploy import parallel_infra
     from saorsa_deploy.main import main as run_cli
 
-    total = len(steps)
-    for i, step in enumerate(steps[start:], start + 1):
+    units = iter_units(steps)
+    total = len(units)
+    for i, unit in enumerate(units[start:], start + 1):
+        if isinstance(unit, StepGroup):
+            console.rule(f"[bold cyan][{i}/{total}][/bold cyan] {unit.label}")
+            # run_parallel_group prints failures and raises SystemExit on any
+            # lane failure, so reaching the next line means every lane succeeded.
+            parallel_infra.run_parallel_group(console, unit)
+            _record_group(journal, unit)
+            continue
+
+        step = unit
         console.rule(f"[bold cyan][{i}/{total}][/bold cyan] {step.label}")
         console.print(f"[dim]$ {step.render()}[/dim]")
         try:
