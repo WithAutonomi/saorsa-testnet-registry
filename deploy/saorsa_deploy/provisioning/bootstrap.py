@@ -14,6 +14,10 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
     build_set_hostname_command,
 )
+from saorsa_deploy.provisioning.progress import (
+    RichLiveProgressHandler,
+    create_progress_handler,
+)
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
@@ -21,6 +25,33 @@ BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
 METRICS_PORT = 9100
 
 DEFAULT_REWARDS_ADDRESS = "0x03B770D9cD32077cC0bF330c13C114a87643B124"
+
+
+def _build_binary_install_command(download_url: str, is_archive: bool) -> str:
+    """Return the idempotent shell command that installs the ant-node binary.
+
+    Skips the download when the binary is already present (``test -f``), so a
+    re-run is a no-op. Shared by the single-host and multi-host bootstrap
+    provisioners so both stay byte-identical.
+    """
+    if is_archive:
+        return (
+            f"test -f {BINARY_INSTALL_PATH} "
+            f"&& echo 'ANT_BINARY:SKIP' || "
+            f"(wget -q {download_url} -O /tmp/{RELEASE_ASSET_NAME} && "
+            f"tar -xzf /tmp/{RELEASE_ASSET_NAME} -C /tmp/ && "
+            f"mv /tmp/ant-node {BINARY_INSTALL_PATH} && "
+            f"chmod +x {BINARY_INSTALL_PATH} && "
+            f"rm -f /tmp/{RELEASE_ASSET_NAME} && "
+            f"echo 'ANT_BINARY:INSTALLED')"
+        )
+    return (
+        f"test -f {BINARY_INSTALL_PATH} "
+        f"&& echo 'ANT_BINARY:SKIP' || "
+        f"(wget -q {download_url} -O {BINARY_INSTALL_PATH} && "
+        f"chmod +x {BINARY_INSTALL_PATH} && "
+        f"echo 'ANT_BINARY:INSTALLED')"
+    )
 
 
 def _build_exec_start(
@@ -204,25 +235,9 @@ class AntBootstrapNodeProvisioner:
                 commands=[f"mkdir -p {LOG_DIR}/{self.service_name}"],
             )
 
-            if self.binary_is_archive:
-                install_cmd = (
-                    f"test -f {BINARY_INSTALL_PATH} "
-                    f"&& echo 'ANT_BINARY:SKIP' || "
-                    f"(wget -q {download_url} -O /tmp/{RELEASE_ASSET_NAME} && "
-                    f"tar -xzf /tmp/{RELEASE_ASSET_NAME} -C /tmp/ && "
-                    f"mv /tmp/ant-node {BINARY_INSTALL_PATH} && "
-                    f"chmod +x {BINARY_INSTALL_PATH} && "
-                    f"rm -f /tmp/{RELEASE_ASSET_NAME} && "
-                    f"echo 'ANT_BINARY:INSTALLED')"
-                )
-            else:
-                install_cmd = (
-                    f"test -f {BINARY_INSTALL_PATH} "
-                    f"&& echo 'ANT_BINARY:SKIP' || "
-                    f"(wget -q {download_url} -O {BINARY_INSTALL_PATH} && "
-                    f"chmod +x {BINARY_INSTALL_PATH} && "
-                    f"echo 'ANT_BINARY:INSTALLED')"
-                )
+            install_cmd = _build_binary_install_command(
+                download_url, self.binary_is_archive
+            )
             add_op(
                 state,
                 server.shell,
@@ -264,3 +279,199 @@ class AntBootstrapNodeProvisioner:
             f"[green]Bootstrap #{self.bootstrap_index} ({self.service_name}) "
             f"provisioned at {self.ip}[/green]"
         )
+
+
+class AntBootstrapNodesProvisioner:
+    """Provisions multiple additional bootstrap nodes (index 2+) in parallel.
+
+    Mirrors :class:`~saorsa_deploy.provisioning.node.AntNodeProvisioner`: every
+    host lives in a single pyinfra ``Inventory`` so pyinfra connects and runs
+    operations across all hosts concurrently, and a
+    :class:`~saorsa_deploy.provisioning.progress.RichLiveProgressHandler` renders
+    a live per-host progress table (the same table ``nodes provision`` shows).
+
+    Each bootstrap host differs only by its ``bootstrap_index`` — which drives
+    the service name (``ant-bootstrap-{index}``), unit-file contents, log
+    directory and OS hostname — so those steps are added as per-host operations
+    (``add_op(..., host=[host])``) while the host-agnostic steps (disable
+    unattended-upgrades, mount the data volume, install the binary, reload
+    systemd) are added once for the whole fleet.
+
+    Genesis (index 1) is NOT handled here — it is provisioned on its own by the
+    single-host :class:`AntBootstrapNodeProvisioner` via ``nodes provision-genesis``.
+    """
+
+    def __init__(
+        self,
+        nodes: list[dict],
+        bootstrap_peers: list[str],
+        ssh_key_path: str = "~/.ssh/id_rsa",
+        port: int | None = None,
+        log_level: str | None = None,
+        testnet: bool = False,
+        console: Console | None = None,
+        binary_url: str | None = None,
+        binary_is_archive: bool = True,
+        upgrade_channel: str | None = None,
+        rewards_address: str = DEFAULT_REWARDS_ADDRESS,
+        testnet_name: str | None = None,
+    ):
+        """``nodes`` is a list of dicts, each with ``ip`` and ``bootstrap_index``
+        (``region`` is accepted and ignored — it is only used for display by the
+        caller)."""
+        self.nodes = nodes
+        self.bootstrap_peers = bootstrap_peers
+        self.ssh_key_path = ssh_key_path
+        self.port = port
+        self.log_level = log_level
+        self.testnet = testnet
+        self.console = console or Console()
+        self.binary_url = binary_url
+        self.binary_is_archive = binary_is_archive
+        self.upgrade_channel = upgrade_channel
+        self.rewards_address = rewards_address
+        self.testnet_name = testnet_name
+        self._index_by_ip = {n["ip"]: n["bootstrap_index"] for n in nodes}
+
+    def _service_name(self, bootstrap_index: int) -> str:
+        return f"ant-bootstrap-{bootstrap_index}"
+
+    def _hostname(self, bootstrap_index: int) -> str | None:
+        if not self.testnet_name:
+            return None
+        return f"{self.testnet_name}-ant-bootstrap-{bootstrap_index}"
+
+    def _build_config_commands(self, bootstrap_index: int) -> list[str]:
+        """Per-host setup: hostname, log dir, and the systemd unit file.
+
+        Runs after the shared "mount data volume" op so the log directory lands
+        on the mounted volume, mirroring the single-host provisioner's ordering.
+        """
+        service_name = self._service_name(bootstrap_index)
+        exec_start = _build_exec_start(
+            bootstrap_index=bootstrap_index,
+            bootstrap_peers=self.bootstrap_peers,
+            port=self.port,
+            log_level=self.log_level,
+            testnet=self.testnet,
+            upgrade_channel=self.upgrade_channel,
+            rewards_address=self.rewards_address,
+        )
+        unit_content = _build_unit_file(service_name, exec_start)
+        unit_path = f"/etc/systemd/system/{service_name}.service"
+
+        commands = []
+        hostname = self._hostname(bootstrap_index)
+        if hostname:
+            commands.append(build_set_hostname_command(hostname))
+        commands.append(f"mkdir -p {LOG_DIR}/{service_name}")
+        commands.append(f"cat > {unit_path} << 'UNIT_EOF'\n{unit_content}UNIT_EOF")
+        return commands
+
+    def execute(self) -> None:
+        """Provision every bootstrap host concurrently in one pyinfra session."""
+        if self.binary_url:
+            download_url = self.binary_url
+            self.console.print(f"Using binary URL: {download_url}")
+        else:
+            self.console.print("Fetching latest release from GitHub...")
+            download_url = get_release_url()
+            self.console.print(f"  Release URL: {download_url}")
+
+        hosts_data = [
+            (n["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path})
+            for n in self.nodes
+        ]
+        inventory = Inventory((hosts_data, {}))
+        state = State(inventory=inventory, config=Config())
+
+        progress = create_progress_handler(self.console)
+        state.add_callback_handler(progress)
+        if isinstance(progress, RichLiveProgressHandler):
+            progress._live.start()
+
+        try:
+            self.console.print(
+                f"Connecting to {len(self.nodes)} bootstrap host(s) as root..."
+            )
+            connect_all(state)
+
+            active_hosts = list(state.inventory.get_active_hosts())
+
+            # Host-agnostic steps for the whole fleet.
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
+                commands=[build_disable_unattended_upgrades_command()],
+            )
+            add_op(
+                state,
+                server.shell,
+                name="Mount attached storage volume",
+                commands=[build_mount_volume_command()],
+            )
+            add_op(
+                state,
+                server.shell,
+                name="Download and install ant-node binary",
+                commands=[
+                    _build_binary_install_command(download_url, self.binary_is_archive)
+                ],
+            )
+
+            # Per-host setup (hostname / log dir / unit file): each host's
+            # service name embeds its bootstrap index, so these must be targeted.
+            for host in active_hosts:
+                index = self._index_by_ip[host.name]
+                add_op(
+                    state,
+                    server.shell,
+                    name=f"Configure {self._service_name(index)}",
+                    commands=self._build_config_commands(index),
+                    host=[host],
+                )
+
+            # One daemon-reload for the fleet, after all unit files are written.
+            add_op(
+                state,
+                systemd.daemon_reload,
+                name="Reload systemd daemon",
+            )
+
+            # Enable + start each host's service.
+            for host in active_hosts:
+                index = self._index_by_ip[host.name]
+                service_name = self._service_name(index)
+                add_op(
+                    state,
+                    systemd.service,
+                    name=f"Enable and start {service_name}",
+                    service=service_name,
+                    running=True,
+                    enabled=True,
+                    host=[host],
+                )
+
+            self.console.print("Running provisioning operations...")
+            run_ops(state)
+
+            if isinstance(progress, RichLiveProgressHandler):
+                progress.mark_all_done()
+        finally:
+            disconnect_all(state)
+            if isinstance(progress, RichLiveProgressHandler):
+                progress._live.stop()
+
+        failed = state.failed_hosts
+        total = len(self.nodes)
+        succeeded = total - len(failed)
+        self.console.print()
+        self.console.print(
+            f"[bold]Bootstrap provisioning complete: "
+            f"{succeeded}/{total} host(s) succeeded[/bold]"
+        )
+        if failed:
+            for host in failed:
+                self.console.print(f"  [red]Failed: {host.name}[/red]")
+            raise RuntimeError(f"{len(failed)} bootstrap host(s) failed provisioning")

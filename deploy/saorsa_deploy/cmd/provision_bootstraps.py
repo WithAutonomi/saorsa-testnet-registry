@@ -3,7 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
-from saorsa_deploy.provisioning.bootstrap import AntBootstrapNodeProvisioner
+from saorsa_deploy.provisioning.bootstrap import AntBootstrapNodesProvisioner
 from saorsa_deploy.registry import record_event
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_deployment_state, update_deployment_state
@@ -62,48 +62,39 @@ def cmd_provision_bootstraps(args):
         {"count": len(additional_nodes), "genesis_peer": genesis_peer},
     )
 
-    for node in additional_nodes:
-        console.print(
-            f"[bold]Provisioning bootstrap #{node['bootstrap_index']} "
-            f"at {node['ip']} ({node['region']})...[/bold]"
+    kwargs = {
+        "nodes": additional_nodes,
+        "bootstrap_peers": [genesis_peer],
+        "ssh_key_path": args.ssh_key_path,
+        "port": args.port,
+        "log_level": args.log_level,
+        "testnet": args.testnet,
+        "console": console,
+        "rewards_address": args.rewards_address,
+        "testnet_name": args.name,
+    }
+    if args.upgrade_channel:
+        kwargs["upgrade_channel"] = args.upgrade_channel
+    if binary_url:
+        kwargs["binary_url"] = binary_url
+        kwargs["binary_is_archive"] = binary_is_archive
+
+    provisioner = AntBootstrapNodesProvisioner(**kwargs)
+    try:
+        provisioner.execute()
+    except Exception as e:
+        console.print(f"[bold red]Bootstrap provisioning failed:[/bold red] {e}")
+        from saorsa_db.models import DeploymentStatus
+
+        from saorsa_deploy.registry import record_status
+
+        record_event(
+            args.name,
+            "bootstrap_provisioning_failed",
+            {"error": str(e)},
         )
-        kwargs = {
-            "ip": node["ip"],
-            "bootstrap_index": node["bootstrap_index"],
-            "ssh_key_path": args.ssh_key_path,
-            "bootstrap_peers": [genesis_peer],
-            "port": args.port,
-            "log_level": args.log_level,
-            "testnet": args.testnet,
-            "console": console,
-            "rewards_address": args.rewards_address,
-            "testnet_name": args.name,
-        }
-        if args.upgrade_channel:
-            kwargs["upgrade_channel"] = args.upgrade_channel
-        if binary_url:
-            kwargs["binary_url"] = binary_url
-            kwargs["binary_is_archive"] = binary_is_archive
-
-        provisioner = AntBootstrapNodeProvisioner(**kwargs)
-        try:
-            provisioner.execute()
-        except Exception as e:
-            console.print(
-                f"[bold red]Failed to provision bootstrap "
-                f"#{node['bootstrap_index']}:[/bold red] {e}"
-            )
-            from saorsa_db.models import DeploymentStatus
-
-            from saorsa_deploy.registry import record_status
-
-            record_event(
-                args.name,
-                "bootstrap_provisioning_failed",
-                {"bootstrap_index": node["bootstrap_index"], "error": str(e)},
-            )
-            record_status(args.name, DeploymentStatus.FAILED)
-            sys.exit(1)
+        record_status(args.name, DeploymentStatus.FAILED)
+        sys.exit(1)
 
     # Update state with all bootstrap ports
     all_bootstrap_nodes = []
