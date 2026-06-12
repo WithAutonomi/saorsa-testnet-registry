@@ -21,6 +21,14 @@ def _deploy_args(**overrides):
         "ssh_key_path": "~/.ssh/id_rsa",
         "purpose": "test",
         "sleep_interval_secs": 900,
+        "daily": False,
+        "provider": "digitalocean",
+        "monitoring_provider": "digitalocean",
+        "monitoring_region": None,
+        "monitoring_droplet_size": None,
+        "monitoring_volume_type": None,
+        "influx_retention_days": 7,
+        "log_retention_days": 7,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -228,8 +236,72 @@ class TestDeployHappyPath:
         infra_args = deploy_patches.infra_clients.call_args.args[0]
         assert infra_args.uploader == []
         assert infra_args.downloader == [
-            "digital_ocean:nyc1:s-4vcpu-8gb:bootstrap_cache=true"
+            "digitalocean:nyc1:s-4vcpu-8gb:bootstrap_cache=true"
         ]
+
+
+class TestProviderSelection:
+    def test_client_provider_prefixes_downloader_spec(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(
+            _deploy_args(provider="hetzner", spec="fsn1:cpx41")
+        )
+        infra_args = deploy_patches.infra_clients.call_args.args[0]
+        assert infra_args.downloader == [
+            "hetzner:fsn1:cpx41:bootstrap_cache=true"
+        ]
+
+    def test_client_provider_persisted_in_deploy_args(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(_deploy_args(provider="vultr"))
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["provider"] == "vultr"
+
+    def test_monitoring_provider_threaded_to_infra(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(
+            _deploy_args(monitoring_provider="ovh")
+        )
+        mon_args = deploy_patches.mon_infra.call_args.args[0]
+        assert mon_args.provider == "ovh"
+        # OVH delegates region/size to provider defaults (None passthrough).
+        assert mon_args.region is None
+        assert mon_args.droplet_size is None
+
+    def test_monitoring_default_provider_keeps_lon1_small_box(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(_deploy_args())
+        mon_args = deploy_patches.mon_infra.call_args.args[0]
+        assert mon_args.provider == "digitalocean"
+        assert mon_args.region == "lon1"
+        assert mon_args.droplet_size == "s-2vcpu-4gb"
+
+    def test_monitoring_provider_persisted_in_deploy_args(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(
+            _deploy_args(monitoring_provider="ovh")
+        )
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["monitoring_provider"] == "ovh"
+
+
+class TestRetentionAndCadence:
+    def test_influx_retention_threaded_to_provision(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(
+            _deploy_args(influx_retention_days=14)
+        )
+        prov_args = deploy_patches.prov_mon.call_args.args[0]
+        assert prov_args.retention_days == 14
+
+    def test_retention_persisted_in_deploy_args(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(
+            _deploy_args(influx_retention_days=14, log_retention_days=3)
+        )
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["influx_retention_days"] == 14
+        assert payload["log_retention_days"] == 3
+
+    def test_daily_flag_sets_sleep_to_one_day(self, deploy_patches):
+        cmd_prod_continuous_downloader_deploy(
+            _deploy_args(daily=True, sleep_interval_secs=900)
+        )
+        payload = deploy_patches.record_create.call_args.args[1]
+        assert payload["sleep_interval_secs"] == 86400
 
 
 class TestDeployFailure:

@@ -1018,12 +1018,39 @@ Arguments (for `prod continuous-downloader deploy`):
 | `--purpose` | string | — | Free-text description; persisted into `deploy_args` and shown by `deployments slack-post` |
 | `--addresses-path` | path | shipped default | Local file of newline-separated addresses |
 | `--sleep-interval-secs` | int | `900` | Seconds to sleep at the **end of each full pass** through the address list before starting the next cycle. `0` disables the sleep (back-to-back cycling). Persisted in `deploy_args.sleep_interval_secs`. |
+| `--daily` | flag | off | Convenience for a permanent once-a-day cadence: sets `--sleep-interval-secs` to `86400` (24h between full passes). Overrides `--sleep-interval-secs` when both are given. |
+| `--provider` | `{digitalocean,hetzner,vultr,ovh}` | `digitalocean` | Cloud provider for the downloader **client** VM. Non-DO providers are cheaper for a permanent run and cut DigitalOcean egress (which is pooled and overage-billed). Requires the provider's credentials in the environment (`HCLOUD_TOKEN` / `VULTR_API_KEY` / the four `OVH_*` vars). The client TF module is selected automatically. |
+| `--monitoring-provider` | `{digitalocean,ovh}` | `digitalocean` | Cloud provider for the paired **monitoring** VM (InfluxDB/Grafana). Only DigitalOcean and OVH have monitoring Terraform modules. |
+| `--monitoring-region` | string | `lon1` (DO) / provider default (OVH) | Region for the monitoring VM. |
+| `--monitoring-droplet-size` | string | `s-2vcpu-4gb` (DO) / provider default (OVH) | InfluxDB VM size/flavor. |
+| `--monitoring-volume-type` | string | `high-speed` | OVH only: monitoring data-volume type. |
+| `--influx-retention-days` | int | `7` | InfluxDB bucket retention (days) for the monitoring stack. `0` = infinite. Applied at first `monitoring provision`. |
+| `--log-retention-days` | int | `7` | Days to keep per-op download logs under `/var/log/ant-prod-downloader` before a **daily systemd timer** (`ant-prod-downloader-logprune.timer`) prunes them with `find -mtime +N -delete`. `0` disables pruning (keep logs forever). |
 | `--branch-name` / `--repo-owner` | string | — | Optional custom ant build |
 | `--ant-version` | string | — | Optional explicit release version |
 | `--monitoring-volume-size` | int | `50` | Monitoring VM attached volume size (GB) |
 | `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key |
 
-The monitoring VM always uses region `lon1`.
+The monitoring VM defaults to region `lon1` on DigitalOcean; with `--monitoring-provider ovh` it uses the OVH default region (or `--monitoring-region`). The client VM and the monitoring VM are independent — e.g. a Hetzner client paired with an OVH (or DO) monitoring box.
+
+#### Running a permanent downloader
+
+This command is designed to be left running indefinitely to measure production download performance over time (and correlate it with releases). The defaults above make that safe out of the box:
+
+- **Cadence** — pass `--daily` (≈ once-a-day; sleeps 24h after each full pass through the address list). Use `--sleep-interval-secs N` for any other interval.
+- **Cheaper provider** — pass `--provider hetzner` (or `ovh`/`vultr`) for the client VM, and `--monitoring-provider ovh` to also move the monitoring box off DigitalOcean.
+- **Log retention** — per-op logs are pruned after 7 days by default (`--log-retention-days`).
+- **Influx retention** — the InfluxDB bucket is capped at 7 days by default (`--influx-retention-days`); metrics older than that expire.
+- **Long-history archival** — because Influx retention is bounded, periodically copy results into Postgres with `deployments archive` (below) so per-download history is retained for the long term.
+
+```bash
+uv run saorsa-deploy prod continuous-downloader deploy \
+  --name PROD-DL-01 \
+  --spec fsn1:cpx41 --provider hetzner \
+  --monitoring-provider ovh \
+  --daily \
+  --purpose "Permanent prod download soak"
+```
 
 After the command reports success, record download aggregates into Postgres on demand:
 
@@ -1031,6 +1058,28 @@ After the command reports success, record download aggregates into Postgres on d
 uv run saorsa-deploy deployments record-results \
   --name PROD-DL-01 --monitoring-name PROD-DL-01 --window -1h
 ```
+
+#### Archiving results for long-term history (`deployments archive`)
+
+`deployments archive` is a thin wrapper over `record-results` for keeping a long history despite the bounded InfluxDB retention. Run it from the machine that owns the registry DB (`DATABASE_URL` set) and can reach the monitoring VM's InfluxDB. It must run **at least as often as the Influx retention window** (default 7 days) so no per-op records expire before they are copied; the per-op `deployment_download_records` table is the authoritative long-term history (idempotent, full-range upsert).
+
+```bash
+# One-shot (ideal for cron / a scheduled agent):
+uv run saorsa-deploy deployments archive --name PROD-DL-01
+
+# Or a self-contained long-runner that archives every 6h:
+uv run saorsa-deploy deployments archive --name PROD-DL-01 --loop --interval-secs 21600
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | — | Deployment name (must match a registry row). |
+| `--monitoring-name` | string | `--name` | Monitoring stack to load Influx creds from. |
+| `--window` | string | `-7d` | Flux range start for the aggregate rollup. Per-op records are always pulled full-range regardless. |
+| `--loop` | flag | off | Keep archiving forever, sleeping `--interval-secs` between runs; a transient failure is logged and the loop continues. |
+| `--interval-secs` | int | `21600` | With `--loop`: seconds between runs (6h). |
+| `--influx-url/-token/-org/-bucket` | string | from monitoring state | Override the Influx connection. |
+| `--update-slack` | flag | off | Thread a results summary onto the deployment's Slack message after each run (best-effort). |
 
 The command registers a row in the `deployments` table with `deploy_args.kind = "prod-continuous-downloader"` so the web UI and API can distinguish these from testnet deployments.
 

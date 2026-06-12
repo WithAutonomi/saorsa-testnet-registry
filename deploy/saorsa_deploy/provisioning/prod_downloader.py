@@ -62,6 +62,11 @@ SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 ENV_PATH = "/etc/ant-prod-downloader.env"
 # heaptrack memory-profile output dir (shared with the testnet --heaptrack path).
 HEAPTRACK_DIR = "/var/log/ant-heaptrack"
+# Daily timer that prunes per-op logs older than the retention window so a
+# permanent downloader never fills its disk with stdout/stderr files.
+LOG_PRUNE_NAME = "ant-prod-downloader-logprune"
+LOG_PRUNE_SERVICE_PATH = f"/etc/systemd/system/{LOG_PRUNE_NAME}.service"
+LOG_PRUNE_TIMER_PATH = f"/etc/systemd/system/{LOG_PRUNE_NAME}.timer"
 
 
 def _build_systemd_unit(one_shot: bool = False) -> str:
@@ -123,6 +128,7 @@ class ProdDownloaderProvisioner:
         one_shot: bool = False,
         rust_log: str | None = None,
         memory_profiling: bool = False,
+        log_retention_days: int = 7,
         console: Console | None = None,
     ):
         self.downloaders = downloaders
@@ -139,6 +145,7 @@ class ProdDownloaderProvisioner:
         self.evm_network = evm_network
         self.rust_log = rust_log
         self.memory_profiling = memory_profiling
+        self.log_retention_days = log_retention_days
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -191,6 +198,7 @@ class ProdDownloaderProvisioner:
             self._add_deploy_service_script_op(state)
             self._add_env_and_addresses_op(state)
             self._add_systemd_unit_op(state)
+            self._add_log_pruning_op(state)
 
             run_ops(state)
 
@@ -399,3 +407,68 @@ HEAPTRACK_DIR={HEAPTRACK_DIR}
             name="Write ant-prod-downloader.service systemd unit",
             commands=[cmd],
         )
+
+    def _add_log_pruning_op(self, state: State) -> None:
+        """Install (or remove) the daily log-pruning systemd timer.
+
+        Delegates the command building to :func:`build_log_prune_command` so
+        the shell content is unit-testable without a pyinfra State.
+        """
+        days = int(self.log_retention_days)
+        if days <= 0:
+            name = "Disable ant-prod-downloader log pruning"
+        else:
+            name = f"Install log-pruning timer ({days}-day retention)"
+        add_op(
+            state,
+            server.shell,
+            name=name,
+            commands=[build_log_prune_command(days)],
+        )
+
+
+def build_log_prune_command(retention_days: int) -> str:
+    """Return the shell command that installs/removes the log-prune timer.
+
+    A permanent downloader leaves a stdout/stderr pair on disk for every
+    download; without pruning the VM eventually fills up. A oneshot service
+    runs ``find ... -mtime +N -delete`` and a ``.timer`` fires it daily.
+    ``retention_days <= 0`` disables pruning entirely (keep forever): the
+    previously-installed timer is removed so toggling the flag off on a
+    re-provision actually takes effect.
+    """
+    if retention_days <= 0:
+        return (
+            f"systemctl disable --now {LOG_PRUNE_NAME}.timer 2>/dev/null || true; "
+            f"rm -f {LOG_PRUNE_TIMER_PATH} {LOG_PRUNE_SERVICE_PATH}; "
+            "systemctl daemon-reload"
+        )
+
+    days = int(retention_days)
+    prune_service = f"""\
+[Unit]
+Description=Prune ant-prod-downloader per-op logs older than {days} days
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/find {LOG_DIR} -type f -mtime +{days} -delete
+"""
+    prune_timer = """\
+[Unit]
+Description=Daily prune of ant-prod-downloader per-op logs
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+    return (
+        f"cat > {LOG_PRUNE_SERVICE_PATH} << 'PRUNE_SVC_EOF'\n"
+        f"{prune_service}PRUNE_SVC_EOF\n"
+        f"cat > {LOG_PRUNE_TIMER_PATH} << 'PRUNE_TIMER_EOF'\n"
+        f"{prune_timer}PRUNE_TIMER_EOF\n"
+        f"systemctl daemon-reload && "
+        f"systemctl enable --now {LOG_PRUNE_NAME}.timer"
+    )

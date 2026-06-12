@@ -97,6 +97,8 @@ def _ensure_monitoring(args, console: Console) -> None:
     from saorsa_deploy.cmd.monitoring_infra import cmd_monitoring_infra
     from saorsa_deploy.cmd.provision_monitoring import cmd_provision_monitoring
 
+    retention_days = getattr(args, "influx_retention_days", 0) or 0
+
     if _monitoring_stack_exists(args.name):
         if _monitoring_has_influx(args.name):
             console.print(
@@ -112,17 +114,35 @@ def _ensure_monitoring(args, console: Console) -> None:
         cmd_provision_monitoring(SimpleNamespace(
             name=args.name,
             ssh_key_path=args.ssh_key_path,
+            retention_days=retention_days,
         ))
         return
 
-    console.print("[bold cyan]Step 1/5: creating monitoring VM[/bold cyan]")
+    provider = getattr(args, "monitoring_provider", "digitalocean")
+    # Defaults differ per provider: DigitalOcean keeps the small lon1 box the
+    # prod flows have always used; OVH falls through to the obs-provider
+    # defaults (region/flavor) since lon1 / s-2vcpu-4gb are DO-specific.
+    if provider == "digitalocean":
+        region = getattr(args, "monitoring_region", None) or MONITORING_REGION
+        droplet_size = (
+            getattr(args, "monitoring_droplet_size", None) or "s-2vcpu-4gb"
+        )
+    else:
+        region = getattr(args, "monitoring_region", None)
+        droplet_size = getattr(args, "monitoring_droplet_size", None)
+
+    console.print(
+        f"[bold cyan]Step 1/5: creating monitoring VM ({provider})[/bold cyan]"
+    )
     mon_infra_args = SimpleNamespace(
         name=args.name,
-        region=MONITORING_REGION,
+        provider=provider,
+        region=region,
         volume_size=args.monitoring_volume_size,
         # A single client VM forwards little; keep the InfluxDB box small
-        # rather than the larger testnet default.
-        droplet_size="s-2vcpu-4gb",
+        # rather than the larger testnet default (None → provider default).
+        droplet_size=droplet_size,
+        volume_type=getattr(args, "monitoring_volume_type", None),
         force=False,
         grafana=getattr(args, "grafana", False),
     )
@@ -132,6 +152,7 @@ def _ensure_monitoring(args, console: Console) -> None:
     mon_prov_args = SimpleNamespace(
         name=args.name,
         ssh_key_path=args.ssh_key_path,
+        retention_days=retention_days,
     )
     cmd_provision_monitoring(mon_prov_args)
 
@@ -147,18 +168,22 @@ def _ensure_client_infra(args, console: Console) -> None:
         )
         return
 
-    console.print(f"[bold cyan]Step 3/5: creating downloader VM ({args.spec})[/bold cyan]")
-    # prod continuous-downloader is Digital Ocean only (--spec carries no
-    # provider field); prefix the provider parse_downloader_spec now requires.
-    # bootstrap_cache is carried through so client_state records the real
-    # per-VM cache mode (the print/slack surfaces read it from there).
+    provider = getattr(args, "provider", "digitalocean")
+    console.print(
+        f"[bold cyan]Step 3/5: creating downloader VM "
+        f"({provider}:{args.spec})[/bold cyan]"
+    )
+    # The client VM provider is selectable; --spec carries no provider field, so
+    # prefix the provider token parse_downloader_spec requires. bootstrap_cache
+    # is carried through so client_state records the real per-VM cache mode (the
+    # print/slack surfaces read it from there).
     cache_token = (
         f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
     )
     infra_args = SimpleNamespace(
         name=args.name,
         uploader=[],
-        downloader=[f"digital_ocean:{args.spec}:{cache_token}"],
+        downloader=[f"{provider}:{args.spec}:{cache_token}"],
         force=False,
     )
     cmd_infra_clients(infra_args)
@@ -282,6 +307,7 @@ def _provision_prod_downloader(
         influx_bucket=influx_bucket,
         rust_log=getattr(args, "rust_log", None),
         memory_profiling=getattr(args, "memory_profiling", False),
+        log_retention_days=getattr(args, "log_retention_days", 7),
         console=console,
     )
     provisioner.execute()
@@ -372,6 +398,11 @@ def cmd_prod_continuous_downloader_deploy(args):
     """Deploy a prod continuous-downloader testbed against the Autonomi prod network."""
     console = Console()
 
+    # --daily is a convenience for the permanent once-a-day cadence; it wins
+    # over an explicit --sleep-interval-secs so `--daily` always means 24h.
+    if getattr(args, "daily", False):
+        args.sleep_interval_secs = 86400
+
     if args.sleep_interval_secs < 0:
         console.print(
             "[bold red]Error:[/bold red] --sleep-interval-secs must be >= 0."
@@ -427,6 +458,10 @@ def cmd_prod_continuous_downloader_deploy(args):
         "memory_profiling": getattr(args, "memory_profiling", False),
         "purpose": args.purpose,
         "sleep_interval_secs": args.sleep_interval_secs,
+        "provider": getattr(args, "provider", "digitalocean"),
+        "monitoring_provider": getattr(args, "monitoring_provider", "digitalocean"),
+        "influx_retention_days": getattr(args, "influx_retention_days", 0) or 0,
+        "log_retention_days": getattr(args, "log_retention_days", 0) or 0,
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version,
             debug=getattr(args, "debug", False),
@@ -488,11 +523,17 @@ def cmd_prod_continuous_downloader_deploy(args):
         f"[bold green]prod continuous-downloader '{args.name}' is running.[/bold green]"
     )
     console.print(
-        "[dim]Per-op logs: ssh root@<vm> ls /var/log/ant-prod-downloader/[/dim]"
+        "[dim]Per-op logs: ssh root@<vm> ls /var/log/ant-prod-downloader/ "
+        f"(pruned after {getattr(args, 'log_retention_days', 7)} days)[/dim]"
     )
     console.print(
         f"[dim]Record download metrics with: saorsa-deploy deployments record-results "
         f"--name {args.name} --monitoring-name {args.name} --window -1h[/dim]"
+    )
+    console.print(
+        f"[dim]Archive Influx → Postgres periodically (Influx retention "
+        f"~{getattr(args, 'influx_retention_days', 7)}d) with: saorsa-deploy "
+        f"deployments archive --name {args.name}[/dim]"
     )
 
 

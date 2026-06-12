@@ -1277,6 +1277,68 @@ def main(argv=None):
         ),
     )
 
+    # deployments archive
+    deployments_archive_parser = deployments_subparsers.add_parser(
+        "archive",
+        help=(
+            "Archive a deployment's InfluxDB results into Postgres for long-term "
+            "history. Thin wrapper over `record-results` intended to be run "
+            "from the machine that owns the registry DB (DATABASE_URL set). "
+            "Influx retention is bounded (~7 days), so run this at least that "
+            "often. One-shot by default (cron / scheduled-agent friendly); pass "
+            "--loop to keep archiving on an interval."
+        ),
+    )
+    deployments_archive_parser.add_argument(
+        "--name", type=str, required=True,
+        help="Deployment name (must match a row in the registry).",
+    )
+    deployments_archive_parser.add_argument(
+        "--monitoring-name", type=str, default=None,
+        help="Monitoring stack name to load Influx creds from (defaults to --name).",
+    )
+    deployments_archive_parser.add_argument(
+        "--window", type=str, default="-7d",
+        help=(
+            "Flux range start for the aggregate rollup (default: -7d, matching "
+            "the default Influx retention). Per-op records are always pulled "
+            "full-range and idempotently upserted regardless of this value."
+        ),
+    )
+    deployments_archive_parser.add_argument(
+        "--loop", action="store_true",
+        help=(
+            "Keep archiving forever, sleeping --interval-secs between runs, "
+            "instead of doing a single pass and exiting. A transient failure in "
+            "one iteration is logged and the loop continues."
+        ),
+    )
+    deployments_archive_parser.add_argument(
+        "--interval-secs", type=int, default=21600,
+        help="With --loop: seconds to sleep between archive runs (default: 21600 = 6h).",
+    )
+    deployments_archive_parser.add_argument(
+        "--influx-url", type=str, default=None,
+        help="InfluxDB URL (overrides monitoring state lookup).",
+    )
+    deployments_archive_parser.add_argument(
+        "--influx-token", type=str, default=None,
+        help="InfluxDB API token (overrides monitoring state lookup).",
+    )
+    deployments_archive_parser.add_argument(
+        "--influx-org", type=str, default=None,
+        help="InfluxDB organization (default: from monitoring state, else 'ant').",
+    )
+    deployments_archive_parser.add_argument(
+        "--influx-bucket", type=str, default=None,
+        help="InfluxDB bucket (default: from monitoring state, else 'testnet-metrics').",
+    )
+    deployments_archive_parser.add_argument(
+        "--update-slack", action="store_true",
+        help="Forwarded to record-results: thread a results summary onto the "
+        "deployment's Slack message after each archive run (best-effort).",
+    )
+
     # deployments slack-post
     deployments_slack_post_parser = deployments_subparsers.add_parser(
         "slack-post",
@@ -2686,6 +2748,82 @@ def main(argv=None):
             "Pass 0 to disable inter-cycle sleeping (back-to-back cycling)."
         ),
     )
+    prod_cd_deploy_parser.add_argument(
+        "--daily",
+        action="store_true",
+        help=(
+            "Convenience for a permanent once-a-day cadence: sets "
+            "--sleep-interval-secs to 86400 (24h between full passes). "
+            "Overrides --sleep-interval-secs when both are given."
+        ),
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "hetzner", "vultr", "ovh"],
+        help=(
+            "Cloud provider for the downloader CLIENT VM (default: "
+            "digitalocean). Non-DO providers are cheaper for a permanent run "
+            "and cut DigitalOcean egress. Requires the provider's credentials "
+            "in the environment (HCLOUD_TOKEN / VULTR_API_KEY / the OVH_* vars)."
+        ),
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--monitoring-provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "ovh"],
+        help=(
+            "Cloud provider for the paired MONITORING VM (InfluxDB/Grafana). "
+            "Only digitalocean and ovh have monitoring Terraform modules "
+            "(default: digitalocean)."
+        ),
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--monitoring-region",
+        type=str,
+        default=None,
+        help=(
+            "Region for the monitoring VM. Default: lon1 on digitalocean, the "
+            "provider default (e.g. GRA9) on ovh."
+        ),
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--monitoring-droplet-size",
+        type=str,
+        default=None,
+        help=(
+            "InfluxDB VM size/flavor. Default: s-2vcpu-4gb on digitalocean, the "
+            "provider default on ovh."
+        ),
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--monitoring-volume-type",
+        type=str,
+        default=None,
+        help="OVH only: monitoring data volume type (default: high-speed).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--influx-retention-days",
+        type=int,
+        default=7,
+        help=(
+            "InfluxDB bucket retention in days for the monitoring stack "
+            "(default: 7). Pass 0 for infinite retention. Applied at first "
+            "monitoring provision."
+        ),
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--log-retention-days",
+        type=int,
+        default=7,
+        help=(
+            "Days to keep per-op download logs under /var/log/ant-prod-downloader "
+            "on the client VM before a daily systemd timer prunes them "
+            "(default: 7). Pass 0 to disable pruning (keep logs forever)."
+        ),
+    )
 
     prod_cd_destroy_parser = prod_cd_subparsers.add_parser(
         "destroy",
@@ -3895,6 +4033,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.record_results import cmd_record_results
 
             cmd_record_results(args)
+        elif args.deployments_subcommand == "archive":
+            from saorsa_deploy.cmd.archive_results import cmd_archive_results
+
+            cmd_archive_results(args)
         elif args.deployments_subcommand == "slack-post":
             from saorsa_deploy.cmd.slack_post import cmd_slack_post
 
