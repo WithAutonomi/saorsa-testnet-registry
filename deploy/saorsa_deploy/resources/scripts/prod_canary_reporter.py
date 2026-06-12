@@ -1,10 +1,12 @@
 """Daily Slack reporter for a prod canary deployment.
 
 Runs on the canary's monitoring VM via a systemd timer. Reads
-``prod_canary_upload`` / ``prod_canary_probe`` from the local Influx,
-applies the two-strike loss-confirmation rule per probe-host, computes
-deltas against ``$STATE_FILE`` (the previous day's snapshot) and posts a
-Slack Block Kit message to ``$SLACK_WEBHOOK_URL``.
+``prod_canary_upload`` / ``prod_canary_probe`` from the local Influx, derives
+per-canary *unavailability episodes* from the probe stream (the two-strike
+confirmation plus recovery), computes deltas against ``$STATE_FILE`` (the
+previous run's snapshot) and posts a Slack Block Kit message to
+``$SLACK_WEBHOOK_URL``. Reports availability now + window durations rather
+than a sticky "lost" count — chunks go unreachable then mostly recover.
 
 Only the Python standard library is used — no third-party deps need to be
 installed on the monitoring VM.
@@ -30,15 +32,15 @@ PROBE_INCONCLUSIVE = "inconclusive"
 DEFAULT_STATE_FILE = "/var/lib/ant-prod-canary-reporter/last-report.json"
 HTTP_TIMEOUT_SECS = 60
 
-# Hours-to-loss histogram buckets — mirrors deploy/saorsa_deploy/cmd/
-# prod_canary_results.py so the daily message matches print-recorded-results.
-HOUR_BUCKETS = [
-    ("0–6h", 0, 6),
-    ("6–24h", 6, 24),
-    ("1–3d", 24, 72),
-    ("3–7d", 72, 168),
-    ("7–30d", 168, 720),
-    (">30d", 720, float("inf")),
+# Unavailability-window duration buckets — mirrors the recovered-duration
+# histogram in deploy/saorsa_deploy/cmd/prod_canary_results.py so the daily
+# message matches print-recorded-results.
+DURATION_BUCKETS = [
+    ("<6h", 0, 6),
+    ("6-24h", 6, 24),
+    ("1-3d", 24, 72),
+    ("3-7d", 72, 168),
+    (">7d", 168, float("inf")),
 ]
 
 
@@ -219,93 +221,83 @@ def fetch_probes(
 def derive_state(
     uploads: dict[str, dict], probes: list[dict]
 ) -> dict[str, dict]:
-    """Return ``{canary_id: {status, ...}}`` for every uploaded canary.
+    """Return ``{canary_id: {...}}`` with per-canary availability *episodes*.
 
-    Status is one of: ``alive``, ``pending``, ``lost``. For ``lost`` the
-    earliest-confirmation across vantages wins (matching the global
-    derivation). For ``pending`` we surface that at least one vantage has
-    seen a failure that hasn't yet been confirmed.
+    Mirrors ``derive_unavailability_episodes`` in prod_canary_results.py: walk
+    each canary's probe stream (one shard host per canary in practice, so a
+    single time-ordered walk is correct) and emit episodes — maximal runs of
+    confirmed unreachability that either recovered or are still ongoing.
+
+    Each canary dict has: file_name, uploaded_at, top_address,
+    ``current`` ("available"|"unavailable"), ``last_host`` (vantage of the
+    most recent probe), and ``episodes`` (list). Influx ``status`` is trusted
+    as-is — the probe already reclassifies timeout-dominated failures to
+    inconclusive before emitting.
     """
-    by_canary_host: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    by_canary: dict[str, list[dict]] = defaultdict(list)
     for p in probes:
-        by_canary_host[(p["canary_id"], p["probed_by_host"])].append(p)
-    for plist in by_canary_host.values():
-        plist.sort(key=lambda x: x["probed_at"])
+        by_canary[p["canary_id"]].append(p)
 
     state: dict[str, dict] = {}
     for cid, upload in uploads.items():
-        best_loss: dict | None = None
-        any_pending_host: str | None = None
-        any_pending_chunk: str | None = None
+        ordered = sorted(by_canary.get(cid, []), key=lambda x: x["probed_at"])
+        uploaded_at = upload["uploaded_at"]
+        episodes: list[dict] = []
+        pending_chunk: str | None = None
+        open_ep: dict | None = None
+        last_host = ordered[-1]["probed_by_host"] if ordered else ""
 
-        for (canary_id, host), plist in by_canary_host.items():
-            if canary_id != cid:
+        def _hrs(a, b):
+            return max(0.0, (b - a).total_seconds() / 3600.0)
+
+        for p in ordered:
+            status = p["status"]
+            if status == PROBE_INCONCLUSIVE:
                 continue
-            first_failed_at = None
-            first_failed_chunk: str | None = None
-            confirmed = None
-            for p in plist:
-                status = p["status"]
-                if status == PROBE_INCONCLUSIVE:
-                    continue
-                if status == PROBE_OK:
-                    first_failed_at = None
-                    first_failed_chunk = None
-                    continue
-                missing = p["missing_chunk_address"] or ""
-                if first_failed_chunk is not None and first_failed_chunk == missing:
-                    confirmed = {
-                        "first_failed_probe_at": first_failed_at,
-                        "confirmed_lost_at": p["probed_at"],
-                        "missing_chunk_address": missing,
-                        "confirmed_by_host": host,
-                    }
-                    break
-                first_failed_at = p["probed_at"]
-                first_failed_chunk = missing
-            if confirmed and (
-                best_loss is None
-                or confirmed["confirmed_lost_at"] < best_loss["confirmed_lost_at"]
-            ):
-                best_loss = confirmed
-            elif first_failed_chunk and confirmed is None:
-                any_pending_host = host
-                any_pending_chunk = first_failed_chunk
+            if status == PROBE_OK:
+                if open_ep is not None:
+                    open_ep["recovered_at"] = p["probed_at"]
+                    open_ep["recovered"] = True
+                    open_ep["unavailable_hours"] = _hrs(
+                        open_ep["confirmed_at"], p["probed_at"]
+                    )
+                    episodes.append(open_ep)
+                    open_ep = None
+                pending_chunk = None
+                continue
+            missing = p["missing_chunk_address"] or ""
+            if open_ep is not None:
+                continue
+            if pending_chunk is not None and pending_chunk == missing:
+                open_ep = {
+                    "missing_chunk_address": missing,
+                    "confirmed_at": p["probed_at"],
+                    "confirmed_by_host": p["probed_by_host"],
+                    "recovered_at": None,
+                    "recovered": False,
+                    "hours_to_confirmed": _hrs(uploaded_at, p["probed_at"]),
+                    "unavailable_hours": None,
+                    "is_data_map": missing == upload["top_address"],
+                }
+                pending_chunk = None
+            else:
+                pending_chunk = missing
 
-        if best_loss is not None:
-            uploaded_at = upload["uploaded_at"]
-            hours_to_confirmed = max(
-                0.0,
-                (
-                    best_loss["confirmed_lost_at"] - uploaded_at
-                ).total_seconds() / 3600.0,
-            )
-            state[cid] = {
-                "status": "lost",
-                "uploaded_at": uploaded_at,
-                "file_name": upload["file_name"],
-                "missing_chunk_address": best_loss["missing_chunk_address"],
-                "confirmed_lost_at": best_loss["confirmed_lost_at"],
-                "confirmed_by_host": best_loss["confirmed_by_host"],
-                "hours_to_confirmed_loss": hours_to_confirmed,
-                "is_data_map": (
-                    best_loss["missing_chunk_address"] == upload["top_address"]
-                ),
-            }
-        elif any_pending_chunk:
-            state[cid] = {
-                "status": "pending",
-                "uploaded_at": upload["uploaded_at"],
-                "file_name": upload["file_name"],
-                "pending_chunk_address": any_pending_chunk,
-                "pending_on_host": any_pending_host,
-            }
-        else:
-            state[cid] = {
-                "status": "alive",
-                "uploaded_at": upload["uploaded_at"],
-                "file_name": upload["file_name"],
-            }
+        if open_ep is not None:
+            episodes.append(open_ep)  # ongoing
+
+        state[cid] = {
+            "file_name": upload["file_name"],
+            "uploaded_at": uploaded_at,
+            "top_address": upload["top_address"],
+            "last_host": last_host,
+            "episodes": episodes,
+            "current": (
+                "unavailable"
+                if episodes and not episodes[-1]["recovered"]
+                else "available"
+            ),
+        }
     return state
 
 
@@ -326,11 +318,15 @@ def last_probe_per_host(probes: list[dict]) -> dict[str, datetime]:
     return out
 
 
-def losses_by_host(state: dict[str, dict]) -> dict[str, int]:
+def unavailable_by_host(state: dict[str, dict]) -> dict[str, int]:
+    """Count currently-unavailable canaries attributed to the vantage that
+    confirmed the ongoing episode."""
     out: dict[str, int] = defaultdict(int)
     for s in state.values():
-        if s["status"] == "lost" and s.get("confirmed_by_host"):
-            out[s["confirmed_by_host"]] += 1
+        if s["current"] == "unavailable" and s["episodes"]:
+            host = s["episodes"][-1].get("confirmed_by_host") or s["last_host"]
+            if host:
+                out[host] += 1
     return out
 
 
@@ -370,22 +366,33 @@ def build_blocks(
     prev_state: dict[str, dict],
 ) -> list[dict]:
     total = len(state)
-    alive = sum(1 for s in state.values() if s["status"] == "alive")
-    pending = sum(1 for s in state.values() if s["status"] == "pending")
-    lost = sum(1 for s in state.values() if s["status"] == "lost")
-
-    prev_lost_ids = {
-        cid for cid, s in prev_state.items() if s.get("status") == "lost"
-    }
-    new_losses = [
-        (cid, s) for cid, s in state.items()
-        if s["status"] == "lost" and cid not in prev_lost_ids
+    available = sum(1 for s in state.values() if s["current"] == "available")
+    unavailable = sum(1 for s in state.values() if s["current"] == "unavailable")
+    all_episodes = [e for s in state.values() for e in s["episodes"]]
+    recovered_eps = [e for e in all_episodes if e["recovered"]]
+    ongoing_eps = [
+        (cid, s["episodes"][-1], s)
+        for cid, s in state.items()
+        if s["current"] == "unavailable"
     ]
-    new_losses.sort(key=lambda x: x[1]["confirmed_lost_at"])
+
+    prev_unavail_ids = {
+        cid for cid, s in prev_state.items()
+        if s.get("current") == "unavailable"
+    }
+    newly_unavailable = [
+        (cid, s) for cid, s in state.items()
+        if s["current"] == "unavailable" and cid not in prev_unavail_ids
+    ]
+    newly_unavailable.sort(key=lambda x: x[1]["episodes"][-1]["confirmed_at"])
+    newly_recovered = [
+        cid for cid, s in state.items()
+        if s["current"] == "available" and cid in prev_unavail_ids
+    ]
 
     last_probes = last_probe_per_host(probes)
-    host_losses = losses_by_host(state)
-    all_hosts = sorted(set(last_probes) | set(host_losses))
+    host_unavail = unavailable_by_host(state)
+    all_hosts = sorted(set(last_probes) | set(host_unavail))
 
     blocks: list[dict] = []
 
@@ -455,40 +462,70 @@ def build_blocks(
             },
         })
 
-    # Status
-    delta_lost = lost - sum(1 for cid in prev_lost_ids if cid in state)
-    delta_lost_text = f" (+{delta_lost})" if delta_lost > 0 else ""
+    # Status — availability now + episode tallies
+    delta_unavail = unavailable - sum(
+        1 for cid in prev_unavail_ids if cid in state
+    )
+    delta_text = f" (+{delta_unavail})" if delta_unavail > 0 else ""
     status_lines = [
         f"• Uploaded: *{total}*",
-        f"• Alive: *{alive}*",
-        f"• Pending first-failure: *{pending}*",
-        f"• Confirmed lost: *{lost}*{delta_lost_text}",
+        f"• Available now: *{available}*",
+        f"• Unavailable now: *{unavailable}*{delta_text}",
+        f"• Episodes — total *{len(all_episodes)}*, "
+        f"recovered *{len(recovered_eps)}*, ongoing *{len(ongoing_eps)}*",
     ]
     blocks.append({
         "type": "section",
         "text": {"type": "mrkdwn", "text": "*Status*\n" + "\n".join(status_lines)},
     })
 
-    # Hours-to-loss histogram
-    if lost > 0:
-        bucket_counts = {label: 0 for label, *_ in HOUR_BUCKETS}
-        for s in state.values():
-            if s["status"] != "lost":
-                continue
-            hrs = s["hours_to_confirmed_loss"]
-            for label, lo, hi in HOUR_BUCKETS:
-                if lo <= hrs < hi:
-                    bucket_counts[label] += 1
+    # Recovered-episode unavailability-duration distribution.
+    durs = sorted(
+        e["unavailable_hours"] for e in recovered_eps
+        if e["unavailable_hours"] is not None
+    )
+    if durs:
+        n = len(durs)
+        median = durs[n // 2]
+        p95 = durs[min(n - 1, int(round(0.95 * (n - 1))))]
+        counts = {label: 0 for label, *_ in DURATION_BUCKETS}
+        for h in durs:
+            for label, lo, hi in DURATION_BUCKETS:
+                if lo <= h < hi:
+                    counts[label] += 1
                     break
-        hist_lines = [
-            f"• {label}: {bucket_counts[label]}"
-            for label, *_ in HOUR_BUCKETS
-        ]
+        hist = " ".join(f"{label}:{counts[label]}" for label, *_ in DURATION_BUCKETS)
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*Hours-to-loss (cumulative)*\n" + "\n".join(hist_lines),
+                "text": (
+                    "*Recovered unavailability windows*\n"
+                    f"• median {median:.1f}h, p95 {p95:.1f}h, "
+                    f"max {durs[-1]:.1f}h (n={n})\n• {hist}"
+                ),
+            },
+        })
+
+    # Currently-unavailable (ongoing) episodes — the genuine concern.
+    if ongoing_eps:
+        ongoing_eps.sort(key=lambda x: x[1]["confirmed_at"])
+        items = []
+        for cid, ep, s in ongoing_eps[:20]:
+            down_h = (now - ep["confirmed_at"]).total_seconds() / 3600.0
+            role = "DataMap" if ep.get("is_data_map") else "data"
+            items.append(
+                f"• `{s['file_name'] or cid[:8]}` — missing {role} "
+                f"`{_short_chunk(ep['missing_chunk_address'])}` — "
+                f"down {down_h:.1f}h (uploaded {_fmt_age(now, s['uploaded_at'])})"
+            )
+        if len(ongoing_eps) > 20:
+            items.append(f"_…and {len(ongoing_eps) - 20} more_")
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Currently unavailable*\n" + "\n".join(items),
             },
         })
 
@@ -498,9 +535,9 @@ def build_blocks(
         for h in all_hosts:
             last = last_probes.get(h)
             last_txt = _fmt_age(now, last) if last else "never"
-            losses_txt = host_losses.get(h, 0)
+            u = host_unavail.get(h, 0)
             vant_lines.append(
-                f"• `{h}` — last probe {last_txt} — confirmed losses: {losses_txt}"
+                f"• `{h}` — last probe {last_txt} — unavailable now: {u}"
             )
         blocks.append({
             "type": "section",
@@ -510,31 +547,37 @@ def build_blocks(
             },
         })
 
-    # New losses since last report
-    if new_losses:
-        cutoff_text = "since last report"
-        head = f"*New losses {cutoff_text}* ({len(new_losses)})"
-        items = []
-        for cid, s in new_losses[:20]:
-            role = "DataMap" if s.get("is_data_map") else "data"
-            items.append(
-                f"• `{s['file_name'] or cid[:8]}` — "
-                f"missing {role} `{_short_chunk(s['missing_chunk_address'])}` — "
-                f"uploaded {_fmt_age(now, s['uploaded_at'])}, "
-                f"confirmed {_fmt_age(now, s['confirmed_lost_at'])}"
+    # Deltas since last report
+    delta_lines = []
+    if newly_unavailable:
+        delta_lines.append(
+            f"*Newly unavailable since last report* ({len(newly_unavailable)})"
+        )
+        for cid, s in newly_unavailable[:15]:
+            ep = s["episodes"][-1]
+            role = "DataMap" if ep.get("is_data_map") else "data"
+            delta_lines.append(
+                f"• `{s['file_name'] or cid[:8]}` — missing {role} "
+                f"`{_short_chunk(ep['missing_chunk_address'])}` "
+                f"(confirmed {_fmt_age(now, ep['confirmed_at'])})"
             )
-        if len(new_losses) > 20:
-            items.append(f"_…and {len(new_losses) - 20} more_")
+        if len(newly_unavailable) > 15:
+            delta_lines.append(f"_…and {len(newly_unavailable) - 15} more_")
+    if newly_recovered:
+        delta_lines.append(
+            f"*Recovered since last report:* {len(newly_recovered)}"
+        )
+    if delta_lines:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": head + "\n" + "\n".join(items)},
+            "text": {"type": "mrkdwn", "text": "\n".join(delta_lines)},
         })
     else:
         blocks.append({
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": "_No new losses since last report._",
+                "text": "_No availability changes since last report._",
             }],
         })
 
@@ -570,10 +613,11 @@ def post_to_slack(webhook_url: str, blocks: list[dict]) -> None:
 
 
 def _to_persistable(state: dict[str, dict]) -> dict[str, Any]:
-    """Strip datetimes / non-JSON values for the on-disk snapshot."""
+    """Strip datetimes / non-JSON values for the on-disk snapshot. Only the
+    current availability flag is needed to compute next run's deltas."""
     out: dict[str, Any] = {}
     for cid, s in state.items():
-        out[cid] = {"status": s["status"]}
+        out[cid] = {"current": s["current"]}
     return out
 
 
