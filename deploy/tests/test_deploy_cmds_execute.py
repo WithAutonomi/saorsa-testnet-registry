@@ -8,8 +8,9 @@ import pytest
 from rich.console import Console
 
 import saorsa_deploy.main as main_mod
+import saorsa_deploy.parallel_infra as parallel_infra
 from saorsa_deploy.cmd.deploy_cmds import _execute
-from saorsa_deploy.orchestrator.steps import Step
+from saorsa_deploy.orchestrator.steps import Step, StepGroup
 
 
 def _console() -> Console:
@@ -71,3 +72,52 @@ def test_non_best_effort_failure_still_aborts(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         _execute(_console(), steps)
     assert exc.value.code == 3
+
+
+# --------------------------------------------------------------------------- #
+# parallel-group units are dispatched to the parallel runner
+# --------------------------------------------------------------------------- #
+def _infra_group() -> StepGroup:
+    return StepGroup(
+        name="infra",
+        label="Create infrastructure (parallel)",
+        lanes=[
+            [Step(["bootstraps", "infra"], "Bootstraps", group="infra", lane="bn")],
+            [Step(["elastic", "infra"], "Elastic", group="infra", lane="el")],
+        ],
+    )
+
+
+def test_group_dispatched_to_parallel_runner_then_continues(monkeypatch):
+    called = _patch_runner(monkeypatch, {})
+    groups: list[str] = []
+    monkeypatch.setattr(
+        parallel_infra,
+        "run_parallel_group",
+        lambda console, group: groups.append(group.name),
+    )
+    # A group followed by a normal sequential step.
+    steps = [
+        Step(["bootstraps", "infra"], "Bootstraps", group="infra", lane="bn"),
+        Step(["elastic", "infra"], "Elastic", group="infra", lane="el"),
+        Step(["after"], "Later step"),
+    ]
+    _execute(_console(), steps)
+    assert groups == ["infra"]  # the group ran once via the parallel runner
+    assert called == ["after"]  # the trailing sequential step still ran in-process
+
+
+def test_group_failure_aborts_the_run(monkeypatch):
+    _patch_runner(monkeypatch, {})
+
+    def boom(console, group):
+        raise SystemExit(4)
+
+    monkeypatch.setattr(parallel_infra, "run_parallel_group", boom)
+    steps = [
+        Step(["bootstraps", "infra"], "Bootstraps", group="infra", lane="bn"),
+        Step(["after"], "Later step"),
+    ]
+    with pytest.raises(SystemExit) as exc:
+        _execute(_console(), steps)
+    assert exc.value.code == 4

@@ -70,6 +70,34 @@ on all three node-provision commands, telegraf after `nodes start`, destroy in
 reverse) so they can't be got wrong by hand. `up` executes each step by
 re-entering the CLI in-process, so a failing step halts the run.
 
+### Parallel infrastructure creation
+
+The five infrastructure-creation steps of a testnet/extension deploy
+(`bootstraps infra`, `nodes infra`, `elastic infra`, `monitoring infra`,
+`clients infra`) run **concurrently** as a single group rather than one after
+another, since each VM tier is created independently. The only ordering that
+remains is `bootstraps infra → nodes infra`: they share the deployment-state
+object (and `nodes infra` needs the bootstrap nodes in state), so they run
+sequentially in one lane. `elastic`, `monitoring`, and `clients` each own an
+independent S3 state key and run as their own lanes. The critical path is
+therefore the (usually longest) bootstraps→nodes chain, with the observability
+tiers built in its shadow.
+
+`plan` still lists all five commands (annotated `(parallel)`) so you can read the
+exact argv. During `up`, each lane runs as its own `saorsa-deploy` subprocess
+with its combined output tee'd to `.saorsa/infra-logs/lane<NN>-<cmd>.log` (the
+paths are printed up front for `tail -f`), while the parent shows one live status
+table — one row per lane. A lane stops at its first failing step (so `nodes
+infra` is skipped if `bootstraps infra` fails); in-flight lanes are allowed to
+finish (a running `terraform apply` is never killed mid-flight), and once every
+lane settles, any failure prints the failed lanes' captured output and aborts the
+deploy before provisioning begins.
+
+For resume purposes the whole group is **one journal unit**: it is recorded as
+done only when every lane succeeds, so a re-run with `--resume` either skips the
+entire group or re-executes all of it. That is safe because each `infra` command
+is idempotent — terraform reconciles already-created tiers as no-ops.
+
 ### Resumable runs (the step journal)
 
 `up` records every completed step in a **journal** at

@@ -187,3 +187,108 @@ class TestRendering:
         )
         assert "3 completed step(s)" in text
         assert "2 step(s)" in text
+
+
+# --------------------------------------------------------------------------- #
+# parallel groups collapse into a single resumable journal unit
+# --------------------------------------------------------------------------- #
+def _grouped_plan() -> list[Step]:
+    """A build step + a 3-lane infra group + a tail provision step."""
+    return [
+        Step(["build", "ant-node", "--name", "DEV-01"], "Build ant-node from branch"),
+        Step(
+            ["bootstraps", "infra", "--name", "DEV-01"],
+            "Create bootstrap infrastructure",
+            group="infra",
+            lane="bootstraps-nodes",
+        ),
+        Step(
+            ["nodes", "infra", "--name", "DEV-01"],
+            "Create node infrastructure",
+            group="infra",
+            lane="bootstraps-nodes",
+        ),
+        Step(
+            ["elastic", "infra", "--name", "DEV-01"],
+            "Create Elasticsearch infrastructure",
+            group="infra",
+            lane="elastic",
+        ),
+        Step(["nodes", "provision", "--name", "DEV-01"], "Provision nodes"),
+    ]
+
+
+def _record_units(journal: dict, plan: list[Step], count: int) -> None:
+    """Record the first ``count`` execution units of ``plan`` into ``journal``."""
+    for unit in step_journal.iter_units(plan)[:count]:
+        if isinstance(unit, step_journal.StepGroup):
+            step_journal.record_group(journal, unit)
+        else:
+            step_journal.record_step(journal, unit)
+
+
+class TestParallelGroupJournal:
+    def test_plan_collapses_to_units(self):
+        # 5 flat steps -> build + infra-group + provision = 3 units.
+        units = step_journal.iter_units(_grouped_plan())
+        assert len(units) == 3
+        assert isinstance(units[1], step_journal.StepGroup)
+        # bootstraps+nodes share a lane (sequential); elastic is its own lane.
+        assert [[s.argv[:2] for s in lane] for lane in units[1].lanes] == [
+            [["bootstraps", "infra"], ["nodes", "infra"]],
+            [["elastic", "infra"]],
+        ]
+
+    def test_group_recorded_as_single_entry(self):
+        journal = step_journal.new_journal("DEV-01", "testnet")
+        _record_units(journal, _grouped_plan(), 2)  # build + whole infra group
+        assert len(journal["steps"]) == 2
+        group_entry = journal["steps"][1]
+        assert group_entry["group"] == "infra"
+        assert group_entry["status"] == step_journal.STATUS_SUCCEEDED
+        assert group_entry["argvs"][0] == [
+            ["bootstraps", "infra", "--name", "DEV-01"],
+            ["nodes", "infra", "--name", "DEV-01"],
+        ]
+
+    def test_completed_group_resumes_past_it(self):
+        plan = _grouped_plan()
+        journal = step_journal.new_journal("DEV-01", "testnet")
+        _record_units(journal, plan, 2)  # build + group done; provision remains
+        match = step_journal.match_journal(journal, "testnet", plan)
+        assert match.matches
+        assert match.resume_index == 2  # skip build + group, run provision
+
+    def test_partial_group_is_not_recorded_so_whole_group_reruns(self):
+        # A group only gets a journal entry on full success. With just the build
+        # step recorded, resume re-runs the entire (idempotent) infra group.
+        plan = _grouped_plan()
+        journal = step_journal.new_journal("DEV-01", "testnet")
+        _record_units(journal, plan, 1)  # only the build step
+        match = step_journal.match_journal(journal, "testnet", plan)
+        assert match.matches
+        assert match.resume_index == 1
+
+    def test_edited_group_diverges_at_the_group(self):
+        plan = _grouped_plan()
+        journal = step_journal.new_journal("DEV-01", "testnet")
+        _record_units(journal, plan, 2)
+        # The manifest changed a node-infra flag: the group identity no longer
+        # matches, so the journal diverges at the group unit (index 1).
+        journal["steps"][1]["argvs"][0][1] = ["nodes", "infra", "--name", "OTHER"]
+        match = step_journal.match_journal(journal, "testnet", plan)
+        assert not match.matches
+        assert match.divergence == 1
+        assert match.resume_index == 1
+
+    def test_divergence_renders_group_commands(self):
+        plan = _grouped_plan()
+        journal = step_journal.new_journal("DEV-01", "testnet")
+        _record_units(journal, plan, 2)
+        journal["steps"][1]["argvs"][0][1] = ["nodes", "infra", "--name", "OTHER"]
+        match = step_journal.match_journal(journal, "testnet", plan)
+        text = "\n".join(
+            step_journal.render_divergence(journal, "testnet", plan, match)
+        )
+        assert "--name OTHER" in text  # journal side
+        assert "--name DEV-01" in text  # plan side

@@ -3,7 +3,12 @@
 This is the single source of truth for the command-ordering and flag-coupling
 invariants that previously lived as prose in the ``deploy-runbook`` skill:
 
-- bootstraps infra → nodes infra → (elastic/monitoring/clients infra)
+- the five infra steps form one parallel group (``group="infra"``): bootstraps
+  infra → nodes infra run sequentially in a single lane (they share the
+  deployment-state object), while elastic / monitoring / clients infra each run
+  as their own concurrent lane. ``iter_units`` collapses the group and
+  ``parallel_infra`` executes the lanes at once; on resume the whole idempotent
+  group is one journal unit.
 - (elastic/monitoring provision) → nodes provision-genesis →
   bootstraps provision (only when bootstrap count > 1) → nodes provision →
   nodes start → (telegraf) → (clients provision/start) → generate-inventory
@@ -349,23 +354,48 @@ def build_testnet_deploy_steps(
     if spec.bootstraps.attached_volume_size is not None:
         boot_argv += ["--attached-volume-size", str(spec.bootstraps.attached_volume_size)]
     boot_argv += ["--purpose", manifest.purpose]
-    steps.append(Step(boot_argv, "Create bootstrap infrastructure"))
-
-    steps.append(Step(_nodes_infra_argv(name, spec.nodes), "Create node infrastructure"))
-
+    # All five infra steps form one parallel group: bootstraps→nodes share the
+    # deployment-state object (and nodes infra requires bootstrap state), so they
+    # run sequentially in a single lane; elastic/monitoring/clients each own an
+    # independent S3 state key and run as their own concurrent lanes.
+    steps.append(
+        Step(boot_argv, "Create bootstrap infrastructure", group="infra", lane="bootstraps-nodes")
+    )
+    steps.append(
+        Step(
+            _nodes_infra_argv(name, spec.nodes),
+            "Create node infrastructure",
+            group="infra",
+            lane="bootstraps-nodes",
+        )
+    )
     if spec.elastic.enabled:
         steps.append(
-            Step(_elastic_infra_argv(name, spec.elastic), "Create Elasticsearch infrastructure")
+            Step(
+                _elastic_infra_argv(name, spec.elastic),
+                "Create Elasticsearch infrastructure",
+                group="infra",
+                lane="elastic",
+            )
         )
     if spec.monitoring.enabled:
         steps.append(
             Step(
                 _monitoring_infra_argv(name, spec.monitoring),
                 "Create monitoring infrastructure",
+                group="infra",
+                lane="monitoring",
             )
         )
     if spec.clients is not None:
-        steps.append(Step(_clients_infra_argv(name, spec.clients), "Create client infrastructure"))
+        steps.append(
+            Step(
+                _clients_infra_argv(name, spec.clients),
+                "Create client infrastructure",
+                group="infra",
+                lane="clients",
+            )
+        )
 
     # --- provision + start tail ---
     steps += _provision_and_start_steps(
@@ -444,20 +474,45 @@ def build_extension_deploy_steps(
             f"Seed bootstraps from {spec.source}",
         )
     )
-    steps.append(Step(_nodes_infra_argv(name, spec.nodes), "Create node infrastructure"))
+    # Infra parallel group. The bootstrap tier is the source testnet's (seeded by
+    # the sequential `deployments extend` step above), so node infra has no
+    # bootstrap-creation lane to wait on — it runs as its own lane alongside the
+    # independent elastic/monitoring/clients lanes.
+    steps.append(
+        Step(
+            _nodes_infra_argv(name, spec.nodes),
+            "Create node infrastructure",
+            group="infra",
+            lane="nodes",
+        )
+    )
     if spec.elastic.enabled:
         steps.append(
-            Step(_elastic_infra_argv(name, spec.elastic), "Create Elasticsearch infrastructure")
+            Step(
+                _elastic_infra_argv(name, spec.elastic),
+                "Create Elasticsearch infrastructure",
+                group="infra",
+                lane="elastic",
+            )
         )
     if spec.monitoring.enabled:
         steps.append(
             Step(
                 _monitoring_infra_argv(name, spec.monitoring),
                 "Create monitoring infrastructure",
+                group="infra",
+                lane="monitoring",
             )
         )
     if spec.clients is not None:
-        steps.append(Step(_clients_infra_argv(name, spec.clients), "Create client infrastructure"))
+        steps.append(
+            Step(
+                _clients_infra_argv(name, spec.clients),
+                "Create client infrastructure",
+                group="infra",
+                lane="clients",
+            )
+        )
 
     steps += _provision_and_start_steps(
         name,
