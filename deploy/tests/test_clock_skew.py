@@ -9,6 +9,7 @@ from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
 from saorsa_deploy.config.models import Downloader, Nodes, ProviderNodes, Uploader
 from saorsa_deploy.orchestrator.testnet import _downloader_spec, _uploader_spec
 from saorsa_deploy.provisioning.clock_skew import (
+    SKEW_APT_CONF,
     SKEW_MARKER,
     build_clock_skew_command,
     format_skew_offset,
@@ -159,6 +160,18 @@ class TestBuildClockSkewCommand:
 
     def test_sets_clock(self):
         assert "date -s" in build_clock_skew_command(7200)
+
+    def test_writes_apt_date_tolerance(self):
+        cmd = build_clock_skew_command(-7200)
+        assert SKEW_APT_CONF in cmd
+        assert 'Acquire::Check-Date "false";' in cmd
+        assert 'Acquire::Check-Valid-Until "false";' in cmd
+
+    def test_apt_tolerance_written_before_marker_short_circuit(self):
+        # The apt drop-in must be written even on hosts already skewed by an
+        # earlier build (marker present) — so it lands before the early exit.
+        cmd = build_clock_skew_command(-7200)
+        assert cmd.index(SKEW_APT_CONF) < cmd.index('echo "ANT_SKEW:ALREADY"')
 
 
 class TestUploaderSpecClockSkew:

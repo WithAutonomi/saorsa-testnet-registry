@@ -42,6 +42,14 @@ SKEW_HOURS = 3
 # setup command a no-op on subsequent provision runs (prevents compounding).
 SKEW_MARKER = "/etc/ant-clock-skew-applied"
 
+# apt validates a mirror's InRelease against the system clock: a rewound clock
+# makes the file look "not valid yet" and an advanced clock makes it look
+# expired, either way aborting `apt-get update` (and so every later package
+# install) on a skewed VM. Disabling the two date checks lets apt keep working
+# regardless of the injected skew. Written by build_clock_skew_command on every
+# skewed host so the downstream heaptrack / AWS-CLI / Telegraf apt installs run.
+SKEW_APT_CONF = "/etc/apt/apt.conf.d/99-clock-skew-tolerance"
+
 # A Go-style duration body: one or more <int><unit> tokens, unit in h/m/s.
 _DURATION_TOKEN_RE = re.compile(r"(\d+)([hms])")
 _DURATION_BODY_RE = re.compile(r"(?:\d+[hms])+")
@@ -155,13 +163,18 @@ def build_clock_skew_command(offset_seconds: int) -> str:
     ``offset_seconds`` is a signed number of seconds — positive makes the clock
     run fast, negative makes it run slow. The command:
 
-    1. Short-circuits with ``ANT_SKEW:ALREADY`` if the marker file exists.
-    2. Disables NTP and stops/disables every common time-sync service.
-    3. Jumps the system clock by the offset using ``date -s``.
-    4. Records the applied offset (compact label, e.g. ``+2h``) in the marker
+    1. Writes the apt date-tolerance drop-in (``SKEW_APT_CONF``) so later
+       ``apt-get update`` calls don't reject the mirror's InRelease against the
+       skewed clock. Done unconditionally (before the marker short-circuit) so
+       it self-heals on hosts skewed by an earlier build that lacked it.
+    2. Short-circuits with ``ANT_SKEW:ALREADY`` if the marker file exists.
+    3. Disables NTP and stops/disables every common time-sync service.
+    4. Jumps the system clock by the offset using ``date -s``.
+    5. Records the applied offset (compact label, e.g. ``+2h``) in the marker
        file and prints ``ANT_SKEW:APPLIED:<offset>``.
 
-    Idempotent via the marker file — re-running never compounds the offset.
+    Idempotent via the marker file — re-running never compounds the offset; the
+    apt drop-in write is itself idempotent (overwrites the same file).
     """
     sign = "+" if offset_seconds >= 0 else "-"
     magnitude = abs(int(offset_seconds))
@@ -173,6 +186,11 @@ def build_clock_skew_command(offset_seconds: int) -> str:
     return f"""\
 set -eu
 MARKER="{SKEW_MARKER}"
+mkdir -p /etc/apt/apt.conf.d
+cat > "{SKEW_APT_CONF}" <<'EOF'
+Acquire::Check-Date "false";
+Acquire::Check-Valid-Until "false";
+EOF
 if [ -f "$MARKER" ]; then
     echo "ANT_SKEW:ALREADY"
     exit 0
