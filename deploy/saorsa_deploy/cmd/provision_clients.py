@@ -12,6 +12,7 @@ from saorsa_deploy.state import (
     S3_ADDRESSES_BUCKET,
     load_client_state,
     load_deployment_state,
+    update_client_state,
     update_client_wallet,
 )
 from saorsa_deploy.wallet import (
@@ -383,6 +384,19 @@ def cmd_provision_clients(args):
     if not clients:
         console.print("[bold red]Error:[/bold red] No clients found in client state.")
         sys.exit(1)
+
+    # Record the SSH key these VMs are being provisioned with so that
+    # `clients destroy` can reach them later (to stop the uploader service
+    # before draining its wallet) without the operator having to remember and
+    # re-pass the exact same --ssh-key-path. Best-effort: a failure here only
+    # costs the convenience, not the provisioning run.
+    try:
+        update_client_state(args.name, {"ssh_key_path": args.ssh_key_path})
+    except Exception as e:  # noqa: BLE001 — recording is best-effort
+        console.print(
+            f"[yellow]Warning: failed to record ssh_key_path in client "
+            f"state: {e}[/yellow]"
+        )
 
     has_uploaders = any(c.get("role", "upload") == "upload" for c in clients)
 

@@ -202,3 +202,57 @@ class TestRecoverClientsFromTfstate:
             recovered = _recover_clients_from_tfstate("DEV-02", console)
 
         assert recovered == []
+
+
+class TestStopUploaderSshKeyResolution:
+    """`clients destroy` must reach uploader VMs with the key they were
+    provisioned with — not the hardcoded default — so the pre-drain service
+    stop doesn't fail with an authentication error."""
+
+    def _uploader_state(self, ssh_key_path):
+        clients = [
+            {
+                "role": "upload",
+                "provider": "digitalocean",
+                "region": "lon1",
+                "client_index": 1,
+                "vm_size": "s-2vcpu-4gb",
+                "ip": "10.0.0.1",
+                "wallet_secret_key": "0xdeadbeef",
+                "wallet_address": "0xabc",
+            }
+        ]
+        state = {"name": "DEV-02", "clients": clients}
+        if ssh_key_path is not None:
+            state["ssh_key_path"] = ssh_key_path
+        return state
+
+    def _run(self, patches, args, ssh_key_path):
+        patches.load_client.return_value = self._uploader_state(ssh_key_path)
+        with (
+            patch(
+                "saorsa_deploy.cmd.destroy_clients._stop_uploader_services"
+            ) as p_stop,
+            patch(
+                "saorsa_deploy.cmd.destroy_clients._drain_uploader_wallets"
+            ),
+        ):
+            cmd_destroy_clients(args)
+        return p_stop
+
+    def test_uses_recorded_key_when_no_flag(self, patches):
+        # No --ssh-key-path on destroy → use the key recorded at provision time.
+        args = _args(wallet_secret_key="0xfund")
+        p_stop = self._run(patches, args, ssh_key_path="~/.ssh/stg_key")
+        assert p_stop.call_args.args[1] == "~/.ssh/stg_key"
+
+    def test_explicit_flag_overrides_recorded_key(self, patches):
+        args = _args(wallet_secret_key="0xfund", ssh_key_path="~/.ssh/override")
+        p_stop = self._run(patches, args, ssh_key_path="~/.ssh/stg_key")
+        assert p_stop.call_args.args[1] == "~/.ssh/override"
+
+    def test_falls_back_to_default_when_nothing_recorded(self, patches):
+        # Legacy state with no recorded ssh_key_path and no flag → old default.
+        args = _args(wallet_secret_key="0xfund")
+        p_stop = self._run(patches, args, ssh_key_path=None)
+        assert p_stop.call_args.args[1] == "~/.ssh/id_rsa"

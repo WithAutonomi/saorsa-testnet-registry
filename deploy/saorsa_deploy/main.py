@@ -481,12 +481,13 @@ def main(argv=None):
     clients_destroy_parser.add_argument(
         "--ssh-key-path",
         type=str,
-        default="~/.ssh/id_rsa",
+        default=None,
         help=(
             "SSH key used to stop the ant-uploader service on each uploader VM "
             "before draining its wallet, so the drain isn't racing a live "
-            "spender. Best-effort: unreachable VMs are skipped "
-            "(default: ~/.ssh/id_rsa)."
+            "spender. Best-effort: unreachable VMs are skipped. Defaults to the "
+            "key recorded in client state at provision time, falling back to "
+            "~/.ssh/id_rsa."
         ),
     )
 

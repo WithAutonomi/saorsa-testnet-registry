@@ -44,9 +44,11 @@ def cmd_destroy_clients(args):
 
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
     clients: list[dict] = []
+    state_ssh_key_path: str | None = None
     try:
         client_state = load_client_state(args.name)
         clients = client_state.get("clients", []) or []
+        state_ssh_key_path = client_state.get("ssh_key_path")
     except RuntimeError:
         console.print(
             "[yellow]No client state in S3 — scanning for orphan client tfstate "
@@ -102,9 +104,19 @@ def cmd_destroy_clients(args):
                 "can be drained back."
             )
             sys.exit(1)
+        # SSH key precedence: an explicit --ssh-key-path on this command wins;
+        # otherwise use the key recorded in client state at provision time;
+        # only then fall back to the historical default. Using the default
+        # blindly is what made the stop step fail with an auth error when the
+        # VMs were provisioned with a non-default key.
+        stop_ssh_key_path = (
+            getattr(args, "ssh_key_path", None)
+            or state_ssh_key_path
+            or "~/.ssh/id_rsa"
+        )
         _stop_uploader_services(
             uploaders_with_wallet,
-            getattr(args, "ssh_key_path", "~/.ssh/id_rsa"),
+            stop_ssh_key_path,
             console,
         )
         _drain_uploader_wallets(
