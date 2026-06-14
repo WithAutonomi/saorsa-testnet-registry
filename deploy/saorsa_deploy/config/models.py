@@ -374,6 +374,24 @@ class ProdDownloadersSpec(_Base):
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
     sleep_interval_secs: Optional[int] = None
+    # Cloud provider for the client VM (digitalocean | hetzner | vultr | ovh;
+    # default digitalocean). Non-DO is cheaper for a permanent run and cuts
+    # pooled DigitalOcean egress. Needs the provider's creds in the env.
+    provider: Optional[str] = None
+    # Cloud provider for the paired monitoring VM (digitalocean | ovh; default
+    # digitalocean). Only those two have monitoring Terraform modules.
+    monitoring_provider: Optional[str] = None
+    # Monitoring VM overrides (default lon1 / s-2vcpu-4gb on DO; provider
+    # defaults on OVH). monitoring_volume_type is OVH-only.
+    monitoring_region: Optional[str] = None
+    monitoring_droplet_size: Optional[str] = None
+    monitoring_volume_type: Optional[str] = None
+    # InfluxDB bucket retention in days (default 7); 0 = infinite. For a
+    # permanent run, periodically archive into Postgres (`deployments archive`).
+    influx_retention_days: Optional[int] = None
+    # Per-op download-log retention in days before the daily prune timer
+    # (default 7); 0 = keep forever.
+    log_retention_days: Optional[int] = None
 
 
 class ProdProbe(_Base):

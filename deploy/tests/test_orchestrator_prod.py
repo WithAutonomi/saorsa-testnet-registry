@@ -381,6 +381,70 @@ def test_prod_continuous_downloader_sleep_interval():
     assert "--branch-name" in argv and "--ant-version" not in argv
 
 
+def test_prod_continuous_downloader_permanent_options_map_to_flags():
+    m = Manifest.model_validate(
+        {
+            "name": "CD",
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_continuous_downloader": {
+                "spec": "fsn1:cpx41",
+                "provider": "hetzner",
+                "monitoring_provider": "ovh",
+                "monitoring_region": "GRA9",
+                "monitoring_droplet_size": "b3-8",
+                "monitoring_volume_type": "high-speed",
+                "influx_retention_days": 7,
+                "log_retention_days": 7,
+                "sleep_interval_secs": 86400,
+                "binary": {"version": "0.3.1"},
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert argv[:3] == ["prod", "continuous-downloader", "deploy"]
+
+    def _val(flag):
+        return argv[argv.index(flag) + 1]
+
+    assert _val("--provider") == "hetzner"
+    assert _val("--monitoring-provider") == "ovh"
+    assert _val("--monitoring-region") == "GRA9"
+    assert _val("--monitoring-droplet-size") == "b3-8"
+    assert _val("--monitoring-volume-type") == "high-speed"
+    assert _val("--influx-retention-days") == "7"
+    assert _val("--log-retention-days") == "7"
+    assert _val("--sleep-interval-secs") == "86400"
+
+
+def test_prod_continuous_downloader_omits_unset_permanent_options():
+    m = Manifest.model_validate(
+        {
+            "name": "CD",
+            "kind": "prod-continuous-downloader",
+            "purpose": "p",
+            "ssh_key_path": SSH,
+            "prod_continuous_downloader": {
+                "spec": "lon1",
+                "binary": {"version": "0.3.1"},
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    # Nothing set → the CLI defaults apply; no new flags are emitted.
+    for flag in (
+        "--provider",
+        "--monitoring-provider",
+        "--monitoring-region",
+        "--monitoring-droplet-size",
+        "--monitoring-volume-type",
+        "--influx-retention-days",
+        "--log-retention-days",
+    ):
+        assert flag not in argv
+
+
 def test_prod_skip_builds_omits_branch_build_step():
     m = Manifest.model_validate(
         {

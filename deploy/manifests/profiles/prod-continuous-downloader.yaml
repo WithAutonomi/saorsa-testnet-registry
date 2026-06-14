@@ -1,0 +1,51 @@
+# Permanent production continuous-downloader.
+#
+# Runs one client VM that walks an address list once a day against the
+# production Autonomi network to track download performance over time, with a
+# paired InfluxDB/Grafana monitoring stack. Bounded log + Influx retention keep
+# it disk-safe for indefinite operation; archive results into Postgres
+# periodically (see the note at the bottom) for long-term history.
+#
+#   saorsa-deploy deployments plan --config <this file>     # preview the steps
+#   saorsa-deploy deployments up   --config <this file>     # deploy
+#   saorsa-deploy deployments down --name PROD-DL-01        # tear down
+#
+# Copy into the git-ignored manifests/runs/ dir and edit per run.
+
+name: PROD-DL-01
+kind: prod-continuous-downloader
+purpose: "Permanent prod download performance baseline"
+ssh_key_path: ~/.ssh/ant_deploy
+
+prod_continuous_downloader:
+  # Client VM. The cheap, always-on box doing the downloads.
+  spec: fsn1:cpx41            # region[:vm_size]
+  provider: hetzner          # digitalocean | hetzner | vultr | ovh (default DO)
+
+  # Pinned release (or use `branch:` + `repo_owner:` for a custom build).
+  binary:
+    version: "0.3.1"
+
+  # Once-a-day cadence: sleep 24h at the end of each full pass through the list.
+  sleep_interval_secs: 86400
+
+  # Monitoring VM (independent of the client provider).
+  monitoring_provider: ovh   # digitalocean | ovh (only these have modules)
+  monitoring_region: GRA9    # optional; provider default if omitted
+  monitoring_droplet_size: b3-8   # optional; provider default if omitted
+  # monitoring_volume_type: high-speed   # OVH only
+  monitoring_volume_size: 50
+
+  # Bounded retention for permanent operation.
+  influx_retention_days: 7   # 0 = infinite
+  log_retention_days: 7      # 0 = keep per-op logs forever
+
+  # Optional: override the bundled address list.
+  # addresses_path: my-addresses.txt
+
+# Optional: post a deployment summary to Slack once it's up.
+# slack_post: true
+#
+# Long-term history: Influx retention is bounded, so periodically copy results
+# into Postgres from a box with DATABASE_URL set (at least weekly):
+#   saorsa-deploy deployments archive --name PROD-DL-01

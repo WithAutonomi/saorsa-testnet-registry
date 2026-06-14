@@ -146,6 +146,20 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
         argv += ["--addresses-path", spec.addresses_path]
     if spec.sleep_interval_secs is not None:
         argv += ["--sleep-interval-secs", str(spec.sleep_interval_secs)]
+    if spec.provider is not None:
+        argv += ["--provider", spec.provider]
+    if spec.monitoring_provider is not None:
+        argv += ["--monitoring-provider", spec.monitoring_provider]
+    if spec.monitoring_region is not None:
+        argv += ["--monitoring-region", spec.monitoring_region]
+    if spec.monitoring_droplet_size is not None:
+        argv += ["--monitoring-droplet-size", spec.monitoring_droplet_size]
+    if spec.monitoring_volume_type is not None:
+        argv += ["--monitoring-volume-type", spec.monitoring_volume_type]
+    if spec.influx_retention_days is not None:
+        argv += ["--influx-retention-days", str(spec.influx_retention_days)]
+    if spec.log_retention_days is not None:
+        argv += ["--log-retention-days", str(spec.log_retention_days)]
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
     argv += _bootstrap_cache_flag(spec)
