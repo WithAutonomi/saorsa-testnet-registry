@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from rich.console import Console
 
@@ -101,6 +102,31 @@ def _record_group(journal: dict | None, group: StepGroup) -> None:
     save_step_journal(journal["name"], journal)
 
 
+def _format_duration(seconds: float) -> str:
+    """Human-friendly elapsed time, e.g. ``42.3s`` / ``3m 07s`` / ``1h 04m 09s``."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(int(round(seconds)), 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m {secs:02d}s"
+
+
+def _print_timing_summary(
+    console: Console, timings: list[tuple[str, float]]
+) -> None:
+    """Print per-step durations, slowest first, plus a total — to spotlight the
+    slow steps when a deploy feels sluggish."""
+    if not timings:
+        return
+    total = sum(d for _, d in timings)
+    console.rule("[bold]Step timing summary[/bold]")
+    for label, dur in sorted(timings, key=lambda t: t[1], reverse=True):
+        console.print(f"  [cyan]{_format_duration(dur):>11}[/cyan]  {label}")
+    console.print(f"  [bold]{_format_duration(total):>11}  total[/bold]")
+
+
 def _execute(
     console: Console, steps: list[Step], journal: dict | None = None, start: int = 0
 ) -> None:
@@ -109,46 +135,71 @@ def _execute(
 
     units = iter_units(steps)
     total = len(units)
+    timings: list[tuple[str, float]] = []
     for i, unit in enumerate(units[start:], start + 1):
         if isinstance(unit, StepGroup):
             console.rule(f"[bold cyan][{i}/{total}][/bold cyan] {unit.label}")
             # run_parallel_group prints failures and raises SystemExit on any
             # lane failure, so reaching the next line means every lane succeeded.
+            t0 = time.monotonic()
             parallel_infra.run_parallel_group(console, unit)
+            elapsed = time.monotonic() - t0
+            timings.append((unit.label, elapsed))
+            console.print(
+                f"[green]✓[/green] [{i}/{total}] {unit.label} finished in "
+                f"[bold]{_format_duration(elapsed)}[/bold]"
+            )
             _record_group(journal, unit)
             continue
 
         step = unit
         console.rule(f"[bold cyan][{i}/{total}][/bold cyan] {step.label}")
         console.print(f"[dim]$ {step.render()}[/dim]")
+        t0 = time.monotonic()
         try:
             run_cli(step.argv)
         except SystemExit as e:
             code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
             if code != 0:
+                elapsed = time.monotonic() - t0
                 if step.best_effort:
                     console.print(
                         f"[bold yellow]Warning:[/bold yellow] step {i}/{total} "
-                        f"({step.label}) exited {code}; continuing (best-effort)."
+                        f"({step.label}) exited {code} after "
+                        f"{_format_duration(elapsed)}; continuing (best-effort)."
                     )
+                    timings.append((step.label, elapsed))
                     _record_step(journal, step, step_journal.STATUS_BEST_EFFORT_FAILED)
                     continue
                 console.print(
-                    f"[bold red]Aborting:[/bold red] step {i}/{total} ({step.label}) exited {code}."
+                    f"[bold red]Aborting:[/bold red] step {i}/{total} "
+                    f"({step.label}) exited {code} after {_format_duration(elapsed)}."
                 )
+                _print_timing_summary(console, timings)
                 sys.exit(code)
         except Exception as e:
             # A best-effort step (e.g. the Slack post tail) must never fail the
             # run; the real deployment work is already done by the time it runs.
             if step.best_effort:
+                elapsed = time.monotonic() - t0
                 console.print(
                     f"[bold yellow]Warning:[/bold yellow] step {i}/{total} "
-                    f"({step.label}) raised {type(e).__name__}: {e}; continuing (best-effort)."
+                    f"({step.label}) raised {type(e).__name__}: {e} after "
+                    f"{_format_duration(elapsed)}; continuing (best-effort)."
                 )
+                timings.append((step.label, elapsed))
                 _record_step(journal, step, step_journal.STATUS_BEST_EFFORT_FAILED)
                 continue
             raise
+        elapsed = time.monotonic() - t0
+        timings.append((step.label, elapsed))
+        console.print(
+            f"[green]✓[/green] [{i}/{total}] {step.label} finished in "
+            f"[bold]{_format_duration(elapsed)}[/bold]"
+        )
         _record_step(journal, step, step_journal.STATUS_SUCCEEDED)
+
+    _print_timing_summary(console, timings)
 
 
 def _resolve_step_journal(

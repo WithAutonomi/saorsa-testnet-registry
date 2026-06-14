@@ -9,7 +9,7 @@ from rich.console import Console
 
 import saorsa_deploy.main as main_mod
 import saorsa_deploy.parallel_infra as parallel_infra
-from saorsa_deploy.cmd.deploy_cmds import _execute
+from saorsa_deploy.cmd.deploy_cmds import _execute, _format_duration
 from saorsa_deploy.orchestrator.steps import Step, StepGroup
 
 
@@ -121,3 +121,59 @@ def test_group_failure_aborts_the_run(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         _execute(_console(), steps)
     assert exc.value.code == 4
+
+
+# --------------------------------------------------------------------------- #
+# Per-step timing
+# --------------------------------------------------------------------------- #
+def test_format_duration_units():
+    assert _format_duration(5) == "5.0s"
+    assert _format_duration(42.34) == "42.3s"
+    assert _format_duration(127) == "2m 07s"
+    assert _format_duration(3845) == "1h 04m 05s"
+
+
+def _capture_console() -> tuple[Console, io.StringIO]:
+    buf = io.StringIO()
+    return Console(file=buf, width=120, force_terminal=False), buf
+
+
+def test_prints_per_step_time_and_summary(monkeypatch):
+    _patch_runner(monkeypatch, {})
+    console, buf = _capture_console()
+    steps = [Step(["a"], "Step A"), Step(["b"], "Step B")]
+    _execute(console, steps)
+    out = buf.getvalue()
+    # Each step reports its own elapsed time...
+    assert out.count("finished in") == 2
+    # ...and a final summary lists every step plus a total.
+    assert "Step timing summary" in out
+    assert "Step A" in out and "Step B" in out
+    assert "total" in out
+
+
+def test_group_elapsed_is_reported(monkeypatch):
+    _patch_runner(monkeypatch, {})
+    monkeypatch.setattr(
+        parallel_infra, "run_parallel_group", lambda console, group: None
+    )
+    console, buf = _capture_console()
+    steps = [
+        Step(["bootstraps", "infra"], "Bootstraps", group="infra", lane="bn"),
+        Step(["after"], "Later step"),
+    ]
+    _execute(console, steps)
+    out = buf.getvalue()
+    assert out.count("finished in") == 2  # the group and the trailing step
+
+
+def test_summary_printed_on_abort(monkeypatch):
+    _patch_runner(monkeypatch, {"b": 3})
+    console, buf = _capture_console()
+    steps = [Step(["a"], "Step A"), Step(["b"], "Step B")]
+    with pytest.raises(SystemExit):
+        _execute(console, steps)
+    out = buf.getvalue()
+    # The partial summary is still printed so a failed run shows what it spent.
+    assert "Step timing summary" in out
+    assert "Step A" in out
