@@ -243,7 +243,7 @@ env-filter — letting one deployment run nodes and clients at different levels.
 
 `nodes.log_level` also **lifts the node→ES Telegraf drop filter** so verbose node
 logs actually reach Elasticsearch. The forwarder drops any line whose level is in
-`elastic provision-telegraf --drop-log-levels` (CLI default `DEBUG,TRACE`); left
+`deployments provision-telegraf --drop-log-levels` (CLI default `DEBUG,TRACE`); left
 alone that silently strips the very trace/debug the operator asked for (nodes
 write it to disk, ES shows only INFO/WARN). The orchestrator therefore derives the
 drop set from `nodes.log_level` (drop only levels strictly *more verbose* than the
@@ -452,7 +452,7 @@ commands to opt in.
 
 - `monitoring infra` — create the InfluxDB VM via Terraform (and the Grafana VM only with `--grafana`). `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (InfluxDB VM; default `s-4vcpu-8gb` do / `b3-8` ovh), `--grafana`/`--no-grafana` (default off), `--grafana-size` (default `s-1vcpu-2gb` do / `d2-4` ovh; only used with `--grafana`), `--volume-size`, `--volume-type` (ovh). OVH needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an `ant_deploy` SSH key in the project.
 - `monitoring provision` — install InfluxDB (InfluxDB VM) and, when Grafana was enabled, Grafana (Grafana VM); prints connection details. `--retention-days N` caps InfluxDB bucket retention (default `0` = infinite, the dev default; set e.g. 14 for prod). Retention is applied to both buckets at first provision.
-- `monitoring provision-telegraf` — install Telegraf on nodes for host metrics (CPU, mem, disk, net) → InfluxDB. Retrofit path (`--inventory-path`/`--host-ips-file`) provisions Tier-1 host+procstat metrics only; the Prometheus app-metrics scrape is only wired on the `--name` path with `node_count > 0`.
+- `deployments provision-telegraf` — install Telegraf for host metrics (CPU, mem, disk, net) → InfluxDB **and** node log forwarding → Elasticsearch in one pass (see "Telegraf provisioning" below). Metrics-only when only monitoring state exists. Retrofit path (`--inventory-path`/`--host-ips-file`) provisions Tier-1 host+procstat metrics only; the Prometheus app-metrics scrape is only wired on the `--name` path with `node_count > 0`.
 - `monitoring info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
 - `monitoring destroy` — tear down monitoring infrastructure (both VMs)
 
@@ -481,7 +481,7 @@ rather than relying on a mutable `host_role` dropdown:
   canary client VMs, tagged `host_role=CLIENT`), **plus** the client `ant`
   service's memory (see below).
 
-On CLIENT-role hosts, `monitoring provision-telegraf` appends two extra inputs
+On CLIENT-role hosts, `deployments provision-telegraf` appends two extra inputs
 (from `resources/monitoring/telegraf_metrics_client.conf`, gated on
 `host_role=="CLIENT"` so node configs stay byte-identical and the cgroup input's
 "path missing" error never fires on the node fleet): a `procstat` keyed on
@@ -497,17 +497,38 @@ terminal spike clips the discretely-sampled procstat RSS.
 
 `monitoring provision` creates both buckets and mints an **org-scoped** Telegraf
 token (read+write on every bucket, so adding a bucket never requires reminting
-the immutable token). `monitoring provision-telegraf` routes CLIENT-role hosts
+the immutable token). `deployments provision-telegraf` routes CLIENT-role hosts
 to `client-metrics` and everything else to `testnet-metrics`. The Node Host
 Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
 `client-metrics` — neither can render the other's data regardless of the Role
 dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
 `INFLUXDB_CLIENT_BUCKET`).
 
-### Telegraf naming
+### Telegraf provisioning (single combined command)
 
-- `elastic provision-telegraf` — Elasticsearch log forwarding
-- `monitoring provision-telegraf` — InfluxDB host metrics
+Both Telegraf forwarders are installed by **one** command,
+`deployments provision-telegraf` (the old `elastic provision-telegraf` and
+`monitoring provision-telegraf` subcommands were removed). It installs both in a
+**single SSH pass per host group** — one Telegraf deb install, one
+connect/run/disconnect — instead of two separate passes:
+
+- Elasticsearch log forwarding (systemd `telegraf-ant-elasticsearch`)
+- InfluxDB host metrics (systemd `telegraf-ant-metrics`)
+
+A backend is provisioned only when its credentials resolve: explicit
+`--elasticsearch-*` / `--influxdb-*` flags, or — with `--name` — whatever elastic
+/ monitoring state the deployment has (so an ES-only or metrics-only deployment
+gets just that one). Per-VM role grouping (GENESIS/BOOTSTRAP/WAN_NODE) and the
+client-tier metrics pass are unchanged; only the two passes are merged. In a
+`deployments up` run this single step is emitted whenever elastic and/or
+monitoring is enabled, and it now runs **before `nodes start`** so host metrics
+(which can't be backfilled) cover the node's lifetime from the first second.
+
+Code: combined runner `provisioning/telegraf_combined.py`, command
+`cmd/provision_telegraf_combined.py`; the per-forwarder logic still lives in
+`provisioning/telegraf.py` (ES) and `provisioning/telegraf_metrics.py` (InfluxDB),
+each now exposing an `add_ops(state, install=...)` seam. The shared install op
+lives in `provisioning/telegraf_install.py`.
 
 ## Elasticsearch (Log Forwarding)
 
@@ -522,7 +543,7 @@ SSH-key prerequisites as monitoring).
 - `elastic provision` — install Elasticsearch 8.x, create index template, user + API key. `--retention-days` (default 7, ILM) + `--shards`
 - `elastic info` — print connection details (URL, user, password, API key)
 - `elastic destroy` — tear down Elasticsearch infrastructure
-- `elastic provision-telegraf` — install Telegraf on nodes for log forwarding → Elasticsearch (auto-loads ES credentials from state)
+- Node log forwarding is installed by `deployments provision-telegraf` (auto-loads ES credentials from state), alongside InfluxDB host metrics in one pass — see "Telegraf provisioning" under Monitoring.
 
 ### Architecture
 

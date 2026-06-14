@@ -59,7 +59,7 @@ def print_connection_summary(name: str, details: dict, console: Console):
         f"  [bold]API Token:[/bold] {token}",
         "",
         "  [dim]Telegraf command:[/dim]",
-        f"  saorsa-deploy monitoring provision-telegraf --name {name}",
+        f"  saorsa-deploy deployments provision-telegraf --name {name}",
     ]
 
     console.print()

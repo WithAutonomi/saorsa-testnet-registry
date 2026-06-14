@@ -281,27 +281,27 @@ def _provision_and_start_steps(
         nodes_argv[idx:idx] = ["--full-headroom-mb", str(nodes.full_headroom_mb)]
     steps.append(Step(nodes_argv, "Provision nodes"))
 
-    steps.append(Step(["nodes", "start", "--name", name, "--ssh-key-path", ssh_key], "Start nodes"))
-
-    if elastic.enabled:
-        argv = ["elastic", "provision-telegraf", "--name", name]
-        # Derive the node forwarder's drop set from nodes.log_level so that
-        # `log_level: trace`/`debug` actually reaches ES (an explicit
-        # elastic.drop_log_levels still overrides). See helper docstring.
-        drop = _resolve_elastic_drop_log_levels(elastic, nodes.log_level)
-        if drop is not None:
-            argv += ["--drop-log-levels", drop]
-        if elastic.buffer_limit is not None:
-            argv += ["--buffer-limit", str(elastic.buffer_limit)]
+    # Install Telegraf BEFORE starting the nodes so host metrics (which cannot be
+    # backfilled) cover the node's lifetime from the first second, and the ES log
+    # tail is already watching when the first line is written. Both forwarders go
+    # in a single pass per host group via `deployments provision-telegraf`.
+    if elastic.enabled or monitoring.enabled:
+        argv = ["deployments", "provision-telegraf", "--name", name]
+        if elastic.enabled:
+            # Derive the node forwarder's drop set from nodes.log_level so that
+            # `log_level: trace`/`debug` actually reaches ES (an explicit
+            # elastic.drop_log_levels still overrides). See helper docstring.
+            drop = _resolve_elastic_drop_log_levels(elastic, nodes.log_level)
+            if drop is not None:
+                argv += ["--drop-log-levels", drop]
+            if elastic.buffer_limit is not None:
+                argv += ["--buffer-limit", str(elastic.buffer_limit)]
         argv += ["--ssh-key-path", ssh_key]
-        steps.append(Step(argv, "Install Telegraf log forwarding (Elasticsearch)"))
-    if monitoring.enabled:
         steps.append(
-            Step(
-                ["monitoring", "provision-telegraf", "--name", name, "--ssh-key-path", ssh_key],
-                "Install Telegraf host metrics (InfluxDB)",
-            )
+            Step(argv, "Install Telegraf (Elasticsearch logs + InfluxDB metrics)")
         )
+
+    steps.append(Step(["nodes", "start", "--name", name, "--ssh-key-path", ssh_key], "Start nodes"))
 
     if clients is not None:
         argv = ["clients", "provision", "--name", name, *ant_binary_flags(binaries.ant)]

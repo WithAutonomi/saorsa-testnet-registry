@@ -654,29 +654,57 @@ terraform apply
 aws iam create-access-key --user-name ant-build-uploader
 ```
 
-### `elastic provision-telegraf` command
+### `deployments provision-telegraf` command
 
-Install and configure Telegraf for Elasticsearch log forwarding on all testnet VMs. Formerly named `provision-telegraf`.
+Install Telegraf for **both** Elasticsearch log forwarding (systemd
+`telegraf-ant-elasticsearch`) **and** InfluxDB host metrics (systemd
+`telegraf-ant-metrics`) in a **single SSH pass per host group** — one Telegraf
+deb install, one connect/run/disconnect. This replaces the former separate
+`elastic provision-telegraf` and `monitoring provision-telegraf` commands.
+
+A backend is provisioned only when its credentials resolve: pass the
+`--elasticsearch-*` / `--influxdb-*` flags explicitly, or pass `--name` and the
+command auto-loads whatever elastic / monitoring state the deployment has (so a
+deployment with only one backend gets just that forwarder).
 
 ```bash
-uv run saorsa-deploy elastic provision-telegraf --name DEV-01 \
+# Deployment state mode: loads node IPs + ES and InfluxDB credentials from state.
+uv run saorsa-deploy deployments provision-telegraf --name DEV-01
+
+# Explicit credentials (e.g. external setups / retrofit).
+uv run saorsa-deploy deployments provision-telegraf \
+  --host-ips-file hosts.txt \
   --elasticsearch-url https://es.example.com \
-  --elasticsearch-username user \
-  --elasticsearch-password pass
+  --elasticsearch-username user --elasticsearch-password pass \
+  --influxdb-url http://1.2.3.4:8086 --influxdb-token TOKEN
 ```
 
 #### Arguments
 
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
-| `--name` | string | Yes | - | Deployment name |
-| `--elasticsearch-url` | string | Yes | - | Elasticsearch endpoint URL |
-| `--elasticsearch-username` | string | Yes | - | Elasticsearch username |
-| `--elasticsearch-password` | string | Yes | - | Elasticsearch password |
-| `--node-version` | string | No | - | Version of the deployed binary |
-| `--branch-commit` | string | No | - | Git branch or commit |
-| `--repo-owner` | string | No | `maidsafe` | Repository owner |
-| `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
+| `--name` | string | No¹ | - | Deployment name (loads node IPs + ES/InfluxDB credentials from state) |
+| `--host-ips-file` | string | No¹ | - | Text file of host IPs, one per line (retrofit) |
+| `--inventory-path` | string | No¹ | - | Inventory JSON (reads ip/ssh_user/ssh_key/role per entry) |
+| `--host-role` | choice | No | - | Force `GENESIS`/`BOOTSTRAP`/`WAN_NODE`/`CLIENT` for every host (retrofit) |
+| `--elasticsearch-url` / `-username` / `-password` | string | No² | - | ES endpoint + credentials (auto-loaded from elastic state with `--name`) |
+| `--influxdb-url` / `--influxdb-token` | string | No² | - | InfluxDB endpoint + token (auto-loaded from monitoring state with `--name`) |
+| `--influxdb-org` | string | No | `ant` | InfluxDB organization |
+| `--influxdb-bucket` | string | No | `testnet-metrics` | Node host-metrics bucket (CLIENT hosts always use `client-metrics`) |
+| `--node-version` / `--branch-commit` / `--repo-owner` | string | No | / / `maidsafe` | ES global tags |
+| `--drop-log-levels` | string | No | `DEBUG,TRACE` | ES log levels dropped before shipping (`""` keeps every line) |
+| `--buffer-limit` / `--max-undelivered-lines` | int | No | / | ES forwarder buffer sizes |
+| `--from-start` / `--only-new-logs` | flag | No | from-start | ES tail reads from beginning vs end |
+| `--ant-log-dir` | string | No | `/mnt/ant-node-storage/log` | Override the tailed log directory |
+| `--ssh-key-path` / `--ssh-user` | string | No | `~/.ssh/id_rsa` / `root` | SSH connection details |
+
+¹ Exactly one of `--name` / `--host-ips-file` / `--inventory-path` is required.
+² At least one backend's credentials must resolve (via flags or `--name` state).
+
+On the `--name` path the command also enumerates client VMs from client state (if
+any) and provisions host-stat Telegraf on them with `host_role="CLIENT"`, routed
+to the dedicated **`client-metrics`** bucket (the client→ES forwarder is installed
+separately by `clients provision`).
 
 ## Monitoring
 
@@ -752,7 +780,7 @@ uv run saorsa-deploy monitoring provision --name PROD-MON --retention-days 14
 | `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
 | `--retention-days` | int | No | 0 | InfluxDB bucket retention in days (`0` = keep forever, the dev default). Applied to both buckets at first provision |
 
-On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `monitoring provision-telegraf` command.
+On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `deployments provision-telegraf` command.
 
 This step creates **two** InfluxDB buckets — `testnet-metrics` (node-tier host
 metrics, the `prometheus` per-node measurement, and application measurements
@@ -763,38 +791,14 @@ Host Statistics** and **Client Host Statistics** Grafana dashboards physically
 isolated: each dashboard queries only its own bucket, so neither can render the
 other's data.
 
-### `monitoring provision-telegraf` command
+### InfluxDB host-metrics Telegraf
 
-Install Telegraf for InfluxDB metrics forwarding on testnet VMs. Collects host-level metrics: CPU, memory, disk space (all mount points), and network bandwidth.
-
-```bash
-# Using deployment state (loads IPs from S3)
-uv run saorsa-deploy monitoring provision-telegraf --name DEV-01 \
-  --influxdb-url http://1.2.3.4:8086 \
-  --influxdb-token TOKEN
-
-# Using explicit host IPs (for external setups)
-uv run saorsa-deploy monitoring provision-telegraf \
-  --host-ips 5.6.7.8,9.10.11.12 \
-  --influxdb-url http://1.2.3.4:8086 \
-  --influxdb-token TOKEN
-```
-
-#### Arguments
-
-| Argument | Type | Required | Default | Description |
-|----------|------|----------|---------|-------------|
-| `--name` | string | No | - | Deployment name (loads VM IPs from deployment state) |
-| `--host-ips` | string | No | - | Comma-separated host IPs (alternative to `--name`) |
-| `--influxdb-url` | string | Yes | - | InfluxDB URL |
-| `--influxdb-token` | string | Yes | - | InfluxDB API token |
-| `--influxdb-org` | string | No | `ant` | InfluxDB organization |
-| `--influxdb-bucket` | string | No | `testnet-metrics` | InfluxDB bucket for **node** host metrics (CLIENT hosts always use `client-metrics`) |
-| `--ssh-key-path` | string | No | `~/.ssh/id_rsa` | SSH key for provisioning |
-
-Either `--name` or `--host-ips` must be provided. The `--host-ips` flag allows provisioning machines from external testnet setups without any deployment state in this repository.
-
-When `--name` is provided the command also enumerates client VMs from client state (if any exist) and provisions host-stat telegraf on them with `host_role="CLIENT"`. CLIENT-role hosts are routed to the dedicated **`client-metrics`** bucket (overriding `--influxdb-bucket`, which only governs node-tier hosts), so client host metrics surface on the **Client Host Statistics** dashboard while node metrics stay on **Node Host Statistics** — the two dashboards read from separate buckets and never cross-contaminate.
+Telegraf for InfluxDB host metrics (CPU, memory, disk space across all mount
+points, network bandwidth) is installed by the unified
+[`deployments provision-telegraf`](#deployments-provision-telegraf-command)
+command, in the same pass as Elasticsearch log forwarding. When only monitoring
+state exists for a deployment it provisions metrics only. The node host-metrics
+bucket is `testnet-metrics`; CLIENT hosts are always routed to `client-metrics`.
 
 CLIENT-role hosts additionally get the client `ant` service's **memory** recorded into `client-metrics`: a `procstat` input matching `system.slice/ant-*.service` (per-process RSS, tagged `metric_source=ant-client`, 2 s interval) and a `cgroup` input reading `memory.current` + `memory.peak` (whole-service live + high-water peak) for the same glob. These stanzas (`resources/monitoring/telegraf_metrics_client.conf`) are appended **only** on CLIENT hosts, so node configs are byte-identical and the cgroup input never logs a missing-path error on the node fleet. The single `ant-*` glob matches whichever client unit a VM runs (`ant-uploader`, `ant-downloader`, `ant-prod-uploader`, `ant-prod-downloader`, `ant-prod-canary-upload`, `ant-prod-canary-probe`). Query `procstat` filtered to `process_name == "ant"` for per-process RSS, or the `cgroup` measurement's `memory.peak` for the true per-run high-water mark (caught even when a sub-2 s terminal spike clips the sampled RSS). The local-* prod kinds run no systemd unit and are not covered.
 
@@ -841,10 +845,8 @@ uv run saorsa-deploy monitoring infra --name DEV-01
 # 2. Install InfluxDB + Grafana (prints connection details)
 uv run saorsa-deploy monitoring provision --name DEV-01
 
-# 3. Install Telegraf on testnet nodes
-uv run saorsa-deploy monitoring provision-telegraf --name DEV-01 \
-  --influxdb-url http://1.2.3.4:8086 \
-  --influxdb-token TOKEN
+# 3. Install Telegraf on testnet nodes (host metrics + log forwarding, one pass)
+uv run saorsa-deploy deployments provision-telegraf --name DEV-01
 
 # 4. View Grafana dashboards at http://1.2.3.4:3000
 

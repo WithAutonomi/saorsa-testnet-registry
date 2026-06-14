@@ -1,6 +1,6 @@
 """Remove the telegraf-ant-metrics sidecar from node VMs.
 
-Mirrors the input modes of monitoring provision-telegraf / elastic clean:
+Mirrors the input modes of deployments provision-telegraf / elastic clean:
   --inventory-path   read node_vms from inventory JSON
   --host-ips-file    read IPs from a text file (one per line)
   --name             load IPs from deployment state (bootstrap + regulars)

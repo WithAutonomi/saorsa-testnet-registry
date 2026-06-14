@@ -251,9 +251,8 @@ EXPECTED_DEPLOY = [
         "--ssh-key-path",
         SSH,
     ],
+    ["deployments", "provision-telegraf", "--name", "STG-01", "--ssh-key-path", SSH],
     ["nodes", "start", "--name", "STG-01", "--ssh-key-path", SSH],
-    ["elastic", "provision-telegraf", "--name", "STG-01", "--ssh-key-path", SSH],
-    ["monitoring", "provision-telegraf", "--name", "STG-01", "--ssh-key-path", SSH],
     [
         "clients",
         "provision",
@@ -518,7 +517,8 @@ def test_monitoring_on_by_default():
     cmds = [s.argv[:2] for s in build_deploy_steps(_minimal())]
     assert ["monitoring", "infra"] in cmds
     assert ["monitoring", "provision"] in cmds
-    assert ["monitoring", "provision-telegraf"] in cmds
+    # Telegraf for both backends is now installed by the combined command.
+    assert ["deployments", "provision-telegraf"] in cmds
 
 
 def test_monitoring_opt_out():
@@ -526,7 +526,8 @@ def test_monitoring_opt_out():
     cmds = [s.argv[:2] for s in steps]
     assert ["monitoring", "infra"] not in cmds
     assert ["monitoring", "provision"] not in cmds
-    assert ["monitoring", "provision-telegraf"] not in cmds
+    # _minimal() has no elastic either, so the combined telegraf step is absent.
+    assert ["deployments", "provision-telegraf"] not in cmds
 
 
 def _monitoring_infra_argv(steps):
@@ -622,6 +623,10 @@ def test_extension_deploy_skips_bootstrap_tier():
     assert ["nodes", "start"] in cmds
     extend = steps[0]
     assert "--source" in extend.argv and "DEV-01" in extend.argv
+    # Telegraf (monitoring defaults on for extensions) is installed BEFORE the
+    # nodes are started, so metrics cover the node lifetime from the start.
+    assert ["deployments", "provision-telegraf"] in cmds
+    assert cmds.index(["deployments", "provision-telegraf"]) < cmds.index(["nodes", "start"])
 
 
 def test_extension_destroy_ends_with_unextend():
@@ -703,7 +708,7 @@ def test_unknown_nodes_provider_rejected():
 # --------------------------------------------------------------------------- #
 def _es_telegraf_step(m):
     steps = build_deploy_steps(m)
-    return next(s for s in steps if s.argv[:2] == ["elastic", "provision-telegraf"])
+    return next(s for s in steps if s.argv[:2] == ["deployments", "provision-telegraf"])
 
 
 def _nodes(**extra):
@@ -787,7 +792,7 @@ def test_client_forward_buffer_limit_emitted_when_buffer_set():
     cprov = next(s for s in steps if s.argv[:2] == ["clients", "provision"])
     assert cprov.argv[cprov.argv.index("--forward-buffer-limit") + 1] == "2000000"
     # and the node forwarder still gets its own --buffer-limit
-    es = next(s for s in steps if s.argv[:2] == ["elastic", "provision-telegraf"])
+    es = next(s for s in steps if s.argv[:2] == ["deployments", "provision-telegraf"])
     assert es.argv[es.argv.index("--buffer-limit") + 1] == "2000000"
 
 

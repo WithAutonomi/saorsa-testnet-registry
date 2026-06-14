@@ -8,6 +8,10 @@ from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.provisioning.node import METRICS_PORT_BASE
+from saorsa_deploy.provisioning.telegraf_install import (
+    TELEGRAF_INSTALL_COMMANDS,
+    TELEGRAF_INSTALL_OP_NAME,
+)
 from saorsa_deploy.resources import get_resources_dir
 
 TELEGRAF_CONFIG_DIR = "/etc/telegraf-metrics"
@@ -66,91 +70,7 @@ class TelegrafMetricsProvisioner:
         connect_all(state)
 
         try:
-            add_op(
-                state,
-                server.shell,
-                name="Install Telegraf",
-                commands=[
-                    "dpkg -s telegraf >/dev/null 2>&1 && echo 'TELEGRAF:SKIP' || "
-                    "(rm -f /tmp/telegraf.deb && "
-                    "wget -q https://dl.influxdata.com/telegraf/releases/"
-                    "telegraf_1.33.0-1_amd64.deb -O /tmp/telegraf.deb && "
-                    "dpkg -i /tmp/telegraf.deb && "
-                    "rm -f /tmp/telegraf.deb && "
-                    "echo 'TELEGRAF:INSTALLED')",
-                ],
-            )
-
-            env_content = self._build_env_file()
-            add_op(
-                state,
-                server.shell,
-                name="Write Telegraf metrics environment file",
-                commands=[
-                    f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
-                ],
-            )
-
-            config_content = self._build_telegraf_config()
-            add_op(
-                state,
-                server.shell,
-                name="Write Telegraf metrics configuration",
-                commands=[
-                    f"mkdir -p {TELEGRAF_CONFIG_DIR}",
-                    f"cat > {TELEGRAF_CONFIG_PATH}"
-                    f" << 'CONF_EOF'\n{config_content}CONF_EOF",
-                ],
-            )
-
-            if self.node_count > 0:
-                prometheus_config = self._build_prometheus_config()
-                add_op(
-                    state,
-                    server.shell,
-                    name="Write Telegraf prometheus scrape configuration",
-                    commands=[
-                        f"cat > {TELEGRAF_PROMETHEUS_CONFIG_PATH}"
-                        f" << 'PROM_EOF'\n{prometheus_config}PROM_EOF",
-                    ],
-                )
-
-            unit_content = self._build_unit_file()
-            add_op(
-                state,
-                server.shell,
-                name="Write Telegraf metrics systemd unit",
-                commands=[
-                    f"cat > {TELEGRAF_UNIT_PATH} << 'UNIT_EOF'\n{unit_content}UNIT_EOF",
-                ],
-            )
-
-            add_op(
-                state,
-                server.shell,
-                name="Enable and start Telegraf metrics service",
-                commands=[
-                    "systemctl daemon-reload",
-                    f"systemctl enable {TELEGRAF_SERVICE_NAME}",
-                    f"systemctl restart {TELEGRAF_SERVICE_NAME}",
-                ],
-            )
-
-            add_op(
-                state,
-                server.shell,
-                name="Verify Telegraf metrics service is active",
-                commands=[
-                    f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
-                    f"|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - "
-                    f"{TELEGRAF_SERVICE_NAME} is not running'; "
-                    f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
-                    f"test -f {TELEGRAF_CONFIG_PATH} "
-                    "|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - config file missing'; "
-                    "exit 1)",
-                ],
-            )
-
+            self.add_ops(state, install=True)
             self.console.print("Running Telegraf metrics provisioning operations...")
             run_ops(state)
         finally:
@@ -168,6 +88,92 @@ class TelegrafMetricsProvisioner:
             raise RuntimeError(
                 f"{len(failed)} host(s) failed Telegraf metrics provisioning"
             )
+
+    def add_ops(self, state: State, *, install: bool = True) -> None:
+        """Append the InfluxDB host-metrics operations to a connected ``state``.
+
+        Split out from :meth:`execute` so a single shared ``state`` can carry both
+        these operations and the ES log-forwarder's in one pass over the hosts.
+        Pass ``install=False`` when the (identical) Telegraf install op has already
+        been added to the same state by another provisioner.
+        """
+        if install:
+            add_op(
+                state,
+                server.shell,
+                name=TELEGRAF_INSTALL_OP_NAME,
+                commands=TELEGRAF_INSTALL_COMMANDS,
+            )
+
+        env_content = self._build_env_file()
+        add_op(
+            state,
+            server.shell,
+            name="Write Telegraf metrics environment file",
+            commands=[
+                f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
+            ],
+        )
+
+        config_content = self._build_telegraf_config()
+        add_op(
+            state,
+            server.shell,
+            name="Write Telegraf metrics configuration",
+            commands=[
+                f"mkdir -p {TELEGRAF_CONFIG_DIR}",
+                f"cat > {TELEGRAF_CONFIG_PATH}"
+                f" << 'CONF_EOF'\n{config_content}CONF_EOF",
+            ],
+        )
+
+        if self.node_count > 0:
+            prometheus_config = self._build_prometheus_config()
+            add_op(
+                state,
+                server.shell,
+                name="Write Telegraf prometheus scrape configuration",
+                commands=[
+                    f"cat > {TELEGRAF_PROMETHEUS_CONFIG_PATH}"
+                    f" << 'PROM_EOF'\n{prometheus_config}PROM_EOF",
+                ],
+            )
+
+        unit_content = self._build_unit_file()
+        add_op(
+            state,
+            server.shell,
+            name="Write Telegraf metrics systemd unit",
+            commands=[
+                f"cat > {TELEGRAF_UNIT_PATH} << 'UNIT_EOF'\n{unit_content}UNIT_EOF",
+            ],
+        )
+
+        add_op(
+            state,
+            server.shell,
+            name="Enable and start Telegraf metrics service",
+            commands=[
+                "systemctl daemon-reload",
+                f"systemctl enable {TELEGRAF_SERVICE_NAME}",
+                f"systemctl restart {TELEGRAF_SERVICE_NAME}",
+            ],
+        )
+
+        add_op(
+            state,
+            server.shell,
+            name="Verify Telegraf metrics service is active",
+            commands=[
+                f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
+                f"|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - "
+                f"{TELEGRAF_SERVICE_NAME} is not running'; "
+                f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
+                f"test -f {TELEGRAF_CONFIG_PATH} "
+                "|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - config file missing'; "
+                "exit 1)",
+            ],
+        )
 
     def _build_env_file(self) -> str:
         return (

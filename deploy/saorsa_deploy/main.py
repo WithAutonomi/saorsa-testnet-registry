@@ -865,6 +865,162 @@ def main(argv=None):
         "Falls back to ANT_DEPLOY_SECRET_KEY env var if not provided.",
     )
 
+    # deployments provision-telegraf
+    deployments_provision_telegraf_parser = deployments_subparsers.add_parser(
+        "provision-telegraf",
+        help=(
+            "Install Telegraf for Elasticsearch log forwarding AND InfluxDB host "
+            "metrics in a single pass per host group. A backend is provisioned "
+            "only when its credentials resolve (explicit flags, or whatever "
+            "elastic/monitoring state --name has)."
+        ),
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Deployment name. Required unless --host-ips-file/--inventory-path "
+        "is provided. Loads elastic + monitoring credentials and node IPs from state.",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--host-ips-file",
+        type=str,
+        default=None,
+        help="Path to a text file containing one IP address per line "
+        "(alternative to loading IPs from deployment state).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=None,
+        help="Path to an inventory JSON file (reads ip/ssh_user/ssh_key/role per entry).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--host-role",
+        type=str,
+        default=None,
+        choices=["GENESIS", "BOOTSTRAP", "WAN_NODE", "CLIENT"],
+        help="Force this host_role tag for every targeted host (retrofit modes). "
+        "CLIENT additionally routes host metrics to the client-metrics bucket.",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--ssh-user",
+        type=str,
+        default="root",
+        help="SSH username for provisioning (default: root)",
+    )
+    # --- Elasticsearch backend ---
+    deployments_provision_telegraf_parser.add_argument(
+        "--elasticsearch-url",
+        type=str,
+        default=None,
+        help="Elasticsearch endpoint URL (auto-loaded from elastic state if --name).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--elasticsearch-username",
+        type=str,
+        default=None,
+        help="Elasticsearch username (auto-loaded from elastic state if --name).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--elasticsearch-password",
+        type=str,
+        default=None,
+        help="Elasticsearch password (auto-loaded from elastic state if --name).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--node-version",
+        type=str,
+        default=None,
+        help="Version of the deployed ant-node binary (ES global tag).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--branch-commit",
+        type=str,
+        default=None,
+        help="Git branch or commit of the deployed binary (ES global tag).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        default="maidsafe",
+        help="Repository owner for branch builds (default: maidsafe).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--ant-log-dir",
+        type=str,
+        default=None,
+        help="Override the ant-node log directory that Telegraf tails "
+        "(default: /mnt/ant-node-storage/log).",
+    )
+    deployments_provision_telegraf_tail_group = (
+        deployments_provision_telegraf_parser.add_mutually_exclusive_group()
+    )
+    deployments_provision_telegraf_tail_group.add_argument(
+        "--from-start",
+        dest="from_beginning",
+        action="store_true",
+        default=True,
+        help="Telegraf reads each log file from the beginning (default).",
+    )
+    deployments_provision_telegraf_tail_group.add_argument(
+        "--only-new-logs",
+        dest="from_beginning",
+        action="store_false",
+        help="Telegraf tails from the end of each existing log file (no backfill).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--drop-log-levels",
+        type=str,
+        default="DEBUG,TRACE",
+        help="Comma-separated ant-node log levels Telegraf drops before shipping "
+        'to Elasticsearch (default: DEBUG,TRACE). Use "" to keep every line.',
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--buffer-limit",
+        type=int,
+        default=None,
+        help="Size of Telegraf's ES output buffer (metric_buffer_limit) in lines "
+        "(default 2,000,000).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--max-undelivered-lines",
+        type=int,
+        default=None,
+        help="Size of the inputs.tail buffer in lines (defaults to 1/4 of --buffer-limit).",
+    )
+    # --- InfluxDB backend ---
+    deployments_provision_telegraf_parser.add_argument(
+        "--influxdb-url",
+        type=str,
+        default=None,
+        help="InfluxDB URL (auto-loaded from monitoring state if --name).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--influxdb-token",
+        type=str,
+        default=None,
+        help="InfluxDB API token (auto-loaded from monitoring state if --name).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--influxdb-org",
+        type=str,
+        default="ant",
+        help="InfluxDB organization (default: ant).",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--influxdb-bucket",
+        type=str,
+        default="testnet-metrics",
+        help="InfluxDB bucket for node host metrics (default: testnet-metrics).",
+    )
+
     # deployments ls
     deployments_ls_parser = deployments_subparsers.add_parser(
         "ls",
@@ -1205,7 +1361,7 @@ def main(argv=None):
     )
 
     # =========================================================================
-    # === elastic group (clean, destroy, info, infra, provision, provision-telegraf) ===
+    # === elastic group (clean, destroy, info, infra, provision) ===
     # =========================================================================
     elastic_parser = subparsers.add_parser(
         "elastic",
@@ -1382,162 +1538,8 @@ def main(argv=None):
         ),
     )
 
-    # elastic provision-telegraf (was elastic provision-telegraf)
-    elastic_provision_telegraf_parser = elastic_subparsers.add_parser(
-        "provision-telegraf",
-        help="Install and configure Telegraf for Elasticsearch log forwarding",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--name",
-        type=str,
-        default=None,
-        help="Deployment name (must match the name used with `nodes infra`). "
-        "Required unless --host-ips-file is provided.",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--elasticsearch-url",
-        type=str,
-        default=None,
-        help="Elasticsearch endpoint URL (auto-loaded from elastic state if --name is provided)",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--elasticsearch-username",
-        type=str,
-        default=None,
-        help="Elasticsearch username (auto-loaded from elastic state if --name is provided)",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--elasticsearch-password",
-        type=str,
-        default=None,
-        help="Elasticsearch password (auto-loaded from elastic state if --name is provided)",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--node-version",
-        type=str,
-        default=None,
-        help="Version of the deployed ant-node binary",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--branch-commit",
-        type=str,
-        default=None,
-        help="Git branch or commit of the deployed binary",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--repo-owner",
-        type=str,
-        default="maidsafe",
-        help="Repository owner for branch builds (default: maidsafe)",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--ssh-key-path",
-        type=str,
-        default="~/.ssh/id_rsa",
-        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--ssh-user",
-        type=str,
-        default="root",
-        help="SSH username for provisioning (default: root)",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--host-ips-file",
-        type=str,
-        default=None,
-        help="Path to a text file containing one IP address per line "
-        "(alternative to loading IPs from deployment state)",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--inventory-path",
-        type=str,
-        default=None,
-        help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
-        "from each entry in the node_vms array.",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--host-role",
-        type=str,
-        default=None,
-        choices=["GENESIS", "BOOTSTRAP", "WAN_NODE", "CLIENT"],
-        help="Force this host_role tag for every targeted host. Use with "
-        "auxiliary inventories like bootstrap-inventory.json, whose entries "
-        "sit under node_vms and would otherwise be labelled WAN_NODE.",
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--ant-log-dir",
-        type=str,
-        default=None,
-        help=(
-            "Override the ant-node log directory that telegraf tails. "
-            "Defaults to the production layout "
-            "(/mnt/ant-node-storage/log). Use a different path for "
-            "non-standard deployments such as bootstrap nodes that log to "
-            "/mnt/ant-node-storage/logs."
-        ),
-    )
-    elastic_provision_telegraf_tail_group = (
-        elastic_provision_telegraf_parser.add_mutually_exclusive_group()
-    )
-    elastic_provision_telegraf_tail_group.add_argument(
-        "--from-start",
-        dest="from_beginning",
-        action="store_true",
-        default=True,
-        help=(
-            "Telegraf reads each log file from the beginning (default). "
-            "Use this for fresh deployments where startup logs matter."
-        ),
-    )
-    elastic_provision_telegraf_tail_group.add_argument(
-        "--only-new-logs",
-        dest="from_beginning",
-        action="store_false",
-        help=(
-            "Telegraf tails from the end of each existing log file (no "
-            "backfill). Use this for post-hoc attachment to a running "
-            "testnet to avoid re-ingesting historical logs."
-        ),
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--drop-log-levels",
-        type=str,
-        default="DEBUG,TRACE",
-        help=(
-            "Comma-separated ant-node log levels Telegraf drops before "
-            "shipping to Elasticsearch (default: DEBUG,TRACE). INFO is "
-            "kept by default because its breadcrumbs are needed for "
-            "post-hoc investigation. Use --drop-log-levels \"\" to keep "
-            "every line, or --drop-log-levels DEBUG,TRACE,INFO to trim "
-            "the loudest levels when ES capacity is constrained."
-        ),
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--buffer-limit",
-        type=int,
-        default=None,
-        help=(
-            "Size of Telegraf's output buffer (metric_buffer_limit) in "
-            "lines. Default 2,000,000 gives ~50 s of headroom at 40k "
-            "lines/sec for a 900-node testnet; drop to 200,000 for "
-            "tiny/short runs. When full Telegraf evicts oldest-first — "
-            "that's how DEV-01 lost all node-side forwarding at 01:30."
-        ),
-    )
-    elastic_provision_telegraf_parser.add_argument(
-        "--max-undelivered-lines",
-        type=int,
-        default=None,
-        help=(
-            "Size of the inputs.tail buffer in lines. Defaults to 1/4 of "
-            "--buffer-limit. Rarely needs tuning unless log files rotate "
-            "faster than Telegraf can drain."
-        ),
-    )
-
     # =========================================================================
-    # === monitoring group (clean, destroy, info, infra, provision, provision-telegraf) ===
+    # === monitoring group (clean, destroy, info, infra, provision) ===
     # =========================================================================
     monitoring_parser = subparsers.add_parser(
         "monitoring",
@@ -1717,85 +1719,6 @@ def main(argv=None):
             "the node-tier and client-tier buckets at first provision; set "
             "e.g. 14 for a long-running production stack."
         ),
-    )
-
-    # monitoring provision-telegraf (was monitoring provision-telegraf)
-    monitoring_provision_telegraf_parser = monitoring_subparsers.add_parser(
-        "provision-telegraf",
-        help="Install and configure Telegraf for InfluxDB metrics forwarding",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--name",
-        type=str,
-        default=None,
-        help="Deployment name (loads VM IPs from deployment state)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--host-ips",
-        type=str,
-        default=None,
-        help="Comma-separated list of host IPs to provision (alternative to --name)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--influxdb-url",
-        type=str,
-        default=None,
-        help="InfluxDB URL (auto-loaded from monitoring state if --name is provided)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--influxdb-token",
-        type=str,
-        default=None,
-        help="InfluxDB API token (auto-loaded from monitoring state if --name is provided)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--influxdb-org",
-        type=str,
-        default="ant",
-        help="InfluxDB organization (default: ant)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--influxdb-bucket",
-        type=str,
-        default="testnet-metrics",
-        help="InfluxDB bucket (default: testnet-metrics)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--ssh-key-path",
-        type=str,
-        default="~/.ssh/id_rsa",
-        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--ssh-user",
-        type=str,
-        default="root",
-        help="SSH username for provisioning (default: root)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--host-ips-file",
-        type=str,
-        default=None,
-        help="Path to a text file containing one IP address per line "
-        "(alternative to --host-ips or loading IPs from deployment state)",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--host-role",
-        type=str,
-        default=None,
-        choices=["GENESIS", "BOOTSTRAP", "WAN_NODE", "CLIENT"],
-        help="Force this host_role tag for every targeted host. Use with "
-        "auxiliary inventories like bootstrap-inventory.json, whose entries "
-        "sit under node_vms and would otherwise be labelled WAN_NODE. "
-        "CLIENT additionally routes host metrics to the client-metrics "
-        "bucket.",
-    )
-    monitoring_provision_telegraf_parser.add_argument(
-        "--inventory-path",
-        type=str,
-        default=None,
-        help="Path to an inventory JSON file. Reads ip, ssh_user, and ssh_key "
-        "from each entry in the node_vms array.",
     )
 
     # =========================================================================
@@ -3936,6 +3859,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
 
             cmd_generate_inventory(args)
+        elif args.deployments_subcommand == "provision-telegraf":
+            from saorsa_deploy.cmd.provision_telegraf_combined import (
+                cmd_provision_telegraf_combined,
+            )
+
+            cmd_provision_telegraf_combined(args)
         elif args.deployments_subcommand == "ls":
             from saorsa_deploy.cmd.ls import cmd_ls
 
@@ -3999,10 +3928,6 @@ def main(argv=None):
             from saorsa_deploy.cmd.provision_elastic import cmd_provision_elastic
 
             cmd_provision_elastic(args)
-        elif args.elastic_subcommand == "provision-telegraf":
-            from saorsa_deploy.cmd.provision_telegraf import cmd_provision_telegraf
-
-            cmd_provision_telegraf(args)
     elif args.command == "monitoring":
         if args.monitoring_subcommand == "clean":
             from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring
@@ -4024,12 +3949,6 @@ def main(argv=None):
             from saorsa_deploy.cmd.provision_monitoring import cmd_provision_monitoring
 
             cmd_provision_monitoring(args)
-        elif args.monitoring_subcommand == "provision-telegraf":
-            from saorsa_deploy.cmd.provision_telegraf_metrics import (
-                cmd_provision_telegraf_metrics,
-            )
-
-            cmd_provision_telegraf_metrics(args)
     elif args.command == "migration":
         if args.migration_subcommand == "plan":
             from saorsa_deploy.cmd.migration_plan import cmd_migration_plan

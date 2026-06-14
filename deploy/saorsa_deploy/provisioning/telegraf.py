@@ -7,6 +7,10 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.provisioning.telegraf_install import (
+    TELEGRAF_INSTALL_COMMANDS,
+    TELEGRAF_INSTALL_OP_NAME,
+)
 from saorsa_deploy.provisioning.volume import LOG_DIR
 
 TELEGRAF_CONFIG_DIR = "/etc/telegraf-elasticsearch"
@@ -24,7 +28,7 @@ TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 #: from peer X", "registered peer ID Y", etc.) — dropping it makes it
 #: impossible to reconstruct what a node was doing at a given moment.
 #:
-#: Override via ``--drop-log-levels`` on the ``elastic provision-telegraf``
+#: Override via ``--drop-log-levels`` on the ``deployments provision-telegraf``
 #: command. Use ``--drop-log-levels ""`` to keep every line.
 DEFAULT_DROP_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "TRACE")
 
@@ -118,84 +122,7 @@ class TelegrafProvisioner:
         connect_all(state)
 
         try:
-            add_op(
-                state,
-                server.shell,
-                name="Install Telegraf",
-                commands=[
-                    "dpkg -s telegraf >/dev/null 2>&1 && echo 'TELEGRAF:SKIP' || "
-                    "(rm -f /tmp/telegraf.deb && "
-                    "wget -q https://dl.influxdata.com/telegraf/releases/"
-                    "telegraf_1.33.0-1_amd64.deb -O /tmp/telegraf.deb && "
-                    "dpkg -i /tmp/telegraf.deb && "
-                    "rm -f /tmp/telegraf.deb && "
-                    "echo 'TELEGRAF:INSTALLED')",
-                ],
-            )
-
-            add_op(
-                state,
-                server.shell,
-                name="Grant telegraf access to log directory",
-                commands=["usermod -aG root telegraf"],
-            )
-
-            env_content = self._build_env_file()
-            add_op(
-                state,
-                server.shell,
-                name="Write Telegraf environment file",
-                commands=[
-                    f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
-                    f'echo "ANT_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
-                ],
-            )
-
-            config_content = self._build_telegraf_config()
-            add_op(
-                state,
-                server.shell,
-                name="Write Telegraf configuration",
-                commands=[
-                    f"mkdir -p {TELEGRAF_CONFIG_DIR}",
-                    f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
-                ],
-            )
-
-            unit_content = self._build_unit_file()
-            add_op(
-                state,
-                server.shell,
-                name="Write Telegraf systemd unit",
-                commands=[f"cat > {TELEGRAF_UNIT_PATH} << 'UNIT_EOF'\n{unit_content}UNIT_EOF"],
-            )
-
-            add_op(
-                state,
-                server.shell,
-                name="Enable and start Telegraf service",
-                commands=[
-                    "systemctl daemon-reload",
-                    f"systemctl enable {TELEGRAF_SERVICE_NAME}",
-                    f"systemctl restart {TELEGRAF_SERVICE_NAME}",
-                ],
-            )
-
-            add_op(
-                state,
-                server.shell,
-                name="Verify Telegraf service is active",
-                commands=[
-                    f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
-                    f"|| (echo 'TELEGRAF_VERIFY:FAILED - {TELEGRAF_SERVICE_NAME} is not running'; "
-                    f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
-                    f"test -f {TELEGRAF_CONFIG_PATH} "
-                    "|| (echo 'TELEGRAF_VERIFY:FAILED - config file missing'; exit 1)",
-                    f"test -f {TELEGRAF_ENV_PATH} "
-                    "|| (echo 'TELEGRAF_VERIFY:FAILED - env file missing'; exit 1)",
-                ],
-            )
-
+            self.add_ops(state, install=True)
             self.console.print("Running Telegraf provisioning operations...")
             run_ops(state)
         finally:
@@ -209,6 +136,86 @@ class TelegrafProvisioner:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
             raise RuntimeError(f"{len(failed)} host(s) failed Telegraf provisioning")
+
+    def add_ops(self, state: State, *, install: bool = True) -> None:
+        """Append the ES-log-forwarder operations to a connected pyinfra ``state``.
+
+        Split out from :meth:`execute` so a single shared ``state`` can carry the
+        operations for both this provisioner and the InfluxDB metrics provisioner
+        in one pass over the hosts. Pass ``install=False`` when another provisioner
+        already added the (identical) Telegraf install op to the same state, so the
+        package is fetched and installed only once per host.
+        """
+        if install:
+            add_op(
+                state,
+                server.shell,
+                name=TELEGRAF_INSTALL_OP_NAME,
+                commands=TELEGRAF_INSTALL_COMMANDS,
+            )
+
+        add_op(
+            state,
+            server.shell,
+            name="Grant telegraf access to log directory",
+            commands=["usermod -aG root telegraf"],
+        )
+
+        env_content = self._build_env_file()
+        add_op(
+            state,
+            server.shell,
+            name="Write Telegraf environment file",
+            commands=[
+                f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
+                f'echo "ANT_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
+            ],
+        )
+
+        config_content = self._build_telegraf_config()
+        add_op(
+            state,
+            server.shell,
+            name="Write Telegraf configuration",
+            commands=[
+                f"mkdir -p {TELEGRAF_CONFIG_DIR}",
+                f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
+            ],
+        )
+
+        unit_content = self._build_unit_file()
+        add_op(
+            state,
+            server.shell,
+            name="Write Telegraf systemd unit",
+            commands=[f"cat > {TELEGRAF_UNIT_PATH} << 'UNIT_EOF'\n{unit_content}UNIT_EOF"],
+        )
+
+        add_op(
+            state,
+            server.shell,
+            name="Enable and start Telegraf service",
+            commands=[
+                "systemctl daemon-reload",
+                f"systemctl enable {TELEGRAF_SERVICE_NAME}",
+                f"systemctl restart {TELEGRAF_SERVICE_NAME}",
+            ],
+        )
+
+        add_op(
+            state,
+            server.shell,
+            name="Verify Telegraf service is active",
+            commands=[
+                f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
+                f"|| (echo 'TELEGRAF_VERIFY:FAILED - {TELEGRAF_SERVICE_NAME} is not running'; "
+                f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
+                f"test -f {TELEGRAF_CONFIG_PATH} "
+                "|| (echo 'TELEGRAF_VERIFY:FAILED - config file missing'; exit 1)",
+                f"test -f {TELEGRAF_ENV_PATH} "
+                "|| (echo 'TELEGRAF_VERIFY:FAILED - env file missing'; exit 1)",
+            ],
+        )
 
     def _build_env_file(self) -> str:
         """Generate the Telegraf environment file content."""
