@@ -432,10 +432,10 @@ class TestGetAntReleaseUrl:
 
         url = get_ant_release_url("0.3.0")
         assert url == "https://github.com/download/v0.3.0/ant.tar.gz"
-        mock_get.assert_called_once_with(
-            "https://api.github.com/repos/WithAutonomi/ant-client/releases/tags/ant-cli-v0.3.0",
-            timeout=30,
+        assert mock_get.call_args.args[0] == (
+            "https://api.github.com/repos/WithAutonomi/ant-client/releases/tags/ant-cli-v0.3.0"
         )
+        assert mock_get.call_args.kwargs["timeout"] == 30
 
     @patch("saorsa_deploy.binary_source.requests.get")
     def test_raises_when_asset_not_found(self, mock_get):

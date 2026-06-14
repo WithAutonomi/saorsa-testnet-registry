@@ -13,6 +13,53 @@ BUILDS_REGION = "eu-west-2"
 BUILDS_KEY_PREFIX = "builds"
 
 
+def _github_headers() -> dict[str, str]:
+    """Headers for GitHub REST calls, with auth when a token is in the env.
+
+    Unauthenticated GitHub API access is capped at 60 requests/hour per IP, so a
+    burst of deploys can exhaust it and make valid releases look missing. A
+    ``GITHUB_TOKEN`` (or ``GH_TOKEN``, the gh-CLI spelling) lifts the limit to
+    5000/hour. The token is optional — public release lookups still work without
+    one until the limit is hit.
+    """
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _release_tag_exists(repo: str, tag: str) -> bool:
+    """Return True/False for a GitHub release tag, raising on indeterminate replies.
+
+    Only a 200 (exists) or 404 (genuinely missing) is a definitive answer.
+    Anything else — most importantly a 403 rate-limit, but also 429/5xx — must
+    NOT be reported as "missing", or a transient error masquerades as a bad
+    version. Those cases raise a clear RuntimeError instead.
+    """
+    url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    resp = requests.get(url, headers=_github_headers(), timeout=30)
+    if resp.status_code == 200:
+        return True
+    if resp.status_code == 404:
+        return False
+
+    rate_limited = (
+        resp.status_code in (403, 429)
+        and resp.headers.get("X-RateLimit-Remaining") == "0"
+    )
+    hint = (
+        " GitHub API rate limit exceeded — set GITHUB_TOKEN to raise the "
+        "60/hour unauthenticated limit to 5000/hour."
+        if rate_limited
+        else ""
+    )
+    raise RuntimeError(
+        f"GitHub returned HTTP {resp.status_code} checking release "
+        f"'{tag}' in {repo}; cannot determine whether it exists.{hint}"
+    )
+
+
 def remote_branch_exists(repo_owner: str, repo_name: str, branch_name: str) -> bool:
     """Return True if ``branch_name`` resolves to a ref on the remote GitHub repo.
 
@@ -80,7 +127,7 @@ def get_release_url(version: str | None = None) -> str:
     else:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
-    resp = requests.get(url, timeout=30)
+    resp = requests.get(url, headers=_github_headers(), timeout=30)
     resp.raise_for_status()
     release = resp.json()
     for asset in release.get("assets", []):
@@ -99,10 +146,11 @@ def get_custom_build_url(name: str, repo_owner: str, branch_name: str) -> str:
 
 
 def check_release_exists(version: str) -> bool:
-    """Check if a specific release version exists on GitHub."""
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{version}"
-    resp = requests.get(url, timeout=30)
-    return resp.status_code == 200
+    """Check if a specific ant-node release version exists on GitHub.
+
+    Raises on a rate-limit/transient reply rather than reporting "missing".
+    """
+    return _release_tag_exists(GITHUB_REPO, f"v{version}")
 
 
 def check_custom_build_exists(name: str, repo_owner: str, branch_name: str) -> bool:
@@ -138,7 +186,7 @@ def get_ant_release_url(version: str | None = None) -> str:
     else:
         url = f"https://api.github.com/repos/{ANT_GITHUB_REPO}/releases/latest"
 
-    resp = requests.get(url, timeout=30)
+    resp = requests.get(url, headers=_github_headers(), timeout=30)
     resp.raise_for_status()
     release = resp.json()
     for asset in release.get("assets", []):
@@ -158,13 +206,11 @@ def get_ant_custom_build_url(name: str, repo_owner: str, branch_name: str) -> st
 
 
 def check_ant_release_exists(version: str) -> bool:
-    """Check if a specific ant release version exists on GitHub."""
-    url = (
-        f"https://api.github.com/repos/{ANT_GITHUB_REPO}"
-        f"/releases/tags/ant-cli-v{version}"
-    )
-    resp = requests.get(url, timeout=30)
-    return resp.status_code == 200
+    """Check if a specific ant (client) release version exists on GitHub.
+
+    Raises on a rate-limit/transient reply rather than reporting "missing".
+    """
+    return _release_tag_exists(ANT_GITHUB_REPO, f"ant-cli-v{version}")
 
 
 def check_ant_custom_build_exists(

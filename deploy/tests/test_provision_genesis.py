@@ -153,10 +153,10 @@ class TestGetReleaseUrl:
 
         url = get_release_url()
         assert url == "https://github.com/download/v1.0.0/asset.tar.gz"
-        mock_get.assert_called_once_with(
-            "https://api.github.com/repos/WithAutonomi/ant-node/releases/latest",
-            timeout=30,
+        assert mock_get.call_args.args[0] == (
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/latest"
         )
+        assert mock_get.call_args.kwargs["timeout"] == 30
 
     @patch("saorsa_deploy.binary_source.requests.get")
     def test_returns_versioned_download_url(self, mock_get):
@@ -176,10 +176,10 @@ class TestGetReleaseUrl:
 
         url = get_release_url("0.2.0")
         assert url == "https://github.com/download/v0.2.0/asset.tar.gz"
-        mock_get.assert_called_once_with(
-            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.2.0",
-            timeout=30,
+        assert mock_get.call_args.args[0] == (
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.2.0"
         )
+        assert mock_get.call_args.kwargs["timeout"] == 30
 
     @patch("saorsa_deploy.binary_source.requests.get")
     def test_raises_when_asset_not_found(self, mock_get):

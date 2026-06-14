@@ -8,6 +8,7 @@ from saorsa_deploy.binary_source import (
     BUILDS_BUCKET,
     BUILDS_KEY_PREFIX,
     BUILDS_REGION,
+    check_ant_release_exists,
     check_custom_build_exists,
     check_release_exists,
     get_custom_build_url,
@@ -34,10 +35,10 @@ class TestGetReleaseUrl:
 
         url = get_release_url()
         assert url == "https://github.com/download/latest/asset.tar.gz"
-        mock_get.assert_called_once_with(
-            "https://api.github.com/repos/WithAutonomi/ant-node/releases/latest",
-            timeout=30,
+        assert mock_get.call_args.args[0] == (
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/latest"
         )
+        assert mock_get.call_args.kwargs["timeout"] == 30
 
     @patch("saorsa_deploy.binary_source.requests.get")
     def test_versioned_release_url(self, mock_get):
@@ -55,10 +56,10 @@ class TestGetReleaseUrl:
 
         url = get_release_url("0.3.0")
         assert url == "https://github.com/download/v0.3.0/asset.tar.gz"
-        mock_get.assert_called_once_with(
-            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.3.0",
-            timeout=30,
+        assert mock_get.call_args.args[0] == (
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.3.0"
         )
+        assert mock_get.call_args.kwargs["timeout"] == 30
 
     @patch("saorsa_deploy.binary_source.requests.get")
     def test_raises_when_asset_not_found(self, mock_get):
@@ -107,26 +108,82 @@ class TestGetCustomBuildUrl:
         assert "/DEV-01/saorsa-labs/main/ant-node" in url
 
 
+def _resp(status_code, headers=None):
+    r = MagicMock()
+    r.status_code = status_code
+    r.headers = headers or {}
+    return r
+
+
 class TestCheckReleaseExists:
     @patch("saorsa_deploy.binary_source.requests.get")
     def test_returns_true_when_release_exists(self, mock_get):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_get.return_value = mock_resp
+        mock_get.return_value = _resp(200)
 
         assert check_release_exists("0.2.0") is True
-        mock_get.assert_called_once_with(
-            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.2.0",
-            timeout=30,
+        called_url = mock_get.call_args.args[0]
+        assert called_url == (
+            "https://api.github.com/repos/WithAutonomi/ant-node/releases/tags/v0.2.0"
         )
+        assert mock_get.call_args.kwargs["timeout"] == 30
 
     @patch("saorsa_deploy.binary_source.requests.get")
     def test_returns_false_when_release_not_found(self, mock_get):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 404
-        mock_get.return_value = mock_resp
+        mock_get.return_value = _resp(404)
 
         assert check_release_exists("99.99.99") is False
+
+
+class TestReleaseTagExistsErrorHandling:
+    """A non-200/404 reply must raise, not be reported as 'release missing'."""
+
+    @patch("saorsa_deploy.binary_source.requests.get")
+    def test_rate_limit_raises_with_token_hint(self, mock_get):
+        mock_get.return_value = _resp(403, {"X-RateLimit-Remaining": "0"})
+
+        with pytest.raises(RuntimeError) as exc:
+            check_ant_release_exists("0.2.7")
+        msg = str(exc.value)
+        assert "rate limit" in msg.lower()
+        assert "GITHUB_TOKEN" in msg
+
+    @patch("saorsa_deploy.binary_source.requests.get")
+    def test_server_error_raises_without_misleading_missing(self, mock_get):
+        mock_get.return_value = _resp(500)
+
+        with pytest.raises(RuntimeError) as exc:
+            check_release_exists("0.2.0")
+        assert "500" in str(exc.value)
+        assert "rate limit" not in str(exc.value).lower()
+
+    @patch("saorsa_deploy.binary_source.requests.get")
+    def test_403_without_rate_limit_header_still_raises(self, mock_get):
+        # A 403 that is NOT a rate limit (no remaining=0) must still not be
+        # read as "missing"; it raises without the rate-limit hint.
+        mock_get.return_value = _resp(403, {"X-RateLimit-Remaining": "11"})
+
+        with pytest.raises(RuntimeError) as exc:
+            check_ant_release_exists("0.2.7")
+        assert "GITHUB_TOKEN" not in str(exc.value)
+
+    @patch.dict("os.environ", {"GITHUB_TOKEN": "tok123"}, clear=False)
+    @patch("saorsa_deploy.binary_source.requests.get")
+    def test_token_is_sent_as_bearer_auth(self, mock_get):
+        mock_get.return_value = _resp(200)
+        assert check_ant_release_exists("0.2.7") is True
+        headers = mock_get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer tok123"
+
+    @patch.dict("os.environ", {"GH_TOKEN": "ghtok"}, clear=False)
+    @patch("saorsa_deploy.binary_source.requests.get")
+    def test_gh_token_fallback(self, mock_get):
+        import os
+
+        os.environ.pop("GITHUB_TOKEN", None)
+        mock_get.return_value = _resp(200)
+        assert check_release_exists("0.2.0") is True
+        headers = mock_get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer ghtok"
 
 
 class TestCheckCustomBuildExists:
