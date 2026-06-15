@@ -155,6 +155,31 @@ def _seed_prod_bootstraps(args, console: Console) -> None:
         update_deployment_state(args.name, {"bootstrap_port": bootstrap_port})
 
 
+def _build_node_infra_args(args) -> SimpleNamespace:
+    """Build the ``SimpleNamespace`` ``cmd_infra_nodes`` expects for a single
+    provider/region run.
+
+    All four provider ``*_vm_count`` start at 0; the chosen provider's count,
+    region override and size var are then set in the dict so the chosen
+    ``*_vm_count`` *overwrites* its zero rather than being passed to
+    ``SimpleNamespace`` twice (which raises ``got multiple values``).
+    """
+    prefix, size_var, default_size = _PROVIDER_INFO[args.provider]
+    kwargs = {
+        "name": args.name,
+        "force": False,
+        "attached_volume_size": args.volume_size,
+        "do_vm_count": 0,
+        "hetzner_vm_count": 0,
+        "vultr_vm_count": 0,
+        "ovh_vm_count": 0,
+    }
+    kwargs[f"{prefix}_vm_count"] = args.vm_count
+    kwargs[f"{prefix}_regions_list"] = args.region
+    kwargs[size_var] = args.vm_size or default_size
+    return SimpleNamespace(**kwargs)
+
+
 def _ensure_node_infra(args, console: Console) -> None:
     from saorsa_deploy.cmd.infra_nodes import cmd_infra_nodes
 
@@ -164,25 +189,11 @@ def _ensure_node_infra(args, console: Console) -> None:
         )
         return
 
-    prefix, size_var, default_size = _PROVIDER_INFO[args.provider]
-    vm_size = args.vm_size or default_size
+    infra_args = _build_node_infra_args(args)
+    _, _, default_size = _PROVIDER_INFO[args.provider]
     console.print(
         f"[bold cyan]Creating {args.vm_count} node VM(s) "
-        f"({args.provider}/{args.region}, {vm_size})[/bold cyan]"
-    )
-    infra_args = SimpleNamespace(
-        name=args.name,
-        force=False,
-        attached_volume_size=args.volume_size,
-        do_vm_count=0,
-        hetzner_vm_count=0,
-        vultr_vm_count=0,
-        ovh_vm_count=0,
-        **{
-            f"{prefix}_vm_count": args.vm_count,
-            f"{prefix}_regions_list": args.region,
-            size_var: vm_size,
-        },
+        f"({args.provider}/{args.region}, {args.vm_size or default_size})[/bold cyan]"
     )
     cmd_infra_nodes(infra_args)
 

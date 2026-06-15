@@ -1,12 +1,53 @@
 """Unit tests for the ``prod nodes`` profiling-node command helpers."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from saorsa_deploy.cmd.prod_nodes import (
     _PROVIDER_INFO,
+    _build_node_infra_args,
     _parse_prod_bootstrap_nodes,
 )
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError
+
+
+def _deploy_args(provider, vm_size=None):
+    return SimpleNamespace(
+        name="PN",
+        provider=provider,
+        region="ord",
+        vm_size=vm_size,
+        vm_count=1,
+        volume_size=100,
+    )
+
+
+@pytest.mark.parametrize("provider", ["digitalocean", "hetzner", "vultr", "ovh"])
+def test_build_node_infra_args_no_duplicate_count(provider):
+    # Regression: SimpleNamespace previously got the chosen provider's
+    # *_vm_count both as an explicit zero and via the spread, raising
+    # "got multiple values for keyword argument". Construction must succeed
+    # and the chosen provider's count must win.
+    ns = _build_node_infra_args(_deploy_args(provider, vm_size="custom-size"))
+    prefix, size_var, _ = _PROVIDER_INFO[provider]
+    # Every provider count attribute exists; only the chosen one is non-zero.
+    counts = {
+        p: getattr(ns, f"{pre}_vm_count")
+        for p, (pre, _, _) in _PROVIDER_INFO.items()
+    }
+    assert getattr(ns, f"{prefix}_vm_count") == 1
+    assert sum(counts.values()) == 1  # all others are 0
+    assert getattr(ns, f"{prefix}_regions_list") == "ord"
+    assert getattr(ns, size_var) == "custom-size"
+    assert ns.attached_volume_size == 100
+    assert ns.force is False
+
+
+def test_build_node_infra_args_defaults_vm_size_per_provider():
+    ns = _build_node_infra_args(_deploy_args("vultr", vm_size=None))
+    _, size_var, default_size = _PROVIDER_INFO["vultr"]
+    assert getattr(ns, size_var) == default_size
 
 
 def test_parse_prod_bootstrap_nodes_basic():
