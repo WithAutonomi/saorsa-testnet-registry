@@ -243,13 +243,14 @@ env-filter — letting one deployment run nodes and clients at different levels.
 
 `nodes.log_level` also **lifts the node→ES Telegraf drop filter** so verbose node
 logs actually reach Elasticsearch. The forwarder drops any line whose level is in
-`deployments provision-telegraf --drop-log-levels` (CLI default `DEBUG,TRACE`); left
+the node-tier `--drop-log-levels` flag (folded telegraf default `DEBUG,TRACE`); left
 alone that silently strips the very trace/debug the operator asked for (nodes
 write it to disk, ES shows only INFO/WARN). The orchestrator therefore derives the
 drop set from `nodes.log_level` (drop only levels strictly *more verbose* than the
-configured one): `trace` → `--drop-log-levels ""` (keep everything), `debug` →
-`--drop-log-levels TRACE`, `info`/unset → omit the flag (CLI default `DEBUG,TRACE`,
-so existing manifests' step argv — and `up` journal hashes — stay byte-identical).
+configured one) and passes it on the `nodes provision`/`provision-genesis`/`bootstraps
+provision` steps alongside `--with-telegraf`: `trace` → `--drop-log-levels ""` (keep
+everything), `debug` → `--drop-log-levels TRACE`, `info`/unset → omit the flag (folded
+telegraf default `DEBUG,TRACE`).
 An explicit **`elastic.drop_log_levels`** in the manifest always wins: set it to
 `"DEBUG,TRACE"` to keep verbose logs on disk but out of ES (volume), or `""` to
 force-keep everything regardless of node level. The **client** forwarder has no
@@ -508,31 +509,46 @@ Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
 dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
 `INFLUXDB_CLIENT_BUCKET`).
 
-### Telegraf provisioning (single combined command)
+### Telegraf provisioning (folded into the provision passes)
 
-Both Telegraf forwarders are installed by **one** command,
-`deployments provision-telegraf` (the old `elastic provision-telegraf` and
-`monitoring provision-telegraf` subcommands were removed). It installs both in a
-**single SSH pass per host group** — one Telegraf deb install, one
-connect/run/disconnect — instead of two separate passes:
+The two Telegraf forwarders — Elasticsearch log forwarding (systemd
+`telegraf-ant-elasticsearch`) and InfluxDB host metrics (systemd
+`telegraf-ant-metrics`) — are installed **inside the existing provisioning
+passes**, not as a separate step. In a `deployments up` run there is **no
+standalone telegraf step**: the node-tier provision commands install Telegraf in
+the same SSH pass they use to provision the ant-node services, so the node VM
+list is walked **once**, not twice (the old separate pass over the large node
+list was the deploy bottleneck).
 
-- Elasticsearch log forwarding (systemd `telegraf-ant-elasticsearch`)
-- InfluxDB host metrics (systemd `telegraf-ant-metrics`)
+- **`nodes provision` / `nodes provision-genesis` / `bootstraps provision`** take
+  a **`--with-telegraf`** flag (plus `--drop-log-levels` / `--buffer-limit` for
+  the ES side). When set, the command resolves whatever elastic / monitoring
+  state the deployment has and folds the matching forwarders into its pyinfra
+  pass — the first installs the Telegraf deb, the rest reuse it. A backend with
+  no state is skipped; if neither resolves it warns and installs nothing (never
+  fails node provisioning). The orchestrator adds `--with-telegraf` to all three
+  node-tier steps whenever elastic and/or monitoring is enabled, deriving
+  `--drop-log-levels` from `nodes.log_level` exactly as before.
+- **Client host metrics** are installed by **`clients provision`** (best-effort,
+  gated on `--monitoring-name`), alongside the client→ES log forwarder it already
+  installs. So the client tier is also covered without a separate step.
 
-A backend is provisioned only when its credentials resolve: explicit
-`--elasticsearch-*` / `--influxdb-*` flags, or — with `--name` — whatever elastic
-/ monitoring state the deployment has (so an ES-only or metrics-only deployment
-gets just that one). Per-VM role grouping (GENESIS/BOOTSTRAP/WAN_NODE) and the
-client-tier metrics pass are unchanged; only the two passes are merged. In a
-`deployments up` run this single step is emitted whenever elastic and/or
-monitoring is enabled, and it now runs **before `nodes start`** so host metrics
-(which can't be backfilled) cover the node's lifetime from the first second.
+Because Telegraf is installed during provisioning (which runs before
+`nodes start`), host metrics still cover the node's lifetime from the first
+second.
 
-Code: combined runner `provisioning/telegraf_combined.py`, command
-`cmd/provision_telegraf_combined.py`; the per-forwarder logic still lives in
+The mechanism: each node/bootstrap provisioner accepts `extra_op_providers` — a
+list of objects exposing `add_ops(state, install=...)` — and folds their ops into
+its state before `run_ops`. `cmd/telegraf_fold.py` `build_node_telegraf_providers`
+resolves the ES + InfluxDB forwarders from state; the per-forwarder logic lives in
 `provisioning/telegraf.py` (ES) and `provisioning/telegraf_metrics.py` (InfluxDB),
-each now exposing an `add_ops(state, install=...)` seam. The shared install op
-lives in `provisioning/telegraf_install.py`.
+each exposing the `add_ops` seam; the shared install op is in
+`provisioning/telegraf_install.py`.
+
+The standalone **`deployments provision-telegraf`** command (combined ES +
+InfluxDB in one pass over a host group; `provisioning/telegraf_combined.py`,
+`cmd/provision_telegraf_combined.py`) is **retained for retrofit / manual re-runs**
+against an existing deployment — it's just no longer part of the `up` sequence.
 
 ## Elasticsearch (Log Forwarding)
 

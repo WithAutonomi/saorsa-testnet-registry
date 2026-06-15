@@ -148,6 +148,7 @@ class AntNodeProvisioner:
         restart_policy: str = "on-success",
         restart_sec: int = 5,
         limit_nofile: int | None = None,
+        extra_op_providers: list | None = None,
     ):
         self.host_ips = host_ips
         self.bootstrap_peers = bootstrap_peers
@@ -169,6 +170,11 @@ class AntNodeProvisioner:
         self.restart_policy = restart_policy
         self.restart_sec = restart_sec
         self.limit_nofile = limit_nofile
+        # Optional providers (e.g. Telegraf forwarders) whose ops are folded
+        # into this provisioner's single pyinfra pass, so node provisioning and
+        # Telegraf install happen in ONE pass over the node VMs. Each exposes
+        # ``add_ops(state, install=...)``; the first installs the Telegraf deb.
+        self.extra_op_providers = list(extra_op_providers or [])
 
     def _build_unit_commands(self, is_nat: bool) -> list[str]:
         """Build the list of `cat > unit-file` commands for one host variant."""
@@ -372,6 +378,13 @@ class AntNodeProvisioner:
                 name="Enable node services (not started — use nodes start)",
                 commands=enable_commands,
             )
+
+            # Fold in any extra op providers (Telegraf forwarders) so they ride
+            # the same SSH pass. The first installs the Telegraf deb; the rest
+            # reuse it. Ops are added after the node ops, so the node services
+            # are already configured before Telegraf starts tailing/scraping.
+            for idx, provider in enumerate(self.extra_op_providers):
+                provider.add_ops(state, install=idx == 0)
 
             run_ops(state)
 

@@ -142,6 +142,7 @@ class AntBootstrapNodeProvisioner:
         upgrade_channel: str | None = None,
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         testnet_name: str | None = None,
+        extra_op_providers: list | None = None,
     ):
         self.ip = ip
         self.bootstrap_index = bootstrap_index
@@ -156,6 +157,8 @@ class AntBootstrapNodeProvisioner:
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
         self.testnet_name = testnet_name
+        # Telegraf forwarders folded into this single-host pyinfra pass.
+        self.extra_op_providers = list(extra_op_providers or [])
 
     @property
     def hostname(self) -> str | None:
@@ -270,6 +273,9 @@ class AntBootstrapNodeProvisioner:
                 enabled=True,
             )
 
+            for idx, provider in enumerate(self.extra_op_providers):
+                provider.add_ops(state, install=idx == 0)
+
             self.console.print("Running provisioning operations...")
             run_ops(state)
         finally:
@@ -315,6 +321,7 @@ class AntBootstrapNodesProvisioner:
         upgrade_channel: str | None = None,
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         testnet_name: str | None = None,
+        extra_op_providers: list | None = None,
     ):
         """``nodes`` is a list of dicts, each with ``ip`` and ``bootstrap_index``
         (``region`` is accepted and ignored — it is only used for display by the
@@ -332,6 +339,8 @@ class AntBootstrapNodesProvisioner:
         self.rewards_address = rewards_address
         self.testnet_name = testnet_name
         self._index_by_ip = {n["ip"]: n["bootstrap_index"] for n in nodes}
+        # Telegraf forwarders folded into this single pyinfra pass over the fleet.
+        self.extra_op_providers = list(extra_op_providers or [])
 
     def _service_name(self, bootstrap_index: int) -> str:
         return f"ant-bootstrap-{bootstrap_index}"
@@ -452,6 +461,9 @@ class AntBootstrapNodesProvisioner:
                     enabled=True,
                     host=[host],
                 )
+
+            for idx, provider in enumerate(self.extra_op_providers):
+                provider.add_ops(state, install=idx == 0)
 
             self.console.print("Running provisioning operations...")
             run_ops(state)

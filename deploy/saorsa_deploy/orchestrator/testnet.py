@@ -232,6 +232,23 @@ def _provision_and_start_steps(
         binaries.ant_node, mode, upgrade_channel, ssh_key, nodes.log_level
     )
 
+    # Fold Telegraf install into the node-tier provision passes (genesis,
+    # bootstraps, WAN nodes) instead of a separate pass: each provision command
+    # installs the forwarders the deployment has state for in its own SSH pass.
+    # Because the install rides the existing pass and happens before `nodes
+    # start`, host metrics still cover the node lifetime from the first second.
+    if elastic.enabled or monitoring.enabled:
+        common = [*common, "--with-telegraf"]
+        if elastic.enabled:
+            # Derive the node forwarder's drop set from nodes.log_level so that
+            # `log_level: trace`/`debug` actually reaches ES (an explicit
+            # elastic.drop_log_levels still overrides). See helper docstring.
+            drop = _resolve_elastic_drop_log_levels(elastic, nodes.log_level)
+            if drop is not None:
+                common += ["--drop-log-levels", drop]
+            if elastic.buffer_limit is not None:
+                common += ["--buffer-limit", str(elastic.buffer_limit)]
+
     if include_genesis:
         steps.append(
             Step(
@@ -281,26 +298,9 @@ def _provision_and_start_steps(
         nodes_argv[idx:idx] = ["--full-headroom-mb", str(nodes.full_headroom_mb)]
     steps.append(Step(nodes_argv, "Provision nodes"))
 
-    # Install Telegraf BEFORE starting the nodes so host metrics (which cannot be
-    # backfilled) cover the node's lifetime from the first second, and the ES log
-    # tail is already watching when the first line is written. Both forwarders go
-    # in a single pass per host group via `deployments provision-telegraf`.
-    if elastic.enabled or monitoring.enabled:
-        argv = ["deployments", "provision-telegraf", "--name", name]
-        if elastic.enabled:
-            # Derive the node forwarder's drop set from nodes.log_level so that
-            # `log_level: trace`/`debug` actually reaches ES (an explicit
-            # elastic.drop_log_levels still overrides). See helper docstring.
-            drop = _resolve_elastic_drop_log_levels(elastic, nodes.log_level)
-            if drop is not None:
-                argv += ["--drop-log-levels", drop]
-            if elastic.buffer_limit is not None:
-                argv += ["--buffer-limit", str(elastic.buffer_limit)]
-        argv += ["--ssh-key-path", ssh_key]
-        steps.append(
-            Step(argv, "Install Telegraf (Elasticsearch logs + InfluxDB metrics)")
-        )
-
+    # Telegraf was installed during the provision passes above (via
+    # --with-telegraf), so there is no separate telegraf step. Client host
+    # metrics are installed by `clients provision` below.
     steps.append(Step(["nodes", "start", "--name", name, "--ssh-key-path", ssh_key], "Start nodes"))
 
     if clients is not None:

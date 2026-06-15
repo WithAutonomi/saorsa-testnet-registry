@@ -106,6 +106,23 @@ def cmd_provision_genesis(args):
 
     clear_known_hosts([bootstrap_ip], console)
 
+    extra_op_providers = []
+    if getattr(args, "with_telegraf", False):
+        from saorsa_deploy.cmd.telegraf_fold import build_node_telegraf_providers
+
+        extra_op_providers = build_node_telegraf_providers(
+            args.name,
+            host_ips=[bootstrap_ip],
+            host_role="GENESIS",
+            node_count=1,
+            is_genesis=True,
+            ssh_key_path=args.ssh_key_path,
+            ssh_user=getattr(args, "ssh_user", "root"),
+            drop_log_levels=getattr(args, "drop_log_levels", None),
+            buffer_limit=getattr(args, "buffer_limit", None),
+            console=console,
+        )
+
     kwargs = {
         "ip": bootstrap_ip,
         "bootstrap_index": 1,
@@ -116,6 +133,7 @@ def cmd_provision_genesis(args):
         "console": console,
         "rewards_address": args.rewards_address,
         "testnet_name": args.name,
+        "extra_op_providers": extra_op_providers,
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel

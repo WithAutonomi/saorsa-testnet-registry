@@ -214,6 +214,41 @@ class TestAntNodeProvisioner:
     @patch("saorsa_deploy.provisioning.node.State")
     @patch("saorsa_deploy.provisioning.node.Inventory")
     @patch("saorsa_deploy.provisioning.node.get_release_url")
+    def test_execute_folds_extra_op_providers_into_pass(
+        self,
+        mock_release_url,
+        _mock_inventory,
+        mock_state,
+        _mock_connect,
+        _mock_add_op,
+        mock_run_ops,
+        _mock_disconnect,
+    ):
+        # Telegraf forwarders are added to the SAME pyinfra state before run_ops:
+        # the first installs the deb (install=True), the rest reuse it.
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
+        _configure_state_mock(mock_state, ["10.0.0.1"])
+        es = MagicMock()
+        metrics = MagicMock()
+
+        AntNodeProvisioner(
+            host_ips=["10.0.0.1"],
+            bootstrap_peers=["10.0.0.100:5000"],
+            extra_op_providers=[es, metrics],
+        ).execute()
+
+        state_instance = mock_state.return_value
+        es.add_ops.assert_called_once_with(state_instance, install=True)
+        metrics.add_ops.assert_called_once_with(state_instance, install=False)
+        mock_run_ops.assert_called_once()
+
+    @patch("saorsa_deploy.provisioning.node.disconnect_all")
+    @patch("saorsa_deploy.provisioning.node.run_ops")
+    @patch("saorsa_deploy.provisioning.node.add_op")
+    @patch("saorsa_deploy.provisioning.node.connect_all")
+    @patch("saorsa_deploy.provisioning.node.State")
+    @patch("saorsa_deploy.provisioning.node.Inventory")
+    @patch("saorsa_deploy.provisioning.node.get_release_url")
     def test_execute_disconnects_on_error(
         self,
         mock_release_url,

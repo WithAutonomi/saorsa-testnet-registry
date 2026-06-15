@@ -101,6 +101,23 @@ def cmd_provision_nodes(args):
 
     clear_known_hosts(all_ips, console)
 
+    extra_op_providers = []
+    if getattr(args, "with_telegraf", False):
+        from saorsa_deploy.cmd.telegraf_fold import build_node_telegraf_providers
+
+        extra_op_providers = build_node_telegraf_providers(
+            args.name,
+            host_ips=all_ips,
+            host_role="WAN_NODE",
+            node_count=args.node_count,
+            is_genesis=False,
+            ssh_key_path=args.ssh_key_path,
+            ssh_user=getattr(args, "ssh_user", "root"),
+            drop_log_levels=getattr(args, "drop_log_levels", None),
+            buffer_limit=getattr(args, "buffer_limit", None),
+            console=console,
+        )
+
     kwargs = {
         "host_ips": all_ips,
         "bootstrap_peers": bootstrap_peers,
@@ -115,6 +132,7 @@ def cmd_provision_nodes(args):
         "clock_skew_ips": clock_skew_ips,
         "full_ips": full_ips,
         "full_headroom_mb": getattr(args, "full_headroom_mb", DEFAULT_FULL_HEADROOM_MB),
+        "extra_op_providers": extra_op_providers,
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel

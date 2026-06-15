@@ -662,6 +662,13 @@ Install Telegraf for **both** Elasticsearch log forwarding (systemd
 deb install, one connect/run/disconnect. This replaces the former separate
 `elastic provision-telegraf` and `monitoring provision-telegraf` commands.
 
+> **Note:** in a `deployments up` run Telegraf is no longer installed by this
+> command — it is **folded into the provision passes** (`nodes provision` /
+> `nodes provision-genesis` / `bootstraps provision` take `--with-telegraf`, and
+> `clients provision` installs client host metrics), so the node VM list is
+> walked once. This standalone command is retained for **retrofit / manual
+> re-runs** against an already-provisioned deployment.
+
 A backend is provisioned only when its credentials resolve: pass the
 `--elasticsearch-*` / `--influxdb-*` flags explicitly, or pass `--name` and the
 command auto-loads whatever elastic / monitoring state the deployment has (so a

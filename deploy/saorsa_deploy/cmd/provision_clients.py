@@ -553,3 +553,19 @@ def cmd_provision_clients(args):
     except Exception as e:
         console.print(f"[bold red]Client provisioning failed:[/bold red] {e}")
         sys.exit(1)
+
+    # Install client host-metrics Telegraf (InfluxDB, host_role=CLIENT) as part
+    # of this clients pass, so it no longer needs a separate provision-telegraf
+    # step. Best-effort: a monitoring hiccup must not fail the client deploy.
+    monitoring_name = getattr(args, "monitoring_name", None)
+    if monitoring_name:
+        from saorsa_deploy.cmd.provision_telegraf_metrics import (
+            provision_client_telegraf_best_effort,
+        )
+
+        provision_client_telegraf_best_effort(
+            monitoring_name,
+            args.ssh_key_path,
+            getattr(args, "ssh_user", "root"),
+            console,
+        )

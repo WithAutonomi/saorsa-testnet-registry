@@ -27,6 +27,38 @@ def _add_manifest_args(p):
     )
 
 
+def _add_telegraf_fold_args(p):
+    """Shared Telegraf-fold args for the node-tier provision commands.
+
+    When ``--with-telegraf`` is set, the command installs the Elasticsearch
+    log-forwarder and/or InfluxDB host-metrics Telegraf (whichever the
+    deployment has state for) in the SAME pyinfra pass it uses to provision the
+    ant-node services — avoiding a second pass over the node VMs.
+    """
+    p.add_argument(
+        "--with-telegraf",
+        action="store_true",
+        help="Install Telegraf (ES log forwarding + InfluxDB host metrics, "
+        "whichever the deployment has elastic/monitoring state for) in the same "
+        "pass as node provisioning.",
+    )
+    p.add_argument(
+        "--drop-log-levels",
+        type=str,
+        default=None,
+        help="Comma-separated ant-node log levels Telegraf drops before "
+        'shipping to Elasticsearch (only with --with-telegraf). Use "" to keep '
+        "every line; omit to use the default (DEBUG,TRACE).",
+    )
+    p.add_argument(
+        "--buffer-limit",
+        type=int,
+        default=None,
+        help="Telegraf ES output buffer (metric_buffer_limit) in lines "
+        "(only with --with-telegraf).",
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="saorsa-deploy",
@@ -221,6 +253,7 @@ def main(argv=None):
         "provision",
         help="Provision additional bootstrap nodes (index 2+) after genesis",
     )
+    _add_telegraf_fold_args(bootstraps_provision_parser)
     bootstraps_provision_parser.add_argument(
         "--branch-name",
         type=str,
@@ -2318,6 +2351,7 @@ def main(argv=None):
     nodes_provision_parser = nodes_subparsers.add_parser(
         "provision", help="Provision ant-node services on node VMs"
     )
+    _add_telegraf_fold_args(nodes_provision_parser)
     nodes_provision_parser.add_argument(
         "--branch-name",
         type=str,
@@ -2448,6 +2482,7 @@ def main(argv=None):
     nodes_provision_genesis_parser = nodes_subparsers.add_parser(
         "provision-genesis", help="Provision the genesis node"
     )
+    _add_telegraf_fold_args(nodes_provision_genesis_parser)
     nodes_provision_genesis_parser.add_argument(
         "--branch-name",
         type=str,
