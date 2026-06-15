@@ -1423,6 +1423,98 @@ saorsa-deploy prod canary destroy --name CANARY-01 --no-keep-monitoring
 
 Postgres rows are never touched by destroy.
 
+### Running profiling nodes against production (`prod nodes`)
+
+`prod nodes deploy` stands up node VM(s) — each running `node_count` ant-node
+services (default **15**, matching the prod fleet) — that join the **production**
+Autonomi network, with every service wrapped in **heaptrack** for memory
+profiling. It is built for chasing the intermittent ant-node memory leak under
+real production load with a **debug build** (full debug info).
+
+It reuses the whole node lifecycle rather than the migration ceremony: the
+command seeds the deployment's S3 state with the production bootstrap peers
+(fetched from the WithAutonomi `bootstrap_peers.toml`), then drives the existing
+`nodes infra` (multi-provider VM + data-volume creation) and `nodes start`; the
+provisioning pass is prod-mode (no `--evm-network` → arbitrum-one,
+`Restart=always`, `LimitNOFILE=65536`, `--stop-on-upgrade` with **no** upgrade
+channel so the pinned debug build keeps running) and folds in heaptrack plus,
+optionally, InfluxDB host-metric forwarding.
+
+heaptrack traces are written **per service** to the attached data volume
+(`/mnt/ant-node-storage/heaptrack/ant-node-<i>.<pid>.zst`), not the root disk —
+15 debug nodes generate large, growing traces. heaptrack writes incrementally,
+so even an OOM/SIGKILL leaves an analysable trace.
+
+#### Build the debug binary first
+
+A debug build is produced by the separate `build ant-node --debug` step (drops
+`--release`; artifact from `target/debug`). With a manifest the orchestrator adds
+this step automatically from `binary.debug: true`; from the CLI, run it yourself
+against the **same** `--name`:
+
+```bash
+saorsa-deploy build ant-node --name PROF-NODE-01 \
+  --branch-name main --repo-owner WithAutonomi --debug
+```
+
+#### Deploy
+
+```bash
+saorsa-deploy prod nodes deploy \
+  --name PROF-NODE-01 \
+  --provider hetzner --region fsn1 --vm-size cpx42 \
+  --node-count 15 \
+  --branch-name main --repo-owner WithAutonomi --debug \
+  --monitoring \
+  --purpose "ant-node leak profiling"
+```
+
+| Flag | Required | Default | Notes |
+|------|----------|---------|-------|
+| `--name` | yes | — | Deployment name; also names the optional paired monitoring stack. |
+| `--provider` | no | `digitalocean` | `digitalocean` \| `hetzner` \| `vultr` \| `ovh`. Reuses the node TF modules. Non-DO is cheaper for prod egress; Vultr/OVH have block-storage caveats. |
+| `--region` | yes | — | Provider region for the node VM(s). |
+| `--vm-size` | no | per-provider (DO `s-4vcpu-8gb`, Hetzner `cpx42`, Vultr `vhf-4c-16gb`, OVH `b3-16`) | VM size/plan/flavor. |
+| `--vm-count` | no | `1` | Node VMs to create in the region. |
+| `--node-count` | no | `15` | ant-node services per VM. |
+| `--volume-size` | no | `100` | Attached data-volume GB; node data + heaptrack traces live here. |
+| `--heaptrack` / `--no-heaptrack` | no | **on** | Wrap every service with heaptrack. On is the whole point; `--no-heaptrack` runs plain prod nodes. |
+| `--monitoring` / `--no-monitoring` | no | off | Pair an InfluxDB VM and forward host/per-service RSS metrics (bucket `testnet-metrics`). |
+| `--grafana` / `--no-grafana` | no | off | With `--monitoring`, also create a Grafana VM. |
+| `--monitoring-volume-size` | no | `50` | Monitoring VM volume size in GB. |
+| `--log-retention-days` | no | `7` | Daily timer deletes traces older than N days; `0` keeps forever. |
+| `--rewards-address` | no | standard prod address | EVM rewards address for the node services. |
+| `--log-level` | no | ant-node default | Single global level (`info`/`debug`/`trace`); ant-node has no per-module filter. |
+| `--port` | no | `10000` | Initial listen port; services use `port..port+node_count-1`. |
+| `--branch-name` + `--repo-owner` | no | latest release | Custom ant-node build (built first via `build ant-node`). |
+| `--node-version` | no | — | Pinned release instead (mutually exclusive with branch). Releases ship optimised — no debug builds. |
+| `--debug` | no | off | Informational: record the binary as a debug build for `slack-post`. The real build is `build ant-node --debug`. |
+| `--purpose` | yes | — | Free-text description, persisted in `deploy_args.purpose`. |
+
+Sequencing under one command: seed prod bootstraps → `nodes infra` → (optional
+`monitoring infra`/`provision`) → prod-mode `nodes provision` + heaptrack →
+`nodes start` → install the trace-prune timer. The Deployment row is registered
+with `deploy_args.kind = "prod-nodes"`.
+
+#### Retrieve traces + destroy
+
+```bash
+# Pull the heaptrack traces off before tearing down:
+scp root@<vm>:/mnt/ant-node-storage/heaptrack/ant-node-*.zst ./traces/
+
+# Default: also destroys the paired monitoring stack.
+saorsa-deploy prod nodes destroy --name PROF-NODE-01
+# Keep monitoring for after-the-fact analysis:
+saorsa-deploy prod nodes destroy --name PROF-NODE-01 --keep-monitoring
+```
+
+#### Manifest
+
+Fully declarative via `deployments up/plan/down --config` (`kind: prod-nodes`).
+Because `up` is resumable, a re-run after a mid-sequence failure skips the
+already-done ~10-minute debug build. See
+`manifests/profiles/prod-nodes.yaml`.
+
 ### Running tests
 
 ```bash

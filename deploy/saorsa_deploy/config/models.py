@@ -42,6 +42,7 @@ KIND_TO_BLOCK: dict[str, str] = {
     "prod-downloaders": "prod_downloaders",
     "prod-local-uploads": "prod_local_uploads",
     "prod-local-downloads": "prod_local_downloads",
+    "prod-nodes": "prod_nodes",
 }
 
 Payment = Literal["merkle", "no-merkle"]
@@ -459,6 +460,35 @@ class ProdLocalDownloadsSpec(_Base):
     bootstrap_cache: Optional[bool] = None
 
 
+class ProdNodesSpec(_Base):
+    """Profiling ant-node VMs that join the PRODUCTION network under heaptrack.
+
+    ``binary`` is an ANT-NODE source (release version XOR branch build). For a
+    profiling run set ``binary.branch`` + ``binary.debug: true`` so the
+    orchestrator's ``build ant-node`` step builds without ``--release`` (full
+    debug info). All other fields mirror ``prod nodes deploy`` flags; ``None``
+    means "use the CLI default".
+    """
+
+    binary: Binary
+    region: str
+    provider: Optional[str] = None  # digitalocean (default) | hetzner | vultr | ovh
+    vm_size: Optional[str] = None
+    vm_count: Optional[int] = None  # default 1
+    node_count: Optional[int] = None  # default 15 (prod fleet density)
+    volume_size: Optional[int] = None  # GB attached data volume; default 100
+    # heaptrack defaults ON for this kind — set false to run plain prod nodes.
+    heaptrack: Optional[bool] = None
+    monitoring: Optional[bool] = None  # InfluxDB host metrics; default off
+    grafana: Optional[bool] = None  # with monitoring, also a Grafana VM
+    monitoring_volume_size: Optional[int] = None
+    log_retention_days: Optional[int] = None  # heaptrack-trace prune; 0 = keep
+    rewards_address: Optional[str] = None
+    log_level: Optional[LogLevel] = None  # ant-node single global level
+    port: Optional[int] = None  # initial listen port (default 10000)
+    keep_monitoring: Optional[bool] = None  # destroy: --keep-monitoring when True
+
+
 # --------------------------------------------------------------------------- #
 # top-level manifest
 # --------------------------------------------------------------------------- #
@@ -477,6 +507,7 @@ class Manifest(_Base):
     prod_downloaders: Optional[ProdDownloadersSpec] = None
     prod_local_uploads: Optional[ProdLocalUploadsSpec] = None
     prod_local_downloads: Optional[ProdLocalDownloadsSpec] = None
+    prod_nodes: Optional[ProdNodesSpec] = None
 
     @model_validator(mode="after")
     def _kind_block_consistent(self) -> "Manifest":

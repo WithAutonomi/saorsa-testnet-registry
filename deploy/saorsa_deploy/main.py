@@ -3049,6 +3049,187 @@ def main(argv=None):
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
+    # --- prod nodes (heaptrack profiling nodes against production) ---
+    prod_nodes_parser = prod_subparsers.add_parser(
+        "nodes",
+        help="Profiling ant-node VMs that join the PRODUCTION network, running "
+        "a debug build wrapped in heaptrack (for chasing the node memory leak).",
+    )
+    prod_nodes_subparsers = prod_nodes_parser.add_subparsers(
+        dest="prod_nodes_action", required=True
+    )
+
+    prod_nodes_deploy_parser = prod_nodes_subparsers.add_parser(
+        "deploy",
+        help="Create node VM(s) joining production, provision ant-node services "
+        "wrapped in heaptrack, and start them.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (also used for the paired monitoring stack).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "hetzner", "vultr", "ovh"],
+        help="Cloud provider for the node VM(s) (default: digitalocean).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--region",
+        type=str,
+        required=True,
+        help="Provider region for the node VM(s) (e.g. lon1, fsn1, lhr, GRA9).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--vm-size",
+        type=str,
+        default=None,
+        help="Provider VM size/plan/flavor. Defaults to a prod-appropriate size "
+        "per provider (DO s-4vcpu-8gb, Hetzner cpx42, Vultr vhf-4c-16gb, OVH b3-16).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--vm-count",
+        type=int,
+        default=1,
+        help="Number of node VMs to create in the region (default: 1).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--node-count",
+        type=int,
+        default=15,
+        help="ant-node services per VM (default: 15, matching the prod fleet).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--volume-size",
+        type=int,
+        default=100,
+        help="Attached data-volume size in GB per node VM (default: 100). Node "
+        "data plus growing heaptrack traces live here, not the root disk.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--heaptrack",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wrap every ant-node service with heaptrack memory profiling "
+        "(default: on — the whole point of this command). --no-heaptrack runs "
+        "plain prod nodes.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--monitoring",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also stand up a paired InfluxDB VM and forward host/per-service "
+        "RSS metrics (default: off). Pair with --grafana for dashboards.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--grafana",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="With --monitoring, also create a Grafana VM (default: off — "
+        "InfluxDB only).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--monitoring-volume-size",
+        type=int,
+        default=50,
+        help="Monitoring VM attached volume size in GB (default: 50).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--log-retention-days",
+        type=int,
+        default=7,
+        help="Install a daily timer that deletes heaptrack traces older than N "
+        "days (default: 7). 0 keeps traces forever.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--rewards-address",
+        type=str,
+        default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
+        help="EVM rewards address for the prod node services "
+        "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        help="ant-node --log-level (single level: info/debug/trace). ant-node has "
+        "no per-module env filter, so one global level applies.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--port",
+        type=int,
+        default=10000,
+        help="Initial ant-node listen port; services use port..port+node_count-1 "
+        "(default: 10000).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant-node binary from this branch (requires "
+        "--repo-owner). Build it first with `build ant-node --debug` for a "
+        "profiling-friendly debug build.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for the custom-built ant-node binary "
+        "(requires --branch-name).",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--node-version",
+        type=str,
+        help="Specific release version of ant-node to install (e.g. 0.11.6). "
+        "Mutually exclusive with --branch-name/--repo-owner.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Informational: record that the resolved branch binary is a debug "
+        "build so `deployments slack-post` surfaces it. The actual debug build is "
+        "produced by `build ant-node --debug`; this flag does not change the fetch.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this profiling run is for. Persisted "
+        "into deploy_args and surfaced by `deployments slack-post`.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning (default: ~/.ssh/id_rsa).",
+    )
+
+    prod_nodes_destroy_parser = prod_nodes_subparsers.add_parser(
+        "destroy",
+        help="Destroy a prod profiling-nodes deployment (node VMs and, by "
+        "default, the paired monitoring stack).",
+    )
+    prod_nodes_destroy_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name to tear down.",
+    )
+    prod_nodes_destroy_parser.add_argument(
+        "--keep-monitoring",
+        action="store_true",
+        help="Leave the paired monitoring VM running so recorded metrics remain "
+        "queryable after the node VMs are gone. Default: monitoring is destroyed "
+        "alongside the nodes.",
+    )
+    prod_nodes_destroy_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
     # --- prod uploaders ---
     prod_up_parser = prod_subparsers.add_parser(
         "uploaders",
@@ -4252,6 +4433,20 @@ def main(argv=None):
             )
 
             cmd_prod_downloaders_destroy(args)
+        elif (
+            args.prod_subcommand == "nodes"
+            and args.prod_nodes_action == "deploy"
+        ):
+            from saorsa_deploy.cmd.prod_nodes import cmd_prod_nodes_deploy
+
+            cmd_prod_nodes_deploy(args)
+        elif (
+            args.prod_subcommand == "nodes"
+            and args.prod_nodes_action == "destroy"
+        ):
+            from saorsa_deploy.cmd.prod_nodes import cmd_prod_nodes_destroy
+
+            cmd_prod_nodes_destroy(args)
         elif (
             args.prod_subcommand == "uploaders"
             and args.prod_up_action == "deploy"

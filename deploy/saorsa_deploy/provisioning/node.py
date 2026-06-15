@@ -29,6 +29,19 @@ from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_
 
 METRICS_PORT_BASE = 9100
 
+# heaptrack traces for node memory profiling are written to the attached data
+# volume (not the root disk) — 15 debug-build nodes generate large, growing
+# ``.zst`` traces that would otherwise fill ``/``.
+HEAPTRACK_DIR = f"{MOUNT_POINT}/heaptrack"
+
+# Idempotent heaptrack apt install (mirrors the prod-uploader/client install op).
+INSTALL_HEAPTRACK_COMMAND = (
+    "command -v heaptrack >/dev/null && echo 'HEAPTRACK:SKIP' || "
+    "(DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+    "heaptrack && echo 'HEAPTRACK:INSTALLED')"
+)
+
 
 def _build_node_exec_start(
     bootstrap_peers,
@@ -41,13 +54,24 @@ def _build_node_exec_start(
     metrics_port=None,
     rewards_address=DEFAULT_REWARDS_ADDRESS,
     evm_network="arbitrum-sepolia",
+    heaptrack_base=None,
 ):
     """Build the ExecStart command line for a node service.
 
     Args:
         bootstrap_peers: List of "ip:port" strings for all bootstrap nodes.
+        heaptrack_base: When set, wrap the ant-node invocation with
+            ``heaptrack -o <heaptrack_base>`` for memory profiling. heaptrack
+            writes ``<base>.<pid>.zst`` incrementally, so even an OOM/SIGKILL
+            leaves an analysable trace. The wrapper is prepended to the whole
+            command, so when the unit is also a NAT variant the outer
+            ``ip netns exec ant_nat`` prefix (added in ``_build_node_unit_file``)
+            still sits outermost — heaptrack profiles the node, not netns.
     """
-    parts = [BINARY_INSTALL_PATH]
+    parts = []
+    if heaptrack_base:
+        parts.extend(["heaptrack", "-o", heaptrack_base])
+    parts.append(BINARY_INSTALL_PATH)
     parts.append(f"--root-dir {root_dir}")
     for peer in bootstrap_peers:
         parts.append(f"--bootstrap {peer}")
@@ -149,6 +173,8 @@ class AntNodeProvisioner:
         restart_sec: int = 5,
         limit_nofile: int | None = None,
         extra_op_providers: list | None = None,
+        heaptrack: bool = False,
+        heaptrack_dir: str = HEAPTRACK_DIR,
     ):
         self.host_ips = host_ips
         self.bootstrap_peers = bootstrap_peers
@@ -170,6 +196,11 @@ class AntNodeProvisioner:
         self.restart_policy = restart_policy
         self.restart_sec = restart_sec
         self.limit_nofile = limit_nofile
+        # Memory profiling: when enabled, every node service's ExecStart is
+        # wrapped with heaptrack (traces under ``heaptrack_dir`` on the data
+        # volume, one base per service so the 15 nodes don't collide).
+        self.heaptrack = heaptrack
+        self.heaptrack_dir = heaptrack_dir
         # Optional providers (e.g. Telegraf forwarders) whose ops are folded
         # into this provisioner's single pyinfra pass, so node provisioning and
         # Telegraf install happen in ONE pass over the node VMs. Each exposes
@@ -185,6 +216,9 @@ class AntNodeProvisioner:
             root_dir = f"{MOUNT_POINT}/data/{service_name}"
             log_dir = f"{LOG_DIR}/{service_name}"
             metrics_port = METRICS_PORT_BASE + i
+            heaptrack_base = (
+                f"{self.heaptrack_dir}/{service_name}" if self.heaptrack else None
+            )
             exec_start = _build_node_exec_start(
                 bootstrap_peers=self.bootstrap_peers,
                 root_dir=root_dir,
@@ -196,6 +230,7 @@ class AntNodeProvisioner:
                 metrics_port=metrics_port,
                 rewards_address=self.rewards_address,
                 evm_network=self.evm_network,
+                heaptrack_base=heaptrack_base,
             )
             unit_content = _build_node_unit_file(
                 service_name,
@@ -218,6 +253,13 @@ class AntNodeProvisioner:
             self.console.print("Fetching latest release from GitHub...")
             download_url = get_release_url()
             self.console.print(f"  Release URL: {download_url}")
+
+        if self.heaptrack:
+            self.console.print(
+                f"[cyan]heaptrack memory profiling enabled "
+                f"(traces → {self.heaptrack_dir}/ant-node-<i>.<pid>.zst on each VM; "
+                f"fetch via scp before destroy).[/cyan]"
+            )
 
         if self.nat_ips:
             self.console.print(
@@ -278,6 +320,9 @@ class AntNodeProvisioner:
             mkdir_commands = [f"mkdir -p {LOG_DIR}"]
             for i in range(self.node_count):
                 mkdir_commands.append(f"mkdir -p {LOG_DIR}/ant-node-{i + 1}")
+            if self.heaptrack:
+                # On the data volume (mounted just above), not the root disk.
+                mkdir_commands.append(f"mkdir -p {self.heaptrack_dir}")
 
             add_op(
                 state,
@@ -285,6 +330,14 @@ class AntNodeProvisioner:
                 name="Create log directories",
                 commands=mkdir_commands,
             )
+
+            if self.heaptrack:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Install heaptrack",
+                    commands=[INSTALL_HEAPTRACK_COMMAND],
+                )
 
             if self.binary_is_archive:
                 install_cmd = (

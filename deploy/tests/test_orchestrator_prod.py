@@ -853,3 +853,130 @@ def test_bootstrap_cache_flag_omitted_when_unset():
     argv = build_deploy_steps(m)[0].argv
     assert "--bootstrap-cache" not in argv
     assert "--no-bootstrap-cache" not in argv
+
+
+# --------------------------------------------------------------------------- #
+# prod-nodes — heaptrack profiling nodes against production
+# --------------------------------------------------------------------------- #
+def _prod_nodes_manifest(prod_nodes: dict) -> Manifest:
+    return Manifest.model_validate(
+        {
+            "name": "PROF-NODE-01",
+            "kind": "prod-nodes",
+            "purpose": "leak chase",
+            "ssh_key_path": SSH,
+            "prod_nodes": prod_nodes,
+        }
+    )
+
+
+def test_prod_nodes_debug_build_then_deploy():
+    m = _prod_nodes_manifest(
+        {
+            "binary": {"branch": "main", "repo_owner": "WithAutonomi", "debug": True},
+            "provider": "hetzner",
+            "region": "fsn1",
+            "vm_size": "cpx42",
+            "vm_count": 1,
+            "node_count": 15,
+            "volume_size": 100,
+            "heaptrack": True,
+            "monitoring": True,
+            "grafana": False,
+            "monitoring_volume_size": 50,
+            "log_retention_days": 7,
+            "log_level": "info",
+        }
+    )
+    steps = _argvs(build_deploy_steps(m))
+    # A debug ANT-NODE build precedes the deploy (not `build ant`).
+    assert steps[0] == [
+        "build",
+        "ant-node",
+        "--name",
+        "PROF-NODE-01",
+        "--branch-name",
+        "main",
+        "--repo-owner",
+        "WithAutonomi",
+        "--ssh-key-path",
+        SSH,
+        "--debug",
+    ]
+    assert steps[1] == [
+        "prod",
+        "nodes",
+        "deploy",
+        "--name",
+        "PROF-NODE-01",
+        "--purpose",
+        "leak chase",
+        "--region",
+        "fsn1",
+        "--provider",
+        "hetzner",
+        "--vm-size",
+        "cpx42",
+        "--vm-count",
+        "1",
+        "--node-count",
+        "15",
+        "--volume-size",
+        "100",
+        "--heaptrack",
+        "--monitoring",
+        "--no-grafana",
+        "--monitoring-volume-size",
+        "50",
+        "--log-retention-days",
+        "7",
+        "--log-level",
+        "info",
+        "--branch-name",
+        "main",
+        "--repo-owner",
+        "WithAutonomi",
+        "--debug",
+        "--ssh-key-path",
+        SSH,
+    ]
+
+
+def test_prod_nodes_release_has_no_build_step():
+    m = _prod_nodes_manifest(
+        {"binary": {"version": "0.11.6"}, "region": "lon1"}
+    )
+    steps = _argvs(build_deploy_steps(m))
+    # A pinned release ships prebuilt — no build step, just the deploy.
+    assert len(steps) == 1
+    assert steps[0][:3] == ["prod", "nodes", "deploy"]
+    assert "--node-version" in steps[0]
+    assert steps[0][steps[0].index("--node-version") + 1] == "0.11.6"
+    # No build step means no --branch-name in the (single) deploy step's source.
+    assert "--branch-name" not in steps[0]
+
+
+def test_prod_nodes_no_heaptrack_flag_emitted():
+    m = _prod_nodes_manifest(
+        {"binary": {"version": "0.11.6"}, "region": "lon1", "heaptrack": False}
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--no-heaptrack" in argv
+    assert "--heaptrack" not in argv
+
+
+def test_prod_nodes_destroy_default_and_keep_monitoring():
+    base = {"binary": {"version": "0.11.6"}, "region": "lon1"}
+    m = _prod_nodes_manifest(base)
+    assert _argvs(build_destroy_steps(m)) == [
+        ["prod", "nodes", "destroy", "--name", "PROF-NODE-01", "--ssh-key-path", SSH]
+    ]
+    m_keep = _prod_nodes_manifest({**base, "keep_monitoring": True})
+    assert build_destroy_steps(m_keep)[0].argv[-1] == "--keep-monitoring"
+
+
+def test_prod_nodes_debug_requires_branch():
+    with pytest.raises(ValidationError):
+        _prod_nodes_manifest(
+            {"binary": {"version": "0.11.6", "debug": True}, "region": "lon1"}
+        )

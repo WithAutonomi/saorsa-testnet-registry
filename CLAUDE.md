@@ -413,6 +413,57 @@ See `deploy/README.md` §"Running downloads from the local machine" for the full
 
 See `deploy/README.md` §"Running canaries against production" for the full argument table and the dataset description.
 
+### Running prod profiling nodes
+
+`prod nodes deploy` stands up node VM(s) — each running `--node-count` ant-node
+services (default 15, matching the prod fleet) — that join the **production**
+Autonomi network with every service wrapped in **heaptrack**, to chase the
+intermittent ant-node memory leak under real prod load with a **debug build**.
+This is the node-tier sibling of the prod client commands (uploaders/downloaders/
+canary).
+
+- **Vehicle (not `extend`, not `migration`).** `deployments extend` only reuses
+  another *testnet's* bootstraps; the `migration` subsystem is the established
+  prod-node provisioner but is modelled around migrating an existing source fleet
+  (drain/destroy-source/inventory-splice) — wrong for a throwaway profiling VM.
+  Instead `prod nodes` **seeds the deployment's S3 state with the production
+  bootstrap peers** (`fetch_prod_bootstraps()` → WithAutonomi `bootstrap_peers.toml`)
+  and then reuses the normal node lifecycle: `nodes infra` (all four providers'
+  TF modules) → a prod-mode `nodes provision` → `nodes start`. Prod-mode node
+  settings match `migration provision` (no `--evm-network` → arbitrum-one,
+  `Restart=always`, `RestartSec=10`, `LimitNOFILE=65536`); `--stop-on-upgrade` is
+  always emitted and no `--upgrade-channel` is set, so the pinned debug build
+  keeps running (never auto-upgrades).
+- **Node-side heaptrack** is the one genuinely new mechanism (heaptrack was
+  client-only before): `provisioning/node.py` wraps each service's `ExecStart`
+  `heaptrack -o <dir>/ant-node-<i> <ant-node …>`, composing **inside** the NAT
+  `ip netns exec` prefix (so heaptrack profiles the node, not netns), plus an
+  idempotent heaptrack apt-install op and a trace-dir mkdir. Traces go to the
+  **attached data volume** (`/mnt/ant-node-storage/heaptrack/ant-node-<i>.<pid>.zst`),
+  NOT the root disk — 15 debug nodes generate large, growing traces. heaptrack is
+  default **ON** for this command (`--no-heaptrack` to opt out).
+- **Debug build** reuses the existing `build ant-node --debug` (no migration/build
+  change). Manifest `binary.debug: true` → orchestrator emits the `build ant-node
+  --debug` step before the deploy; from the CLI run `build ant-node --debug` first
+  against the same `--name`.
+- **Optional monitoring** (`--monitoring`, off by default; `--grafana` opt-in):
+  reuses `monitoring infra/provision` + the node provision `--with-telegraf` seam
+  to forward host/per-service RSS metrics to InfluxDB (`testnet-metrics` bucket).
+- **Bounded trace retention**: `--log-retention-days` (default 7; `0` = keep
+  forever) installs a daily `ant-node-heaptrack-logprune.timer` that
+  `find -mtime +N -delete`s old `.zst` traces.
+- Registers a `Deployment` row with `deploy_args.kind = "prod-nodes"`. Fully
+  declarative via `deployments up/plan/down --config` (`kind: prod-nodes`,
+  `ProdNodesSpec` in `config/models.py`, `orchestrator/prod.py` `_nodes`); `up` is
+  resumable so a retry skips the ~10-minute debug build. Example:
+  `deploy/manifests/profiles/prod-nodes.yaml`. Impl: `cmd/prod_nodes.py`.
+- `prod nodes destroy` tears down the node VMs and (by default) the paired
+  monitoring stack; pass `--keep-monitoring` to retain it. `scp` the `.zst` traces
+  off each VM before destroy.
+
+See `deploy/README.md` §"Running profiling nodes against production" for the full
+argument table.
+
 ### Deployment Statuses
 
 `pending` → `running` → `stopped` (success) or `failed`

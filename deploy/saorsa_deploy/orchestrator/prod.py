@@ -18,7 +18,13 @@ the env-bridge that honours a custom ``secret_key_env``.
 from __future__ import annotations
 
 from saorsa_deploy.config.models import Manifest
-from saorsa_deploy.orchestrator.steps import Step, ant_binary_flags, ant_build_steps
+from saorsa_deploy.orchestrator.steps import (
+    Step,
+    ant_binary_flags,
+    ant_build_steps,
+    build_steps_for_branches,
+    node_binary_flags,
+)
 
 
 def _prod_uploader_spec(u) -> str:
@@ -243,6 +249,51 @@ def _local_downloads(manifest: Manifest) -> list[Step]:
     return [Step(argv, "Run prod downloads from the local machine")]
 
 
+def _nodes(manifest: Manifest) -> list[Step]:
+    spec = manifest.prod_nodes
+    argv = [
+        "prod",
+        "nodes",
+        "deploy",
+        "--name",
+        manifest.name,
+        "--purpose",
+        manifest.purpose,
+        "--region",
+        spec.region,
+    ]
+    if spec.provider is not None:
+        argv += ["--provider", spec.provider]
+    if spec.vm_size is not None:
+        argv += ["--vm-size", spec.vm_size]
+    if spec.vm_count is not None:
+        argv += ["--vm-count", str(spec.vm_count)]
+    if spec.node_count is not None:
+        argv += ["--node-count", str(spec.node_count)]
+    if spec.volume_size is not None:
+        argv += ["--volume-size", str(spec.volume_size)]
+    if spec.heaptrack is not None:
+        argv += ["--heaptrack" if spec.heaptrack else "--no-heaptrack"]
+    if spec.monitoring is not None:
+        argv += ["--monitoring" if spec.monitoring else "--no-monitoring"]
+    if spec.grafana is not None:
+        argv += ["--grafana" if spec.grafana else "--no-grafana"]
+    if spec.monitoring_volume_size is not None:
+        argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
+    if spec.log_retention_days is not None:
+        argv += ["--log-retention-days", str(spec.log_retention_days)]
+    if spec.rewards_address is not None:
+        argv += ["--rewards-address", spec.rewards_address]
+    if spec.log_level is not None:
+        argv += ["--log-level", spec.log_level]
+    if spec.port is not None:
+        argv += ["--port", str(spec.port)]
+    argv += node_binary_flags(spec.binary)
+    argv += _binary_debug_flag(spec.binary)
+    argv += ["--ssh-key-path", manifest.ssh_key_path]
+    return [Step(argv, "Deploy prod profiling nodes (+ optional monitoring)")]
+
+
 _DEPLOY_BUILDERS = {
     "prod-uploaders": _uploaders,
     "prod-downloaders": _downloaders,
@@ -250,6 +301,7 @@ _DEPLOY_BUILDERS = {
     "prod-canary": _canary,
     "prod-local-uploads": _local_uploads,
     "prod-local-downloads": _local_downloads,
+    "prod-nodes": _nodes,
 }
 
 # Destroy is a single command for the VM-backed kinds; local-* have no infra.
@@ -258,6 +310,7 @@ _DESTROY = {
     "prod-downloaders": ["prod", "downloaders", "destroy"],
     "prod-continuous-downloader": ["prod", "continuous-downloader", "destroy"],
     "prod-canary": ["prod", "canary", "destroy"],
+    "prod-nodes": ["prod", "nodes", "destroy"],
 }
 
 
@@ -272,9 +325,16 @@ def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list
     # --skip-builds the operator asserts the build already exists in S3.
     steps: list[Step] = []
     if not skip_builds:
-        steps = ant_build_steps(
-            manifest.name, manifest.ssh_key_path, manifest.spec.binary
-        )
+        if manifest.kind == "prod-nodes":
+            # prod-nodes resolves an ANT-NODE branch build (not the client `ant`),
+            # so it needs a `build ant-node` step, not `build ant`.
+            steps = build_steps_for_branches(
+                manifest.name, manifest.ssh_key_path, manifest.spec.binary, None
+            )
+        else:
+            steps = ant_build_steps(
+                manifest.name, manifest.ssh_key_path, manifest.spec.binary
+            )
     return steps + builder(manifest)
 
 

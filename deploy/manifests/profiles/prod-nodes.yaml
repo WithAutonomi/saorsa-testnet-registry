@@ -1,0 +1,58 @@
+# Profiling ant-node VMs against the PRODUCTION Autonomi network.
+#
+# Stands up a VM running 15 ant-node services that join production, built as a
+# DEBUG build and wrapped in heaptrack, so memory traces can be captured to chase
+# the intermittent ant-node leak under real prod load. Optional InfluxDB host
+# metrics correlate WHEN memory grows with load over time.
+#
+#   saorsa-deploy deployments plan --config <this file>     # preview the steps
+#   saorsa-deploy deployments up   --config <this file>     # build + deploy
+#   saorsa-deploy deployments down --config <this file>     # tear down
+#
+# Because `up` is resumable, a re-run after a mid-sequence failure skips the
+# already-done ~10-minute debug build. Copy into the git-ignored manifests/runs/
+# dir and edit per run.
+
+name: PROF-NODE-01
+kind: prod-nodes
+purpose: "ant-node memory-leak profiling on production (debug + heaptrack)"
+ssh_key_path: ~/.ssh/ant_deploy
+
+prod_nodes:
+  # ANT-NODE binary. For profiling, use a branch build with debug: true so the
+  # `build ant-node` step drops --release (full debug info for heaptrack).
+  binary:
+    branch: main
+    repo_owner: WithAutonomi
+    debug: true
+  # A pinned release instead (no debug builds — releases ship optimised):
+  # binary:
+  #   version: "0.11.6"
+
+  # Node VM placement. One VM of 15 services, matching prod fleet density.
+  provider: hetzner          # digitalocean (default) | hetzner | vultr | ovh
+  region: fsn1
+  vm_size: cpx42             # optional; prod-appropriate default per provider
+  vm_count: 1
+  node_count: 15
+  volume_size: 100           # GB data volume; node data + heaptrack traces live here
+
+  # heaptrack defaults ON for this kind. Set false to run plain prod nodes.
+  heaptrack: true
+  log_retention_days: 7      # prune traces older than N days; 0 = keep forever
+
+  # Optional continuous host/RSS metrics alongside heaptrack.
+  monitoring: true
+  grafana: false
+  monitoring_volume_size: 50
+
+  # ant-node has no per-module env filter — a single global level applies.
+  log_level: info            # info | debug | trace
+  # port: 10000              # initial listen port (services use port..port+14)
+  # rewards_address: "0x..." # defaults to the standard prod rewards address
+
+# Optional: post a deployment summary to Slack once it's up.
+# slack_post: true
+#
+# Retrieve traces before teardown:
+#   scp root@<vm>:/mnt/ant-node-storage/heaptrack/ant-node-*.zst ./traces/
