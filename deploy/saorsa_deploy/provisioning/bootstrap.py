@@ -1,3 +1,4 @@
+import time
 from io import StringIO
 
 from pyinfra.api import Config, Inventory, State
@@ -15,8 +16,10 @@ from saorsa_deploy.provisioning.apt import (
     build_set_hostname_command,
 )
 from saorsa_deploy.provisioning.progress import (
+    OpTimingHandler,
     RichLiveProgressHandler,
     create_progress_handler,
+    print_op_timing_summary,
 )
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
@@ -206,7 +209,11 @@ class AntBootstrapNodeProvisioner:
             ),
         )
         state = State(inventory=inventory, config=Config())
+        timing = OpTimingHandler()
+        state.add_callback_handler(timing)
+        _connect_start = time.monotonic()
         connect_all(state)
+        connect_seconds = time.monotonic() - _connect_start
 
         try:
             add_op(
@@ -281,6 +288,12 @@ class AntBootstrapNodeProvisioner:
         finally:
             disconnect_all(state)
 
+        print_op_timing_summary(
+            self.console,
+            timing,
+            title=f"provision-genesis ({self.service_name})",
+            connect_seconds=connect_seconds,
+        )
         self.console.print(
             f"[green]Bootstrap #{self.bootstrap_index} ({self.service_name}) "
             f"provisioned at {self.ip}[/green]"
@@ -396,14 +409,19 @@ class AntBootstrapNodesProvisioner:
 
         progress = create_progress_handler(self.console)
         state.add_callback_handler(progress)
+        timing = OpTimingHandler()
+        state.add_callback_handler(timing)
         if isinstance(progress, RichLiveProgressHandler):
             progress._live.start()
 
+        connect_seconds = None
         try:
             self.console.print(
                 f"Connecting to {len(self.nodes)} bootstrap host(s) as root..."
             )
+            _connect_start = time.monotonic()
             connect_all(state)
+            connect_seconds = time.monotonic() - _connect_start
 
             active_hosts = list(state.inventory.get_active_hosts())
 
@@ -482,6 +500,12 @@ class AntBootstrapNodesProvisioner:
         self.console.print(
             f"[bold]Bootstrap provisioning complete: "
             f"{succeeded}/{total} host(s) succeeded[/bold]"
+        )
+        print_op_timing_summary(
+            self.console,
+            timing,
+            title="bootstraps provision",
+            connect_seconds=connect_seconds,
         )
         if failed:
             for host in failed:

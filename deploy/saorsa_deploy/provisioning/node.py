@@ -1,3 +1,5 @@
+import time
+
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
 from pyinfra.api.operation import add_op
@@ -22,8 +24,10 @@ from saorsa_deploy.provisioning.full_nodes import (
 )
 from saorsa_deploy.provisioning.nat import NAT_IP_EXEC_PREFIX, build_nat_setup_command
 from saorsa_deploy.provisioning.progress import (
+    OpTimingHandler,
     RichLiveProgressHandler,
     create_progress_handler,
+    print_op_timing_summary,
 )
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
@@ -289,13 +293,18 @@ class AntNodeProvisioner:
 
         progress = create_progress_handler(self.console)
         state.add_callback_handler(progress)
+        timing = OpTimingHandler()
+        state.add_callback_handler(timing)
 
         if isinstance(progress, RichLiveProgressHandler):
             progress._live.start()
 
+        connect_seconds = None
         try:
             self.console.print(f"Connecting to {len(self.host_ips)} host(s) as root...")
+            _connect_start = time.monotonic()
             connect_all(state)
+            connect_seconds = time.monotonic() - _connect_start
 
             active_hosts = list(state.inventory.get_active_hosts())
             nat_hosts = [h for h in active_hosts if h.name in self.nat_ips]
@@ -455,6 +464,9 @@ class AntNodeProvisioner:
         self.console.print(
             f"[bold]Provisioning complete: {succeeded}/{total} hosts succeeded, "
             f"{self.node_count} node(s) per host[/bold]"
+        )
+        print_op_timing_summary(
+            self.console, timing, title="nodes provision", connect_seconds=connect_seconds
         )
         if failed:
             for host in failed:
