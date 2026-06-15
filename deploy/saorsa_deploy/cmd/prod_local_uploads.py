@@ -35,6 +35,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from rich.console import Console
@@ -247,6 +248,21 @@ def _parse_ant_json(stdout: str) -> dict | None:
         except json.JSONDecodeError:
             continue
     return None
+
+
+def _cost_to_decimal(value) -> Decimal | None:
+    """Convert a string-encoded uint256 cost field (atto/wei) to ``Decimal``.
+
+    ``ant --json file upload`` emits ``storage_cost_atto`` / ``gas_cost_wei`` as
+    strings; the Postgres columns are ``NUMERIC``. Empty/missing/unparseable
+    (e.g. an older ``ant`` that omits them) stays ``None`` (NULL).
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _classify_status(parsed: dict | None, exit_code: int) -> ProdUploadStatus:
@@ -713,6 +729,8 @@ def _process_one_upload(
     upload_secs = float((parsed or {}).get("elapsed_secs") or 0.0) or None
     address = str((parsed or {}).get("address") or "") or None
     reason = str((parsed or {}).get("reason") or "") or None
+    storage_cost_atto = _cost_to_decimal((parsed or {}).get("storage_cost_atto"))
+    gas_cost_wei = _cost_to_decimal((parsed or {}).get("gas_cost_wei"))
 
     if status == ProdUploadStatus.SUCCESS:
         console.print(
@@ -747,6 +765,8 @@ def _process_one_upload(
         started_at=started_at,
         finished_at=finished_at,
         reason=reason,
+        storage_cost_atto=storage_cost_atto,
+        gas_cost_wei=gas_cost_wei,
     )
 
     return status == ProdUploadStatus.SUCCESS
