@@ -16,6 +16,7 @@ The CLI entry point ``cmd_record_results`` resolves the deployment's
 import os
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from rich.console import Console
 from rich.table import Table
@@ -411,6 +412,21 @@ def _started_at(point: dict) -> datetime:
     return point["_time"]
 
 
+def _cost_to_decimal(value) -> Decimal | None:
+    """Convert a string-encoded uint256 cost field to ``Decimal``.
+
+    Cost fields (``storage_cost_atto`` / ``gas_cost_wei``) ride through Influx
+    as strings to keep full precision; the Postgres columns are ``NUMERIC``.
+    Empty/missing/unparseable stays ``None`` (NULL).
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def _record_prod_upload(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
@@ -462,6 +478,8 @@ def _record_prod_upload(
             started_at=_started_at(p),
             finished_at=p["_time"],
             reason=p.get("reason") or None,
+            storage_cost_atto=_cost_to_decimal(p.get("storage_cost_atto")),
+            gas_cost_wei=_cost_to_decimal(p.get("gas_cost_wei")),
         )
         recorded += 1
 

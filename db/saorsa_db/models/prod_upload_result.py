@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
@@ -9,6 +10,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -56,6 +58,13 @@ class DeploymentProdUploadResult(Base):
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     upload_secs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # On-chain cost of the upload, surfaced by `ant --json file upload`. Stored
+    # as NUMERIC (uint256-shaped) so large values keep full precision; both
+    # nullable since older `ant` binaries / already-recorded rows omit them.
+    storage_cost_atto: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(), nullable=True
+    )
+    gas_cost_wei: Mapped[Optional[Decimal]] = mapped_column(Numeric(), nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -92,6 +101,14 @@ class DeploymentProdUploadResult(Base):
             "duration_ms": self.duration_ms,
             "upload_secs": self.upload_secs,
             "reason": self.reason,
+            "storage_cost_atto": (
+                str(self.storage_cost_atto)
+                if self.storage_cost_atto is not None
+                else None
+            ),
+            "gas_cost_wei": (
+                str(self.gas_cost_wei) if self.gas_cost_wei is not None else None
+            ),
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat(),
             "recorded_at": self.recorded_at.isoformat(),

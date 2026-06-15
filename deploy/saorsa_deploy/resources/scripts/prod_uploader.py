@@ -168,6 +168,8 @@ def _build_line(
     file_name: str,
     source_url: str,
     reason: str,
+    storage_cost_atto: str = "",
+    gas_cost_wei: str = "",
 ) -> str:
     tag_set = f"host={_escape_tag(host)},region={_escape_tag(region)}"
     field_set = (
@@ -192,6 +194,14 @@ def _build_line(
         f'source_url="{_escape_field_string(source_url)}",'
         f'reason="{_escape_field_string(reason)}"'
     )
+    # Cost fields are uint256-shaped in ant's JSON (string-encoded). Emit them as
+    # Influx string fields so they don't lose precision; downstream
+    # record-results parses them back as Decimal. Older `ant` binaries omit them
+    # (empty string) — skip so the schema stays stable across versions.
+    if storage_cost_atto:
+        field_set += f',storage_cost_atto="{_escape_field_string(storage_cost_atto)}"'
+    if gas_cost_wei:
+        field_set += f',gas_cost_wei="{_escape_field_string(gas_cost_wei)}"'
     # No explicit line-protocol timestamp: InfluxDB stamps each point with its
     # own (correct) server-receive time. This is essential for clock-skewed
     # clients — their wall clock can be hours off, and an explicit client
@@ -555,6 +565,10 @@ def main() -> int:
         upload_secs = float((parsed or {}).get("elapsed_secs") or 0.0)
         address = str((parsed or {}).get("address") or "")
         reason = str((parsed or {}).get("reason") or "")
+        # Per-upload on-chain cost (ant emits these on both success and
+        # partial-failure JSON). uint256-shaped strings — kept verbatim.
+        storage_cost_atto = str((parsed or {}).get("storage_cost_atto") or "")
+        gas_cost_wei = str((parsed or {}).get("gas_cost_wei") or "")
 
         # Fields added by ant-client PR #87 (WithAutonomi). Older `ant` binaries
         # omit them — keep all zero so this script keeps working against them.
@@ -617,6 +631,8 @@ def main() -> int:
                 store_duration_max_ms=store_duration_max_ms,
                 address=address, file_name=file_name, source_url=url,
                 reason=reason,
+                storage_cost_atto=storage_cost_atto,
+                gas_cost_wei=gas_cost_wei,
             )
             _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
 

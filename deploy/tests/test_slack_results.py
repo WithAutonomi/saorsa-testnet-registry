@@ -143,6 +143,38 @@ def test_prod_upload_ignores_unknown_status():
     assert "no prod_upload points" in _text(blocks)
 
 
+def test_prod_upload_blocks_sum_and_render_costs():
+    points = [
+        {"host": "h1", "status": 0, "chunks_stored": 42, "chunks_failed": 0,
+         "total_chunks": 42, "file_name": "a.bin", "source_url": "ua",
+         # 1.5 ANT and 0.001 ETH expressed in atto/wei.
+         "storage_cost_atto": "1500000000000000000",
+         "gas_cost_wei": "1000000000000000"},
+        {"host": "h1", "status": 0, "chunks_stored": 10, "chunks_failed": 0,
+         "total_chunks": 10, "file_name": "b.bin", "source_url": "ub",
+         "storage_cost_atto": "500000000000000000",
+         "gas_cost_wei": "2000000000000000"},
+    ]
+    text = _text(prod_upload_result_blocks(points))
+    # Grand total: 2 ANT storage / 0.003 ETH gas.
+    assert "2 ANT" in text
+    assert "0.003 ETH" in text
+    # Per-file human-readable cost on the detail lines.
+    assert "1.5 ANT" in text
+
+
+def test_prod_upload_blocks_omit_cost_when_absent():
+    points = [
+        {"host": "h1", "status": 0, "chunks_stored": 1, "chunks_failed": 0,
+         "total_chunks": 1, "file_name": "a.bin", "source_url": "ua"},
+    ]
+    text = _text(prod_upload_result_blocks(points))
+    # Totals still render (as "-"), and no spurious ANT/ETH amounts appear in
+    # the per-file detail when ant emitted no cost.
+    assert "Storage cost" in text
+    assert "`a.bin` [ok] — 1/1 chunks on h1" in text
+
+
 def test_canary_blocks_render_summary_and_histogram():
     summary = {
         "upload_count": 100,

@@ -2,6 +2,7 @@
 per-file ``deployment_prod_upload_results`` upsert path.
 """
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -123,6 +124,49 @@ def test_records_one_row_per_point(repo):
         == ProdUploadStatus.DOWNLOAD_FAILED
     )
     assert by_url["https://example.com/missing.bin"].reason == "HTTP 404"
+
+
+def test_records_cost_fields_as_decimal(repo):
+    r, _ = repo
+    deployment = r.create(
+        name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"}
+    )
+
+    points = [
+        _influx_point(
+            storage_cost_atto="123456789000000000",
+            gas_cost_wei="42000000000000",
+        ),
+        # A point with no cost (older `ant`) keeps the columns NULL.
+        _influx_point(source_url="https://example.com/nocost.bin"),
+    ]
+    _run_cmd(r, points)
+
+    rows = r.list_prod_upload_results_for_deployment(deployment.id)
+    by_url = {row.source_url: row for row in rows}
+    with_cost = by_url["https://example.com/file.bin"]
+    assert with_cost.storage_cost_atto == Decimal("123456789000000000")
+    assert with_cost.gas_cost_wei == Decimal("42000000000000")
+    no_cost = by_url["https://example.com/nocost.bin"]
+    assert no_cost.storage_cost_atto is None
+    assert no_cost.gas_cost_wei is None
+
+
+def test_re_run_with_older_binary_keeps_recorded_cost(repo):
+    """Re-recording from a point that omits cost must not wipe a value an
+    earlier run captured."""
+    r, _ = repo
+    deployment = r.create(
+        name="PROD-UP-01", deploy_args={"kind": "prod-uploaders"}
+    )
+
+    _run_cmd(r, [_influx_point(storage_cost_atto="999", gas_cost_wei="5")])
+    _run_cmd(r, [_influx_point()])  # no cost fields
+
+    rows = r.list_prod_upload_results_for_deployment(deployment.id)
+    assert len(rows) == 1
+    assert rows[0].storage_cost_atto == Decimal("999")
+    assert rows[0].gas_cost_wei == Decimal("5")
 
 
 def test_re_run_updates_existing_row(repo):

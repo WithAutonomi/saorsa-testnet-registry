@@ -217,6 +217,8 @@ class DeploymentRepository(ABC):
         started_at: datetime,
         finished_at: datetime,
         reason: str | None = None,
+        storage_cost_atto: Optional[Decimal] = None,
+        gas_cost_wei: Optional[Decimal] = None,
     ) -> DeploymentProdUploadResult:
         ...
 
@@ -761,6 +763,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         started_at: datetime,
         finished_at: datetime,
         reason: str | None = None,
+        storage_cost_atto: Optional[Decimal] = None,
+        gas_cost_wei: Optional[Decimal] = None,
     ) -> DeploymentProdUploadResult:
         existing = (
             self.session.query(DeploymentProdUploadResult)
@@ -789,6 +793,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 started_at=started_at,
                 finished_at=finished_at,
                 reason=reason,
+                storage_cost_atto=storage_cost_atto,
+                gas_cost_wei=gas_cost_wei,
             )
             self.session.add(existing)
         else:
@@ -805,6 +811,13 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.started_at = started_at
             existing.finished_at = finished_at
             existing.reason = reason
+            # Only overwrite cost when the caller actually has it — a re-record
+            # against an older `ant` binary (which omits cost) shouldn't wipe a
+            # value captured by an earlier run.
+            if storage_cost_atto is not None:
+                existing.storage_cost_atto = storage_cost_atto
+            if gas_cost_wei is not None:
+                existing.gas_cost_wei = gas_cost_wei
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing

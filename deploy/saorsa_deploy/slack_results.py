@@ -15,6 +15,7 @@ count for large per-file / per-host detail.
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 
 from saorsa_deploy.cmd.slack_post import (
     _chunked_sections,
@@ -23,6 +24,26 @@ from saorsa_deploy.cmd.slack_post import (
 )
 
 _PROD_UPLOAD_STATUS_LABEL = {0: "ok", 1: "partial", 2: "dl-failed"}
+
+_ATTO_PER_UNIT = Decimal(10) ** 18
+
+
+def _cost_decimal(value) -> Decimal | None:
+    """Parse a string-encoded uint256 cost field to ``Decimal`` (None if absent)."""
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _fmt_token(value: Decimal | None, symbol: str) -> str:
+    """Render an atto/wei amount (10^-18) as human-readable ANT / ETH."""
+    if value is None:
+        return "-"
+    amount = (value / _ATTO_PER_UNIT).normalize()
+    return f"{amount:f} {symbol}"
 
 # Slack caps a message at 50 blocks; _chunked_sections packs ~35 lines/block, so
 # a per-op list of unbounded length (e.g. a long-running continuous downloader)
@@ -130,9 +151,14 @@ def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
         return [_section("*Results:* _no prod_upload points found._")]
 
     per_host: dict[str, dict] = defaultdict(
-        lambda: {"ok": 0, "partial": 0, "failed": 0, "stored": 0, "cfailed": 0}
+        lambda: {
+            "ok": 0, "partial": 0, "failed": 0, "stored": 0, "cfailed": 0,
+            "ant": Decimal(0), "gas": Decimal(0),
+        }
     )
     totals = {"ok": 0, "partial": 0, "failed": 0}
+    grand_ant = Decimal(0)
+    grand_gas = Decimal(0)
     for p in usable:
         status = p["status"]
         host = p.get("host") or "?"
@@ -141,6 +167,14 @@ def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
         totals[bucket] += 1
         per_host[host]["stored"] += p.get("chunks_stored") or 0
         per_host[host]["cfailed"] += p.get("chunks_failed") or 0
+        ant = _cost_decimal(p.get("storage_cost_atto"))
+        gas = _cost_decimal(p.get("gas_cost_wei"))
+        if ant is not None:
+            per_host[host]["ant"] += ant
+            grand_ant += ant
+        if gas is not None:
+            per_host[host]["gas"] += gas
+            grand_gas += gas
 
     blocks: list[dict] = [
         _fields_section(
@@ -148,13 +182,16 @@ def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
                 ("Uploads OK", str(totals["ok"])),
                 ("Partial", str(totals["partial"])),
                 ("Failed", str(totals["failed"])),
+                ("Storage cost", _fmt_token(grand_ant, "ANT")),
+                ("Gas cost", _fmt_token(grand_gas, "ETH")),
             ]
         )
     ]
 
     host_lines = [
         f"• *{host}*: {d['ok']} ok / {d['partial']} partial / {d['failed']} failed "
-        f"— chunks {d['stored']} stored / {d['cfailed']} failed"
+        f"— chunks {d['stored']} stored / {d['cfailed']} failed "
+        f"— {_fmt_token(d['ant'], 'ANT')} / {_fmt_token(d['gas'], 'ETH')}"
         for host, d in sorted(per_host.items())
     ]
     blocks.extend(_chunked_sections("*Per-host upload results:*", host_lines))
@@ -165,9 +202,14 @@ def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
         label = _PROD_UPLOAD_STATUS_LABEL[p["status"]]
         stored = p.get("chunks_stored") or 0
         total_chunks = p.get("total_chunks") or 0
+        ant = _cost_decimal(p.get("storage_cost_atto"))
+        gas = _cost_decimal(p.get("gas_cost_wei"))
+        cost = ""
+        if ant is not None or gas is not None:
+            cost = f" — {_fmt_token(ant, 'ANT')} / {_fmt_token(gas, 'ETH')}"
         file_lines.append(
             f"• `{name}` [{label}] — {stored}/{total_chunks} chunks on "
-            f"{p.get('host') or '?'}"
+            f"{p.get('host') or '?'}{cost}"
         )
     blocks.extend(_chunked_sections("*Per-file detail:*", file_lines))
     return blocks

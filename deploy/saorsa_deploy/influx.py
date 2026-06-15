@@ -220,7 +220,10 @@ def fetch_prod_upload_points(
     ``start_ns`` (int), ``chunks_stored`` (int), ``chunks_failed`` (int),
     ``total_chunks`` (int), ``address`` (str), ``file_name`` (str),
     ``source_url`` (str), ``reason`` (str — populated on partial_upload from
-    ant's JSON ``reason`` field; empty otherwise).
+    ant's JSON ``reason`` field; empty otherwise), ``storage_cost_atto`` (str —
+    ANT spent in atto, uint256-shaped; empty for older ``ant`` binaries) and
+    ``gas_cost_wei`` (str — gas spent in wei; empty likewise). The cost strings
+    are returned verbatim; callers convert to ``Decimal`` to keep full precision.
 
     The default ``start: 0`` queries from the Unix epoch — prod uploaders
     are bounded runs so a wide window is the right default.
@@ -286,6 +289,8 @@ def _parse_prod_upload_csv(body: str) -> list[dict]:
                     "file_name": record.get("file_name", "") or "",
                     "source_url": record.get("source_url", "") or "",
                     "reason": record.get("reason", "") or "",
+                    "storage_cost_atto": record.get("storage_cost_atto", "") or "",
+                    "gas_cost_wei": record.get("gas_cost_wei", "") or "",
                 }
             )
         except (KeyError, ValueError):

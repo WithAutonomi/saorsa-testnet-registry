@@ -42,6 +42,29 @@ def test_parses_success_and_partial_rows():
     assert partial["address"] == ""
     assert partial["reason"] == "wave store failed after retries"
 
+    # CSV without cost columns (older `ant`) → empty-string cost passthrough.
+    assert success["storage_cost_atto"] == ""
+    assert success["gas_cost_wei"] == ""
+
+
+PROD_UPLOAD_CSV_WITH_COST = (
+    ",result,table,_start,_stop,_time,host,region,_measurement,address,"
+    "chunks_failed,chunks_stored,file_name,file_size,reason,source_url,start_ns,"
+    "status,total_chunks,total_ms,upload_secs,storage_cost_atto,gas_cost_wei\n"
+    ",_result,0,2026-04-01T00:00:00Z,2026-04-26T00:00:00Z,"
+    "2026-04-19T16:19:36.708970856Z,prodhost-01,lon1,prod_upload,addr-abc,"
+    "0,42,file.bin,1048576,,https://example.com/file.bin,"
+    "1776615435704524798,0,42,12345,3.5,123456789000000000,42000000000000\n"
+)
+
+
+def test_parses_cost_fields_verbatim():
+    points = _parse_prod_upload_csv(PROD_UPLOAD_CSV_WITH_COST)
+    assert len(points) == 1
+    # Cost rides through as a verbatim string to preserve uint256 precision.
+    assert points[0]["storage_cost_atto"] == "123456789000000000"
+    assert points[0]["gas_cost_wei"] == "42000000000000"
+
 
 def test_skips_other_measurements():
     body = (

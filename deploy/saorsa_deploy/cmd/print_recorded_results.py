@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime
+from decimal import Decimal
 
 from rich.console import Console
 from rich.panel import Panel
@@ -375,6 +376,8 @@ def _print_prod_upload_tables(
     by_host: dict[str, list[DeploymentProdUploadResult]],
     console: Console,
 ) -> None:
+    grand_ant = Decimal(0)
+    grand_gas = Decimal(0)
     for host in sorted(by_host.keys()):
         rows = sorted(by_host[host], key=lambda r: r.started_at)
         table = Table(
@@ -389,7 +392,15 @@ def _print_prod_upload_tables(
         table.add_column("Chunks Uploaded", justify="right")
         table.add_column("Failed", justify="right")
         table.add_column("Duration", justify="right")
+        table.add_column("ANT cost", justify="right")
+        table.add_column("ETH gas", justify="right")
+        host_ant = Decimal(0)
+        host_gas = Decimal(0)
         for i, row in enumerate(rows, start=1):
+            if row.storage_cost_atto is not None:
+                host_ant += row.storage_cost_atto
+            if row.gas_cost_wei is not None:
+                host_gas += row.gas_cost_wei
             table.add_row(
                 str(i),
                 row.file_name or "-",
@@ -398,8 +409,24 @@ def _print_prod_upload_tables(
                 f"{row.chunks_stored or 0}/{row.total_chunks or 0}",
                 str(row.chunks_failed or 0),
                 _fmt_duration(row.duration_ms),
+                _fmt_token(row.storage_cost_atto, "ANT"),
+                _fmt_token(row.gas_cost_wei, "ETH"),
             )
+        table.add_section()
+        table.add_row(
+            "", "[bold]Total[/bold]", "", "", "", "", "",
+            f"[bold]{_fmt_token(host_ant, 'ANT')}[/bold]",
+            f"[bold]{_fmt_token(host_gas, 'ETH')}[/bold]",
+        )
         console.print(table)
+        grand_ant += host_ant
+        grand_gas += host_gas
+
+    if len(by_host) > 1:
+        console.print(
+            f"[bold]Run total:[/bold] {_fmt_token(grand_ant, 'ANT')} storage / "
+            f"{_fmt_token(grand_gas, 'ETH')} gas"
+        )
 
 
 def _print_prod_upload_details(
@@ -427,6 +454,14 @@ def _print_prod_upload_details(
             console.print(f"  Address:           {row.address or '-'}")
             console.print(f"  Duration (ms):     {row.duration_ms or 0}")
             console.print(f"  Upload secs:       {row.upload_secs or 0}")
+            console.print(
+                f"  Storage cost:      {_fmt_token(row.storage_cost_atto, 'ANT')}"
+                f"  ({row.storage_cost_atto if row.storage_cost_atto is not None else '-'} atto)"
+            )
+            console.print(
+                f"  Gas cost:          {_fmt_token(row.gas_cost_wei, 'ETH')}"
+                f"  ({row.gas_cost_wei if row.gas_cost_wei is not None else '-'} wei)"
+            )
             console.print(f"  Reason:            {row.reason or '-'}")
             console.print()
 
@@ -552,6 +587,22 @@ def _fmt_bw(value) -> str:
         return f"{mb:.2f} MB/s"
     kb = value / 1024
     return f"{kb:.1f} KB/s"
+
+
+_ATTO_PER_UNIT = Decimal(10) ** 18
+
+
+def _fmt_token(value, symbol: str) -> str:
+    """Render an atto/wei amount (10^-18) as a human-readable token value.
+
+    Storage cost is in atto-ANT and gas in wei; both divide by 10^18 to give
+    ANT / ETH. Uses ``Decimal`` so we never lose precision, and fixed-point
+    formatting (never scientific) with trailing zeros stripped.
+    """
+    if value is None:
+        return "-"
+    amount = (Decimal(value) / _ATTO_PER_UNIT).normalize()
+    return f"{amount:f} {symbol}"
 
 
 def _fmt_size(num_bytes) -> str:

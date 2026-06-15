@@ -213,6 +213,25 @@ class TestInfluxLineReason:
         assert 'reason=""' in line
 
 
+class TestInfluxLineCost:
+    def test_cost_fields_emitted_when_present(self, service):
+        line = TestInfluxLine()._line(
+            service,
+            storage_cost_atto="123456789000000000",
+            gas_cost_wei="42000000000000",
+        )
+        assert 'storage_cost_atto="123456789000000000"' in line
+        assert 'gas_cost_wei="42000000000000"' in line
+
+    def test_cost_fields_absent_when_empty(self, service):
+        # Older `ant` binaries omit cost — the schema must stay stable, so no
+        # empty cost field is written (and the line still ends with reason).
+        line = TestInfluxLine()._line(service)
+        assert "storage_cost_atto" not in line
+        assert "gas_cost_wei" not in line
+        assert line.endswith('reason=""')
+
+
 class TestResolveBootstrapArgs:
     def test_cache_enabled_by_default_returns_empty(self, service, monkeypatch):
         monkeypatch.delenv("BOOTSTRAP_CACHE", raising=False)
