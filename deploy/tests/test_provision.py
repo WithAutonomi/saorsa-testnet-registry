@@ -346,6 +346,49 @@ class TestAntNodeProvisioner:
     @patch("saorsa_deploy.provisioning.node.State")
     @patch("saorsa_deploy.provisioning.node.Inventory")
     @patch("saorsa_deploy.provisioning.node.get_release_url")
+    def test_multi_file_ops_collapse_to_single_command(
+        self,
+        mock_release_url,
+        _mock_inventory,
+        mock_state,
+        _mock_connect,
+        mock_add_op,
+        _mock_run_ops,
+        _mock_disconnect,
+    ):
+        # log-dirs and unit-file writes must each be ONE command (one SSH
+        # round-trip per host), not one command per node service — otherwise an
+        # op over 15 services costs 15 sequential round-trips on the slowest host.
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
+        _configure_state_mock(mock_state, ["10.0.0.1"])
+
+        AntNodeProvisioner(
+            host_ips=["10.0.0.1"],
+            bootstrap_peers=["10.0.0.100:5000"],
+            node_count=15,
+        ).execute()
+
+        ops = {
+            call.kwargs.get("name"): call.kwargs.get("commands", [])
+            for call in mock_add_op.call_args_list
+        }
+        # One mkdir -p with every directory as an argument.
+        log_cmds = ops["Create log directories"]
+        assert len(log_cmds) == 1
+        assert log_cmds[0].startswith("mkdir -p ")
+        assert "ant-node-1" in log_cmds[0] and "ant-node-15" in log_cmds[0]
+        # One script writing all 15 unit files.
+        unit_cmds = ops["Write systemd unit files"]
+        assert len(unit_cmds) == 1
+        assert unit_cmds[0].count("cat > /etc/systemd/system/ant-node-") == 15
+
+    @patch("saorsa_deploy.provisioning.node.disconnect_all")
+    @patch("saorsa_deploy.provisioning.node.run_ops")
+    @patch("saorsa_deploy.provisioning.node.add_op")
+    @patch("saorsa_deploy.provisioning.node.connect_all")
+    @patch("saorsa_deploy.provisioning.node.State")
+    @patch("saorsa_deploy.provisioning.node.Inventory")
+    @patch("saorsa_deploy.provisioning.node.get_release_url")
     def test_execute_raises_when_hosts_fail(
         self,
         mock_release_url,
@@ -464,15 +507,19 @@ class TestAntNodeProvisioner:
         provisioner.execute()
 
         # Last add_op is the enable step (services are not started here —
-        # `nodes start` handles that after NAT rules are in place)
+        # `nodes start` handles that after NAT rules are in place). The
+        # daemon-reload + per-service enables are collapsed into ONE command
+        # (one SSH round-trip per host) rather than one command per service.
         enable_call = mock_add_op.call_args_list[-1]
         commands = enable_call.kwargs.get("commands", [])
-        assert commands[0] == "systemctl daemon-reload"
-        assert "systemctl is-enabled --quiet ant-node-1" in commands[1]
-        assert "systemctl enable ant-node-1" in commands[1]
-        assert "--now" not in commands[1]
-        assert "systemctl is-enabled --quiet ant-node-2" in commands[2]
-        assert "--now" not in commands[2]
+        assert len(commands) == 1
+        script = commands[0]
+        assert script.startswith("set -e\n")
+        assert "systemctl daemon-reload" in script
+        assert "systemctl is-enabled --quiet ant-node-1" in script
+        assert "systemctl enable ant-node-1" in script
+        assert "systemctl is-enabled --quiet ant-node-2" in script
+        assert "--now" not in script
 
 
 class TestCmdProvisionClearsKnownHosts:

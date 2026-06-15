@@ -29,6 +29,7 @@ from saorsa_deploy.provisioning.progress import (
     create_progress_handler,
     print_op_timing_summary,
 )
+from saorsa_deploy.provisioning.shell_ops import as_single_shell_command
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 METRICS_PORT_BASE = 9100
@@ -326,18 +327,19 @@ class AntNodeProvisioner:
                 commands=[build_mount_volume_command()],
             )
 
-            mkdir_commands = [f"mkdir -p {LOG_DIR}"]
-            for i in range(self.node_count):
-                mkdir_commands.append(f"mkdir -p {LOG_DIR}/ant-node-{i + 1}")
+            # One `mkdir -p` with every directory as an argument — a single SSH
+            # round-trip per host rather than one per node service.
+            log_dirs = [LOG_DIR]
+            log_dirs += [f"{LOG_DIR}/ant-node-{i + 1}" for i in range(self.node_count)]
             if self.heaptrack:
                 # On the data volume (mounted just above), not the root disk.
-                mkdir_commands.append(f"mkdir -p {self.heaptrack_dir}")
+                log_dirs.append(self.heaptrack_dir)
 
             add_op(
                 state,
                 server.shell,
                 name="Create log directories",
-                commands=mkdir_commands,
+                commands=["mkdir -p " + " ".join(log_dirs)],
             )
 
             if self.heaptrack:
@@ -411,7 +413,7 @@ class AntNodeProvisioner:
                     state,
                     server.shell,
                     name="Write systemd unit files (NAT variant)",
-                    commands=self._build_unit_commands(is_nat=True),
+                    commands=[as_single_shell_command(self._build_unit_commands(is_nat=True))],
                     host=nat_hosts,
                 )
 
@@ -420,7 +422,7 @@ class AntNodeProvisioner:
                     state,
                     server.shell,
                     name="Write systemd unit files",
-                    commands=self._build_unit_commands(is_nat=False),
+                    commands=[as_single_shell_command(self._build_unit_commands(is_nat=False))],
                     host=plain_hosts,
                 )
 
@@ -433,6 +435,8 @@ class AntNodeProvisioner:
                     f"|| (systemctl enable {service_name} "
                     f"&& echo 'ANT_SVC:ENABLED:{service_name}')"
                 )
+            # Collapse daemon-reload + per-service enable into one round-trip.
+            enable_commands = [as_single_shell_command(enable_commands)]
 
             svc_results = add_op(
                 state,

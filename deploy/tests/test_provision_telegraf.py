@@ -555,12 +555,15 @@ class TestTelegrafProvisionerExecute:
         p = _make_provisioner()
         p.execute()
 
-        # 6th add_op call (index 5) is "Enable and start"
+        # 6th add_op call (index 5) is "Enable and start". The three systemctl
+        # calls are collapsed into one command (one SSH round-trip per host).
         enable_call = mock_add_op.call_args_list[5]
         commands = enable_call.kwargs.get("commands", [])
-        assert "systemctl daemon-reload" in commands
-        assert f"systemctl enable {TELEGRAF_SERVICE_NAME}" in commands
-        assert f"systemctl restart {TELEGRAF_SERVICE_NAME}" in commands
+        assert len(commands) == 1
+        script = commands[0]
+        assert "systemctl daemon-reload" in script
+        assert f"systemctl enable {TELEGRAF_SERVICE_NAME}" in script
+        assert f"systemctl restart {TELEGRAF_SERVICE_NAME}" in script
 
     @patch("saorsa_deploy.provisioning.telegraf.disconnect_all")
     @patch("saorsa_deploy.provisioning.telegraf.run_ops")

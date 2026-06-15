@@ -7,6 +7,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.provisioning.shell_ops import as_single_shell_command
 from saorsa_deploy.provisioning.telegraf_install import (
     TELEGRAF_INSTALL_COMMANDS,
     TELEGRAF_INSTALL_OP_NAME,
@@ -167,8 +168,10 @@ class TelegrafProvisioner:
             server.shell,
             name="Write Telegraf environment file",
             commands=[
-                f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
-                f'echo "ANT_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
+                as_single_shell_command([
+                    f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
+                    f'echo "ANT_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
+                ])
             ],
         )
 
@@ -178,8 +181,10 @@ class TelegrafProvisioner:
             server.shell,
             name="Write Telegraf configuration",
             commands=[
-                f"mkdir -p {TELEGRAF_CONFIG_DIR}",
-                f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
+                as_single_shell_command([
+                    f"mkdir -p {TELEGRAF_CONFIG_DIR}",
+                    f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
+                ])
             ],
         )
 
@@ -196,9 +201,11 @@ class TelegrafProvisioner:
             server.shell,
             name="Enable and start Telegraf service",
             commands=[
-                "systemctl daemon-reload",
-                f"systemctl enable {TELEGRAF_SERVICE_NAME}",
-                f"systemctl restart {TELEGRAF_SERVICE_NAME}",
+                as_single_shell_command([
+                    "systemctl daemon-reload",
+                    f"systemctl enable {TELEGRAF_SERVICE_NAME}",
+                    f"systemctl restart {TELEGRAF_SERVICE_NAME}",
+                ])
             ],
         )
 
@@ -207,13 +214,15 @@ class TelegrafProvisioner:
             server.shell,
             name="Verify Telegraf service is active",
             commands=[
-                f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
-                f"|| (echo 'TELEGRAF_VERIFY:FAILED - {TELEGRAF_SERVICE_NAME} is not running'; "
-                f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
-                f"test -f {TELEGRAF_CONFIG_PATH} "
-                "|| (echo 'TELEGRAF_VERIFY:FAILED - config file missing'; exit 1)",
-                f"test -f {TELEGRAF_ENV_PATH} "
-                "|| (echo 'TELEGRAF_VERIFY:FAILED - env file missing'; exit 1)",
+                as_single_shell_command([
+                    f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
+                    f"|| (echo 'TELEGRAF_VERIFY:FAILED - {TELEGRAF_SERVICE_NAME} is not running'; "
+                    f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
+                    f"test -f {TELEGRAF_CONFIG_PATH} "
+                    "|| (echo 'TELEGRAF_VERIFY:FAILED - config file missing'; exit 1)",
+                    f"test -f {TELEGRAF_ENV_PATH} "
+                    "|| (echo 'TELEGRAF_VERIFY:FAILED - env file missing'; exit 1)",
+                ])
             ],
         )
 

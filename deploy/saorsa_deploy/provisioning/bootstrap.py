@@ -21,6 +21,7 @@ from saorsa_deploy.provisioning.progress import (
     create_progress_handler,
     print_op_timing_summary,
 )
+from saorsa_deploy.provisioning.shell_ops import as_single_shell_command
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
@@ -455,7 +456,7 @@ class AntBootstrapNodesProvisioner:
                     state,
                     server.shell,
                     name=f"Configure {self._service_name(index)}",
-                    commands=self._build_config_commands(index),
+                    commands=[as_single_shell_command(self._build_config_commands(index))],
                     host=[host],
                 )
 
