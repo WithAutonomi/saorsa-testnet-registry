@@ -1,4 +1,5 @@
 import concurrent.futures
+import os
 import subprocess
 import time
 from typing import Iterable
@@ -53,6 +54,44 @@ def configure_ssh_connect_retries(
             meta.default = value
             applied = True
     return applied
+
+
+def configure_ssh_known_hosts(known_hosts_file: str = os.devnull) -> bool:
+    """Decouple provisioning SSH from the user's ``~/.ssh/known_hosts``.
+
+    Every provisioner builds a one-off pyinfra Inventory whose SSH connector
+    defaults to ``ssh_strict_host_key_checking="accept-new"`` against the real
+    ``~/.ssh/known_hosts``. Cloud providers (Vultr especially) recycle IPs
+    constantly, so a recycled IP that still carries a stale entry makes
+    paramiko raise ``BadHostKeyException`` ("Host key does not match") and the
+    whole provision step fails. ``clear_known_hosts`` tries to pre-empt this by
+    running ``ssh-keygen -R`` per IP, but pyinfra writes the new key straight
+    back, so the file keeps getting re-polluted across runs and parallel
+    connects still race.
+
+    Pointing the connector's ``ssh_known_hosts_file`` default at ``/dev/null``
+    means an *empty* host-keys set is loaded for every connection: no host is
+    ever "known with a different key", so ``AcceptNewPolicy`` accepts every
+    connection and nothing is written back to the user's real file. These are
+    freshly-created, ephemeral VMs we provisioned seconds earlier, so host-key
+    TOFU adds no real protection — this simply mirrors what ``wait_for_ssh``
+    already does (``UserKnownHostsFile=/dev/null``).
+
+    Mutates the connector ``DataMeta`` default once at package import (see
+    ``saorsa_deploy/__init__.py``); per-host inventory data still overrides it.
+    Returns ``True`` if applied. Defensive against pyinfra internals shifting:
+    a missing module/key is a no-op rather than a crash on import.
+    """
+    try:
+        from pyinfra.connectors.ssh import connector_data_meta
+    except Exception:
+        return False
+
+    meta = connector_data_meta.get("ssh_known_hosts_file")
+    if meta is not None:
+        meta.default = known_hosts_file
+        return True
+    return False
 
 
 def clear_known_hosts(ips, console=None):
