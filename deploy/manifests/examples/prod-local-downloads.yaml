@@ -1,0 +1,35 @@
+# Example / reference: prod-local-downloads — download from PRODUCTION Autonomi
+# on THIS machine (no VMs provisioned; read-only, costs nothing). Intended for
+# testing downloads from a real home internet connection. Per-address results go
+# straight to Postgres; there is no Influx, no monitoring VM, and no destroy
+# command. The download-side sibling of prod-local-uploads.
+#
+# A standalone, copy-me template showing EVERY available field. Required fields
+# are live; optional fields are shown commented with their defaults. Copy into
+# ../runs/ (git-ignored), rename, and edit. Validate with:
+#   saorsa-deploy deployments config validate --config deploy/manifests/examples/prod-local-downloads.yaml
+
+# --- top-level envelope (common to every kind) ---
+name: PROD-LOCAL-DL-01
+kind: prod-local-downloads
+purpose: "Smoke-test prod downloads from home connection"
+# ssh_key_path: ~/.ssh/ant_deploy          # unused for local-downloads (nothing is provisioned); may be omitted
+slack_post: true                           # default false; append a `deployments slack-post` step to `up`
+# extends: ../profiles/some-base.yaml      # optional loader directive: deep-merge a base manifest (lists REPLACE)
+
+prod_local_downloads:
+  # Binary: a pinned release ({ version }) OR a branch build ({ branch, repo_owner }).
+  binary:
+    version: 0.3.1                          # release form
+    # branch: my-feature-branch             # branch form — mutually exclusive with version
+    # repo_owner: jacderida                  # branch builds only; default maidsafe
+    # validation: "string-baked-into-binary" # optional --validation-string (branch builds only)
+
+  # Newline-separated list of addresses to download (required — no bundled default).
+  addresses_path: /home/chris/downloads/prod_addresses.txt
+
+  # By default each download goes to a per-run temp dir and is deleted as soon as
+  # its result row is recorded. Set this to retain the files under a dir you control.
+  # keep_output_dir: /home/chris/data/downloads
+
+  bootstrap_cache: true                      # optional (default true): true → ant WITHOUT --bootstrap, reading ~/.config/ant/bootstrap_peers.toml (written only if missing); false → legacy --bootstrap

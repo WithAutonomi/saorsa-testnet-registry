@@ -1,0 +1,48 @@
+# Example / reference: prod-downloaders — download public files from PRODUCTION
+# Autonomi (read-only; costs nothing). Provisions a single client VM that walks
+# an address list ONCE and then exits (Type=simple, Restart=no), with a paired
+# InfluxDB monitoring VM. This is the one-shot sibling of
+# prod-continuous-downloader (which loops forever); see
+# ../profiles/prod-continuous-downloader.yaml for the permanent variant.
+#
+# A standalone, copy-me template showing EVERY available field. Required fields
+# are live; optional fields are shown commented with their defaults. Copy into
+# ../runs/ (git-ignored), rename, and edit. Validate with:
+#   saorsa-deploy deployments config validate --config deploy/manifests/examples/prod-downloads.yaml
+#
+# This is NOT a profile — prod kinds are single-command deployments written
+# standalone (no `extends:` base).
+
+# --- top-level envelope (common to every kind) ---
+name: PROD-DL-01
+kind: prod-downloaders
+purpose: "One-shot prod download performance check"
+ssh_key_path: ~/.ssh/ant_deploy           # absolute or ~; default ~/.ssh/id_rsa
+slack_post: true                           # default false; append a `deployments slack-post` step to `up`
+# extends: ../profiles/some-base.yaml      # optional loader directive: deep-merge a base manifest (lists REPLACE)
+
+prod_downloaders:
+  # Single client VM doing the downloads.
+  spec: lon1:s-2vcpu-4gb                    # required: region[:vm_size]
+
+  # Binary: choose EITHER a pinned release ({ version }) OR a branch build
+  # ({ branch, repo_owner }). Branch builds add a `build ant` step to `up`.
+  binary:
+    version: "0.3.1"                        # release form
+    # branch: my-feature-branch             # branch form — mutually exclusive with version
+    # repo_owner: jacderida                  # branch builds only; default maidsafe
+    # validation: "string-baked-into-binary" # optional --validation-string (branch builds only)
+    # debug: true                          # optional (branch builds only): build WITHOUT --release (memory profiling). Default off.
+
+  # Optional: override the bundled curated address list (newline-separated addresses).
+  # addresses_path: /home/chris/downloads/prod_addresses.txt
+
+  # monitoring_volume_size: 50             # GB attached volume on the paired InfluxDB VM (default 50)
+  # keep_monitoring: false                 # destroy: preserve InfluxDB+Grafana when true (default false → torn down)
+  # keep_elastic: false                    # destroy: preserve the dedicated client-log Elasticsearch when true (default false → torn down). Only created when forward_logs is set.
+
+  # bootstrap_cache: true                  # optional (default true): true → ant WITHOUT --bootstrap + provisioned bootstrap_peers.toml; false → legacy --bootstrap
+  # forward_logs: true                     # optional (default false): forward this VM's ant stdout+stderr to a dedicated Elasticsearch instance stood up by this deploy (index telegraf-ant-clients-<name>)
+  # memory_profiling: true                 # optional (default false): wrap this VM's ant invocation with heaptrack (installs the heaptrack apt package); profiles → /var/log/ant-heaptrack/ on the VM (scp off before destroy)
+  # rust_log: "ant_cli=info,saorsa_core::dht_network_manager=debug"   # optional: set RUST_LOG on the downloader service, OVERRIDING the verbosity flag; full RUST_LOG syntax incl `::` allowed
+  # clock_skew: 2h                         # optional, TESTING ONLY: disable time sync + shift this VM's clock by a signed Go duration (e.g. 2h, -2h, 30m)
