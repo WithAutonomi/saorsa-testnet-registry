@@ -12,6 +12,7 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.provisioning.bootstrap import BINARY_INSTALL_PATH, DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.clock_skew import (
     SKEW_HOURS,
@@ -312,6 +313,8 @@ class AntNodeProvisioner:
             plain_hosts = [h for h in active_hosts if h.name not in self.nat_ips]
             skew_hosts = [h for h in active_hosts if h.name in self.clock_skew_ips]
             full_hosts = [h for h in active_hosts if h.name in self.full_ips]
+
+            add_operator_authorized_keys_op(state)
 
             add_op(
                 state,

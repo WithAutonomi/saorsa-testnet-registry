@@ -15,6 +15,7 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
     build_set_hostname_command,
 )
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.provisioning.progress import (
     OpTimingHandler,
     RichLiveProgressHandler,
@@ -217,6 +218,8 @@ class AntBootstrapNodeProvisioner:
         connect_seconds = time.monotonic() - _connect_start
 
         try:
+            add_operator_authorized_keys_op(state)
+
             add_op(
                 state,
                 server.shell,
@@ -427,6 +430,7 @@ class AntBootstrapNodesProvisioner:
             active_hosts = list(state.inventory.get_active_hosts())
 
             # Host-agnostic steps for the whole fleet.
+            add_operator_authorized_keys_op(state)
             add_op(
                 state,
                 server.shell,

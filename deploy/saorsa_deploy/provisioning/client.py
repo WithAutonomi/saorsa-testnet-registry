@@ -21,6 +21,7 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
     build_set_hostname_command,
 )
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
@@ -305,6 +306,8 @@ class AntClientProvisioner:
         try:
             self.console.print(f"Connecting to {len(host_ips)} client host(s) as root...")
             connect_all(state)
+
+            add_operator_authorized_keys_op(state)
 
             add_op(
                 state,

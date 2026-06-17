@@ -14,6 +14,7 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
     build_set_hostname_command,
 )
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
@@ -148,6 +149,8 @@ class AntGenesisNodeProvisioner:
         connect_all(state)
 
         try:
+            add_operator_authorized_keys_op(state)
+
             add_op(
                 state,
                 server.shell,

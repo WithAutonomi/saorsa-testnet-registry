@@ -1,0 +1,8 @@
+# Operator SSH public keys installed on EVERY provisioned VM
+# (bootstrap, genesis, node, and client tiers, across all providers).
+#
+# One key per line. Blank lines and lines starting with '#' are ignored.
+# Keys here are appended idempotently to root's authorized_keys during each
+# tier's provisioning pass, so operators keep access regardless of which cloud
+# key the VM was originally created with. See provisioning/authorized_keys.py.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFeNb683ohEnVRNO2mDNadW3n7KVhV9/6qbGXkWtRRf6 studio1@studio1.local

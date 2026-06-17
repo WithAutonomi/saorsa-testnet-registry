@@ -32,6 +32,7 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -209,6 +210,8 @@ class ProdCanaryUploadProvisioner:
                 f"Connecting to canary upload host {self.host_ip} as root..."
             )
             connect_all(state)
+
+            add_operator_authorized_keys_op(state)
 
             add_op(
                 state,
@@ -409,6 +412,8 @@ class ProdCanaryProbeProvisioner:
                 f"Connecting to {len(host_ips)} canary probe host(s) as root..."
             )
             connect_all(state)
+
+            add_operator_authorized_keys_op(state)
 
             add_op(
                 state,

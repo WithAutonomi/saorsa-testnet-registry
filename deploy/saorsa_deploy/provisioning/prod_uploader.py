@@ -37,6 +37,7 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
@@ -146,6 +147,8 @@ class ProdUploaderProvisioner:
                 f"Connecting to {len(host_ips)} prod-uploader host(s) as root..."
             )
             connect_all(state)
+
+            add_operator_authorized_keys_op(state)
 
             add_op(
                 state,
