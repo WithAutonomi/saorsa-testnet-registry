@@ -154,7 +154,32 @@ def create_build_vm(
     raise RuntimeError("Failed to create build droplet in any region: " + "; ".join(errors))
 
 
-def destroy_build_vm(droplet_id: int) -> None:
-    """Destroy the build droplet."""
+def destroy_build_vm(droplet_id: int, wait: bool = True, timeout: int = 120) -> None:
+    """Destroy the build droplet, confirming the deletion actually took effect.
+
+    DigitalOcean's delete is asynchronous and returns 204 immediately. Previously
+    the response was never checked, so a rejected delete (or one still in flight)
+    silently left the droplet listed — where the next run's name lookup would
+    reuse it, half-built. We therefore check the response status and, by default,
+    poll until the droplet no longer exists, so a leak surfaces as an error the
+    caller can warn about rather than passing silently.
+    """
     headers = _get_headers()
-    requests.delete(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
+    resp = requests.delete(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
+    # 204 = accepted, 404 = already gone; anything else is a real failure.
+    if resp.status_code not in (204, 404):
+        resp.raise_for_status()
+
+    if not wait:
+        return
+
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        check = requests.get(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
+        if check.status_code == 404:
+            return
+        check.raise_for_status()
+        time.sleep(5)
+    raise TimeoutError(
+        f"Droplet {droplet_id} still exists {timeout}s after delete request"
+    )

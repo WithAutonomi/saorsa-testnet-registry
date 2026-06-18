@@ -225,10 +225,78 @@ class TestDestroyBuildVm:
     def test_deletes_droplet(self, mock_requests):
         os.environ["DO_TOKEN"] = "test-token"
         try:
+            mock_delete_resp = MagicMock()
+            mock_delete_resp.status_code = 204
+            mock_requests.delete.return_value = mock_delete_resp
+
+            # Confirmation poll: droplet is gone (404).
+            mock_gone_resp = MagicMock()
+            mock_gone_resp.status_code = 404
+            mock_requests.get.return_value = mock_gone_resp
+
             destroy_build_vm(12345)
+
             mock_requests.delete.assert_called_once()
             delete_url = mock_requests.delete.call_args[0][0]
             assert "12345" in delete_url
+            # Deletion was confirmed via a follow-up GET.
+            mock_requests.get.assert_called_once()
+            assert "12345" in mock_requests.get.call_args[0][0]
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.requests")
+    def test_skips_confirmation_when_wait_false(self, mock_requests):
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            mock_delete_resp = MagicMock()
+            mock_delete_resp.status_code = 204
+            mock_requests.delete.return_value = mock_delete_resp
+
+            destroy_build_vm(12345, wait=False)
+
+            mock_requests.delete.assert_called_once()
+            mock_requests.get.assert_not_called()
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.requests")
+    def test_raises_on_rejected_delete(self, mock_requests):
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            mock_delete_resp = MagicMock()
+            mock_delete_resp.status_code = 500
+            mock_delete_resp.raise_for_status.side_effect = requests.HTTPError("500")
+            mock_requests.delete.return_value = mock_delete_resp
+
+            with pytest.raises(requests.HTTPError):
+                destroy_build_vm(12345)
+
+            # A rejected delete must not be silently treated as success.
+            mock_requests.get.assert_not_called()
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.time.sleep")
+    @patch("saorsa_deploy.build_droplet.time.monotonic")
+    @patch("saorsa_deploy.build_droplet.requests")
+    def test_raises_when_droplet_persists(self, mock_requests, mock_monotonic, _mock_sleep):
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            mock_delete_resp = MagicMock()
+            mock_delete_resp.status_code = 204
+            mock_requests.delete.return_value = mock_delete_resp
+
+            # Droplet keeps coming back as still-existing (200).
+            mock_alive_resp = MagicMock()
+            mock_alive_resp.status_code = 200
+            mock_requests.get.return_value = mock_alive_resp
+
+            # First monotonic() seeds the loop start; second is past the timeout.
+            mock_monotonic.side_effect = [0, 0, 121]
+
+            with pytest.raises(TimeoutError, match="still exists"):
+                destroy_build_vm(12345)
         finally:
             os.environ.pop("DO_TOKEN", None)
 

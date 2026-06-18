@@ -13,6 +13,7 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 
 
 class AntNodeBuilder:
@@ -80,6 +81,8 @@ class AntNodeBuilder:
                 commands=["cloud-init status --wait || true"],
             )
 
+            add_operator_authorized_keys_op(state)
+
             add_op(
                 state,
                 server.shell,
@@ -136,6 +139,10 @@ class AntNodeBuilder:
                 server.shell,
                 name=f"Clone {self.repo_owner}/ant-node ({self.branch_name})",
                 commands=[
+                    # Remove any leftover checkout first: a reused build droplet
+                    # (e.g. one stranded by a killed previous run) already has
+                    # /root/ant-node, and a bare `git clone` aborts on it.
+                    "rm -rf /root/ant-node && "
                     f"git clone --branch {self.branch_name} --depth 1 "
                     f"https://github.com/{self.repo_owner}/ant-node.git /root/ant-node"
                 ],
