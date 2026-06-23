@@ -351,10 +351,10 @@ def _fmt_age(now: datetime, when: datetime) -> str:
     return f"{d}d {h}h ago" if h else f"{d}d ago"
 
 
-def _short_chunk(addr: str) -> str:
-    if not addr:
-        return "?"
-    return f"{addr[:8]}…" if len(addr) > 8 else addr
+def _chunk_addr(addr: str) -> str:
+    # Full address — operators need the complete hex to look the chunk up /
+    # re-probe / map to a close group. No truncation.
+    return addr or "?"
 
 
 def build_blocks(
@@ -516,7 +516,7 @@ def build_blocks(
             role = "DataMap" if ep.get("is_data_map") else "data"
             items.append(
                 f"• `{s['file_name'] or cid[:8]}` — missing {role} "
-                f"`{_short_chunk(ep['missing_chunk_address'])}` — "
+                f"`{_chunk_addr(ep['missing_chunk_address'])}` — "
                 f"down {down_h:.1f}h (uploaded {_fmt_age(now, s['uploaded_at'])})"
             )
         if len(ongoing_eps) > 20:
@@ -558,7 +558,7 @@ def build_blocks(
             role = "DataMap" if ep.get("is_data_map") else "data"
             delta_lines.append(
                 f"• `{s['file_name'] or cid[:8]}` — missing {role} "
-                f"`{_short_chunk(ep['missing_chunk_address'])}` "
+                f"`{_chunk_addr(ep['missing_chunk_address'])}` "
                 f"(confirmed {_fmt_age(now, ep['confirmed_at'])})"
             )
         if len(newly_unavailable) > 15:
