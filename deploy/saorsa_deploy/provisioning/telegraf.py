@@ -300,7 +300,16 @@ class TelegrafProvisioner:
     "target",
     "peer_id",
     "version",
-    "commit"
+    "commit",
+    "relayer",
+    "allocated",
+    "peer",
+    "client",
+    "public_addr",
+    "address",
+    "kind",
+    "event",
+    "component"
   ]
 
   json_time_key = "timestamp"
