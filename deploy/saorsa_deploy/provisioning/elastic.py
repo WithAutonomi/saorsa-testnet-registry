@@ -361,6 +361,12 @@ class ElasticProvisioner:
             "            'number_of_shards': NUMBER_OF_SHARDS,\n"
             "            'number_of_replicas': 0,\n"
             "            'index.lifecycle.name': ILM_POLICY_NAME,\n"
+            # Drop (not reject) any field whose value doesn't fit its
+            # dynamically-inferred mapping -- e.g. a u64 like ant-node's
+            # tail.challenge_id overflowing the inferred `long`. Without this
+            # a single out-of-range value is an ES 400 that wedges the whole
+            # Telegraf->ES batch and silently halts log forwarding.
+            "            'index.mapping.ignore_malformed': True,\n"
             "        },\n"
             "        'mappings': {\n"
             "            'properties': {\n"
@@ -392,6 +398,9 @@ class ElasticProvisioner:
             "            'number_of_shards': NUMBER_OF_SHARDS,\n"
             "            'number_of_replicas': 0,\n"
             "            'index.lifecycle.name': ILM_POLICY_NAME,\n"
+            # Same malformed-field guard as the node template above, so a
+            # bad client log field can never wedge the Telegraf->ES batch.
+            "            'index.mapping.ignore_malformed': True,\n"
             "        },\n"
             "        'mappings': {\n"
             "            'properties': {\n"
