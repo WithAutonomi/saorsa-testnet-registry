@@ -7,7 +7,7 @@ an ordered ``list[Step]``; ``plan`` prints them and ``up``/``down`` execute them
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from saorsa_deploy.config.models import Binary
 
@@ -62,6 +62,8 @@ class StepGroup:
 def _group_label(group_id: str) -> str:
     if group_id == "infra":
         return "Create infrastructure (parallel)"
+    if group_id == "build":
+        return "Build binaries (parallel)"
     return f"{group_id} (parallel)"
 
 
@@ -170,4 +172,12 @@ def build_steps_for_branches(
             argv.append("--debug")
         steps.append(Step(argv, "Build ant-node from branch"))
     steps += ant_build_steps(name, ssh_key, ant)
+    # The two branch builds are independent (~5 min each), so when both are
+    # needed run them concurrently: tag each as its own lane of a single
+    # ``build`` parallel group (collapsed by :func:`iter_units`, executed by
+    # ``parallel_infra.run_parallel_group`` with a live lane table). A lone
+    # build (or none) is left as a plain sequential step so prod kinds and
+    # single-binary testnets keep their byte-for-byte argv and journal contract.
+    if len(steps) == 2:
+        steps = [replace(s, group="build", lane=s.argv[1]) for s in steps]
     return steps

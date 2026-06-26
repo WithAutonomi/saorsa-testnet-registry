@@ -9,6 +9,7 @@ import pytest
 
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
+from saorsa_deploy.orchestrator.steps import StepGroup, iter_units
 
 SSH = "/ssh/key"
 PURPOSE = "RC sanity check"
@@ -500,6 +501,64 @@ def test_skip_builds_noop_when_no_branch_binaries():
     assert _argvs(build_deploy_steps(m, skip_builds=True)) == _argvs(
         build_deploy_steps(m)
     )
+
+
+def test_both_branch_builds_run_as_parallel_group():
+    # Both binaries from a branch ⇒ the two build steps form one ``build``
+    # parallel group with a lane each, so ``up`` runs them concurrently.
+    m = _minimal(
+        binaries={
+            "ant_node": {"branch": "feat-x", "repo_owner": "me"},
+            "ant": {"branch": "feat-y", "repo_owner": "me"},
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[0].argv[:2] == ["build", "ant-node"]
+    assert steps[1].argv[:2] == ["build", "ant"]
+    assert (steps[0].group, steps[0].lane) == ("build", "ant-node")
+    assert (steps[1].group, steps[1].lane) == ("build", "ant")
+
+    # The two contiguous build steps collapse into a single resumable unit.
+    units = iter_units(steps)
+    assert isinstance(units[0], StepGroup)
+    assert units[0].name == "build"
+    assert units[0].label == "Build binaries (parallel)"
+    assert [[s.argv[:2] for s in lane] for lane in units[0].lanes] == [
+        [["build", "ant-node"]],
+        [["build", "ant"]],
+    ]
+
+
+def test_single_ant_node_branch_build_stays_sequential():
+    # Only ant-node from a branch ⇒ one ungrouped sequential build step
+    # (byte-for-byte unchanged from before parallelisation).
+    m = _minimal(binaries={"ant_node": {"branch": "feat-x", "repo_owner": "me"}})
+    steps = build_deploy_steps(m)
+    assert steps[0].argv[:2] == ["build", "ant-node"]
+    assert (steps[0].group, steps[0].lane) == (None, None)
+    assert isinstance(iter_units(steps)[0], type(steps[0]))  # a bare Step, not StepGroup
+
+
+def test_single_ant_branch_build_stays_sequential():
+    # ant-node version-pinned + ant from a branch ⇒ one ungrouped build step.
+    m = _minimal(
+        binaries={
+            "ant_node": {"version": "1.0"},
+            "ant": {"branch": "feat-y", "repo_owner": "me"},
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert steps[0].argv[:2] == ["build", "ant"]
+    assert (steps[0].group, steps[0].lane) == (None, None)
+    assert not isinstance(iter_units(steps)[0], StepGroup)
+
+
+def test_no_branch_builds_emit_no_build_group():
+    # Version-pinned binaries ⇒ no build steps and no build group at all.
+    m = _minimal()
+    steps = build_deploy_steps(m)
+    assert all(s.argv[:1] != ["build"] for s in steps)
+    assert all(getattr(s, "group", None) != "build" for s in steps)
 
 
 def test_no_upgrade_channel_by_default_but_emitted_when_set():
