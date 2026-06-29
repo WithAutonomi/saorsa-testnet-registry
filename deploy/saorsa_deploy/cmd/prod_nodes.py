@@ -49,6 +49,7 @@ from saorsa_deploy.ssh import clear_known_hosts, wait_for_ssh
 from saorsa_deploy.state import (
     delete_deployment_state,
     load_deployment_state,
+    load_elastic_state,
     load_monitoring_state,
     save_deployment_state,
     update_deployment_state,
@@ -119,6 +120,99 @@ def _monitoring_has_influx(name: str) -> bool:
     except RuntimeError:
         return False
     return bool(state.get("influxdb_url") and state.get("influxdb_token"))
+
+
+def _elastic_has_creds(name: str) -> bool:
+    """True once the dedicated ES VM is both created AND provisioned (has creds)."""
+    try:
+        state = load_elastic_state(name)
+    except RuntimeError:
+        return False
+    return bool(state.get("elasticsearch_url") and state.get("elasticsearch_username"))
+
+
+def _resolve_node_drop_log_levels(args) -> str | None:
+    """Resolve the node→ES ``--drop-log-levels`` value.
+
+    Mirrors ``orchestrator/testnet._resolve_elastic_drop_log_levels``: an explicit
+    ``--elastic-drop-log-levels`` always wins; otherwise the drop set is derived
+    from ``--log-level`` so a debug/trace build actually ships its verbose logs to
+    the dedicated ES (rather than the forwarder's default ``DEBUG,TRACE`` quietly
+    stripping them):
+
+    - ``trace``      -> ``""``      (drop nothing; forward everything)
+    - ``debug``      -> ``"TRACE"`` (keep DEBUG, drop the noisier TRACE)
+    - ``info``/unset -> ``None``    (omit; forwarder default ``DEBUG,TRACE``)
+    """
+    explicit = getattr(args, "elastic_drop_log_levels", None)
+    if explicit is not None:
+        return explicit
+    level = (getattr(args, "log_level", None) or "").strip().lower()
+    if level == "trace":
+        return ""
+    if level == "debug":
+        return "TRACE"
+    return None
+
+
+def _ensure_elastic(args, console: Console) -> None:
+    """Ensure a dedicated Elasticsearch VM (named after the deployment) exists.
+
+    Mirrors ``_ensure_monitoring``: stands up the ES VM and provisions it when
+    absent, re-provisioning if a prior infra step created the VM but the provision
+    didn't finish. Node log forwarding is wired separately in
+    ``_provision_prod_nodes`` (the node telegraf forwarder resolves this instance
+    by deployment name).
+    """
+    from saorsa_deploy.cmd.elastic_infra import cmd_elastic_infra
+    from saorsa_deploy.cmd.prod_log_forwarding import elastic_state_exists
+    from saorsa_deploy.cmd.provision_elastic import cmd_provision_elastic
+
+    if elastic_state_exists(args.name):
+        if _elastic_has_creds(args.name):
+            console.print(
+                f"[dim]Elasticsearch '{args.name}' already exists — "
+                "skipping elastic infra / provision.[/dim]"
+            )
+            return
+        console.print(
+            f"[yellow]Elasticsearch VM for '{args.name}' exists but has no creds "
+            "(a prior provision didn't finish) — re-provisioning.[/yellow]"
+        )
+        cmd_provision_elastic(
+            SimpleNamespace(
+                name=args.name,
+                ssh_key_path=args.ssh_key_path,
+                retention_days=args.elastic_retention_days,
+                shards=args.elastic_shards,
+            )
+        )
+        return
+
+    console.print(
+        "[bold cyan]Creating dedicated Elasticsearch VM for node log forwarding"
+        "[/bold cyan]"
+    )
+    cmd_elastic_infra(
+        SimpleNamespace(
+            name=args.name,
+            provider="digitalocean",
+            region=None,
+            droplet_size=args.elastic_droplet_size,
+            volume_size=args.elastic_volume_size,
+            volume_type=None,
+            force=False,
+        )
+    )
+    console.print("[bold cyan]Provisioning Elasticsearch for node log forwarding[/bold cyan]")
+    cmd_provision_elastic(
+        SimpleNamespace(
+            name=args.name,
+            ssh_key_path=args.ssh_key_path,
+            retention_days=args.elastic_retention_days,
+            shards=args.elastic_shards,
+        )
+    )
 
 
 def _seed_prod_bootstraps(args, console: Console) -> None:
@@ -273,8 +367,18 @@ def _provision_prod_nodes(args, console: Console) -> None:
         )
         sys.exit(1)
 
+    # Fold in the node telegraf forwarders whenever the deployment has a backend
+    # to forward to: InfluxDB host metrics (--monitoring) and/or the dedicated ES
+    # node-log forwarder (--forward-logs). build_node_telegraf_providers resolves
+    # each backend from state by deployment name and skips any that's absent.
     extra_op_providers = []
-    if args.monitoring and _monitoring_has_influx(args.name):
+    monitoring_on = bool(getattr(args, "monitoring", False)) and _monitoring_has_influx(
+        args.name
+    )
+    elastic_on = bool(getattr(args, "forward_logs", False)) and _elastic_has_creds(
+        args.name
+    )
+    if monitoring_on or elastic_on:
         from saorsa_deploy.cmd.telegraf_fold import build_node_telegraf_providers
 
         extra_op_providers = build_node_telegraf_providers(
@@ -285,7 +389,7 @@ def _provision_prod_nodes(args, console: Console) -> None:
             is_genesis=False,
             ssh_key_path=args.ssh_key_path,
             ssh_user="root",
-            drop_log_levels=None,
+            drop_log_levels=_resolve_node_drop_log_levels(args),
             buffer_limit=None,
             console=console,
         )
@@ -408,6 +512,9 @@ def cmd_prod_nodes_deploy(args):
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
     console.print(f"  heaptrack: {'on' if args.heaptrack else 'off'}")
     console.print(f"  Monitoring: {'on' if args.monitoring else 'off'}")
+    console.print(
+        f"  Log forwarding (dedicated ES): {'on' if args.forward_logs else 'off'}"
+    )
     console.print()
 
     deploy_args_payload = {
@@ -421,6 +528,11 @@ def cmd_prod_nodes_deploy(args):
         "heaptrack": args.heaptrack,
         "monitoring": args.monitoring,
         "monitoring_name": args.name if args.monitoring else None,
+        "forward_logs": args.forward_logs,
+        "elastic_name": args.name if args.forward_logs else None,
+        "elastic_retention_days": (
+            args.elastic_retention_days if args.forward_logs else None
+        ),
         "log_retention_days": args.log_retention_days,
         "rewards_address": args.rewards_address,
         "log_level": args.log_level,
@@ -440,6 +552,8 @@ def cmd_prod_nodes_deploy(args):
         _ensure_node_infra(args, console)
         if args.monitoring:
             _ensure_monitoring(args, console)
+        if args.forward_logs:
+            _ensure_elastic(args, console)
         _provision_prod_nodes(args, console)
 
         from saorsa_deploy.cmd.start_nodes import cmd_start_nodes
@@ -510,6 +624,15 @@ def cmd_prod_nodes_destroy(args):
             console.print(
                 f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
             )
+
+        # Tear down the dedicated node-log Elasticsearch VM (only present when the
+        # deploy used --forward-logs) unless --keep-elastic was given. Reuses the
+        # shared prod helper — the ES state key is the same as for client kinds.
+        from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
+
+        destroy_client_elastic(
+            args.name, getattr(args, "keep_elastic", False), console
+        )
     except SystemExit:
         record_event(args.name, "prod_nodes_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)

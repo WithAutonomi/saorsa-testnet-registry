@@ -487,6 +487,14 @@ class ProdNodesSpec(_Base):
     log_level: Optional[LogLevel] = None  # ant-node single global level
     port: Optional[int] = None  # initial listen port (default 10000)
     keep_monitoring: Optional[bool] = None  # destroy: --keep-monitoring when True
+    # Dedicated per-deployment Elasticsearch for node log forwarding. `enabled:
+    # true` stands up a small ES VM named after this deployment and forwards the
+    # node JSON logs to it (index telegraf-ant-nodes-<name>), so debug-build
+    # profiling nodes don't flood the always-on `ant-prod-01` ES. Reuses the same
+    # Elastic model as testnet/extension; volume_size/retention_days/droplet_size/
+    # shards size it, drop_log_levels overrides the log_level-derived ES filter.
+    elastic: Elastic = Elastic()
+    keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
 
 
 # --------------------------------------------------------------------------- #

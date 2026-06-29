@@ -3138,6 +3138,50 @@ def main(argv=None):
         help="Monitoring VM attached volume size in GB (default: 50).",
     )
     prod_nodes_deploy_parser.add_argument(
+        "--forward-logs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Stand up a dedicated Elasticsearch VM (named after this deployment) "
+        "and forward the node JSON logs to it (default: off). Keeps verbose "
+        "debug-build logs off the always-on ant-prod-01 ES.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--elastic-volume-size",
+        type=int,
+        default=100,
+        help="Data-volume size in GB for the dedicated Elasticsearch VM "
+        "(default: 100). Only used with --forward-logs.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--elastic-retention-days",
+        type=int,
+        default=7,
+        help="ILM retention for the dedicated Elasticsearch index (default: 7). "
+        "Only used with --forward-logs.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--elastic-droplet-size",
+        type=str,
+        default=None,
+        help="VM size for the dedicated Elasticsearch box (default: per-provider "
+        "elastic default, e.g. DO s-4vcpu-8gb). Only used with --forward-logs.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--elastic-shards",
+        type=int,
+        default=2,
+        help="Primary shard count for the dedicated Elasticsearch index "
+        "(default: 2). Only used with --forward-logs.",
+    )
+    prod_nodes_deploy_parser.add_argument(
+        "--elastic-drop-log-levels",
+        type=str,
+        default=None,
+        help="Override the node→ES level drop filter (comma-separated, e.g. "
+        "'DEBUG,TRACE'). Default: derived from --log-level (trace keeps all, "
+        "debug drops TRACE, info/unset uses the DEBUG,TRACE default).",
+    )
+    prod_nodes_deploy_parser.add_argument(
         "--log-retention-days",
         type=int,
         default=7,
@@ -3222,6 +3266,13 @@ def main(argv=None):
         help="Leave the paired monitoring VM running so recorded metrics remain "
         "queryable after the node VMs are gone. Default: monitoring is destroyed "
         "alongside the nodes.",
+    )
+    prod_nodes_destroy_parser.add_argument(
+        "--keep-elastic",
+        action="store_true",
+        help="Leave the dedicated Elasticsearch VM running (only created when the "
+        "deploy used --forward-logs) so forwarded node logs remain queryable. "
+        "Default: it is destroyed alongside the nodes.",
     )
     prod_nodes_destroy_parser.add_argument(
         "--ssh-key-path",

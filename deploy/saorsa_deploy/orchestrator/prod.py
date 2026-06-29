@@ -288,6 +288,22 @@ def _nodes(manifest: Manifest) -> list[Step]:
         argv += ["--log-level", spec.log_level]
     if spec.port is not None:
         argv += ["--port", str(spec.port)]
+    # Dedicated node-log Elasticsearch. Only emit flags when enabled so manifests
+    # without an `elastic:` block keep byte-identical step argv (and `up` journal
+    # hashes). The deploy command stands up the ES VM and wires the node→ES
+    # forwarder; `build_destroy_steps` appends --keep-elastic from spec.keep_elastic.
+    if spec.elastic.enabled:
+        argv += ["--forward-logs"]
+        if spec.elastic.volume_size is not None:
+            argv += ["--elastic-volume-size", str(spec.elastic.volume_size)]
+        if spec.elastic.retention_days is not None:
+            argv += ["--elastic-retention-days", str(spec.elastic.retention_days)]
+        if spec.elastic.droplet_size is not None:
+            argv += ["--elastic-droplet-size", spec.elastic.droplet_size]
+        if spec.elastic.shards is not None:
+            argv += ["--elastic-shards", str(spec.elastic.shards)]
+        if spec.elastic.drop_log_levels is not None:
+            argv += ["--elastic-drop-log-levels", spec.elastic.drop_log_levels]
     argv += node_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)
     argv += ["--ssh-key-path", manifest.ssh_key_path]
