@@ -46,6 +46,23 @@ prod_nodes:
   grafana: false
   monitoring_volume_size: 50
 
+  # Optional DEDICATED Elasticsearch for node log forwarding. `enabled: true`
+  # stands up a small ES VM named after this deployment (e.g. PROF-NODE-01) and
+  # forwards the node JSON logs to it — so a verbose debug build's logs don't
+  # flood the always-on `ant-prod-01` ES. Torn down on `down` unless
+  # keep_elastic: true. Omit the block (or enabled: false) to forward nowhere.
+  # The ES level filter is derived from log_level below (debug/trace actually
+  # reach ES); set drop_log_levels to override (e.g. "DEBUG,TRACE" to keep
+  # verbose logs on disk only, "" to force-keep everything).
+  elastic:
+    enabled: true
+    retention_days: 7
+    volume_size: 100
+    # droplet_size: s-4vcpu-8gb   # per-provider elastic default if unset
+    # shards: 2
+    # drop_log_levels: ""         # override the log_level-derived ES filter
+  # keep_elastic: true            # leave the ES VM up after `down`
+
   # ant-node has no per-module env filter — a single global level applies.
   log_level: info            # info | debug | trace
   # port: 10000              # initial listen port (services use port..port+14)

@@ -8,6 +8,7 @@ from saorsa_deploy.cmd.prod_nodes import (
     _PROVIDER_INFO,
     _build_node_infra_args,
     _parse_prod_bootstrap_nodes,
+    _resolve_node_drop_log_levels,
 )
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError
 
@@ -79,3 +80,33 @@ def test_provider_info_covers_all_four_providers():
         assert isinstance(prefix, str) and prefix
         assert size_var.endswith(("_droplet_size", "_server_type", "_plan", "_flavor"))
         assert isinstance(default, str) and default
+
+
+def _drop_args(log_level=None, override=None):
+    return SimpleNamespace(log_level=log_level, elastic_drop_log_levels=override)
+
+
+@pytest.mark.parametrize(
+    "level,expected",
+    [
+        ("trace", ""),       # forward everything
+        ("TRACE", ""),       # case-insensitive
+        ("debug", "TRACE"),  # keep DEBUG, drop the noisier TRACE
+        ("info", None),      # omit → forwarder default DEBUG,TRACE
+        (None, None),        # unset → omit
+    ],
+)
+def test_resolve_node_drop_log_levels_derives_from_log_level(level, expected):
+    assert _resolve_node_drop_log_levels(_drop_args(log_level=level)) == expected
+
+
+@pytest.mark.parametrize("override", ["", "DEBUG,TRACE", "TRACE"])
+def test_resolve_node_drop_log_levels_explicit_override_wins(override):
+    # An explicit --elastic-drop-log-levels beats any log_level-derived value,
+    # including the empty-string "keep everything" escape hatch.
+    assert (
+        _resolve_node_drop_log_levels(
+            _drop_args(log_level="info", override=override)
+        )
+        == override
+    )

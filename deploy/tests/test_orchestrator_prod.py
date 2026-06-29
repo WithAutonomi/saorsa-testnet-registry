@@ -980,3 +980,60 @@ def test_prod_nodes_debug_requires_branch():
         _prod_nodes_manifest(
             {"binary": {"version": "0.11.6", "debug": True}, "region": "lon1"}
         )
+
+
+def test_prod_nodes_elastic_emits_forward_logs_and_sizing():
+    m = _prod_nodes_manifest(
+        {
+            "binary": {"version": "0.11.6"},
+            "region": "lon1",
+            "log_level": "debug",
+            "elastic": {
+                "enabled": True,
+                "volume_size": 200,
+                "retention_days": 14,
+                "droplet_size": "s-8vcpu-16gb",
+                "shards": 3,
+            },
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert "--forward-logs" in argv
+    assert argv[argv.index("--elastic-volume-size") + 1] == "200"
+    assert argv[argv.index("--elastic-retention-days") + 1] == "14"
+    assert argv[argv.index("--elastic-droplet-size") + 1] == "s-8vcpu-16gb"
+    assert argv[argv.index("--elastic-shards") + 1] == "3"
+    # No explicit drop override given → the flag is omitted (CLI derives it from
+    # --log-level at deploy time).
+    assert "--elastic-drop-log-levels" not in argv
+
+
+def test_prod_nodes_elastic_omitted_by_default():
+    # No `elastic:` block → no forward-logs flags at all (byte-identical argv to
+    # before this feature, so existing `up` journal/plan hashes still match).
+    m = _prod_nodes_manifest({"binary": {"version": "0.11.6"}, "region": "lon1"})
+    argv = build_deploy_steps(m)[0].argv
+    assert "--forward-logs" not in argv
+    assert not any(a.startswith("--elastic-") for a in argv)
+
+
+def test_prod_nodes_elastic_drop_log_levels_override_emitted():
+    m = _prod_nodes_manifest(
+        {
+            "binary": {"version": "0.11.6"},
+            "region": "lon1",
+            "log_level": "trace",
+            "elastic": {"enabled": True, "drop_log_levels": "DEBUG,TRACE"},
+        }
+    )
+    argv = build_deploy_steps(m)[0].argv
+    assert argv[argv.index("--elastic-drop-log-levels") + 1] == "DEBUG,TRACE"
+
+
+def test_prod_nodes_keep_elastic_emits_flag():
+    base = {"binary": {"version": "0.11.6"}, "region": "lon1"}
+    m = _prod_nodes_manifest({**base, "keep_elastic": True})
+    assert "--keep-elastic" in build_destroy_steps(m)[0].argv
+    # Default (no keep_elastic) does NOT emit the flag.
+    m_default = _prod_nodes_manifest(base)
+    assert "--keep-elastic" not in build_destroy_steps(m_default)[0].argv
