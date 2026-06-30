@@ -15,9 +15,37 @@ from saorsa_deploy.state import (
     delete_terraform_state,
     list_terraform_state_keys,
     load_deployment_state,
+    load_terraform_state,
     update_deployment_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
+
+
+def _orphan_volume_size(state_key: str) -> str:
+    """Return the node-storage volume size recorded in an orphan tfstate.
+
+    Reading the real size (rather than a hardcoded default) keeps the destroy
+    plan from computing a volume "shrink", which DO/OVH reject. Takes the max
+    across instances and falls back to "20" when no volume size is recorded or
+    the state can't be read.
+    """
+    try:
+        tfstate = load_terraform_state(state_key)
+    except Exception:
+        return "20"
+    sizes: list[int] = []
+    for resource in tfstate.get("resources", []):
+        if resource.get("name") != "node_storage":
+            continue
+        rtype = resource.get("type", "")
+        if "volume" not in rtype and "block_storage" not in rtype:
+            continue
+        for inst in resource.get("instances") or []:
+            attrs = inst.get("attributes") or {}
+            size = attrs.get("size", attrs.get("size_gb"))
+            if isinstance(size, (int, float)) and size > 0:
+                sizes.append(int(size))
+    return str(max(sizes)) if sizes else "20"
 
 
 def _apply_provider_size_vars(
@@ -177,11 +205,16 @@ def cmd_destroy_nodes(args):
         region = state_key[len(prefix) : -len(".tfstate")]
         tf_source = resources_dir / provider.tf_dir
         workspace_dir = workspace_base / f"{provider_name}-{args.name}-{region}"
+        # Read the real volume size from the orphan's own tfstate. A hardcoded
+        # value smaller than the recorded volume makes Terraform's destroy plan
+        # compute a volume "shrink", which DO/OVH reject ("size can only be
+        # expanded and not shrunk") — failing the destroy. Fall back to "20"
+        # only when no volume size is recorded.
         variables = {
             "name": args.name,
             "region": region,
             "vm_count": "1",
-            "attached_volume_size": "20",
+            "attached_volume_size": _orphan_volume_size(state_key),
         }
         _apply_provider_size_vars(variables, provider_name)
         configs.append(
