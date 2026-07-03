@@ -309,7 +309,16 @@ class TelegrafProvisioner:
     "address",
     "kind",
     "event",
-    "component"
+    "component",
+    # Relay-affinity reacquire-decision line (saorsa_core::reachability::
+    # acquisition, "relay acquisition: reacquire decision"). These are string
+    # fields; without whitelisting them the telegraf json parser silently drops
+    # them and only `message` reaches Elasticsearch. `present_in_candidates` is
+    # a JSON boolean (not capturable via json_string_fields) but is redundant
+    # with `previous_index` (== "None" iff the previous relayer was absent).
+    "previous_relayer",
+    "previous_index",
+    "chosen"
   ]
 
   json_time_key = "timestamp"
