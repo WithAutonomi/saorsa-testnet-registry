@@ -1,0 +1,49 @@
+# Auto-upgrade test testnet — 100 nodes on Digital Ocean, beta upgrade channel.
+#
+# Purpose: exercise the ant-node automatic upgrade process. Nodes are pinned to
+# the `beta` upgrade channel, so once they are up they self-upgrade to the latest
+# beta release (via --stop-on-upgrade). Deploy a starting ant_node version OLDER
+# than the current beta so there is an upgrade to observe, then watch the rollout
+# (e.g. the `track-upgrades` / `bootstrap-upgrade-check` tooling).
+#
+# Single provider, single region (DO / lon1) — no multi-provider spread needed for
+# an upgrade test. Node math: 100 ant-node services = 20 DO VMs × per_vm 5.
+
+name: UPGRADE-01
+kind: testnet
+purpose: "Test the ant-node automatic upgrade process on the beta channel"
+ssh_key_path: ~/.ssh/ant_deploy
+
+testnet:
+  mode: true
+  upgrade_channel: beta        # nodes self-upgrade to the latest beta release
+
+  binaries:
+    # ant_node MUST be a branch build for an upgrade test: the branch carries the
+    # modified (shortened) rollout-window timer so the auto-upgrade fires quickly
+    # instead of over the normal long window. Set branch/repo_owner to that build.
+    ant_node:
+      branch: upgrade-test-short-window   # <-- branch with the shortened rollout window
+      repo_owner: WithAutonomi
+    # Client binary version doesn't matter as long as it's compatible; a pinned
+    # release is fine (required because clients are configured).
+    ant:
+      version: 0.2.5-rc.4
+
+  bootstraps:
+    count: 3
+    port: 10000
+
+  nodes:
+    per_vm: 5                  # 20 VMs × 5 services = 100 nodes
+    providers:
+      digital_ocean:
+        vm_count: 20           # vm_count is PER REGION; single region => 20 VMs total
+        regions_list: [lon1]
+        size: s-2vcpu-4gb
+
+  clients:
+    uploaders:
+      - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.04 }
+    downloaders:
+      - { provider: digital_ocean, region: lon1 }
