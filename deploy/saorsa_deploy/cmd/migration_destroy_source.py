@@ -1,6 +1,6 @@
 """``saorsa-deploy migration destroy-source`` — terminate the source VMs.
 
-Supports two source providers:
+Supports three source providers:
 
 * **aws** — the AWS prod fleet is not in any saorsa-deploy Terraform state, so
   destruction goes through boto3 directly. EBS root volumes auto-delete when
@@ -13,6 +13,11 @@ Supports two source providers:
   afterwards. If a droplet was already removed by a previous partial run, its
   data volume is found by the ``<name>-data`` naming convention so it is never
   left orphaned.
+* **vultr** — instances are deleted via the Vultr API by instance ID. Like DO,
+  Vultr keeps a deleted instance's block storage, so we capture each instance's
+  attached block(s) first and delete them explicitly afterwards. If the instance
+  was already removed by a previous partial run, its data block is found by the
+  ``<name>-data`` label convention so it is never left orphaned.
 
 Refuses unless every VM in the migration is in ``source_drained`` state. Use
 ``--force`` to override (e.g. to clean up after a partial drain).
@@ -34,7 +39,7 @@ from saorsa_deploy.migration_registry import (
     get_migration_repository,
 )
 
-SUPPORTED_SOURCE_PROVIDERS = ("aws", "digitalocean")
+SUPPORTED_SOURCE_PROVIDERS = ("aws", "digitalocean", "vultr")
 
 DO_API_BASE = "https://api.digitalocean.com/v2"
 DO_REQUEST_TIMEOUT = 30
@@ -42,6 +47,14 @@ DO_REQUEST_TIMEOUT = 30
 # briefly fail ("still attached") in that window, so retry a few times.
 DO_VOLUME_DELETE_ATTEMPTS = 6
 DO_VOLUME_DELETE_BACKOFF_SECS = 5
+
+VULTR_API_BASE = "https://api.vultr.com/v2"
+VULTR_REQUEST_TIMEOUT = 30
+# Deleting an instance detaches its block storage asynchronously; a block delete
+# can briefly fail ("must be detached") in that window, so nudge a detach and
+# retry a few times rather than orphaning the block.
+VULTR_BLOCK_DELETE_ATTEMPTS = 6
+VULTR_BLOCK_DELETE_BACKOFF_SECS = 5
 
 
 def _check_root_delete_on_termination(
@@ -292,6 +305,176 @@ def _destroy_digitalocean(vms: list, repo, console: Console) -> list[str]:
     return failures
 
 
+def _vultr_headers() -> dict:
+    token = os.environ.get("VULTR_API_KEY")
+    if not token:
+        raise RuntimeError("VULTR_API_KEY environment variable is not set")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
+def _vultr_check(resp: requests.Response, context: str) -> None:
+    """Raise RuntimeError with the response body when a Vultr call failed."""
+    if resp.ok:
+        return
+    raise RuntimeError(
+        f"{context} → HTTP {resp.status_code} {resp.reason}: "
+        f"{resp.text.strip() or '<empty body>'}"
+    )
+
+
+def _vultr_list_blocks() -> list[dict]:
+    """Return every block-storage volume on the account (cursor-paginated)."""
+    blocks: list[dict] = []
+    cursor: str | None = None
+    while True:
+        params = {"per_page": 500}
+        if cursor:
+            params["cursor"] = cursor
+        resp = requests.get(
+            f"{VULTR_API_BASE}/blocks",
+            headers=_vultr_headers(),
+            params=params,
+            timeout=VULTR_REQUEST_TIMEOUT,
+        )
+        _vultr_check(resp, "Vultr GET blocks")
+        body = resp.json()
+        blocks.extend(body.get("blocks") or [])
+        cursor = ((body.get("meta") or {}).get("links") or {}).get("next")
+        if not cursor:
+            return blocks
+
+
+def _vultr_block_ids_for_vm(vm) -> list[str]:
+    """Block IDs to clean up for a Vultr source VM.
+
+    Prefers the live instance's attachment list; if the instance is already gone
+    (a prior run deleted it, so the block is now detached), falls back to the
+    ``<source_name>-data`` label convention so a half-deleted VM's data block is
+    still found and removed.
+    """
+    blocks = _vultr_list_blocks()
+    attached = [
+        b["id"]
+        for b in blocks
+        if b.get("attached_to_instance") == vm.source_provider_id
+    ]
+    if attached:
+        return attached
+    label = f"{vm.source_name}-data"
+    return [b["id"] for b in blocks if b.get("label") == label]
+
+
+def _vultr_delete_instance(instance_id: str) -> None:
+    resp = requests.delete(
+        f"{VULTR_API_BASE}/instances/{instance_id}",
+        headers=_vultr_headers(),
+        timeout=VULTR_REQUEST_TIMEOUT,
+    )
+    if resp.status_code == 404:  # already gone — idempotent
+        return
+    _vultr_check(resp, f"Vultr DELETE instances/{instance_id}")
+
+
+def _vultr_detach_block(block_id: str) -> None:
+    """Best-effort detach; ignore errors (already detached / instance gone)."""
+    try:
+        requests.post(
+            f"{VULTR_API_BASE}/blocks/{block_id}/detach",
+            headers=_vultr_headers(),
+            timeout=VULTR_REQUEST_TIMEOUT,
+        )
+    except requests.RequestException:
+        pass
+
+
+def _vultr_delete_block(block_id: str) -> None:
+    last_error = None
+    for attempt in range(VULTR_BLOCK_DELETE_ATTEMPTS):
+        resp = requests.delete(
+            f"{VULTR_API_BASE}/blocks/{block_id}",
+            headers=_vultr_headers(),
+            timeout=VULTR_REQUEST_TIMEOUT,
+        )
+        if resp.status_code in (204, 404):  # deleted, or already gone
+            return
+        last_error = (
+            f"HTTP {resp.status_code} {resp.reason}: "
+            f"{resp.text.strip() or '<empty body>'}"
+        )
+        # A failure here usually means the instance detach hasn't settled yet;
+        # nudge an explicit detach, wait, and retry rather than orphaning it.
+        if attempt < VULTR_BLOCK_DELETE_ATTEMPTS - 1:
+            _vultr_detach_block(block_id)
+            time.sleep(VULTR_BLOCK_DELETE_BACKOFF_SECS)
+    raise RuntimeError(
+        f"Vultr DELETE blocks/{block_id} failed after "
+        f"{VULTR_BLOCK_DELETE_ATTEMPTS} attempts → {last_error}"
+    )
+
+
+def _destroy_vultr(vms: list, repo, console: Console) -> list[str]:
+    """Delete Vultr source instances and their attached block storage.
+
+    Returns the source names that failed. Marks each fully-destroyed VM
+    (instance **and** block gone) ``SOURCE_DESTROYED``.
+    """
+    failures: list[str] = []
+    for vm in vms:
+        console.print(
+            f"[bold]{vm.source_region}:[/bold] destroying Vultr instance "
+            f"{vm.source_provider_id} ({vm.source_name})..."
+        )
+
+        try:
+            block_ids = _vultr_block_ids_for_vm(vm)
+        except Exception as e:
+            console.print(
+                f"[red]{vm.source_name}: block lookup failed: {e}[/red]"
+            )
+            failures.append(vm.source_name)
+            continue
+
+        try:
+            _vultr_delete_instance(vm.source_provider_id)
+        except Exception as e:
+            console.print(
+                f"[red]{vm.source_name}: instance delete failed: {e}[/red]"
+            )
+            failures.append(vm.source_name)
+            continue
+
+        # Instance deletion detaches but does NOT delete block storage — remove
+        # it explicitly so no orphaned data blocks are left behind.
+        block_failed = False
+        for bid in block_ids:
+            try:
+                _vultr_delete_block(bid)
+                console.print(f"  [dim]Deleted block {bid}[/dim]")
+            except Exception as e:
+                console.print(
+                    f"[bold red]{vm.source_name}: block {bid} NOT deleted "
+                    f"(orphaned — remove manually):[/bold red] {e}"
+                )
+                block_failed = True
+        if block_failed:
+            failures.append(vm.source_name)
+            continue
+
+        repo.update_vm(
+            vm.id,
+            status=MigrationVmStatus.SOURCE_DESTROYED,
+            source_destroyed_at=datetime.now(timezone.utc),
+        )
+        console.print(
+            f"[green]{vm.source_region}: instance {vm.source_provider_id} + "
+            f"{len(block_ids)} block(s) destroyed.[/green]"
+        )
+    return failures
+
+
 def cmd_migration_destroy_source(args):
     console = Console()
 
@@ -358,17 +541,22 @@ def cmd_migration_destroy_source(args):
 
     aws_by_region: dict[str, list] = defaultdict(list)
     do_vms: list = []
+    vultr_vms: list = []
     for vm in targets:
         if vm.source_provider == "aws":
             aws_by_region[vm.source_region].append(vm)
         elif vm.source_provider == "digitalocean":
             do_vms.append(vm)
+        elif vm.source_provider == "vultr":
+            vultr_vms.append(vm)
 
     failures: list[str] = []
     if aws_by_region:
         failures += _destroy_aws(aws_by_region, repo, console)
     if do_vms:
         failures += _destroy_digitalocean(do_vms, repo, console)
+    if vultr_vms:
+        failures += _destroy_vultr(vultr_vms, repo, console)
 
     if failures:
         console.print()
