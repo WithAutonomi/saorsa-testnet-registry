@@ -191,7 +191,10 @@ def test_vultr_destroys_instance_and_block():
     deleted = []
 
     def get(url, **_):
-        assert "/blocks" in url
+        # Single-block status check (delete path): report detached so it deletes.
+        if "/blocks/" in url:
+            return FakeResp(200, {"block": {"attached_to_instance": ""}})
+        # List lookup (find the VM's block).
         return FakeResp(
             200,
             {
@@ -221,12 +224,45 @@ def test_vultr_destroys_instance_and_block():
     ]
 
 
+def test_vultr_waits_for_detach_before_deleting_block():
+    """Block starts attached (async detach not settled) then detaches; the delete
+    must wait for the detach rather than failing."""
+    vm = _vm(23, "ant-prod-01-vl-lax-4", provider="vultr", pid="inst-4", region="lax")
+    repo = FakeRepo(_migration(), [vm])
+
+    single_get_calls = {"n": 0}
+    deleted = []
+
+    def get(url, **_):
+        if "/blocks/" in url:  # single-block status check
+            single_get_calls["n"] += 1
+            # First poll: still attached; second poll: detached.
+            attached = "inst-4" if single_get_calls["n"] < 2 else ""
+            return FakeResp(200, {"block": {"attached_to_instance": attached}})
+        return FakeResp(
+            200,
+            {"blocks": [{"id": "blk-4", "attached_to_instance": "inst-4"}]},
+        )
+
+    def delete(url, **_):
+        deleted.append(url)
+        return FakeResp(204)
+
+    _run(repo, get, delete)
+
+    assert vm.status == MigrationVmStatus.SOURCE_DESTROYED
+    assert single_get_calls["n"] >= 2  # polled until detached
+    assert any("/blocks/blk-4" in u for u in deleted)
+
+
 def test_vultr_falls_back_to_label_when_instance_gone():
     vm = _vm(21, "ant-prod-01-vl-lax-2", provider="vultr", pid="gone", region="lax")
     repo = FakeRepo(_migration(), [vm])
     deleted = []
 
     def get(url, **_):
+        if "/blocks/" in url:  # single-block status check -> already detached
+            return FakeResp(200, {"block": {"attached_to_instance": ""}})
         # Instance already gone -> block is detached; find it by label.
         return FakeResp(
             200,
@@ -256,16 +292,18 @@ def test_vultr_block_delete_failure_keeps_vm_undestroyed():
     repo = FakeRepo(_migration(), [vm])
 
     def get(url, **_):
+        # Block never detaches -> the poll exhausts and the block is never deleted.
+        if "/blocks/" in url:
+            return FakeResp(200, {"block": {"attached_to_instance": "inst-3"}})
         return FakeResp(
             200,
             {"blocks": [{"id": "blk-stuck", "attached_to_instance": "inst-3"}]},
         )
 
     def delete(url, **_):
-        if "/instances/" in url:
-            return FakeResp(204)
-        # Block delete keeps failing (e.g. still-attached) -> retries exhaust.
-        return FakeResp(400, reason="Bad Request", text="block must be detached")
+        # Only the instance delete is reached; the block delete never fires
+        # because the block never reports detached.
+        return FakeResp(204)
 
     with pytest.raises(SystemExit):
         _run(repo, get, delete)

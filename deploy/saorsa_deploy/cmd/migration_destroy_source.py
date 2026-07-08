@@ -50,11 +50,13 @@ DO_VOLUME_DELETE_BACKOFF_SECS = 5
 
 VULTR_API_BASE = "https://api.vultr.com/v2"
 VULTR_REQUEST_TIMEOUT = 30
-# Deleting an instance detaches its block storage asynchronously; a block delete
-# can briefly fail ("must be detached") in that window, so nudge a detach and
-# retry a few times rather than orphaning the block.
-VULTR_BLOCK_DELETE_ATTEMPTS = 6
-VULTR_BLOCK_DELETE_BACKOFF_SECS = 5
+# Deleting an instance detaches its block storage ASYNCHRONOUSLY and Vultr
+# refuses to delete a block while it still reads as attached ("Block storage
+# must be detached before removing"). The detach can take a few minutes, so we
+# poll the block until it reports no attachment before deleting — nudging an
+# explicit detach if it stalls. 30 × 10s = up to 5 min per block.
+VULTR_BLOCK_DELETE_ATTEMPTS = 30
+VULTR_BLOCK_DELETE_BACKOFF_SECS = 10
 
 
 def _check_root_delete_on_termination(
@@ -391,23 +393,45 @@ def _vultr_detach_block(block_id: str) -> None:
 
 
 def _vultr_delete_block(block_id: str) -> None:
-    last_error = None
+    """Delete a block, waiting for the instance-deletion detach to settle first.
+
+    Vultr detaches a deleted instance's block asynchronously and rejects a
+    delete while the block still reads as attached. So poll the block until it
+    reports no attachment (``attached_to_instance`` empty) — nudging one explicit
+    detach if it stalls — then delete. A 404 at any point means it's already gone.
+    """
+    last_error = "block never reported detached"
+    nudged = False
     for attempt in range(VULTR_BLOCK_DELETE_ATTEMPTS):
-        resp = requests.delete(
+        get = requests.get(
             f"{VULTR_API_BASE}/blocks/{block_id}",
             headers=_vultr_headers(),
             timeout=VULTR_REQUEST_TIMEOUT,
         )
-        if resp.status_code in (204, 404):  # deleted, or already gone
+        if get.status_code == 404:  # already gone
             return
-        last_error = (
-            f"HTTP {resp.status_code} {resp.reason}: "
-            f"{resp.text.strip() or '<empty body>'}"
-        )
-        # A failure here usually means the instance detach hasn't settled yet;
-        # nudge an explicit detach, wait, and retry rather than orphaning it.
+        _vultr_check(get, f"Vultr GET blocks/{block_id}")
+        attached = (get.json().get("block") or {}).get("attached_to_instance")
+        if attached:
+            # Still attached: nudge one explicit detach, then keep polling for
+            # the asynchronous detach to complete.
+            if not nudged:
+                _vultr_detach_block(block_id)
+                nudged = True
+            last_error = f"still attached to {attached}"
+        else:
+            delete = requests.delete(
+                f"{VULTR_API_BASE}/blocks/{block_id}",
+                headers=_vultr_headers(),
+                timeout=VULTR_REQUEST_TIMEOUT,
+            )
+            if delete.status_code in (204, 404):  # deleted, or already gone
+                return
+            last_error = (
+                f"HTTP {delete.status_code} {delete.reason}: "
+                f"{delete.text.strip() or '<empty body>'}"
+            )
         if attempt < VULTR_BLOCK_DELETE_ATTEMPTS - 1:
-            _vultr_detach_block(block_id)
             time.sleep(VULTR_BLOCK_DELETE_BACKOFF_SECS)
     raise RuntimeError(
         f"Vultr DELETE blocks/{block_id} failed after "
