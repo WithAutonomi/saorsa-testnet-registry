@@ -86,8 +86,10 @@ def cmd_record_analysis(args):
         )
         sys.exit(1)
 
+    window_label = "full run" if args.window == "0" else args.window
     console.print(
-        f"[bold]Querying {influx_url} (bucket={influx_bucket}, window={args.window})...[/bold]"
+        f"[bold]Querying {influx_url} (bucket={influx_bucket}, "
+        f"window={window_label})...[/bold]"
     )
     try:
         points = fetch_host_metric_points(
@@ -105,7 +107,7 @@ def cmd_record_analysis(args):
     if not aggregates:
         console.print(
             f"[yellow]No host metric points found for deployment '{args.name}' "
-            f"in window {args.window}. Nothing to record.[/yellow]"
+            f"in window {window_label}. Nothing to record.[/yellow]"
         )
         if args.summary:
             console.print(

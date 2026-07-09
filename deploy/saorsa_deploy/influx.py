@@ -376,13 +376,18 @@ def fetch_host_metric_points(
     token: str,
     org: str,
     bucket: str,
-    start: str = "-6h",
+    start: str = "0",
     timeout: int = 30,
 ) -> dict:
     """Run three Flux queries (cpu/mem/net) and return the raw points.
 
     Returns a dict with keys ``cpu``, ``mem``, ``net``, each mapping to a
     list of row dicts from :func:`_parse_flux_csv`.
+
+    The default ``start: 0`` queries from the Unix epoch — i.e. every host
+    metric point in the bucket — so a run's full history is recorded rather
+    than only a trailing window. Pass a Flux duration (e.g. ``-6h``) to
+    restrict it.
     """
     result: dict = {}
     for key, template in (

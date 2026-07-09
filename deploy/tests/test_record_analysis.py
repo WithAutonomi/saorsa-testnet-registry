@@ -6,10 +6,14 @@ from saorsa_db.repositories import SqlAlchemyDeploymentRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import saorsa_deploy.cmd.record_analysis as record_analysis_mod
+from saorsa_deploy import influx
 from saorsa_deploy.influx import (
     _parse_flux_csv,
     aggregate_host_metrics,
+    fetch_host_metric_points,
 )
+from saorsa_deploy.main import main
 
 
 def _cpu_point(host: str, ts: str, idle: float) -> dict:
@@ -226,6 +230,60 @@ def test_aggregate_multi_host_produces_sorted_results():
     }
     results = aggregate_host_metrics(points)
     assert [r["host"] for r in results] == ["hostA", "hostZ"]
+
+
+def test_record_analysis_window_defaults_to_full_run(monkeypatch):
+    """Without --window the command records the whole run (Flux start '0')."""
+    captured = {}
+
+    def _capture(args):
+        captured["window"] = args.window
+
+    monkeypatch.setattr(record_analysis_mod, "cmd_record_analysis", _capture)
+    main(["deployments", "record-analysis", "--name", "DEV-01"])
+    assert captured["window"] == "0"
+
+
+def test_record_analysis_window_flag_is_honoured(monkeypatch):
+    """An explicit --window narrows the range and is passed through verbatim."""
+    captured = {}
+
+    def _capture(args):
+        captured["window"] = args.window
+
+    monkeypatch.setattr(record_analysis_mod, "cmd_record_analysis", _capture)
+    main(["deployments", "record-analysis", "--name", "DEV-01", "--window=-6h"])
+    assert captured["window"] == "-6h"
+
+
+def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
+    """The default start '0' is formatted into every host-metric Flux range."""
+    seen = []
+
+    def _fake_run_flux(url, token, org, flux, timeout=30):
+        seen.append(flux)
+        return ""
+
+    monkeypatch.setattr(influx, "_run_flux", _fake_run_flux)
+    fetch_host_metric_points(
+        url="http://x", token="t", org="ant", bucket="testnet-metrics"
+    )
+    assert len(seen) == 3
+    assert all("range(start: 0)" in flux for flux in seen)
+
+
+def test_fetch_host_metric_points_honours_explicit_start(monkeypatch):
+    seen = []
+
+    def _fake_run_flux(url, token, org, flux, timeout=30):
+        seen.append(flux)
+        return ""
+
+    monkeypatch.setattr(influx, "_run_flux", _fake_run_flux)
+    fetch_host_metric_points(
+        url="http://x", token="t", org="ant", bucket="testnet-metrics", start="-6h"
+    )
+    assert all("range(start: -6h)" in flux for flux in seen)
 
 
 @pytest.fixture()

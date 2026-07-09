@@ -697,7 +697,9 @@ def record_analysis(
             (not about raw metrics — about the change that was tested)
         monitoring_name: Monitoring stack name to load Influx creds from
             (defaults to the deployment name)
-        window: Flux range start (e.g. "-6h", "-24h", "-7d"). Default: -6h
+        window: Flux range start. Omit to record the entire run (default "0",
+            from the Unix epoch = all data). Pass a duration like "-6h",
+            "-24h", or "-7d" to record only a narrower window.
         influx_url: Override InfluxDB URL (otherwise loaded from monitoring state)
         influx_token: Override InfluxDB API token
         influx_org: Override InfluxDB organization

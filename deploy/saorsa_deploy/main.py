@@ -1225,8 +1225,12 @@ def main(argv=None):
     deployments_record_analysis_parser.add_argument(
         "--window",
         type=str,
-        default="-6h",
-        help="Flux range start (e.g. -6h, -24h, -7d). Default: -6h",
+        default="0",
+        help=(
+            "Flux range start. Default '0' records the entire run (from the "
+            "Unix epoch, i.e. all data in the bucket). Pass a duration like "
+            "-6h, -24h, or -7d to record only a narrower window."
+        ),
     )
     deployments_record_analysis_parser.add_argument(
         "--summary",
