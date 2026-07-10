@@ -1120,6 +1120,31 @@ uv run saorsa-deploy prod downloaders destroy --name PROD-DL-OS-01
 # add --keep-monitoring to preserve the InfluxDB VM
 ```
 
+### Upgrading the `ant` binary in place (`deployments upgrade-ant-binary`)
+
+`deployments upgrade-ant-binary` force-installs the latest (or a pinned/branch) `ant` binary on an already-running `prod-downloaders` or `prod-continuous-downloader` client VM over SSH, and restarts the service — no Terraform infrastructure is touched. It exists because the binary-install step used by `deploy` is presence-gated (it skips if `ant` is already installed at `/root/.local/bin/ant`), so re-running `deploy` against an existing deployment never picks up a new release.
+
+```bash
+uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-DL-01
+# pin a specific release instead of latest:
+uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-DL-01 --ant-version 0.3.1
+# use a custom branch build:
+uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-DL-01 --branch-name my-fix --repo-owner myuser
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string | required | Deployment name (its S3 client state supplies the VM IP(s)) |
+| `--branch-name` | string | none | Use a custom-built `ant` binary from this branch (requires `--repo-owner`) |
+| `--repo-owner` | string | none | GitHub repo owner for the custom-built binary |
+| `--ant-version` | string | none (latest) | Pin a specific `ant` release version instead of resolving `latest` |
+| `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key used to reach the VM(s) |
+| `--restart` / `--no-restart` | flag | `--restart` | Restart `ant-prod-downloader` after the binary swap |
+
+Only `prod-downloaders` and `prod-continuous-downloader` deployments are supported (kind is validated via the registry when `DATABASE_URL` is set; the command still runs without it, skipping validation). The `ant_binary_upgrade_started` / `_completed` / `_failed` events are recorded for the deployment, and a successful run updates `deploy_args.ant_binary` so `deployments slack-post` reflects the new binary.
+
+**`--no-restart` note**: the `prod_downloader.py` service has no checkpoint/resume state — every start walks its full address list from the beginning. For `prod-continuous-downloader` this is harmless (it loops forever anyway), but restarting a `prod-downloaders` (one-shot) deployment that has already completed its single pass re-runs the entire address list, duplicating Influx points and any already-recorded results. Pass `--no-restart` for a completed one-shot deployment and restart the service manually only when you actually want another full pass.
+
 ### Running uploaders against production (`prod uploaders`)
 
 `prod uploaders deploy` stands up one or more client VMs that each upload a list of public files to the canonical Autonomi production network with `ant --json file upload --public`, recording per-file metrics in InfluxDB. Each VM downloads its source files at runtime from the URL list you supply, uploads each one in turn, and exits when its list is exhausted — teardown is explicit via `prod uploaders destroy`.

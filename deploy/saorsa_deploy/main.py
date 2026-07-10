@@ -1437,6 +1437,57 @@ def main(argv=None):
         help="Skip the interactive confirmation prompt",
     )
 
+    # deployments upgrade-ant-binary
+    deployments_upgrade_ant_binary_parser = deployments_subparsers.add_parser(
+        "upgrade-ant-binary",
+        help=(
+            "Force-install the ant binary in place on a running prod "
+            "downloader deployment's VM(s) and restart the service. "
+            "Supports prod-downloaders and prod-continuous-downloader only; "
+            "no infrastructure is touched."
+        ),
+    )
+    deployments_upgrade_ant_binary_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must have client state in S3).",
+    )
+    deployments_upgrade_ant_binary_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Use custom-built ant binary from this branch (requires --repo-owner).",
+    )
+    deployments_upgrade_ant_binary_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for custom-built ant binary (requires --branch-name).",
+    )
+    deployments_upgrade_ant_binary_parser.add_argument(
+        "--ant-version",
+        type=str,
+        help="Specific release version of ant to install (e.g., 0.3.0). "
+        "Default: latest release.",
+    )
+    deployments_upgrade_ant_binary_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+    deployments_upgrade_ant_binary_parser.add_argument(
+        "--restart",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Restart the ant-prod-downloader service after swapping the "
+            "binary (default: on). --no-restart leaves the new binary on "
+            "disk without restarting — useful for a completed one-shot "
+            "'prod-downloaders' run, since restarting it re-walks the "
+            "entire address list from scratch (no checkpointing)."
+        ),
+    )
+
     # deployments up
     deployments_up_parser = deployments_subparsers.add_parser(
         "up",
@@ -4370,6 +4421,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.unextend import cmd_unextend
 
             cmd_unextend(args)
+        elif args.deployments_subcommand == "upgrade-ant-binary":
+            from saorsa_deploy.cmd.upgrade_ant_binary import cmd_upgrade_ant_binary
+
+            cmd_upgrade_ant_binary(args)
         elif args.deployments_subcommand == "up":
             from saorsa_deploy.cmd.deploy_cmds import cmd_up
 
