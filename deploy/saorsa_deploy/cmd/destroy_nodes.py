@@ -63,7 +63,7 @@ def _apply_provider_size_vars(
         variables["server_type"] = p_cfg.get("server_type", "cpx22")
     elif provider_name == "vultr":
         variables["plan"] = p_cfg.get("plan", "vc2-2c-4gb")
-    elif provider_name == "ovh":
+    elif provider_name in ("ovh", "ovh_3az"):
         variables["flavor_name"] = p_cfg.get("flavor_name", "b3-16")
         variables["service_name"] = os.environ.get("OVH_CLOUD_PROJECT_SERVICE", "")
         variables["name_template"] = "ant-node"
@@ -77,7 +77,7 @@ def _check_ovh_destroy_env(
     Terraform re-reads the module's data sources on destroy, so the OVH API
     credentials and project id are needed just like on create.
     """
-    if "ovh" not in provider_names:
+    if "ovh" not in provider_names and "ovh_3az" not in provider_names:
         return
     missing = [v for v in OVH_REQUIRED_ENV_VARS if not os.environ.get(v)]
     if missing:
@@ -179,8 +179,13 @@ def cmd_destroy_nodes(args):
             "name": name,
             "region": region,
             "vm_count": vm_count,
-            "attached_volume_size": terraform_variables.get("attached_volume_size", "20"),
         }
+        # ovh_3az has no attached volume (3-AZ regions have no block storage), so
+        # its module doesn't declare attached_volume_size.
+        if provider_name != "ovh_3az":
+            variables["attached_volume_size"] = terraform_variables.get(
+                "attached_volume_size", "20"
+            )
         _apply_provider_size_vars(
             variables, provider_name, providers_config.get(provider_name)
         )

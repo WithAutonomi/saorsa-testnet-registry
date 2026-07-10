@@ -2234,8 +2234,21 @@ def main(argv=None):
         "--attached-volume-size",
         type=int,
         default=20,
-        help="Size of attached volume in GB (default: 20)",
+        help="Default attached-volume size in GB for volume-backed providers "
+        "(default: 20). Per-provider --<provider>-attached-volume-size overrides "
+        "it. Not applicable to ovh_3az (3-AZ regions have no block storage).",
     )
+    # Per-provider attached-volume overrides. Default None => fall back to the
+    # global --attached-volume-size. No ovh_3az flag: 3-AZ has no block storage,
+    # so ovh_3az nodes use the root disk.
+    for _p in ("do", "hetzner", "vultr", "ovh"):
+        nodes_infra_parser.add_argument(
+            f"--{_p}-attached-volume-size",
+            type=int,
+            default=None,
+            help=f"Attached-volume size in GB for {_p} nodes "
+            "(overrides --attached-volume-size).",
+        )
     nodes_infra_parser.add_argument(
         "--name",
         type=str,
@@ -2349,6 +2362,37 @@ def main(argv=None):
         help="Comma-separated list of specific OVH regions to use "
         "(e.g. GRA9,UK1,DE1). Overrides --ovh-regions and the default "
         "ordering; no fallback substitution.",
+    )
+    # OVH 3-AZ regions (EU-WEST-PAR, EU-SOUTH-MIL) use a separate provider that
+    # creates instances via OpenStack/Nova (resources/ovh-3az) to sidestep the
+    # OVH-native API's 500 on user_data/availability_zone in 3-AZ regions. Same
+    # OVH credentials as --ovh-*.
+    nodes_infra_parser.add_argument(
+        "--ovh-3az-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on OVH 3-AZ regions "
+        "(default: 0, provider not used)",
+    )
+    nodes_infra_parser.add_argument(
+        "--ovh-3az-flavor",
+        type=str,
+        default="b3-16",
+        help="OVH 3-AZ instance flavor (default: b3-16)",
+    )
+    nodes_infra_parser.add_argument(
+        "--ovh-3az-regions",
+        type=int,
+        default=1,
+        help="Number of OVH 3-AZ regions to use (default: 1). "
+        "Ignored if --ovh-3az-regions-list is set.",
+    )
+    nodes_infra_parser.add_argument(
+        "--ovh-3az-regions-list",
+        type=str,
+        default=None,
+        help="Comma-separated list of specific OVH 3-AZ regions to use "
+        "(EU-WEST-PAR, EU-SOUTH-MIL). Overrides --ovh-3az-regions.",
     )
 
     # nodes provision

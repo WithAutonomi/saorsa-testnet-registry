@@ -27,6 +27,14 @@ def _args(**overrides):
         "ovh_regions": 0,
         "ovh_regions_list": None,
         "ovh_flavor": "b3-16",
+        "ovh_3az_vm_count": 0,
+        "ovh_3az_regions": 1,
+        "ovh_3az_regions_list": None,
+        "ovh_3az_flavor": "b3-16",
+        "do_attached_volume_size": None,
+        "hetzner_attached_volume_size": None,
+        "vultr_attached_volume_size": None,
+        "ovh_attached_volume_size": None,
         "force": False,
     }
     defaults.update(overrides)
@@ -313,6 +321,60 @@ class TestOvhProvider:
         # Testnet node VMs follow the NAME-ant-node-REGION-N convention, not
         # the module's migration-oriented "ovh" default.
         assert cfg.variables["name_template"] == "ant-node"
+
+    def test_ovh_3az_routes_to_ovh_3az_module_with_zones(self, patches, monkeypatch):
+        # ovh_3az must resolve to the ovh-3az module (state_key prefix), pass the
+        # flavor + service_name, and inject the region's AZ list for round-robin.
+        patches.load_state.return_value = _state_with_bootstraps()
+        for var, value in OVH_ENV.items():
+            monkeypatch.setenv(var, value)
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="ovh_3az",
+                region="EU-WEST-PAR",
+                outputs={"vm_ips": ["10.0.0.9"], "vm_ids": ["uuid-1"]},
+            ),
+        ]
+
+        cmd_infra_nodes(
+            _args(
+                do_vm_count=0,
+                ovh_3az_vm_count=2,
+                ovh_3az_regions_list="EU-WEST-PAR",
+                ovh_3az_flavor="b3-16",
+            )
+        )
+
+        cfg = patches.execute.call_args.args[0][0]
+        assert cfg.provider == "ovh_3az"
+        assert cfg.state_key == "saorsa-deploy/ovh-3az-DEV-02-EU-WEST-PAR.tfstate"
+        assert cfg.variables["flavor_name"] == "b3-16"
+        assert cfg.variables["service_name"] == "project-id"
+        assert cfg.variables["name_template"] == "ant-node"
+        assert (
+            cfg.variables["availability_zones"]
+            == '["eu-west-par-a","eu-west-par-b","eu-west-par-c"]'
+        )
+        # ovh_3az has no block storage — the module has no attached_volume_size
+        # variable, so it must never be passed.
+        assert "attached_volume_size" not in cfg.variables
+
+    def test_do_attached_volume_size_override_beats_global(self, patches, monkeypatch):
+        # A per-provider --do-attached-volume-size overrides the global default.
+        patches.load_state.return_value = _state_with_bootstraps()
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True, provider="digitalocean", region="nyc1",
+                outputs={"vm_ips": ["10.0.0.9"], "vm_ids": ["uuid-1"]},
+            ),
+        ]
+        cmd_infra_nodes(
+            _args(do_vm_count=1, do_regions_list="nyc1",
+                  attached_volume_size=20, do_attached_volume_size=250)
+        )
+        cfg = patches.execute.call_args.args[0][0]
+        assert cfg.variables["attached_volume_size"] == "250"
 
     def test_state_records_flavor_name(self, patches, monkeypatch):
         patches.load_state.return_value = _state_with_bootstraps()

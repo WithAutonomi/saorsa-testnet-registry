@@ -45,8 +45,14 @@ _PROVIDER_FLAGS = {
     ),
     "vultr": ("--vultr-vm-count", "--vultr-regions", "--vultr-regions-list", "--vultr-plan"),
     "ovh": ("--ovh-vm-count", "--ovh-regions", "--ovh-regions-list", "--ovh-flavor"),
+    "ovh_3az": (
+        "--ovh-3az-vm-count",
+        "--ovh-3az-regions",
+        "--ovh-3az-regions-list",
+        "--ovh-3az-flavor",
+    ),
 }
-_PROVIDER_ORDER = ["digital_ocean", "hetzner", "vultr", "ovh"]
+_PROVIDER_ORDER = ["digital_ocean", "hetzner", "vultr", "ovh", "ovh_3az"]
 
 
 def _uploader_spec(u) -> str:
@@ -101,8 +107,12 @@ def _nodes_infra_argv(name: str, nodes: Nodes) -> list[str]:
             argv += [regions_flag, str(cfg.regions)]
         if cfg.size:
             argv += [size_flag, cfg.size]
-    if nodes.attached_volume_size is not None:
-        argv += ["--attached-volume-size", str(nodes.attached_volume_size)]
+        # Attached-volume size is per-provider; ovh_3az never has one (no block
+        # storage — validated in the config model). digital_ocean's CLI prefix
+        # is "do".
+        if cfg.attached_volume_size is not None:
+            vol_prefix = "do" if provider == "digital_ocean" else provider
+            argv += [f"--{vol_prefix}-attached-volume-size", str(cfg.attached_volume_size)]
     return argv
 
 

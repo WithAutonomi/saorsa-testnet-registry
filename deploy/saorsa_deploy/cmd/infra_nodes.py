@@ -23,6 +23,38 @@ from saorsa_deploy.state import (
 from saorsa_deploy.terraform import TerraformRunConfig
 from saorsa_deploy.vultr_availability import resolve_vultr_regions
 
+# OVH 3-AZ regions place instances in a named availability zone; the ovh-3az
+# module round-robins VMs across a region's zones (via Nova). Keys are the
+# uppercase region names as they appear in a manifest; values are the lowercase
+# OpenStack AZ names.
+OVH_3AZ_REGION_ZONES = {
+    "EU-WEST-PAR": ["eu-west-par-a", "eu-west-par-b", "eu-west-par-c"],
+    "EU-SOUTH-MIL": ["eu-south-mil-a", "eu-south-mil-b", "eu-south-mil-c"],
+}
+
+
+def _ovh_az_tfvar(zones: list[str]) -> str:
+    """Render an HCL list literal for a Terraform list(string) ``-var`` value."""
+    return "[" + ",".join(f'"{z}"' for z in zones) + "]"
+
+
+# Internal provider name -> the CLI arg prefix for its per-provider volume flag.
+_VOLUME_ARG_PREFIX = {
+    "digitalocean": "do",
+    "hetzner": "hetzner",
+    "vultr": "vultr",
+    "ovh": "ovh",
+}
+
+
+def _provider_volume_size(args, provider_name: str) -> int:
+    """Attached-volume size for a provider: its per-provider override if set,
+    else the global ``--attached-volume-size``. Not called for ``ovh_3az``
+    (no block storage)."""
+    prefix = _VOLUME_ARG_PREFIX[provider_name]
+    override = getattr(args, f"{prefix}_attached_volume_size", None)
+    return override if override is not None else args.attached_volume_size
+
 
 def _parse_regions_list(raw: str | None) -> list[str] | None:
     if not raw:
@@ -63,6 +95,12 @@ def _build_provider_specs(args) -> list[ProviderSpec]:
         specs.append(
             ProviderSpec("ovh", args.ovh_vm_count, count, override)
         )
+    if getattr(args, "ovh_3az_vm_count", 0) > 0:
+        override = _parse_regions_list(getattr(args, "ovh_3az_regions_list", None))
+        count = len(override) if override else getattr(args, "ovh_3az_regions", 1)
+        specs.append(
+            ProviderSpec("ovh_3az", args.ovh_3az_vm_count, count, override)
+        )
     return specs
 
 
@@ -72,6 +110,7 @@ def _build_provider_state(
     hetzner_server_type: str,
     vultr_plan: str,
     ovh_flavor: str,
+    ovh_3az_flavor: str = "b3-16",
 ) -> dict:
     providers_state = {}
     for spec in provider_specs:
@@ -84,6 +123,8 @@ def _build_provider_state(
             entry["plan"] = vultr_plan
         elif spec.name == "ovh":
             entry["flavor_name"] = ovh_flavor
+        elif spec.name == "ovh_3az":
+            entry["flavor_name"] = ovh_3az_flavor
         providers_state[spec.name] = entry
     return providers_state
 
@@ -106,7 +147,7 @@ def _check_ovh_env(provider_specs: list[ProviderSpec]) -> str | None:
     Returns the OVH Public Cloud project id (``service_name``) when an OVH
     spec is present, ``None`` otherwise.
     """
-    if not any(s.name == "ovh" for s in provider_specs):
+    if not any(s.name in ("ovh", "ovh_3az") for s in provider_specs):
         return None
     missing = [v for v in OVH_REQUIRED_ENV_VARS if not os.environ.get(v)]
     if missing:
@@ -130,7 +171,8 @@ def cmd_infra_nodes(args):
     if not provider_specs:
         console.print(
             "[bold red]Error:[/bold red] At least one provider must have vm_count > 0. "
-            "Use --do-vm-count, --hetzner-vm-count, --vultr-vm-count, or --ovh-vm-count."
+            "Use --do-vm-count, --hetzner-vm-count, --vultr-vm-count, "
+            "--ovh-vm-count, or --ovh-3az-vm-count."
         )
         sys.exit(1)
 
@@ -159,6 +201,7 @@ def cmd_infra_nodes(args):
     hetzner_server_type = getattr(args, "hetzner_server_type", "cpx22")
     vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
     ovh_flavor = getattr(args, "ovh_flavor", "b3-16")
+    ovh_3az_flavor = getattr(args, "ovh_3az_flavor", "b3-16")
     force = getattr(args, "force", False)
 
     record_event(args.name, "infra_nodes_started")
@@ -235,8 +278,15 @@ def cmd_infra_nodes(args):
             "name": args.name,
             "region": region,
             "vm_count": str(vm_count_by_provider[provider_name]),
-            "attached_volume_size": str(args.attached_volume_size),
         }
+        # attached_volume_size is per-provider (a --<provider>-attached-volume-size
+        # override, else the global --attached-volume-size). ovh_3az is excluded:
+        # 3-AZ regions have no block storage, so those nodes use the root disk and
+        # the ovh-3az module has no volume.
+        if provider_name != "ovh_3az":
+            variables["attached_volume_size"] = str(
+                _provider_volume_size(args, provider_name)
+            )
         if provider_name == "digitalocean":
             variables["droplet_size"] = do_droplet_size
         elif provider_name == "hetzner":
@@ -250,6 +300,15 @@ def cmd_infra_nodes(args):
             # flow; testnet node VMs follow the NAME-ant-node-REGION-N
             # convention used by the other providers.
             variables["name_template"] = "ant-node"
+        elif provider_name == "ovh_3az":
+            variables["flavor_name"] = ovh_3az_flavor
+            variables["service_name"] = ovh_service_name
+            variables["name_template"] = "ant-node"
+            # Round-robin VMs across the 3-AZ region's zones (Nova places the
+            # instance in the given AZ). No data volume — root disk only.
+            zones = OVH_3AZ_REGION_ZONES.get(region.upper())
+            if zones:
+                variables["availability_zones"] = _ovh_az_tfvar(zones)
 
         configs.append(
             TerraformRunConfig(
@@ -299,7 +358,8 @@ def cmd_infra_nodes(args):
     # total failure. Previously we saved regions only after a successful
     # apply, which left orphans invisible to destroy.
     providers_state = _build_provider_state(
-        provider_specs, do_droplet_size, hetzner_server_type, vultr_plan, ovh_flavor
+        provider_specs, do_droplet_size, hetzner_server_type, vultr_plan,
+        ovh_flavor, ovh_3az_flavor,
     )
     terraform_variables = {
         "name": args.name,

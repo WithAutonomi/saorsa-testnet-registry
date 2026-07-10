@@ -29,17 +29,18 @@ STG_01 = {
         "nodes": {
             "per_vm": 15,
             "nat_percent": 30,
-            "attached_volume_size": 100,
             "providers": {
                 "digital_ocean": {
                     "vm_count": 5,
                     "regions_list": ["ams3", "blr1", "fra1", "lon1", "nyc1", "syd1", "sgp1"],
                     "size": "s-8vcpu-16gb",
+                    "attached_volume_size": 100,
                 },
                 "vultr": {
                     "vm_count": 5,
                     "regions_list": ["ams", "ewr", "lax", "lhr", "nrt"],
                     "size": "vhp-8c-16gb-intel",
+                    "attached_volume_size": 100,
                 },
             },
         },
@@ -159,13 +160,15 @@ EXPECTED_DEPLOY = [
         "ams3,blr1,fra1,lon1,nyc1,syd1,sgp1",
         "--do-droplet-size",
         "s-8vcpu-16gb",
+        "--do-attached-volume-size",
+        "100",
         "--vultr-vm-count",
         "5",
         "--vultr-regions-list",
         "ams,ewr,lax,lhr,nrt",
         "--vultr-plan",
         "vhp-8c-16gb-intel",
-        "--attached-volume-size",
+        "--vultr-attached-volume-size",
         "100",
     ],
     [

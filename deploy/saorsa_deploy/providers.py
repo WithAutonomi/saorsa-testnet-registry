@@ -42,17 +42,27 @@ PROVIDERS = {
     ),
     "ovh": ProviderConfig(
         name="ovh",
-        # Instance-capable OVH regions today: 8 EU + 1 NA. APAC regions
-        # (BOM/SGP/SYD) require per-account activation; add them here once
-        # the project has them enabled.
+        # 1-AZ (mono-datacenter) regions only. The 3-AZ regions (EU-WEST-PAR,
+        # EU-SOUTH-MIL) are served by the separate `ovh_3az` provider below —
+        # OVH's native instance-create API 500s on 3-AZ when the request carries
+        # user_data or availability_zone, which this module needs, so they must
+        # go through the OpenStack/Nova-based ovh-3az module instead.
         regions=[
-            "GRA9", "SBG5", "DE1", "UK1", "WAW1",
-            "EU-WEST-PAR", "EU-SOUTH-MIL", "RBX-A",
-            "BHS5",
+            "GRA9", "SBG5", "DE1", "UK1", "WAW1", "RBX-A", "BHS5",
         ],
         default_region="GRA9",
         tf_dir="ovh",
         state_key_prefix="saorsa-deploy/ovh",
+    ),
+    "ovh_3az": ProviderConfig(
+        name="ovh_3az",
+        # OVH 3-AZ regions. Same OVH credentials as `ovh`; creates instances via
+        # the OpenStack/Nova API (resources/ovh-3az) to sidestep the OVH-native
+        # region endpoint's 500 on user_data / availability_zone.
+        regions=["EU-WEST-PAR", "EU-SOUTH-MIL"],
+        default_region="EU-WEST-PAR",
+        tf_dir="ovh-3az",
+        state_key_prefix="saorsa-deploy/ovh-3az",
     ),
 }
 

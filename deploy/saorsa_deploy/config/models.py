@@ -137,6 +137,11 @@ class ProviderNodes(_Base):
     regions: Optional[int] = None
     regions_list: Optional[list[str]] = None
     size: Optional[str] = None
+    # GB of attached block-storage volume per VM for this provider. Per-provider
+    # (not nodes-level) because providers differ: ovh_3az has NO block storage
+    # (3-AZ regions), so setting it there is rejected — those nodes use the root
+    # disk. Omit to fall back to the CLI's global --attached-volume-size default.
+    attached_volume_size: Optional[int] = None
 
     @model_validator(mode="after")
     def _regions_exclusive(self) -> "ProviderNodes":
@@ -151,6 +156,10 @@ class Nodes(_Base):
     clock_skew: Optional[int] = None  # nodes provision --clock-skew-count (N random hosts)
     full_percent: Optional[int] = None  # nodes provision --full-percent (% of non-NAT VMs)
     full_headroom_mb: Optional[int] = None  # nodes provision --full-headroom-mb
+    # DEPRECATED at this level — moved to per-provider (nodes.providers.<p>.
+    # attached_volume_size). Kept only to emit a clear migration error; see the
+    # validator below. Providers differ (ovh_3az has no block storage), so a
+    # single nodes-level size is no longer meaningful.
     attached_volume_size: Optional[int] = None
     # Single log level for the node systemd services (nodes + genesis +
     # bootstraps), passed as ant-node `--log-level`. ant-node has NO env-filter
@@ -162,7 +171,7 @@ class Nodes(_Base):
 
     @model_validator(mode="after")
     def _known_providers(self) -> "Nodes":
-        allowed = {"digital_ocean", "hetzner", "vultr", "ovh"}
+        allowed = {"digital_ocean", "hetzner", "vultr", "ovh", "ovh_3az"}
         unknown = set(self.providers) - allowed
         if unknown:
             raise ValueError(
@@ -171,6 +180,24 @@ class Nodes(_Base):
             )
         if not self.providers:
             raise ValueError("nodes.providers: at least one provider is required")
+        return self
+
+    @model_validator(mode="after")
+    def _volume_size_placement(self) -> "Nodes":
+        if self.attached_volume_size is not None:
+            raise ValueError(
+                "nodes.attached_volume_size has moved to per-provider: set it "
+                "under nodes.providers.<provider>.attached_volume_size instead. "
+                "It is not valid for ovh_3az (3-AZ regions have no block "
+                "storage; those nodes use the root disk)."
+            )
+        cfg = self.providers.get("ovh_3az")
+        if cfg is not None and cfg.attached_volume_size is not None:
+            raise ValueError(
+                "nodes.providers.ovh_3az: attached_volume_size is not supported "
+                "— OVH 3-AZ regions have no block storage, so these nodes use "
+                "the root disk. Remove attached_volume_size from ovh_3az."
+            )
         return self
 
 
