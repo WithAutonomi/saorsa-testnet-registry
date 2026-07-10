@@ -183,8 +183,18 @@ def cmd_destroy_nodes(args):
         # ovh_3az has no attached volume (3-AZ regions have no block storage), so
         # its module doesn't declare attached_volume_size.
         if provider_name != "ovh_3az":
-            variables["attached_volume_size"] = terraform_variables.get(
-                "attached_volume_size", "20"
+            # The recorded deployment-level value can be stale/wrong for a
+            # provider that used a per-provider size override at create time
+            # (that override isn't persisted anywhere) — trust whichever is
+            # LARGER between it and the size actually recorded in this
+            # region's own tfstate, since DO/OVH reject any destroy plan that
+            # would shrink an existing volume.
+            recorded_size = int(
+                terraform_variables.get("attached_volume_size", "20")
+            )
+            actual_size = int(_orphan_volume_size(state_key))
+            variables["attached_volume_size"] = str(
+                max(recorded_size, actual_size)
             )
         _apply_provider_size_vars(
             variables, provider_name, providers_config.get(provider_name)

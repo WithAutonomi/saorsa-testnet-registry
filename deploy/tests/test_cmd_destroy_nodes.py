@@ -34,10 +34,14 @@ def patches():
             "saorsa_deploy.cmd.destroy_nodes.list_terraform_state_keys"
         ) as p_list_keys,
         patch(
+            "saorsa_deploy.cmd.destroy_nodes.load_terraform_state"
+        ) as p_load_tf,
+        patch(
             "saorsa_deploy.cmd.destroy_nodes.execute_terraform_runs"
         ) as p_execute,
     ):
         p_list_keys.return_value = []
+        p_load_tf.side_effect = Exception("no tfstate")
         p_execute.return_value = [
             TerraformResult(
                 success=True, provider="digitalocean", region="lon1"
@@ -51,6 +55,7 @@ def patches():
             delete_state=p_delete_state,
             delete_tf=p_delete_tf,
             list_keys=p_list_keys,
+            load_tf=p_load_tf,
             execute=p_execute,
         )
 
