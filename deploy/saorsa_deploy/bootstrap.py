@@ -9,11 +9,39 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     delete_terraform_state,
     list_terraform_state_keys,
+    load_terraform_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
 
 BOOTSTRAP_STATE_KEY_PREFIX = "saorsa-deploy/do-bootstrap"
 BOOTSTRAP_DROPLET_SIZE = "s-2vcpu-4gb"
+
+
+def _real_bootstrap_volume_size(state_key: str) -> int:
+    """Return the bootstrap_storage volume size recorded in a region's own tfstate.
+
+    Reading the real size (rather than trusting a single deployment-level
+    default) keeps the destroy plan from computing a volume "shrink", which
+    DigitalOcean rejects. Falls back to 20 when no volume size is recorded or
+    the state can't be read.
+    """
+    try:
+        tfstate = load_terraform_state(state_key)
+    except Exception:
+        return 20
+    sizes: list[int] = []
+    for resource in tfstate.get("resources", []):
+        if resource.get("name") != "bootstrap_storage":
+            continue
+        rtype = resource.get("type", "")
+        if "volume" not in rtype and "block_storage" not in rtype:
+            continue
+        for inst in resource.get("instances") or []:
+            attrs = inst.get("attributes") or {}
+            size = attrs.get("size", attrs.get("size_gb"))
+            if isinstance(size, (int, float)) and size > 0:
+                sizes.append(int(size))
+    return max(sizes) if sizes else 20
 
 
 def _select_bootstrap_regions(
@@ -54,8 +82,14 @@ def _build_bootstrap_configs(
     regions: list[str],
     volume_size: int = 20,
     droplet_size: str = BOOTSTRAP_DROPLET_SIZE,
+    volume_size_by_region: dict[str, int] | None = None,
 ) -> list[TerraformRunConfig]:
-    """Build Terraform run configs for bootstrap nodes."""
+    """Build Terraform run configs for bootstrap nodes.
+
+    ``volume_size_by_region``, when given, overrides ``volume_size`` for the
+    matching region — used by destroy call sites that need each region's own
+    recorded volume size rather than one deployment-level default.
+    """
     resources_dir = get_resources_dir()
     tf_source = resources_dir / "digitalocean-bootstrap"
     workspace_base = Path.cwd() / ".saorsa" / "workspaces"
@@ -65,11 +99,14 @@ def _build_bootstrap_configs(
         bootstrap_index = i + 1
         workspace_dir = workspace_base / f"do-bootstrap-{name}-{region}"
         state_key = f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-{region}.tfstate"
+        region_volume_size = (
+            (volume_size_by_region or {}).get(region, volume_size)
+        )
 
         variables = {
             "name": name,
             "region": region,
-            "attached_volume_size": str(volume_size),
+            "attached_volume_size": str(region_volume_size),
             "droplet_size": droplet_size,
             "bootstrap_index": str(bootstrap_index),
         }
@@ -126,6 +163,7 @@ def purge_stale_bootstrap_state(
     for key in stale_keys:
         region = _region_from_bootstrap_state_key(key, name)
         workspace_dir = workspace_base / f"do-bootstrap-{name}-{region}"
+        region_volume_size = max(volume_size, _real_bootstrap_volume_size(key))
         configs.append(
             TerraformRunConfig(
                 provider="digitalocean",
@@ -136,7 +174,7 @@ def purge_stale_bootstrap_state(
                 variables={
                     "name": name,
                     "region": region,
-                    "attached_volume_size": str(volume_size),
+                    "attached_volume_size": str(region_volume_size),
                     "droplet_size": droplet_size,
                     "bootstrap_index": "1",
                 },
@@ -230,7 +268,26 @@ def destroy_bootstrap_vms(
 ) -> None:
     """Destroy bootstrap VMs via Terraform."""
     console = console or Console()
-    configs = _build_bootstrap_configs(name, regions, volume_size, droplet_size)
+    # Trust whichever is LARGER between the deployment-recorded default and
+    # each region's own tfstate-recorded size — a region provisioned with a
+    # different volume size than what's currently recorded would otherwise
+    # make Terraform compute a shrink, which DigitalOcean rejects.
+    volume_size_by_region = {
+        region: max(
+            volume_size,
+            _real_bootstrap_volume_size(
+                f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-{region}.tfstate"
+            ),
+        )
+        for region in regions
+    }
+    configs = _build_bootstrap_configs(
+        name,
+        regions,
+        volume_size,
+        droplet_size,
+        volume_size_by_region=volume_size_by_region,
+    )
 
     from saorsa_deploy.state import check_terraform_state_exists
 
