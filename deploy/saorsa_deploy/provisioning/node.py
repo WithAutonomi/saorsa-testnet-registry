@@ -31,7 +31,12 @@ from saorsa_deploy.provisioning.progress import (
     print_op_timing_summary,
 )
 from saorsa_deploy.provisioning.shell_ops import as_single_shell_command
-from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
+from saorsa_deploy.provisioning.volume import (
+    LOG_DIR,
+    MOUNT_POINT,
+    build_mount_volume_command,
+    build_root_disk_dir_command,
+)
 
 METRICS_PORT_BASE = 9100
 
@@ -173,6 +178,7 @@ class AntNodeProvisioner:
         nat_ips: set[str] | None = None,
         clock_skew_ips: set[str] | None = None,
         full_ips: set[str] | None = None,
+        root_disk_ips: set[str] | None = None,
         full_headroom_mb: int = DEFAULT_FULL_HEADROOM_MB,
         evm_network: str | None = "arbitrum-sepolia",
         restart_policy: str = "on-success",
@@ -197,6 +203,9 @@ class AntNodeProvisioner:
         self.nat_ips = set(nat_ips) if nat_ips else set()
         self.clock_skew_ips = set(clock_skew_ips) if clock_skew_ips else set()
         self.full_ips = set(full_ips) if full_ips else set()
+        # Hosts with NO attached volume (OVH 3-AZ regions have no block storage):
+        # they get a root-disk /mnt/ant-node-storage directory instead of a mount.
+        self.root_disk_ips = set(root_disk_ips) if root_disk_ips else set()
         self.full_headroom_mb = full_headroom_mb
         self.evm_network = evm_network
         self.restart_policy = restart_policy
@@ -312,7 +321,17 @@ class AntNodeProvisioner:
             nat_hosts = [h for h in active_hosts if h.name in self.nat_ips]
             plain_hosts = [h for h in active_hosts if h.name not in self.nat_ips]
             skew_hosts = [h for h in active_hosts if h.name in self.clock_skew_ips]
-            full_hosts = [h for h in active_hosts if h.name in self.full_ips]
+            # OVH 3-AZ hosts have no attached volume; the rest mount one.
+            root_disk_hosts = [h for h in active_hosts if h.name in self.root_disk_ips]
+            volume_hosts = [h for h in active_hosts if h.name not in self.root_disk_ips]
+            # Exclude root-disk hosts from storage-full simulation — it would fill
+            # the root disk (/mnt/ant-node-storage is a plain dir there), not a
+            # dedicated volume, risking OS instability.
+            full_hosts = [
+                h
+                for h in active_hosts
+                if h.name in self.full_ips and h.name not in self.root_disk_ips
+            ]
 
             add_operator_authorized_keys_op(state)
 
@@ -323,12 +342,35 @@ class AntNodeProvisioner:
                 commands=[build_disable_unattended_upgrades_command()],
             )
 
-            add_op(
-                state,
-                server.shell,
-                name="Mount attached storage volume",
-                commands=[build_mount_volume_command()],
-            )
+            if self.root_disk_ips:
+                # Mixed deployment including OVH 3-AZ hosts (no block storage):
+                # mount a volume on the volume-backed hosts, use a root-disk
+                # directory on the 3-AZ hosts. Only split when 3-AZ hosts are
+                # present so the common single-op path (and its ordering) is
+                # unchanged.
+                if volume_hosts:
+                    add_op(
+                        state,
+                        server.shell,
+                        name="Mount attached storage volume",
+                        commands=[build_mount_volume_command()],
+                        host=volume_hosts,
+                    )
+                if root_disk_hosts:
+                    add_op(
+                        state,
+                        server.shell,
+                        name="Set up root-disk storage directory (no volume)",
+                        commands=[build_root_disk_dir_command()],
+                        host=root_disk_hosts,
+                    )
+            else:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Mount attached storage volume",
+                    commands=[build_mount_volume_command()],
+                )
 
             # One `mkdir -p` with every directory as an argument — a single SSH
             # round-trip per host rather than one per node service.

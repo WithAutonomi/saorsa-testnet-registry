@@ -85,6 +85,12 @@ def cmd_provision_nodes(args):
             f"[bold]Provisioning {len(all_ips)} VM(s) across {len(vm_ips)} region(s)...[/bold]"
         )
 
+    root_disk_ips = _resolve_root_disk_ips(vm_ips, all_ips)
+    if root_disk_ips:
+        console.print(
+            f"  Root-disk storage (no volume): {len(root_disk_ips)} OVH 3-AZ VM(s)"
+        )
+
     console.print(f"  Bootstrap peers: {', '.join(bootstrap_peers)}")
     console.print(f"  Node count per VM: {args.node_count}")
     console.print(f"  SSH key: {args.ssh_key_path}")
@@ -131,6 +137,7 @@ def cmd_provision_nodes(args):
         "nat_ips": nat_ips,
         "clock_skew_ips": clock_skew_ips,
         "full_ips": full_ips,
+        "root_disk_ips": root_disk_ips,
         "full_headroom_mb": getattr(args, "full_headroom_mb", DEFAULT_FULL_HEADROOM_MB),
         "extra_op_providers": extra_op_providers,
     }
@@ -209,6 +216,21 @@ def cmd_provision_nodes(args):
             "[yellow]Warning: Failed to record nodes_per_vm/nat_percent in "
             f"deploy_args: {e}[/yellow]"
         )
+
+
+def _resolve_root_disk_ips(vm_ips: dict, all_ips: list[str]) -> set[str]:
+    """IPs of node VMs that have NO attached volume and use the root disk for
+    /mnt/ant-node-storage — i.e. the ovh_3az provider (OVH 3-AZ regions have no
+    block storage). ``vm_ips`` is keyed ``"provider/region"`` (e.g.
+    ``"ovh_3az/EU-WEST-PAR"``), so match on the provider prefix. Intersected with
+    ``all_ips`` so a single-region provision only flags hosts it is provisioning.
+    """
+    return {
+        ip
+        for region_key, ips in vm_ips.items()
+        if region_key.split("/", 1)[0] == "ovh_3az"
+        for ip in ips
+    } & set(all_ips)
 
 
 def _resolve_nat_ips(args, state, vm_ips_by_region, console) -> set[str]:

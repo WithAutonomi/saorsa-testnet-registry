@@ -18,6 +18,14 @@ STRIPE_VG_NAME = "ant_storage_vg"
 STRIPE_LV_NAME = "ant_storage_lv"
 
 
+def build_root_disk_dir_command(mount_point: str = MOUNT_POINT) -> str:
+    """Build a shell command for node hosts with NO attached volume (OVH 3-AZ
+    regions have no block storage): just ensure the storage directory exists on
+    the root disk. Idempotent. Reports ``ANT_VOLUME:ROOT_DISK``.
+    """
+    return f"mkdir -p {mount_point} && echo 'ANT_VOLUME:ROOT_DISK'"
+
+
 def build_mount_volume_command(mount_point: str = MOUNT_POINT) -> str:
     """Build a shell command that finds an attached volume, mounts it, and adds an fstab entry.
 
@@ -27,6 +35,10 @@ def build_mount_volume_command(mount_point: str = MOUNT_POINT) -> str:
       - ANT_VOLUME:ALREADY_MOUNTED — mount point already active
       - ANT_VOLUME:MOUNTED — volume was mounted and fstab updated
       - ANT_VOLUME:NO_DEVICE — no attached volume device found
+
+    A missing device is a hard error (exit 1) so a failed volume attach fails
+    loudly. Hosts that intentionally have no volume (ovh_3az) are given
+    :func:`build_root_disk_dir_command` instead, targeted per-host by the caller.
     """
     # Try each provider's glob pattern until one matches
     discover_parts = " ".join(

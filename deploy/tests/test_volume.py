@@ -2,7 +2,26 @@ from saorsa_deploy.provisioning.volume import (
     MOUNT_POINT,
     VOLUME_DEVICE_GLOBS,
     build_mount_volume_command,
+    build_root_disk_dir_command,
 )
+
+
+class TestBuildRootDiskDirCommand:
+    def test_makes_mount_point_and_reports_root_disk(self):
+        cmd = build_root_disk_dir_command()
+        assert f"mkdir -p {MOUNT_POINT}" in cmd
+        assert "ANT_VOLUME:ROOT_DISK" in cmd
+
+    def test_custom_mount_point(self):
+        cmd = build_root_disk_dir_command("/mnt/custom")
+        assert "mkdir -p /mnt/custom" in cmd
+
+    def test_never_touches_a_block_device(self):
+        # Root-disk hosts (OVH 3-AZ) have no volume — the command must not try to
+        # discover/format/mount a device.
+        cmd = build_root_disk_dir_command()
+        for token in ("blkid", "mkfs", "mount ", "NO_DEVICE", "/dev/"):
+            assert token not in cmd
 
 
 class TestBuildMountVolumeCommand:
