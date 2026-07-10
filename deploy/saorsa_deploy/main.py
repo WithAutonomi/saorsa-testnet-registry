@@ -523,6 +523,16 @@ def main(argv=None):
             "~/.ssh/id_rsa."
         ),
     )
+    clients_destroy_parser.add_argument(
+        "--skip-stop-services",
+        action="store_true",
+        help=(
+            "Skip SSHing into uploader VMs to stop ant-uploader before "
+            "draining. Use on a retry after a partial destroy failure when "
+            "the remaining VMs are unreachable and the stop step would just "
+            "stall waiting on connection timeouts."
+        ),
+    )
 
     # clients infra
     clients_infra_parser = clients_subparsers.add_parser(

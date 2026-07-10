@@ -37,6 +37,9 @@ def patches():
         patch(
             "saorsa_deploy.cmd.destroy_clients.run_terraform_destroy"
         ) as p_destroy,
+        patch(
+            "saorsa_deploy.cmd.destroy_clients.update_client_state"
+        ) as p_update_client,
     ):
         p_list_keys.return_value = []
         p_destroy.return_value = TerraformResult(
@@ -49,6 +52,7 @@ def patches():
             list_keys=p_list_keys,
             load_tf=p_load_tf,
             destroy=p_destroy,
+            update_client=p_update_client,
         )
 
 
