@@ -205,6 +205,9 @@ class TestPurgeStaleBootstrapState:
         ) as mock_exec, patch(
             "saorsa_deploy.bootstrap.delete_terraform_state"
         ) as mock_delete, patch(
+            "saorsa_deploy.bootstrap.load_terraform_state",
+            side_effect=Exception("no tfstate"),
+        ), patch(
             "saorsa_deploy.bootstrap.Path.cwd",
             return_value=tmp_path,
         ):
@@ -236,6 +239,9 @@ class TestPurgeStaleBootstrapState:
         ) as mock_exec, patch(
             "saorsa_deploy.bootstrap.delete_terraform_state"
         ) as mock_delete, patch(
+            "saorsa_deploy.bootstrap.load_terraform_state",
+            side_effect=Exception("no tfstate"),
+        ), patch(
             "saorsa_deploy.bootstrap.Path.cwd",
             return_value=tmp_path,
         ):

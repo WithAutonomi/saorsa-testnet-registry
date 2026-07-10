@@ -357,6 +357,25 @@ See `deploy/README.md` §"Running continuous downloaders against production" for
 
 See `deploy/README.md` §"Running one-shot downloaders against production" for the full argument table.
 
+### Upgrading the `ant` binary in place on a running prod downloader
+
+`deployments upgrade-ant-binary --name <name>` force-installs the latest (or a
+pinned/branch) `ant` binary on an already-running `prod-downloaders` or
+`prod-continuous-downloader` client VM over SSH and restarts the service —
+no infrastructure is touched. It exists because the `deploy`-time binary
+install op is presence-gated (`test -f /root/.local/bin/ant && SKIP`), so a
+plain re-`deploy` never picks up a new release on an existing deployment.
+Minimal flags (`--name` only needed; `--branch-name`/`--repo-owner`/
+`--ant-version` to override latest, `--ssh-key-path`,
+`--restart`/`--no-restart`, default on) — VM IP(s) come from the deployment's
+S3 client state, same as `deployments record-results`. `--no-restart` matters
+for a completed `prod-downloaders` run: the service has no checkpoint, so
+restarting it re-walks the whole address list from scratch, duplicating
+metrics. Impl: `deploy/saorsa_deploy/cmd/upgrade_ant_binary.py`,
+`provisioning/prod_downloader.py` `build_ant_binary_upgrade_command`.
+
+See `deploy/README.md` §"Upgrading the `ant` binary in place" for the full argument table.
+
 ### Running prod uploaders
 
 `prod uploaders deploy` is the upload-side equivalent of `prod continuous-downloader`: it stands up one or more client VMs that each upload a list of public files to the production Autonomi network with `ant --json file upload --public`, then exit when the list is exhausted. Per-file results (chunks_stored / chunks_failed / address / file size / duration) are emitted to a `prod_upload` Influx measurement on a paired monitoring VM.

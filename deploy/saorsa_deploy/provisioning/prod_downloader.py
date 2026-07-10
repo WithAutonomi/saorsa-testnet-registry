@@ -430,6 +430,36 @@ HEAPTRACK_DIR={HEAPTRACK_DIR}
         )
 
 
+def build_ant_binary_upgrade_command(
+    download_url: str, binary_is_archive: bool = True
+) -> str:
+    """Return the shell command that force-installs the ``ant`` binary.
+
+    Unlike :meth:`ProdDownloaderProvisioner._add_install_ant_op`, this always
+    overwrites ``ANT_INSTALL_PATH`` — that install op is gated on
+    ``test -f ... && SKIP`` so a plain re-provision never picks up a new
+    binary; upgrading an already-deployed VM in place needs the unconditional
+    version.
+    """
+    if binary_is_archive:
+        return (
+            f"rm -f {ANT_INSTALL_PATH} && "
+            f"wget -q {download_url} -O /tmp/ant-archive.tar.gz && "
+            f"tar -xzf /tmp/ant-archive.tar.gz -C /tmp/ && "
+            f"find /tmp -name ant -type f -path '*/ant-*/*' "
+            f"-exec mv {{}} {ANT_INSTALL_PATH} \\; && "
+            f"chmod +x {ANT_INSTALL_PATH} && "
+            f"rm -rf /tmp/ant-*/ /tmp/ant-archive.tar.gz && "
+            f"echo 'ANT_BINARY:UPGRADED'"
+        )
+    return (
+        f"rm -f {ANT_INSTALL_PATH} && "
+        f"wget -q {download_url} -O {ANT_INSTALL_PATH} && "
+        f"chmod +x {ANT_INSTALL_PATH} && "
+        f"echo 'ANT_BINARY:UPGRADED'"
+    )
+
+
 def build_log_prune_command(retention_days: int) -> str:
     """Return the shell command that installs/removes the log-prune timer.
 

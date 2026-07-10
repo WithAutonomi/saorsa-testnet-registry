@@ -23,6 +23,7 @@ from saorsa_deploy.state import (
     load_client_state,
     load_terraform_state,
     terraform_state_attributes,
+    update_client_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig, run_terraform_destroy
 from saorsa_deploy.wallet import (
@@ -45,10 +46,12 @@ def cmd_destroy_clients(args):
     console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
     clients: list[dict] = []
     state_ssh_key_path: str | None = None
+    has_persisted_state = False
     try:
         client_state = load_client_state(args.name)
         clients = client_state.get("clients", []) or []
         state_ssh_key_path = client_state.get("ssh_key_path")
+        has_persisted_state = True
     except RuntimeError:
         console.print(
             "[yellow]No client state in S3 — scanning for orphan client tfstate "
@@ -114,11 +117,16 @@ def cmd_destroy_clients(args):
             or state_ssh_key_path
             or "~/.ssh/id_rsa"
         )
-        _stop_uploader_services(
-            uploaders_with_wallet,
-            stop_ssh_key_path,
-            console,
-        )
+        if getattr(args, "skip_stop_services", False):
+            console.print(
+                "[dim]Skipping ant-uploader stop step (--skip-stop-services).[/dim]"
+            )
+        else:
+            _stop_uploader_services(
+                uploaders_with_wallet,
+                stop_ssh_key_path,
+                console,
+            )
         _drain_uploader_wallets(
             uploaders_with_wallet,
             funding_secret_key,
@@ -178,7 +186,8 @@ def cmd_destroy_clients(args):
     console.print(f"[bold]Destroying {len(configs)} client VM(s)...[/bold]")
 
     failures = []
-    for config in configs:
+    remaining_clients = list(clients)
+    for spec, config in zip(clients, configs):
         result = run_terraform_destroy(config)
         if not result.success:
             console.print(
@@ -197,6 +206,19 @@ def cmd_destroy_clients(args):
                 delete_terraform_state(config.state_key)
             except Exception:
                 pass
+            # Prune the destroyed client from persisted state immediately, so
+            # a retry after a later failure doesn't reprocess (stop/drain/
+            # destroy) VMs already gone. Skip when state was recovered from
+            # orphan tfstate scans — there's no persisted client state to prune.
+            if has_persisted_state:
+                remaining_clients.remove(spec)
+                try:
+                    update_client_state(args.name, {"clients": remaining_clients})
+                except Exception as e:
+                    console.print(
+                        f"[yellow]Warning: failed to prune destroyed client from "
+                        f"state: {e}[/yellow]"
+                    )
 
     # Clean up workspace directories
     for config in configs:
