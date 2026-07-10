@@ -1,0 +1,98 @@
+# staging-rc-lowbw.yaml
+#
+# Bandwidth-optimised sibling of staging-rc.yaml. Same ~870-node scale and the
+# same client stress load, but the node tier is re-placed to push as much
+# node-to-node replication traffic as possible onto OVH (unmetered EU public
+# cloud, $0 egress) and keep DigitalOcean/Vultr (metered, $0.01/GB overage) as
+# the NON-EU geographic-diversity tier rather than the bulk tier.
+#
+# Why: DO and Vultr pool bandwidth account-wide and only grant the free
+# allowance by the hour a VM runs (~8.2 GB/h for a 6 TB/mo VM). A node VM
+# egresses ~40-55 GB/h, i.e. ~5x what it earns back, so every metered node VM
+# is a net drain from minute one. OVH EU is unmetered, so nodes there are free.
+#
+# ---- OVH core-quota basis (snapshot 2026-07-09, live `/cloud/project/.../quota`) ----
+# The binding OVH limit is 40 CORES PER REGION. Node-safe 1-AZ regions and their
+# FREE cores at snapshot time (prod fills BHS5/GRA9/WAW1 to 40/40 — unusable):
+#     RBX-A 40 free | DE1 34 free | SBG5 32 free | UK1 22 free   (~128 total)
+# b3-16 = 4 vCPU (same 16 GB RAM / 15-node density as prod; HALF the core cost
+# of the c3-16 DEV-01 used, so twice the nodes fit per region). OVH clients below
+# consume UK1 (2x b3-8 = 4 cores) and DE1 (1x b3-8 = 2 cores), left as headroom.
+#
+# ---- node split (58 VMs x 15 = 870 nodes) ----
+#   OVH   (FREE)     b3-16 x 6 x {RBX-A,SBG5,DE1} = 18 VMs = 270 nodes
+#   DO    (metered)  s-8vcpu-16gb x 5 x {nyc1,sfo3,tor1,blr1,sgp1} = 25 VMs = 375
+#   Vultr (metered)  vhp-8c-16gb-intel x 5 x {ord,lax,nrt} = 15 VMs = 225
+# Metered node VMs: 40 (vs 50 in staging-rc/DEV-01). Projected node overage from
+# measured per-VM egress: ~$15/h (vs ~$19/h for DEV-01), plus OVH now carries 270
+# free nodes instead of 120.
+#
+# ---- knobs ----
+# * PUSH OVH HIGHER: if RBX-A/SBG5/DE1 are clear at deploy time (check the quota
+#   API first) raise ovh.nodes vm_count 6 -> 8 for ~360 free nodes (~$13/h). Do
+#   NOT exceed 8 without a quota bump: SBG5 free=32 => 8 VMs is its exact ceiling.
+# * The real lever is an OVH per-region CORE-QUOTA INCREASE (RBX-A is empty; more
+#   cores there = more of the fleet on free bandwidth). Uniform per-region
+#   vm_count caps us well below the ~450 nodes the free cores could theoretically
+#   hold, so quota is what limits the saving, not this manifest.
+# * Geo note: OVH here is EU-only (France x2, Germany). DO/Vultr deliberately
+#   carry North America (nyc/sfo/tor + ord/lax), Asia (blr/sgp + nrt). Oceania is
+#   dropped to stay on proven-reliable regions (DO syd1 lacks s-8vcpu-16gb; Vultr
+#   syd is less battle-tested) — add `syd` to the Vultr list if you want it back.
+
+kind: testnet
+
+ssh_key_path: ~/.ssh/ant_deploy
+
+testnet:
+  mode: true
+  bootstraps:
+    count: 7
+    port: 10000
+    attached_volume_size: 50
+
+  nodes:
+    clock_skew: 1
+    per_vm: 15
+    nat_percent: 30
+    providers:
+      ovh:
+        vm_count: 6
+        regions_list: [RBX-A, SBG5, DE1]   # 1-AZ only (block storage); nodes attach a volume
+        size: b3-16                         # 4 vCPU/16 GB — 2x core-efficient vs c3-16
+        attached_volume_size: 100
+      digital_ocean:
+        vm_count: 5
+        regions_list: [nyc1, sfo3, tor1, blr1, sgp1]   # non-EU diversity tier
+        size: s-8vcpu-16gb
+        attached_volume_size: 100
+      vultr:
+        vm_count: 5
+        regions_list: [ord, lax, nrt]                  # non-EU diversity tier
+        size: vhp-8c-16gb-intel
+        attached_volume_size: 100
+
+  clients:
+    uploaders:
+      - { provider: vultr, region: syd, file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle,    ant: 1000, eth: 0.1 }
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 1000, vm_size: b3-8,       payment: no-merkle, ant: 1000, eth: 0.1 }
+      - { provider: vultr, clock_skew: -2h, region: ewr, file_size_mb: 500,  vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1 }
+      - { provider: vultr, region: ams, file_size_mb: 300,  vm_size: vc2-2c-4gb, payment: no-merkle, ant: 500,  eth: 0.1 }
+      - { provider: vultr, region: sjc, file_size_mb: 100,  vm_size: vc2-2c-4gb,                       ant: 500,  eth: 0.1 }
+      - { provider: vultr, region: sgp, file_size_mb: 50,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.04 }
+      - { provider: vultr, region: sgp, file_size_mb: 25,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.04 }
+      - { provider: ovh,   region: DE1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04 }
+      - { provider: ovh,   region: RBX-A,file_size_mb: 20,   vm_size: b3-8,                             ant: 200,  eth: 0.04 }   # was BHS5 (full: 40/40 cores from prod)
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04 }
+    downloaders:
+      - { provider: digital_ocean, region: tor1 }
+      - { provider: digital_ocean, clock_skew: -2h, region: lon1 }
+
+  elastic:
+    enabled: true
+    droplet_size: s-8vcpu-16gb
+    volume_size: 500
+    shards: 8
+
+  monitoring:
+    enabled: true

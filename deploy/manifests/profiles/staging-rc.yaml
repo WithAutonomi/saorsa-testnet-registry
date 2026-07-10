@@ -13,16 +13,17 @@ testnet:
     clock_skew: 1
     per_vm: 15
     nat_percent: 30
-    attached_volume_size: 100
     providers:
       digital_ocean:
         vm_count: 5
         regions_list: [ams3, blr1, fra1, lon1, nyc1, syd1, sgp1]
         size: s-8vcpu-16gb
+        attached_volume_size: 100
       vultr:
         vm_count: 5
         regions_list: [ams, ord, lax, lhr, nrt]
         size: vhp-8c-16gb-intel
+        attached_volume_size: 100
 
   clients:
     uploaders:

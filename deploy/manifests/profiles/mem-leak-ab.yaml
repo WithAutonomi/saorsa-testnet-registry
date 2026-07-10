@@ -29,16 +29,17 @@ testnet:
   nodes:
     per_vm: 15
     nat_percent: 30
-    attached_volume_size: 500
     providers:
       digital_ocean:
         vm_count: 1
         regions_list: [ams3, blr1, fra1, lon1, nyc1, sfo3, sgp1]   # sfo3 not syd1: syd1 lacks s-8vcpu-16gb
         size: s-8vcpu-16gb
+        attached_volume_size: 500
       vultr:
         vm_count: 1
         regions_list: [ams, ord, lax, lhr, nrt, sgp, syd]   # ord (not ewr): ewr strands pending node VMs
         size: vhp-8c-16gb-intel                          # vhp plan required for block storage
+        attached_volume_size: 500
 
   clients:
     uploaders:

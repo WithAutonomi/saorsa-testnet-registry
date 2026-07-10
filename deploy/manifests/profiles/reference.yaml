@@ -45,24 +45,31 @@ testnet:
     full_percent: 20         # % of NON-NAT node VMs to make storage-full (pre-fill data volume so nodes reject stores); randomly chosen (not region-spread) so full nodes scatter across the keyspace; always disjoint from nat_percent; omit/0 to disable
     full_headroom_mb: 100    # free space (MiB) to leave when filling; only meaningful with full_percent > 0
     log_level: info          # single ant-node --log-level for EVERY node-tier service (genesis + bootstraps + WAN nodes): info | debug | trace. ant-node has NO per-module / env-filter logging (its --log-level is bound to RUST_LOG and takes one level only) — distinct from the per-client `rust_log` env-filter below. Also auto-lifts the node→ES drop filter (see elastic.drop_log_levels) so debug/trace reaches Elasticsearch, not just disk.
-    attached_volume_size: 100
     providers:               # vm_count is PER REGION; provider total = vm_count × number-of-regions
       digital_ocean:
         vm_count: 5
         regions_list: [ams3, blr1, fra1, lon1, nyc1]   # explicit regions
         size: s-8vcpu-16gb                              # → --do-droplet-size
+        attached_volume_size: 100                       # GB volume per VM (per-provider; ovh_3az can't have one)
       hetzner:
         vm_count: 1
         regions: 2                                      # region COUNT form (mutually exclusive with regions_list)
         size: cpx32                                     # → --hetzner-server-type
+        attached_volume_size: 100
       vultr:
         vm_count: 5
         regions_list: [ams, ewr, lax, lhr, nrt]
         size: vhp-8c-16gb-intel                         # → --vultr-plan
-      ovh:
+        attached_volume_size: 100
+      ovh:                     # 1-AZ OVH regions (have block storage)
         vm_count: 2
         regions_list: [GRA9, UK1, DE1]                  # OVH region names are uppercase
         size: b3-16                                     # → --ovh-flavor; needs OVH_APPLICATION_KEY/SECRET, OVH_CONSUMER_KEY, OVH_CLOUD_PROJECT_SERVICE
+        attached_volume_size: 100
+      ovh_3az:                 # OVH 3-AZ regions (EU-WEST-PAR, EU-SOUTH-MIL): instances via Nova, NO block storage → root disk only, so NO attached_volume_size (it errors)
+        vm_count: 2
+        regions_list: [EU-WEST-PAR, EU-SOUTH-MIL]
+        size: b3-16                                     # → --ovh-3az-flavor; same OVH credentials as ovh
 
   clients:                   # optional. Needs >=1 uploader AND >=1 downloader. Remove the block for no clients.
     # forward_logs (per-client) forwards the client ant process's stdout+stderr to
