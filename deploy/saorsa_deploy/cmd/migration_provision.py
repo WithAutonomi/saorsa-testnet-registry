@@ -14,6 +14,7 @@ from rich.console import Console
 from saorsa_db.models import MigrationStatus, MigrationVmStatus
 
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
+from saorsa_deploy.cmd.provision_telegraf import set_hostnames
 from saorsa_deploy.migration_registry import (
     MigrationRegistryError,
     get_migration_repository,
@@ -76,6 +77,25 @@ def cmd_migration_provision(args):
     console.print()
 
     clear_known_hosts(target_ips, console)
+
+    # Migrated VMs come up with the cloud provider's default hostname, which is
+    # often lowercased (e.g. OVH turns the SBG5-1 instance name into the OS
+    # hostname `ant-prod-01-ovh-sbg5-1`). Set each VM's hostname to its
+    # fleet-convention target name so host-keyed telemetry — notably the InfluxDB
+    # host tag, which uses the raw OS hostname — matches the rest of the fleet
+    # (the ES forwarder force-uppercases, so it was unaffected either way).
+    set_hostnames(
+        [
+            {
+                "ip": vm.target_ip,
+                "name": vm.target_name,
+                "ssh_user": "root",
+                "ssh_key": args.ssh_key_path,
+            }
+            for vm in vms
+        ],
+        console,
+    )
 
     kwargs = {
         "host_ips": target_ips,
