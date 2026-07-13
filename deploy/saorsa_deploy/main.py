@@ -1081,6 +1081,11 @@ def main(argv=None):
         action="store_true",
         help="Show only deployments created in the last 7 days.",
     )
+    deployments_ls_parser.add_argument(
+        "--has-results",
+        action="store_true",
+        help="Show only deployments for which results were recorded.",
+    )
     deployments_ls_status_group = deployments_ls_parser.add_mutually_exclusive_group()
     deployments_ls_status_group.add_argument(
         "--status",

@@ -125,11 +125,14 @@ def cmd_ls(args):
     if getattr(args, "recent", False):
         deployments = _filter_recent(deployments)
 
+    ids_with_results = repo.deployment_ids_with_results()
+
+    if getattr(args, "has_results", False):
+        deployments = [d for d in deployments if d.id in ids_with_results]
+
     if not deployments:
         console.print("[dim]No deployments recorded.[/dim]")
         return
-
-    ids_with_results = repo.deployment_ids_with_results()
 
     table = Table(title=f"Deployments ({len(deployments)})")
     table.add_column("ID", justify="right")
