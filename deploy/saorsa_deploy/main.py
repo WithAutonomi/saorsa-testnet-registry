@@ -1425,6 +1425,22 @@ def main(argv=None):
         help="Print the Slack payload as JSON instead of posting.",
     )
 
+    # deployments print
+    deployments_print_parser = deployments_subparsers.add_parser(
+        "print",
+        help=(
+            "Print a deployment's summary (the same information as "
+            "`deployments slack-post`) to the terminal instead of posting it "
+            "to Slack. Identified by ID rather than name."
+        ),
+    )
+    deployments_print_parser.add_argument(
+        "--id",
+        type=int,
+        required=True,
+        help="Deployment ID (must exist in the registry).",
+    )
+
     # deployments unextend
     deployments_unextend_parser = deployments_subparsers.add_parser(
         "unextend",
@@ -4422,6 +4438,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.slack_post import cmd_slack_post
 
             cmd_slack_post(args)
+        elif args.deployments_subcommand == "print":
+            from saorsa_deploy.cmd.print_deployment import cmd_print
+
+            cmd_print(args)
         elif args.deployments_subcommand == "unextend":
             from saorsa_deploy.cmd.unextend import cmd_unextend
 
