@@ -25,10 +25,13 @@ _DEFAULT_REGION = {"digitalocean": "lon1", "ovh": "GRA9", "contabo": "EU"}
 
 # Per-provider, per-stack default VM size. The InfluxDB / Elasticsearch boxes
 # want CPU+RAM; the Grafana box is tiny (it only renders panels). Contabo values
-# are product ids (verify current ids via `cntb get products`).
-_DEFAULT_INFLUXDB_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8", "contabo": "V45"}
-_DEFAULT_GRAFANA_SIZE = {"digitalocean": "s-1vcpu-2gb", "ovh": "d2-4", "contabo": "V44"}
-_DEFAULT_ELASTIC_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8", "contabo": "V45"}
+# are product ids (authoritative table: the createInstance API docs). V95 = VPS 20
+# SSD (6 vCPU / 12 GB / 200 GB); V91 = VPS 10 NVMe (4 vCPU / 8 GB, cheapest). These
+# are modest defaults — a log-heavy Elasticsearch should override with a bigger
+# Storage tier (e.g. V99 = VPS 30 Storage, 1000 GB) in the manifest.
+_DEFAULT_INFLUXDB_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8", "contabo": "V95"}
+_DEFAULT_GRAFANA_SIZE = {"digitalocean": "s-1vcpu-2gb", "ovh": "d2-4", "contabo": "V91"}
+_DEFAULT_ELASTIC_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8", "contabo": "V95"}
 
 
 def resolve_provider(args) -> str:
