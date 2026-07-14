@@ -117,6 +117,9 @@ def cmd_provision_monitoring(args):
 
     retention_days = getattr(args, "retention_days", 0) or 0
 
+    # Contabo has no attachable block storage → InfluxDB data on the root disk.
+    root_disk = state.get("provider") == "contabo"
+
     if grafana_ip and grafana_ip != vm_ip:
         ssh_targets = [vm_ip, grafana_ip]
     else:
@@ -133,6 +136,7 @@ def cmd_provision_monitoring(args):
             grafana_password=grafana_password,
             retention_days=retention_days,
             console=console,
+            root_disk=root_disk,
         )
         connection_details = provisioner.execute()
     except Exception as e:

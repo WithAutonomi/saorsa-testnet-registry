@@ -64,6 +64,19 @@ PROVIDERS = {
         tf_dir="ovh-3az",
         state_key_prefix="saorsa-deploy/ovh-3az",
     ),
+    "contabo": ProviderConfig(
+        name="contabo",
+        # Contabo region codes. The Terraform provider docs list only the first
+        # five, but the create API accepts the wider set. Product availability
+        # varies per region. Like ovh_3az, Contabo has NO attachable block
+        # storage, so its nodes are root-disk-only (resources/contabo).
+        regions=[
+            "EU", "US-central", "US-east", "US-west", "UK", "SIN", "AUS", "JPN", "IND",
+        ],
+        default_region="EU",
+        tf_dir="contabo",
+        state_key_prefix="saorsa-deploy/contabo",
+    ),
 }
 
 DEFAULT_PROVIDER = "digitalocean"

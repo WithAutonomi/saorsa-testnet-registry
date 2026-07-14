@@ -43,6 +43,7 @@ KIND_TO_BLOCK: dict[str, str] = {
     "prod-local-uploads": "prod_local_uploads",
     "prod-local-downloads": "prod_local_downloads",
     "prod-nodes": "prod_nodes",
+    "prod-debug-nodes": "prod_debug_nodes",
 }
 
 Payment = Literal["merkle", "no-merkle"]
@@ -524,6 +525,57 @@ class ProdNodesSpec(_Base):
     keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
 
 
+class ProdDebugNodesSpec(_Base):
+    """Permanent crash-debug ant-node VMs joining the PRODUCTION network.
+
+    Sibling of ``ProdNodesSpec`` but for panic/crash debugging rather than
+    heaptrack memory profiling: RUST_BACKTRACE on every service, core dumps, a
+    single global DEBUG ``log_level`` (ant-node has no per-module env filter), and
+    a DEDICATED small InfluxDB + short-retention Elasticsearch. Node and
+    monitoring/logging VMs each pick their own provider — including Contabo, which
+    is root-disk only (no attachable volume). Set ``binary.branch`` +
+    ``binary.debug: true`` to build a debug ant-node. ``None`` means "use the CLI
+    default"; the CLI defaults ``log_level=debug``, ``rust_backtrace=1``,
+    ``coredumps``/``monitoring``/``forward_logs`` on.
+    """
+
+    binary: Binary
+    region: str
+    provider: Optional[str] = None  # digitalocean|hetzner|vultr|ovh|contabo
+    vm_size: Optional[str] = None
+    vm_count: Optional[int] = None  # default 1
+    node_count: Optional[int] = None  # default 15
+    volume_size: Optional[int] = None  # ignored on Contabo (root disk)
+    log_level: Optional[LogLevel] = None  # default 'debug'
+    rust_backtrace: Optional[str] = None  # default '1'; 'full' or '' also valid
+    coredumps: Optional[bool] = None  # default on
+    coredump_retention_days: Optional[int] = None  # default 7; 0 = keep forever
+    heaptrack: Optional[bool] = None  # default off (use prod-nodes for heaptrack)
+    monitoring: Optional[bool] = None  # dedicated InfluxDB; default on
+    monitoring_provider: Optional[str] = None  # digitalocean|ovh|contabo
+    monitoring_region: Optional[str] = None
+    monitoring_droplet_size: Optional[str] = None
+    monitoring_volume_size: Optional[int] = None  # ignored on Contabo
+    grafana: Optional[bool] = None  # with monitoring, also a Grafana VM
+    influx_retention_days: Optional[int] = None  # default 7; 0 = infinite
+    forward_logs: Optional[bool] = None  # dedicated ES for node logs; default on
+    elastic_provider: Optional[str] = None  # digitalocean|ovh|contabo
+    elastic_region: Optional[str] = None
+    elastic_droplet_size: Optional[str] = None
+    elastic_volume_size: Optional[int] = None  # ignored on Contabo
+    elastic_retention_days: Optional[int] = None  # ILM days; default 3
+    elastic_shards: Optional[int] = None  # default 1
+    elastic_drop_log_levels: Optional[str] = None
+    rewards_address: Optional[str] = None
+    port: Optional[int] = None
+    keep_monitoring: Optional[bool] = None  # destroy: --keep-monitoring when True
+    keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
+    # Contabo needs an image UUID and the operator public key (registered as a
+    # contabo_secret) for whichever tier(s) run on Contabo.
+    contabo_image_id: Optional[str] = None
+    contabo_ssh_public_key_path: Optional[str] = None
+
+
 # --------------------------------------------------------------------------- #
 # top-level manifest
 # --------------------------------------------------------------------------- #
@@ -543,6 +595,7 @@ class Manifest(_Base):
     prod_local_uploads: Optional[ProdLocalUploadsSpec] = None
     prod_local_downloads: Optional[ProdLocalDownloadsSpec] = None
     prod_nodes: Optional[ProdNodesSpec] = None
+    prod_debug_nodes: Optional[ProdDebugNodesSpec] = None
 
     @model_validator(mode="after")
     def _kind_block_consistent(self) -> "Manifest":

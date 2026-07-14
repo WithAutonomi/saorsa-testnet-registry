@@ -1278,6 +1278,48 @@ There is no paired destroy command; nothing was provisioned.
 
 Companion commands behave the same way as for `prod local-uploads`: `deployments record-results` refuses this kind (records are written at run time), `deployments print-recorded-results` renders per-address Rich tables (`--details` for the long form), and `deployments slack-post` posts a "Prod Downloads [Home]" summary.
 
+### Running crash-debug nodes against production (`prod debug-nodes`)
+
+`prod debug-nodes deploy` stands up a small, isolated, **permanent** set of ant-node services that join the **production** network configured for panic/crash debugging — the sibling of `prod nodes` (which is heaptrack memory profiling). Each service runs with `RUST_BACKTRACE`, core dumps enabled, and DEBUG-level logs forwarded to a **dedicated** short-retention Elasticsearch, plus a **dedicated** small InfluxDB for host/RSS metrics. None of it touches the main prod monitoring stack. Registers a `Deployment` row with `deploy_args.kind = "prod-debug-nodes"`.
+
+```bash
+# Contabo VDS node, DEBUG logs + backtraces + core dumps, dedicated small ES + InfluxDB.
+saorsa-deploy prod debug-nodes deploy \
+  --name DEBUG-NODE-01 \
+  --purpose "permanent prod crash capture" \
+  --provider contabo --region EU --vm-size V10 \
+  --contabo-image-id <ubuntu-24.04-uuid> \
+  --branch-name main --repo-owner WithAutonomi --debug \
+  --ssh-key-path ~/.ssh/ant_deploy
+```
+
+| Argument | Required | Description |
+|---|---|---|
+| `--name NAME` | yes | Deployment name (also used for the paired monitoring/ES stacks). |
+| `--purpose TEXT` | yes | Free-text description; persisted to `deploy_args`. |
+| `--provider {digitalocean,hetzner,vultr,ovh,contabo}` | no | Node VM provider (default digitalocean). |
+| `--region REGION` | yes | Node region (e.g. `lon1`, `fsn1`, `GRA9`, `EU`). |
+| `--vm-size SIZE` | no | Node VM size/plan/flavor/product-id (per-provider default; Contabo default `V10` VDS). |
+| `--vm-count N` / `--node-count N` | no | VMs per region (default 1) / ant-node services per VM (default 15). |
+| `--volume-size GB` | no | Attached data volume (default 100). **Ignored on Contabo** (root disk only). |
+| `--log-level {info,debug,trace}` | no | Single global level (default `debug`). ant-node has no per-module env filter, so per-module `RUST_LOG` targeting is not possible. |
+| `--rust-backtrace VAL` | no | `RUST_BACKTRACE` on each service (default `1`; `full`, or `""` to disable). |
+| `--coredumps` / `--no-coredumps` | no | Enable core dumps (`LimitCORE=infinity` + `kernel.core_pattern` under the data path). Default on. |
+| `--coredump-retention-days N` | no | Daily prune of cores older than N days (default 7; 0 = keep forever). |
+| `--heaptrack` / `--no-heaptrack` | no | Also wrap services in heaptrack (default off — use `prod nodes` for that). |
+| `--monitoring` / `--no-monitoring` | no | Dedicated InfluxDB (default on). `--monitoring-provider {digitalocean,ovh,contabo}`, `--monitoring-region`, `--monitoring-droplet-size`, `--monitoring-volume-size`, `--grafana`, `--influx-retention-days` (default 7). |
+| `--forward-logs` / `--no-forward-logs` | no | Dedicated Elasticsearch for node logs (default on). `--elastic-provider {digitalocean,ovh,contabo}`, `--elastic-region`, `--elastic-droplet-size`, `--elastic-volume-size`, `--elastic-retention-days` (default 3), `--elastic-shards` (default 1), `--elastic-drop-log-levels`. |
+| `--branch-name` + `--repo-owner` / `--node-version` | no | Custom ant-node branch build (build first with `build ant-node --debug`) / pinned release. `--debug` records the branch build as a debug build. |
+| `--contabo-image-id UUID` | when any Contabo tier | Ubuntu image UUID (resolve via `cntb get images`). |
+| `--contabo-ssh-public-key-path PATH` | no | Operator public key registered as a `contabo_secret` (default `~/.ssh/id_rsa.pub`). |
+| `--rewards-address` / `--port` / `--ssh-key-path` | no | Prod rewards address / initial listen port (default 10000) / SSH key. |
+
+`prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy.
+
+Fully declarative via `deployments up/plan/down --config` (`kind: prod-debug-nodes`); example manifest at `manifests/profiles/prod-debug-nodes.yaml`. `up` is resumable, so a retry skips the ~10-minute debug build.
+
+**Contabo provider.** Contabo (nodes + monitoring/ES) authenticates via `CNTB_OAUTH2_CLIENT_ID` / `CNTB_OAUTH2_CLIENT_SECRET` / `CNTB_OAUTH2_USER` (account email) / `CNTB_OAUTH2_PASS` (API password) — the `contabo/contabo` Terraform provider reads them from the environment. Contabo has **no attachable block volume** (root-disk only, sized up front, not growable online) and bills on **committed monthly contracts** (no hourly billing / proration), which suits permanent debug nodes. Images are referenced by UUID (`--contabo-image-id`).
+
 ### Static IP Management
 
 Static IPs are allocated outside Terraform and stored in `deploy/production-ips.json`. This ensures IPs survive VM teardown and recreation. The IPs were allocated using provider CLIs:

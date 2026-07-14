@@ -93,6 +93,9 @@ def cmd_provision_elastic(args):
     _wait_for_ssh(vm_ip, args.ssh_key_path, console)
     clear_known_hosts([vm_ip], console)
 
+    # Contabo has no attachable block storage → Elasticsearch data on root disk.
+    root_disk = state.get("provider") == "contabo"
+
     try:
         provisioner = ElasticProvisioner(
             host_ip=vm_ip,
@@ -101,6 +104,7 @@ def cmd_provision_elastic(args):
             retention_days=args.retention_days,
             shards=args.shards,
             console=console,
+            root_disk=root_disk,
         )
         connection_details = provisioner.execute()
     except Exception as e:

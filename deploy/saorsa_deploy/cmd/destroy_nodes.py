@@ -5,7 +5,8 @@ from pathlib import Path
 
 from rich.console import Console
 
-from saorsa_deploy.cmd.infra_nodes import OVH_REQUIRED_ENV_VARS
+from saorsa_deploy.cmd.infra_nodes import NO_VOLUME_PROVIDERS, OVH_REQUIRED_ENV_VARS
+from saorsa_deploy.contabo import missing_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.registry import record_event, record_status
@@ -67,6 +68,30 @@ def _apply_provider_size_vars(
         variables["flavor_name"] = p_cfg.get("flavor_name", "b3-16")
         variables["service_name"] = os.environ.get("OVH_CLOUD_PROJECT_SERVICE", "")
         variables["name_template"] = "ant-node"
+    elif provider_name == "contabo":
+        # image_id / ssh_public_key_path fall back to the module defaults on
+        # destroy (the resources are removed from state, so their values don't
+        # affect the plan). Only product_id is carried through for completeness.
+        variables["product_id"] = p_cfg.get("product_id", "V92")
+
+
+def _check_contabo_destroy_env(
+    provider_names: list[str], console: Console
+) -> None:
+    """Exit early when Contabo regions are present but the OAuth2 env is missing.
+
+    The contabo provider needs its credentials to delete resources, just like on
+    create.
+    """
+    if "contabo" not in provider_names:
+        return
+    missing = missing_contabo_env()
+    if missing:
+        console.print(
+            f"[bold red]Error:[/bold red] Contabo node region(s) present but "
+            f"required environment variable(s) not set: {', '.join(missing)}"
+        )
+        sys.exit(1)
 
 
 def _check_ovh_destroy_env(
@@ -134,9 +159,11 @@ def cmd_destroy_nodes(args):
             console.print(f"  [dim]{key}[/dim]")
     console.print()
 
-    _check_ovh_destroy_env(
-        [p for p, _ in region_pairs] + [p for p, _ in orphan_main_keys], console
-    )
+    _all_destroy_providers = [p for p, _ in region_pairs] + [
+        p for p, _ in orphan_main_keys
+    ]
+    _check_ovh_destroy_env(_all_destroy_providers, console)
+    _check_contabo_destroy_env(_all_destroy_providers, console)
 
     if not args.force:
         confirm = input(
@@ -180,9 +207,9 @@ def cmd_destroy_nodes(args):
             "region": region,
             "vm_count": vm_count,
         }
-        # ovh_3az has no attached volume (3-AZ regions have no block storage), so
-        # its module doesn't declare attached_volume_size.
-        if provider_name != "ovh_3az":
+        # Providers without block storage (ovh_3az, contabo) don't declare
+        # attached_volume_size — their modules are root-disk only.
+        if provider_name not in NO_VOLUME_PROVIDERS:
             # The recorded deployment-level value can be stale/wrong for a
             # provider that used a per-provider size override at create time
             # (that override isn't persisted anywhere) — trust whichever is
@@ -229,8 +256,9 @@ def cmd_destroy_nodes(args):
             "name": args.name,
             "region": region,
             "vm_count": "1",
-            "attached_volume_size": _orphan_volume_size(state_key),
         }
+        if provider_name not in NO_VOLUME_PROVIDERS:
+            variables["attached_volume_size"] = _orphan_volume_size(state_key)
         _apply_provider_size_vars(variables, provider_name)
         configs.append(
             TerraformRunConfig(
@@ -347,6 +375,7 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
     console.print()
 
     _check_ovh_destroy_env([p for p, _ in orphans], console)
+    _check_contabo_destroy_env([p for p, _ in orphans], console)
 
     if not force:
         confirm = input(
@@ -371,8 +400,9 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
             "name": name,
             "region": region,
             "vm_count": "1",
-            "attached_volume_size": "20",
         }
+        if provider_name not in NO_VOLUME_PROVIDERS:
+            variables["attached_volume_size"] = "20"
         _apply_provider_size_vars(variables, provider_name)
         configs.append(
             TerraformRunConfig(

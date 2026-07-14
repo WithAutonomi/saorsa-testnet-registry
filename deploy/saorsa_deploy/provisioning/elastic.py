@@ -14,7 +14,10 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
-from saorsa_deploy.provisioning.volume import build_mount_volume_command
+from saorsa_deploy.provisioning.volume import (
+    build_mount_volume_command,
+    build_root_disk_dir_command,
+)
 
 ELASTIC_MOUNT_POINT = "/mnt/elastic-storage"
 ELASTIC_DATA_DIR = f"{ELASTIC_MOUNT_POINT}/elasticsearch"
@@ -54,6 +57,7 @@ class ElasticProvisioner:
         retention_days: int = DEFAULT_RETENTION_DAYS,
         shards: int = DEFAULT_INDEX_SHARDS,
         console: Console | None = None,
+        root_disk: bool = False,
     ):
         if retention_days < 1:
             raise ValueError(
@@ -67,6 +71,10 @@ class ElasticProvisioner:
         self.retention_days = retention_days
         self.shards = shards
         self.console = console or Console()
+        # root_disk == True for providers with no attachable block storage
+        # (contabo): Elasticsearch data lives on the instance root disk, so we
+        # make the storage directory instead of mounting a device.
+        self.root_disk = root_disk
         self._es_password = secrets.token_urlsafe(24)
 
     def execute(self) -> dict:
@@ -121,10 +129,20 @@ class ElasticProvisioner:
         return connection_details
 
     def _add_mount_volume_op(self, state: State):
-        # Shared multi-provider mount: tries every provider's device glob
+        # Providers with no attachable block storage (contabo) keep data on the
+        # root disk: just make the storage directory. Everything else uses the
+        # shared multi-provider mount: tries every provider's device glob
         # (DO / Hetzner / Vultr / OVH) and formats the volume if it has no
         # filesystem yet — OVH Cinder volumes arrive raw, unlike DO volumes
         # which Terraform pre-formats ext4.
+        if self.root_disk:
+            add_op(
+                state,
+                server.shell,
+                name="Set up Elasticsearch storage directory (root disk, no volume)",
+                commands=[build_root_disk_dir_command(ELASTIC_MOUNT_POINT)],
+            )
+            return
         add_op(
             state,
             server.shell,

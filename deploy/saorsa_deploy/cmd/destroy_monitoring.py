@@ -8,6 +8,7 @@ from saorsa_deploy.cmd.obs_provider import (
     require_ovh_service_name,
     state_key_abbrev,
 )
+from saorsa_deploy.contabo import require_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
@@ -69,6 +70,15 @@ def cmd_destroy_monitoring(args):
             "name": args.name,
             "region": region,
             "service_name": service_name,
+            "enable_grafana": enable_grafana,
+        }
+    elif provider == "contabo":
+        require_contabo_env(console)
+        # Root-disk only (no volume); product_id/image_id/ssh_public_key_path
+        # fall back to the module defaults on destroy.
+        variables = {
+            "name": args.name,
+            "region": region,
             "enable_grafana": enable_grafana,
         }
     else:

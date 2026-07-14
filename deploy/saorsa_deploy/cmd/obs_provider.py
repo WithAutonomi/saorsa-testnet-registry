@@ -1,11 +1,13 @@
 """Shared provider plumbing for the monitoring + elastic (observability) stacks.
 
-Both stacks support DigitalOcean (the default) and OVH. DigitalOcean uses the
-``digitalocean`` provider with ``droplet_size`` / ``volume_size``; OVH is
-OpenStack-backed and needs the Public Cloud project id (``service_name``) plus
-``flavor_name`` / ``attached_volume_size`` / ``volume_type``. Centralising the
-per-provider resource directory, tfstate-key abbreviation, default region, and
-default sizes here keeps the infra and destroy commands in sync.
+Both stacks support DigitalOcean (the default), OVH, and Contabo. DigitalOcean
+uses the ``digitalocean`` provider with ``droplet_size`` / ``volume_size``; OVH
+is OpenStack-backed and needs the Public Cloud project id (``service_name``) plus
+``flavor_name`` / ``attached_volume_size`` / ``volume_type``; Contabo uses the
+``contabo`` provider with a ``product_id`` and — because it has no attachable
+block storage — is root-disk-only (no volume). Centralising the per-provider
+resource directory, tfstate-key abbreviation, default region, and default sizes
+here keeps the infra and destroy commands in sync.
 """
 
 import os
@@ -13,19 +15,20 @@ import sys
 
 from rich.console import Console
 
-OBS_PROVIDERS = ("digitalocean", "ovh")
+OBS_PROVIDERS = ("digitalocean", "ovh", "contabo")
 
 # tfstate key abbreviation per provider (DigitalOcean keeps the historical
 # "do-" prefix so existing state keys are unchanged).
-_ABBREV = {"digitalocean": "do", "ovh": "ovh"}
+_ABBREV = {"digitalocean": "do", "ovh": "ovh", "contabo": "contabo"}
 
-_DEFAULT_REGION = {"digitalocean": "lon1", "ovh": "GRA9"}
+_DEFAULT_REGION = {"digitalocean": "lon1", "ovh": "GRA9", "contabo": "EU"}
 
 # Per-provider, per-stack default VM size. The InfluxDB / Elasticsearch boxes
-# want CPU+RAM; the Grafana box is tiny (it only renders panels).
-_DEFAULT_INFLUXDB_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8"}
-_DEFAULT_GRAFANA_SIZE = {"digitalocean": "s-1vcpu-2gb", "ovh": "d2-4"}
-_DEFAULT_ELASTIC_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8"}
+# want CPU+RAM; the Grafana box is tiny (it only renders panels). Contabo values
+# are product ids (verify current ids via `cntb get products`).
+_DEFAULT_INFLUXDB_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8", "contabo": "V45"}
+_DEFAULT_GRAFANA_SIZE = {"digitalocean": "s-1vcpu-2gb", "ovh": "d2-4", "contabo": "V44"}
+_DEFAULT_ELASTIC_SIZE = {"digitalocean": "s-4vcpu-8gb", "ovh": "b3-8", "contabo": "V45"}
 
 
 def resolve_provider(args) -> str:

@@ -11,6 +11,7 @@ from saorsa_deploy.cmd.obs_provider import (
     resolve_provider,
     state_key_abbrev,
 )
+from saorsa_deploy.contabo import require_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
@@ -93,6 +94,29 @@ def cmd_monitoring_infra(args):
             "grafana_flavor_name": grafana_size,
             "attached_volume_size": str(volume_size),
             "volume_type": volume_type,
+            "enable_grafana": "true" if enable_grafana else "false",
+        }
+    elif provider == "contabo":
+        require_contabo_env(console)
+        image_id = getattr(args, "contabo_image_id", None)
+        if not image_id:
+            console.print(
+                "[bold red]Error:[/bold red] Contabo monitoring requires "
+                "--contabo-image-id (an Ubuntu image UUID; resolve via "
+                "`cntb get images`)."
+            )
+            sys.exit(1)
+        # Contabo is root-disk only (no volume). droplet_size / grafana_size
+        # carry Contabo product ids here (from obs_provider defaults or --*-size).
+        variables = {
+            "name": args.name,
+            "region": region,
+            "product_id": droplet_size,
+            "grafana_product_id": grafana_size,
+            "image_id": image_id,
+            "ssh_public_key_path": getattr(
+                args, "contabo_ssh_public_key_path", "~/.ssh/id_rsa.pub"
+            ),
             "enable_grafana": "true" if enable_grafana else "false",
         }
     else:

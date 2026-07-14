@@ -310,6 +310,85 @@ def _nodes(manifest: Manifest) -> list[Step]:
     return [Step(argv, "Deploy prod profiling nodes (+ optional monitoring)")]
 
 
+def _bool_flag(value, flag: str) -> list[str]:
+    """argparse BooleanOptionalAction flag emitted only when set (None omits)."""
+    if value is None:
+        return []
+    return [flag] if value else [f"--no-{flag[2:]}"]
+
+
+def _debug_nodes(manifest: Manifest) -> list[Step]:
+    spec = manifest.prod_debug_nodes
+    argv = [
+        "prod",
+        "debug-nodes",
+        "deploy",
+        "--name",
+        manifest.name,
+        "--purpose",
+        manifest.purpose,
+        "--region",
+        spec.region,
+    ]
+    if spec.provider is not None:
+        argv += ["--provider", spec.provider]
+    if spec.vm_size is not None:
+        argv += ["--vm-size", spec.vm_size]
+    if spec.vm_count is not None:
+        argv += ["--vm-count", str(spec.vm_count)]
+    if spec.node_count is not None:
+        argv += ["--node-count", str(spec.node_count)]
+    if spec.volume_size is not None:
+        argv += ["--volume-size", str(spec.volume_size)]
+    if spec.log_level is not None:
+        argv += ["--log-level", spec.log_level]
+    if spec.rust_backtrace is not None:
+        argv += ["--rust-backtrace", spec.rust_backtrace]
+    argv += _bool_flag(spec.coredumps, "--coredumps")
+    if spec.coredump_retention_days is not None:
+        argv += ["--coredump-retention-days", str(spec.coredump_retention_days)]
+    argv += _bool_flag(spec.heaptrack, "--heaptrack")
+    argv += _bool_flag(spec.monitoring, "--monitoring")
+    if spec.monitoring_provider is not None:
+        argv += ["--monitoring-provider", spec.monitoring_provider]
+    if spec.monitoring_region is not None:
+        argv += ["--monitoring-region", spec.monitoring_region]
+    if spec.monitoring_droplet_size is not None:
+        argv += ["--monitoring-droplet-size", spec.monitoring_droplet_size]
+    if spec.monitoring_volume_size is not None:
+        argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
+    argv += _bool_flag(spec.grafana, "--grafana")
+    if spec.influx_retention_days is not None:
+        argv += ["--influx-retention-days", str(spec.influx_retention_days)]
+    argv += _bool_flag(spec.forward_logs, "--forward-logs")
+    if spec.elastic_provider is not None:
+        argv += ["--elastic-provider", spec.elastic_provider]
+    if spec.elastic_region is not None:
+        argv += ["--elastic-region", spec.elastic_region]
+    if spec.elastic_droplet_size is not None:
+        argv += ["--elastic-droplet-size", spec.elastic_droplet_size]
+    if spec.elastic_volume_size is not None:
+        argv += ["--elastic-volume-size", str(spec.elastic_volume_size)]
+    if spec.elastic_retention_days is not None:
+        argv += ["--elastic-retention-days", str(spec.elastic_retention_days)]
+    if spec.elastic_shards is not None:
+        argv += ["--elastic-shards", str(spec.elastic_shards)]
+    if spec.elastic_drop_log_levels is not None:
+        argv += ["--elastic-drop-log-levels", spec.elastic_drop_log_levels]
+    if spec.rewards_address is not None:
+        argv += ["--rewards-address", spec.rewards_address]
+    if spec.port is not None:
+        argv += ["--port", str(spec.port)]
+    if spec.contabo_image_id is not None:
+        argv += ["--contabo-image-id", spec.contabo_image_id]
+    if spec.contabo_ssh_public_key_path is not None:
+        argv += ["--contabo-ssh-public-key-path", spec.contabo_ssh_public_key_path]
+    argv += node_binary_flags(spec.binary)
+    argv += _binary_debug_flag(spec.binary)
+    argv += ["--ssh-key-path", manifest.ssh_key_path]
+    return [Step(argv, "Deploy prod debug nodes (+ dedicated InfluxDB + ES)")]
+
+
 _DEPLOY_BUILDERS = {
     "prod-uploaders": _uploaders,
     "prod-downloaders": _downloaders,
@@ -318,6 +397,7 @@ _DEPLOY_BUILDERS = {
     "prod-local-uploads": _local_uploads,
     "prod-local-downloads": _local_downloads,
     "prod-nodes": _nodes,
+    "prod-debug-nodes": _debug_nodes,
 }
 
 # Destroy is a single command for the VM-backed kinds; local-* have no infra.
@@ -327,6 +407,7 @@ _DESTROY = {
     "prod-continuous-downloader": ["prod", "continuous-downloader", "destroy"],
     "prod-canary": ["prod", "canary", "destroy"],
     "prod-nodes": ["prod", "nodes", "destroy"],
+    "prod-debug-nodes": ["prod", "debug-nodes", "destroy"],
 }
 
 
@@ -341,9 +422,9 @@ def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list
     # --skip-builds the operator asserts the build already exists in S3.
     steps: list[Step] = []
     if not skip_builds:
-        if manifest.kind == "prod-nodes":
-            # prod-nodes resolves an ANT-NODE branch build (not the client `ant`),
-            # so it needs a `build ant-node` step, not `build ant`.
+        if manifest.kind in ("prod-nodes", "prod-debug-nodes"):
+            # These resolve an ANT-NODE branch build (not the client `ant`), so
+            # they need a `build ant-node` step, not `build ant`.
             steps = build_steps_for_branches(
                 manifest.name, manifest.ssh_key_path, manifest.spec.binary, None
             )

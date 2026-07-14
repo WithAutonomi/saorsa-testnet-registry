@@ -10,6 +10,7 @@ from saorsa_deploy.cmd.obs_provider import (
     resolve_provider,
     state_key_abbrev,
 )
+from saorsa_deploy.contabo import require_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
@@ -90,6 +91,27 @@ def cmd_elastic_infra(args):
             "flavor_name": droplet_size,
             "attached_volume_size": str(volume_size),
             "volume_type": volume_type,
+        }
+    elif provider == "contabo":
+        require_contabo_env(console)
+        image_id = getattr(args, "contabo_image_id", None)
+        if not image_id:
+            console.print(
+                "[bold red]Error:[/bold red] Contabo elastic requires "
+                "--contabo-image-id (an Ubuntu image UUID; resolve via "
+                "`cntb get images`)."
+            )
+            sys.exit(1)
+        # Contabo is root-disk only (no volume). droplet_size carries a Contabo
+        # product id here (from obs_provider defaults or --droplet-size).
+        variables = {
+            "name": args.name,
+            "region": region,
+            "product_id": droplet_size,
+            "image_id": image_id,
+            "ssh_public_key_path": getattr(
+                args, "contabo_ssh_public_key_path", "~/.ssh/id_rsa.pub"
+            ),
         }
     else:
         variables = {

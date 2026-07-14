@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.contabo import missing_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.hetzner_availability import resolve_hetzner_regions
 from saorsa_deploy.providers import PROVIDERS, ProviderSpec, resolve_regions
@@ -38,6 +39,12 @@ def _ovh_az_tfvar(zones: list[str]) -> str:
     return "[" + ",".join(f'"{z}"' for z in zones) + "]"
 
 
+# Providers with NO attachable block storage: their nodes store data on the
+# instance root disk and the TF module has no volume, so the attached-volume
+# variable must not be passed. ovh_3az (3-AZ regions expose no Cinder volume
+# service) and contabo (the provider has no standalone block-volume resource).
+NO_VOLUME_PROVIDERS = frozenset({"ovh_3az", "contabo"})
+
 # Internal provider name -> the CLI arg prefix for its per-provider volume flag.
 _VOLUME_ARG_PREFIX = {
     "digitalocean": "do",
@@ -49,8 +56,8 @@ _VOLUME_ARG_PREFIX = {
 
 def _provider_volume_size(args, provider_name: str) -> int:
     """Attached-volume size for a provider: its per-provider override if set,
-    else the global ``--attached-volume-size``. Not called for ``ovh_3az``
-    (no block storage)."""
+    else the global ``--attached-volume-size``. Not called for providers in
+    ``NO_VOLUME_PROVIDERS`` (no block storage)."""
     prefix = _VOLUME_ARG_PREFIX[provider_name]
     override = getattr(args, f"{prefix}_attached_volume_size", None)
     return override if override is not None else args.attached_volume_size
@@ -101,6 +108,12 @@ def _build_provider_specs(args) -> list[ProviderSpec]:
         specs.append(
             ProviderSpec("ovh_3az", args.ovh_3az_vm_count, count, override)
         )
+    if getattr(args, "contabo_vm_count", 0) > 0:
+        override = _parse_regions_list(getattr(args, "contabo_regions_list", None))
+        count = len(override) if override else getattr(args, "contabo_regions", 1)
+        specs.append(
+            ProviderSpec("contabo", args.contabo_vm_count, count, override)
+        )
     return specs
 
 
@@ -111,6 +124,7 @@ def _build_provider_state(
     vultr_plan: str,
     ovh_flavor: str,
     ovh_3az_flavor: str = "b3-16",
+    contabo_product_id: str = "V92",
 ) -> dict:
     providers_state = {}
     for spec in provider_specs:
@@ -125,6 +139,8 @@ def _build_provider_state(
             entry["flavor_name"] = ovh_flavor
         elif spec.name == "ovh_3az":
             entry["flavor_name"] = ovh_3az_flavor
+        elif spec.name == "contabo":
+            entry["product_id"] = contabo_product_id
         providers_state[spec.name] = entry
     return providers_state
 
@@ -158,6 +174,29 @@ def _check_ovh_env(provider_specs: list[ProviderSpec]) -> str | None:
     return os.environ["OVH_CLOUD_PROJECT_SERVICE"]
 
 
+def _check_contabo(provider_specs: list[ProviderSpec], image_id: str | None) -> None:
+    """Fail fast when Contabo is requested without its OAuth2 env or an image id.
+
+    Contabo (like OVH) has no availability preflight; we only validate that the
+    provider can authenticate and that an image UUID was supplied (Contabo
+    images are referenced by UUID, not resolvable by name via Terraform).
+    """
+    if not any(s.name == "contabo" for s in provider_specs):
+        return
+    missing = missing_contabo_env()
+    if missing:
+        raise RuntimeError(
+            f"Contabo nodes requested but required environment variable(s) not "
+            f"set: {', '.join(missing)}"
+        )
+    if not image_id:
+        raise RuntimeError(
+            "Contabo nodes requested but --contabo-image-id is not set. Contabo "
+            "images are referenced by UUID; resolve the current Ubuntu image id "
+            "with `cntb get images` and pass it via --contabo-image-id."
+        )
+
+
 def cmd_infra_nodes(args):
     """Create the main node VMs for a deployment.
 
@@ -172,7 +211,7 @@ def cmd_infra_nodes(args):
         console.print(
             "[bold red]Error:[/bold red] At least one provider must have vm_count > 0. "
             "Use --do-vm-count, --hetzner-vm-count, --vultr-vm-count, "
-            "--ovh-vm-count, or --ovh-3az-vm-count."
+            "--ovh-vm-count, --ovh-3az-vm-count, or --contabo-vm-count."
         )
         sys.exit(1)
 
@@ -202,6 +241,11 @@ def cmd_infra_nodes(args):
     vultr_plan = getattr(args, "vultr_plan", "vc2-2c-4gb")
     ovh_flavor = getattr(args, "ovh_flavor", "b3-16")
     ovh_3az_flavor = getattr(args, "ovh_3az_flavor", "b3-16")
+    contabo_product_id = getattr(args, "contabo_product_id", "V92")
+    contabo_image_id = getattr(args, "contabo_image_id", None)
+    contabo_ssh_public_key_path = getattr(
+        args, "contabo_ssh_public_key_path", "~/.ssh/id_rsa.pub"
+    )
     force = getattr(args, "force", False)
 
     record_event(args.name, "infra_nodes_started")
@@ -227,6 +271,14 @@ def cmd_infra_nodes(args):
     # just validate credentials before any Terraform runs.
     try:
         ovh_service_name = _check_ovh_env(provider_specs)
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    # Contabo likewise has no availability preflight; validate its OAuth2 env
+    # and that an image UUID was supplied before any Terraform runs.
+    try:
+        _check_contabo(provider_specs, contabo_image_id)
     except RuntimeError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -280,10 +332,10 @@ def cmd_infra_nodes(args):
             "vm_count": str(vm_count_by_provider[provider_name]),
         }
         # attached_volume_size is per-provider (a --<provider>-attached-volume-size
-        # override, else the global --attached-volume-size). ovh_3az is excluded:
-        # 3-AZ regions have no block storage, so those nodes use the root disk and
-        # the ovh-3az module has no volume.
-        if provider_name != "ovh_3az":
+        # override, else the global --attached-volume-size). Providers without
+        # block storage (ovh_3az, contabo) are excluded: those nodes use the root
+        # disk and their TF modules have no volume.
+        if provider_name not in NO_VOLUME_PROVIDERS:
             variables["attached_volume_size"] = str(
                 _provider_volume_size(args, provider_name)
             )
@@ -309,6 +361,12 @@ def cmd_infra_nodes(args):
             zones = OVH_3AZ_REGION_ZONES.get(region.upper())
             if zones:
                 variables["availability_zones"] = _ovh_az_tfvar(zones)
+        elif provider_name == "contabo":
+            # No volume (root disk only). Contabo references images by UUID and
+            # registers the operator's public key as a contabo_secret.
+            variables["product_id"] = contabo_product_id
+            variables["image_id"] = contabo_image_id
+            variables["ssh_public_key_path"] = contabo_ssh_public_key_path
 
         configs.append(
             TerraformRunConfig(
@@ -359,7 +417,7 @@ def cmd_infra_nodes(args):
     # apply, which left orphans invisible to destroy.
     providers_state = _build_provider_state(
         provider_specs, do_droplet_size, hetzner_server_type, vultr_plan,
-        ovh_flavor, ovh_3az_flavor,
+        ovh_flavor, ovh_3az_flavor, contabo_product_id,
     )
     terraform_variables = {
         "name": args.name,

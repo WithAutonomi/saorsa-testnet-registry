@@ -1646,9 +1646,25 @@ def main(argv=None):
         "--provider",
         type=str,
         default="digitalocean",
-        choices=["digitalocean", "ovh"],
+        choices=["digitalocean", "ovh", "contabo"],
         help="Cloud provider for the Elasticsearch VM (default: digitalocean). "
-        "'ovh' requires OVH_CLOUD_PROJECT_SERVICE + OVH API credentials.",
+        "'ovh' requires OVH_CLOUD_PROJECT_SERVICE + OVH API credentials; "
+        "'contabo' requires the CNTB_OAUTH2_* credentials and --contabo-image-id "
+        "(root-disk only, no volume).",
+    )
+    elastic_infra_parser.add_argument(
+        "--contabo-image-id",
+        type=str,
+        default=None,
+        help="Ubuntu image UUID for a Contabo Elasticsearch VM (required with "
+        "--provider contabo; resolve via `cntb get images`).",
+    )
+    elastic_infra_parser.add_argument(
+        "--contabo-ssh-public-key-path",
+        type=str,
+        default="~/.ssh/id_rsa.pub",
+        help="Operator SSH PUBLIC key path registered as a Contabo secret "
+        "(default: ~/.ssh/id_rsa.pub).",
     )
     elastic_infra_parser.add_argument(
         "--region",
@@ -1827,9 +1843,25 @@ def main(argv=None):
         "--provider",
         type=str,
         default="digitalocean",
-        choices=["digitalocean", "ovh"],
+        choices=["digitalocean", "ovh", "contabo"],
         help="Cloud provider for the monitoring VMs (default: digitalocean). "
-        "'ovh' requires OVH_CLOUD_PROJECT_SERVICE + OVH API credentials.",
+        "'ovh' requires OVH_CLOUD_PROJECT_SERVICE + OVH API credentials; "
+        "'contabo' requires the CNTB_OAUTH2_* credentials and --contabo-image-id "
+        "(root-disk only, no volume).",
+    )
+    monitoring_infra_parser.add_argument(
+        "--contabo-image-id",
+        type=str,
+        default=None,
+        help="Ubuntu image UUID for Contabo monitoring VM(s) (required with "
+        "--provider contabo; resolve via `cntb get images`).",
+    )
+    monitoring_infra_parser.add_argument(
+        "--contabo-ssh-public-key-path",
+        type=str,
+        default="~/.ssh/id_rsa.pub",
+        help="Operator SSH PUBLIC key path registered as a Contabo secret "
+        "(default: ~/.ssh/id_rsa.pub).",
     )
     monitoring_infra_parser.add_argument(
         "--region",
@@ -2475,6 +2507,51 @@ def main(argv=None):
         default=None,
         help="Comma-separated list of specific OVH 3-AZ regions to use "
         "(EU-WEST-PAR, EU-SOUTH-MIL). Overrides --ovh-3az-regions.",
+    )
+    # Contabo: root-disk only (no attachable block storage), so no
+    # --contabo-attached-volume-size flag. Images are referenced by UUID and the
+    # operator public key is registered as a contabo_secret.
+    nodes_infra_parser.add_argument(
+        "--contabo-vm-count",
+        type=int,
+        default=0,
+        help="Number of VMs per region on Contabo (default: 0, provider not used)",
+    )
+    nodes_infra_parser.add_argument(
+        "--contabo-product-id",
+        type=str,
+        default="V92",
+        help="Contabo product id / plan (default: V92). Verify current ids via "
+        "`cntb get products`.",
+    )
+    nodes_infra_parser.add_argument(
+        "--contabo-regions",
+        type=int,
+        default=1,
+        help="Number of Contabo regions to use (default: 1). "
+        "Ignored if --contabo-regions-list is set.",
+    )
+    nodes_infra_parser.add_argument(
+        "--contabo-regions-list",
+        type=str,
+        default=None,
+        help="Comma-separated list of specific Contabo regions to use "
+        "(EU, US-central, US-east, US-west, UK, SIN, AUS, JPN, IND). "
+        "Overrides --contabo-regions.",
+    )
+    nodes_infra_parser.add_argument(
+        "--contabo-image-id",
+        type=str,
+        default=None,
+        help="Ubuntu image UUID for Contabo VMs (required with --contabo-vm-count; "
+        "resolve via `cntb get images`).",
+    )
+    nodes_infra_parser.add_argument(
+        "--contabo-ssh-public-key-path",
+        type=str,
+        default="~/.ssh/id_rsa.pub",
+        help="Operator SSH PUBLIC key path registered as a Contabo secret "
+        "(default: ~/.ssh/id_rsa.pub).",
     )
 
     # nodes provision
@@ -3410,6 +3487,139 @@ def main(argv=None):
         default="~/.ssh/id_rsa",
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
+
+    # --- prod debug-nodes (crash-debug nodes against production) ---
+    prod_dbg_parser = prod_subparsers.add_parser(
+        "debug-nodes",
+        help="Permanent crash-debug ant-node VMs joining PRODUCTION: "
+        "RUST_BACKTRACE, core dumps, DEBUG logs, and a dedicated small "
+        "InfluxDB + short-retention Elasticsearch. Node and monitoring/logging "
+        "VMs each choose their own provider (incl. Contabo).",
+    )
+    prod_dbg_subparsers = prod_dbg_parser.add_subparsers(
+        dest="prod_debug_nodes_action", required=True
+    )
+
+    prod_dbg_deploy = prod_dbg_subparsers.add_parser(
+        "deploy",
+        help="Create node VM(s) joining production configured for crash "
+        "debugging, provision the ant-node services, and start them.",
+    )
+    prod_dbg_deploy.add_argument("--name", type=str, required=True,
+        help="Deployment name (also used for the paired monitoring/ES stacks).")
+    prod_dbg_deploy.add_argument(
+        "--provider", type=str, default="digitalocean",
+        choices=["digitalocean", "hetzner", "vultr", "ovh", "contabo"],
+        help="Cloud provider for the node VM(s) (default: digitalocean).")
+    prod_dbg_deploy.add_argument("--region", type=str, required=True,
+        help="Provider region for the node VM(s) (e.g. lon1, fsn1, GRA9, EU).")
+    prod_dbg_deploy.add_argument("--vm-size", type=str, default=None,
+        help="Provider VM size/plan/flavor/product-id. Defaults per provider "
+        "(DO s-4vcpu-8gb, Hetzner cpx42, Vultr vhf-4c-16gb, OVH b3-16, "
+        "Contabo V10 VDS).")
+    prod_dbg_deploy.add_argument("--vm-count", type=int, default=1,
+        help="Number of node VMs to create in the region (default: 1).")
+    prod_dbg_deploy.add_argument("--node-count", type=int, default=15,
+        help="ant-node services per VM (default: 15, matching the prod fleet).")
+    prod_dbg_deploy.add_argument("--volume-size", type=int, default=100,
+        help="Attached data-volume size in GB per node VM (default: 100). "
+        "Ignored on providers with no attachable volume (Contabo: root disk).")
+    prod_dbg_deploy.add_argument("--log-level", type=str, default="debug",
+        help="ant-node --log-level (single level: info/debug/trace; default "
+        "debug). ant-node has no per-module env filter, so one global level "
+        "applies — the requested per-module targeting is not achievable.")
+    prod_dbg_deploy.add_argument("--rust-backtrace", type=str, default="1",
+        help="RUST_BACKTRACE value set on every service (default: 1; use 'full' "
+        "for verbose traces, or '' to disable).")
+    prod_dbg_deploy.add_argument("--coredumps", action=argparse.BooleanOptionalAction,
+        default=True, help="Enable core dumps (LimitCORE=infinity + a global "
+        "kernel.core_pattern under the data path) so a panic leaves an "
+        "inspectable core (default: on).")
+    prod_dbg_deploy.add_argument("--coredump-retention-days", type=int, default=7,
+        help="Install a daily timer deleting core dumps older than N days "
+        "(default: 7). 0 keeps them forever.")
+    prod_dbg_deploy.add_argument("--heaptrack", action=argparse.BooleanOptionalAction,
+        default=False, help="Also wrap services in heaptrack memory profiling "
+        "(default: off — use `prod nodes` for the heaptrack-focused kind).")
+    prod_dbg_deploy.add_argument("--monitoring", action=argparse.BooleanOptionalAction,
+        default=True, help="Stand up a dedicated small InfluxDB VM and forward "
+        "host/per-service metrics (default: on).")
+    prod_dbg_deploy.add_argument("--monitoring-provider", type=str,
+        default="digitalocean", choices=["digitalocean", "ovh", "contabo"],
+        help="Provider for the monitoring VM (default: digitalocean).")
+    prod_dbg_deploy.add_argument("--monitoring-region", type=str, default=None,
+        help="Region for the monitoring VM (default: per-provider default).")
+    prod_dbg_deploy.add_argument("--monitoring-droplet-size", type=str, default=None,
+        help="VM size for the InfluxDB box (default: per-provider default).")
+    prod_dbg_deploy.add_argument("--monitoring-volume-size", type=int, default=50,
+        help="Monitoring VM attached volume size in GB (default: 50; ignored on "
+        "Contabo).")
+    prod_dbg_deploy.add_argument("--grafana", action=argparse.BooleanOptionalAction,
+        default=False, help="With --monitoring, also create a Grafana VM "
+        "(default: off — InfluxDB only).")
+    prod_dbg_deploy.add_argument("--influx-retention-days", type=int, default=7,
+        help="InfluxDB bucket retention in days (default: 7; 0 = infinite).")
+    prod_dbg_deploy.add_argument("--forward-logs", action=argparse.BooleanOptionalAction,
+        default=True, help="Stand up a dedicated Elasticsearch VM and forward the "
+        "node JSON logs to it (default: on). Keeps verbose debug logs off the "
+        "always-on prod ES.")
+    prod_dbg_deploy.add_argument("--elastic-provider", type=str,
+        default="digitalocean", choices=["digitalocean", "ovh", "contabo"],
+        help="Provider for the Elasticsearch VM (default: digitalocean).")
+    prod_dbg_deploy.add_argument("--elastic-region", type=str, default=None,
+        help="Region for the Elasticsearch VM (default: per-provider default).")
+    prod_dbg_deploy.add_argument("--elastic-droplet-size", type=str, default=None,
+        help="VM size for the Elasticsearch box (default: per-provider default).")
+    prod_dbg_deploy.add_argument("--elastic-volume-size", type=int, default=100,
+        help="Data-volume size in GB for the Elasticsearch VM (default: 100; "
+        "ignored on Contabo).")
+    prod_dbg_deploy.add_argument("--elastic-retention-days", type=int, default=3,
+        help="ILM retention for the dedicated Elasticsearch index (default: 3).")
+    prod_dbg_deploy.add_argument("--elastic-shards", type=int, default=1,
+        help="Primary shard count for the Elasticsearch index (default: 1).")
+    prod_dbg_deploy.add_argument("--elastic-drop-log-levels", type=str, default=None,
+        help="Override the node→ES level drop filter. Default: derived from "
+        "--log-level (debug drops only TRACE so DEBUG reaches ES).")
+    prod_dbg_deploy.add_argument("--rewards-address", type=str,
+        default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
+        help="EVM rewards address for the prod node services.")
+    prod_dbg_deploy.add_argument("--port", type=int, default=10000,
+        help="Initial ant-node listen port (default: 10000).")
+    prod_dbg_deploy.add_argument("--branch-name", type=str,
+        help="Use a custom-built ant-node binary from this branch (requires "
+        "--repo-owner). Build it first with `build ant-node --debug`.")
+    prod_dbg_deploy.add_argument("--repo-owner", type=str,
+        help="GitHub repo owner for the custom-built ant-node binary.")
+    prod_dbg_deploy.add_argument("--node-version", type=str,
+        help="Specific release version of ant-node to install (e.g. 0.11.6).")
+    prod_dbg_deploy.add_argument("--debug", action="store_true",
+        help="Informational: record that the resolved branch binary is a debug "
+        "build. The actual debug build comes from `build ant-node --debug`.")
+    prod_dbg_deploy.add_argument("--purpose", type=str, required=True,
+        help="Free-text description of what this debug run is for.")
+    prod_dbg_deploy.add_argument("--ssh-key-path", type=str, default="~/.ssh/id_rsa",
+        help="Path to SSH private key for provisioning (default: ~/.ssh/id_rsa).")
+    prod_dbg_deploy.add_argument("--contabo-image-id", type=str, default=None,
+        help="Ubuntu image UUID for Contabo VMs (required when any Contabo "
+        "provider is used; resolve via `cntb get images`).")
+    prod_dbg_deploy.add_argument("--contabo-ssh-public-key-path", type=str,
+        default="~/.ssh/id_rsa.pub",
+        help="Operator SSH PUBLIC key path registered as a Contabo secret "
+        "(default: ~/.ssh/id_rsa.pub; the .pub of --ssh-key-path).")
+
+    prod_dbg_destroy = prod_dbg_subparsers.add_parser(
+        "destroy",
+        help="Destroy a prod debug-nodes deployment (node VMs and, by default, "
+        "the paired monitoring + Elasticsearch stacks).",
+    )
+    prod_dbg_destroy.add_argument("--name", type=str, required=True,
+        help="Deployment name to tear down.")
+    prod_dbg_destroy.add_argument("--keep-monitoring", action="store_true",
+        help="Leave the monitoring VM running (default: destroyed with nodes).")
+    prod_dbg_destroy.add_argument("--keep-elastic", action="store_true",
+        help="Leave the Elasticsearch VM running (default: destroyed with nodes).")
+    prod_dbg_destroy.add_argument("--ssh-key-path", type=str, default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).")
 
     # --- prod uploaders ---
     prod_up_parser = prod_subparsers.add_parser(
@@ -4636,6 +4846,24 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_nodes import cmd_prod_nodes_destroy
 
             cmd_prod_nodes_destroy(args)
+        elif (
+            args.prod_subcommand == "debug-nodes"
+            and args.prod_debug_nodes_action == "deploy"
+        ):
+            from saorsa_deploy.cmd.prod_debug_nodes import (
+                cmd_prod_debug_nodes_deploy,
+            )
+
+            cmd_prod_debug_nodes_deploy(args)
+        elif (
+            args.prod_subcommand == "debug-nodes"
+            and args.prod_debug_nodes_action == "destroy"
+        ):
+            from saorsa_deploy.cmd.prod_debug_nodes import (
+                cmd_prod_debug_nodes_destroy,
+            )
+
+            cmd_prod_debug_nodes_destroy(args)
         elif (
             args.prod_subcommand == "uploaders"
             and args.prod_up_action == "deploy"

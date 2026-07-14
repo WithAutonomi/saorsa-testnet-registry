@@ -3,6 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.cmd.infra_nodes import NO_VOLUME_PROVIDERS
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
 from saorsa_deploy.provisioning.clock_skew import select_skew_ips
 from saorsa_deploy.provisioning.full_nodes import DEFAULT_FULL_HEADROOM_MB, select_full_ips
@@ -220,15 +221,16 @@ def cmd_provision_nodes(args):
 
 def _resolve_root_disk_ips(vm_ips: dict, all_ips: list[str]) -> set[str]:
     """IPs of node VMs that have NO attached volume and use the root disk for
-    /mnt/ant-node-storage — i.e. the ovh_3az provider (OVH 3-AZ regions have no
-    block storage). ``vm_ips`` is keyed ``"provider/region"`` (e.g.
-    ``"ovh_3az/EU-WEST-PAR"``), so match on the provider prefix. Intersected with
+    /mnt/ant-node-storage — the providers in ``NO_VOLUME_PROVIDERS`` (ovh_3az:
+    OVH 3-AZ regions have no block storage; contabo: the provider has no
+    attachable block-volume resource). ``vm_ips`` is keyed ``"provider/region"``
+    (e.g. ``"contabo/EU"``), so match on the provider prefix. Intersected with
     ``all_ips`` so a single-region provision only flags hosts it is provisioning.
     """
     return {
         ip
         for region_key, ips in vm_ips.items()
-        if region_key.split("/", 1)[0] == "ovh_3az"
+        if region_key.split("/", 1)[0] in NO_VOLUME_PROVIDERS
         for ip in ips
     } & set(all_ips)
 

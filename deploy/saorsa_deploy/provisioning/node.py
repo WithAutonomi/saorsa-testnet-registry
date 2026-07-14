@@ -53,6 +53,31 @@ INSTALL_HEAPTRACK_COMMAND = (
     "heaptrack && echo 'HEAPTRACK:INSTALLED')"
 )
 
+# Core dumps for the prod-debug-nodes kind are written under the data path
+# (attached volume, or the root disk on volume-less providers like contabo), so
+# a panicking ant-node leaves an inspectable core even on OOM/SIGKILL.
+COREDUMP_DIR = f"{MOUNT_POINT}/coredumps"
+
+
+def build_coredump_setup_command(coredump_dir: str = COREDUMP_DIR) -> str:
+    """Enable core dumps globally, writing them under ``coredump_dir``.
+
+    Sets ``kernel.core_pattern`` to an absolute path so the kernel writes cores
+    to a known directory (paired with ``LimitCORE=infinity`` on the service unit,
+    which lifts the per-service core-size limit). Idempotent. The single-quoted
+    heredoc keeps the ``%e/%p/%t`` pattern literal.
+    """
+    pattern = f"{coredump_dir}/core.%e.%p.%t"
+    return (
+        f"mkdir -p {coredump_dir}\n"
+        "cat > /etc/sysctl.d/99-ant-coredump.conf << 'COREDUMP_EOF'\n"
+        f"kernel.core_pattern={pattern}\n"
+        "kernel.core_uses_pid=1\n"
+        "COREDUMP_EOF\n"
+        "sysctl -p /etc/sysctl.d/99-ant-coredump.conf >/dev/null\n"
+        "echo 'ANT_COREDUMP:CONFIGURED'"
+    )
+
 
 def _build_node_exec_start(
     bootstrap_peers,
@@ -116,6 +141,8 @@ def _build_node_unit_file(
     restart_policy="on-success",
     restart_sec=5,
     limit_nofile=None,
+    rust_backtrace=None,
+    coredumps=False,
 ):
     """Build the systemd unit file content for a node service.
 
@@ -129,12 +156,23 @@ def _build_node_unit_file(
     ``restart_policy``, ``restart_sec`` and ``limit_nofile`` are knobs the
     prod-migration command needs to match the existing prod fleet's units
     (``always`` / ``10`` / ``65536``); defaults preserve testnet behaviour.
+
+    ``rust_backtrace`` (e.g. ``"1"`` / ``"full"``) adds an
+    ``Environment=RUST_BACKTRACE=`` line, and ``coredumps`` adds
+    ``LimitCORE=infinity`` — both used by the prod-debug-nodes kind. They default
+    off, so every other caller's unit is byte-for-byte unchanged. The
+    ``Environment=`` value propagates through the NAT ``ip netns exec`` wrapper
+    (systemd sets it for the whole service), so it can't be inlined on ExecStart.
     """
     description_suffix = " (port-restricted NAT)" if is_nat else ""
     wrapped_exec_start = (
         f"{NAT_IP_EXEC_PREFIX}{exec_start}" if is_nat else exec_start
     )
+    env_lines = ""
+    if rust_backtrace:
+        env_lines += f"\nEnvironment=RUST_BACKTRACE={rust_backtrace}"
     limit_line = f"\nLimitNOFILE={limit_nofile}" if limit_nofile else ""
+    core_line = "\nLimitCORE=infinity" if coredumps else ""
     return f"""\
 [Unit]
 Description=Ant Node ({service_name}){description_suffix}
@@ -142,10 +180,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=simple{env_lines}
 ExecStart={wrapped_exec_start}
 Restart={restart_policy}
-RestartSec={restart_sec}{limit_line}
+RestartSec={restart_sec}{limit_line}{core_line}
 
 [Install]
 WantedBy=multi-user.target
@@ -187,6 +225,9 @@ class AntNodeProvisioner:
         extra_op_providers: list | None = None,
         heaptrack: bool = False,
         heaptrack_dir: str = HEAPTRACK_DIR,
+        rust_backtrace: str | None = None,
+        coredumps: bool = False,
+        coredump_dir: str = COREDUMP_DIR,
     ):
         self.host_ips = host_ips
         self.bootstrap_peers = bootstrap_peers
@@ -216,6 +257,12 @@ class AntNodeProvisioner:
         # volume, one base per service so the 15 nodes don't collide).
         self.heaptrack = heaptrack
         self.heaptrack_dir = heaptrack_dir
+        # Crash-debug knobs (prod-debug-nodes kind), default off so other
+        # callers' units are unchanged: RUST_BACKTRACE on the service env, plus
+        # LimitCORE=infinity + a global kernel.core_pattern under coredump_dir.
+        self.rust_backtrace = rust_backtrace
+        self.coredumps = coredumps
+        self.coredump_dir = coredump_dir
         # Optional providers (e.g. Telegraf forwarders) whose ops are folded
         # into this provisioner's single pyinfra pass, so node provisioning and
         # Telegraf install happen in ONE pass over the node VMs. Each exposes
@@ -254,6 +301,8 @@ class AntNodeProvisioner:
                 restart_policy=self.restart_policy,
                 restart_sec=self.restart_sec,
                 limit_nofile=self.limit_nofile,
+                rust_backtrace=self.rust_backtrace,
+                coredumps=self.coredumps,
             )
             unit_path = f"/etc/systemd/system/{service_name}.service"
             commands.append(f"cat > {unit_path} << 'UNIT_EOF'\n{unit_content}UNIT_EOF")
@@ -379,6 +428,9 @@ class AntNodeProvisioner:
             if self.heaptrack:
                 # On the data volume (mounted just above), not the root disk.
                 log_dirs.append(self.heaptrack_dir)
+            if self.coredumps:
+                # Under the data path too, so cores land off the root disk.
+                log_dirs.append(self.coredump_dir)
 
             add_op(
                 state,
@@ -393,6 +445,14 @@ class AntNodeProvisioner:
                     server.shell,
                     name="Install heaptrack",
                     commands=[INSTALL_HEAPTRACK_COMMAND],
+                )
+
+            if self.coredumps:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Enable core dumps (kernel.core_pattern)",
+                    commands=[build_coredump_setup_command(self.coredump_dir)],
                 )
 
             if self.binary_is_archive:

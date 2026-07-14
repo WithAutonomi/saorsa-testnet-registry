@@ -1,0 +1,92 @@
+# Permanent CRASH-DEBUG ant-node VMs against the PRODUCTION Autonomi network.
+#
+# Sibling of prod-nodes (which is heaptrack memory profiling). This kind stands
+# up a small, isolated, PERMANENT set of node VMs configured to capture panic /
+# crash information over time: RUST_BACKTRACE on every service, core dumps
+# (size/age pruned), and DEBUG-level logs forwarded to a DEDICATED short-retention
+# Elasticsearch, with a DEDICATED small InfluxDB for host/RSS metrics — none of it
+# touching the main prod monitoring stack.
+#
+#   saorsa-deploy deployments plan --config <this file>     # preview the steps
+#   saorsa-deploy deployments up   --config <this file>     # build + deploy
+#   saorsa-deploy deployments down --config <this file>     # tear down
+#
+# `up` is resumable, so a re-run after a mid-sequence failure skips the already
+# done ~10-minute debug build. Copy into the git-ignored manifests/runs/ dir and
+# edit per run.
+#
+# NOTE on logging: ant-node has NO per-module env filter — its --log-level is a
+# single global level. The requested per-module RUST_LOG targeting
+# (saorsa_transport, saorsa_core::*, ant_node::replication) is NOT achievable at
+# the deploy layer; log_level: debug (below) is the closest available.
+
+name: DEBUG-NODE-01
+kind: prod-debug-nodes
+purpose: "permanent ant-node crash/panic capture on production (backtraces + core dumps)"
+ssh_key_path: ~/.ssh/ant_deploy
+
+prod_debug_nodes:
+  # ANT-NODE binary. A branch build with debug: true drops --release so the
+  # `build ant-node` step produces full debug info (better backtraces).
+  binary:
+    branch: main
+    repo_owner: WithAutonomi
+    debug: true
+  # A pinned release instead (releases ship optimised — no debug builds):
+  # binary:
+  #   version: "0.11.6"
+
+  # --- Node VM placement ---
+  # Contabo example (cheap, generous bandwidth, good for a permanent run). Contabo
+  # has NO attachable/growable block volume, so nodes are ROOT-DISK ONLY: pick a
+  # VDS with ample fixed disk up front (it can't be grown online later without a
+  # disruptive rebuild). Contabo needs the CNTB_OAUTH2_* env vars + an image UUID.
+  provider: contabo          # digitalocean | hetzner | vultr | ovh | contabo
+  region: EU                 # Contabo: EU, US-central/east/west, UK, SIN, AUS, JPN, IND
+  vm_size: V10               # Contabo VDS product id (verify: cntb get products)
+  vm_count: 1
+  node_count: 15
+  # volume_size: 100         # attached data volume (GB); IGNORED on Contabo
+
+  # Contabo image UUID + operator public key (registered as a contabo_secret).
+  # Resolve the Ubuntu image id with `cntb get images`. Required for any Contabo
+  # tier (nodes/monitoring/elastic below).
+  contabo_image_id: "REPLACE-WITH-UBUNTU-24.04-UUID"
+  contabo_ssh_public_key_path: ~/.ssh/ant_deploy.pub
+
+  # --- Crash-debug configuration ---
+  log_level: debug           # single global level (info | debug | trace)
+  rust_backtrace: "1"        # "1" | "full" | "" (disable)
+  coredumps: true            # LimitCORE=infinity + kernel.core_pattern under data dir
+  coredump_retention_days: 7 # prune cores older than N days; 0 = keep forever
+  # heaptrack: false         # off by default (use prod-nodes for heaptrack)
+
+  # --- Dedicated small InfluxDB (host/RSS metrics) ---
+  monitoring: true
+  monitoring_provider: contabo   # digitalocean | ovh | contabo
+  # monitoring_region: EU
+  # monitoring_droplet_size: V45
+  grafana: false
+  influx_retention_days: 7
+
+  # --- Dedicated short-retention Elasticsearch (node logs) ---
+  # log_level: debug above resolves the node→ES drop filter to "TRACE", so DEBUG
+  # lines actually reach ES (TRACE dropped). 3-day ILM keeps volume bounded.
+  forward_logs: true
+  elastic_provider: contabo      # digitalocean | ovh | contabo
+  # elastic_region: EU
+  # elastic_droplet_size: V45
+  elastic_retention_days: 3
+  elastic_shards: 1
+  # elastic_drop_log_levels: ""  # override the log_level-derived ES filter
+
+  # port: 10000                  # initial listen port (services use port..port+14)
+  # rewards_address: "0x..."     # defaults to the standard prod rewards address
+  # keep_monitoring: true        # leave InfluxDB up after `down`
+  # keep_elastic: true           # leave ES up after `down`
+
+# Optional: post a deployment summary to Slack once it's up.
+# slack_post: true
+#
+# Retrieve core dumps before teardown:
+#   scp root@<vm>:/mnt/ant-node-storage/coredumps/core.* ./cores/

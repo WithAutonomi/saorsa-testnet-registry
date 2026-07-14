@@ -483,6 +483,85 @@ canary).
 See `deploy/README.md` §"Running profiling nodes against production" for the full
 argument table.
 
+### Running prod crash-debug nodes
+
+`prod debug-nodes deploy` is the panic/crash-debugging sibling of `prod nodes`
+(which is heaptrack *memory* profiling). It stands up a small, isolated,
+**permanent** set of ant-node services joining the **production** network,
+configured to capture crash information over time, with its OWN dedicated small
+InfluxDB + short-retention Elasticsearch (not the main prod stack). Registers a
+`Deployment` row with `deploy_args.kind = "prod-debug-nodes"`; fully declarative
+via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.py`,
+`orchestrator/prod.py` `_debug_nodes`). Impl: `cmd/prod_debug_nodes.py`. Example:
+`deploy/manifests/profiles/prod-debug-nodes.yaml`.
+
+- **Crash-debug node config** (all default-guarded in `provisioning/node.py`, so
+  every other kind's systemd unit stays byte-identical):
+  - **`--rust-backtrace`** (default `1`; `full` or `""` to disable) →
+    `Environment=RUST_BACKTRACE=` on each service. It MUST be a systemd
+    `Environment=` line (not inlined on ExecStart) so it propagates through the
+    NAT `ip netns exec` wrapper.
+  - **`--coredumps`** (default on) → `LimitCORE=infinity` on the unit + a global
+    `kernel.core_pattern` sysctl writing cores to
+    `/mnt/ant-node-storage/coredumps/` (on the data volume, or the root disk on
+    volume-less providers), so even an OOM/SIGKILL leaves an inspectable core.
+    `--coredump-retention-days` (default 7) installs a daily prune timer.
+  - **`--log-level`** (default `debug`). **ant-node has NO per-module env filter**
+    — a single global level is the only option, so the requested per-module
+    `RUST_LOG` targeting (`saorsa_transport`, `saorsa_core::*`,
+    `ant_node::replication`) is NOT achievable at the deploy layer. `--log-level
+    debug` resolves the node→ES drop filter to `TRACE` (keep DEBUG, drop TRACE)
+    so the debug logs actually reach ES.
+  - heaptrack is OFF by default here (use `prod nodes` for the heaptrack kind).
+- **Dedicated monitoring/logging, selectable provider+region.** `--monitoring`
+  (default on) stands up a small InfluxDB; `--forward-logs` (default on) stands
+  up a dedicated Elasticsearch with a short ILM (`--elastic-retention-days`,
+  default 3). Node VMs pick their provider via `--provider` (all five providers);
+  the monitoring/ES VMs pick theirs independently via `--monitoring-provider` /
+  `--elastic-provider` (DigitalOcean/OVH/**Contabo** only — those are the
+  observability TF modules). Torn down on `destroy` unless `--keep-monitoring` /
+  `--keep-elastic`.
+- Vehicle is the same as `prod nodes`: seed the production bootstrap peers into
+  S3 state, then `nodes infra` → prod-mode `nodes provision` → `nodes start`
+  (arbitrum-one, `Restart=always`, `LimitNOFILE=65536`, `--stop-on-upgrade`, no
+  upgrade channel so the pinned debug build keeps running). `binary.debug: true`
+  emits a `build ant-node --debug` step; `up` is resumable.
+
+See `deploy/README.md` §"Running crash-debug nodes against production" for the
+full argument table.
+
+### Cloud provider: Contabo (nodes + monitoring/logging)
+
+**Contabo** is supported as a node provider (alongside DigitalOcean/Hetzner/
+Vultr/OVH) and as a monitoring/Elasticsearch provider (alongside DigitalOcean/
+OVH). It authenticates via an OAuth2 password flow reading four **`CNTB_OAUTH2_*`**
+env vars (`CLIENT_ID`/`CLIENT_SECRET`/`USER`=account email/`PASS`=API password),
+which the `contabo/contabo` Terraform provider reads directly from the
+environment — so, like OVH, there is no `TF_VAR` credential mapping, just a
+`_check_contabo_env` preflight (`deploy/saorsa_deploy/contabo.py`). TF modules:
+`resources/contabo{,-monitoring,-elastic}`.
+
+Two Contabo constraints shape the design:
+- **No attachable block volume.** Contabo's provider has no standalone
+  attachable/growable block-storage resource (extra disk is only a buggy
+  in-contract `extraStorage` add-on), so Contabo VMs are **root-disk only** —
+  reusing the existing `ovh_3az` root-disk machinery (`root_disk_ips` /
+  `build_root_disk_dir_command`; `NO_VOLUME_PROVIDERS` in `cmd/infra_nodes.py`;
+  a `root_disk` flag on `MonitoringProvisioner`/`ElasticProvisioner`). Size the
+  root disk (a VDS) up front — it can't be grown online later without a
+  disruptive rebuild. `--volume-size` etc. are ignored for Contabo.
+- **Committed monthly billing.** Contabo instances are prepaid monthly contracts
+  (no hourly billing, no proration on early destroy), which suits the *permanent*
+  debug-node use case but not ephemeral churn.
+
+Contabo images are referenced by UUID (not resolvable by name via Terraform):
+pass **`--contabo-image-id`** (resolve via `cntb get images`) wherever a Contabo
+tier is used; the operator public key is registered as a `contabo_secret` from
+`--contabo-ssh-public-key-path` (default `~/.ssh/id_rsa.pub`) and `default_user=root`
+gives root SSH. Contabo is currently wired for the single-`--provider` node path
+(prod kinds / `nodes infra`) and the observability stacks; it is not yet a
+`nodes.providers.<name>` option in testnet/extension manifests.
+
 ### Deployment Statuses
 
 `pending` → `running` → `stopped` (success) or `failed`

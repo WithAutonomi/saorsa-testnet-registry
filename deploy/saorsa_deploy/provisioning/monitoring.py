@@ -14,7 +14,10 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
-from saorsa_deploy.provisioning.volume import build_mount_volume_command
+from saorsa_deploy.provisioning.volume import (
+    build_mount_volume_command,
+    build_root_disk_dir_command,
+)
 from saorsa_deploy.resources import get_resources_dir
 
 MONITORING_MOUNT_POINT = "/mnt/monitoring-storage"
@@ -59,6 +62,7 @@ class MonitoringProvisioner:
         grafana_password: str,
         retention_days: int = 0,
         console: Console | None = None,
+        root_disk: bool = False,
     ):
         self.influxdb_ip = influxdb_ip
         self.grafana_ip = grafana_ip
@@ -67,6 +71,10 @@ class MonitoringProvisioner:
         # 0 == infinite retention (the historical behaviour, kept for dev).
         self.retention_days = retention_days
         self.console = console or Console()
+        # root_disk == True for providers with no attachable block storage
+        # (contabo): InfluxDB data lives on the instance root disk, so we make
+        # the storage directory instead of mounting a device.
+        self.root_disk = root_disk
         self._admin_password = secrets.token_urlsafe(24)
 
     def execute(self) -> dict:
@@ -159,10 +167,20 @@ class MonitoringProvisioner:
         )
 
     def _add_mount_volume_op(self, state: State):
-        # Shared multi-provider mount: tries every provider's device glob
+        # Providers with no attachable block storage (contabo) keep data on the
+        # root disk: just make the storage directory. Everything else uses the
+        # shared multi-provider mount: tries every provider's device glob
         # (DO / Hetzner / Vultr / OVH) and formats the volume if it has no
         # filesystem yet — OVH Cinder volumes arrive raw, unlike DO volumes
         # which Terraform pre-formats ext4.
+        if self.root_disk:
+            add_op(
+                state,
+                server.shell,
+                name="Set up monitoring storage directory (root disk, no volume)",
+                commands=[build_root_disk_dir_command(MONITORING_MOUNT_POINT)],
+            )
+            return
         add_op(
             state,
             server.shell,
