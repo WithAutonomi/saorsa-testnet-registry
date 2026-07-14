@@ -49,9 +49,10 @@ prod_debug_nodes:
   # volume_size: 100         # attached data volume (GB); IGNORED on Contabo
 
   # Contabo image UUID + operator public key (registered as a contabo_secret).
-  # Resolve the Ubuntu image id with `cntb get images`. Required for any Contabo
-  # tier (nodes/monitoring/elastic below).
-  contabo_image_id: "REPLACE-WITH-UBUNTU-24.04-UUID"
+  # This is the standard ubuntu-24.04 image; re-verify with
+  # `cntb get images --imageType standard` as UUIDs can change. Required for any
+  # Contabo tier (nodes/monitoring/elastic below).
+  contabo_image_id: d64d5c6c-9dda-4e38-8174-0ee282474d8a   # ubuntu-24.04
   contabo_ssh_public_key_path: ~/.ssh/ant_deploy.pub
 
   # --- Crash-debug configuration ---
