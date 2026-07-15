@@ -99,6 +99,18 @@ def _build_node_infra_args(args) -> SimpleNamespace:
 
 
 def _ensure_node_infra(args, console: Console) -> None:
+    # Contabo bypasses Terraform entirely (its provider's 20-min create timeout
+    # can't absorb Contabo's slow async "orders"): create/adopt via the REST API.
+    if args.provider == "contabo":
+        from saorsa_deploy.cmd.contabo_infra import ensure_contabo_node_infra
+
+        console.print(
+            f"[bold cyan]Ensuring {args.vm_count} Contabo node VM(s) via API "
+            f"({args.region}/{args.vm_size})[/bold cyan]"
+        )
+        ensure_contabo_node_infra(args, console)
+        return
+
     from saorsa_deploy.cmd.infra_nodes import cmd_infra_nodes
 
     if _node_infra_exists(args.name):
@@ -148,21 +160,26 @@ def _ensure_monitoring(args, console: Console) -> None:
         f"[bold cyan]Creating monitoring (InfluxDB) VM on "
         f"{args.monitoring_provider}[/bold cyan]"
     )
-    cmd_monitoring_infra(
-        SimpleNamespace(
-            name=args.name,
-            provider=args.monitoring_provider,
-            region=args.monitoring_region,
-            volume_size=args.monitoring_volume_size,
-            droplet_size=args.monitoring_droplet_size,
-            grafana_size=None,
-            volume_type=None,
-            force=False,
-            grafana=getattr(args, "grafana", False),
-            contabo_image_id=args.contabo_image_id,
-            contabo_ssh_public_key_path=args.contabo_ssh_public_key_path,
+    if args.monitoring_provider == "contabo":
+        from saorsa_deploy.cmd.contabo_infra import ensure_contabo_monitoring_infra
+
+        ensure_contabo_monitoring_infra(args, console)
+    else:
+        cmd_monitoring_infra(
+            SimpleNamespace(
+                name=args.name,
+                provider=args.monitoring_provider,
+                region=args.monitoring_region,
+                volume_size=args.monitoring_volume_size,
+                droplet_size=args.monitoring_droplet_size,
+                grafana_size=None,
+                volume_type=None,
+                force=False,
+                grafana=getattr(args, "grafana", False),
+                contabo_image_id=args.contabo_image_id,
+                contabo_ssh_public_key_path=args.contabo_ssh_public_key_path,
+            )
         )
-    )
     console.print("[bold cyan]Provisioning InfluxDB[/bold cyan]")
     cmd_provision_monitoring(
         SimpleNamespace(
@@ -205,19 +222,24 @@ def _ensure_elastic(args, console: Console) -> None:
         f"{args.elastic_provider} (retention {args.elastic_retention_days}d)"
         "[/bold cyan]"
     )
-    cmd_elastic_infra(
-        SimpleNamespace(
-            name=args.name,
-            provider=args.elastic_provider,
-            region=args.elastic_region,
-            droplet_size=args.elastic_droplet_size,
-            volume_size=args.elastic_volume_size,
-            volume_type=None,
-            force=False,
-            contabo_image_id=args.contabo_image_id,
-            contabo_ssh_public_key_path=args.contabo_ssh_public_key_path,
+    if args.elastic_provider == "contabo":
+        from saorsa_deploy.cmd.contabo_infra import ensure_contabo_elastic_infra
+
+        ensure_contabo_elastic_infra(args, console)
+    else:
+        cmd_elastic_infra(
+            SimpleNamespace(
+                name=args.name,
+                provider=args.elastic_provider,
+                region=args.elastic_region,
+                droplet_size=args.elastic_droplet_size,
+                volume_size=args.elastic_volume_size,
+                volume_type=None,
+                force=False,
+                contabo_image_id=args.contabo_image_id,
+                contabo_ssh_public_key_path=args.contabo_ssh_public_key_path,
+            )
         )
-    )
     console.print("[bold cyan]Provisioning Elasticsearch for node log forwarding[/bold cyan]")
     cmd_provision_elastic(
         SimpleNamespace(
@@ -513,6 +535,11 @@ def cmd_prod_debug_nodes_deploy(args):
 
 def cmd_prod_debug_nodes_destroy(args):
     """Destroy a prod crash-debug-nodes deployment (VMs + monitoring + ES)."""
+    from saorsa_deploy.cmd.contabo_infra import (
+        destroy_contabo_elastic,
+        destroy_contabo_monitoring,
+        destroy_contabo_nodes,
+    )
     from saorsa_deploy.cmd.destroy_monitoring import cmd_destroy_monitoring
     from saorsa_deploy.cmd.destroy_nodes import cmd_destroy_nodes
     from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
@@ -525,17 +552,22 @@ def cmd_prod_debug_nodes_destroy(args):
 
     try:
         console.print("[bold cyan]Destroying node VMs...[/bold cyan]")
-        cmd_destroy_nodes(SimpleNamespace(name=args.name, force=True))
-        # The seeded prod bootstraps are not real infra, so remove state entirely.
-        try:
-            delete_deployment_state(args.name)
-        except Exception:
-            pass
+        # Contabo instances are API-managed (no tfstate); cancel them via the API.
+        # destroy_contabo_nodes deletes the deployment state itself when it applies.
+        if not destroy_contabo_nodes(args.name, console):
+            cmd_destroy_nodes(SimpleNamespace(name=args.name, force=True))
+            # The seeded prod bootstraps are not real infra, so remove state.
+            try:
+                delete_deployment_state(args.name)
+            except Exception:
+                pass
 
         if args.keep_monitoring:
             console.print(
                 "[dim]Leaving monitoring stack intact (--keep-monitoring).[/dim]"
             )
+        elif destroy_contabo_monitoring(args.name, console):
+            pass  # handled via the Contabo API
         elif _monitoring_stack_exists(args.name):
             console.print("[bold cyan]Destroying monitoring stack...[/bold cyan]")
             cmd_destroy_monitoring(SimpleNamespace(name=args.name, force=True))
@@ -544,9 +576,10 @@ def cmd_prod_debug_nodes_destroy(args):
                 f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
             )
 
-        destroy_client_elastic(
-            args.name, getattr(args, "keep_elastic", False), console
-        )
+        if getattr(args, "keep_elastic", False):
+            console.print("[dim]Leaving Elasticsearch intact (--keep-elastic).[/dim]")
+        elif not destroy_contabo_elastic(args.name, console):
+            destroy_client_elastic(args.name, False, console)
     except SystemExit:
         record_event(args.name, "prod_debug_nodes_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
