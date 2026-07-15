@@ -53,6 +53,41 @@ def _state(**overrides):
     return base
 
 
+class TestObservabilityAndProdBootstraps:
+    def test_prod_seeded_bootstraps_excluded_from_bootstrap_vms(self):
+        state = _state(
+            bootstrap_nodes=[
+                {"ip": "1.2.3.4", "region": "prod", "bootstrap_index": 1},
+                {"ip": "5.6.7.8", "region": "prod", "bootstrap_index": 2},
+            ]
+        )
+        inv = build_inventory(state, created_at="2026-04-16T18:00:00Z")
+        assert inv["bootstrap_vms"] == []
+
+    def test_observability_vms_from_monitoring_and_elastic(self):
+        inv = build_inventory(
+            _state(),
+            ssh_key="/k",
+            created_at="2026-04-16T18:00:00Z",
+            monitoring_state={
+                "region": "EU", "provider": "contabo", "vm_ip": "10.9.0.1",
+            },
+            elastic_state={
+                "region": "EU", "provider": "contabo", "vm_ip": "10.9.0.2",
+            },
+        )
+        obs = inv["observability_vms"]
+        roles = {v["role"]: v for v in obs}
+        assert set(roles) == {"influxdb", "elasticsearch"}
+        assert roles["influxdb"]["ip"] == "10.9.0.1"
+        assert roles["elasticsearch"]["ip"] == "10.9.0.2"
+        assert all(v["ssh_key"] == "/k" and v["ssh_user"] == "root" for v in obs)
+
+    def test_observability_vms_empty_without_stacks(self):
+        inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
+        assert inv["observability_vms"] == []
+
+
 class TestBuildInventory:
     def test_top_level_keys_match_schema(self):
         inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
@@ -65,6 +100,7 @@ class TestBuildInventory:
             "bootstrap_vms",
             "node_vms",
             "client_vms",
+            "observability_vms",
         }
         assert inv["schema_version"] == INVENTORY_SCHEMA_VERSION
         assert inv["testnet_id"] == "DEV-02"

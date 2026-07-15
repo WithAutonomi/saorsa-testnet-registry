@@ -8,7 +8,12 @@ from rich.console import Console
 
 from saorsa_deploy.evm import get_evm_network_info
 from saorsa_deploy.provisioning.volume import MOUNT_POINT
-from saorsa_deploy.state import load_client_state, load_deployment_state
+from saorsa_deploy.state import (
+    load_client_state,
+    load_deployment_state,
+    load_elastic_state,
+    load_monitoring_state,
+)
 
 INVENTORY_SCHEMA_VERSION = 4
 DEFAULT_SSH_USER = "root"
@@ -104,6 +109,12 @@ def _build_bootstrap_vms_field(state: dict, ssh_key: str) -> list[dict]:
 
     entries = []
     for node in sorted(bootstrap_nodes, key=lambda n: n.get("bootstrap_index", 0)):
+        # Skip peers seeded from the PRODUCTION network (region "prod"): they are
+        # external nodes we neither own nor can SSH into (prod-nodes /
+        # prod-debug-nodes join production rather than run their own bootstraps),
+        # so listing them as our bootstrap VMs would mislead a consumer.
+        if node.get("region") == "prod":
+            continue
         index = node["bootstrap_index"]
         service = f"ant-bootstrap-{index}"
         entries.append(
@@ -166,17 +177,68 @@ def _build_client_vms_field(
     return entries
 
 
+def _build_observability_vms_field(
+    name: str,
+    ssh_key: str,
+    monitoring_state: dict | None,
+    elastic_state: dict | None,
+) -> list[dict]:
+    """VMs for the deployment's own monitoring / logging stack (InfluxDB, Grafana,
+    Elasticsearch). Empty when the deployment has no such stack."""
+    entries: list[dict] = []
+    if monitoring_state and monitoring_state.get("vm_ip"):
+        region = monitoring_state.get("region", "")
+        entries.append({
+            "name": f"{name}-ant-monitoring-{region}",
+            "provider": monitoring_state.get("provider", ""),
+            "region": region,
+            "ip": monitoring_state["vm_ip"],
+            "role": "influxdb",
+            "ssh_user": DEFAULT_SSH_USER,
+            "ssh_key": ssh_key,
+            "services": ["influxdb"],
+        })
+        if monitoring_state.get("grafana_ip"):
+            entries.append({
+                "name": f"{name}-ant-grafana-{region}",
+                "provider": monitoring_state.get("provider", ""),
+                "region": region,
+                "ip": monitoring_state["grafana_ip"],
+                "role": "grafana",
+                "ssh_user": DEFAULT_SSH_USER,
+                "ssh_key": ssh_key,
+                "services": ["grafana"],
+            })
+    if elastic_state and elastic_state.get("vm_ip"):
+        region = elastic_state.get("region", "")
+        entries.append({
+            "name": f"{name}-ant-elastic-{region}",
+            "provider": elastic_state.get("provider", ""),
+            "region": region,
+            "ip": elastic_state["vm_ip"],
+            "role": "elasticsearch",
+            "ssh_user": DEFAULT_SSH_USER,
+            "ssh_key": ssh_key,
+            "services": ["elasticsearch"],
+        })
+    return entries
+
+
 def build_inventory(
     state: dict,
     ssh_key: str = DEFAULT_SSH_KEY,
     node_count: int | None = None,
     created_at: str | None = None,
     clients: list[dict] | None = None,
+    monitoring_state: dict | None = None,
+    elastic_state: dict | None = None,
 ) -> dict:
     """Build the schema-version-4 inventory dict from a loaded deployment state.
 
     Pure function, easy to unit test. `clients` is optional; pass the list from
     client state when present, or omit/None for deployments without client VMs.
+    `monitoring_state` / `elastic_state` are optional; pass them to include the
+    deployment's own InfluxDB / Grafana / Elasticsearch VMs.
     """
     resolved_node_count = node_count if node_count is not None else state.get("node_count")
     if resolved_node_count is None:
@@ -196,6 +258,9 @@ def build_inventory(
         "bootstrap_vms": _build_bootstrap_vms_field(state, ssh_key),
         "node_vms": _build_node_vms_field(state, ssh_key, resolved_node_count),
         "client_vms": _build_client_vms_field(state, clients, ssh_key),
+        "observability_vms": _build_observability_vms_field(
+            state["name"], ssh_key, monitoring_state, elastic_state
+        ),
     }
 
 
@@ -291,8 +356,6 @@ def cmd_generate_inventory(args):
     """Generate a schema-version-4 inventory.json for a deployment."""
     console = Console()
 
-    wallet_secret_key = _resolve_wallet_secret_key(args)
-
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
     try:
         state = load_deployment_state(args.name)
@@ -308,26 +371,47 @@ def cmd_generate_inventory(args):
     if client_state:
         clients = client_state.get("clients") or []
 
+    # The deployment's own monitoring / logging stack, if any (best-effort).
+    try:
+        monitoring_state = load_monitoring_state(args.name)
+    except RuntimeError:
+        monitoring_state = None
+    try:
+        elastic_state = load_elastic_state(args.name)
+    except RuntimeError:
+        elastic_state = None
+
     try:
         inventory = build_inventory(
             state,
             ssh_key=args.ssh_key_path,
             node_count=args.node_count,
             clients=clients,
+            monitoring_state=monitoring_state,
+            elastic_state=elastic_state,
         )
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
-    try:
-        manifest = build_devnet_manifest(
-            state,
-            wallet_private_key=wallet_secret_key,
-            node_count=args.node_count,
-        )
-    except ValueError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
+    # The devnet manifest describes a self-hosted network (our own genesis +
+    # bootstraps). prod-* kinds JOIN production (bootstraps tagged region "prod"),
+    # where it — and its wallet key — is meaningless, so skip it for those.
+    prod_seeded = any(
+        n.get("region") == "prod" for n in (state.get("bootstrap_nodes") or [])
+    )
+    manifest = None
+    if not prod_seeded:
+        wallet_secret_key = _resolve_wallet_secret_key(args)
+        try:
+            manifest = build_devnet_manifest(
+                state,
+                wallet_private_key=wallet_secret_key,
+                node_count=args.node_count,
+            )
+        except ValueError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            sys.exit(1)
 
     if args.output:
         output_path = Path(os.path.expanduser(args.output))
@@ -336,14 +420,12 @@ def cmd_generate_inventory(args):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(inventory, indent=2) + "\n")
 
-    manifest_path = output_path.parent / DEVNET_MANIFEST_FILENAME
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-
     node_vm_count = len(inventory["node_vms"])
     services_per_vm = len(inventory["node_vms"][0]["services"]) if node_vm_count else 0
     total_nodes = node_vm_count * services_per_vm
     bootstrap_vm_count = len(inventory["bootstrap_vms"])
     client_vm_count = len(inventory["client_vms"])
+    obs_vm_count = len(inventory["observability_vms"])
     nat_vm_count = sum(1 for vm in inventory["node_vms"] if vm.get("nat_simulated"))
     console.print(f"[bold green]Wrote inventory to {output_path}[/bold green]")
     console.print(f"  {bootstrap_vm_count} bootstrap VM(s)")
@@ -353,9 +435,21 @@ def cmd_generate_inventory(args):
         f"{total_nodes} nodes{nat_suffix}"
     )
     console.print(f"  {client_vm_count} client VM(s)")
-    console.print(f"[bold green]Wrote devnet manifest to {manifest_path}[/bold green]")
-    console.print(
-        f"  {len(manifest['bootstrap'])} bootstrap multiaddr(s), "
-        f"{manifest['node_count']} nodes total, "
-        f"evm={DEVNET_EVM_NETWORK}"
-    )
+    console.print(f"  {obs_vm_count} observability VM(s)")
+
+    if manifest is not None:
+        manifest_path = output_path.parent / DEVNET_MANIFEST_FILENAME
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        console.print(
+            f"[bold green]Wrote devnet manifest to {manifest_path}[/bold green]"
+        )
+        console.print(
+            f"  {len(manifest['bootstrap'])} bootstrap multiaddr(s), "
+            f"{manifest['node_count']} nodes total, "
+            f"evm={DEVNET_EVM_NETWORK}"
+        )
+    else:
+        console.print(
+            "[dim]Skipped devnet manifest (production deployment — joins the "
+            "production network).[/dim]"
+        )
