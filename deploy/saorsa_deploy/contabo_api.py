@@ -32,7 +32,7 @@ TOKEN_URL = os.environ.get(
 # NOT fatal to the instance — it keeps provisioning server-side and a re-run
 # adopts it by display name — so the cap only bounds how long we block.
 _POLL_SECS = 20
-_DEFAULT_MAX_WAIT_SECS = 2700  # 45 min
+_DEFAULT_MAX_WAIT_SECS = 10800  # 180 min — Contabo "orders" can be very slow
 
 
 class ContaboError(RuntimeError):
