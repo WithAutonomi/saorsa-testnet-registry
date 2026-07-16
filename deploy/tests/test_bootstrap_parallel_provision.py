@@ -19,6 +19,21 @@ from pyinfra.operations import server, systemd
 from saorsa_deploy.provisioning.bootstrap import AntBootstrapNodesProvisioner
 
 
+@pytest.fixture(autouse=True)
+def _mock_operator_authorized_keys_add_op():
+    """Neutralize the operator-SSH-keys op's internal ``add_op``.
+
+    ``execute()`` calls ``add_operator_authorized_keys_op`` (added in
+    ``feat: install operator SSH keys on every VM``), which invokes the real
+    pyinfra ``add_op`` from ``provisioning.authorized_keys`` — a module these
+    tests don't patch — making pyinfra raise "Operation called within another
+    operation" against the mocked State. Patch that helper's ``add_op`` the same
+    way these tests already patch the bootstrap module's ``add_op``.
+    """
+    with patch("saorsa_deploy.provisioning.authorized_keys.add_op"):
+        yield
+
+
 def _fake_host(ip):
     return SimpleNamespace(name=ip)
 

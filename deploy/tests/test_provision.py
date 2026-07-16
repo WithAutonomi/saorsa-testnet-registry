@@ -14,6 +14,21 @@ from saorsa_deploy.provisioning.node import (
 from saorsa_deploy.provisioning.volume import MOUNT_POINT
 
 
+@pytest.fixture(autouse=True)
+def _mock_operator_authorized_keys_add_op():
+    """Neutralize the operator-SSH-keys op's internal ``add_op``.
+
+    ``execute()`` calls ``add_operator_authorized_keys_op`` (added in
+    ``feat: install operator SSH keys on every VM``), which invokes the real
+    pyinfra ``add_op`` from ``provisioning.authorized_keys`` — a module these
+    tests don't patch. Against the mocked State that makes pyinfra raise
+    "Operation called within another operation". Patch that helper's ``add_op``
+    the same way the tests already patch each provisioner module's ``add_op``.
+    """
+    with patch("saorsa_deploy.provisioning.authorized_keys.add_op"):
+        yield
+
+
 def _mock_active_hosts(host_ips):
     """Build mock Host-like objects for a mocked Pyinfra state.
 
