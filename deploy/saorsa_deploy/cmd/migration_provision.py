@@ -97,6 +97,18 @@ def cmd_migration_provision(args):
         console,
     )
 
+    # Contabo has no attachable block volume — its VMs are root-disk only, so
+    # node storage lives under /mnt/ant-node-storage on the root disk rather
+    # than a mounted volume (same as OVH 3-AZ). Every other target provider
+    # attaches a data volume.
+    root_disk_ips = (
+        set(target_ips) if migration.target_provider == "contabo" else None
+    )
+    if root_disk_ips:
+        console.print(
+            f"  Root-disk storage (no volume): {len(root_disk_ips)} Contabo VM(s)"
+        )
+
     kwargs = {
         "host_ips": target_ips,
         "bootstrap_peers": bootstrap_peers,
@@ -108,6 +120,7 @@ def cmd_migration_provision(args):
         "console": console,
         "rewards_address": args.rewards_address,
         "nat_ips": None,
+        "root_disk_ips": root_disk_ips,
         # Match the existing prod fleet's units exactly (see prod fsn1
         # ant-node-1.service): no --evm-network (ant-node defaults to
         # arbitrum-one for prod), Restart=always with 10s back-off, and

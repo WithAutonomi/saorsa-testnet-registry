@@ -1992,7 +1992,7 @@ def main(argv=None):
         "--target-provider",
         type=str,
         required=True,
-        choices=["hetzner", "ovh"],
+        choices=["hetzner", "ovh", "contabo"],
         help="Destination provider.",
     )
     migration_plan_parser.add_argument(
@@ -2000,14 +2000,18 @@ def main(argv=None):
         type=str,
         required=True,
         help=(
-            "Destination VM type/flavor (e.g. cpx42 for hetzner, b3-16 for ovh)."
+            "Destination VM type/flavor (e.g. cpx42 for hetzner, b3-16 for ovh, "
+            "or a Contabo product id like V99 for contabo)."
         ),
     )
     migration_plan_parser.add_argument(
         "--target-volume-size",
         type=int,
-        required=True,
-        help="Attached data volume size in GB (e.g. 50).",
+        default=0,
+        help=(
+            "Attached data volume size in GB (e.g. 50). Required for "
+            "hetzner/ovh; ignored for contabo, which is root-disk only."
+        ),
     )
     migration_plan_parser.add_argument(
         "--node-count-per-vm",
@@ -2020,7 +2024,8 @@ def main(argv=None):
     migration_infra_parser = migration_subparsers.add_parser(
         "infra",
         help=(
-            "Provision destination Hetzner VMs for a migration via Terraform."
+            "Provision destination VMs for a migration (Terraform for "
+            "hetzner/ovh; the Contabo REST API for contabo)."
         ),
     )
     migration_infra_parser.add_argument(
@@ -2032,8 +2037,9 @@ def main(argv=None):
         required=True,
         help=(
             "Comma-separated <location>=<count> map (e.g. "
-            "fsn1=3,hel1=3,nbg1=3). Sum must equal the number of VMs still "
-            "in 'planned' status."
+            "fsn1=3,hel1=3,nbg1=3; for contabo use region codes like "
+            "US-central=3). Sum must equal the number of VMs still in "
+            "'planned' status."
         ),
     )
     migration_infra_parser.add_argument(
@@ -2044,6 +2050,25 @@ def main(argv=None):
             "Path to inventory.json — used to compute name index offsets so "
             "new VMs don't collide with existing prod names. Defaults to "
             "~/.autonomi/testnets/<deployment-name>/inventory.json."
+        ),
+    )
+    migration_infra_parser.add_argument(
+        "--contabo-image-id",
+        type=str,
+        default="d64d5c6c-9dda-4e38-8174-0ee282474d8a",
+        help=(
+            "Contabo image UUID (contabo targets only). Defaults to the "
+            "standard ubuntu-24.04 image; re-verify with `cntb get images "
+            "--imageType standard` as UUIDs can change."
+        ),
+    )
+    migration_infra_parser.add_argument(
+        "--contabo-ssh-public-key-path",
+        type=str,
+        default="~/.ssh/id_rsa.pub",
+        help=(
+            "Path to the operator SSH public key (contabo targets only); "
+            "registered as a Contabo secret so the new VMs allow root login."
         ),
     )
 

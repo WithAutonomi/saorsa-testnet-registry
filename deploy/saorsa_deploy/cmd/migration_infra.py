@@ -33,6 +33,11 @@ from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import check_terraform_state_exists
 from saorsa_deploy.terraform import TerraformRunConfig
 
+# Contabo is provisioned via the REST API, not Terraform, so it isn't a
+# ``_ProviderProfile``. Its migrated VMs are named ``<deployment>-cntb-<region>-N``.
+_CONTABO = "contabo"
+_CONTABO_NAME_TEMPLATE = "cntb"
+
 
 @dataclass(frozen=True)
 class _ProviderProfile:
@@ -193,6 +198,129 @@ def _workspace_dir(migration_name: str, location: str) -> Path:
     )
 
 
+def _contabo_secret_name(migration_name: str, location: str) -> str:
+    """Deterministic Contabo ssh-secret name (idempotent create/lookup)."""
+    return f"migration-{migration_name.lower()}-{location.lower()}"
+
+
+def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
+    """Create/adopt Contabo target VMs via the REST API and record them.
+
+    Mirrors the Terraform path's record-keeping (set target_locations, map
+    results onto the ``planned`` VMs in --locations order, transition to
+    ``infra_provisioned``) but provisions through ``ContaboClient`` instead of
+    Terraform, and records no volume (Contabo is root-disk only). Idempotent:
+    instances are adopted by their fleet-convention display name, so a re-run
+    after a partial failure resumes rather than duplicating.
+    """
+    from saorsa_deploy.cmd.contabo_infra import _create_or_adopt
+    from saorsa_deploy.contabo import require_contabo_env
+    from saorsa_deploy.contabo_api import ContaboClient, ContaboError
+
+    require_contabo_env(console)
+
+    product = migration.target_server_type
+    image_id = args.contabo_image_id
+    ssh_key_path = args.contabo_ssh_public_key_path
+
+    inventory_path = (
+        Path(args.inventory_path).expanduser()
+        if getattr(args, "inventory_path", None)
+        else _default_inventory_path(migration.deployment_name)
+    )
+    offsets: dict[str, int] = {
+        loc: _max_existing_index(
+            inventory_path,
+            migration.deployment_name,
+            _CONTABO_NAME_TEMPLATE,
+            loc,
+        )
+        for loc, _ in parsed
+    }
+
+    repo.set_target_locations(migration.id, {loc: n for loc, n in parsed})
+
+    console.print(
+        f"[bold]Provisioning {sum(n for _, n in parsed)} Contabo VM(s) "
+        f"({product}) for migration {migration.name}...[/bold]"
+    )
+    for loc, count in parsed:
+        first = offsets[loc] + 1
+        console.print(
+            f"  {loc}: {count} × {product} "
+            f"(-{loc}-{first}..-{offsets[loc] + count})"
+        )
+    console.print()
+
+    client = ContaboClient(console)
+    now = datetime.now(timezone.utc)
+    idx = 0
+    failures = 0
+    for loc, count in parsed:
+        slice_vms = planned_vms[idx : idx + count]
+        idx += count
+        try:
+            secret_id = client.ensure_ssh_secret(
+                _contabo_secret_name(migration.name, loc), ssh_key_path
+            )
+        except (ContaboError, OSError) as e:
+            console.print(
+                f"[bold red]{loc}: could not register ssh secret: {e}[/bold red]"
+            )
+            failures += 1
+            continue
+        for i, vm in enumerate(slice_vms):
+            target_name = (
+                f"{migration.deployment_name}-{_CONTABO_NAME_TEMPLATE}-{loc}-"
+                f"{i + 1 + offsets[loc]}"
+            )
+            try:
+                instance_id, ip = _create_or_adopt(
+                    client,
+                    console,
+                    display_name=target_name,
+                    product_id=product,
+                    image_id=image_id,
+                    region=loc,
+                    ssh_secret_id=secret_id,
+                )
+            except ContaboError as e:
+                console.print(
+                    f"[bold red]{target_name}: provisioning failed: {e}[/bold red]"
+                )
+                failures += 1
+                continue
+            repo.update_vm(
+                vm.id,
+                target_name=target_name,
+                target_provider=_CONTABO,
+                target_provider_id=str(instance_id),
+                target_location=loc,
+                target_ip=str(ip),
+                target_volume_id=None,
+                status=MigrationVmStatus.INFRA_PROVISIONED,
+                infra_provisioned_at=now,
+            )
+
+    if failures:
+        console.print(
+            f"[bold red]{failures} VM(s)/location(s) failed. Re-run "
+            "`migration infra` to resume (existing instances are adopted).[/bold red]"
+        )
+        repo.update_migration_status(migration.id, MigrationStatus.FAILED)
+        sys.exit(1)
+
+    repo.update_migration_status(migration.id, MigrationStatus.INFRA_PROVISIONED)
+    console.print(
+        f"[bold green]All Contabo VM(s) provisioned. "
+        f"{len(planned_vms)} target VM(s) recorded.[/bold green]"
+    )
+    console.print(
+        "[dim]Next: run `saorsa-deploy migration provision --name "
+        f"{args.name} ...` to install ant-node on the new VMs.[/dim]"
+    )
+
+
 def cmd_migration_infra(args):
     console = Console()
 
@@ -209,23 +337,6 @@ def cmd_migration_infra(args):
         )
         sys.exit(1)
 
-    profile = _PROFILES.get(migration.target_provider)
-    if profile is None:
-        supported = ", ".join(sorted(_PROFILES))
-        console.print(
-            f"[bold red]Error:[/bold red] migration target_provider is "
-            f"{migration.target_provider!r}; supported: {supported}."
-        )
-        sys.exit(1)
-
-    missing = [v for v in profile.required_env_vars if not os.environ.get(v)]
-    if missing:
-        console.print(
-            f"[bold red]Error:[/bold red] required env var(s) not set for "
-            f"{migration.target_provider!r}: {', '.join(missing)}"
-        )
-        sys.exit(1)
-
     try:
         parsed = _parse_locations(args.locations)
     except ValueError as e:
@@ -239,6 +350,30 @@ def cmd_migration_infra(args):
             f"[bold red]Error:[/bold red] --locations sum is {requested_total} "
             f"but {len(planned_vms)} VM(s) remain in 'planned' status. "
             "Adjust --locations to match the remaining count."
+        )
+        sys.exit(1)
+
+    # Contabo bypasses Terraform entirely (root-disk only, slow async REST
+    # "orders" that blow the TF provider's 20-min timeout) — see contabo_api.py.
+    # Provision it directly via the REST API and record onto the MigrationVm rows.
+    if migration.target_provider == _CONTABO:
+        _infra_contabo(args, console, repo, migration, parsed, planned_vms)
+        return
+
+    profile = _PROFILES.get(migration.target_provider)
+    if profile is None:
+        supported = ", ".join(sorted([*_PROFILES, _CONTABO]))
+        console.print(
+            f"[bold red]Error:[/bold red] migration target_provider is "
+            f"{migration.target_provider!r}; supported: {supported}."
+        )
+        sys.exit(1)
+
+    missing = [v for v in profile.required_env_vars if not os.environ.get(v)]
+    if missing:
+        console.print(
+            f"[bold red]Error:[/bold red] required env var(s) not set for "
+            f"{migration.target_provider!r}: {', '.join(missing)}"
         )
         sys.exit(1)
 

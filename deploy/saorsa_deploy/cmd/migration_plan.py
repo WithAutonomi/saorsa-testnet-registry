@@ -41,6 +41,16 @@ def cmd_migration_plan(args):
         )
         sys.exit(1)
 
+    # Hetzner/OVH targets attach a data volume; Contabo is root-disk only and
+    # ignores --target-volume-size. Require a positive size for the volume
+    # providers so a forgotten flag fails here rather than at `migration infra`.
+    if args.target_provider != "contabo" and args.target_volume_size <= 0:
+        console.print(
+            f"[bold red]Error:[/bold red] --target-volume-size must be > 0 for "
+            f"target provider '{args.target_provider}'."
+        )
+        sys.exit(1)
+
     inventory_path = (
         Path(args.inventory_path).expanduser()
         if args.inventory_path
