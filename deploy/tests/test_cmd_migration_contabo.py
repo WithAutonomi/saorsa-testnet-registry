@@ -71,8 +71,13 @@ def test_infra_contabo_creates_instances_and_records_vms():
         patch("saorsa_deploy.contabo.require_contabo_env"),
         patch("saorsa_deploy.contabo_api.ContaboClient", return_value=client),
         patch("saorsa_deploy.cmd.contabo_infra._create_or_adopt", side_effect=_adopt),
+        patch.object(mod, "_wait_for_ssh_ready", return_value=[]) as wait,
     ):
         mod.cmd_migration_infra(_infra_args())
+
+    # SSH-readiness was awaited on the created target IPs before completing.
+    wait.assert_called_once()
+    assert set(wait.call_args.args[0]) == {"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 
     # Target locations recorded, and one create per VM with the right product/region.
     repo.set_target_locations.assert_called_once_with(42, {"US-central": 3})
@@ -108,6 +113,48 @@ def test_infra_contabo_locations_count_mismatch_exits():
     ):
         mod.cmd_migration_infra(_infra_args(locations="US-central=3"))
     repo.set_target_locations.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# _wait_for_ssh_ready — first-boot SSH settle
+# --------------------------------------------------------------------------- #
+def test_wait_for_ssh_ready_all_ready_returns_empty():
+    with (
+        patch.object(mod.socket, "create_connection"),  # always succeeds
+        patch.object(mod.time, "sleep"),
+    ):
+        not_ready = mod._wait_for_ssh_ready(
+            ["1.1.1.1", "2.2.2.2"], MagicMock(),
+            required_consecutive=2, interval=0, timeout=60,
+        )
+    assert not_ready == []
+
+
+def test_wait_for_ssh_ready_reports_unready_host():
+    def _connect(addr, timeout=None):
+        if addr[0] == "2.2.2.2":
+            raise OSError("connection refused")
+        return MagicMock()  # usable as a context manager
+
+    # monotonic climbs past the (0 + timeout) deadline after a few iterations.
+    clock = iter([0, 5, 10, 15, 20, 999, 999, 999])
+    with (
+        patch.object(mod.socket, "create_connection", side_effect=_connect),
+        patch.object(mod.time, "sleep"),
+        patch.object(mod.time, "monotonic", side_effect=lambda: next(clock, 999)),
+    ):
+        not_ready = mod._wait_for_ssh_ready(
+            ["1.1.1.1", "2.2.2.2"], MagicMock(),
+            required_consecutive=1, interval=0, timeout=30,
+        )
+    assert not_ready == ["2.2.2.2"]
+
+
+def test_wait_for_ssh_ready_empty_noop():
+    # No IPs → returns immediately without touching the network.
+    with patch.object(mod.socket, "create_connection") as cc:
+        assert mod._wait_for_ssh_ready([], MagicMock()) == []
+    cc.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #

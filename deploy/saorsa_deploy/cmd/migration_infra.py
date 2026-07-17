@@ -14,7 +14,9 @@ Hetzner and OVH are supported today.
 import json
 import os
 import re
+import socket
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,6 +205,60 @@ def _contabo_secret_name(migration_name: str, location: str) -> str:
     return f"migration-{migration_name.lower()}-{location.lower()}"
 
 
+def _wait_for_ssh_ready(
+    ips,
+    console,
+    *,
+    port: int = 22,
+    timeout: int = 600,
+    interval: int = 10,
+    required_consecutive: int = 3,
+    connect_timeout: int = 5,
+) -> list[str]:
+    """Block until every IP accepts TCP :``port`` on ``required_consecutive``
+    consecutive checks; return the IPs that never became ready.
+
+    A freshly-created Contabo VM reports ``running`` (its API status) before
+    sshd is up, and its SSH can *flap* down→up→down during first boot — which
+    silently broke the migration's hostname step and the Telegraf retrofit for a
+    just-born VM. Requiring several consecutive successful connects means we
+    only proceed once the VM has settled past that first-boot flap. Never
+    raises: any still-unready host is returned + warned so the caller can decide
+    (we warn rather than fail, since the VMs already exist and are recorded).
+    """
+    if not ips:
+        return []
+    console.print(
+        f"[bold]Waiting for SSH (:{port}) to settle on {len(ips)} VM(s) "
+        f"(need {required_consecutive} consecutive OK)...[/bold]"
+    )
+    consecutive = {ip: 0 for ip in ips}
+    ready: set[str] = set()
+    deadline = time.monotonic() + timeout
+    while len(ready) < len(ips) and time.monotonic() < deadline:
+        for ip in ips:
+            if ip in ready:
+                continue
+            try:
+                with socket.create_connection((ip, port), timeout=connect_timeout):
+                    consecutive[ip] += 1
+            except OSError:
+                consecutive[ip] = 0
+            if consecutive[ip] >= required_consecutive:
+                ready.add(ip)
+                console.print(f"  [green]{ip}: SSH ready[/green]")
+        if len(ready) < len(ips):
+            time.sleep(interval)
+    not_ready = [ip for ip in ips if ip not in ready]
+    if not_ready:
+        console.print(
+            f"[yellow]Warning: {len(not_ready)} VM(s) not SSH-ready after "
+            f"{timeout}s: {', '.join(not_ready)}. `migration provision` may need "
+            "a re-run for these hosts once they settle.[/yellow]"
+        )
+    return not_ready
+
+
 def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
     """Create/adopt Contabo target VMs via the REST API and record them.
 
@@ -254,6 +310,7 @@ def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
 
     client = ContaboClient(console)
     now = datetime.now(timezone.utc)
+    created_ips: list[str] = []
     idx = 0
     failures = 0
     for loc, count in parsed:
@@ -290,6 +347,7 @@ def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
                 )
                 failures += 1
                 continue
+            created_ips.append(str(ip))
             repo.update_vm(
                 vm.id,
                 target_name=target_name,
@@ -309,6 +367,12 @@ def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
         )
         repo.update_migration_status(migration.id, MigrationStatus.FAILED)
         sys.exit(1)
+
+    # A just-created Contabo VM reports "running" before sshd is up and can flap
+    # during first boot; wait until SSH has settled so the subsequent
+    # `migration provision` (hostname + ant-node) and the Telegraf retrofit
+    # don't silently skip a not-yet-reachable host.
+    _wait_for_ssh_ready(created_ips, console)
 
     repo.update_migration_status(migration.id, MigrationStatus.INFRA_PROVISIONED)
     console.print(
