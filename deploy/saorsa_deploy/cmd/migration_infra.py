@@ -210,9 +210,9 @@ def _wait_for_ssh_ready(
     console,
     *,
     port: int = 22,
-    timeout: int = 600,
-    interval: int = 10,
-    required_consecutive: int = 3,
+    timeout: int = 900,
+    interval: int = 12,
+    required_consecutive: int = 5,
     connect_timeout: int = 5,
 ) -> list[str]:
     """Block until every IP accepts TCP :``port`` on ``required_consecutive``

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from rich.console import Console
 from saorsa_db.models import MigrationStatus, MigrationVmStatus
 
+from saorsa_deploy.cmd.migration_infra import _wait_for_ssh_ready
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
 from saorsa_deploy.cmd.provision_telegraf import set_hostnames
 from saorsa_deploy.migration_registry import (
@@ -75,6 +76,13 @@ def cmd_migration_provision(args):
     console.print(f"  Rewards address: {args.rewards_address}")
     console.print(f"  SSH key: {args.ssh_key_path}")
     console.print()
+
+    # A freshly-created Contabo VM's SSH can keep flapping for several minutes —
+    # longer than (and even after) `migration infra`'s settle check. Wait here,
+    # right before the SSH-based provisioning pass, so a VM that flapped between
+    # infra and now doesn't fail provisioning. Best-effort: still-unready hosts
+    # are warned about, then the provisioner surfaces any that remain unreachable.
+    _wait_for_ssh_ready(target_ips, console)
 
     clear_known_hosts(target_ips, console)
 
