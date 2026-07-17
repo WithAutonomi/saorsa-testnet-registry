@@ -85,6 +85,16 @@ class ContaboClient:
     def _request(self, method: str, path: str, **kw) -> dict:
         url = f"{API_BASE}{path}"
         resp = requests.request(method, url, headers=self._headers(), timeout=60, **kw)
+        if resp.status_code == 401:
+            # The cached OAuth access token is short-lived (Contabo/Keycloak
+            # tokens expire in minutes) and a multi-VM run — each VM a slow
+            # "order" we poll for — easily outlives one token. A 401 means the
+            # request was rejected, not processed, so refreshing the token and
+            # retrying once is safe even for the create POST.
+            self._token = None
+            resp = requests.request(
+                method, url, headers=self._headers(), timeout=60, **kw
+            )
         if resp.status_code not in (200, 201):
             raise ContaboError(
                 f"Contabo API {method} {path} failed ({resp.status_code}): "
