@@ -497,15 +497,22 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
 
 - **Crash-debug node config** (all default-guarded in `provisioning/node.py`, so
   every other kind's systemd unit stays byte-identical):
-  - **`--rust-backtrace`** (default `1`; `full` or `""` to disable) →
-    `Environment=RUST_BACKTRACE=` on each service. It MUST be a systemd
-    `Environment=` line (not inlined on ExecStart) so it propagates through the
+  - **`--rust-backtrace`** (default `full`; `1` or `""` to disable) →
+    `Environment=RUST_BACKTRACE=` on each service, PLUS an unconditional
+    `Environment=COLORBT_SHOW_HIDDEN=1` (ant-node's color-backtrace filters every
+    frame otherwise, printing `<empty backtrace>`). Both MUST be systemd
+    `Environment=` lines (not inlined on ExecStart) so they propagate through the
     NAT `ip netns exec` wrapper.
   - **`--coredumps`** (default on) → `LimitCORE=infinity` on the unit + a global
     `kernel.core_pattern` sysctl writing cores to
     `/mnt/ant-node-storage/coredumps/` (on the data volume, or the root disk on
     volume-less providers), so even an OOM/SIGKILL leaves an inspectable core.
-    `--coredump-retention-days` (default 7) installs a daily prune timer.
+    Also installs `gdb` + `elfutils` (`eu-stack`) on the VM to symbolise those
+    file cores in place — `systemd-coredump` is deliberately NOT installed (it
+    would be inert against the file-based `core_pattern`, or force cores off the
+    data volume). NB the release binary is stripped, so symbols are limited
+    without an unstripped build; the live COLORBT backtrace is the higher-value
+    signal. `--coredump-retention-days` (default 7) installs a daily prune timer.
   - **`--log-level`** (default `debug`). **ant-node has NO per-module env filter**
     — a single global level is the only option, so the requested per-module
     `RUST_LOG` targeting (`saorsa_transport`, `saorsa_core::*`,

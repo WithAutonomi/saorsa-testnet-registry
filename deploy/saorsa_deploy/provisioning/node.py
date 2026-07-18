@@ -58,6 +58,21 @@ INSTALL_HEAPTRACK_COMMAND = (
 # a panicking ant-node leaves an inspectable core even on OOM/SIGKILL.
 COREDUMP_DIR = f"{MOUNT_POINT}/coredumps"
 
+# Idempotent apt install of the core-dump inspection tools (prod-debug-nodes
+# kind, gated on coredumps). ``gdb`` and ``eu-stack`` (from ``elfutils``) read
+# the file cores under COREDUMP_DIR directly, so a symbolised backtrace can be
+# produced on the box without shipping the 1 GiB cores elsewhere. NB the release
+# ant-node binary is stripped, so symbols are limited without an unstripped
+# build; systemd-coredump is deliberately NOT installed (it would either be inert
+# against this file-based core_pattern or force the cores off the data volume).
+INSTALL_DEBUG_TOOLS_COMMAND = (
+    "command -v gdb >/dev/null && command -v eu-stack >/dev/null "
+    "&& echo 'DEBUG_TOOLS:SKIP' || "
+    "(DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+    "gdb elfutils && echo 'DEBUG_TOOLS:INSTALLED')"
+)
+
 
 def build_coredump_setup_command(coredump_dir: str = COREDUMP_DIR) -> str:
     """Enable core dumps globally, writing them under ``coredump_dir``.
@@ -143,6 +158,7 @@ def _build_node_unit_file(
     limit_nofile=None,
     rust_backtrace=None,
     coredumps=False,
+    colorbt_show_hidden=False,
 ):
     """Build the systemd unit file content for a node service.
 
@@ -158,11 +174,14 @@ def _build_node_unit_file(
     (``always`` / ``10`` / ``65536``); defaults preserve testnet behaviour.
 
     ``rust_backtrace`` (e.g. ``"1"`` / ``"full"``) adds an
-    ``Environment=RUST_BACKTRACE=`` line, and ``coredumps`` adds
-    ``LimitCORE=infinity`` — both used by the prod-debug-nodes kind. They default
-    off, so every other caller's unit is byte-for-byte unchanged. The
-    ``Environment=`` value propagates through the NAT ``ip netns exec`` wrapper
-    (systemd sets it for the whole service), so it can't be inlined on ExecStart.
+    ``Environment=RUST_BACKTRACE=`` line, ``colorbt_show_hidden`` adds
+    ``Environment=COLORBT_SHOW_HIDDEN=1`` (ant-node's color-backtrace filters
+    every frame otherwise, printing ``<empty backtrace>``), and ``coredumps``
+    adds ``LimitCORE=infinity`` — all used by the prod-debug-nodes kind. They
+    default off, so every other caller's unit is byte-for-byte unchanged. The
+    ``Environment=`` values propagate through the NAT ``ip netns exec`` wrapper
+    (systemd sets them for the whole service), so they can't be inlined on
+    ExecStart.
     """
     description_suffix = " (port-restricted NAT)" if is_nat else ""
     wrapped_exec_start = (
@@ -171,6 +190,8 @@ def _build_node_unit_file(
     env_lines = ""
     if rust_backtrace:
         env_lines += f"\nEnvironment=RUST_BACKTRACE={rust_backtrace}"
+    if colorbt_show_hidden:
+        env_lines += "\nEnvironment=COLORBT_SHOW_HIDDEN=1"
     limit_line = f"\nLimitNOFILE={limit_nofile}" if limit_nofile else ""
     core_line = "\nLimitCORE=infinity" if coredumps else ""
     return f"""\
@@ -228,6 +249,7 @@ class AntNodeProvisioner:
         rust_backtrace: str | None = None,
         coredumps: bool = False,
         coredump_dir: str = COREDUMP_DIR,
+        colorbt_show_hidden: bool = False,
     ):
         self.host_ips = host_ips
         self.bootstrap_peers = bootstrap_peers
@@ -258,11 +280,13 @@ class AntNodeProvisioner:
         self.heaptrack = heaptrack
         self.heaptrack_dir = heaptrack_dir
         # Crash-debug knobs (prod-debug-nodes kind), default off so other
-        # callers' units are unchanged: RUST_BACKTRACE on the service env, plus
-        # LimitCORE=infinity + a global kernel.core_pattern under coredump_dir.
+        # callers' units are unchanged: RUST_BACKTRACE + COLORBT_SHOW_HIDDEN on
+        # the service env, plus LimitCORE=infinity + a global kernel.core_pattern
+        # under coredump_dir, and gdb/eu-stack installed to read the file cores.
         self.rust_backtrace = rust_backtrace
         self.coredumps = coredumps
         self.coredump_dir = coredump_dir
+        self.colorbt_show_hidden = colorbt_show_hidden
         # Optional providers (e.g. Telegraf forwarders) whose ops are folded
         # into this provisioner's single pyinfra pass, so node provisioning and
         # Telegraf install happen in ONE pass over the node VMs. Each exposes
@@ -303,6 +327,7 @@ class AntNodeProvisioner:
                 limit_nofile=self.limit_nofile,
                 rust_backtrace=self.rust_backtrace,
                 coredumps=self.coredumps,
+                colorbt_show_hidden=self.colorbt_show_hidden,
             )
             unit_path = f"/etc/systemd/system/{service_name}.service"
             commands.append(f"cat > {unit_path} << 'UNIT_EOF'\n{unit_content}UNIT_EOF")
@@ -453,6 +478,12 @@ class AntNodeProvisioner:
                     server.shell,
                     name="Enable core dumps (kernel.core_pattern)",
                     commands=[build_coredump_setup_command(self.coredump_dir)],
+                )
+                add_op(
+                    state,
+                    server.shell,
+                    name="Install core-dump tools (gdb, elfutils)",
+                    commands=[INSTALL_DEBUG_TOOLS_COMMAND],
                 )
 
             if self.binary_is_archive:

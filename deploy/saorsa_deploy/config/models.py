@@ -535,8 +535,10 @@ class ProdDebugNodesSpec(_Base):
     monitoring/logging VMs each pick their own provider — including Contabo, which
     is root-disk only (no attachable volume). Set ``binary.branch`` +
     ``binary.debug: true`` to build a debug ant-node. ``None`` means "use the CLI
-    default"; the CLI defaults ``log_level=debug``, ``rust_backtrace=1``,
-    ``coredumps``/``monitoring``/``forward_logs`` on.
+    default"; the CLI defaults ``log_level=debug``, ``rust_backtrace=full``,
+    ``coredumps``/``monitoring``/``forward_logs`` on. Every service also gets
+    ``COLORBT_SHOW_HIDDEN=1`` (unconditional for this kind) and, when
+    ``coredumps`` is on, ``gdb``/``elfutils`` installed to read the file cores.
     """
 
     binary: Binary
@@ -547,7 +549,7 @@ class ProdDebugNodesSpec(_Base):
     node_count: Optional[int] = None  # default 15
     volume_size: Optional[int] = None  # ignored on Contabo (root disk)
     log_level: Optional[LogLevel] = None  # default 'debug'
-    rust_backtrace: Optional[str] = None  # default '1'; 'full' or '' also valid
+    rust_backtrace: Optional[str] = None  # default 'full'; '1' or '' also valid
     coredumps: Optional[bool] = None  # default on
     coredump_retention_days: Optional[int] = None  # default 7; 0 = keep forever
     heaptrack: Optional[bool] = None  # default off (use prod-nodes for heaptrack)

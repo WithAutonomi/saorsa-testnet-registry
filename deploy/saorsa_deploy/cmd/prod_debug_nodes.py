@@ -339,9 +339,12 @@ def _provision_debug_nodes(args, console: Console) -> None:
         "limit_nofile": 65536,
         "heaptrack": args.heaptrack,
         "root_disk_ips": root_disk_ips,
-        # The crash-debug knobs.
+        # The crash-debug knobs. COLORBT_SHOW_HIDDEN is always on for this kind:
+        # ant-node's color-backtrace filters every frame otherwise (prints
+        # <empty backtrace>), so a bare RUST_BACKTRACE yields nothing useful.
         "rust_backtrace": args.rust_backtrace,
         "coredumps": args.coredumps,
+        "colorbt_show_hidden": True,
         "extra_op_providers": extra_op_providers,
     }
     if binary_url:

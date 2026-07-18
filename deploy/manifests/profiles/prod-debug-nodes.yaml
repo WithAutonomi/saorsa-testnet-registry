@@ -2,8 +2,10 @@
 #
 # Sibling of prod-nodes (which is heaptrack memory profiling). This kind stands
 # up a small, isolated, PERMANENT set of node VMs configured to capture panic /
-# crash information over time: RUST_BACKTRACE on every service, core dumps
-# (size/age pruned), and DEBUG-level logs forwarded to a DEDICATED short-retention
+# crash information over time: RUST_BACKTRACE + COLORBT_SHOW_HIDDEN on every
+# service (so ant-node's color-backtrace prints real frames, not <empty
+# backtrace>), core dumps (size/age pruned, with gdb/elfutils installed to read
+# them in place), and DEBUG-level logs forwarded to a DEDICATED short-retention
 # Elasticsearch, with a DEDICATED small InfluxDB for host/RSS metrics — none of it
 # touching the main prod monitoring stack.
 #
@@ -57,7 +59,7 @@ prod_debug_nodes:
 
   # --- Crash-debug configuration ---
   log_level: debug           # single global level (info | debug | trace)
-  rust_backtrace: "1"        # "1" | "full" | "" (disable)
+  rust_backtrace: "full"     # "full" | "1" | "" (disable); COLORBT_SHOW_HIDDEN=1 always set
   coredumps: true            # LimitCORE=infinity + kernel.core_pattern under data dir
   coredump_retention_days: 7 # prune cores older than N days; 0 = keep forever
   # heaptrack: false         # off by default (use prod-nodes for heaptrack)
