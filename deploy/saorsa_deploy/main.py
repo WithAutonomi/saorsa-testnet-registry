@@ -3553,9 +3553,11 @@ def main(argv=None):
         help="ant-node --log-level (single level: info/debug/trace; default "
         "debug). ant-node has no per-module env filter, so one global level "
         "applies — the requested per-module targeting is not achievable.")
-    prod_dbg_deploy.add_argument("--rust-backtrace", type=str, default="1",
-        help="RUST_BACKTRACE value set on every service (default: 1; use 'full' "
-        "for verbose traces, or '' to disable).")
+    prod_dbg_deploy.add_argument("--rust-backtrace", type=str, default="full",
+        help="RUST_BACKTRACE value set on every service (default: full; use '1' "
+        "for a terser trace, or '' to disable). Services also always get "
+        "COLORBT_SHOW_HIDDEN=1 so ant-node's color-backtrace prints real frames "
+        "instead of <empty backtrace>.")
     prod_dbg_deploy.add_argument("--coredumps", action=argparse.BooleanOptionalAction,
         default=True, help="Enable core dumps (LimitCORE=infinity + a global "
         "kernel.core_pattern under the data path) so a panic leaves an "

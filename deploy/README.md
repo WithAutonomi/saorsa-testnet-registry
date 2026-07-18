@@ -1280,7 +1280,9 @@ Companion commands behave the same way as for `prod local-uploads`: `deployments
 
 ### Running crash-debug nodes against production (`prod debug-nodes`)
 
-`prod debug-nodes deploy` stands up a small, isolated, **permanent** set of ant-node services that join the **production** network configured for panic/crash debugging — the sibling of `prod nodes` (which is heaptrack memory profiling). Each service runs with `RUST_BACKTRACE`, core dumps enabled, and DEBUG-level logs forwarded to a **dedicated** short-retention Elasticsearch, plus a **dedicated** small InfluxDB for host/RSS metrics. None of it touches the main prod monitoring stack. Registers a `Deployment` row with `deploy_args.kind = "prod-debug-nodes"`.
+`prod debug-nodes deploy` stands up a small, isolated, **permanent** set of ant-node services that join the **production** network configured for panic/crash debugging — the sibling of `prod nodes` (which is heaptrack memory profiling). Each service runs with `RUST_BACKTRACE` **and `COLORBT_SHOW_HIDDEN=1`** (ant-node's color-backtrace filters every frame otherwise, printing `<empty backtrace>`), core dumps enabled (with `gdb` + `elfutils`/`eu-stack` installed on the VM to symbolise the file cores in place), and DEBUG-level logs forwarded to a **dedicated** short-retention Elasticsearch, plus a **dedicated** small InfluxDB for host/RSS metrics. None of it touches the main prod monitoring stack. Registers a `Deployment` row with `deploy_args.kind = "prod-debug-nodes"`.
+
+> **Note:** the release ant-node binary is stripped, so gdb/eu-stack give limited symbols against the file cores — for a fully symbolised backtrace pull the core to a box with an *unstripped* build of the same version. The higher-value signal is usually the live backtrace: with `COLORBT_SHOW_HIDDEN=1` + `RUST_BACKTRACE=full`, the next panic prints real frames straight to the journal/ES, no core needed. `systemd-coredump` is intentionally **not** installed (it would either be inert against the file-based `core_pattern` or force cores off the data volume, breaking the retention timer).
 
 ```bash
 # Contabo VDS node, DEBUG logs + backtraces + core dumps, dedicated small ES + InfluxDB.
@@ -1303,8 +1305,8 @@ saorsa-deploy prod debug-nodes deploy \
 | `--vm-count N` / `--node-count N` | no | VMs per region (default 1) / ant-node services per VM (default 15). |
 | `--volume-size GB` | no | Attached data volume (default 100). **Ignored on Contabo** (root disk only). |
 | `--log-level {info,debug,trace}` | no | Single global level (default `debug`). ant-node has no per-module env filter, so per-module `RUST_LOG` targeting is not possible. |
-| `--rust-backtrace VAL` | no | `RUST_BACKTRACE` on each service (default `1`; `full`, or `""` to disable). |
-| `--coredumps` / `--no-coredumps` | no | Enable core dumps (`LimitCORE=infinity` + `kernel.core_pattern` under the data path). Default on. |
+| `--rust-backtrace VAL` | no | `RUST_BACKTRACE` on each service (default `full`; `1` for a terser trace, or `""` to disable). Services also always get `COLORBT_SHOW_HIDDEN=1`. |
+| `--coredumps` / `--no-coredumps` | no | Enable core dumps (`LimitCORE=infinity` + `kernel.core_pattern` under the data path) **and install `gdb` + `elfutils` on the VM to read them**. Default on. |
 | `--coredump-retention-days N` | no | Daily prune of cores older than N days (default 7; 0 = keep forever). |
 | `--heaptrack` / `--no-heaptrack` | no | Also wrap services in heaptrack (default off — use `prod nodes` for that). |
 | `--monitoring` / `--no-monitoring` | no | Dedicated InfluxDB (default on). `--monitoring-provider {digitalocean,ovh,contabo}`, `--monitoring-region`, `--monitoring-droplet-size`, `--monitoring-volume-size`, `--grafana`, `--influx-retention-days` (default 7). |

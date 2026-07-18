@@ -27,6 +27,7 @@ from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.provisioning.node import (
     COREDUMP_DIR,
+    INSTALL_DEBUG_TOOLS_COMMAND,
     _build_node_unit_file,
     build_coredump_setup_command,
 )
@@ -41,6 +42,7 @@ class TestDebugUnitFile:
     def test_defaults_have_no_debug_lines(self):
         unit = _build_node_unit_file("ant-node-1", _EXEC)
         assert "Environment=" not in unit
+        assert "COLORBT_SHOW_HIDDEN" not in unit
         assert "LimitCORE" not in unit
 
     def test_prod_style_unit_unchanged_by_new_params(self):
@@ -53,6 +55,7 @@ class TestDebugUnitFile:
         b = _build_node_unit_file(
             "ant-node-1", _EXEC, restart_policy="always", restart_sec=10,
             limit_nofile=65536, rust_backtrace=None, coredumps=False,
+            colorbt_show_hidden=False,
         )
         assert a == b
         assert "Environment=" not in a
@@ -69,13 +72,24 @@ class TestDebugUnitFile:
         unit = _build_node_unit_file("ant-node-1", _EXEC, coredumps=True)
         assert "LimitCORE=infinity\n" in unit
 
-    def test_debug_env_present_on_nat_variant(self):
-        # The RUST_BACKTRACE env must be a systemd Environment= line (so it
-        # survives the ip netns exec wrapper), not inlined on ExecStart.
+    def test_colorbt_show_hidden_adds_environment_line(self):
+        # ant-node's color-backtrace filters every frame (<empty backtrace>)
+        # unless COLORBT_SHOW_HIDDEN=1 is set on the service env.
         unit = _build_node_unit_file(
-            "ant-node-1", _EXEC, is_nat=True, rust_backtrace="1", coredumps=True
+            "ant-node-1", _EXEC, colorbt_show_hidden=True
         )
-        assert "Environment=RUST_BACKTRACE=1\n" in unit
+        assert "Environment=COLORBT_SHOW_HIDDEN=1\n" in unit
+
+    def test_debug_env_present_on_nat_variant(self):
+        # The RUST_BACKTRACE / COLORBT_SHOW_HIDDEN envs must be systemd
+        # Environment= lines (so they survive the ip netns exec wrapper), not
+        # inlined on ExecStart.
+        unit = _build_node_unit_file(
+            "ant-node-1", _EXEC, is_nat=True, rust_backtrace="full",
+            coredumps=True, colorbt_show_hidden=True,
+        )
+        assert "Environment=RUST_BACKTRACE=full\n" in unit
+        assert "Environment=COLORBT_SHOW_HIDDEN=1\n" in unit
         assert "ip netns exec" in unit
         assert "LimitCORE=infinity\n" in unit
 
@@ -86,6 +100,18 @@ def test_coredump_setup_command_writes_absolute_pattern():
     assert f"kernel.core_pattern={COREDUMP_DIR}/core.%e.%p.%t" in cmd
     assert f"mkdir -p {COREDUMP_DIR}" in cmd
     assert "/etc/sysctl.d/99-ant-coredump.conf" in cmd
+
+
+def test_install_debug_tools_command_is_idempotent():
+    # gdb + eu-stack (elfutils) to read the file cores in place; idempotent via a
+    # command -v gate, mirroring INSTALL_HEAPTRACK_COMMAND. systemd-coredump is
+    # deliberately NOT installed.
+    cmd = INSTALL_DEBUG_TOOLS_COMMAND
+    assert "command -v gdb" in cmd
+    assert "command -v eu-stack" in cmd
+    assert "apt-get install -y -qq gdb elfutils" in cmd
+    assert "DEBUG_TOOLS:SKIP" in cmd and "DEBUG_TOOLS:INSTALLED" in cmd
+    assert "systemd-coredump" not in cmd
 
 
 # --------------------------------------------------------------------------- #
