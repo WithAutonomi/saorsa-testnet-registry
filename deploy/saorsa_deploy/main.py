@@ -4299,6 +4299,56 @@ def main(argv=None):
         help="Skip the interactive confirmation prompt.",
     )
 
+    # --- prod set-volume-reserve ---
+    prod_svr_parser = prod_subparsers.add_parser(
+        "set-volume-reserve",
+        help="Lower the ext4 reserved-block percentage (default 5%%) on every "
+        "node VM's data volume in a production inventory, reclaiming the "
+        "otherwise-unusable reserve. Sequential, no ant-node restart.",
+    )
+    prod_svr_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        required=True,
+        help="Path to the production inventory JSON (schema_version 3 or 4).",
+    )
+    prod_svr_parser.add_argument(
+        "--reserve-percent",
+        type=int,
+        default=1,
+        help="ext4 reserved-block percentage to set (default: 1).",
+    )
+    prod_svr_parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        choices=["aws", "digitalocean", "hetzner", "ovh", "vultr", "contabo"],
+        help="Restrict to a single provider (default: every provider in the inventory).",
+    )
+    prod_svr_parser.add_argument(
+        "--limit-to",
+        type=str,
+        default=None,
+        help="Comma-separated VM names to restrict the run to (matched against "
+        "inventory 'name' field). Combine with --provider for fine-grained tests.",
+    )
+    prod_svr_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key for every VM (default: each VM's inventory ssh_key).",
+    )
+    prod_svr_parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Continue past per-VM failures instead of stopping at the first error.",
+    )
+    prod_svr_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt.",
+    )
+
     # --- prod files ---
     prod_files_parser = prod_subparsers.add_parser(
         "files",
@@ -4955,6 +5005,10 @@ def main(argv=None):
             )
 
             cmd_prod_extend_unmanaged_volumes(args)
+        elif args.prod_subcommand == "set-volume-reserve":
+            from saorsa_deploy.cmd.set_volume_reserve import cmd_set_volume_reserve
+
+            cmd_set_volume_reserve(args)
         elif args.prod_subcommand == "files":
             from saorsa_deploy.cmd.prod_files import cmd_prod_files
 

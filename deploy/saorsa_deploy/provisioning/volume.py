@@ -17,6 +17,13 @@ VOLUME_DEVICE_GLOBS = [
 STRIPE_VG_NAME = "ant_storage_vg"
 STRIPE_LV_NAME = "ant_storage_lv"
 
+# ext4 reserves 5% of blocks for root by default. On a ~394 GB data volume that
+# is ~16 GB the node can never use, and the volume reports 100% full while df
+# shows headroom. These volumes hold only node data (never the OS), so drop the
+# reserve to 1%. Applied at format time here; `prod set-volume-reserve`
+# retrofits already-provisioned fleets. Idempotent: re-setting 1% is a no-op.
+DATA_VOLUME_RESERVED_PERCENT = 1
+
 
 def build_root_disk_dir_command(mount_point: str = MOUNT_POINT) -> str:
     """Build a shell command for node hosts with NO attached volume (OVH 3-AZ
@@ -56,6 +63,11 @@ def build_mount_volume_command(mount_point: str = MOUNT_POINT) -> str:
         f"if ! blkid -o value -s TYPE $DEVICE > /dev/null 2>&1; then "
         f"mkfs.ext4 -q $DEVICE || {{ echo 'ANT_VOLUME:FORMAT_FAILED'; exit 1; }}; "
         f"fi; "
+        # Drop the ext4 reserved-block percentage to 1% (default 5% wastes ~16 GB
+        # on a ~394 GB data volume). Run unconditionally, not only inside the
+        # mkfs branch above, because DO/Hetzner volumes arrive pre-formatted ext4
+        # (Terraform) and so never hit the mkfs branch. Non-fatal.
+        f"tune2fs -m {DATA_VOLUME_RESERVED_PERCENT} $DEVICE > /dev/null 2>&1 || true; "
         f"mkdir -p {mount_point} && "
         f"mount -o defaults,nofail,discard $DEVICE {mount_point} || "
         f"{{ echo 'ANT_VOLUME:MOUNT_FAILED'; exit 1; }}; "
@@ -133,6 +145,8 @@ def build_striped_volume_command(
         f"vgcreate {vg_name} $DEV1 $DEV2 && "
         f"lvcreate -l 100%FREE --stripes 2 --stripesize 64 -n {lv_name} {vg_name} && "
         f"mkfs.ext4 {lv_path} && "
+        # Drop the ext4 reserved-block percentage to 1% (see volume mount path).
+        f"tune2fs -m {DATA_VOLUME_RESERVED_PERCENT} {lv_path} > /dev/null 2>&1; "
         f"mkdir -p {mount_point} && "
         f"mount -o defaults,noatime {lv_path} {mount_point} && "
         f"grep -q '{lv_path}' /etc/fstab || "

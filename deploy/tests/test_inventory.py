@@ -4,12 +4,18 @@ import json
 
 import pytest
 
-from saorsa_deploy.inventory import SUPPORTED_PROVIDERS, load_node_inventory
+from saorsa_deploy.inventory import (
+    SUPPORTED_PROVIDERS,
+    SUPPORTED_SCHEMA_VERSIONS,
+    load_node_inventory,
+)
 
 
-def _write_inventory(tmp_path, node_vms):
+def _write_inventory(tmp_path, node_vms, schema_version=3):
     path = tmp_path / "inventory.json"
-    path.write_text(json.dumps({"schema_version": 3, "node_vms": node_vms}))
+    path.write_text(
+        json.dumps({"schema_version": schema_version, "node_vms": node_vms})
+    )
     return path
 
 
@@ -52,4 +58,24 @@ def test_load_inventory_with_contabo_and_vultr(tmp_path):
 def test_load_inventory_rejects_unknown_provider(tmp_path):
     path = _write_inventory(tmp_path, [_entry("x", "nimbus", "eu")])
     with pytest.raises(ValueError, match="unknown provider"):
+        load_node_inventory(path)
+
+
+@pytest.mark.parametrize("version", sorted(SUPPORTED_SCHEMA_VERSIONS))
+def test_load_inventory_accepts_supported_schema_versions(tmp_path, version):
+    # generate-inventory currently emits v4; earlier files are v3. The loader
+    # must accept both — rejecting v4 silently broke every inventory-driven
+    # command against freshly-generated inventories.
+    path = _write_inventory(
+        tmp_path, [_entry("ant-prod-01-vl-nrt-1", "vultr", "nrt")], schema_version=version
+    )
+    vms = load_node_inventory(path)
+    assert [v.name for v in vms] == ["ant-prod-01-vl-nrt-1"]
+
+
+def test_load_inventory_rejects_unsupported_schema_version(tmp_path):
+    path = _write_inventory(
+        tmp_path, [_entry("x", "vultr", "nrt")], schema_version=99
+    )
+    with pytest.raises(ValueError, match="Unsupported inventory schema_version"):
         load_node_inventory(path)
