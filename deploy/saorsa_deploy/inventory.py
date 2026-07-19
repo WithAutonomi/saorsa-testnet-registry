@@ -2,7 +2,7 @@
 
 Production deployments are not provisioned via ``saorsa-deploy`` and therefore
 have no entry in S3 deployment state. They ship instead as JSON inventories
-(schema_version 3) under e.g. ``~/.autonomi/testnets/<name>/inventory.json``.
+(schema_version 3 or 4) under e.g. ``~/.autonomi/testnets/<name>/inventory.json``.
 
 Operational commands that target an existing prod fleet (such as
 ``prod extend-unmanaged-volumes``) consume these inventories directly through
@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SUPPORTED_PROVIDERS = {"aws", "digitalocean", "hetzner", "ovh", "vultr", "contabo"}
-SUPPORTED_SCHEMA_VERSION = 3
+# generate-inventory currently emits v4; v3 files predate the client/observability
+# split. The node_vms shape this loader reads is identical across both, so accept
+# either rather than rejecting freshly-generated inventories.
+SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4})
 
 
 @dataclass(frozen=True)
@@ -48,10 +51,10 @@ def load_node_inventory(
     raw = json.loads(path.read_text())
 
     schema_version = raw.get("schema_version")
-    if schema_version != SUPPORTED_SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         raise ValueError(
             f"Unsupported inventory schema_version: {schema_version!r} "
-            f"(expected {SUPPORTED_SCHEMA_VERSION})"
+            f"(expected one of {sorted(SUPPORTED_SCHEMA_VERSIONS)})"
         )
 
     node_vms_raw = raw.get("node_vms")

@@ -1408,6 +1408,54 @@ pvs
 df -h /mnt/ant-node-storage
 ```
 
+### Reclaiming ext4 reserved space (`prod set-volume-reserve`)
+
+ext4 reserves **5% of a filesystem's blocks for root by default**. On a large
+node data volume that is many GB the node can never use — the volume reports
+`100%` full (`Avail 0`) while the raw device still has headroom (e.g. `378G` used
+of a `394G` device). Because these volumes hold only node data (never the OS
+root), the reserve can safely drop to **1%**, reclaiming ~4%.
+
+**Future volumes** get the 1% reserve automatically: it is applied with
+`tune2fs -m 1` at format time in the volume-mount and striped-volume
+provisioners (`provisioning/volume.py`), so any newly-created data volume — on
+any block-volume provider — starts at 1%.
+
+**Existing fleets** are retrofitted with `prod set-volume-reserve`, which reads a
+`generate-inventory` inventory and, per node VM, SSHes in and runs `tune2fs -m`
+on whichever device backs `/mnt/ant-node-storage`. The device is autodetected
+via `findmnt` (works for both raw-ext4 and LVM-striped nodes) — nothing is
+hardcoded. `tune2fs` runs against the live mounted filesystem, so **no ant-node
+service is stopped**. Root-disk providers (Contabo, OVH 3-AZ) keep node data on
+the OS root filesystem and are **skipped** so that filesystem's reserve is never
+touched.
+
+```bash
+# Dry-run against a single VM first (interactive confirm unless -y)
+saorsa-deploy prod set-volume-reserve \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
+  --limit-to ant-prod-01-hz-ash-1
+
+# Retrofit the whole fleet, continuing past any per-VM failure
+saorsa-deploy prod set-volume-reserve \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
+  --keep-going -y
+```
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--inventory-path` | yes | — | `generate-inventory` JSON (schema_version 3 or 4). |
+| `--reserve-percent` | no | `1` | ext4 reserved-block percentage to set. |
+| `--provider` | no | all | Restrict to one provider (`aws`/`digitalocean`/`hetzner`/`ovh`/`vultr`/`contabo`). |
+| `--limit-to` | no | all | Comma-separated VM names to restrict the run to. |
+| `--ssh-key-path` | no | per-VM | Override the SSH key for every VM. |
+| `--keep-going` | no | off | Continue past per-VM failures instead of stopping. |
+| `-y`, `--yes` | no | off | Skip the interactive confirmation. |
+
+Every step is idempotent — re-running once a volume is already at 1% is a no-op.
+The command targets **node VMs only** (like `prod extend-unmanaged-volumes`);
+bootstrap VMs are not covered.
+
 ### Running canaries against production (`prod canary`)
 
 A *canary deployment* uploads a fixed list of public files to the production
