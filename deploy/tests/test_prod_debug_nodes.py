@@ -235,7 +235,7 @@ class TestDebugNodesOrchestrator:
         deploy = build_deploy_steps(_debug_manifest())[1].argv
         for flag in (
             "--provider", "--vm-size", "--coredumps", "--monitoring",
-            "--forward-logs", "--contabo-image-id",
+            "--forward-logs", "--contabo-image-id", "--log-retention-days",
         ):
             assert flag not in deploy
 
@@ -246,6 +246,7 @@ class TestDebugNodesOrchestrator:
                 vm_size="V10",
                 coredumps=True,
                 coredump_retention_days=7,
+                log_retention_days=1,
                 rust_backtrace="full",
                 monitoring=True,
                 monitoring_provider="contabo",
@@ -261,6 +262,9 @@ class TestDebugNodesOrchestrator:
         assert "--coredumps" in deploy
         assert ["--coredump-retention-days", "7"] == _pair(
             deploy, "--coredump-retention-days"
+        )
+        assert ["--log-retention-days", "1"] == _pair(
+            deploy, "--log-retention-days"
         )
         assert ["--monitoring-provider", "contabo"] == _pair(
             deploy, "--monitoring-provider"

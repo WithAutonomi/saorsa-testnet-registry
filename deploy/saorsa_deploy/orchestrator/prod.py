@@ -347,6 +347,8 @@ def _debug_nodes(manifest: Manifest) -> list[Step]:
     argv += _bool_flag(spec.coredumps, "--coredumps")
     if spec.coredump_retention_days is not None:
         argv += ["--coredump-retention-days", str(spec.coredump_retention_days)]
+    if spec.log_retention_days is not None:
+        argv += ["--log-retention-days", str(spec.log_retention_days)]
     argv += _bool_flag(spec.heaptrack, "--heaptrack")
     argv += _bool_flag(spec.monitoring, "--monitoring")
     if spec.monitoring_provider is not None:

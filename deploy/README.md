@@ -1308,6 +1308,7 @@ saorsa-deploy prod debug-nodes deploy \
 | `--rust-backtrace VAL` | no | `RUST_BACKTRACE` on each service (default `full`; `1` for a terser trace, or `""` to disable). Services also always get `COLORBT_SHOW_HIDDEN=1`. |
 | `--coredumps` / `--no-coredumps` | no | Enable core dumps (`LimitCORE=infinity` + `kernel.core_pattern` under the data path) **and install `gdb` + `elfutils` on the VM to read them**. Default on. |
 | `--coredump-retention-days N` | no | Daily prune of cores older than N days (default 7; 0 = keep forever). |
+| `--log-retention-days N` | no | Daily prune of rotated ant-node debug logs under `/mnt/ant-node-storage/log` older than N days (default **1** — much shorter than coredumps' default since logs are already forwarded to Elasticsearch; 0 = keep forever). Also runs once immediately on install for prompt relief on a full disk. |
 | `--heaptrack` / `--no-heaptrack` | no | Also wrap services in heaptrack (default off — use `prod nodes` for that). |
 | `--monitoring` / `--no-monitoring` | no | Dedicated InfluxDB (default on). `--monitoring-provider {digitalocean,ovh,contabo}`, `--monitoring-region`, `--monitoring-droplet-size`, `--monitoring-volume-size`, `--grafana`, `--influx-retention-days` (default 7). |
 | `--forward-logs` / `--no-forward-logs` | no | Dedicated Elasticsearch for node logs (default on). `--elastic-provider {digitalocean,ovh,contabo}`, `--elastic-region`, `--elastic-droplet-size`, `--elastic-volume-size`, `--elastic-retention-days` (default 3), `--elastic-shards` (default 1), `--elastic-drop-log-levels`. |
@@ -1316,7 +1317,7 @@ saorsa-deploy prod debug-nodes deploy \
 | `--contabo-ssh-public-key-path PATH` | no | Operator public key registered as a `contabo_secret` (default `~/.ssh/id_rsa.pub`). |
 | `--rewards-address` / `--port` / `--ssh-key-path` | no | Prod rewards address / initial listen port (default 10000) / SSH key. |
 
-`prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy.
+`prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy — the on-disk debug logs are pruned much sooner by `--log-retention-days` and are already durable in Elasticsearch, so there's no equivalent scp step needed for them.
 
 Fully declarative via `deployments up/plan/down --config` (`kind: prod-debug-nodes`); example manifest at `manifests/profiles/prod-debug-nodes.yaml`. `up` is resumable, so a retry skips the ~10-minute debug build.
 

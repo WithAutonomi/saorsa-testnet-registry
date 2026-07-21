@@ -513,6 +513,18 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
     data volume). NB the release binary is stripped, so symbols are limited
     without an unstripped build; the live COLORBT backtrace is the higher-value
     signal. `--coredump-retention-days` (default 7) installs a daily prune timer.
+  - **`--log-retention-days`** (default **1**) installs a daily systemd timer
+    (`ant-node-debug-logprune`) pruning rotated ant-node debug logs under
+    `/mnt/ant-node-storage/log` — deliberately much shorter than the coredump
+    default, since logs (unlike core dumps) are already durably forwarded to
+    Elasticsearch via `--forward-logs`. ant-node rotates `--log-dir` output
+    daily on its own (one `ant-node.YYYY-MM-DD.log` per service per day) and
+    self-prunes to `--log-max-files`/`ANT_LOG_MAX_FILES` (default 7), but at
+    DEBUG level that built-in cap alone can still vastly outgrow the disk; this
+    is an external backstop. `0` keeps logs forever. The install step also runs
+    the prune once immediately (not just enabling the timer) so a disk that's
+    already full gets relief right away rather than waiting for the next
+    scheduled run.
   - **`--log-level`** (default `debug`). **ant-node has NO per-module env filter**
     — a single global level is the only option, so the requested per-module
     `RUST_LOG` targeting (`saorsa_transport`, `saorsa_core::*`,

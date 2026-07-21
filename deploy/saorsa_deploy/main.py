@@ -3565,6 +3565,13 @@ def main(argv=None):
     prod_dbg_deploy.add_argument("--coredump-retention-days", type=int, default=7,
         help="Install a daily timer deleting core dumps older than N days "
         "(default: 7). 0 keeps them forever.")
+    prod_dbg_deploy.add_argument("--log-retention-days", type=int, default=1,
+        help="Install a daily timer deleting rotated ant-node debug logs "
+        "under /mnt/ant-node-storage/log older than N days (default: 1 — "
+        "unlike coredumps, logs are already durably forwarded to "
+        "Elasticsearch via --forward-logs, so there's no reason to keep "
+        "more than the unavoidable ~1-day rotation floor). 0 keeps them "
+        "forever.")
     prod_dbg_deploy.add_argument("--heaptrack", action=argparse.BooleanOptionalAction,
         default=False, help="Also wrap services in heaptrack memory profiling "
         "(default: off — use `prod nodes` for the heaptrack-focused kind).")

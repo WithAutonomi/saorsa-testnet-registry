@@ -536,7 +536,9 @@ class ProdDebugNodesSpec(_Base):
     is root-disk only (no attachable volume). Set ``binary.branch`` +
     ``binary.debug: true`` to build a debug ant-node. ``None`` means "use the CLI
     default"; the CLI defaults ``log_level=debug``, ``rust_backtrace=full``,
-    ``coredumps``/``monitoring``/``forward_logs`` on. Every service also gets
+    ``coredumps``/``monitoring``/``forward_logs`` on, ``log_retention_days=1``
+    (logs are already forwarded to Elasticsearch, so unlike core dumps there's
+    no reason to keep more than a day of them on disk). Every service also gets
     ``COLORBT_SHOW_HIDDEN=1`` (unconditional for this kind) and, when
     ``coredumps`` is on, ``gdb``/``elfutils`` installed to read the file cores.
     """
@@ -552,6 +554,7 @@ class ProdDebugNodesSpec(_Base):
     rust_backtrace: Optional[str] = None  # default 'full'; '1' or '' also valid
     coredumps: Optional[bool] = None  # default on
     coredump_retention_days: Optional[int] = None  # default 7; 0 = keep forever
+    log_retention_days: Optional[int] = None  # default 1; 0 = keep forever
     heaptrack: Optional[bool] = None  # default off (use prod-nodes for heaptrack)
     monitoring: Optional[bool] = None  # dedicated InfluxDB; default on
     monitoring_provider: Optional[str] = None  # digitalocean|ovh|contabo

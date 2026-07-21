@@ -41,7 +41,7 @@ from saorsa_deploy.cmd.prod_nodes import (
 from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
 from saorsa_deploy.cmd.provision_nodes import _resolve_root_disk_ips
 from saorsa_deploy.prod_bootstraps import PROD_BOOTSTRAPS_URL
-from saorsa_deploy.provisioning.node import COREDUMP_DIR, AntNodeProvisioner
+from saorsa_deploy.provisioning.node import COREDUMP_DIR, LOG_DIR, AntNodeProvisioner
 from saorsa_deploy.registry import (
     record_deploy_args_update,
     record_deployment_created,
@@ -433,6 +433,88 @@ def _install_coredump_logprune(args, console: Console) -> None:
         disconnect_all(state_obj)
 
 
+def _install_debug_logprune(args, console: Console) -> None:
+    """Install a daily systemd timer pruning rotated ant-node debug logs.
+
+    ant-node rotates ``--log-dir`` output daily (one ``ant-node.YYYY-MM-DD.log``
+    file per service per calendar day) and already self-prunes via
+    ``--log-max-files``/``ANT_LOG_MAX_FILES`` (default 7) — but at DEBUG level
+    that default cap can still vastly outgrow the disk, so this installs a
+    tighter external backstop. Unlike core dumps, logs are already durably
+    forwarded to Elasticsearch (``--forward-logs``), so the default retention
+    here is intentionally much shorter (1 day) than the coredump default (7).
+    ``--log-retention-days 0`` keeps them forever (no timer). Also runs the
+    prune once immediately so a full disk gets relief right away instead of
+    waiting for the next scheduled run.
+    """
+    from pyinfra.api import Config, Inventory, State
+    from pyinfra.api.connect import connect_all, disconnect_all
+    from pyinfra.api.operation import add_op
+    from pyinfra.api.operations import run_ops
+    from pyinfra.operations import server
+
+    if args.log_retention_days <= 0:
+        return
+    try:
+        state = load_deployment_state(args.name)
+    except RuntimeError:
+        return
+    vm_ips = state.get("vm_ips") or {}
+    host_ips: list[str] = []
+    for region_key in sorted(vm_ips.keys()):
+        host_ips.extend(vm_ips[region_key])
+    if not host_ips:
+        return
+
+    console.print(
+        f"[dim]Installing debug-log prune timer "
+        f"(delete rotated logs older than {args.log_retention_days}d).[/dim]"
+    )
+    service_unit = (
+        "[Unit]\n"
+        "Description=Prune old ant-node debug logs\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart=/usr/bin/find {LOG_DIR} -type f "
+        f"-mtime +{args.log_retention_days} -delete\n"
+    )
+    timer_unit = (
+        "[Unit]\n"
+        "Description=Daily ant-node debug-log prune\n\n"
+        "[Timer]\n"
+        "OnCalendar=daily\n"
+        "Persistent=true\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+    commands = [
+        f"cat > /etc/systemd/system/ant-node-debug-logprune.service "
+        f"<< 'SVC_EOF'\n{service_unit}SVC_EOF",
+        f"cat > /etc/systemd/system/ant-node-debug-logprune.timer "
+        f"<< 'TMR_EOF'\n{timer_unit}TMR_EOF",
+        "systemctl daemon-reload",
+        "systemctl enable --now ant-node-debug-logprune.timer",
+        "systemctl start ant-node-debug-logprune.service",
+    ]
+
+    clear_known_hosts(host_ips, console)
+    hosts_data = [
+        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
+    ]
+    state_obj = State(inventory=Inventory((hosts_data, {})), config=Config())
+    connect_all(state_obj)
+    try:
+        add_op(
+            state_obj,
+            server.shell,
+            name="Install debug-log prune timer",
+            commands=commands,
+        )
+        run_ops(state_obj)
+    finally:
+        disconnect_all(state_obj)
+
+
 def cmd_prod_debug_nodes_deploy(args):
     """Deploy crash-debug ant-node VMs against the production Autonomi network."""
     console = Console()
@@ -450,6 +532,10 @@ def cmd_prod_debug_nodes_deploy(args):
     console.print(f"  Log level: {args.log_level}")
     console.print(f"  RUST_BACKTRACE: {args.rust_backtrace or 'off'}")
     console.print(f"  Core dumps: {'on' if args.coredumps else 'off'}")
+    log_retention = (
+        f"{args.log_retention_days}d" if args.log_retention_days > 0 else "forever"
+    )
+    console.print(f"  Debug-log retention: {log_retention}")
     console.print(f"  Monitoring: {args.monitoring_provider if args.monitoring else 'off'}")
     console.print(
         f"  Log forwarding (dedicated ES): "
@@ -469,6 +555,7 @@ def cmd_prod_debug_nodes_deploy(args):
         "rust_backtrace": args.rust_backtrace,
         "coredumps": args.coredumps,
         "coredump_retention_days": args.coredump_retention_days,
+        "log_retention_days": args.log_retention_days,
         "heaptrack": args.heaptrack,
         "monitoring": args.monitoring,
         "monitoring_provider": args.monitoring_provider if args.monitoring else None,
@@ -511,6 +598,7 @@ def cmd_prod_debug_nodes_deploy(args):
 
         if args.coredumps:
             _install_coredump_logprune(args, console)
+        _install_debug_logprune(args, console)
 
         record_deploy_args_update(args.name, {"nodes_per_vm": args.node_count})
     except SystemExit:

@@ -62,6 +62,9 @@ prod_debug_nodes:
   rust_backtrace: "full"     # "full" | "1" | "" (disable); COLORBT_SHOW_HIDDEN=1 always set
   coredumps: true            # LimitCORE=infinity + kernel.core_pattern under data dir
   coredump_retention_days: 7 # prune cores older than N days; 0 = keep forever
+  log_retention_days: 1      # prune rotated debug logs older than N days; 0 = keep
+                             # forever. Default 1 (not 7 like coredumps) because
+                             # logs are already forwarded to Elasticsearch below.
   # heaptrack: false         # off by default (use prod-nodes for heaptrack)
 
   # --- Dedicated small InfluxDB (host/RSS metrics) ---
@@ -91,5 +94,8 @@ prod_debug_nodes:
 # Optional: post a deployment summary to Slack once it's up.
 # slack_post: true
 #
-# Retrieve core dumps before teardown:
+# Retrieve core dumps before teardown (or before the daily prune deletes them):
 #   scp root@<vm>:/mnt/ant-node-storage/coredumps/core.* ./cores/
+# Debug logs are pruned much sooner (log_retention_days above) since they're
+# already durable in Elasticsearch — pull any you need from
+# /mnt/ant-node-storage/log/ant-node-<N>/ promptly if not relying on ES.
