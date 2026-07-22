@@ -10,6 +10,9 @@ disk usage to help pick which one to remove.
 Purely imperative — driven by ``--inventory-path``/``--name``/
 ``--service-name``[/``--ssh-key-path``], with no manifest/orchestrator/DB
 wiring, and works against any host in a given inventory, not just prod fleets.
+``rm``/``add`` also update the inventory file's per-host ``nodes``/``services``
+lists to match (best-effort — a failure here warns but never fails the
+command, since the live SSH change has already happened by that point).
 """
 
 import os
@@ -25,7 +28,11 @@ from pyinfra.operations import server
 from rich.console import Console
 from rich.table import Table
 
-from saorsa_deploy.inventory import NodeVm, load_node_inventory
+from saorsa_deploy.inventory import (
+    NodeVm,
+    load_node_inventory,
+    update_service_in_inventory,
+)
 from saorsa_deploy.provisioning.bootstrap import DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.node import (
     _build_node_exec_start,
@@ -187,6 +194,25 @@ def cmd_prod_services_ls(args) -> None:
     console.print(table)
 
 
+def _update_inventory(
+    inventory_path: str, vm: NodeVm, service_name: str, *, added: bool, console: Console
+) -> None:
+    """Best-effort: the live SSH change has already succeeded by the time this
+    runs, so an inventory-write failure is reported but never fails the
+    command — the operator would just need to reconcile the file by hand.
+    """
+    try:
+        update_service_in_inventory(inventory_path, vm.name, service_name, added=added)
+    except (ValueError, OSError) as e:
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] {service_name} was "
+            f"{'added on' if added else 'removed from'} {vm.name}, but the "
+            f"inventory file could not be updated: {e}"
+        )
+        return
+    console.print(f"[dim]Inventory updated: {inventory_path}[/dim]")
+
+
 def cmd_prod_services_rm(args) -> None:
     """Stop, disable, and delete one ant-node service's unit + data/log dirs,
     freeing the disk space it was using. Never touches sibling services."""
@@ -217,6 +243,7 @@ def cmd_prod_services_rm(args) -> None:
         f"[bold green]✓[/bold green] Removed {args.service_name} from {vm.name} "
         "(unit, data dir, and log dir deleted)."
     )
+    _update_inventory(args.inventory_path, vm, args.service_name, added=False, console=console)
 
 
 def cmd_prod_services_add(args) -> None:
@@ -303,3 +330,4 @@ def cmd_prod_services_add(args) -> None:
         f"[bold green]✓[/bold green] Added and started {args.service_name} on "
         f"{vm.name} (cloned from {sibling['service_name']})."
     )
+    _update_inventory(args.inventory_path, vm, args.service_name, added=True, console=console)

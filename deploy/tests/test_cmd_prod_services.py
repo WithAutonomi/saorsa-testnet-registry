@@ -232,6 +232,56 @@ class TestCmdProdServicesRm:
         assert "ant-node-2" in cmds
         assert "ant-node-1" not in cmds
 
+    def test_removed_service_dropped_from_inventory_file(self, services_patches, tmp_path):
+        entry = _entry("host-a")
+        entry["services"] = ["ant-node-1", "ant-node-2"]
+        inv_path = _write_inventory(tmp_path, [entry])
+        ssh_key = _make_ssh_key(tmp_path)
+        services_patches.add_op.side_effect = [
+            _op_result(
+                services_patches.host,
+                [
+                    "ANT_SVC:LIST:ant-node-1:active:enabled:100",
+                    "ANT_SVC:LIST:ant-node-2:active:enabled:200",
+                ],
+            ),
+            _op_result(services_patches.host, ["ANT_SVC:REMOVED:ant-node-2"]),
+        ]
+        cmd_prod_services_rm(
+            _args(
+                inventory_path=str(inv_path),
+                service_name="ant-node-2",
+                ssh_key_path=ssh_key,
+            )
+        )
+        raw = json.loads(inv_path.read_text())
+        assert raw["node_vms"][0]["services"] == ["ant-node-1"]
+
+    def test_inventory_write_failure_warns_but_does_not_raise(
+        self, services_patches, tmp_path, capsys
+    ):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        ssh_key = _make_ssh_key(tmp_path)
+        services_patches.add_op.side_effect = [
+            _op_result(
+                services_patches.host, ["ANT_SVC:LIST:ant-node-1:active:enabled:100"]
+            ),
+            _op_result(services_patches.host, ["ANT_SVC:REMOVED:ant-node-1"]),
+        ]
+        with patch(
+            "saorsa_deploy.cmd.prod_services.update_service_in_inventory",
+            side_effect=OSError("disk full"),
+        ):
+            cmd_prod_services_rm(
+                _args(
+                    inventory_path=str(inv_path),
+                    service_name="ant-node-1",
+                    ssh_key_path=ssh_key,
+                )
+            )
+        out = capsys.readouterr().out.replace("\n", " ")
+        assert "could not be updated" in out
+
 
 class TestCmdProdServicesAdd:
     def test_already_exists_exits(self, services_patches, tmp_path):
@@ -307,6 +357,35 @@ class TestCmdProdServicesAdd:
         assert "--port 10003" in cmds
         assert "--metrics-port 9103" in cmds
         assert "ant-node-1" not in cmds
+
+    def test_added_service_appears_in_inventory_file(self, services_patches, tmp_path):
+        entry = _entry("host-a")
+        entry["services"] = ["ant-node-1"]
+        inv_path = _write_inventory(tmp_path, [entry])
+        ssh_key = _make_ssh_key(tmp_path)
+
+        services_patches.add_op.side_effect = [
+            _op_result(
+                services_patches.host, ["ANT_SVC:LIST:ant-node-1:active:enabled:100"]
+            ),
+            _op_result(services_patches.host, ["ANT_SVC:ADDED:ant-node-4"]),
+        ]
+        services_patches.subprocess_run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=_sibling_unit(index=1, port=10000, metrics_port=9100),
+            stderr="",
+        )
+
+        cmd_prod_services_add(
+            _args(
+                inventory_path=str(inv_path),
+                service_name="ant-node-4",
+                ssh_key_path=ssh_key,
+            )
+        )
+
+        raw = json.loads(inv_path.read_text())
+        assert raw["node_vms"][0]["services"] == ["ant-node-1", "ant-node-4"]
 
     def test_ssh_read_failure_exits(self, services_patches, tmp_path):
         inv_path = _write_inventory(tmp_path, [_entry("host-a")])
