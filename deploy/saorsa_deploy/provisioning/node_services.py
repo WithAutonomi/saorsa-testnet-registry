@@ -1,0 +1,190 @@
+"""Shell command builders for managing a single ant-node systemd service on an
+already-provisioned host.
+
+Unlike ``provisioning/node.py`` (which provisions a whole ``--node-count``
+fleet in one pyinfra pass), these operate on exactly ONE named service on ONE
+host — the mechanism behind ``prod services ls/rm/add``
+(``cmd/prod_services.py``), used to free disk space on a quota-constrained
+fleet (e.g. Hetzner) by removing one ``ant-node-N`` service and later adding
+one back once a quota increase lands.
+
+``add``'s new unit is rendered with the same ``_build_node_exec_start``/
+``_build_node_unit_file`` templates ``provisioning/node.py`` uses for a full
+fleet, fed with parameters recovered from an existing sibling service's live
+unit file (via :func:`parse_node_unit`) so the new service matches its
+siblings' binary, EVM network, NAT wrapping, log level, bootstrap peers,
+restart policy, backtrace env, upgrade channel, and rewards address. heaptrack
+wrapping (the ``prod nodes`` kind) is NOT cloned — a heaptrack-wrapped sibling
+yields a new service without heaptrack.
+"""
+
+import re
+
+from saorsa_deploy.provisioning.nat import NAT_IP_EXEC_PREFIX
+from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT
+
+SERVICE_NAME_RE = re.compile(r"^ant-node-([1-9]\d*)$")
+
+
+def parse_service_name(service_name: str) -> int:
+    """Return the 1-based service index for ``ant-node-<N>``.
+
+    The sole validation point for a ``--service-name`` value — raises
+    ``ValueError`` for anything else, so every caller (CLI entry points and
+    the command builders below) rejects malformed input the same way.
+    """
+    m = SERVICE_NAME_RE.match(service_name)
+    if not m:
+        raise ValueError(
+            "--service-name must look like 'ant-node-<positive int>', "
+            f"got {service_name!r}"
+        )
+    return int(m.group(1))
+
+
+def build_list_services_command() -> str:
+    """Shell script listing every ``ant-node-*`` systemd service on the host,
+    its active/enabled state, and its data directory's on-disk size.
+
+    Emits one marker line per discovered service:
+      ``ANT_SVC:LIST:<service>:<active>:<enabled>:<bytes>``
+    or, if none exist:
+      ``ANT_SVC:LIST:NONE``
+
+    Services are discovered by globbing unit files, never by trusting a
+    ``--node-count``/inventory value — those can drift after a prior
+    ``rm``/``add``.
+    """
+    return f"""\
+set -eu
+FOUND=0
+for unit in /etc/systemd/system/ant-node-*.service; do
+  [ -e "$unit" ] || continue
+  FOUND=1
+  svc=$(basename "$unit" .service)
+  active=$(systemctl is-active "$svc" 2>/dev/null || true)
+  enabled=$(systemctl is-enabled "$svc" 2>/dev/null || true)
+  bytes=$(du -sb "{MOUNT_POINT}/data/$svc" 2>/dev/null | cut -f1)
+  [ -n "$bytes" ] || bytes=0
+  echo "ANT_SVC:LIST:$svc:$active:$enabled:$bytes"
+done
+[ "$FOUND" -eq 1 ] || echo "ANT_SVC:LIST:NONE"
+"""
+
+
+def parse_service_list(stdout_lines) -> list[dict]:
+    """Parse ``ANT_SVC:LIST:...`` marker lines into records, sorted by index."""
+    records = []
+    for raw_line in stdout_lines:
+        line = raw_line.strip()
+        if not line.startswith("ANT_SVC:LIST:") or line == "ANT_SVC:LIST:NONE":
+            continue
+        rest = line[len("ANT_SVC:LIST:") :]
+        parts = rest.split(":")
+        if len(parts) != 4:
+            continue
+        svc, active, enabled, size_bytes = parts
+        try:
+            index = parse_service_name(svc)
+            size = int(size_bytes)
+        except ValueError:
+            continue
+        records.append(
+            {
+                "service_name": svc,
+                "index": index,
+                "active": active,
+                "enabled": enabled,
+                "size_bytes": size,
+            }
+        )
+    records.sort(key=lambda r: r["index"])
+    return records
+
+
+def build_remove_service_command(service_name: str) -> str:
+    """Stop, disable, and delete the unit + data/log dirs for exactly
+    ``service_name``. Every path/command below is scoped to the literal
+    service name — never a glob — so sibling ``ant-node-N`` services on the
+    same host are never touched.
+    """
+    parse_service_name(service_name)
+    svc = service_name
+    return f"""\
+set -eu
+systemctl stop {svc} 2>/dev/null || true
+systemctl disable {svc} 2>/dev/null || true
+rm -f /etc/systemd/system/{svc}.service
+systemctl daemon-reload
+rm -rf {MOUNT_POINT}/data/{svc}
+rm -rf {LOG_DIR}/{svc}
+echo "ANT_SVC:REMOVED:{svc}"
+"""
+
+
+def parse_node_unit(content: str) -> dict:
+    """Parse a rendered ant-node systemd unit file back into the parameters
+    needed to clone it for a new service (feeds ``_build_node_exec_start``/
+    ``_build_node_unit_file`` in ``provisioning/node.py``).
+
+    Best-effort: a flag absent from the sibling's ``ExecStart`` is reported as
+    unset (``None``/``False``), matching ``_build_node_exec_start``'s own
+    "falsy means omit the flag" convention, so re-rendering reproduces the
+    sibling's unit exactly (modulo the paths/ports that ``add`` intentionally
+    changes for the new service index).
+    """
+    exec_start_m = re.search(r"^ExecStart=(.*)$", content, re.MULTILINE)
+    if not exec_start_m:
+        raise ValueError("sibling unit file has no ExecStart= line")
+    exec_start = exec_start_m.group(1)
+
+    is_nat = exec_start.startswith(NAT_IP_EXEC_PREFIX)
+    if is_nat:
+        exec_start = exec_start[len(NAT_IP_EXEC_PREFIX) :]
+
+    def _flag(pattern):
+        m = re.search(pattern, exec_start)
+        return m.group(1) if m else None
+
+    port_s = _flag(r"--port (\d+)")
+    metrics_port_s = _flag(r"--metrics-port (\d+)")
+
+    restart_policy_m = re.search(r"^Restart=(\S+)$", content, re.MULTILINE)
+    restart_sec_m = re.search(r"^RestartSec=(\d+)", content, re.MULTILINE)
+    limit_nofile_m = re.search(r"^LimitNOFILE=(\d+)$", content, re.MULTILINE)
+    rust_backtrace_m = re.search(
+        r"^Environment=RUST_BACKTRACE=(.*)$", content, re.MULTILINE
+    )
+
+    return {
+        "bootstrap_peers": re.findall(r"--bootstrap (\S+)", exec_start),
+        "port": int(port_s) if port_s else None,
+        "log_level": _flag(r"--log-level (\S+)"),
+        "testnet": "--network-mode testnet" in exec_start,
+        "upgrade_channel": _flag(r"--upgrade-channel (\S+)"),
+        "evm_network": _flag(r"--evm-network (\S+)"),
+        "metrics_port": int(metrics_port_s) if metrics_port_s else None,
+        "rewards_address": _flag(r"--rewards-address (\S+)"),
+        "is_nat": is_nat,
+        "restart_policy": restart_policy_m.group(1) if restart_policy_m else "on-success",
+        "restart_sec": int(restart_sec_m.group(1)) if restart_sec_m else 5,
+        "limit_nofile": int(limit_nofile_m.group(1)) if limit_nofile_m else None,
+        "rust_backtrace": rust_backtrace_m.group(1) if rust_backtrace_m else None,
+        "colorbt_show_hidden": "Environment=COLORBT_SHOW_HIDDEN=1" in content,
+        "coredumps": "LimitCORE=infinity" in content,
+    }
+
+
+def build_write_unit_and_start_command(service_name: str, unit_content: str) -> str:
+    """Write a new unit file, reload systemd, then enable and start exactly
+    ``service_name`` — never touching any other unit.
+    """
+    parse_service_name(service_name)
+    return (
+        f"cat > /etc/systemd/system/{service_name}.service << 'UNIT_EOF'\n"
+        f"{unit_content}UNIT_EOF\n"
+        "systemctl daemon-reload\n"
+        f"systemctl enable {service_name}\n"
+        f"systemctl start {service_name}\n"
+        f'echo "ANT_SVC:ADDED:{service_name}"'
+    )

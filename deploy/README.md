@@ -1457,6 +1457,67 @@ Every step is idempotent — re-running once a volume is already at 1% is a no-o
 The command targets **node VMs only** (like `prod extend-unmanaged-volumes`);
 bootstrap VMs are not covered.
 
+### Managing individual node services (`prod services`)
+
+A node VM can run into its storage quota with no headroom left, while a
+cloud-side volume-size increase needs human approval that can take 24-48h
+(e.g. Hetzner). In the meantime the only way to free disk space is to remove
+one `ant-node-N` service; once the quota increase lands, a matching service
+can be added back. `prod services ls/rm/add` does exactly that, against a
+single named host in an inventory — it is a maintenance tool (no manifest, no
+DB/orchestrator wiring) and works against **any** host in a given inventory,
+not just prod fleets.
+
+```bash
+# See what's running and how much disk each service is using
+saorsa-deploy prod services ls \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
+  --name ant-prod-01-hz-ash-1
+
+# Free space by removing the biggest one
+saorsa-deploy prod services rm \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
+  --name ant-prod-01-hz-ash-1 \
+  --service-name ant-node-7
+
+# ...once the volume-size increase lands, add it back
+saorsa-deploy prod services add \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
+  --name ant-prod-01-hz-ash-1 \
+  --service-name ant-node-7
+```
+
+| Argument | Required | Default | Applies to | Description |
+|----------|----------|---------|------------|-------------|
+| `--inventory-path` | yes | — | all | Inventory JSON (schema_version 3 or 4) containing the host. |
+| `--name` | yes | — | all | Host name, matched against the inventory's `name` field. |
+| `--service-name` | `ls`: no / `rm`, `add`: yes | `ls`: list all | all | `ant-node-<N>`. On `ls`, restricts output to one service; omit to list every service on the host. |
+| `--ssh-key-path` | no | host's inventory `ssh_key` | all | Override the SSH key for this one host. |
+
+Services are discovered by globbing `ant-node-*` unit files on the host —
+never by trusting `--node-count` or the inventory's `services` list, both of
+which can drift after a prior `rm`/`add`.
+
+- **`ls`** reports each service's `systemctl is-active`/`is-enabled` state and
+  its data directory's size (`du -sb` on `/mnt/ant-node-storage/data/<service>`).
+- **`rm`** stops, disables, and deletes the unit file plus its data AND log
+  directories — every command is scoped to the exact targeted service name
+  (never a glob), so sibling services on the same host are never touched.
+- **`add`** clones its config from the lowest-indexed **active** sibling
+  service already on the host: binary path, EVM network, NAT wrapping
+  (`ip netns exec ant_nat`), log level, bootstrap peers, restart policy,
+  `RUST_BACKTRACE`/`COLORBT_SHOW_HIDDEN` env, `LimitCORE` (coredumps),
+  upgrade channel, and rewards address are all read back from the sibling's
+  live unit file and reproduced exactly. The node port and metrics port (if
+  the sibling has them) are derived by offsetting the sibling's values by the
+  difference between the two service indices, matching how
+  `nodes provision` assigns them (`base + index`) in the first place. The new
+  service is written, enabled, **and started** — `add` brings a working node
+  back online, not just an enabled-but-stopped one. Fails clearly if the host
+  has no active sibling to clone from, or if the target service name already
+  exists. heaptrack wrapping (the `prod nodes` kind) is **not** cloned — a
+  heaptrack-wrapped sibling yields a new service without heaptrack.
+
 ### Running canaries against production (`prod canary`)
 
 A *canary deployment* uploads a fixed list of public files to the production

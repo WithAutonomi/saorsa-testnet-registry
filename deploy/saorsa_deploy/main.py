@@ -4356,6 +4356,95 @@ def main(argv=None):
         help="Skip the interactive confirmation prompt.",
     )
 
+    # --- prod services (ls/rm/add a single ant-node service on one host) ---
+    prod_services_parser = prod_subparsers.add_parser(
+        "services",
+        help="List, remove, or add a single ant-node systemd service on one "
+        "host — for freeing disk space on a quota-constrained node VM "
+        "(e.g. Hetzner) ahead of a volume-size increase, and adding a "
+        "service back once it lands.",
+    )
+    prod_services_subparsers = prod_services_parser.add_subparsers(
+        dest="prod_services_action", required=True
+    )
+
+    def _add_prod_services_common_args(parser, *, service_name_help):
+        parser.add_argument(
+            "--inventory-path",
+            type=str,
+            required=True,
+            help="Path to the inventory JSON (schema_version 3 or 4) containing the host.",
+        )
+        parser.add_argument(
+            "--name",
+            type=str,
+            required=True,
+            help="Host name, matched against the inventory's 'name' field.",
+        )
+        parser.add_argument(
+            "--service-name",
+            type=str,
+            required=True,
+            help=service_name_help,
+        )
+        parser.add_argument(
+            "--ssh-key-path",
+            type=str,
+            default=None,
+            help="Override the SSH key (default: the host's inventory ssh_key).",
+        )
+
+    prod_services_ls_parser = prod_services_subparsers.add_parser(
+        "ls",
+        help="List every ant-node-* service on the host with its active/enabled "
+        "state and on-disk data size.",
+    )
+    prod_services_ls_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        required=True,
+        help="Path to the inventory JSON (schema_version 3 or 4) containing the host.",
+    )
+    prod_services_ls_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Host name, matched against the inventory's 'name' field.",
+    )
+    prod_services_ls_parser.add_argument(
+        "--service-name",
+        type=str,
+        default=None,
+        help="Restrict output to a single service, e.g. ant-node-7 "
+        "(default: list every ant-node-* service on the host).",
+    )
+    prod_services_ls_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key (default: the host's inventory ssh_key).",
+    )
+
+    prod_services_rm_parser = prod_services_subparsers.add_parser(
+        "rm",
+        help="Stop, disable, and delete one ant-node service's unit + data/log "
+        "dirs, freeing its disk space. Never touches sibling services.",
+    )
+    _add_prod_services_common_args(
+        prod_services_rm_parser,
+        service_name_help="Service to remove, e.g. ant-node-7.",
+    )
+
+    prod_services_add_parser = prod_services_subparsers.add_parser(
+        "add",
+        help="Add a new ant-node service at --service-name, cloning its config "
+        "from an existing running sibling service on the same host.",
+    )
+    _add_prod_services_common_args(
+        prod_services_add_parser,
+        service_name_help="Service to add, e.g. ant-node-7 (must not already exist).",
+    )
+
     # --- prod files ---
     prod_files_parser = prod_subparsers.add_parser(
         "files",
@@ -5016,6 +5105,18 @@ def main(argv=None):
             from saorsa_deploy.cmd.set_volume_reserve import cmd_set_volume_reserve
 
             cmd_set_volume_reserve(args)
+        elif args.prod_subcommand == "services" and args.prod_services_action == "ls":
+            from saorsa_deploy.cmd.prod_services import cmd_prod_services_ls
+
+            cmd_prod_services_ls(args)
+        elif args.prod_subcommand == "services" and args.prod_services_action == "rm":
+            from saorsa_deploy.cmd.prod_services import cmd_prod_services_rm
+
+            cmd_prod_services_rm(args)
+        elif args.prod_subcommand == "services" and args.prod_services_action == "add":
+            from saorsa_deploy.cmd.prod_services import cmd_prod_services_add
+
+            cmd_prod_services_add(args)
         elif args.prod_subcommand == "files":
             from saorsa_deploy.cmd.prod_files import cmd_prod_files
 
