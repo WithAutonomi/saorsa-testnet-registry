@@ -319,6 +319,30 @@ HOST_FLUX_NET = """from(bucket: "{bucket}")
        and (r._field == "bytes_recv" or r._field == "bytes_sent"))
 """
 
+# Per-device disk I/O counters. Which devices exist at all is decided at
+# collection time by the `devices` include-glob in telegraf_metrics.conf (which
+# already keeps snapd `loop*` out), so no device filtering is needed here.
+HOST_FLUX_DISKIO = """from(bucket: "{bucket}")
+  |> range(start: {start})
+  |> filter(fn: (r) =>
+       r._measurement == "diskio"
+       and (r._field == "read_bytes" or r._field == "write_bytes"
+            or r._field == "reads" or r._field == "writes"))
+"""
+
+
+# Tag value marking the device that backs the node storage volume. Written by
+# the Telegraf config's volume_role regex processor.
+NODE_STORAGE_ROLE = "node-storage"
+
+# diskio counter field -> the stat name it becomes (suffixed `_per_sec`).
+DISKIO_FIELD_TARGETS = {
+    "read_bytes": "read_bytes",
+    "write_bytes": "write_bytes",
+    "reads": "reads",
+    "writes": "writes",
+}
+
 
 def _run_flux(url: str, token: str, org: str, flux: str, timeout: int = 30) -> str:
     resp = requests.post(
@@ -379,10 +403,10 @@ def fetch_host_metric_points(
     start: str = "0",
     timeout: int = 30,
 ) -> dict:
-    """Run three Flux queries (cpu/mem/net) and return the raw points.
+    """Run four Flux queries (cpu/mem/net/diskio) and return the raw points.
 
-    Returns a dict with keys ``cpu``, ``mem``, ``net``, each mapping to a
-    list of row dicts from :func:`_parse_flux_csv`.
+    Returns a dict with keys ``cpu``, ``mem``, ``net``, ``diskio``, each
+    mapping to a list of row dicts from :func:`_parse_flux_csv`.
 
     The default ``start: 0`` queries from the Unix epoch — i.e. every host
     metric point in the bucket — so a run's full history is recorded rather
@@ -394,6 +418,7 @@ def fetch_host_metric_points(
         ("cpu", HOST_FLUX_CPU),
         ("mem", HOST_FLUX_MEM),
         ("net", HOST_FLUX_NET),
+        ("diskio", HOST_FLUX_DISKIO),
     ):
         flux = template.format(bucket=bucket, start=start)
         body = _run_flux(url, token, org, flux, timeout=timeout)
@@ -431,6 +456,17 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
     * ``bytes_in_per_sec`` / ``bytes_out_per_sec`` — stats of per-second
       deltas of ``net.bytes_recv`` / ``net.bytes_sent``, computed
       separately per interface (``lo`` excluded) then pooled.
+    * ``disk_io_by_device`` — a dict keyed by kernel device name (``sdb``,
+      ``dm-0``), each holding ``volume_role`` plus ``read_bytes_per_sec`` /
+      ``write_bytes_per_sec`` / ``reads_per_sec`` / ``writes_per_sec`` stats of
+      per-second deltas of the ``diskio`` counters.
+
+      Deliberately NOT pooled across devices the way the net counters are
+      pooled across interfaces: a host's root disk and its node storage volume
+      are not interchangeable, and averaging an idle root disk against a busy
+      data volume produces a number that describes neither. The device whose
+      ``volume_role`` is ``"node-storage"`` is the node storage volume (see
+      :func:`~saorsa_deploy.provisioning.telegraf_metrics.build_data_device_env_command`).
     * ``metrics_started_at`` / ``metrics_ended_at`` — earliest/latest
       timestamp of any point contributing to that host.
 
@@ -447,6 +483,8 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
                 "mem_samples": [],
                 "bytes_in_samples": [],
                 "bytes_out_samples": [],
+                # device -> {"volume_role": str|None, "<target>": [rates]}
+                "disk_devices": {},
                 "metrics_started_at": None,
                 "metrics_ended_at": None,
             },
@@ -506,6 +544,50 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
             track_time(entry, prev["_time"])
             track_time(entry, curr["_time"])
 
+    # diskio counters are monotonic per device, exactly like the net counters
+    # above: group by (host, device, field), walk consecutive pairs for a
+    # per-second rate, and drop any negative delta (the counters reset when the
+    # VM reboots) or non-advancing timestamp.
+    diskio_groups: dict[tuple[str, str, str], list[dict]] = {}
+    diskio_roles: dict[tuple[str, str], str] = {}
+    for p in points_by_measurement.get("diskio", []):
+        host = p.get("host")
+        # The diskio device tag is `name` (e.g. "sdb"), not `device`.
+        device = p.get("name")
+        field = p.get("_field")
+        if not host or not device:
+            continue
+        if field not in DISKIO_FIELD_TARGETS:
+            continue
+        # Only the exact "node-storage" marker counts. Any other value is just
+        # an ordinary device -- never infer the storage volume from the tag
+        # merely being present.
+        if p.get("volume_role") == NODE_STORAGE_ROLE:
+            diskio_roles[(host, device)] = NODE_STORAGE_ROLE
+        diskio_groups.setdefault((host, device, field), []).append(p)
+
+    for (host, device, field), pts in diskio_groups.items():
+        pts.sort(key=lambda p: p["_time"])
+        entry = host_entry(host)
+        dev_entry = entry["disk_devices"].setdefault(
+            device,
+            {"volume_role": diskio_roles.get((host, device))},
+        )
+        target = DISKIO_FIELD_TARGETS[field]
+        samples = dev_entry.setdefault(target, [])
+        for prev, curr in zip(pts, pts[1:]):
+            prev_val = _to_float(prev.get("_value"))
+            curr_val = _to_float(curr.get("_value"))
+            if prev_val is None or curr_val is None:
+                continue
+            delta = curr_val - prev_val
+            delta_sec = (curr["_time"] - prev["_time"]).total_seconds()
+            if delta < 0 or delta_sec <= 0:
+                continue
+            samples.append(delta / delta_sec)
+            track_time(entry, prev["_time"])
+            track_time(entry, curr["_time"])
+
     results: list[dict] = []
     for host in sorted(hosts.keys()):
         h = hosts[host]
@@ -520,6 +602,28 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
                 "mem_percent": _stats(h["mem_samples"]),
                 "bytes_in_per_sec": _stats(h["bytes_in_samples"]),
                 "bytes_out_per_sec": _stats(h["bytes_out_samples"]),
+                "disk_io_by_device": {
+                    device: {
+                        "volume_role": dev["volume_role"],
+                        **{
+                            f"{target}_per_sec": _stats(dev.get(target, []))
+                            for target in DISKIO_FIELD_TARGETS.values()
+                        },
+                    }
+                    for device, dev in sorted(h["disk_devices"].items())
+                },
             }
         )
     return results
+
+
+def node_storage_device(entry: dict) -> tuple[str, dict] | None:
+    """Return the ``(device, stats)`` of a host entry's node storage volume.
+
+    ``None`` when the host has no device tagged ``node-storage`` — a client VM,
+    or a host provisioned before the tag existed.
+    """
+    for device, stats in (entry.get("disk_io_by_device") or {}).items():
+        if stats.get("volume_role") == NODE_STORAGE_ROLE:
+            return device, stats
+    return None

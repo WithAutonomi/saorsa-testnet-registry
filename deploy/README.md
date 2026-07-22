@@ -807,6 +807,30 @@ command, in the same pass as Elasticsearch log forwarding. When only monitoring
 state exists for a deployment it provisions metrics only. The node host-metrics
 bucket is `testnet-metrics`; CLIENT hosts are always routed to `client-metrics`.
 
+#### Per-device disk I/O
+
+Both tiers also collect **per-device disk I/O** via a `[[inputs.diskio]]` stanza in the shared base config (`resources/monitoring/telegraf_metrics.conf`). It is **on by default with no flag** — the client config is an append to the node base, so the one stanza covers node-tier and client-tier hosts alike, and reaches every install path (`nodes provision`, `nodes provision-genesis`, `bootstraps provision`, `clients provision`, the standalone `deployments provision-telegraf`, and `monitoring info --telegraf-config`).
+
+This is distinct from `[[inputs.disk]]`, which is capacity only (used/free/total). The `diskio` measurement carries the monotonic counters `read_bytes` / `write_bytes`, `reads` / `writes`, `read_time` / `write_time`, `io_time`, `weighted_io_time`, plus the gauge `iops_in_progress`, each tagged with the device `name` (e.g. `sdb`). Throughput, IOPS, await and `%util` are all derivable from those.
+
+**The `devices` list is include-only** — the plugin has no exclude option, so the glob `["sd*", "vd*", "nvme*", "xvd*", "dm-*"]` has to name everything wanted. It covers each provider's naming (DigitalOcean `vda`/`sda`, OVH + Hetzner `sda`/`sdb`, Vultr `vda`/`vdb`, Contabo root-only, NVMe) plus LVM `dm-*`. Crucially it does **not** match `loop*`: Ubuntu cloud images carry ~10 snapd loop devices that would otherwise add that many permanently-zero series per host. `skip_serial_number = true` keeps disk serials out of the tag set.
+
+##### Identifying the node storage volume
+
+diskio knows only kernel device names (`sdb`, `dm-0`) — never mountpoints — and the device backing `/mnt/ant-node-storage` differs by provider and by whether the volume is raw ext4 or LVM-striped. So the device is resolved **on the host at provision time** (`findmnt -nro SOURCE /mnt/ant-node-storage` → `lsblk -nro KNAME`, the same idiom `set_reserved_blocks.py` uses), written to `ANT_DATA_DEVICE` in `/etc/default/telegraf-ant-metrics`, and matched by a `[[processors.regex]]` scoped to `namepass = ["diskio"]` that tags that device's series **`volume_role = "node-storage"`**.
+
+The tag lands in InfluxDB, so Grafana and `record-analysis` both filter on it directly — no join against the `disk` measurement, and no breakage on LVM hosts.
+
+- **Root-disk providers** (Contabo, OVH 3-AZ) keep node data on the OS root filesystem, so there the **root device is tagged** `node-storage`. That series then necessarily includes OS I/O as well — unavoidable when the two share a disk.
+- **Client VMs** run no node storage and never fall back to root; they get the sentinel `ANT_DATA_DEVICE=__none__`, which matches no real device, so nothing is tagged.
+- Consumers must test `volume_role == "node-storage"` rather than merely testing for the tag's presence.
+
+**Long-term archival.** `deployments record-analysis` pulls the diskio counters alongside CPU/memory/network and upserts per-host aggregates into `deployment_host_results.host_metrics` under **`disk_io_by_device`** — a dict keyed by kernel device name, each holding `volume_role` plus `read_bytes_per_sec` / `write_bytes_per_sec` / `reads_per_sec` / `writes_per_sec`, each a `{avg, min, max, samples}` stat. Rates are computed **within** a device (consecutive per-second deltas, negative deltas dropped as reboot counter resets).
+
+Devices are deliberately **not** averaged together the way the network counters are pooled across interfaces: a host's root disk and its node storage volume are not interchangeable, and an idle root disk averaged against a busy data volume describes neither. `record-analysis`'s summary table therefore shows the **node storage volume's** figures (and names the device); `deployments print-recorded-results` renders every device, one row per (host, device), with the storage volume flagged in its Role column. `host_metrics` is a JSON column, so rows recorded before disk I/O existed simply lack the key and the section is skipped for them.
+
+**Retrofitting an existing deployment.** Nothing is needed for new deployments. To add disk I/O to a deployment that is already running, re-run `deployments provision-telegraf --name <name>`: it regenerates the config from the same builder and restarts `telegraf-ant-metrics`.
+
 CLIENT-role hosts additionally get the client `ant` service's **memory** recorded into `client-metrics`: a `procstat` input matching `system.slice/ant-*.service` (per-process RSS, tagged `metric_source=ant-client`, 2 s interval) and a `cgroup` input reading `memory.current` + `memory.peak` (whole-service live + high-water peak) for the same glob. These stanzas (`resources/monitoring/telegraf_metrics_client.conf`) are appended **only** on CLIENT hosts, so node configs are byte-identical and the cgroup input never logs a missing-path error on the node fleet. The single `ant-*` glob matches whichever client unit a VM runs (`ant-uploader`, `ant-downloader`, `ant-prod-uploader`, `ant-prod-downloader`, `ant-prod-canary-upload`, `ant-prod-canary-probe`). Query `procstat` filtered to `process_name == "ant"` for per-process RSS, or the `cgroup` measurement's `memory.peak` for the true per-run high-water mark (caught even when a sub-2 s terminal spike clips the sampled RSS). The local-* prod kinds run no systemd unit and are not covered.
 
 ### `monitoring info` command

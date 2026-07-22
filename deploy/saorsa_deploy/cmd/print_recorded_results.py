@@ -215,6 +215,58 @@ def _print_analysis_section(
         )
     console.print(table)
 
+    _print_disk_io_table(metrics, console)
+
+
+def _print_disk_io_table(metrics: list[dict], console: Console) -> None:
+    """Render disk I/O as its own table, one row per (host, device).
+
+    Split out from the main host-metrics table rather than adding columns to
+    it, which would push that table past a readable width — and it needs its
+    own rows anyway, since a host has several devices.
+
+    Deliberately per-device: a node's root disk and its storage volume are not
+    interchangeable, so there is no host-level average here. The storage volume
+    is flagged in the Role column; `record-analysis`'s own summary table shows
+    that device alone.
+
+    Rows recorded before disk I/O collection existed have no
+    `disk_io_by_device` key, so the section is skipped for them — no migration,
+    no placeholder rows.
+    """
+    if not any(entry.get("disk_io_by_device") for entry in metrics):
+        return
+
+    table = Table(
+        title="Disk I/O — per device",
+        title_style="bold",
+    )
+    table.add_column("Host")
+    table.add_column("Device")
+    table.add_column("Role")
+    table.add_column("Read avg/min/max", justify="right")
+    table.add_column("Write avg/min/max", justify="right")
+    table.add_column("Read IOPS avg/min/max", justify="right")
+    table.add_column("Write IOPS avg/min/max", justify="right")
+
+    for entry in metrics:
+        devices = entry.get("disk_io_by_device") or {}
+        host = entry.get("host") or "-"
+        for device, stats in sorted(devices.items()):
+            role = stats.get("volume_role")
+            table.add_row(
+                host,
+                device,
+                # Highlighted because this is the device that matters for a
+                # node; the others are context.
+                f"[bold]{role}[/bold]" if role else "-",
+                _fmt_triple_bw(stats.get("read_bytes_per_sec") or {}),
+                _fmt_triple_bw(stats.get("write_bytes_per_sec") or {}),
+                _fmt_triple(stats.get("reads_per_sec") or {}),
+                _fmt_triple(stats.get("writes_per_sec") or {}),
+            )
+    console.print(table)
+
 
 # ---------------------------------------------------------------------------
 # File results section: testnet / prod-continuous-downloader

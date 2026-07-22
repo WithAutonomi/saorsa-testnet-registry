@@ -677,6 +677,56 @@ Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
 dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
 `INFLUXDB_CLIENT_BUCKET`).
 
+### Per-device disk I/O
+
+**Both tiers** collect per-device disk I/O via a `[[inputs.diskio]]` stanza in the
+shared base config (`resources/monitoring/telegraf_metrics.conf`), **on by default,
+no flag**. Because the client config is an *append to the node base*, that one
+stanza covers node-tier and client-tier hosts and reaches every install path
+(`nodes provision`, `provision-genesis`, `bootstraps provision`, `clients provision`,
+the standalone `deployments provision-telegraf`, and `monitoring info
+--telegraf-config`). Distinct from `[[inputs.disk]]`, which is capacity only.
+The `diskio` measurement emits the monotonic counters `read_bytes`/`write_bytes`,
+`reads`/`writes`, `read_time`/`write_time`, `io_time`, `weighted_io_time` plus the
+gauge `iops_in_progress`, tagged with the device `name` — throughput, IOPS, await
+and `%util` all derive from those.
+
+The **`devices` list is include-only** (the plugin has no exclude option), so the
+glob `["sd*","vd*","nvme*","xvd*","dm-*"]` must name every wanted pattern — it spans
+all providers' naming plus LVM `dm-*`, and deliberately does not match `loop*`
+(Ubuntu's ~10 snapd loop devices would be that many dead series per host).
+
+**Identifying the node storage volume.** diskio knows only kernel device names
+(`sdb`, `dm-0`), never mountpoints, and the device backing `/mnt/ant-node-storage`
+varies by provider and by raw-ext4 vs LVM-striped. So it is resolved **on the host at
+provision time** (`findmnt -nro SOURCE` → `lsblk -nro KNAME`, the same idiom as
+`set_reserved_blocks.py`; `build_data_device_env_command` in
+`provisioning/telegraf_metrics.py`), written to `ANT_DATA_DEVICE` in
+`/etc/default/telegraf-ant-metrics`, and matched by a `[[processors.regex]]` scoped
+to `namepass=["diskio"]` that tags that device **`volume_role = "node-storage"`**.
+The tag lands in InfluxDB, so Grafana and `record-analysis` filter on it directly —
+no join against `disk`, no LVM breakage. On **root-disk providers** (Contabo, OVH
+3-AZ) node data lives on the OS root filesystem, so the **root device** is tagged
+(that series then also carries OS I/O — unavoidable when they share a disk).
+**Client VMs** never fall back to root; they get the sentinel `__none__`, which
+matches no device. Always test `volume_role == "node-storage"`, never mere presence.
+
+**Archival.** `deployments record-analysis` now runs a fourth Flux query (`diskio`
+alongside cpu/mem/net) and persists **`disk_io_by_device`** into
+`deployment_host_results.host_metrics` — a dict keyed by device name, each holding
+`volume_role` plus `read_bytes_per_sec` / `write_bytes_per_sec` / `reads_per_sec` /
+`writes_per_sec` as `{avg,min,max,samples}` stats. Rates are computed *within* a
+device (per-second deltas, negative deltas dropped as reboot counter resets).
+Devices are deliberately **NOT** averaged together the way net pools across
+interfaces — a root disk and a node storage volume are not interchangeable, and
+averaging an idle root disk against a busy data volume describes neither. The
+`record-analysis` summary table shows the node storage volume's figures (naming the
+device); `print-recorded-results` renders one row per (host, device) with the
+storage volume flagged. `host_metrics` is a JSON column, so this needed **no Alembic
+migration** and pre-existing rows simply lack the key (the section is skipped).
+Retrofit a running deployment by re-running `deployments provision-telegraf --name
+<name>`, which regenerates the config and restarts `telegraf-ant-metrics`.
+
 ### Telegraf provisioning (folded into the provision passes)
 
 The two Telegraf forwarders — Elasticsearch log forwarding (systemd
