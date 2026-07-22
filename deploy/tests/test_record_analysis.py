@@ -1,4 +1,6 @@
+import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from saorsa_db.db import Base
@@ -52,6 +54,28 @@ def _net_point(
         "_field": field,
         "_value": str(value),
     }
+
+
+def _diskio_point(
+    host: str,
+    ts: str,
+    device: str,
+    field: str,
+    value: int,
+    volume_role: str | None = None,
+) -> dict:
+    point = {
+        "_time": datetime.fromisoformat(ts).astimezone(timezone.utc),
+        "host": host,
+        "_measurement": "diskio",
+        # diskio tags the device as `name`, not `device`.
+        "name": device,
+        "_field": field,
+        "_value": str(value),
+    }
+    if volume_role is not None:
+        point["volume_role"] = volume_role
+    return point
 
 
 def test_parse_flux_csv_keeps_every_column_and_parses_time():
@@ -183,6 +207,275 @@ def test_aggregate_net_skips_counter_resets():
     assert bin_["avg"] == pytest.approx(200.0)
 
 
+def test_aggregate_diskio_converts_counters_to_rates():
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 10_000
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:20+00:00", "sdb", "read_bytes", 30_000
+            ),
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "write_bytes", 0),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "write_bytes", 1_000
+            ),
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "reads", 0),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sdb", "reads", 50),
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "writes", 0),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sdb", "writes", 20),
+        ],
+    }
+    results = aggregate_host_metrics(points)
+    assert len(results) == 1
+    sdb = results[0]["disk_io_by_device"]["sdb"]
+
+    read = sdb["read_bytes_per_sec"]
+    # read_bytes rates: (10000-0)/10 = 1000, (30000-10000)/10 = 2000
+    assert read["samples"] == 2
+    assert read["min"] == pytest.approx(1000.0)
+    assert read["max"] == pytest.approx(2000.0)
+    assert read["avg"] == pytest.approx(1500.0)
+
+    assert sdb["write_bytes_per_sec"]["avg"] == pytest.approx(100.0)
+    assert sdb["reads_per_sec"]["avg"] == pytest.approx(5.0)
+    assert sdb["writes_per_sec"]["avg"] == pytest.approx(2.0)
+
+
+def test_aggregate_diskio_skips_counter_resets():
+    """diskio counters reset when the VM reboots; a negative delta is dropped."""
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:00+00:00", "sda", "write_bytes", 10_000
+            ),
+            # reboot — counter restarts
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sda", "write_bytes", 500
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:20+00:00", "sda", "write_bytes", 2_500
+            ),
+        ],
+    }
+    results = aggregate_host_metrics(points)
+    assert len(results) == 1
+    write = results[0]["disk_io_by_device"]["sda"]["write_bytes_per_sec"]
+    # Only one valid delta: (2500-500)/10 = 200
+    assert write["samples"] == 1
+    assert write["avg"] == pytest.approx(200.0)
+
+
+def test_aggregate_diskio_keeps_devices_separate():
+    """Devices are never averaged together.
+
+    A host's root disk and its node storage volume are not interchangeable:
+    an idle root disk averaged against a busy data volume describes neither.
+    Rates are also computed WITHIN a device, so the differing absolute counter
+    values below can never produce a cross-device delta.
+    """
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            # Root disk: idle, but a large absolute counter.
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:00+00:00", "sda", "read_bytes", 1_000_000
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sda", "read_bytes", 1_000_000
+            ),
+            # Data volume: busy, small absolute counter.
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 50_000
+            ),
+        ],
+    }
+    results = aggregate_host_metrics(points)
+    devices = results[0]["disk_io_by_device"]
+    assert set(devices) == {"sda", "sdb"}
+    # Idle root disk stays 0; it does not dilute the busy data volume.
+    assert devices["sda"]["read_bytes_per_sec"]["avg"] == pytest.approx(0.0)
+    assert devices["sdb"]["read_bytes_per_sec"]["avg"] == pytest.approx(5000.0)
+
+
+def test_aggregate_diskio_marks_the_node_storage_volume():
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sda", "read_bytes", 0),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sda", "read_bytes", 10),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0,
+                volume_role="node-storage",
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 50_000,
+                volume_role="node-storage",
+            ),
+        ],
+    }
+    entry = aggregate_host_metrics(points)[0]
+    devices = entry["disk_io_by_device"]
+    assert devices["sdb"]["volume_role"] == "node-storage"
+    assert devices["sda"]["volume_role"] is None
+
+    device, stats = influx.node_storage_device(entry)
+    assert device == "sdb"
+    assert stats["read_bytes_per_sec"]["avg"] == pytest.approx(5000.0)
+
+
+def test_node_storage_device_is_none_when_nothing_is_tagged():
+    """Client VMs have no node storage, and hosts provisioned before the
+    volume_role tag existed carry no role at all."""
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "vda", "read_bytes", 0),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 10),
+        ],
+    }
+    entry = aggregate_host_metrics(points)[0]
+    assert influx.node_storage_device(entry) is None
+
+
+def test_only_the_exact_node_storage_role_marks_the_volume():
+    """A stray volume_role value must not be read as the storage volume."""
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:00+00:00", "vda", "read_bytes", 0,
+                volume_role="vda",
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 10,
+                volume_role="vda",
+            ),
+        ],
+    }
+    entry = aggregate_host_metrics(points)[0]
+    assert entry["disk_io_by_device"]["vda"]["volume_role"] is None
+    assert influx.node_storage_device(entry) is None
+
+
+def test_aggregate_diskio_ignores_points_without_a_device_tag():
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            {
+                "_time": datetime.fromisoformat(
+                    "2026-04-19T10:00:00+00:00"
+                ).astimezone(timezone.utc),
+                "host": "hostA",
+                "_measurement": "diskio",
+                "_field": "read_bytes",
+                "_value": "0",
+            },
+        ],
+    }
+    assert aggregate_host_metrics(points) == []
+
+
+def test_aggregate_absent_diskio_yields_an_empty_device_map():
+    """Existing callers that pass no diskio points still get the key."""
+    points = {
+        "cpu": [_cpu_point("hostA", "2026-04-19T10:00:00+00:00", 80.0)],
+        "mem": [],
+        "net": [],
+    }
+    results = aggregate_host_metrics(points)
+    assert len(results) == 1
+    assert results[0]["disk_io_by_device"] == {}
+
+
+def test_aggregate_diskio_reports_a_device_with_only_one_point():
+    """A single point yields no delta, so the device is present but empty
+    rather than absent — the device existed, it just had no measurable rate."""
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 5),
+            # A second field with two points, so the host has a tracked window.
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "writes", 0),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sdb", "writes", 10),
+        ],
+    }
+    sdb = aggregate_host_metrics(points)[0]["disk_io_by_device"]["sdb"]
+    assert sdb["read_bytes_per_sec"]["samples"] == 0
+    assert sdb["read_bytes_per_sec"]["avg"] is None
+    assert sdb["writes_per_sec"]["avg"] == pytest.approx(1.0)
+
+
+def test_serialize_host_entry_persists_disk_io_by_device():
+    """`_serialize_host_entry` re-lists keys explicitly, so an omission there
+    silently drops the metric on the way to Postgres."""
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0,
+                volume_role="node-storage",
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 10_000,
+                volume_role="node-storage",
+            ),
+        ],
+    }
+    aggregate = aggregate_host_metrics(points)[0]
+    serialized = record_analysis_mod._serialize_host_entry(aggregate)
+    sdb = serialized["disk_io_by_device"]["sdb"]
+    assert sdb["volume_role"] == "node-storage"
+    assert sdb["read_bytes_per_sec"]["avg"] == pytest.approx(1000.0)
+    for key in ("write_bytes_per_sec", "reads_per_sec", "writes_per_sec"):
+        assert key in sdb
+
+
+def test_serialized_disk_io_is_json_round_trippable():
+    """host_metrics is a JSON column; the nested device map must survive it."""
+    points = {
+        "cpu": [],
+        "mem": [],
+        "net": [],
+        "diskio": [
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:00+00:00", "dm-0", "read_bytes", 0,
+                volume_role="node-storage",
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "dm-0", "read_bytes", 100,
+                volume_role="node-storage",
+            ),
+        ],
+    }
+    serialized = record_analysis_mod._serialize_host_entry(
+        aggregate_host_metrics(points)[0]
+    )
+    assert json.loads(json.dumps(serialized)) == serialized
+
+
 def test_aggregate_tracks_start_and_end_per_host():
     points = {
         "cpu": [
@@ -268,8 +561,10 @@ def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
     fetch_host_metric_points(
         url="http://x", token="t", org="ant", bucket="testnet-metrics"
     )
-    assert len(seen) == 3
+    # cpu / mem / net / diskio
+    assert len(seen) == 4
     assert all("range(start: 0)" in flux for flux in seen)
+    assert any('r._measurement == "diskio"' in flux for flux in seen)
 
 
 def test_fetch_host_metric_points_honours_explicit_start(monkeypatch):
@@ -284,6 +579,88 @@ def test_fetch_host_metric_points_honours_explicit_start(monkeypatch):
         url="http://x", token="t", org="ant", bucket="testnet-metrics", start="-6h"
     )
     assert all("range(start: -6h)" in flux for flux in seen)
+
+
+def _run_cmd_record_analysis(monkeypatch, repo_obj, diskio_points: list[dict]):
+    """Drive the real `cmd_record_analysis` against a fake Influx + repo.
+
+    Exercises the summary-table rendering, which the other command-level tests
+    stub out entirely.
+    """
+    # cmd_record_analysis builds its own Console(); without this Rich falls back
+    # to 80 columns under pytest capture and squeezes the values we assert on.
+    monkeypatch.setenv("COLUMNS", "300")
+    monkeypatch.setattr(record_analysis_mod, "get_repository", lambda: repo_obj)
+    monkeypatch.setattr(
+        record_analysis_mod,
+        "fetch_host_metric_points",
+        lambda **kwargs: {"cpu": [], "mem": [], "net": [], "diskio": diskio_points},
+    )
+
+    args = SimpleNamespace(
+        name="DEV-TEST",
+        influx_url="http://influx",
+        influx_token="token",
+        influx_org="ant",
+        influx_bucket="testnet-metrics",
+        monitoring_name=None,
+        window="0",
+        summary=None,
+    )
+    record_analysis_mod.cmd_record_analysis(args)
+
+
+def test_record_analysis_summary_table_reports_the_storage_volume(
+    monkeypatch, repo, capsys
+):
+    r, _ = repo
+    r.create(name="DEV-TEST", deploy_args={})
+    _run_cmd_record_analysis(
+        monkeypatch,
+        r,
+        [
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "vda", "read_bytes", 0),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 0),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0,
+                volume_role="node-storage",
+            ),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 20 * 1024**2,
+                volume_role="node-storage",
+            ),
+        ],
+    )
+    out = capsys.readouterr().out
+    # Names the storage device and reports ITS rate -- not an average that the
+    # idle root disk would have halved.
+    assert "sdb" in out
+    assert "2.00 MB/s" in out
+
+    # Both devices still reach Postgres.
+    row = r.get_host_result_for_deployment(r.get_by_name("DEV-TEST").id)
+    assert set(row.host_metrics[0]["disk_io_by_device"]) == {"sdb", "vda"}
+
+
+def test_record_analysis_summary_table_handles_no_storage_volume(
+    monkeypatch, repo, capsys
+):
+    """A client VM (or a host provisioned before the volume_role tag) has no
+    node-storage device; the table must render rather than raise."""
+    r, _ = repo
+    r.create(name="DEV-TEST", deploy_args={})
+    _run_cmd_record_analysis(
+        monkeypatch,
+        r,
+        [
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "vda", "read_bytes", 0),
+            _diskio_point(
+                "hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 1_000
+            ),
+        ],
+    )
+    out = capsys.readouterr().out
+    assert "hostA" in out
 
 
 @pytest.fixture()

@@ -4,7 +4,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from saorsa_deploy.influx import aggregate_host_metrics, fetch_host_metric_points
+from saorsa_deploy.influx import (
+    aggregate_host_metrics,
+    fetch_host_metric_points,
+    node_storage_device,
+)
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_monitoring_state
 
@@ -36,6 +40,7 @@ def _serialize_host_entry(entry: dict) -> dict:
         "mem_percent": entry["mem_percent"],
         "bytes_in_per_sec": entry["bytes_in_per_sec"],
         "bytes_out_per_sec": entry["bytes_out_per_sec"],
+        "disk_io_by_device": entry["disk_io_by_device"],
     }
 
 
@@ -136,6 +141,13 @@ def cmd_record_analysis(args):
     table.add_column("Mem avg/min/max %", justify="right")
     table.add_column("In avg/min/max", justify="right")
     table.add_column("Out avg/min/max", justify="right")
+    # Scoped to the NODE STORAGE volume specifically -- that is the disk whose
+    # I/O matters for a node, and averaging it together with an idle root disk
+    # would describe neither. Kept to two columns because this table is already
+    # wide; every device, with full avg/min/max and IOPS, is in the stored
+    # `disk_io_by_device` and rendered by `print-recorded-results`.
+    table.add_column("Storage vol")
+    table.add_column("Vol rd/wr avg", justify="right")
     table.add_column("Started (UTC)")
     table.add_column("Ended (UTC)")
     for agg in aggregates:
@@ -143,12 +155,23 @@ def cmd_record_analysis(args):
         mem = agg["mem_percent"]
         bin_ = agg["bytes_in_per_sec"]
         bout = agg["bytes_out_per_sec"]
+        storage = node_storage_device(agg)
+        if storage is None:
+            # No device tagged node-storage: a client VM, or a host whose
+            # Telegraf predates the volume_role tag.
+            device_label, drd, dwr = "-", {}, {}
+        else:
+            device_label, stats = storage
+            drd = stats.get("read_bytes_per_sec") or {}
+            dwr = stats.get("write_bytes_per_sec") or {}
         table.add_row(
             agg["host"],
             f"{_fmt(cpu['avg'])} / {_fmt(cpu['min'])} / {_fmt(cpu['max'])}",
             f"{_fmt(mem['avg'])} / {_fmt(mem['min'])} / {_fmt(mem['max'])}",
             f"{_fmt_bw(bin_['avg'])} / {_fmt_bw(bin_['min'])} / {_fmt_bw(bin_['max'])}",
             f"{_fmt_bw(bout['avg'])} / {_fmt_bw(bout['min'])} / {_fmt_bw(bout['max'])}",
+            device_label,
+            f"{_fmt_bw(drd.get('avg'))} / {_fmt_bw(dwr.get('avg'))}",
             agg["metrics_started_at"].strftime("%Y-%m-%d %H:%M:%S"),
             agg["metrics_ended_at"].strftime("%Y-%m-%d %H:%M:%S"),
         )
