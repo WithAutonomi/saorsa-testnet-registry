@@ -1,3 +1,4 @@
+import hashlib
 import os
 import socket
 import time
@@ -8,6 +9,8 @@ DO_API_URL = "https://api.digitalocean.com/v2"
 BUILD_REGIONS = ["lon1", "ams3", "nyc1", "syd1"]
 BUILD_SIZE = "c-32"
 BUILD_IMAGE = "ubuntu-24-04-x64"
+MAX_DROPLET_NAME_LENGTH = 63
+BRANCH_HASH_LENGTH = 10
 SSH_KEY_IDS = [
     36971688,
     30643816,
@@ -29,6 +32,22 @@ def _get_headers():
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+
+
+def _build_droplet_name(kind: str, name: str, repo_owner: str, branch_name: str) -> str:
+    """Build a DigitalOcean-safe droplet name.
+
+    DO caps droplet names at 63 characters, but branch names are unbounded
+    (e.g. `chris/disable-outbound-audits-0.14.4` alone pushed a real name over
+    the limit), so the branch is condensed to a short deterministic hash
+    rather than embedded verbatim. Hashing (not a random id) keeps the name
+    stable across retries of the same build, so `_find_droplet_by_name` can
+    still reuse a droplet left over from a failed previous run instead of
+    orphaning it.
+    """
+    branch_hash = hashlib.sha256(branch_name.encode()).hexdigest()[:BRANCH_HASH_LENGTH]
+    droplet_name = f"{kind}-build-{name}-{repo_owner}-{branch_hash}"
+    return droplet_name[:MAX_DROPLET_NAME_LENGTH]
 
 
 def _find_droplet_by_name(droplet_name, headers):
@@ -97,8 +116,7 @@ def create_build_vm(
     """
     size = build_vm_size or BUILD_SIZE
     headers = _get_headers()
-    safe_branch = branch_name.replace("_", "-").replace("/", "-")
-    droplet_name = f"{kind}-build-{name}-{repo_owner}-{safe_branch}"
+    droplet_name = _build_droplet_name(kind, name, repo_owner, branch_name)
 
     existing = _find_droplet_by_name(droplet_name, headers)
     if existing:

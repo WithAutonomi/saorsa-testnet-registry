@@ -1,3 +1,4 @@
+import hashlib
 import os
 from unittest.mock import MagicMock, patch
 
@@ -8,11 +9,35 @@ from saorsa_deploy.build_droplet import (
     BUILD_IMAGE,
     BUILD_REGIONS,
     BUILD_SIZE,
+    MAX_DROPLET_NAME_LENGTH,
     SSH_KEY_IDS,
+    _build_droplet_name,
     create_build_vm,
     destroy_build_vm,
     wait_for_ssh,
 )
+
+
+def _expected_droplet_name(kind, name, repo_owner, branch_name):
+    branch_hash = hashlib.sha256(branch_name.encode()).hexdigest()[:10]
+    return f"{kind}-build-{name}-{repo_owner}-{branch_hash}"
+
+
+class TestBuildDropletName:
+    def test_stays_within_do_length_limit_for_long_branch_name(self):
+        long_branch = "chris/disable-outbound-audits-0.14.4-and-some-other-long-suffix"
+        droplet_name = _build_droplet_name("ant-node", "DEV-03", "WithAutonomi", long_branch)
+        assert len(droplet_name) <= MAX_DROPLET_NAME_LENGTH
+
+    def test_is_deterministic_for_same_inputs(self):
+        first = _build_droplet_name("ant-node", "DEV-03", "WithAutonomi", "chris/some-branch")
+        second = _build_droplet_name("ant-node", "DEV-03", "WithAutonomi", "chris/some-branch")
+        assert first == second
+
+    def test_differs_for_different_branches(self):
+        first = _build_droplet_name("ant-node", "DEV-03", "WithAutonomi", "branch-a")
+        second = _build_droplet_name("ant-node", "DEV-03", "WithAutonomi", "branch-b")
+        assert first != second
 
 
 class TestCreateBuildVm:
@@ -49,14 +74,15 @@ class TestCreateBuildVm:
 
             result = create_build_vm("ant-node", "DEV-01", "myorg", "feature-branch")
 
+            expected_name = _expected_droplet_name("ant-node", "DEV-01", "myorg", "feature-branch")
             assert result["droplet_id"] == 12345
-            assert result["droplet_name"] == "ant-node-build-DEV-01-myorg-feature-branch"
+            assert result["droplet_name"] == expected_name
             assert result["ip_address"] == "1.2.3.4"
 
             # Verify create was called with correct params
             create_call = mock_requests.post.call_args
             body = create_call.kwargs["json"]
-            assert body["name"] == "ant-node-build-DEV-01-myorg-feature-branch"
+            assert body["name"] == expected_name
             assert body["region"] == BUILD_REGIONS[0]
             assert body["size"] == BUILD_SIZE
             assert body["image"] == BUILD_IMAGE
@@ -70,11 +96,12 @@ class TestCreateBuildVm:
         os.environ["DO_TOKEN"] = "test-token"
         try:
             # Existing droplet found
+            existing_name = _expected_droplet_name("ant-node", "TEST", "myorg", "branch")
             mock_list_resp = MagicMock()
             mock_list_resp.json.return_value = {
                 "droplets": [
                     {
-                        "name": "ant-node-build-TEST-myorg-branch",
+                        "name": existing_name,
                         "id": 99999,
                         "networks": {"v4": [{"type": "public", "ip_address": "5.6.7.8"}]},
                     }
