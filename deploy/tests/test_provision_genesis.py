@@ -29,7 +29,6 @@ class TestBuildExecStart:
             f" --log-dir {LOG_DIR}/{GENESIS_SERVICE_NAME}"
             " --stop-on-upgrade"
             " --evm-network arbitrum-sepolia"
-            " --metrics-port 9100"
             f" --rewards-address {DEFAULT_REWARDS_ADDRESS}"
         )
 

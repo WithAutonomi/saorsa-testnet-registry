@@ -121,7 +121,6 @@ class TestParseNodeUnit:
             "log_level": "debug",
             "testnet": False,
             "upgrade_channel": None,
-            "metrics_port": 9102,
             "rewards_address": "0xabc",
             "evm_network": "arbitrum-one",
         }
@@ -149,7 +148,6 @@ class TestParseNodeUnit:
         parsed = parse_node_unit(unit)
         assert parsed["bootstrap_peers"] == ["1.2.3.4:12000", "5.6.7.8:12000"]
         assert parsed["port"] == 10002
-        assert parsed["metrics_port"] == 9102
         assert parsed["log_level"] == "debug"
         assert parsed["testnet"] is False
         assert parsed["evm_network"] == "arbitrum-one"
@@ -176,10 +174,9 @@ class TestParseNodeUnit:
         assert parsed["coredumps"] is True
 
     def test_missing_optional_flags_are_none_or_false(self):
-        unit = self._sibling_unit(port=None, metrics_port=None, log_level=None)
+        unit = self._sibling_unit(port=None, log_level=None)
         parsed = parse_node_unit(unit)
         assert parsed["port"] is None
-        assert parsed["metrics_port"] is None
         assert parsed["log_level"] is None
         assert parsed["rust_backtrace"] is None
         assert parsed["colorbt_show_hidden"] is False

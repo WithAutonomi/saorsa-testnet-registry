@@ -285,9 +285,6 @@ def cmd_prod_services_add(args) -> None:
     new_index = parse_service_name(args.service_name)
     delta = new_index - sibling["index"]
     new_port = parsed["port"] + delta if parsed["port"] is not None else None
-    new_metrics_port = (
-        parsed["metrics_port"] + delta if parsed["metrics_port"] is not None else None
-    )
 
     root_dir = f"{MOUNT_POINT}/data/{args.service_name}"
     log_dir = f"{LOG_DIR}/{args.service_name}"
@@ -300,7 +297,6 @@ def cmd_prod_services_add(args) -> None:
         log_level=parsed["log_level"],
         testnet=parsed["testnet"],
         upgrade_channel=parsed["upgrade_channel"],
-        metrics_port=new_metrics_port,
         rewards_address=parsed["rewards_address"] or DEFAULT_REWARDS_ADDRESS,
         evm_network=parsed["evm_network"],
     )

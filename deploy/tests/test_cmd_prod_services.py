@@ -56,7 +56,7 @@ def _op_result(host, stdout_lines):
     return {host: meta}
 
 
-def _sibling_unit(index=1, port=10000, metrics_port=9100, **overrides):
+def _sibling_unit(index=1, port=10000, **overrides):
     params = {
         "bootstrap_peers": ["1.2.3.4:12000"],
         "root_dir": f"/mnt/ant-node-storage/data/ant-node-{index}",
@@ -65,7 +65,6 @@ def _sibling_unit(index=1, port=10000, metrics_port=9100, **overrides):
         "log_level": "info",
         "testnet": False,
         "upgrade_channel": None,
-        "metrics_port": metrics_port,
         "rewards_address": "0xabc",
         "evm_network": "arbitrum-one",
     }
@@ -334,7 +333,7 @@ class TestCmdProdServicesAdd:
         ]
         services_patches.subprocess_run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=_sibling_unit(index=1, port=10000, metrics_port=9100),
+            stdout=_sibling_unit(index=1, port=10000),
             stderr="",
         )
 
@@ -355,7 +354,7 @@ class TestCmdProdServicesAdd:
         assert "ant-node-4" in cmds
         # index 4 - sibling index 1 = delta 3
         assert "--port 10003" in cmds
-        assert "--metrics-port 9103" in cmds
+        assert "--metrics-port" not in cmds
         assert "ant-node-1" not in cmds
 
     def test_added_service_appears_in_inventory_file(self, services_patches, tmp_path):
@@ -372,7 +371,7 @@ class TestCmdProdServicesAdd:
         ]
         services_patches.subprocess_run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=_sibling_unit(index=1, port=10000, metrics_port=9100),
+            stdout=_sibling_unit(index=1, port=10000),
             stderr="",
         )
 

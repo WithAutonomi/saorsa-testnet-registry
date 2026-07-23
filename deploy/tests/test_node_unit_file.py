@@ -11,7 +11,6 @@ def _sample_exec_start() -> str:
         root_dir="/mnt/ant-node-storage/data/ant-node-1",
         log_dir="/var/log/ant-node/ant-node-1",
         port=10000,
-        metrics_port=9100,
     )
 
 
@@ -84,7 +83,6 @@ class TestHeaptrackExecStart:
         exec_start = _build_node_exec_start(
             bootstrap_peers=["1.2.3.4:10000"],
             root_dir="/mnt/ant-node-storage/data/ant-node-1",
-            metrics_port=9100,
             heaptrack_base="/mnt/ant-node-storage/heaptrack/ant-node-1",
         )
         # heaptrack must be the outermost program, with -o pointing at the base,
@@ -98,12 +96,10 @@ class TestHeaptrackExecStart:
         plain = _build_node_exec_start(
             bootstrap_peers=["1.2.3.4:10000"],
             root_dir="/mnt/ant-node-storage/data/ant-node-1",
-            metrics_port=9100,
         )
         wrapped = _build_node_exec_start(
             bootstrap_peers=["1.2.3.4:10000"],
             root_dir="/mnt/ant-node-storage/data/ant-node-1",
-            metrics_port=9100,
             heaptrack_base="/mnt/ant-node-storage/heaptrack/ant-node-1",
         )
         # Stripping the heaptrack prefix yields the identical ant-node command.
@@ -117,7 +113,6 @@ class TestHeaptrackExecStart:
         exec_start = _build_node_exec_start(
             bootstrap_peers=["1.2.3.4:10000"],
             root_dir="/mnt/ant-node-storage/data/ant-node-1",
-            metrics_port=9100,
             heaptrack_base="/mnt/ant-node-storage/heaptrack/ant-node-1",
         )
         unit = _build_node_unit_file("ant-node-1", exec_start, is_nat=True)
