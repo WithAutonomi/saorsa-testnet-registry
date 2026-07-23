@@ -270,10 +270,47 @@ Both must hold. A failure here is a hard gate.
    uv run saorsa-deploy deployments generate-inventory --name STG-02
    ```
 
-   Then, for each host in the inventory, count records under
-   `/mnt/ant-node-storage/*/record_store` at phase start and again at phase end. The
-   criterion is that the count grew. This is the one step outside the CLI — flag it
-   in the report. If you cannot verify it, that is a failure, not a pass.
+   The inventory's node VM IPs are under `node_vms[].ip` (`ssh_user` is `root`,
+   key `~/.ssh/ant_deploy`).
+
+   Chunks are stored in **LMDB**, not in a `record_store/` directory:
+
+   ```
+   /mnt/ant-node-storage/data/ant-node-<N>/chunks.mdb      # the chunk store
+   /mnt/ant-node-storage/data/ant-node-<N>/paid_list.mdb   # paid-store records
+   ```
+
+   There is **no `record_store/` directory** — an earlier version of this skill said
+   to count files under `/mnt/ant-node-storage/*/record_store`, which matches nothing
+   and returns 0 on every host. That zero is indistinguishable from "the
+   previous-version nodes are storing nothing", i.e. it looks exactly like the
+   hard-gate failure this criterion exists to catch. Do not use that path.
+
+   Instead measure the store's **allocated size**, per host, at phase start and again
+   at phase end:
+
+   ```bash
+   ssh -i ~/.ssh/ant_deploy root@<ip> \
+     'du -cb /mnt/ant-node-storage/data/*/chunks.mdb    | tail -1 | cut -f1
+      du -cb /mnt/ant-node-storage/data/*/paid_list.mdb | tail -1 | cut -f1'
+   ```
+
+   The criterion is that the size **grew on every host**. Two caveats:
+
+   - LMDB can preallocate, so a single absolute number proves nothing. Always take
+     two spaced measurements and require growth. (Take the first ~15 min after
+     `nodes start` — at the exact phase start the fleet is legitimately at zero.)
+   - `paid_list.mdb` growing alongside `chunks.mdb` is the stronger evidence: it
+     shows the nodes are accepting *paid* stores rather than only inbound
+     replication. Report both.
+
+   There is no metric path for this: `mdb_stat` is not installed on the VMs, and an
+   extension deployment's own InfluxDB carries host metrics only
+   (cpu/disk/diskio/mem/net/procstat) — no `prometheus` measurement, so no app-level
+   record count. SSH is the only option today.
+
+   This is the one step outside the CLI — flag it in the report. If you cannot verify
+   it, that is a failure, not a pass.
 
 ## Step 7 — Extraction (blocking)
 
@@ -299,13 +336,21 @@ minutes (600000 ms). A short timeout will kill it mid-write and look like a fail
 Verify, and only continue if rows are actually present:
 
 ```bash
-uv run saorsa-deploy deployments print-recorded-results --name STG-01
+uv run saorsa-deploy deployments ls        # find this run's STG-01 id
+uv run saorsa-deploy deployments print-recorded-results --id <id>
 ```
 
-Check the rows, not the exit code, and check that they belong to **this** run — a
-reused deployment name once made `record-analysis` a silent exit-0 no-op and lost a
-whole run's metrics. Compare the deployment ids against the ones you noted in
-Step 2.
+This command takes **`--id`, not `--name`** — it is the one command in this runbook
+that does, and `--name` exits 2 with a usage error rather than printing anything.
+
+That is the right interface here anyway: the id is what proves the rows belong to
+**this** run. Take the newest `STG-01` id from `deployments ls` and check it is
+greater than the id you noted in Step 2 — a reused deployment name once made
+`record-analysis` a silent exit-0 no-op and lost a whole run's metrics.
+
+Check the rows, not the exit code. The header echoes the id back
+(`Recorded results — STG-01 (id=<id>, kind=testnet)`); confirm it matches, and that
+the Analysis summary is the one you just wrote rather than a previous run's.
 
 If extraction fails or returns nothing, stop. Leave the testnet up and hand back to
 the RM. The data is still in InfluxDB while the monitoring stack is alive, and gone
@@ -348,8 +393,10 @@ State these in the final report rather than working around them:
   CPU/mem/net/disk-IO aggregates), and neither stores the RC tag or profile version
   as a column.
 - No comparison or verdict tool. This skill stops at "run recorded".
-- No CLI for record-store counts, so the mixed-version chunk-storage criterion needs
-  an SSH check.
+- No CLI or metric for record-store counts, so the mixed-version chunk-storage
+  criterion needs an SSH check. The chunk store is LMDB, so what is actually
+  measured is `chunks.mdb` byte growth, not a record count — a node storing a few
+  large chunks and one storing many small ones are indistinguishable.
 - No content verification on downloads. The process lists data integrity as a hard
   gate, but there is nothing to check it with, so the run does not cover it.
 - Phase clocks are wall-clock and driven by you. Nothing in `saorsa-deploy` enforces
