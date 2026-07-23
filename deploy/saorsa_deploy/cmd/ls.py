@@ -31,6 +31,22 @@ _KIND_LABELS = {
 
 _TESTNET_KIND = "testnet"
 
+# Kinds that run ant-node services, and so have a meaningful node version.
+# Every other kind is client-only: it records the *client* binary as
+# ``ant_binary`` and never writes ``node_binary``.
+_NODE_BEARING_KINDS = {
+    _TESTNET_KIND,
+    "testnet-extension",
+    "prod-nodes",
+    "prod-debug-nodes",
+}
+
+# Branch labels can be far longer than a table cell can carry (real examples run
+# to 50+ characters, e.g.
+# ``WithAutonomi/debug/audit-type-and-storage-commitment-timeout-logging``).
+# Truncate rather than let Rich wrap the cell and make every row two lines tall.
+_BRANCH_LABEL_MAX = 28
+
 
 def _derive_raw_kind(deploy_args: dict) -> str:
     if not isinstance(deploy_args, dict):
@@ -69,6 +85,46 @@ def _derive_node_count(deploy_args: dict) -> str:
     if vm_count is None or nodes_per_vm is None:
         return "N/A"
     return str(vm_count * nodes_per_vm)
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _derive_node_version(deploy_args: dict) -> str:
+    # The ant-node binary a deployment ran, from the descriptor written by
+    # `nodes provision` / `prod nodes deploy` / `prod debug-nodes deploy` (see
+    # ``binary_descriptor.build_binary_descriptor``).
+    #
+    # ``N/A`` covers both "no node tier in this kind" and "node_binary was never
+    # recorded" — matching _derive_node_count, which likewise renders N/A for a
+    # non-applicable kind and for a testnet missing its counts. Legacy rows
+    # predating the deploy_args write fall into the latter case; `ls` reads only
+    # Postgres, so there is deliberately no S3-state fallback here.
+    if _derive_raw_kind(deploy_args) not in _NODE_BEARING_KINDS:
+        return "N/A"
+    if not isinstance(deploy_args, dict):
+        return "N/A"
+    descriptor = deploy_args.get("node_binary")
+    if not isinstance(descriptor, dict):
+        return "N/A"
+    kind = descriptor.get("kind")
+    if kind == "release":
+        version = descriptor.get("version")
+        return str(version) if version else "N/A"
+    if kind == "branch":
+        branch = descriptor.get("branch")
+        if not branch:
+            return "N/A"
+        # The owner is load-bearing: the same branch name commonly exists on
+        # several forks (jacderida / WithAutonomi / grumbach).
+        owner = descriptor.get("repo_owner") or "?"
+        return _truncate(f"{owner}/{branch}", _BRANCH_LABEL_MAX)
+    if kind == "latest":
+        return "latest"
+    return "N/A"
 
 
 def _filter_by_name(deployments: list, substring: str) -> list:
@@ -140,6 +196,7 @@ def cmd_ls(args):
     table.add_column("Kind")
     table.add_column("Status")
     table.add_column("Nodes", justify="right")
+    table.add_column("Node Version")
     table.add_column("Has Results")
     table.add_column("Created")
 
@@ -155,6 +212,7 @@ def cmd_ls(args):
             _derive_kind(d.deploy_args),
             status_cell,
             _derive_node_count(d.deploy_args),
+            _derive_node_version(d.deploy_args),
             has_results,
             d.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         )
