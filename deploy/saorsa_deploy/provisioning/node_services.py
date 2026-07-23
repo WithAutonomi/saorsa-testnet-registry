@@ -147,7 +147,6 @@ def parse_node_unit(content: str) -> dict:
         return m.group(1) if m else None
 
     port_s = _flag(r"--port (\d+)")
-    metrics_port_s = _flag(r"--metrics-port (\d+)")
 
     restart_policy_m = re.search(r"^Restart=(\S+)$", content, re.MULTILINE)
     restart_sec_m = re.search(r"^RestartSec=(\d+)", content, re.MULTILINE)
@@ -163,7 +162,6 @@ def parse_node_unit(content: str) -> dict:
         "testnet": "--network-mode testnet" in exec_start,
         "upgrade_channel": _flag(r"--upgrade-channel (\S+)"),
         "evm_network": _flag(r"--evm-network (\S+)"),
-        "metrics_port": int(metrics_port_s) if metrics_port_s else None,
         "rewards_address": _flag(r"--rewards-address (\S+)"),
         "is_nat": is_nat,
         "restart_policy": restart_policy_m.group(1) if restart_policy_m else "on-success",

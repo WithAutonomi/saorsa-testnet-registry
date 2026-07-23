@@ -38,8 +38,6 @@ from saorsa_deploy.provisioning.volume import (
     build_root_disk_dir_command,
 )
 
-METRICS_PORT_BASE = 9100
-
 # heaptrack traces for node memory profiling are written to the attached data
 # volume (not the root disk) — 15 debug-build nodes generate large, growing
 # ``.zst`` traces that would otherwise fill ``/``.
@@ -102,7 +100,6 @@ def _build_node_exec_start(
     log_level=None,
     testnet=False,
     upgrade_channel=None,
-    metrics_port=None,
     rewards_address=DEFAULT_REWARDS_ADDRESS,
     evm_network="arbitrum-sepolia",
     heaptrack_base=None,
@@ -143,8 +140,6 @@ def _build_node_exec_start(
     parts.append("--stop-on-upgrade")
     if evm_network:
         parts.append(f"--evm-network {evm_network}")
-    if metrics_port is not None:
-        parts.append(f"--metrics-port {metrics_port}")
     parts.append(f"--rewards-address {rewards_address}")
     return " ".join(parts)
 
@@ -301,7 +296,6 @@ class AntNodeProvisioner:
             node_port = (self.initial_port + i) if self.initial_port is not None else None
             root_dir = f"{MOUNT_POINT}/data/{service_name}"
             log_dir = f"{LOG_DIR}/{service_name}"
-            metrics_port = METRICS_PORT_BASE + i
             heaptrack_base = (
                 f"{self.heaptrack_dir}/{service_name}" if self.heaptrack else None
             )
@@ -313,7 +307,6 @@ class AntNodeProvisioner:
                 log_level=self.log_level,
                 testnet=self.testnet,
                 upgrade_channel=self.upgrade_channel,
-                metrics_port=metrics_port,
                 rewards_address=self.rewards_address,
                 evm_network=self.evm_network,
                 heaptrack_base=heaptrack_base,

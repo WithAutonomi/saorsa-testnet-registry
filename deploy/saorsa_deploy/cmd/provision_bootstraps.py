@@ -70,8 +70,6 @@ def cmd_provision_bootstraps(args):
             args.name,
             host_ips=[n["ip"] for n in additional_nodes],
             host_role="BOOTSTRAP",
-            node_count=1,
-            is_genesis=True,
             ssh_key_path=args.ssh_key_path,
             ssh_user=getattr(args, "ssh_user", "root"),
             drop_log_levels=getattr(args, "drop_log_levels", None),

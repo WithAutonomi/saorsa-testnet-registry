@@ -27,8 +27,6 @@ from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_
 
 BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
 
-METRICS_PORT = 9100
-
 DEFAULT_REWARDS_ADDRESS = "0x03B770D9cD32077cC0bF330c13C114a87643B124"
 
 
@@ -66,7 +64,6 @@ def _build_exec_start(
     log_level=None,
     testnet=False,
     upgrade_channel=None,
-    metrics_port=METRICS_PORT,
     rewards_address=DEFAULT_REWARDS_ADDRESS,
     evm_network="arbitrum-sepolia",
 ) -> str:
@@ -101,7 +98,6 @@ def _build_exec_start(
     parts.append("--stop-on-upgrade")
     if evm_network:
         parts.append(f"--evm-network {evm_network}")
-    parts.append(f"--metrics-port {metrics_port}")
     parts.append(f"--rewards-address {rewards_address}")
     return " ".join(parts)
 

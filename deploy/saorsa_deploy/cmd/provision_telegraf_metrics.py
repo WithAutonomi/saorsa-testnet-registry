@@ -15,8 +15,7 @@ def _provision_client_telegraf(
     """Provision Telegraf host metrics (host_role=CLIENT) on a deployment's
     client VMs (uploaders / downloaders / canary).
 
-    node_count=0 → host stats only, no Prometheus scrape block. Returns
-    ``(found, ok)``: ``found`` is True if the deployment had client VMs to
+    Returns ``(found, ok)``: ``found`` is True if the deployment had client VMs to
     provision, ``ok`` is True if provisioning did not error. Does not exit the
     process — the caller owns the overall exit status.
     """
@@ -67,7 +66,6 @@ def _provision_client_telegraf(
     try:
         TelegrafMetricsProvisioner(
             host_ips=client_ips,
-            node_count=0,
             host_role="CLIENT",
             **client_kwargs,
         ).execute()

@@ -16,8 +16,6 @@ def _build(**kw):
     defaults = dict(
         host_ips=["10.0.0.1"],
         host_role="WAN_NODE",
-        node_count=15,
-        is_genesis=False,
         ssh_key_path="~/.ssh/id_rsa",
         console=MagicMock(),
     )
@@ -34,7 +32,6 @@ def test_both_backends_yield_es_then_metrics(mock_es, mock_mon):
     assert len(providers) == 2
     assert isinstance(providers[0], TelegrafProvisioner)
     assert isinstance(providers[1], TelegrafMetricsProvisioner)
-    assert providers[1].node_count == 15
     assert providers[1].host_role == "WAN_NODE"
 
 
@@ -86,8 +83,6 @@ def test_drop_log_levels_and_buffer_threaded_to_es(mock_es, mock_mon):
 def test_genesis_provider_flags(mock_es, mock_mon):
     mock_es.side_effect = RuntimeError("no elastic state")
     mock_mon.return_value = _INFLUX
-    providers = _build(host_role="GENESIS", node_count=1, is_genesis=True)
+    providers = _build(host_role="GENESIS")
     metrics = providers[0]
-    assert metrics.is_genesis is True
     assert metrics.host_role == "GENESIS"
-    assert metrics.node_count == 1
