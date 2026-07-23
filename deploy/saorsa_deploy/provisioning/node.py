@@ -38,8 +38,6 @@ from saorsa_deploy.provisioning.volume import (
     build_root_disk_dir_command,
 )
 
-METRICS_PORT_BASE = 9100
-
 # heaptrack traces for node memory profiling are written to the attached data
 # volume (not the root disk) — 15 debug-build nodes generate large, growing
 # ``.zst`` traces that would otherwise fill ``/``.

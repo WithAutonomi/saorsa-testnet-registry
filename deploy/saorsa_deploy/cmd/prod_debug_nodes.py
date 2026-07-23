@@ -312,8 +312,6 @@ def _provision_debug_nodes(args, console: Console) -> None:
             args.name,
             host_ips=all_ips,
             host_role="WAN_NODE",
-            node_count=args.node_count,
-            is_genesis=False,
             ssh_key_path=args.ssh_key_path,
             ssh_user="root",
             drop_log_levels=_resolve_node_drop_log_levels(args),

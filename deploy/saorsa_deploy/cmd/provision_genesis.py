@@ -114,8 +114,6 @@ def cmd_provision_genesis(args):
             args.name,
             host_ips=[bootstrap_ip],
             host_role="GENESIS",
-            node_count=1,
-            is_genesis=True,
             ssh_key_path=args.ssh_key_path,
             ssh_user=getattr(args, "ssh_user", "root"),
             drop_log_levels=getattr(args, "drop_log_levels", None),

@@ -125,7 +125,7 @@ def _make_es_provisioner(args, es, *, host_ips, host_role, ssh_key, ssh_user, na
 
 
 def _make_metrics_provisioner(
-    influx, *, host_ips, host_role, node_count, is_genesis, ssh_key, ssh_user, name,
+    influx, *, host_ips, host_role, ssh_key, ssh_user, name,
     bucket=None, console,
 ):
     if influx is None:
@@ -134,8 +134,6 @@ def _make_metrics_provisioner(
         host_ips=host_ips,
         ssh_key_path=ssh_key,
         ssh_user=ssh_user,
-        node_count=node_count,
-        is_genesis=is_genesis,
         host_role=host_role,
         influxdb_url=influx["influxdb_url"],
         influxdb_token=influx["influxdb_token"],
@@ -147,7 +145,7 @@ def _make_metrics_provisioner(
 
 
 def _provision_group(
-    args, es, influx, *, ips, role, node_count, is_genesis, ssh_key, ssh_user,
+    args, es, influx, *, ips, role, ssh_key, ssh_user,
     name, console, bucket=None,
 ):
     """Run one combined pass over a single host group.
@@ -166,8 +164,8 @@ def _provision_group(
         ssh_user=ssh_user, name=name, console=console,
     )
     metrics_prov = _make_metrics_provisioner(
-        influx, host_ips=ips, host_role=role, node_count=node_count,
-        is_genesis=is_genesis, ssh_key=ssh_key, ssh_user=ssh_user, name=name,
+        influx, host_ips=ips, host_role=role, ssh_key=ssh_key,
+        ssh_user=ssh_user, name=name,
         bucket=bucket, console=console,
     )
     try:
@@ -206,8 +204,8 @@ def cmd_provision_telegraf_combined(args):
         for (role, ssh_user, ssh_key), ips in group_by_role_and_credentials(entries).items():
             bucket = INFLUXDB_CLIENT_BUCKET if role == "CLIENT" else None
             _provision_group(
-                args, es, influx, ips=ips, role=role, node_count=0,
-                is_genesis=False, ssh_key=ssh_key, ssh_user=ssh_user, name=name,
+                args, es, influx, ips=ips, role=role,
+                ssh_key=ssh_key, ssh_user=ssh_user, name=name,
                 bucket=bucket, console=console,
             )
     elif args.host_ips_file:
@@ -222,8 +220,8 @@ def cmd_provision_telegraf_combined(args):
             f"[bold]Using {len(all_ips)} host IP(s) from {args.host_ips_file}...[/bold]"
         )
         _provision_group(
-            args, es, influx, ips=all_ips, role=role, node_count=0,
-            is_genesis=False, ssh_key=args.ssh_key_path, ssh_user=args.ssh_user,
+            args, es, influx, ips=all_ips, role=role,
+            ssh_key=args.ssh_key_path, ssh_user=args.ssh_user,
             name=name, bucket=bucket, console=console,
         )
     elif args.name:
@@ -292,7 +290,6 @@ def _provision_by_name(args, es, influx, console):
 
 def _provision_nodes_by_name(args, es, influx, state, console) -> bool:
     """Run the combined pass over a testnet's node tier. Returns True if any host."""
-    node_count = state.get("node_count", 0)
     bootstrap_nodes = state.get("bootstrap_nodes") or []
     bootstrap_ip = state.get("bootstrap_ip")
     vm_ips = state.get("vm_ips", {})
@@ -322,15 +319,15 @@ def _provision_nodes_by_name(args, es, influx, state, console) -> bool:
     name = args.name
 
     _provision_group(
-        args, es, influx, ips=genesis_ips, role="GENESIS", node_count=1,
-        is_genesis=True, ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
+        args, es, influx, ips=genesis_ips, role="GENESIS",
+        ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
     )
     _provision_group(
-        args, es, influx, ips=secondary_ips, role="BOOTSTRAP", node_count=1,
-        is_genesis=True, ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
+        args, es, influx, ips=secondary_ips, role="BOOTSTRAP",
+        ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
     )
     _provision_group(
-        args, es, influx, ips=regular_ips, role="WAN_NODE", node_count=node_count,
-        is_genesis=False, ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
+        args, es, influx, ips=regular_ips, role="WAN_NODE",
+        ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
     )
     return True
