@@ -173,6 +173,181 @@ def test_ls_nodes_column_is_na_when_legacy_row_lacks_new_fields(capsys, repo):
     assert _derive_node_count({"bootstrap_count": 3, "nodes_per_vm": 25}) == "N/A"
 
 
+def test_ls_node_version_renders_release_version(capsys, repo):
+    from saorsa_deploy.cmd.ls import _derive_node_version
+
+    assert (
+        _derive_node_version(
+            {
+                "bootstrap_count": 3,
+                "node_binary": {"kind": "release", "version": "0.14.2-rc.2"},
+            }
+        )
+        == "0.14.2-rc.2"
+    )
+
+    repo.create(
+        name="STG-01",
+        deploy_args={
+            "bootstrap_count": 3,
+            "node_binary": {"kind": "release", "version": "0.14.2-rc.2"},
+        },
+    )
+    with patch("saorsa_deploy.cmd.ls.get_repository", return_value=repo):
+        cmd_ls(_args())
+
+    out = capsys.readouterr().out
+    assert "Node Version" in out
+    assert "0.14.2-rc.2" in out
+
+
+def test_ls_node_version_renders_owner_slash_branch(capsys, repo):
+    """The owner is load-bearing — the same branch name exists on several forks."""
+    from saorsa_deploy.cmd.ls import _derive_node_version
+
+    assert (
+        _derive_node_version(
+            {
+                "bootstrap_count": 3,
+                "node_binary": {
+                    "kind": "branch",
+                    "branch": "v2-411",
+                    "repo_owner": "jacderida",
+                },
+            }
+        )
+        == "jacderida/v2-411"
+    )
+
+
+def test_ls_node_version_truncates_long_branch_labels():
+    from saorsa_deploy.cmd.ls import _BRANCH_LABEL_MAX, _derive_node_version
+
+    cell = _derive_node_version(
+        {
+            "bootstrap_count": 3,
+            "node_binary": {
+                "kind": "branch",
+                "branch": "debug/audit-type-and-storage-commitment-timeout-logging",
+                "repo_owner": "WithAutonomi",
+            },
+        }
+    )
+    assert len(cell) == _BRANCH_LABEL_MAX
+    assert cell.endswith("…")
+    assert cell.startswith("WithAutonomi/debug/")
+
+
+def test_ls_node_version_renders_latest_and_defaults_missing_owner():
+    from saorsa_deploy.cmd.ls import _derive_node_version
+
+    assert (
+        _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "latest"}})
+        == "latest"
+    )
+    assert (
+        _derive_node_version(
+            {"bootstrap_count": 3, "node_binary": {"kind": "branch", "branch": "main"}}
+        )
+        == "?/main"
+    )
+
+
+def test_ls_node_version_applies_to_node_bearing_prod_kinds():
+    from saorsa_deploy.cmd.ls import _derive_node_version
+
+    assert (
+        _derive_node_version(
+            {
+                "kind": "prod-nodes",
+                "node_binary": {"kind": "release", "version": "0.14.4"},
+            }
+        )
+        == "0.14.4"
+    )
+    assert (
+        _derive_node_version(
+            {
+                "kind": "prod-debug-nodes",
+                "node_binary": {
+                    "kind": "branch",
+                    "branch": "main",
+                    "repo_owner": "WithAutonomi",
+                    "debug": True,
+                },
+            }
+        )
+        == "WithAutonomi/main"
+    )
+    # Manifest kind, defensively supported even though `deployments extend`
+    # currently records extensions with bootstrap_count and no explicit kind.
+    assert (
+        _derive_node_version(
+            {
+                "kind": "testnet-extension",
+                "node_binary": {"kind": "release", "version": "0.12.0"},
+            }
+        )
+        == "0.12.0"
+    )
+
+
+def test_ls_node_version_is_na_for_client_only_kinds(capsys, repo):
+    """Client kinds record `ant_binary`, never a node version."""
+    from saorsa_deploy.cmd.ls import _derive_node_version
+
+    for kind in (
+        "prod-uploaders",
+        "prod-downloaders",
+        "prod-continuous-downloader",
+        "prod-canary",
+        "prod-local-uploads",
+        "prod-local-downloads",
+    ):
+        assert (
+            _derive_node_version(
+                {"kind": kind, "ant_binary": {"kind": "release", "version": "0.4.1"}}
+            )
+            == "N/A"
+        )
+
+    repo.create(
+        name="PROD-UP-01",
+        deploy_args={
+            "kind": "prod-uploaders",
+            "ant_binary": {"kind": "release", "version": "0.4.1"},
+        },
+    )
+    with patch("saorsa_deploy.cmd.ls.get_repository", return_value=repo):
+        cmd_ls(_args())
+
+    out = capsys.readouterr().out
+    assert "PROD-UP-01" in out
+    # The client binary version must not leak into the Node Version column.
+    assert "0.4.1" not in out
+
+
+def test_ls_node_version_is_na_when_descriptor_missing_or_malformed():
+    from saorsa_deploy.cmd.ls import _derive_node_version
+
+    # Legacy testnet rows predating the deploy_args write.
+    assert _derive_node_version({"bootstrap_count": 3}) == "N/A"
+    assert _derive_node_version({}) == "N/A"
+    assert _derive_node_version({"kind": "something-else"}) == "N/A"
+    # Malformed / partial descriptors.
+    assert _derive_node_version({"bootstrap_count": 3, "node_binary": None}) == "N/A"
+    assert _derive_node_version({"bootstrap_count": 3, "node_binary": "0.14.2"}) == "N/A"
+    assert _derive_node_version({"bootstrap_count": 3, "node_binary": {}}) == "N/A"
+    assert (
+        _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "release"}})
+        == "N/A"
+    )
+    assert (
+        _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "branch"}})
+        == "N/A"
+    )
+
+
 def test_ls_filter_status_keeps_only_matching_rows(capsys, repo):
     a = repo.create(name="DEV-A", deploy_args={})
     repo.update_status(a.id, DeploymentStatus.RUNNING)
