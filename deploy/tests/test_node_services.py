@@ -96,6 +96,19 @@ class TestBuildWriteUnitAndStartCommand:
         assert "systemctl start ant-node-9" in cmd
         assert "ANT_SVC:ADDED:ant-node-9" in cmd
 
+    def test_reglobs_es_log_forwarder_guarded_on_its_presence(self):
+        # The recreated log dir (new inode) defeats telegraf-ant-elasticsearch's
+        # inotify watch, so add must bounce it — but only where it exists.
+        cmd = build_write_unit_and_start_command("ant-node-9", "[Unit]\n...\n")
+        assert "systemctl cat telegraf-ant-elasticsearch" in cmd
+        assert "systemctl restart telegraf-ant-elasticsearch" in cmd
+        # Guarded + best-effort so hosts without ES forwarding are unaffected
+        # and a forwarder hiccup never fails an otherwise-successful add.
+        assert "if systemctl cat telegraf-ant-elasticsearch >/dev/null 2>&1; then" in cmd
+        assert "|| true" in cmd
+        # The metrics forwarder self-heals and must NOT be bounced here.
+        assert "telegraf-ant-metrics" not in cmd
+
     def test_rejects_invalid_service_name(self):
         with pytest.raises(ValueError):
             build_write_unit_and_start_command("bad-name", "content")

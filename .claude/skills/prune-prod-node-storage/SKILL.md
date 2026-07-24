@@ -156,6 +156,9 @@ For each `ant-node-N` in order, skipping any already recorded complete in the st
      --inventory-path /home/chris/.autonomi/testnets/ant-prod-01/inventory.json \
      --name <host> --service-name ant-node-N
    ```
+   (`prod services add` re-globs the ES log forwarder itself — it restarts
+   `telegraf-ant-elasticsearch` on the host so the recreated log dir is picked up; see the gotcha
+   below for why. No manual forwarder restart is needed here.)
 3. **Wait for bootstrap-complete** — launch the poll helper as a **background** process and wait for
    it to exit (you are notified on completion):
    ```
@@ -219,3 +222,11 @@ growing after their snapshot, and non-node writers touch the disk — call it ou
 - **Don't misread a transient ES/SSH error as done.** The helper retries transient errors in `--wait`
   mode; a non-zero exit without a deadline means a real problem — diagnose, don't skip.
 - **`prod services` needs no S3/DB/cloud creds** — if one errors, it is SSH/inventory, not state.
+- **The ES forwarder is re-globbed by `add` itself** (no skill action needed). `rm -rf` of a service's
+  log dir + `add` recreating it (a new inode) defeats `telegraf-ant-elasticsearch`'s inotify watch, so
+  the re-added node would forward **nothing** to ES and the poll would hang forever. `prod services
+  add` therefore restarts `telegraf-ant-elasticsearch` on the host (guarded — a no-op where there is no
+  ES forwarding) so it re-discovers the new log dir. Discovered live on ant-prod-01-hz-nbg1-1
+  (2026-07-24): node-1 forwarded 0 docs to ES for 2.5h until the forwarder was restarted, after which
+  forwarding resumed immediately; the fix was then moved into the `add` command. Only the tail
+  forwarder needs this; `telegraf-ant-metrics` (procstat) self-heals.

@@ -176,6 +176,17 @@ def parse_node_unit(content: str) -> dict:
 def build_write_unit_and_start_command(service_name: str, unit_content: str) -> str:
     """Write a new unit file, reload systemd, then enable and start exactly
     ``service_name`` — never touching any other unit.
+
+    Finally, re-glob the Elasticsearch log forwarder. The new service's log dir
+    (``{LOG_DIR}/<svc>``) is created fresh here (a *new inode*, since a prior
+    ``rm`` did ``rm -rf`` on it). The forwarder ``telegraf-ant-elasticsearch``
+    tails ``ant-*/ant-node*.log*`` with ``watch_method=inotify``, whose watch is
+    still bound to the *old, deleted* directory inode — so without a restart it
+    would never discover the new node's log file and that node would forward
+    **nothing** to Elasticsearch. Restarting the forwarder makes it re-glob and
+    pick up the new dir. Guarded on the unit existing (best-effort ``|| true``)
+    so hosts without ES forwarding are unaffected; the metrics forwarder
+    (``telegraf-ant-metrics``, procstat) self-heals and needs no bounce.
     """
     parse_service_name(service_name)
     return (
@@ -184,5 +195,8 @@ def build_write_unit_and_start_command(service_name: str, unit_content: str) -> 
         "systemctl daemon-reload\n"
         f"systemctl enable {service_name}\n"
         f"systemctl start {service_name}\n"
+        "if systemctl cat telegraf-ant-elasticsearch >/dev/null 2>&1; then "
+        "systemctl restart telegraf-ant-elasticsearch || true; "
+        'echo "ANT_SVC:LOGFWD_REGLOBBED:telegraf-ant-elasticsearch"; fi\n'
         f'echo "ANT_SVC:ADDED:{service_name}"'
     )
