@@ -7,10 +7,17 @@ that saorsa-deploy can still function as a standalone CLI.
 
 import logging
 import os
+from datetime import datetime
 
 from saorsa_db.db import get_session_factory
 from saorsa_db.models import Deployment, DeploymentStatus
-from saorsa_db.repositories import DeploymentRepository, SqlAlchemyDeploymentRepository
+from saorsa_db.models.prod_service_audit import ProdServiceAuditAction
+from saorsa_db.repositories import (
+    DeploymentRepository,
+    ProdFleetRepository,
+    SqlAlchemyDeploymentRepository,
+    SqlAlchemyProdFleetRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,3 +128,74 @@ def record_deploy_args_update(
         repo.merge_deploy_args(deployment.id, updates)
     except Exception:
         logger.warning("Failed to merge deploy_args in registry", exc_info=True)
+
+
+def get_prod_fleet_repository() -> ProdFleetRepository | None:
+    """Repository for standalone production-fleet records (disk surveys +
+    service audit), keyed by inventory name. Returns None when DATABASE_URL is
+    unset or unreachable — callers must degrade to no-DB, since the
+    ``prod services`` commands run standalone off inventory.json."""
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        return None
+    try:
+        factory = get_session_factory(database_url)
+        return SqlAlchemyProdFleetRepository(factory())
+    except Exception:
+        logger.debug("Could not connect to registry database", exc_info=True)
+        return None
+
+
+def record_service_audit(
+    inventory_name: str,
+    host: str,
+    service_name: str,
+    action: ProdServiceAuditAction,
+    occurred_at: datetime,
+    size_bytes: int | None = None,
+    note: str | None = None,
+    repo: ProdFleetRepository | None = None,
+) -> None:
+    """Best-effort audit row for a `prod services` add/remove/reset. Silent
+    no-op when DATABASE_URL is unset; warns (never raises) on error, since the
+    live SSH change has already succeeded by the time this runs."""
+    repo = repo or get_prod_fleet_repository()
+    if repo is None:
+        return
+    try:
+        repo.record_service_audit(
+            inventory_name=inventory_name,
+            host=host,
+            service_name=service_name,
+            action=action,
+            occurred_at=occurred_at,
+            size_bytes=size_bytes,
+            note=note,
+        )
+    except Exception:
+        logger.warning("Failed to record service audit in registry", exc_info=True)
+
+
+def record_disk_survey(
+    inventory_name: str,
+    surveyed_at: datetime,
+    services: list[dict],
+    host_disk: dict,
+    repo: ProdFleetRepository | None = None,
+) -> int | None:
+    """Best-effort persist of a disk survey; returns the new survey id or None.
+    Silent no-op when DATABASE_URL is unset; warns (never raises) on error."""
+    repo = repo or get_prod_fleet_repository()
+    if repo is None:
+        return None
+    try:
+        survey = repo.create_disk_survey(
+            inventory_name=inventory_name,
+            surveyed_at=surveyed_at,
+            services=services,
+            host_disk=host_disk,
+        )
+        return survey.id
+    except Exception:
+        logger.warning("Failed to record disk survey in registry", exc_info=True)
+        return None

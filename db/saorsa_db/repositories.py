@@ -36,9 +36,17 @@ from saorsa_db.models.prod_canary import (
     ProdCanaryInitialVerifyStatus,
     ProdCanaryProbeStatus,
 )
+from saorsa_db.models.prod_disk_survey import (
+    ProdDiskSurvey,
+    ProdDiskSurveyService,
+)
 from saorsa_db.models.prod_download_result import (
     DeploymentProdDownloadResult,
     ProdDownloadStatus,
+)
+from saorsa_db.models.prod_service_audit import (
+    ProdServiceAudit,
+    ProdServiceAuditAction,
 )
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
@@ -2124,3 +2132,150 @@ class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
             )
         self.session.delete(rc)
         self.session.commit()
+
+
+class ProdFleetRepository(ABC):
+    """Standalone (no ``deployment_id``) records for production node fleets,
+    keyed by the inventory identifier string (e.g. ``ant-prod-01``): disk-survey
+    history and the service add/remove/reset audit trail."""
+
+    @abstractmethod
+    def create_disk_survey(
+        self,
+        inventory_name: str,
+        surveyed_at: datetime,
+        services: list[dict],
+        host_disk: dict,
+    ) -> ProdDiskSurvey:
+        """Persist one survey: a header row plus one child row per service.
+
+        ``services`` is a list of dicts with keys ``host``, ``provider``,
+        ``service_name``, ``size_bytes``, ``active``, ``enabled``. ``host_disk``
+        maps host name → ``{provider, total_bytes, used_bytes, free_bytes}``.
+        Summary counts are derived here.
+        """
+        ...
+
+    @abstractmethod
+    def get_disk_survey(self, survey_id: int) -> ProdDiskSurvey | None:
+        ...
+
+    @abstractmethod
+    def latest_disk_surveys(
+        self, inventory_name: str, limit: int = 2
+    ) -> list[ProdDiskSurvey]:
+        """Most recent surveys for an inventory, newest first (for
+        today-vs-yesterday diffs)."""
+        ...
+
+    @abstractmethod
+    def record_service_audit(
+        self,
+        inventory_name: str,
+        host: str,
+        service_name: str,
+        action: ProdServiceAuditAction,
+        occurred_at: datetime,
+        size_bytes: int | None = None,
+        note: str | None = None,
+    ) -> ProdServiceAudit:
+        ...
+
+    @abstractmethod
+    def list_service_audit(
+        self,
+        inventory_name: str,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[ProdServiceAudit]:
+        """Audit rows for an inventory in [since, until], oldest first."""
+        ...
+
+
+class SqlAlchemyProdFleetRepository(ProdFleetRepository):
+    def __init__(self, session):
+        self.session = session
+
+    def create_disk_survey(
+        self,
+        inventory_name: str,
+        surveyed_at: datetime,
+        services: list[dict],
+        host_disk: dict,
+    ) -> ProdDiskSurvey:
+        survey = ProdDiskSurvey(
+            inventory_name=inventory_name,
+            surveyed_at=surveyed_at,
+            host_disk=host_disk or {},
+            host_count=len(host_disk or {}),
+            service_count=len(services),
+            total_data_bytes=sum(int(s.get("size_bytes", 0)) for s in services),
+        )
+        for s in services:
+            survey.services.append(
+                ProdDiskSurveyService(
+                    host=s["host"],
+                    provider=s.get("provider"),
+                    service_name=s["service_name"],
+                    size_bytes=int(s.get("size_bytes", 0)),
+                    active=bool(s.get("active", True)),
+                    enabled=bool(s.get("enabled", True)),
+                )
+            )
+        self.session.add(survey)
+        self.session.commit()
+        return survey
+
+    def get_disk_survey(self, survey_id: int) -> ProdDiskSurvey | None:
+        return self.session.get(ProdDiskSurvey, survey_id)
+
+    def latest_disk_surveys(
+        self, inventory_name: str, limit: int = 2
+    ) -> list[ProdDiskSurvey]:
+        return (
+            self.session.query(ProdDiskSurvey)
+            .filter(ProdDiskSurvey.inventory_name == inventory_name)
+            .order_by(ProdDiskSurvey.surveyed_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def record_service_audit(
+        self,
+        inventory_name: str,
+        host: str,
+        service_name: str,
+        action: ProdServiceAuditAction,
+        occurred_at: datetime,
+        size_bytes: int | None = None,
+        note: str | None = None,
+    ) -> ProdServiceAudit:
+        row = ProdServiceAudit(
+            inventory_name=inventory_name,
+            host=host,
+            service_name=service_name,
+            action=action,
+            occurred_at=occurred_at,
+            size_bytes=size_bytes,
+            note=note,
+        )
+        self.session.add(row)
+        self.session.commit()
+        return row
+
+    def list_service_audit(
+        self,
+        inventory_name: str,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[ProdServiceAudit]:
+        query = self.session.query(ProdServiceAudit).filter(
+            ProdServiceAudit.inventory_name == inventory_name
+        )
+        if since is not None:
+            query = query.filter(ProdServiceAudit.occurred_at >= since)
+        if until is not None:
+            query = query.filter(ProdServiceAudit.occurred_at <= until)
+        return query.order_by(ProdServiceAudit.occurred_at.asc()).all()

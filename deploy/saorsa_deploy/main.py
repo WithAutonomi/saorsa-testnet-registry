@@ -4576,6 +4576,58 @@ def main(argv=None):
         service_name_help="Service to reset, e.g. ant-node-7 (must already exist).",
     )
 
+    prod_services_survey_parser = prod_services_subparsers.add_parser(
+        "disk-survey",
+        help="Survey disk usage across EVERY host in a production inventory: "
+        "all ant-node-* services by data-dir size (ascending = deletion "
+        "candidates first) plus each host's free space. Stores the survey in "
+        "the registry DB (best-effort) for historical comparison.",
+    )
+    prod_services_survey_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        required=True,
+        help="Path to the production inventory JSON (all hosts to survey).",
+    )
+    prod_services_survey_parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        choices=["aws", "digitalocean", "hetzner", "ovh", "vultr", "contabo"],
+        help="Restrict the survey to a single provider (default: every provider).",
+    )
+    prod_services_survey_parser.add_argument(
+        "--limit-to",
+        type=str,
+        default=None,
+        help="Comma-separated VM names to restrict the survey to.",
+    )
+    prod_services_survey_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key for every host (default: each host's inventory ssh_key).",
+    )
+    prod_services_survey_parser.add_argument(
+        "--no-store",
+        action="store_true",
+        help="Print the survey but do NOT persist it to the registry DB.",
+    )
+
+    prod_services_survey_report_parser = prod_services_subparsers.add_parser(
+        "survey-report",
+        help="Compare the two most recent stored disk surveys for an inventory "
+        "(today vs yesterday): per-host free-disk delta, total node-data delta, "
+        "and the services added/removed/reset between them from the audit trail. "
+        "Requires DATABASE_URL.",
+    )
+    prod_services_survey_report_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        required=True,
+        help="Path to the production inventory JSON (its testnet_id keys the surveys).",
+    )
+
     # --- prod files ---
     prod_files_parser = prod_subparsers.add_parser(
         "files",
@@ -5263,6 +5315,20 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_reset_data
 
             cmd_prod_services_reset_data(args)
+        elif (
+            args.prod_subcommand == "services"
+            and args.prod_services_action == "disk-survey"
+        ):
+            from saorsa_deploy.cmd.prod_services import cmd_prod_services_disk_survey
+
+            cmd_prod_services_disk_survey(args)
+        elif (
+            args.prod_subcommand == "services"
+            and args.prod_services_action == "survey-report"
+        ):
+            from saorsa_deploy.cmd.prod_services import cmd_prod_services_survey_report
+
+            cmd_prod_services_survey_report(args)
         elif args.prod_subcommand == "files":
             from saorsa_deploy.cmd.prod_files import cmd_prod_files
 

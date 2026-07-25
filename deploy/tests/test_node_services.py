@@ -6,10 +6,12 @@ import pytest
 from saorsa_deploy.provisioning.node import _build_node_exec_start, _build_node_unit_file
 from saorsa_deploy.provisioning.node_services import (
     NODE_IDENTITY_FILENAME,
+    build_disk_survey_command,
     build_list_services_command,
     build_remove_service_command,
     build_reset_data_command,
     build_write_unit_and_start_command,
+    parse_df_line,
     parse_node_unit,
     parse_service_list,
     parse_service_name,
@@ -155,6 +157,38 @@ class TestBuildResetDataCommand:
     def test_rejects_invalid_service_name(self):
         with pytest.raises(ValueError):
             build_reset_data_command("bad-name")
+
+
+class TestBuildDiskSurveyCommand:
+    def test_lists_services_and_emits_df(self):
+        cmd = build_disk_survey_command()
+        # reuses the same per-service LIST marker discovery
+        assert "ant-node-*.service" in cmd
+        assert "ANT_SVC:LIST:$svc:$active:$enabled:$bytes" in cmd
+        assert 'ANT_SVC:LIST:NONE' in cmd
+        # plus a single df marker for the storage device
+        assert "df -B1 --output=size,used,avail /mnt/ant-node-storage" in cmd
+        assert "ANT_SVC:DF:" in cmd
+
+
+class TestParseDfLine:
+    def test_parses_total_used_avail(self):
+        lines = [
+            "ANT_SVC:LIST:ant-node-1:active:enabled:100",
+            "ANT_SVC:DF:422415106048:417612537856:490823680",
+        ]
+        assert parse_df_line(lines) == {
+            "total_bytes": 422415106048,
+            "used_bytes": 417612537856,
+            "free_bytes": 490823680,
+        }
+
+    def test_missing_marker_returns_none(self):
+        assert parse_df_line(["ANT_SVC:LIST:ant-node-1:active:enabled:100"]) is None
+
+    def test_malformed_marker_returns_none(self):
+        assert parse_df_line(["ANT_SVC:DF:onlyone"]) is None
+        assert parse_df_line(["ANT_SVC:DF:a:b:c"]) is None
 
 
 class TestParseNodeUnit:

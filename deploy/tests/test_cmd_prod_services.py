@@ -5,12 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from saorsa_db.models.prod_service_audit import ProdServiceAuditAction
 
 from saorsa_deploy.cmd.prod_services import (
     cmd_prod_services_add,
+    cmd_prod_services_disk_survey,
     cmd_prod_services_ls,
     cmd_prod_services_reset_data,
     cmd_prod_services_rm,
+    cmd_prod_services_survey_report,
 )
 from saorsa_deploy.provisioning.node import _build_node_exec_start, _build_node_unit_file
 
@@ -485,3 +488,199 @@ class TestResetData:
         )
         raw = json.loads(inv_path.read_text())
         assert raw["node_vms"][0]["services"] == ["ant-node-1", "ant-node-2"]
+
+
+class TestAuditTrail:
+    """rm/add/reset-data record a best-effort audit row after the SSH change."""
+
+    def _ls_then_op(self, services_patches, op_marker):
+        services_patches.add_op.side_effect = [
+            _op_result(
+                services_patches.host,
+                [
+                    "ANT_SVC:LIST:ant-node-1:active:enabled:100",
+                    "ANT_SVC:LIST:ant-node-2:active:enabled:222",
+                ],
+            ),
+            _op_result(services_patches.host, [op_marker]),
+        ]
+
+    def test_rm_records_removed_with_size(self, services_patches, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        ssh_key = _make_ssh_key(tmp_path)
+        self._ls_then_op(services_patches, "ANT_SVC:REMOVED:ant-node-2")
+        with patch("saorsa_deploy.cmd.prod_services.registry.record_service_audit") as m:
+            cmd_prod_services_rm(
+                _args(inventory_path=str(inv_path), service_name="ant-node-2", ssh_key_path=ssh_key)
+            )
+        m.assert_called_once()
+        kw = m.call_args
+        assert kw.args[2] == "ant-node-2"
+        assert kw.args[3] == ProdServiceAuditAction.REMOVED
+        assert kw.kwargs["size_bytes"] == 222  # size from the pre-rm ls
+
+    def test_reset_records_reset_with_size(self, services_patches, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        ssh_key = _make_ssh_key(tmp_path)
+        self._ls_then_op(services_patches, "ANT_SVC:RESET:ant-node-2")
+        with patch("saorsa_deploy.cmd.prod_services.registry.record_service_audit") as m:
+            cmd_prod_services_reset_data(
+                _args(inventory_path=str(inv_path), service_name="ant-node-2", ssh_key_path=ssh_key)
+            )
+        m.assert_called_once()
+        assert m.call_args.args[3] == ProdServiceAuditAction.RESET
+        assert m.call_args.kwargs["size_bytes"] == 222
+
+    def test_add_records_added(self, services_patches, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        ssh_key = _make_ssh_key(tmp_path)
+        services_patches.add_op.side_effect = [
+            _op_result(services_patches.host, ["ANT_SVC:LIST:ant-node-1:active:enabled:100"]),
+            _op_result(services_patches.host, ["ANT_SVC:ADDED:ant-node-4"]),
+        ]
+        services_patches.subprocess_run.return_value = SimpleNamespace(
+            returncode=0, stdout=_sibling_unit(index=1, port=10000), stderr=""
+        )
+        with patch("saorsa_deploy.cmd.prod_services.registry.record_service_audit") as m:
+            cmd_prod_services_add(
+                _args(inventory_path=str(inv_path), service_name="ant-node-4", ssh_key_path=ssh_key)
+            )
+        m.assert_called_once()
+        assert m.call_args.args[3] == ProdServiceAuditAction.ADDED
+        assert m.call_args.kwargs.get("size_bytes") is None
+
+
+class TestDiskSurvey:
+    def _survey_args(self, inv_path, **over):
+        d = {
+            "inventory_path": str(inv_path),
+            "provider": None,
+            "limit_to": None,
+            "ssh_key_path": None,
+            "no_store": False,
+        }
+        d.update(over)
+        return SimpleNamespace(**d)
+
+    def test_aggregates_sorts_ascending_and_stores(self, tmp_path):
+        inv_path = _write_inventory(
+            tmp_path, [_entry("host-a", ip="10.0.0.1"), _entry("host-b", ip="10.0.0.2")]
+        )
+
+        def _svc(name, idx, active, size):
+            return {
+                "service_name": name, "index": idx,
+                "active": active, "enabled": "enabled", "size_bytes": size,
+            }
+
+        def fake_survey(vm, ssh_key):
+            if vm.name == "host-a":
+                return {
+                    "vm": vm,
+                    "services": [
+                        _svc("ant-node-1", 1, "active", 30),
+                        _svc("ant-node-2", 2, "active", 10),
+                    ],
+                    "disk": {"total_bytes": 400, "used_bytes": 390, "free_bytes": 10},
+                }
+            return {
+                "vm": vm,
+                "services": [_svc("ant-node-1", 1, "inactive", 20)],
+                "disk": {"total_bytes": 400, "used_bytes": 100, "free_bytes": 300},
+            }
+
+        with (
+            patch(
+                "saorsa_deploy.cmd.prod_services._survey_one_host",
+                side_effect=fake_survey,
+            ),
+            patch(
+                "saorsa_deploy.cmd.prod_services.registry.record_disk_survey",
+                return_value=7,
+            ) as store,
+        ):
+            cmd_prod_services_disk_survey(self._survey_args(inv_path))
+
+        store.assert_called_once()
+        kw = store.call_args.kwargs
+        sizes = [s["size_bytes"] for s in kw["services"]]
+        assert sizes == [10, 20, 30]  # ascending across hosts
+        assert kw["services"][0]["active"] is True  # str -> bool
+        assert set(kw["host_disk"]) == {"host-a", "host-b"}
+        assert kw["host_disk"]["host-a"]["free_bytes"] == 10
+
+    def test_no_store_skips_persistence(self, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+
+        def fake_survey(vm, ssh_key):
+            return {
+                "vm": vm, "services": [],
+                "disk": {"total_bytes": 1, "used_bytes": 1, "free_bytes": 0},
+            }
+
+        with (
+            patch("saorsa_deploy.cmd.prod_services._survey_one_host", side_effect=fake_survey),
+            patch("saorsa_deploy.cmd.prod_services.registry.record_disk_survey") as store,
+        ):
+            cmd_prod_services_disk_survey(self._survey_args(inv_path, no_store=True))
+        store.assert_not_called()
+
+
+class TestSurveyReport:
+    def test_no_database_url_exits(self, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        with patch(
+            "saorsa_deploy.cmd.prod_services.registry.get_prod_fleet_repository",
+            return_value=None,
+        ):
+            with pytest.raises(SystemExit):
+                cmd_prod_services_survey_report(
+                    SimpleNamespace(inventory_path=str(inv_path))
+                )
+
+    def test_compares_two_latest_and_reads_audit(self, tmp_path):
+        from datetime import datetime, timezone
+
+        from saorsa_db.models.prod_disk_survey import ProdDiskSurvey
+        from saorsa_db.models.prod_service_audit import (
+            ProdServiceAudit,
+            ProdServiceAuditAction,
+        )
+
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        t1 = datetime(2026, 7, 24, 12, tzinfo=timezone.utc)
+        t2 = datetime(2026, 7, 25, 12, tzinfo=timezone.utc)
+        def _hd(free, used):
+            return {
+                "host-a": {
+                    "provider": "hetzner", "total_bytes": 400,
+                    "used_bytes": used, "free_bytes": free,
+                }
+            }
+
+        prev = ProdDiskSurvey(
+            inventory_name="inventory", surveyed_at=t1, host_disk=_hd(10, 390),
+            host_count=1, service_count=3, total_data_bytes=90,
+        )
+        latest = ProdDiskSurvey(
+            inventory_name="inventory", surveyed_at=t2, host_disk=_hd(40, 360),
+            host_count=1, service_count=2, total_data_bytes=60,
+        )
+        event = ProdServiceAudit(
+            inventory_name="inventory", host="host-a", service_name="ant-node-3",
+            action=ProdServiceAuditAction.REMOVED, occurred_at=t2, size_bytes=30,
+        )
+        fake_repo = MagicMock()
+        fake_repo.latest_disk_surveys.return_value = [latest, prev]
+        fake_repo.list_service_audit.return_value = [event]
+
+        with patch(
+            "saorsa_deploy.cmd.prod_services.registry.get_prod_fleet_repository",
+            return_value=fake_repo,
+        ):
+            cmd_prod_services_survey_report(SimpleNamespace(inventory_path=str(inv_path)))
+
+        fake_repo.latest_disk_surveys.assert_called_once()
+        fake_repo.list_service_audit.assert_called_once_with(
+            "inventory", since=t1, until=t2
+        )

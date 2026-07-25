@@ -109,6 +109,54 @@ def parse_service_list(stdout_lines) -> list[dict]:
     return records
 
 
+def build_disk_survey_command() -> str:
+    """List every ``ant-node-*`` service (as :func:`build_list_services_command`)
+    AND the storage device's total/used/free bytes, in one SSH pass — the
+    per-host probe behind ``prod services disk-survey``.
+
+    Emits the same ``ANT_SVC:LIST:...`` lines plus one:
+      ``ANT_SVC:DF:<total>:<used>:<avail>``  (bytes; empty fields if df fails).
+    """
+    return f"""\
+set -eu
+FOUND=0
+for unit in /etc/systemd/system/ant-node-*.service; do
+  [ -e "$unit" ] || continue
+  FOUND=1
+  svc=$(basename "$unit" .service)
+  active=$(systemctl is-active "$svc" 2>/dev/null || true)
+  enabled=$(systemctl is-enabled "$svc" 2>/dev/null || true)
+  bytes=$(du -sb "{MOUNT_POINT}/data/$svc" 2>/dev/null | cut -f1)
+  [ -n "$bytes" ] || bytes=0
+  echo "ANT_SVC:LIST:$svc:$active:$enabled:$bytes"
+done
+[ "$FOUND" -eq 1 ] || echo "ANT_SVC:LIST:NONE"
+DF=$(df -B1 --output=size,used,avail {MOUNT_POINT} 2>/dev/null | tail -1)
+echo "ANT_SVC:DF:$(echo $DF | tr ' ' ':')"
+"""
+
+
+def parse_df_line(stdout_lines) -> dict | None:
+    """Parse the ``ANT_SVC:DF:<total>:<used>:<avail>`` marker into a dict of
+    byte counts, or None if absent/unparseable."""
+    for raw_line in stdout_lines:
+        line = raw_line.strip()
+        if not line.startswith("ANT_SVC:DF:"):
+            continue
+        parts = line[len("ANT_SVC:DF:") :].split(":")
+        if len(parts) != 3:
+            return None
+        try:
+            return {
+                "total_bytes": int(parts[0]),
+                "used_bytes": int(parts[1]),
+                "free_bytes": int(parts[2]),
+            }
+        except ValueError:
+            return None
+    return None
+
+
 def build_remove_service_command(service_name: str) -> str:
     """Stop, disable, and delete the unit + data/log dirs for exactly
     ``service_name``. Every path/command below is scoped to the literal

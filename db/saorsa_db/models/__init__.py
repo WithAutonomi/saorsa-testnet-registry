@@ -52,9 +52,17 @@ from saorsa_db.models.prod_canary import (
     ProdCanaryInitialVerifyStatus,
     ProdCanaryProbeStatus,
 )
+from saorsa_db.models.prod_disk_survey import (
+    ProdDiskSurvey,
+    ProdDiskSurveyService,
+)
 from saorsa_db.models.prod_download_result import (
     DeploymentProdDownloadResult,
     ProdDownloadStatus,
+)
+from saorsa_db.models.prod_service_audit import (
+    ProdServiceAudit,
+    ProdServiceAuditAction,
 )
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
@@ -116,7 +124,11 @@ __all__ = [
     "ProdCanaryChunkRole",
     "ProdCanaryInitialVerifyStatus",
     "ProdCanaryProbeStatus",
+    "ProdDiskSurvey",
+    "ProdDiskSurveyService",
     "ProdDownloadStatus",
+    "ProdServiceAudit",
+    "ProdServiceAuditAction",
     "ProdUploadStatus",
     "ReleaseCandidate",
     "ReleaseCandidateCrate",
