@@ -7,8 +7,10 @@ from sqlalchemy import delete, func, insert, select
 
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
+from saorsa_db.models.derived_metric import DeploymentDerivedMetric
 from saorsa_db.models.host_metric_bucket import (
     DISK_METRICS,
+    METRIC_DISK_USED_BYTES,
     METRIC_RSS_BYTES,
     DeploymentHostMetricBucket,
 )
@@ -240,6 +242,55 @@ class DeploymentRepository(ABC):
     def summarize_host_metric_buckets(
         self, cutoff: datetime | None = None
     ) -> list[dict]:
+        ...
+
+    @abstractmethod
+    def get_host_metric_buckets_in_window(
+        self,
+        deployment_id: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        metric: str | None = None,
+    ) -> list[dict]:
+        ...
+
+    @abstractmethod
+    def get_host_metric_endpoints(
+        self,
+        deployment_id: int,
+        metric: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict]:
+        ...
+
+    @abstractmethod
+    def upsert_derived_metric(
+        self,
+        deployment_id: int,
+        metric: str,
+        window_label: str,
+        window_start: datetime,
+        window_end: datetime,
+        unit: str,
+        source: str,
+        value: float | None = None,
+        numerator: float | None = None,
+        denominator: float | None = None,
+        details: dict | None = None,
+    ) -> DeploymentDerivedMetric:
+        ...
+
+    @abstractmethod
+    def list_derived_metrics_for_deployment(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> list[DeploymentDerivedMetric]:
+        ...
+
+    @abstractmethod
+    def delete_derived_metrics(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> int:
         ...
 
     @abstractmethod
@@ -917,6 +968,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 {
                     "host": row.host,
                     "disk_io_by_device": {},
+                    "disk_usage_by_mount": {},
                     "rss_by_service": {},
                     "_first": None,
                     "_last": None,
@@ -942,6 +994,18 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 if row.volume_role is not None:
                     device["volume_role"] = row.volume_role
                 device[row.metric] = stats
+            elif row.metric == METRIC_DISK_USED_BYTES:
+                # Occupancy, keyed by mountpoint rather than device. Shaped like
+                # the rollup's `disk_usage_by_mount` so a window and the rollup
+                # stay interchangeable -- but WITHOUT `first`/`last`, which an
+                # aggregate cannot recover. Growth over a window comes from
+                # `get_host_metric_endpoints`, not from here.
+                mount = entry["disk_usage_by_mount"].setdefault(
+                    row.device or "", {"volume_role": row.volume_role}
+                )
+                if row.volume_role is not None:
+                    mount["volume_role"] = row.volume_role
+                mount["used_bytes"] = stats
             elif row.metric == METRIC_RSS_BYTES:
                 # Keyed by service, never pooled into a host total: the signal
                 # is one service leaking, which a 15-service mean would dilute.
@@ -1008,6 +1072,210 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         if deployment_id is not None:
             statement = statement.where(
                 DeploymentHostMetricBucket.deployment_id == deployment_id
+            )
+        result = self.session.execute(statement)
+        self.session.commit()
+        return result.rowcount or 0
+
+    def get_host_metric_buckets_in_window(
+        self,
+        deployment_id: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        metric: str | None = None,
+    ) -> list[dict]:
+        """Raw bucket rows in a window, un-aggregated.
+
+        ``get_host_metric_window`` collapses a window to avg/min/max, which is
+        the right shape for reporting a rate but the wrong one for totalling
+        bytes: a total is the sum of ``avg x bucket width`` over the individual
+        buckets, and that sum is not recoverable from one pooled average once
+        buckets with differing sample counts have been merged.
+
+        Half-open on ``bucket_start`` (``start <= b < end``), matching
+        ``get_host_metric_window`` so the two never disagree about which
+        buckets a window contains.
+        """
+        query = select(
+            DeploymentHostMetricBucket.host,
+            DeploymentHostMetricBucket.metric,
+            DeploymentHostMetricBucket.device,
+            DeploymentHostMetricBucket.volume_role,
+            DeploymentHostMetricBucket.service,
+            DeploymentHostMetricBucket.bucket_start,
+            DeploymentHostMetricBucket.avg,
+            DeploymentHostMetricBucket.min,
+            DeploymentHostMetricBucket.max,
+            DeploymentHostMetricBucket.samples,
+        ).where(DeploymentHostMetricBucket.deployment_id == deployment_id)
+        if metric is not None:
+            query = query.where(DeploymentHostMetricBucket.metric == metric)
+        if start is not None:
+            query = query.where(DeploymentHostMetricBucket.bucket_start >= start)
+        if end is not None:
+            query = query.where(DeploymentHostMetricBucket.bucket_start < end)
+        query = query.order_by(DeploymentHostMetricBucket.bucket_start)
+        return [
+            {
+                "host": row.host,
+                "metric": row.metric,
+                "device": row.device,
+                "volume_role": row.volume_role,
+                "service": row.service,
+                "bucket_start": row.bucket_start,
+                "avg": float(row.avg) if row.avg is not None else None,
+                "min": float(row.min) if row.min is not None else None,
+                "max": float(row.max) if row.max is not None else None,
+                "samples": int(row.samples or 0),
+            }
+            for row in self.session.execute(query)
+        ]
+
+    def get_host_metric_endpoints(
+        self,
+        deployment_id: int,
+        metric: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict]:
+        """Per-host first and last bucket value of one metric in a window.
+
+        ``get_host_metric_window`` aggregates a window down to avg/min/max,
+        which is the right shape for a rate but destroys what an OCCUPANCY
+        series is measured for: growth is ``last - first``, and neither endpoint
+        survives an aggregate. This returns them.
+
+        Each entry is ``{host, device, volume_role, service, first, last,
+        first_bucket, last_bucket, buckets}``. ``first``/``last`` are the
+        ``avg`` of the earliest and latest bucket in the window -- a bucket
+        average rather than a raw reading, which for a slowly-growing series
+        costs at most half a bucket width of resolution at each edge.
+
+        Returns an empty list for deployments with no buckets; callers must
+        degrade rather than assume.
+        """
+        query = (
+            select(
+                DeploymentHostMetricBucket.host,
+                DeploymentHostMetricBucket.device,
+                DeploymentHostMetricBucket.volume_role,
+                DeploymentHostMetricBucket.service,
+                DeploymentHostMetricBucket.bucket_start,
+                DeploymentHostMetricBucket.avg,
+            )
+            .where(DeploymentHostMetricBucket.deployment_id == deployment_id)
+            .where(DeploymentHostMetricBucket.metric == metric)
+        )
+        if start is not None:
+            query = query.where(DeploymentHostMetricBucket.bucket_start >= start)
+        if end is not None:
+            query = query.where(DeploymentHostMetricBucket.bucket_start < end)
+        query = query.order_by(DeploymentHostMetricBucket.bucket_start)
+
+        # Grouped in Python rather than with a window function: the row count
+        # here is one metric's buckets for one deployment, and DISTINCT ON is
+        # Postgres-only while the tests (and any SQLite consumer) must work too.
+        grouped: dict[tuple, dict] = {}
+        for row in self.session.execute(query):
+            key = (row.host, row.device, row.volume_role, row.service)
+            entry = grouped.get(key)
+            if entry is None:
+                grouped[key] = {
+                    "host": row.host,
+                    "device": row.device,
+                    "volume_role": row.volume_role,
+                    "service": row.service,
+                    "first": float(row.avg) if row.avg is not None else None,
+                    "last": float(row.avg) if row.avg is not None else None,
+                    "first_bucket": row.bucket_start,
+                    "last_bucket": row.bucket_start,
+                    "buckets": 1,
+                }
+                continue
+            entry["buckets"] += 1
+            if row.bucket_start < entry["first_bucket"]:
+                entry["first_bucket"] = row.bucket_start
+                entry["first"] = float(row.avg) if row.avg is not None else None
+            if row.bucket_start > entry["last_bucket"]:
+                entry["last_bucket"] = row.bucket_start
+                entry["last"] = float(row.avg) if row.avg is not None else None
+        return [grouped[key] for key in sorted(grouped, key=lambda k: tuple(
+            "" if part is None else part for part in k
+        ))]
+
+    def upsert_derived_metric(
+        self,
+        deployment_id: int,
+        metric: str,
+        window_label: str,
+        window_start: datetime,
+        window_end: datetime,
+        unit: str,
+        source: str,
+        value: float | None = None,
+        numerator: float | None = None,
+        denominator: float | None = None,
+        details: dict | None = None,
+    ) -> DeploymentDerivedMetric:
+        """Insert or update the one row for this (deployment, metric, window).
+
+        Recomputing must replace, never accumulate: a baseline comparison that
+        silently picked one of several rival rows for the same window would be
+        non-deterministic, which is exactly what the comparison-report command
+        cannot tolerate.
+        """
+        existing = self.session.execute(
+            select(DeploymentDerivedMetric)
+            .where(DeploymentDerivedMetric.deployment_id == deployment_id)
+            .where(DeploymentDerivedMetric.metric == metric)
+            .where(DeploymentDerivedMetric.window_label == window_label)
+        ).scalar_one_or_none()
+
+        if existing is None:
+            existing = DeploymentDerivedMetric(
+                deployment_id=deployment_id,
+                metric=metric,
+                window_label=window_label,
+            )
+            self.session.add(existing)
+
+        existing.window_start = window_start
+        existing.window_end = window_end
+        existing.unit = unit
+        existing.source = source
+        existing.value = value
+        existing.numerator = numerator
+        existing.denominator = denominator
+        existing.details = details
+        self.session.commit()
+        self.session.refresh(existing)
+        return existing
+
+    def list_derived_metrics_for_deployment(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> list[DeploymentDerivedMetric]:
+        query = select(DeploymentDerivedMetric).where(
+            DeploymentDerivedMetric.deployment_id == deployment_id
+        )
+        if window_label is not None:
+            query = query.where(
+                DeploymentDerivedMetric.window_label == window_label
+            )
+        query = query.order_by(
+            DeploymentDerivedMetric.window_label,
+            DeploymentDerivedMetric.metric,
+        )
+        return list(self.session.execute(query).scalars().all())
+
+    def delete_derived_metrics(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> int:
+        statement = delete(DeploymentDerivedMetric).where(
+            DeploymentDerivedMetric.deployment_id == deployment_id
+        )
+        if window_label is not None:
+            statement = statement.where(
+                DeploymentDerivedMetric.window_label == window_label
             )
         result = self.session.execute(statement)
         self.session.commit()

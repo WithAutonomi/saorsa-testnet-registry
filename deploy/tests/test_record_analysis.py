@@ -561,9 +561,10 @@ def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
     fetch_host_metric_points(
         url="http://x", token="t", org="ant", bucket="testnet-metrics"
     )
-    # cpu / mem / net / diskio / procstat
-    assert len(seen) == 5
+    # cpu / mem / net / disk / diskio / procstat
+    assert len(seen) == 6
     assert all("range(start: 0," in flux for flux in seen)
+    assert any('r._measurement == "disk"' in flux for flux in seen)
     assert any('r._measurement == "diskio"' in flux for flux in seen)
     assert any('r._measurement == "procstat"' in flux for flux in seen)
     # Every range MUST carry an explicit far-future stop. Flux defaults stop to

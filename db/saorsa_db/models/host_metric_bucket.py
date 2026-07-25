@@ -26,8 +26,16 @@ METRIC_WRITE_BYTES_PER_SEC = "write_bytes_per_sec"
 METRIC_READS_PER_SEC = "reads_per_sec"
 METRIC_WRITES_PER_SEC = "writes_per_sec"
 METRIC_RSS_BYTES = "rss_bytes"
+METRIC_DISK_USED_BYTES = "disk_used_bytes"
 
 # Metrics carried on the per-device dimension (`device` + `volume_role` set).
+#
+# `disk_used_bytes` shares that dimension but stores a MOUNTPOINT
+# ("/mnt/ant-node-storage") in `device` rather than a kernel device name: the
+# `disk` measurement is tagged by path, and its own `device` tag is the
+# fstab-style source, which does not match what `diskio` reports for an
+# LVM-backed volume. It is kept out of `DISK_METRICS` because that set drives
+# the `disk_io_by_device` rollup key, and occupancy is not I/O.
 DISK_METRICS = frozenset(
     {
         METRIC_READ_BYTES_PER_SEC,
@@ -95,10 +103,11 @@ class DeploymentHostMetricBucket(Base):
     )
     metric: Mapped[str] = mapped_column(String(64), nullable=False)
 
-    # Set for the four diskio series only. Bucketed disk I/O is restricted to
-    # the device tagged `node-storage`: on a typical VM the other devices are
-    # the root disk's boot/ESP partitions, whose counters merely duplicate the
-    # whole-disk counters. Every device is still kept in the rollup JSON.
+    # Set for the four diskio series (a kernel device name) and for
+    # `disk_used_bytes` (a mountpoint). Both are restricted in buckets to the
+    # one tagged `node-storage`: on a typical VM the other entries are the root
+    # disk's boot/ESP partitions, whose counters merely duplicate the whole-disk
+    # counters. Every device and mountpoint is still kept in the rollup JSON.
     device: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     volume_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 

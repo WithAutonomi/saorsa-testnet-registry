@@ -4,7 +4,16 @@ import time
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from saorsa_db.models.derived_metric import (
+    RATIO_METRICS,
+    SOURCE_CAPTURE,
+    WINDOW_FULL_RUN,
+)
 
+from saorsa_deploy.derived_metrics import (
+    compute_from_points,
+    format_metric_value,
+)
 from saorsa_deploy.influx import (
     aggregate_normalised_host_metrics,
     bucket_host_metric_samples,
@@ -55,6 +64,7 @@ def _serialize_host_entry(entry: dict) -> dict:
         "bytes_in_per_sec": entry["bytes_in_per_sec"],
         "bytes_out_per_sec": entry["bytes_out_per_sec"],
         "disk_io_by_device": entry["disk_io_by_device"],
+        "disk_usage_by_mount": entry.get("disk_usage_by_mount") or {},
         "rss_by_service": entry.get("rss_by_service") or {},
     }
 
@@ -100,6 +110,78 @@ def _warn_about_clock_offsets(aggregates: list[dict], console: Console) -> None:
             border_style="yellow",
         )
     )
+
+
+def _record_derived_metrics(
+    *,
+    repo,
+    deployment,
+    points,
+    window_start,
+    window_end,
+    console: Console,
+) -> list:
+    """Compute and persist the normalised per-GB metrics for the whole run.
+
+    Best-effort in one specific sense: a run whose denominators are missing
+    (``record-results`` not yet run, or a deployment with no clients) records
+    nothing and says so, rather than failing the host-metric capture that has
+    already succeeded. It is NOT best-effort about correctness — a metric that
+    cannot be measured is omitted, never estimated.
+    """
+    upload_records = repo.list_upload_records_for_deployment(deployment.id)
+    download_records = repo.list_download_records_for_deployment(deployment.id)
+    if not upload_records and not download_records:
+        console.print(
+            "[yellow]No upload or download records for this deployment, so "
+            "there is no user-traffic denominator to normalise against. Run "
+            "`deployments record-results --name "
+            f"{deployment.name}` first, then re-run this command to derive the "
+            "per-GB metrics.[/yellow]"
+        )
+
+    rows = compute_from_points(
+        points_by_measurement=points,
+        upload_records=upload_records,
+        download_records=download_records,
+        window_start=window_start,
+        window_end=window_end,
+        window_label=WINDOW_FULL_RUN,
+        source=SOURCE_CAPTURE,
+    )
+    for row in rows:
+        repo.upsert_derived_metric(deployment_id=deployment.id, **row)
+    return rows
+
+
+def _print_derived_metrics(rows: list, console: Console) -> None:
+    if not rows:
+        return
+    table = Table(title="Derived per-run metrics (window: full run)")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_column("Numerator", justify="right")
+    table.add_column("Denominator", justify="right")
+    for row in rows:
+        numerator = row.get("numerator")
+        denominator = row.get("denominator")
+        table.add_row(
+            row["metric"],
+            format_metric_value(row.get("value"), row["unit"]),
+            _fmt_bytes(numerator) if numerator is not None else "-",
+            f"{denominator:.2f} GB" if denominator is not None else "-",
+        )
+    console.print(table)
+
+    missing = [m for m in RATIO_METRICS if m not in {r["metric"] for r in rows}]
+    if missing:
+        console.print(
+            "[yellow]Not derived (no measurable value): "
+            + ", ".join(missing)
+            + ". A ratio with an empty denominator, or a disk metric with no "
+            "host reporting a node-storage series, is omitted rather than "
+            "recorded as zero.[/yellow]"
+        )
 
 
 def cmd_record_analysis(args):
@@ -268,6 +350,17 @@ def cmd_record_analysis(args):
         f"[bold green]Recorded host metrics for {len(aggregates)} host(s) "
         f"on deployment '{args.name}'.[/bold green]"
     )
+
+    if getattr(args, "derived", True):
+        derived_rows = _record_derived_metrics(
+            repo=repo,
+            deployment=deployment,
+            points=points,
+            window_start=overall_started,
+            window_end=overall_ended,
+            console=console,
+        )
+        _print_derived_metrics(derived_rows, console)
 
     _warn_about_clock_offsets(aggregates, console)
 

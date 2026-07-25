@@ -662,6 +662,7 @@ class _FakeRepo:
         self.deployment_id = deployment_id
         self.host_result = None
         self.buckets = None
+        self.derived = []
 
     def get_active_by_name(self, name):
         return type("D", (), {"id": self.deployment_id, "name": name})()
@@ -677,6 +678,16 @@ class _FakeRepo:
         self.buckets = buckets
         return len(buckets)
 
+    def list_upload_records_for_deployment(self, deployment_id):
+        return []
+
+    def list_download_records_for_deployment(self, deployment_id):
+        return []
+
+    def upsert_derived_metric(self, **kwargs):
+        self.derived.append(kwargs)
+        return None
+
 
 def _args(**overrides):
     from types import SimpleNamespace
@@ -691,6 +702,7 @@ def _args(**overrides):
         window="0",
         bucket_secs=300,
         summary=None,
+        derived=True,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
