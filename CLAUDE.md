@@ -727,6 +727,86 @@ migration** and pre-existing rows simply lack the key (the section is skipped).
 Retrofit a running deployment by re-running `deployments provision-telegraf --name
 <name>`, which regenerates the config and restarts `telegraf-ant-metrics`.
 
+### Bucketed host metrics + per-service node RSS
+
+`deployments record-analysis` writes host metrics **twice**: the unchanged whole-run
+rollup in `deployment_host_results`, plus fixed-width time buckets in
+**`deployment_host_metric_buckets`** (one row per `(host, bucket_start, metric,
+device, service)` holding `avg`/`min`/`max`/`samples`). The buckets exist so an
+arbitrary sub-window can be re-derived **after the monitoring stack is destroyed** —
+previously `--window` fixed the window at capture and InfluxDB was then gone, which
+is why the rc.1 staging comparison could only be reported directionally (3.37h vs
+5.45h stored windows, the latter including the mixed-version phase).
+
+`--bucket-secs` (default **300**; `0` disables bucket capture). **Width does not
+affect accuracy**: for a boundary-aligned window, `sum(avg*samples)/sum(samples)` is
+exactly the mean of the underlying 10s samples and `MIN(min)`/`MAX(max)`/
+`SUM(samples)` are exact, at any width — each bucket carries its own min/max, so a
+brief spike still surfaces. Width trades only window-edge precision (≤5 min) and
+trend-plot resolution. 300s keeps a staging-sized run near 100k rows (~18 MB)
+instead of ~500k; the registry is on DO's smallest managed Postgres (1 vCPU, ~1 GB
+RAM → `shared_buffers=190MB`, 10 GB disk), where table size *is* query time.
+
+Three invariants, all deliberate:
+- **Rates are computed before bucketing, never after.** net/diskio are per-second
+  deltas taken *within* an interface/device; bucketing raw counters and
+  differencing afterwards is nonsense. `influx.py` is split into
+  `normalise_host_metric_points` (delta/normalise) and `bucket_host_metric_samples`
+  (windowing); `aggregate_host_metrics` keeps its signature and is now the
+  degenerate "one bucket spanning everything" case, so the two paths cannot drift.
+  A rate sample is timestamped at the **end** of its interval.
+- **Re-aggregating `avg` must be sample-weighted**, never a mean of means — buckets
+  hold unequal sample counts at run boundaries and missed scrapes. Done server-side
+  in `repo.get_host_metric_window(deployment_id, start, end)`, which returns
+  `host_metrics`-shaped entries so a window and the rollup are interchangeable.
+  Half-open on `bucket_start`: a bucket is in or out whole.
+- **Bucketed diskio is restricted to the `node-storage`-tagged device.** On a
+  measured staging run 348 of 421 device series were root-disk boot/ESP partitions
+  (`vda1`/`vda14`/`vda15`/`vda16`) duplicating `vda` — the majority of rows for no
+  signal. The rollup still keeps every device.
+
+Historical deployments have no bucket rows; consumers **must** degrade to the
+rollup. **No backfill is possible.** `deployments prune-host-buckets --older-than N
+[--name X] [--dry-run]` drops bucket rows only, leaving the rollup intact, so a
+pruned run degrades to exactly its pre-bucketing view.
+
+**Per-service node RSS** (`rss_by_service` in the rollup, `rss_bytes` as a bucket
+series) is captured from the `procstat`/`memory_rss` field via the `node_service`
+tag — Telegraf always collected it, nothing ever queried it, so process-level memory
+was absent from the registry entirely. `mem_percent` is no substitute: whole-host,
+includes page cache, cannot attribute anything to one of 15 services on a VM. Keyed
+by `node_service` not PID (services restart, PIDs churn) and **never pooled into a
+host total** — one leaking service is invisible in a 15-service mean. The
+`record-analysis` table shows only the peak service as a scalar;
+`print-recorded-results` renders one row per (host, service). Client-tier RSS is a
+separate existing path in the `client-metrics` bucket and is unaffected.
+
+### Clock-skewed hosts must not vanish from Influx capture
+
+**Every Flux `range()` in the query paths carries an explicit `stop`**
+(`FLUX_FAR_FUTURE` in `influx.py`; also applied in `influx_canary.py`). Flux
+defaults `stop` to `now()`, and `provisioning/clock_skew.py` jumps a VM's
+**system** clock (nodes ±`SKEW_HOURS`=3 in a per-host random direction, clients
+by an explicit signed duration), so a *forward*-skewed host's Telegraf writes
+every point hours ahead of real time — and those points were silently discarded.
+
+Shape-dependent, which is why it hid for so long: a long run lost only a
+forward-skewed host's final skew's-worth of data, a short run lost the host
+entirely. Found on DEV-03 (2026-07-25): a +3h node VM contributed **0 of 27**
+hosts to `record-analysis` while holding 460 `memory_rss` points. The same
+defect applied to the file-op (`record-results`), prod-upload and canary
+queries — all fixed together, since it is one mechanism.
+
+Skewed hosts are now captured, but their timestamps stay displaced, so a
+sub-window re-derived from buckets covers a *different* stretch of their run.
+`record-analysis` prints a **`Clock offset detected`** warning
+(`detect_clock_offsets`) listing hosts deviating from the fleet **median**
+`metrics_ended_at` by >15 min, with the signed offset. Median, not local clock:
+no assumption about the invoking machine, and a few skewed hosts can't drag it.
+Negative offsets may instead mean a host stopped reporting early — also worth
+knowing. Regression guard: `test_clock_skewed_metrics.py` asserts no bare
+`range(start: {start})` survives in either query module.
+
 ### Telegraf provisioning (folded into the provision passes)
 
 The two Telegraf forwarders — Elasticsearch log forwarding (systemd

@@ -216,6 +216,7 @@ def _print_analysis_section(
     console.print(table)
 
     _print_disk_io_table(metrics, console)
+    _print_rss_table(metrics, console)
 
 
 def _print_disk_io_table(metrics: list[dict], console: Console) -> None:
@@ -266,6 +267,59 @@ def _print_disk_io_table(metrics: list[dict], console: Console) -> None:
                 _fmt_triple(stats.get("writes_per_sec") or {}),
             )
     console.print(table)
+
+
+def _print_rss_table(metrics: list[dict], console: Console) -> None:
+    """Render per-service RSS as its own table, one row per (host, service).
+
+    Its own rows rather than columns on the main table for the same reason as
+    disk I/O: a node VM runs 15 services, and each needs a row.
+
+    Deliberately not summed or averaged into a host total. The signal worth
+    catching is a *single* service growing without bound, which a 15-service
+    mean would dilute fifteenfold and a host total would hide behind normal
+    fleet variation. `mem_percent` on the main table is not a substitute
+    either — that is whole-host memory including page cache, so it cannot
+    separate a genuine ant-node leak from cache growth, nor attribute anything
+    to one service.
+
+    Rows recorded before RSS capture existed have no `rss_by_service` key, so
+    the section is skipped for them — the same degrade-to-nothing pattern
+    `disk_io_by_device` already relies on. No backfill is possible: the source
+    InfluxDB for those runs is destroyed.
+    """
+    if not any(entry.get("rss_by_service") for entry in metrics):
+        return
+
+    table = Table(
+        title="Node service memory (RSS) — per service",
+        title_style="bold",
+    )
+    table.add_column("Host")
+    table.add_column("Service")
+    table.add_column("RSS avg/min/max", justify="right")
+    table.add_column("Samples", justify="right")
+
+    for entry in metrics:
+        services = entry.get("rss_by_service") or {}
+        host = entry.get("host") or "-"
+        for service, stats in sorted(services.items(), key=_service_sort_key):
+            table.add_row(
+                host,
+                service,
+                _fmt_triple_bytes(stats or {}),
+                str((stats or {}).get("samples") or 0),
+            )
+    console.print(table)
+
+
+def _service_sort_key(item: tuple[str, dict]) -> tuple[str, int, str]:
+    """Sort `ant-node-2` before `ant-node-10`, which a plain sort would not."""
+    name = item[0]
+    prefix, _, suffix = name.rpartition("-")
+    if prefix and suffix.isdigit():
+        return (prefix, int(suffix), "")
+    return (name, 0, "")
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +675,24 @@ def _fmt_triple_bw(stat: dict) -> str:
         f"{_fmt_bw(stat.get('min'))} / "
         f"{_fmt_bw(stat.get('max'))}"
     )
+
+
+def _fmt_triple_bytes(stat: dict) -> str:
+    return (
+        f"{_fmt_bytes(stat.get('avg'))} / "
+        f"{_fmt_bytes(stat.get('min'))} / "
+        f"{_fmt_bytes(stat.get('max'))}"
+    )
+
+
+def _fmt_bytes(value) -> str:
+    """Format a byte count. Distinct from `_fmt_bw`, which is a per-second rate."""
+    if value is None:
+        return "-"
+    gb = value / (1024**3)
+    if gb >= 1:
+        return f"{gb:.2f} GB"
+    return f"{value / (1024 * 1024):.0f} MB"
 
 
 def _fmt_num(value) -> str:

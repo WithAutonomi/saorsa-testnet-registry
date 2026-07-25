@@ -561,10 +561,14 @@ def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
     fetch_host_metric_points(
         url="http://x", token="t", org="ant", bucket="testnet-metrics"
     )
-    # cpu / mem / net / diskio
-    assert len(seen) == 4
-    assert all("range(start: 0)" in flux for flux in seen)
+    # cpu / mem / net / diskio / procstat
+    assert len(seen) == 5
+    assert all("range(start: 0," in flux for flux in seen)
     assert any('r._measurement == "diskio"' in flux for flux in seen)
+    assert any('r._measurement == "procstat"' in flux for flux in seen)
+    # Every range MUST carry an explicit far-future stop. Flux defaults stop to
+    # now(), which silently discarded forward clock-skewed hosts entirely.
+    assert all(f"stop: {influx.FLUX_FAR_FUTURE}" in flux for flux in seen)
 
 
 def test_fetch_host_metric_points_honours_explicit_start(monkeypatch):
@@ -578,7 +582,8 @@ def test_fetch_host_metric_points_honours_explicit_start(monkeypatch):
     fetch_host_metric_points(
         url="http://x", token="t", org="ant", bucket="testnet-metrics", start="-6h"
     )
-    assert all("range(start: -6h)" in flux for flux in seen)
+    assert all("range(start: -6h," in flux for flux in seen)
+    assert all(f"stop: {influx.FLUX_FAR_FUTURE}" in flux for flux in seen)
 
 
 def _run_cmd_record_analysis(monkeypatch, repo_obj, diskio_points: list[dict]):

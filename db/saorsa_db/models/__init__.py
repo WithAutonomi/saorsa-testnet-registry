@@ -1,5 +1,18 @@
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
+from saorsa_db.models.host_metric_bucket import (
+    DISK_METRICS,
+    METRIC_BYTES_IN_PER_SEC,
+    METRIC_BYTES_OUT_PER_SEC,
+    METRIC_CPU_PERCENT,
+    METRIC_MEM_PERCENT,
+    METRIC_READ_BYTES_PER_SEC,
+    METRIC_READS_PER_SEC,
+    METRIC_RSS_BYTES,
+    METRIC_WRITE_BYTES_PER_SEC,
+    METRIC_WRITES_PER_SEC,
+    DeploymentHostMetricBucket,
+)
 from saorsa_db.models.host_result import DeploymentHostResult
 from saorsa_db.models.op_record import (
     DeploymentDownloadRecord,
@@ -42,7 +55,18 @@ __all__ = [
     "DeploymentStatus",
     "DeploymentDownloadRecord",
     "DeploymentFileResult",
+    "DeploymentHostMetricBucket",
     "DeploymentHostResult",
+    "DISK_METRICS",
+    "METRIC_BYTES_IN_PER_SEC",
+    "METRIC_BYTES_OUT_PER_SEC",
+    "METRIC_CPU_PERCENT",
+    "METRIC_MEM_PERCENT",
+    "METRIC_READ_BYTES_PER_SEC",
+    "METRIC_READS_PER_SEC",
+    "METRIC_RSS_BYTES",
+    "METRIC_WRITE_BYTES_PER_SEC",
+    "METRIC_WRITES_PER_SEC",
     "DeploymentUploadRecord",
     "DeploymentProdCanaryChunk",
     "DeploymentProdCanaryLoss",

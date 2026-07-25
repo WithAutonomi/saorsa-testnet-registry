@@ -1,13 +1,18 @@
 import sys
+import time
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from saorsa_deploy.influx import (
-    aggregate_host_metrics,
+    aggregate_normalised_host_metrics,
+    bucket_host_metric_samples,
+    detect_clock_offsets,
     fetch_host_metric_points,
     node_storage_device,
+    normalise_host_metric_points,
+    peak_rss_service,
 )
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_monitoring_state
@@ -31,6 +36,15 @@ def _fmt_bw(value) -> str:
     return f"{kb:.1f} KB/s"
 
 
+def _fmt_bytes(value) -> str:
+    if value is None:
+        return "-"
+    gb = value / (1024**3)
+    if gb >= 1:
+        return f"{gb:.2f} GB"
+    return f"{value / (1024 * 1024):.0f} MB"
+
+
 def _serialize_host_entry(entry: dict) -> dict:
     return {
         "host": entry["host"],
@@ -41,7 +55,51 @@ def _serialize_host_entry(entry: dict) -> dict:
         "bytes_in_per_sec": entry["bytes_in_per_sec"],
         "bytes_out_per_sec": entry["bytes_out_per_sec"],
         "disk_io_by_device": entry["disk_io_by_device"],
+        "rss_by_service": entry.get("rss_by_service") or {},
     }
+
+
+def _fmt_offset(seconds: float) -> str:
+    sign = "+" if seconds >= 0 else "-"
+    total = int(abs(seconds))
+    return f"{sign}{total // 3600}h{(total % 3600) // 60:02d}m"
+
+
+def _warn_about_clock_offsets(aggregates: list[dict], console: Console) -> None:
+    """Surface hosts whose observation window is displaced from its peers.
+
+    Such hosts used to be *silently dropped* — Flux defaults a range's `stop` to
+    `now()`, so a forward clock-skewed host's future-dated points fell outside
+    every query. They are now captured, but their timestamps remain displaced by
+    the skew, which matters the moment anyone slices a sub-window: the same
+    wall-clock window lands on a different stretch of that host's run.
+
+    Warn rather than fail. The skew is deliberate on these testnets
+    (`provisioning/clock_skew.py`), the data is real, and dropping it is what
+    the fix set out to stop.
+    """
+    offsets = detect_clock_offsets(aggregates)
+    if not offsets:
+        return
+
+    lines = [
+        f"  {host:38} {_fmt_offset(delta):>8}" for host, delta in offsets
+    ]
+    console.print(
+        Panel(
+            "These hosts' metrics are offset from the fleet median:\n\n"
+            + "\n".join(lines)
+            + "\n\nA positive offset is a clock running ahead — testnet "
+            "manifests skew some VMs deliberately\n(nodes by a fixed ±3h, "
+            "clients by an explicit duration). Their data IS recorded, but "
+            "its\ntimestamps are displaced, so a sub-window re-derived from "
+            "the buckets will cover a\ndifferent stretch of these hosts' run "
+            "than of everyone else's. A negative offset may\ninstead mean the "
+            "host stopped reporting early.",
+            title="[yellow]Clock offset detected[/yellow]",
+            border_style="yellow",
+        )
+    )
 
 
 def cmd_record_analysis(args):
@@ -108,7 +166,10 @@ def cmd_record_analysis(args):
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
         sys.exit(1)
 
-    aggregates = aggregate_host_metrics(points)
+    # Normalise once, then feed both consumers: the whole-run rollup and the
+    # time buckets. The delta stage is the expensive part on a large run.
+    normalised = normalise_host_metric_points(points)
+    aggregates = aggregate_normalised_host_metrics(normalised)
     if not aggregates:
         console.print(
             f"[yellow]No host metric points found for deployment '{args.name}' "
@@ -133,6 +194,20 @@ def cmd_record_analysis(args):
         summary=args.summary,
     )
 
+    bucket_secs = getattr(args, "bucket_secs", 300)
+    bucket_count = 0
+    if bucket_secs > 0:
+        buckets = bucket_host_metric_samples(normalised, bucket_secs=bucket_secs)
+        started = time.monotonic()
+        bucket_count = repo.replace_host_metric_buckets(
+            deployment_id=deployment.id, buckets=buckets
+        )
+        elapsed = time.monotonic() - started
+        console.print(
+            f"[bold]Stored {bucket_count} metric bucket(s) "
+            f"at {bucket_secs}s resolution in {elapsed:.1f}s.[/bold]"
+        )
+
     table = Table(
         title=f"Host metrics for deployment '{args.name}' (id={deployment.id})"
     )
@@ -148,6 +223,12 @@ def cmd_record_analysis(args):
     # `disk_io_by_device` and rendered by `print-recorded-results`.
     table.add_column("Storage vol")
     table.add_column("Vol rd/wr avg", justify="right")
+    # One scalar for the same reason as the disk columns: this table is already
+    # wide. Peak RSS names the single heaviest service, which is the fleet-level
+    # question ("is anything unusually large?"). The per-service breakdown --
+    # the thing that actually identifies a leak -- lives in the stored
+    # `rss_by_service` and is rendered by `print-recorded-results`.
+    table.add_column("Peak svc RSS", justify="right")
     table.add_column("Started (UTC)")
     table.add_column("Ended (UTC)")
     for agg in aggregates:
@@ -164,6 +245,12 @@ def cmd_record_analysis(args):
             device_label, stats = storage
             drd = stats.get("read_bytes_per_sec") or {}
             dwr = stats.get("write_bytes_per_sec") or {}
+        peak = peak_rss_service(agg)
+        if peak is None:
+            rss_label = "-"
+        else:
+            service, rss = peak
+            rss_label = f"{service} {_fmt_bytes(rss.get('max'))}"
         table.add_row(
             agg["host"],
             f"{_fmt(cpu['avg'])} / {_fmt(cpu['min'])} / {_fmt(cpu['max'])}",
@@ -172,6 +259,7 @@ def cmd_record_analysis(args):
             f"{_fmt_bw(bout['avg'])} / {_fmt_bw(bout['min'])} / {_fmt_bw(bout['max'])}",
             device_label,
             f"{_fmt_bw(drd.get('avg'))} / {_fmt_bw(dwr.get('avg'))}",
+            rss_label,
             agg["metrics_started_at"].strftime("%Y-%m-%d %H:%M:%S"),
             agg["metrics_ended_at"].strftime("%Y-%m-%d %H:%M:%S"),
         )
@@ -180,6 +268,8 @@ def cmd_record_analysis(args):
         f"[bold green]Recorded host metrics for {len(aggregates)} host(s) "
         f"on deployment '{args.name}'.[/bold green]"
     )
+
+    _warn_about_clock_offsets(aggregates, console)
 
     if args.summary:
         console.print(

@@ -26,24 +26,24 @@ from datetime import datetime, timezone
 
 import requests
 
-from saorsa_deploy.influx import _parse_int, _parse_ts
+from saorsa_deploy.influx import FLUX_FAR_FUTURE, _parse_int, _parse_ts
 
 _UPLOAD_FLUX = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "prod_canary_upload")
   |> filter(fn: (r) => r.deployment_name == "{deployment}")
   |> pivot(rowKey: ["_time", "host"], columnKey: ["_field"], valueColumn: "_value")
 """
 
 _CHUNK_FLUX = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "prod_canary_chunk")
   |> filter(fn: (r) => r.deployment_name == "{deployment}")
   |> pivot(rowKey: ["_time", "host"], columnKey: ["_field"], valueColumn: "_value")
 """
 
 _PROBE_FLUX = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "prod_canary_probe")
   |> filter(fn: (r) => r.deployment_name == "{deployment}")
   |> pivot(rowKey: ["_time", "host"], columnKey: ["_field"], valueColumn: "_value")
@@ -114,7 +114,8 @@ def fetch_canary_upload_points(
         url,
         token,
         org,
-        _UPLOAD_FLUX.format(bucket=bucket, start=start, deployment=deployment_name),
+        _UPLOAD_FLUX.format(bucket=bucket, start=start, stop=FLUX_FAR_FUTURE,
+                      deployment=deployment_name),
     )
     points: list[dict] = []
     for record in _rows(body):
@@ -169,7 +170,8 @@ def fetch_canary_chunk_points(
         url,
         token,
         org,
-        _CHUNK_FLUX.format(bucket=bucket, start=start, deployment=deployment_name),
+        _CHUNK_FLUX.format(bucket=bucket, start=start, stop=FLUX_FAR_FUTURE,
+                      deployment=deployment_name),
     )
     points: list[dict] = []
     for record in _rows(body):
@@ -200,7 +202,8 @@ def fetch_canary_probe_points(
         url,
         token,
         org,
-        _PROBE_FLUX.format(bucket=bucket, start=start, deployment=deployment_name),
+        _PROBE_FLUX.format(bucket=bucket, start=start, stop=FLUX_FAR_FUTURE,
+                      deployment=deployment_name),
     )
     points: list[dict] = []
     for record in _rows(body):
