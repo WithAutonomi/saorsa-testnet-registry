@@ -9,6 +9,7 @@ import pytest
 from saorsa_deploy.cmd.prod_services import (
     cmd_prod_services_add,
     cmd_prod_services_ls,
+    cmd_prod_services_reset_data,
     cmd_prod_services_rm,
 )
 from saorsa_deploy.provisioning.node import _build_node_exec_start, _build_node_unit_file
@@ -403,3 +404,84 @@ class TestCmdProdServicesAdd:
                     ssh_key_path=ssh_key,
                 )
             )
+
+
+class TestResetData:
+    def test_invalid_service_name_exits_before_any_ssh(self, services_patches, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        with pytest.raises(SystemExit):
+            cmd_prod_services_reset_data(
+                _args(inventory_path=str(inv_path), service_name="node-1")
+            )
+        services_patches.add_op.assert_not_called()
+
+    def test_service_not_on_host_exits(self, services_patches, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        ssh_key = _make_ssh_key(tmp_path)
+        services_patches.add_op.return_value = _op_result(
+            services_patches.host, ["ANT_SVC:LIST:ant-node-1:active:enabled:100"]
+        )
+        with pytest.raises(SystemExit):
+            cmd_prod_services_reset_data(
+                _args(
+                    inventory_path=str(inv_path),
+                    service_name="ant-node-9",
+                    ssh_key_path=ssh_key,
+                )
+            )
+        # Only the discovery op ran — no reset was attempted.
+        services_patches.add_op.assert_called_once()
+
+    def test_resets_the_targeted_service_only(self, services_patches, tmp_path):
+        inv_path = _write_inventory(tmp_path, [_entry("host-a")])
+        ssh_key = _make_ssh_key(tmp_path)
+        services_patches.add_op.side_effect = [
+            _op_result(
+                services_patches.host,
+                [
+                    "ANT_SVC:LIST:ant-node-1:active:enabled:100",
+                    "ANT_SVC:LIST:ant-node-2:active:enabled:200",
+                ],
+            ),
+            _op_result(services_patches.host, ["ANT_SVC:RESET:ant-node-2"]),
+        ]
+        cmd_prod_services_reset_data(
+            _args(
+                inventory_path=str(inv_path),
+                service_name="ant-node-2",
+                ssh_key_path=ssh_key,
+            )
+        )
+        reset_call = services_patches.add_op.call_args_list[1]
+        cmds = " ".join(reset_call.kwargs["commands"])
+        assert "systemctl stop ant-node-2" in cmds
+        assert "systemctl start ant-node-2" in cmds
+        assert "node_identity.key" in cmds
+        assert "ant-node-1" not in cmds
+
+    def test_does_not_write_inventory(self, services_patches, tmp_path):
+        # reset-data leaves the service definition intact, so the inventory file
+        # must be untouched.
+        entry = _entry("host-a")
+        entry["services"] = ["ant-node-1", "ant-node-2"]
+        inv_path = _write_inventory(tmp_path, [entry])
+        ssh_key = _make_ssh_key(tmp_path)
+        services_patches.add_op.side_effect = [
+            _op_result(
+                services_patches.host,
+                [
+                    "ANT_SVC:LIST:ant-node-1:active:enabled:100",
+                    "ANT_SVC:LIST:ant-node-2:active:enabled:200",
+                ],
+            ),
+            _op_result(services_patches.host, ["ANT_SVC:RESET:ant-node-2"]),
+        ]
+        cmd_prod_services_reset_data(
+            _args(
+                inventory_path=str(inv_path),
+                service_name="ant-node-2",
+                ssh_key_path=ssh_key,
+            )
+        )
+        raw = json.loads(inv_path.read_text())
+        assert raw["node_vms"][0]["services"] == ["ant-node-1", "ant-node-2"]

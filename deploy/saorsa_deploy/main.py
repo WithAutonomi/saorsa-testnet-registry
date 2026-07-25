@@ -4563,6 +4563,19 @@ def main(argv=None):
         service_name_help="Service to add, e.g. ant-node-7 (must not already exist).",
     )
 
+    prod_services_reset_parser = prod_services_subparsers.add_parser(
+        "reset-data",
+        help="Stop one ant-node service, wipe its data dir EXCEPT the identity "
+        "key (node_identity.key), then start it — so it re-bootstraps with the "
+        "SAME peer ID (unchanged XOR range/responsibility), reclaiming the "
+        "record-store bytes while keeping its identity. Leaves the unit, port, "
+        "log dir, and siblings untouched.",
+    )
+    _add_prod_services_common_args(
+        prod_services_reset_parser,
+        service_name_help="Service to reset, e.g. ant-node-7 (must already exist).",
+    )
+
     # --- prod files ---
     prod_files_parser = prod_subparsers.add_parser(
         "files",
@@ -5243,6 +5256,13 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_add
 
             cmd_prod_services_add(args)
+        elif (
+            args.prod_subcommand == "services"
+            and args.prod_services_action == "reset-data"
+        ):
+            from saorsa_deploy.cmd.prod_services import cmd_prod_services_reset_data
+
+            cmd_prod_services_reset_data(args)
         elif args.prod_subcommand == "files":
             from saorsa_deploy.cmd.prod_files import cmd_prod_files
 

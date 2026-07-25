@@ -41,6 +41,7 @@ from saorsa_deploy.provisioning.node import (
 from saorsa_deploy.provisioning.node_services import (
     build_list_services_command,
     build_remove_service_command,
+    build_reset_data_command,
     build_write_unit_and_start_command,
     parse_node_unit,
     parse_service_list,
@@ -244,6 +245,46 @@ def cmd_prod_services_rm(args) -> None:
         "(unit, data dir, and log dir deleted)."
     )
     _update_inventory(args.inventory_path, vm, args.service_name, added=False, console=console)
+
+
+def cmd_prod_services_reset_data(args) -> None:
+    """Stop one ant-node service, wipe its data dir except node_identity.key,
+    then start it again — so it re-bootstraps with the SAME peer ID (unchanged
+    XOR range / record responsibility). Reclaims the record-store bytes while
+    keeping the node's identity; never touches the unit, port, log dir, or any
+    sibling service."""
+    console = Console()
+    _require_service_name(args.service_name, console)
+    vm, ssh_key = _resolve_host(args.inventory_path, args.name, args.ssh_key_path, console)
+
+    records = _list_services(vm, ssh_key, console)
+    if not any(r["service_name"] == args.service_name for r in records):
+        console.print(
+            f"[bold red]Error:[/bold red] {args.service_name} not found on "
+            f"{vm.name}. Run `prod services ls` to see what's there."
+        )
+        sys.exit(1)
+
+    try:
+        _run_single_host_op(
+            vm,
+            ssh_key,
+            f"Reset data for {args.service_name}",
+            build_reset_data_command(args.service_name),
+        )
+    except RuntimeError as e:
+        console.print(
+            f"[bold red]Error:[/bold red] {e} "
+            "(the service may be left stopped, or its identity key was missing "
+            "— check `prod services ls` and the host)."
+        )
+        sys.exit(1)
+
+    console.print(
+        f"[bold green]✓[/bold green] Reset {args.service_name} on {vm.name}: "
+        "data wiped, identity (node_identity.key) retained, service restarted. "
+        "It will re-bootstrap with the same peer ID."
+    )
 
 
 def cmd_prod_services_add(args) -> None:

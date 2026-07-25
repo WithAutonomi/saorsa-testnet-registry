@@ -25,6 +25,13 @@ from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT
 
 SERVICE_NAME_RE = re.compile(r"^ant-node-([1-9]\d*)$")
 
+# The node's persisted identity keypair, written directly in the node's
+# --root-dir by ant-node (constant NODE_IDENTITY_FILENAME in
+# ant-node/src/config.rs). The peer ID is BLAKE3(ML-DSA-65 public key) derived
+# from this file, so preserving it across a data wipe keeps the node's peer ID
+# — and therefore its XOR position and record responsibility — unchanged.
+NODE_IDENTITY_FILENAME = "node_identity.key"
+
 
 def parse_service_name(service_name: str) -> int:
     """Return the 1-based service index for ``ant-node-<N>``.
@@ -200,3 +207,40 @@ def build_write_unit_and_start_command(service_name: str, unit_content: str) -> 
         'echo "ANT_SVC:LOGFWD_REGLOBBED:telegraf-ant-elasticsearch"; fi\n'
         f'echo "ANT_SVC:ADDED:{service_name}"'
     )
+
+
+def build_reset_data_command(service_name: str) -> str:
+    """Stop ``service_name``, wipe its data dir **except** the identity key, then
+    start it again — so the node re-bootstraps with the SAME peer ID.
+
+    The node's ``--root-dir`` (``{MOUNT_POINT}/data/<svc>``) holds both the
+    record stores (``chunks.mdb``/``paid_list.mdb`` — essentially all the bytes)
+    and the identity (:data:`NODE_IDENTITY_FILENAME`). Deleting everything under
+    the root dir *except* ``node_identity.key`` reclaims the space while keeping
+    the node's peer ID — hence its XOR range and record responsibility — so on
+    restart it re-fetches exactly its current responsible set and drops any stale
+    out-of-range records, deterministically same-or-smaller and with no topology
+    churn.
+
+    Unlike ``rm``/``add`` this touches neither the systemd unit (same port) nor
+    the log dir (``{LOG_DIR}/<svc>`` is left intact, so the ES forwarder's
+    inotify watch is undisturbed — no forwarder restart needed).
+
+    Aborts (exit 3) *before* stopping the service if the identity key is missing,
+    so a missing key never turns this into a silent identity-losing wipe. Scoped
+    to the literal service name — sibling services are never touched.
+    """
+    parse_service_name(service_name)
+    root_dir = f"{MOUNT_POINT}/data/{service_name}"
+    key_path = f"{root_dir}/{NODE_IDENTITY_FILENAME}"
+    return f"""\
+set -eu
+if [ ! -f "{key_path}" ]; then
+  echo "ANT_SVC:RESET_ERR:missing_identity_key:{key_path}" >&2
+  exit 3
+fi
+systemctl stop {service_name}
+find "{root_dir}" -mindepth 1 -maxdepth 1 ! -name {NODE_IDENTITY_FILENAME} -exec rm -rf {{}} +
+systemctl start {service_name}
+echo "ANT_SVC:RESET:{service_name}"
+"""

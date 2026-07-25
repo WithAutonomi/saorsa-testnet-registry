@@ -5,8 +5,10 @@ import pytest
 
 from saorsa_deploy.provisioning.node import _build_node_exec_start, _build_node_unit_file
 from saorsa_deploy.provisioning.node_services import (
+    NODE_IDENTITY_FILENAME,
     build_list_services_command,
     build_remove_service_command,
+    build_reset_data_command,
     build_write_unit_and_start_command,
     parse_node_unit,
     parse_service_list,
@@ -112,6 +114,47 @@ class TestBuildWriteUnitAndStartCommand:
     def test_rejects_invalid_service_name(self):
         with pytest.raises(ValueError):
             build_write_unit_and_start_command("bad-name", "content")
+
+
+class TestBuildResetDataCommand:
+    def test_stops_wipes_except_identity_then_starts(self):
+        cmd = build_reset_data_command("ant-node-7")
+        root = "/mnt/ant-node-storage/data/ant-node-7"
+        # stop before wipe, start after
+        assert "systemctl stop ant-node-7" in cmd
+        assert "systemctl start ant-node-7" in cmd
+        assert cmd.index("systemctl stop ant-node-7") < cmd.index(
+            f'find "{root}"'
+        ) < cmd.index("systemctl start ant-node-7")
+        # wipe everything in the data root EXCEPT the identity key
+        assert f'find "{root}" -mindepth 1 -maxdepth 1' in cmd
+        assert f"! -name {NODE_IDENTITY_FILENAME}" in cmd
+        assert cmd.rstrip().endswith('echo "ANT_SVC:RESET:ant-node-7"')
+
+    def test_aborts_before_stopping_if_identity_key_missing(self):
+        cmd = build_reset_data_command("ant-node-7")
+        key = f"/mnt/ant-node-storage/data/ant-node-7/{NODE_IDENTITY_FILENAME}"
+        # the existence guard + exit must come before the stop
+        assert f'if [ ! -f "{key}" ]; then' in cmd
+        assert "exit 3" in cmd
+        assert cmd.index("exit 3") < cmd.index("systemctl stop ant-node-7")
+
+    def test_does_not_touch_log_dir_unit_or_forwarder(self):
+        cmd = build_reset_data_command("ant-node-7")
+        # in-place reset keeps the unit, log dir, and ES forwarder untouched
+        assert "/etc/systemd/system/ant-node-7.service" not in cmd
+        assert "/mnt/ant-node-storage/log/" not in cmd
+        assert "telegraf-ant-elasticsearch" not in cmd
+        assert "daemon-reload" not in cmd
+
+    def test_scoped_to_exact_service_name(self):
+        cmd = build_reset_data_command("ant-node-7")
+        assert "ant-node-8" not in cmd
+        assert "ant-node-70" not in cmd
+
+    def test_rejects_invalid_service_name(self):
+        with pytest.raises(ValueError):
+            build_reset_data_command("bad-name")
 
 
 class TestParseNodeUnit:
