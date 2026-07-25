@@ -1,6 +1,6 @@
 ---
 name: survey-prod-disk
-description: Regularly survey disk pressure across the entire production ant-prod-01 node fleet, keep historical records, and drive service removals to reclaim space. Runs `prod services disk-survey` to rank every node service by disk usage (smallest first = deletion candidates) and store the survey, cross-checks production Elasticsearch for services that can no longer write records (disk-full), presents removal candidates, removes the ones you approve via `prod services rm` (audited), and reports today-vs-yesterday from the stored surveys + audit trail. Use when asked to "survey prod disk", "check fleet disk pressure", "do a disk survey", "find nodes to remove", "reclaim disk on the prod fleet", or "which prod nodes are out of space".
+description: Regularly survey disk pressure across the entire production ant-prod-01 node fleet, keep historical records, and drive service removals to reclaim space. Runs `prod services disk-survey` to rank every node service by disk usage (smallest first = deletion candidates) and store the survey, cross-checks production Elasticsearch for services that can no longer write records (disk-full), presents removal candidates, and DRAINS the ones you approve — removing them one at a time via `prod services rm` (audited) with a wait between each so the network re-replicates, never all at once — then reports today-vs-yesterday from the stored surveys + audit trail. Use when asked to "survey prod disk", "check fleet disk pressure", "do a disk survey", "find nodes to remove", "reclaim disk on the prod fleet", or "which prod nodes are out of space".
 ---
 
 # survey-prod-disk
@@ -80,16 +80,34 @@ Show, per candidate: host, service, size, host free space, and whether the host 
 Recommend how many to remove per host to get each host a healthy free margin, but **let the user
 choose** — do not remove anything unprompted.
 
-### Step 4 — Remove the approved services
-For each service the user approves:
-```
-uv run saorsa-deploy prod services rm \
-  --inventory-path /home/chris/.autonomi/testnets/ant-prod-01/inventory.json \
-  --name <host> --service-name ant-node-N
-```
-Each `rm` records an audit row (removed + reclaimed size) automatically. Removal is permanent;
-the removed node's records re-replicate across the fleet. Re-run Step 1's survey afterward to
-confirm the freed space (and to store an updated survey).
+### Step 4 — Drain the approved services (one at a time, never all at once)
+Removing a node deletes its data; the ~5–7 close-group replicas of each chunk it held drop by one,
+and the network heals back to full replication by re-storing those records on the departed node's
+remaining neighbours. **Removing several nodes at once — especially nodes near each other in the
+keyspace — can push a chunk below its minimum replica count before the heal completes, losing data.**
+So remove as a **drain**: strictly sequential, one service at a time, with a wait between each for
+the network to re-replicate the removed node's records. (It need not be glacial — a few minutes per
+removal is enough for the periodic replication cycle to restore redundancy.)
+
+For each approved service, in order (smallest / most-pressured first):
+1. Remove exactly one:
+   ```
+   uv run saorsa-deploy prod services rm \
+     --inventory-path /home/chris/.autonomi/testnets/ant-prod-01/inventory.json \
+     --name <host> --service-name ant-node-N
+   ```
+   (Records an audit row with the reclaimed size automatically. Removal is permanent.)
+2. **Wait the drain interval** — default **~5 minutes** (`--interval`-style pace; the user can ask
+   for faster/slower, but do not skip it) — before touching the next service, so the network
+   re-replicates the departed node's records. Run this wait as a background sleep (foreground sleep
+   is blocked), or poll a lightweight signal (e.g. that the host's remaining services are still
+   `active` and forwarding to ES) rather than removing back-to-back.
+3. **Never remove two services concurrently**, and prefer spreading consecutive removals across
+   *different* hosts/keyspace regions rather than several from the same host in a row — that keeps
+   any single close group from losing multiple replicas within one drain window.
+
+**Do not** `rm` all approved services in a batch/loop with no gaps. When the drain is done, re-run
+Step 1's survey to confirm the freed space (and store an updated survey).
 
 ### Step 5 — Today-vs-yesterday report
 ```
