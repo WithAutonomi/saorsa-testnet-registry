@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -558,11 +559,33 @@ class TestAntProd01FullShape:
         )
         if not inv_path.exists():
             pytest.skip("ant-prod-01 inventory not available")
+        with open(inv_path) as f:
+            data = json.load(f)
+
         pairs = list(_enumerate_nodes(inv_path))
-        # Expect 66 VMs × 15 nodes each = 990 distinct pairs
-        assert len(pairs) == 990
-        # All hosts should be uppercased.
+
+        # No hard-coded fleet size — services are added/removed on prod over time
+        # (`prod services rm`/`add`), so an exact count (was 66×15=990) is brittle.
+        # Instead cross-check the enumerator against the inventory it reads.
+        assert pairs, "enumerator yielded no nodes"
+        # Per-VM dedup of nodes[]/services[] ⇒ no duplicate (host, service) pairs.
+        assert len(pairs) == len(set(pairs))
+        # All hosts uppercased.
         assert all(h == h.upper() for h, _ in pairs)
-        # Service numbers are 1..15 (strings).
-        svc_numbers = {svc for _, svc in pairs}
-        assert svc_numbers == {str(i) for i in range(1, 16)}
+
+        # Every ant-node-N present in the inventory (its authoritative services[]
+        # list, uppercased) must appear exactly once — this catches parse/dedup
+        # regressions while adapting to legitimate fleet changes.
+        expected = {
+            (vm["name"].upper(), m.group(1))
+            for vm in data.get("node_vms", [])
+            if vm.get("name")
+            for svc in (vm.get("services") or [])
+            if isinstance(svc, str) and (m := re.fullmatch(r"ant-node-(\d+)", svc))
+        }
+        assert set(p for p in pairs if p[1] != "genesis") == expected
+
+        # Service numbers are a non-empty subset of 1..15 (a full host has all 15).
+        svc_numbers = {svc for _, svc in pairs if svc != "genesis"}
+        assert svc_numbers
+        assert svc_numbers <= {str(i) for i in range(1, 16)}
