@@ -831,6 +831,71 @@ Devices are deliberately **not** averaged together the way the network counters 
 
 **Retrofitting an existing deployment.** Nothing is needed for new deployments. To add disk I/O to a deployment that is already running, re-run `deployments provision-telegraf --name <name>`: it regenerates the config from the same builder and restarts `telegraf-ant-metrics`.
 
+### Bucketed host metrics — slicing a window after the run
+
+`deployments record-analysis` writes host metrics twice: the whole-run rollup in `deployment_host_results` (unchanged, and still the cheap "how did the run look overall" view), **and** fixed-width time buckets in **`deployment_host_metric_buckets`**. The buckets exist so an arbitrary sub-window can be re-derived **after the monitoring stack is destroyed** — previously the window was fixed at capture time by `--window`, and once InfluxDB was gone it could never be revisited. That is what forced the rc.1 staging comparison to be reported as directional only: the two runs' stored windows were 3.37 h and 5.45 h, the latter including the mixed-version phase, so their CPU/memory/network figures were not like-for-like.
+
+One row per `(host, bucket_start, metric, device, service)`, holding `avg`/`min`/`max`/`samples`. A tall numeric table rather than JSON-per-bucket, so a window is filtered server-side and re-aggregated in one `GROUP BY`.
+
+```bash
+# Default: 5-minute buckets
+uv run saorsa-deploy deployments record-analysis --name STG-01
+
+# Finer resolution for a run you expect to plot as a trend
+uv run saorsa-deploy deployments record-analysis --name STG-01 --bucket-secs 60
+
+# Rollup only — skip bucket capture entirely
+uv run saorsa-deploy deployments record-analysis --name STG-01 --bucket-secs 0
+```
+
+**Bucket width does not affect accuracy.** For a window aligned to bucket boundaries, `sum(avg × samples) / sum(samples)` is *exactly* the mean of every underlying 10 s sample, and `MIN(min)` / `MAX(max)` / `SUM(samples)` are the exact extremes and count. Each bucket carries its own min and max, so a brief spike inside a bucket still surfaces as that bucket's `max` and as the window's `max`. Width trades only **how finely a window edge can be placed** (≤5 min by default, ~2.8 % of a 3 h window) and **trend-plot resolution** (65 points across a 5 h run at 300 s, 327 at 60 s) — never the numbers themselves. The 300 s default keeps a staging-sized run near 100 k rows rather than half a million; the registry runs on a small managed Postgres instance where table size is what costs query time.
+
+Two things bound what is stored, both deliberate:
+
+- **Disk I/O is bucketed only for the device tagged `node-storage`.** On a measured staging run, 348 of 421 device series were the root disk's boot/ESP partitions (`vda1`, `vda14`, `vda15`, `vda16`) whose counters merely duplicate the whole-disk counters — the majority of all rows, for no signal. The rollup still keeps **every** device.
+- **Rates are computed before bucketing, never after.** The network and disk series are per-second deltas taken *within* an interface or device; bucketing the raw monotonic counters and differencing afterwards would produce nonsense. A rate sample is timestamped at the **end** of the interval it describes.
+
+Reading a window back is `DeploymentRepository.get_host_metric_window(deployment_id, start, end)`, which returns the same shape as `host_metrics` (so a windowed re-derivation and the stored rollup are interchangeable) and does the sample-weighted mean server-side. **Averaging the per-bucket averages would be wrong** — buckets hold unequal sample counts at run boundaries and wherever a scrape was missed. The window is half-open on `bucket_start`, so a bucket is included whole or not at all.
+
+Deployments recorded before this existed simply have no bucket rows, and consumers must degrade to the rollup. **No backfill is possible** — the source InfluxDB for a past run is destroyed with its monitoring stack.
+
+#### `deployments prune-host-buckets`
+
+Buckets are the bulk of what `record-analysis` writes. `prune-host-buckets` drops old ones while leaving `deployment_host_results` intact, so a pruned deployment degrades to exactly the whole-run view it would have had before bucketing — it keeps its analysis, it just can no longer be re-sliced.
+
+```bash
+# Preview first — the delete is irreversible and the data cannot be re-captured
+uv run saorsa-deploy deployments prune-host-buckets --older-than 180 --dry-run
+uv run saorsa-deploy deployments prune-host-buckets --older-than 180
+
+# Scope to one deployment
+uv run saorsa-deploy deployments prune-host-buckets --older-than 0 --name DEV-01
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--older-than N` | *(required)* | Delete buckets whose `bucket_start` is more than N days old. `0` deletes every bucket row. |
+| `--name` | all deployments | Restrict the prune to one deployment. |
+| `--dry-run` | off | Report what would be deleted without deleting it. |
+
+The affected rows are always tabulated before deletion, `--dry-run` or not.
+
+### Clock-skewed hosts
+
+Every Flux `range()` in the Influx query paths carries an explicit far-future `stop`. This is not cosmetic. Flux defaults `stop` to `now()`, and `provisioning/clock_skew.py` deliberately jumps a VM's **system** clock — nodes by a fixed ±3 h in a per-host random direction, clients by an explicit signed duration — so a *forward*-skewed host's Telegraf writes every point hours ahead of real time. Those points fell outside the default range and were silently discarded.
+
+The failure was shape-dependent, which is why it went unnoticed: on a long run a forward-skewed host merely lost its final skew's-worth of data, while on a short run it disappeared from the results entirely. On DEV-03 (2026-07-25) a +3 h node VM contributed 0 of 27 hosts to `record-analysis` while holding 460 `memory_rss` points in the bucket. The same defect applied to the file-op, prod-upload and canary queries.
+
+Those hosts are now captured — but their timestamps remain displaced by the skew, so a sub-window re-derived from the buckets covers a *different* stretch of a skewed host's run than of everyone else's. `record-analysis` therefore prints a **`Clock offset detected`** warning listing any host whose observation window deviates from the fleet **median** by more than 15 minutes, with the signed offset. A positive offset is a clock running ahead; a negative one may instead mean the host stopped reporting early. The median is the reference deliberately — it needs no assumption about the clock of the machine running the command, and a handful of skewed hosts cannot drag it.
+
+### Per-service node memory (RSS)
+
+`record-analysis` also records **per-service RSS** for the node tier, under `rss_by_service` in `host_metrics` and as the `rss_bytes` bucket series. Telegraf has always collected it — four node-tier `[[inputs.procstat]]` blocks plus a regex processor deriving a `node_service` tag (`ant-node-3`) from `cgroup_full` — but nothing ever queried it, so process-level memory was absent from the registry entirely and could not be compared for *any* run recorded before this landed.
+
+`mem_percent` is not a substitute: it is whole-host memory including page cache, so it cannot separate a genuine ant-node leak from cache growth, and it cannot attribute anything to one of the 15 services on a VM.
+
+Keyed by `node_service`, never by PID — services restart and PIDs churn, while `ant-node-3` is stable. Deliberately **not** pooled into a host total, for the same reason disk devices are kept separate: the signal worth catching is a *single* service growing without bound, which a 15-service mean would dilute fifteenfold. `record-analysis`'s summary table shows only the peak service as a scalar; `deployments print-recorded-results` renders one row per (host, service). Client-tier RSS is a separate, already-working path in the `client-metrics` bucket (see below) and is unaffected.
+
 CLIENT-role hosts additionally get the client `ant` service's **memory** recorded into `client-metrics`: a `procstat` input matching `system.slice/ant-*.service` (per-process RSS, tagged `metric_source=ant-client`, 2 s interval) and a `cgroup` input reading `memory.current` + `memory.peak` (whole-service live + high-water peak) for the same glob. These stanzas (`resources/monitoring/telegraf_metrics_client.conf`) are appended **only** on CLIENT hosts, so node configs are byte-identical and the cgroup input never logs a missing-path error on the node fleet. The single `ant-*` glob matches whichever client unit a VM runs (`ant-uploader`, `ant-downloader`, `ant-prod-uploader`, `ant-prod-downloader`, `ant-prod-canary-upload`, `ant-prod-canary-probe`). Query `procstat` filtered to `process_name == "ant"` for per-process RSS, or the `cgroup` measurement's `memory.peak` for the true per-run high-water mark (caught even when a sub-2 s terminal spike clips the sampled RSS). The local-* prod kinds run no systemd unit and are not covered.
 
 ### `monitoring info` command

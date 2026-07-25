@@ -3,8 +3,15 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy import delete, func, insert, select
+
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
+from saorsa_db.models.host_metric_bucket import (
+    DISK_METRICS,
+    METRIC_RSS_BYTES,
+    DeploymentHostMetricBucket,
+)
 from saorsa_db.models.host_result import DeploymentHostResult
 from saorsa_db.models.op_record import (
     DeploymentDownloadRecord,
@@ -196,6 +203,43 @@ class DeploymentRepository(ABC):
     def set_host_result_summary(
         self, deployment_id: int, summary: str
     ) -> DeploymentHostResult:
+        ...
+
+    @abstractmethod
+    def replace_host_metric_buckets(
+        self, deployment_id: int, buckets: list[dict]
+    ) -> int:
+        ...
+
+    @abstractmethod
+    def count_host_metric_buckets(self, deployment_id: int) -> int:
+        ...
+
+    @abstractmethod
+    def get_host_metric_window(
+        self,
+        deployment_id: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict]:
+        ...
+
+    @abstractmethod
+    def get_host_metric_bucket_span(
+        self, deployment_id: int
+    ) -> tuple[datetime, datetime] | None:
+        ...
+
+    @abstractmethod
+    def delete_host_metric_buckets_before(
+        self, cutoff: datetime, deployment_id: int | None = None
+    ) -> int:
+        ...
+
+    @abstractmethod
+    def summarize_host_metric_buckets(
+        self, cutoff: datetime | None = None
+    ) -> list[dict]:
         ...
 
     @abstractmethod
@@ -744,6 +788,230 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
+
+    # -- bucketed host metrics ------------------------------------------------
+
+    def replace_host_metric_buckets(
+        self, deployment_id: int, buckets: list[dict]
+    ) -> int:
+        """Replace every bucket row for a deployment, returning the row count.
+
+        Replace rather than upsert, mirroring how ``upsert_host_result``
+        replaces ``host_metrics`` wholesale: re-running ``record-analysis`` for
+        a deployment re-states its whole stored window. NB a re-run with a
+        *narrower* ``--window`` therefore shrinks what is stored -- the same
+        hazard the rollup row already has.
+
+        Rows are inserted in one bulk statement, not row-at-a-time through the
+        ORM: a single run produces on the order of 100k rows.
+        """
+        self.session.execute(
+            delete(DeploymentHostMetricBucket).where(
+                DeploymentHostMetricBucket.deployment_id == deployment_id
+            )
+        )
+        if buckets:
+            now = datetime.now(timezone.utc)
+            rows = [
+                {
+                    "deployment_id": deployment_id,
+                    "host": b["host"],
+                    "bucket_start": b["bucket_start"],
+                    "metric": b["metric"],
+                    "device": b.get("device"),
+                    "volume_role": b.get("volume_role"),
+                    "service": b.get("service"),
+                    "avg": b.get("avg"),
+                    "min": b.get("min"),
+                    "max": b.get("max"),
+                    "samples": b.get("samples") or 0,
+                    "recorded_at": now,
+                }
+                for b in buckets
+            ]
+            self.session.execute(insert(DeploymentHostMetricBucket), rows)
+        self.session.commit()
+        return len(buckets)
+
+    def count_host_metric_buckets(self, deployment_id: int) -> int:
+        return (
+            self.session.query(func.count(DeploymentHostMetricBucket.id))
+            .filter(DeploymentHostMetricBucket.deployment_id == deployment_id)
+            .scalar()
+        ) or 0
+
+    def get_host_metric_bucket_span(
+        self, deployment_id: int
+    ) -> tuple[datetime, datetime] | None:
+        """Earliest and latest ``bucket_start`` stored for a deployment."""
+        row = self.session.execute(
+            select(
+                func.min(DeploymentHostMetricBucket.bucket_start),
+                func.max(DeploymentHostMetricBucket.bucket_start),
+            ).where(DeploymentHostMetricBucket.deployment_id == deployment_id)
+        ).one_or_none()
+        if row is None or row[0] is None or row[1] is None:
+            return None
+        return (row[0], row[1])
+
+    def get_host_metric_window(
+        self,
+        deployment_id: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict]:
+        """Re-derive rollup-shaped per-host stats for an arbitrary window.
+
+        Returns the same shape ``deployment_host_results.host_metrics`` holds --
+        one dict per host with ``cpu_percent`` / ``mem_percent`` /
+        ``bytes_in_per_sec`` / ``bytes_out_per_sec`` / ``disk_io_by_device`` /
+        ``rss_by_service`` -- so a caller can treat a windowed re-derivation and
+        the stored whole-run rollup interchangeably.
+
+        The window is **half-open on** ``bucket_start`` (``start <= b < end``),
+        so its granularity is the bucket granularity: a bucket is included
+        whole or not at all. Both bounds are optional; omitting them returns the
+        whole run, which is the case that must match the rollup row.
+
+        ``avg`` is **sample-weighted** -- ``sum(avg * samples) / sum(samples)``,
+        computed server-side. A plain mean of the per-bucket averages would be
+        wrong whenever buckets hold unequal sample counts, which they do at run
+        boundaries and wherever a scrape was missed.
+
+        Returns an empty list for deployments recorded before bucketing existed;
+        callers must degrade to the rollup rather than assume buckets exist.
+        """
+        weighted_sum = func.sum(
+            DeploymentHostMetricBucket.avg * DeploymentHostMetricBucket.samples
+        )
+        total_samples = func.sum(DeploymentHostMetricBucket.samples)
+        query = select(
+            DeploymentHostMetricBucket.host,
+            DeploymentHostMetricBucket.metric,
+            DeploymentHostMetricBucket.device,
+            DeploymentHostMetricBucket.volume_role,
+            DeploymentHostMetricBucket.service,
+            (weighted_sum / func.nullif(total_samples, 0)).label("avg"),
+            func.min(DeploymentHostMetricBucket.min).label("min"),
+            func.max(DeploymentHostMetricBucket.max).label("max"),
+            total_samples.label("samples"),
+            func.min(DeploymentHostMetricBucket.bucket_start).label("first_bucket"),
+            func.max(DeploymentHostMetricBucket.bucket_start).label("last_bucket"),
+        ).where(DeploymentHostMetricBucket.deployment_id == deployment_id)
+        if start is not None:
+            query = query.where(DeploymentHostMetricBucket.bucket_start >= start)
+        if end is not None:
+            query = query.where(DeploymentHostMetricBucket.bucket_start < end)
+        query = query.group_by(
+            DeploymentHostMetricBucket.host,
+            DeploymentHostMetricBucket.metric,
+            DeploymentHostMetricBucket.device,
+            DeploymentHostMetricBucket.volume_role,
+            DeploymentHostMetricBucket.service,
+        )
+
+        hosts: dict[str, dict] = {}
+        for row in self.session.execute(query):
+            entry = hosts.setdefault(
+                row.host,
+                {
+                    "host": row.host,
+                    "disk_io_by_device": {},
+                    "rss_by_service": {},
+                    "_first": None,
+                    "_last": None,
+                },
+            )
+            if entry["_first"] is None or row.first_bucket < entry["_first"]:
+                entry["_first"] = row.first_bucket
+            if entry["_last"] is None or row.last_bucket > entry["_last"]:
+                entry["_last"] = row.last_bucket
+
+            stats = {
+                "avg": float(row.avg) if row.avg is not None else None,
+                "min": float(row.min) if row.min is not None else None,
+                "max": float(row.max) if row.max is not None else None,
+                "samples": int(row.samples or 0),
+            }
+            if row.metric in DISK_METRICS:
+                # Kept per-device, never pooled: a root disk and a node storage
+                # volume are not interchangeable.
+                device = entry["disk_io_by_device"].setdefault(
+                    row.device or "", {"volume_role": row.volume_role}
+                )
+                if row.volume_role is not None:
+                    device["volume_role"] = row.volume_role
+                device[row.metric] = stats
+            elif row.metric == METRIC_RSS_BYTES:
+                # Keyed by service, never pooled into a host total: the signal
+                # is one service leaking, which a 15-service mean would dilute.
+                entry["rss_by_service"][row.service or ""] = stats
+            else:
+                entry[row.metric] = stats
+
+        results = []
+        for host in sorted(hosts):
+            entry = hosts[host]
+            first = entry.pop("_first")
+            last = entry.pop("_last")
+            entry["metrics_started_at"] = first.isoformat() if first else None
+            entry["metrics_ended_at"] = last.isoformat() if last else None
+            results.append(entry)
+        return results
+
+    def summarize_host_metric_buckets(
+        self, cutoff: datetime | None = None
+    ) -> list[dict]:
+        """Per-deployment bucket counts and spans, for the prune command.
+
+        With a ``cutoff``, only counts rows whose ``bucket_start`` is strictly
+        older than it -- i.e. exactly what a prune at that cutoff would remove.
+        """
+        query = select(
+            DeploymentHostMetricBucket.deployment_id,
+            Deployment.name,
+            func.count(DeploymentHostMetricBucket.id).label("rows"),
+            func.min(DeploymentHostMetricBucket.bucket_start).label("first_bucket"),
+            func.max(DeploymentHostMetricBucket.bucket_start).label("last_bucket"),
+        ).join(
+            Deployment, Deployment.id == DeploymentHostMetricBucket.deployment_id
+        )
+        if cutoff is not None:
+            query = query.where(DeploymentHostMetricBucket.bucket_start < cutoff)
+        query = query.group_by(
+            DeploymentHostMetricBucket.deployment_id, Deployment.name
+        ).order_by(DeploymentHostMetricBucket.deployment_id)
+        return [
+            {
+                "deployment_id": row.deployment_id,
+                "name": row.name,
+                "rows": int(row.rows or 0),
+                "first_bucket": row.first_bucket,
+                "last_bucket": row.last_bucket,
+            }
+            for row in self.session.execute(query)
+        ]
+
+    def delete_host_metric_buckets_before(
+        self, cutoff: datetime, deployment_id: int | None = None
+    ) -> int:
+        """Delete bucket rows older than ``cutoff``, returning the row count.
+
+        Only touches ``deployment_host_metric_buckets``. The
+        ``deployment_host_results`` rollup row is deliberately left alone, so a
+        pruned deployment degrades to exactly the whole-run-only view it would
+        have had before bucketing existed.
+        """
+        statement = delete(DeploymentHostMetricBucket).where(
+            DeploymentHostMetricBucket.bucket_start < cutoff
+        )
+        if deployment_id is not None:
+            statement = statement.where(
+                DeploymentHostMetricBucket.deployment_id == deployment_id
+            )
+        result = self.session.execute(statement)
+        self.session.commit()
+        return result.rowcount or 0
 
     def upsert_prod_upload_result(
         self,

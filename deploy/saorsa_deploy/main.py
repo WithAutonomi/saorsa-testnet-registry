@@ -1248,6 +1248,20 @@ def main(argv=None):
         ),
     )
     deployments_record_analysis_parser.add_argument(
+        "--bucket-secs",
+        type=int,
+        default=300,
+        help=(
+            "Width in seconds of the time buckets written to "
+            "deployment_host_metric_buckets, which let an arbitrary sub-window "
+            "of the run be re-derived later from Postgres alone. Default 300 "
+            "(5 minutes). Re-aggregating a window is exact at any width, so "
+            "this trades only how finely a window edge can be placed (and "
+            "trend-plot resolution) against stored rows. Pass 0 to skip "
+            "bucket capture and record only the whole-run rollup."
+        ),
+    )
+    deployments_record_analysis_parser.add_argument(
         "--summary",
         type=str,
         default=None,
@@ -1255,6 +1269,38 @@ def main(argv=None):
             "Freeform summary text describing the testnet run outcome. "
             "If omitted, any existing summary on the row is preserved."
         ),
+    )
+
+    # deployments prune-host-buckets
+    deployments_prune_buckets_parser = deployments_subparsers.add_parser(
+        "prune-host-buckets",
+        help=(
+            "Delete old rows from deployment_host_metric_buckets. Never "
+            "touches deployment_host_results, so a pruned deployment degrades "
+            "to the whole-run rollup view rather than losing its analysis."
+        ),
+    )
+    deployments_prune_buckets_parser.add_argument(
+        "--older-than",
+        type=int,
+        required=True,
+        help=(
+            "Delete buckets whose bucket_start is more than this many days "
+            "old. Use 0 to delete every bucket row."
+        ),
+    )
+    deployments_prune_buckets_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Restrict the prune to one deployment (default: every deployment)."
+        ),
+    )
+    deployments_prune_buckets_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be deleted without deleting anything.",
     )
 
     # deployments record-results
@@ -4809,6 +4855,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.record_analysis import cmd_record_analysis
 
             cmd_record_analysis(args)
+        elif args.deployments_subcommand == "prune-host-buckets":
+            from saorsa_deploy.cmd.prune_host_buckets import cmd_prune_host_buckets
+
+            cmd_prune_host_buckets(args)
         elif args.deployments_subcommand == "record-results":
             from saorsa_deploy.cmd.record_results import cmd_record_results
 

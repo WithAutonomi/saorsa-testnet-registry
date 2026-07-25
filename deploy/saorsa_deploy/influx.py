@@ -23,13 +23,42 @@ Influx instance.
 import csv
 import io
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import requests
+from saorsa_db.models.host_metric_bucket import (
+    METRIC_BYTES_IN_PER_SEC,
+    METRIC_BYTES_OUT_PER_SEC,
+    METRIC_CPU_PERCENT,
+    METRIC_MEM_PERCENT,
+    METRIC_RSS_BYTES,
+)
 
 OP_MEASUREMENTS = ("upload", "download")
 
+# Every Flux `range()` in this module must carry an explicit `stop`.
+#
+# Flux defaults `stop` to `now()`, which silently discards points timestamped in
+# the FUTURE -- and we deliberately create hosts that produce exactly those.
+# `provisioning/clock_skew.py` jumps a VM's *system* clock (nodes by a fixed
+# SKEW_HOURS in a per-host random direction, clients by an explicit signed
+# duration), so a forward-skewed host's Telegraf writes every point hours ahead
+# of real time.
+#
+# The failure was silent and shape-dependent: on a long run a forward-skewed
+# host merely lost its final `skew`-worth of data, while on a short run it
+# vanished from the results entirely. Observed on DEV-03 (2026-07-25), where a
+# +3h node VM contributed 0 of 27 hosts to `record-analysis` despite having 460
+# `memory_rss` points sitting in the bucket.
+#
+# An absolute far-future bound rather than a relative one such as `30d`: the
+# point is that no plausible clock is ever excluded, and a relative bound just
+# moves the cliff somewhere less obvious. Empty future shard groups do not
+# exist, so a wide stop costs nothing to scan.
+FLUX_FAR_FUTURE = "2200-01-01T00:00:00Z"
+
 PIVOT_FLUX_TEMPLATE = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "upload" or r._measurement == "download")
   |> filter(fn: (r) =>
        r._field == "file_size" or
@@ -69,6 +98,7 @@ def fetch_operation_points(
     org: str,
     bucket: str,
     start: str = "-30d",
+    stop: str = FLUX_FAR_FUTURE,
     timeout: int = 30,
 ) -> list[dict]:
     """Run the pivoted Flux query and return one dict per operation point.
@@ -77,8 +107,12 @@ def fetch_operation_points(
     ``_measurement`` (str: "upload"|"download"), ``file_size`` (int, bytes),
     ``start_ns`` (int), ``status`` (int: 0=success, 1=failure), ``total_ms``
     (int).
+
+    ``stop`` defaults to :data:`FLUX_FAR_FUTURE` so that clock-skewed client
+    VMs — which testnet manifests create deliberately — are not silently
+    dropped; see that constant's comment.
     """
-    flux = PIVOT_FLUX_TEMPLATE.format(bucket=bucket, start=start)
+    flux = PIVOT_FLUX_TEMPLATE.format(bucket=bucket, start=start, stop=stop)
     resp = requests.post(
         f"{url.rstrip('/')}/api/v2/query",
         params={"org": org},
@@ -198,7 +232,7 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
 
 
 PROD_UPLOAD_FLUX_TEMPLATE = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "prod_upload")
   |> pivot(rowKey: ["_time", "host"], columnKey: ["_field"], valueColumn: "_value")
 """
@@ -210,6 +244,7 @@ def fetch_prod_upload_points(
     org: str,
     bucket: str,
     start: str = "0",
+    stop: str = FLUX_FAR_FUTURE,
     timeout: int = 30,
 ) -> list[dict]:
     """Run a Flux query and return one dict per prod-upload point.
@@ -228,7 +263,7 @@ def fetch_prod_upload_points(
     The default ``start: 0`` queries from the Unix epoch — prod uploaders
     are bounded runs so a wide window is the right default.
     """
-    flux = PROD_UPLOAD_FLUX_TEMPLATE.format(bucket=bucket, start=start)
+    flux = PROD_UPLOAD_FLUX_TEMPLATE.format(bucket=bucket, start=start, stop=stop)
     resp = requests.post(
         f"{url.rstrip('/')}/api/v2/query",
         params={"org": org},
@@ -299,7 +334,7 @@ def _parse_prod_upload_csv(body: str) -> list[dict]:
 
 
 HOST_FLUX_CPU = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) =>
        r._measurement == "cpu"
        and r.cpu == "cpu-total"
@@ -307,12 +342,12 @@ HOST_FLUX_CPU = """from(bucket: "{bucket}")
 """
 
 HOST_FLUX_MEM = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "mem" and r._field == "used_percent")
 """
 
 HOST_FLUX_NET = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) =>
        r._measurement == "net"
        and r.interface != "lo"
@@ -323,11 +358,28 @@ HOST_FLUX_NET = """from(bucket: "{bucket}")
 # collection time by the `devices` include-glob in telegraf_metrics.conf (which
 # already keeps snapd `loop*` out), so no device filtering is needed here.
 HOST_FLUX_DISKIO = """from(bucket: "{bucket}")
-  |> range(start: {start})
+  |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) =>
        r._measurement == "diskio"
        and (r._field == "read_bytes" or r._field == "write_bytes"
             or r._field == "reads" or r._field == "writes"))
+"""
+
+# Per-service resident set size. Telegraf's node-tier config runs four
+# `[[inputs.procstat]]` blocks (ant-node-*, ant-bootstrap-*, ant-bootstrap,
+# ant-genesis-node) plus a regex processor deriving the `node_service` tag from
+# `cgroup_full`, so each of the 15 services on a VM is individually
+# identifiable. Field name and tag verified against a live bucket: procstat also
+# emits `memory_usage`, but that is a percentage of host total, not bytes.
+#
+# The node tier lands in `testnet-metrics`; client-tier procstat is tagged
+# `metric_source=ant-client` and lands in the separate `client-metrics` bucket,
+# so no extra filter is needed to keep the two apart.
+HOST_FLUX_PROCSTAT = """from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) =>
+       r._measurement == "procstat"
+       and r._field == "memory_rss")
 """
 
 
@@ -342,6 +394,17 @@ DISKIO_FIELD_TARGETS = {
     "reads": "reads",
     "writes": "writes",
 }
+
+# Default bucket width for `bucket_host_metric_samples`, in seconds.
+#
+# Windowed re-aggregation is *exact* at any bucket width -- a sample-weighted
+# mean of bucket averages is the true mean of the underlying samples, and
+# MIN(min)/MAX(max)/SUM(samples) are the true extremes and count. Bucket width
+# therefore costs only how finely a window *edge* can be placed and how smooth a
+# trend plot is, not the accuracy of any comparison. 5 minutes keeps a run's
+# stored rows at roughly a fifth of the 1-minute alternative, which matters:
+# the registry runs on the smallest managed Postgres tier.
+DEFAULT_BUCKET_SECS = 300
 
 
 def _run_flux(url: str, token: str, org: str, flux: str, timeout: int = 30) -> str:
@@ -401,17 +464,23 @@ def fetch_host_metric_points(
     org: str,
     bucket: str,
     start: str = "0",
+    stop: str = FLUX_FAR_FUTURE,
     timeout: int = 30,
 ) -> dict:
-    """Run four Flux queries (cpu/mem/net/diskio) and return the raw points.
+    """Run five Flux queries (cpu/mem/net/diskio/procstat) and return raw points.
 
-    Returns a dict with keys ``cpu``, ``mem``, ``net``, ``diskio``, each
-    mapping to a list of row dicts from :func:`_parse_flux_csv`.
+    Returns a dict with keys ``cpu``, ``mem``, ``net``, ``diskio``,
+    ``procstat``, each mapping to a list of row dicts from
+    :func:`_parse_flux_csv`.
 
     The default ``start: 0`` queries from the Unix epoch — i.e. every host
     metric point in the bucket — so a run's full history is recorded rather
     than only a trailing window. Pass a Flux duration (e.g. ``-6h``) to
     restrict it.
+
+    ``stop`` defaults to :data:`FLUX_FAR_FUTURE` rather than Flux's implicit
+    ``now()``, so a forward clock-skewed host's future-dated points are
+    included instead of silently vanishing; see that constant's comment.
     """
     result: dict = {}
     for key, template in (
@@ -419,8 +488,9 @@ def fetch_host_metric_points(
         ("mem", HOST_FLUX_MEM),
         ("net", HOST_FLUX_NET),
         ("diskio", HOST_FLUX_DISKIO),
+        ("procstat", HOST_FLUX_PROCSTAT),
     ):
-        flux = template.format(bucket=bucket, start=start)
+        flux = template.format(bucket=bucket, start=start, stop=stop)
         body = _run_flux(url, token, org, flux, timeout=timeout)
         result[key] = _parse_flux_csv(body)
     return result
@@ -446,73 +516,101 @@ def _stats(samples: list[float]) -> dict:
     }
 
 
-def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
-    """Aggregate raw host metric points into per-host summary dicts.
+class NormalisedHostMetrics(NamedTuple):
+    """Output of :func:`normalise_host_metric_points`.
 
-    For each host seen across the input points, produces one entry with:
-
-    * ``cpu_percent`` — stats of ``100 - cpu.usage_idle`` (``cpu=cpu-total``)
-    * ``mem_percent`` — stats of ``mem.used_percent``
-    * ``bytes_in_per_sec`` / ``bytes_out_per_sec`` — stats of per-second
-      deltas of ``net.bytes_recv`` / ``net.bytes_sent``, computed
-      separately per interface (``lo`` excluded) then pooled.
-    * ``disk_io_by_device`` — a dict keyed by kernel device name (``sdb``,
-      ``dm-0``), each holding ``volume_role`` plus ``read_bytes_per_sec`` /
-      ``write_bytes_per_sec`` / ``reads_per_sec`` / ``writes_per_sec`` stats of
-      per-second deltas of the ``diskio`` counters.
-
-      Deliberately NOT pooled across devices the way the net counters are
-      pooled across interfaces: a host's root disk and its node storage volume
-      are not interchangeable, and averaging an idle root disk against a busy
-      data volume produces a number that describes neither. The device whose
-      ``volume_role`` is ``"node-storage"`` is the node storage volume (see
-      :func:`~saorsa_deploy.provisioning.telegraf_metrics.build_data_device_env_command`).
-    * ``metrics_started_at`` / ``metrics_ended_at`` — earliest/latest
-      timestamp of any point contributing to that host.
-
-    Each stat dict is ``{"avg", "min", "max", "samples"}``; missing series
-    produce all-``None`` stats with ``samples=0``.
+    ``samples`` is the flat, timestamped series — every counter already turned
+    into a rate, every gauge passed through. ``time_bounds`` and ``devices``
+    carry the two things the sample list alone cannot express: the observation
+    window of a host (which includes points that contributed no sample), and
+    the existence of a device that produced no rate at all because only one
+    point was collected for it.
     """
-    hosts: dict[str, dict] = {}
 
-    def host_entry(name: str) -> dict:
-        return hosts.setdefault(
-            name,
+    samples: list[dict]
+    time_bounds: dict[str, list]
+    devices: dict[str, dict]
+
+
+def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostMetrics:
+    """Turn raw Influx points into flat, timestamped, per-series samples.
+
+    This is the delta/normalise stage, deliberately separate from any
+    windowing. ``net`` and the four ``diskio`` series are **per-second deltas
+    computed within an interface/device** — bucketing the raw monotonic
+    counters first and differencing afterwards would produce nonsense, so the
+    rate must be derived here, before any window is applied. ``cpu``, ``mem``
+    and ``procstat`` RSS are gauges and pass straight through.
+
+    Each sample is a dict with ``host``, ``metric``, ``device``,
+    ``volume_role``, ``service``, ``ts`` and ``value``. A rate sample is
+    timestamped at the **end** of the interval it describes: the rate is a
+    property of the interval that just closed, and dating it to the interval's
+    start would place the sample before the data that produced it existed.
+
+    Negative deltas are dropped as counter resets (the counters restart when a
+    VM reboots), as are non-advancing timestamps.
+    """
+    samples: list[dict] = []
+    time_bounds: dict[str, list] = {}
+    devices: dict[str, dict] = {}
+
+    def track_time(host: str, ts: datetime) -> None:
+        bounds = time_bounds.setdefault(host, [None, None])
+        if bounds[0] is None or ts < bounds[0]:
+            bounds[0] = ts
+        if bounds[1] is None or ts > bounds[1]:
+            bounds[1] = ts
+
+    def emit(
+        host: str,
+        metric: str,
+        ts: datetime,
+        value: float,
+        device: str | None = None,
+        volume_role: str | None = None,
+        service: str | None = None,
+    ) -> None:
+        samples.append(
             {
-                "cpu_samples": [],
-                "mem_samples": [],
-                "bytes_in_samples": [],
-                "bytes_out_samples": [],
-                # device -> {"volume_role": str|None, "<target>": [rates]}
-                "disk_devices": {},
-                "metrics_started_at": None,
-                "metrics_ended_at": None,
-            },
+                "host": host,
+                "metric": metric,
+                "device": device,
+                "volume_role": volume_role,
+                "service": service,
+                "ts": ts,
+                "value": value,
+            }
         )
-
-    def track_time(entry: dict, ts: datetime) -> None:
-        if entry["metrics_started_at"] is None or ts < entry["metrics_started_at"]:
-            entry["metrics_started_at"] = ts
-        if entry["metrics_ended_at"] is None or ts > entry["metrics_ended_at"]:
-            entry["metrics_ended_at"] = ts
 
     for p in points_by_measurement.get("cpu", []):
         host = p.get("host")
         idle = _to_float(p.get("_value"))
         if not host or idle is None:
             continue
-        entry = host_entry(host)
-        entry["cpu_samples"].append(100.0 - idle)
-        track_time(entry, p["_time"])
+        emit(host, METRIC_CPU_PERCENT, p["_time"], 100.0 - idle)
+        track_time(host, p["_time"])
 
     for p in points_by_measurement.get("mem", []):
         host = p.get("host")
         val = _to_float(p.get("_value"))
         if not host or val is None:
             continue
-        entry = host_entry(host)
-        entry["mem_samples"].append(val)
-        track_time(entry, p["_time"])
+        emit(host, METRIC_MEM_PERCENT, p["_time"], val)
+        track_time(host, p["_time"])
+
+    # Per-service RSS is a gauge, so unlike net/diskio it needs no delta stage.
+    # Keyed by the `node_service` tag, never by PID: services restart and PIDs
+    # churn, while `ant-node-3` is stable and is what makes per-node analysis
+    # possible on a host running 15 of them.
+    for p in points_by_measurement.get("procstat", []):
+        host = p.get("host")
+        service = p.get("node_service")
+        val = _to_float(p.get("_value"))
+        if not host or not service or val is None:
+            continue
+        emit(host, METRIC_RSS_BYTES, p["_time"], val, service=service)
+        track_time(host, p["_time"])
 
     net_groups: dict[tuple[str, str, str], list[dict]] = {}
     for p in points_by_measurement.get("net", []):
@@ -527,9 +625,10 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
 
     for (host, _interface, field), pts in net_groups.items():
         pts.sort(key=lambda p: p["_time"])
-        entry = host_entry(host)
-        target = (
-            "bytes_in_samples" if field == "bytes_recv" else "bytes_out_samples"
+        metric = (
+            METRIC_BYTES_IN_PER_SEC
+            if field == "bytes_recv"
+            else METRIC_BYTES_OUT_PER_SEC
         )
         for prev, curr in zip(pts, pts[1:]):
             prev_val = _to_float(prev.get("_value"))
@@ -540,9 +639,12 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
             delta_sec = (curr["_time"] - prev["_time"]).total_seconds()
             if delta_bytes < 0 or delta_sec <= 0:
                 continue
-            entry[target].append(delta_bytes / delta_sec)
-            track_time(entry, prev["_time"])
-            track_time(entry, curr["_time"])
+            # Pooled across a host's interfaces (unlike disk devices, which are
+            # kept separate) -- the interfaces of one host carry the same
+            # traffic role, so their sum is the host's bandwidth.
+            emit(host, metric, curr["_time"], delta_bytes / delta_sec)
+            track_time(host, prev["_time"])
+            track_time(host, curr["_time"])
 
     # diskio counters are monotonic per device, exactly like the net counters
     # above: group by (host, device, field), walk consecutive pairs for a
@@ -568,13 +670,14 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
 
     for (host, device, field), pts in diskio_groups.items():
         pts.sort(key=lambda p: p["_time"])
-        entry = host_entry(host)
-        dev_entry = entry["disk_devices"].setdefault(
-            device,
-            {"volume_role": diskio_roles.get((host, device))},
-        )
-        target = DISKIO_FIELD_TARGETS[field]
-        samples = dev_entry.setdefault(target, [])
+        role = diskio_roles.get((host, device))
+        # Registered even when the pair loop below yields nothing: a device seen
+        # exactly once has no rate but does exist, and the rollup reports it
+        # with zero samples rather than omitting it.
+        devices.setdefault(host, {}).setdefault(device, role)
+        if role is not None:
+            devices[host][device] = role
+        metric = f"{DISKIO_FIELD_TARGETS[field]}_per_sec"
         for prev, curr in zip(pts, pts[1:]):
             prev_val = _to_float(prev.get("_value"))
             curr_val = _to_float(curr.get("_value"))
@@ -584,37 +687,204 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
             delta_sec = (curr["_time"] - prev["_time"]).total_seconds()
             if delta < 0 or delta_sec <= 0:
                 continue
-            samples.append(delta / delta_sec)
-            track_time(entry, prev["_time"])
-            track_time(entry, curr["_time"])
+            emit(
+                host,
+                metric,
+                curr["_time"],
+                delta / delta_sec,
+                device=device,
+                volume_role=role,
+            )
+            track_time(host, prev["_time"])
+            track_time(host, curr["_time"])
+
+    return NormalisedHostMetrics(
+        samples=samples, time_bounds=time_bounds, devices=devices
+    )
+
+
+def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
+    """Aggregate raw host metric points into per-host summary dicts.
+
+    For each host seen across the input points, produces one entry with:
+
+    * ``cpu_percent`` — stats of ``100 - cpu.usage_idle`` (``cpu=cpu-total``)
+    * ``mem_percent`` — stats of ``mem.used_percent``
+    * ``bytes_in_per_sec`` / ``bytes_out_per_sec`` — stats of per-second
+      deltas of ``net.bytes_recv`` / ``net.bytes_sent``, computed
+      separately per interface (``lo`` excluded) then pooled.
+    * ``disk_io_by_device`` — a dict keyed by kernel device name (``sdb``,
+      ``dm-0``), each holding ``volume_role`` plus ``read_bytes_per_sec`` /
+      ``write_bytes_per_sec`` / ``reads_per_sec`` / ``writes_per_sec`` stats of
+      per-second deltas of the ``diskio`` counters.
+
+      Deliberately NOT pooled across devices the way the net counters are
+      pooled across interfaces: a host's root disk and its node storage volume
+      are not interchangeable, and averaging an idle root disk against a busy
+      data volume produces a number that describes neither. The device whose
+      ``volume_role`` is ``"node-storage"`` is the node storage volume (see
+      :func:`~saorsa_deploy.provisioning.telegraf_metrics.build_data_device_env_command`).
+    * ``rss_by_service`` — a dict keyed by the ``node_service`` tag
+      (``ant-node-3``), each holding stats of that service's resident set size
+      in bytes. Likewise never pooled into a host total: the signal worth
+      catching is *one* service leaking, which a 15-service mean would dilute
+      fifteenfold. Empty for hosts that run no node services.
+    * ``metrics_started_at`` / ``metrics_ended_at`` — earliest/latest
+      timestamp of any point contributing to that host.
+
+    Each stat dict is ``{"avg", "min", "max", "samples"}``; missing series
+    produce all-``None`` stats with ``samples=0``.
+
+    This is the whole-run view. It is now a thin consumer of
+    :func:`normalise_host_metric_points` — the degenerate case of bucketing
+    where a single bucket spans everything — so it and
+    :func:`bucket_host_metric_samples` cannot drift apart in how they compute a
+    rate. Its signature and output are unchanged.
+
+    A caller that also wants buckets should normalise once and call
+    :func:`aggregate_normalised_host_metrics` directly, rather than paying for
+    the delta stage twice.
+    """
+    return aggregate_normalised_host_metrics(
+        normalise_host_metric_points(points_by_measurement)
+    )
+
+
+def aggregate_normalised_host_metrics(
+    normalised: NormalisedHostMetrics,
+) -> list[dict]:
+    """Collapse normalised samples to one whole-run entry per host.
+
+    The windowing stage's degenerate case: a single bucket spanning everything.
+    See :func:`aggregate_host_metrics` for the output shape.
+    """
+    grouped: dict[tuple, list[float]] = {}
+    services: dict[str, set] = {}
+    for s in normalised.samples:
+        key = (s["host"], s["metric"], s["device"], s["service"])
+        grouped.setdefault(key, []).append(s["value"])
+        if s["metric"] == METRIC_RSS_BYTES:
+            services.setdefault(s["host"], set()).add(s["service"])
+
+    def stats_for(
+        host: str,
+        metric: str,
+        device: str | None = None,
+        service: str | None = None,
+    ) -> dict:
+        return _stats(grouped.get((host, metric, device, service), []))
 
     results: list[dict] = []
-    for host in sorted(hosts.keys()):
-        h = hosts[host]
-        if h["metrics_started_at"] is None or h["metrics_ended_at"] is None:
+    for host in sorted(normalised.time_bounds):
+        started_at, ended_at = normalised.time_bounds[host]
+        if started_at is None or ended_at is None:
             continue
         results.append(
             {
                 "host": host,
-                "metrics_started_at": h["metrics_started_at"],
-                "metrics_ended_at": h["metrics_ended_at"],
-                "cpu_percent": _stats(h["cpu_samples"]),
-                "mem_percent": _stats(h["mem_samples"]),
-                "bytes_in_per_sec": _stats(h["bytes_in_samples"]),
-                "bytes_out_per_sec": _stats(h["bytes_out_samples"]),
+                "metrics_started_at": started_at,
+                "metrics_ended_at": ended_at,
+                "cpu_percent": stats_for(host, METRIC_CPU_PERCENT),
+                "mem_percent": stats_for(host, METRIC_MEM_PERCENT),
+                "bytes_in_per_sec": stats_for(host, METRIC_BYTES_IN_PER_SEC),
+                "bytes_out_per_sec": stats_for(host, METRIC_BYTES_OUT_PER_SEC),
                 "disk_io_by_device": {
                     device: {
-                        "volume_role": dev["volume_role"],
+                        "volume_role": role,
                         **{
-                            f"{target}_per_sec": _stats(dev.get(target, []))
+                            f"{target}_per_sec": stats_for(
+                                host, f"{target}_per_sec", device=device
+                            )
                             for target in DISKIO_FIELD_TARGETS.values()
                         },
                     }
-                    for device, dev in sorted(h["disk_devices"].items())
+                    for device, role in sorted(
+                        normalised.devices.get(host, {}).items()
+                    )
+                },
+                "rss_by_service": {
+                    service: stats_for(
+                        host, METRIC_RSS_BYTES, service=service
+                    )
+                    for service in sorted(services.get(host, ()))
                 },
             }
         )
     return results
+
+
+def _floor_to_bucket(ts: datetime, bucket_secs: int) -> datetime:
+    epoch_secs = int(ts.timestamp())
+    return datetime.fromtimestamp(
+        epoch_secs - (epoch_secs % bucket_secs), tz=timezone.utc
+    )
+
+
+def bucket_host_metric_samples(
+    normalised: NormalisedHostMetrics,
+    bucket_secs: int = DEFAULT_BUCKET_SECS,
+    node_storage_only: bool = True,
+) -> list[dict]:
+    """Collapse normalised samples into fixed-width time buckets.
+
+    Returns one dict per ``(host, metric, device, volume_role, service,
+    bucket_start)`` with ``avg``/``min``/``max``/``samples``, ready for
+    ``DeploymentRepository.replace_host_metric_buckets``.
+
+    Because the delta stage has already run, bucketing here is a pure
+    windowing operation: every value being bucketed is a finished rate or a
+    gauge reading, never a raw counter.
+
+    ``node_storage_only`` restricts the four disk series to the device tagged
+    ``node-storage``. On a typical VM the untagged devices are the root disk's
+    boot/ESP partitions, whose counters merely duplicate the whole-disk
+    counters — on one measured staging run they were 348 of 421 device series,
+    the majority of all stored rows, for no signal. The whole-run rollup keeps
+    every device regardless; this only bounds what is stored per bucket.
+    """
+    if bucket_secs <= 0:
+        raise ValueError("bucket_secs must be positive")
+
+    grouped: dict[tuple, list[float]] = {}
+    for s in normalised.samples:
+        if (
+            node_storage_only
+            and s["device"] is not None
+            and s["volume_role"] != NODE_STORAGE_ROLE
+        ):
+            continue
+        key = (
+            s["host"],
+            s["metric"],
+            s["device"],
+            s["volume_role"],
+            s["service"],
+            _floor_to_bucket(s["ts"], bucket_secs),
+        )
+        grouped.setdefault(key, []).append(s["value"])
+
+    rows: list[dict] = []
+    for key in sorted(
+        grouped,
+        key=lambda k: (k[0], k[1], k[2] or "", k[4] or "", k[5]),
+    ):
+        host, metric, device, volume_role, service, bucket_start = key
+        stats = _stats(grouped[key])
+        rows.append(
+            {
+                "host": host,
+                "metric": metric,
+                "device": device,
+                "volume_role": volume_role,
+                "service": service,
+                "bucket_start": bucket_start,
+                "avg": stats["avg"],
+                "min": stats["min"],
+                "max": stats["max"],
+                "samples": stats["samples"],
+            }
+        )
+    return rows
 
 
 def node_storage_device(entry: dict) -> tuple[str, dict] | None:
@@ -627,3 +897,70 @@ def node_storage_device(entry: dict) -> tuple[str, dict] | None:
         if stats.get("volume_role") == NODE_STORAGE_ROLE:
             return device, stats
     return None
+
+
+# A host's observation window may legitimately end a little before the others
+# (a missed final scrape, a late start). This threshold is far larger than any
+# scrape gap at the 10s collection interval, so anything beyond it is a genuine
+# time offset rather than jitter.
+CLOCK_OFFSET_THRESHOLD_SECS = 900
+
+
+def detect_clock_offsets(
+    aggregates: list[dict], threshold_secs: int = CLOCK_OFFSET_THRESHOLD_SECS
+) -> list[tuple[str, float]]:
+    """Return ``(host, offset_seconds)`` for hosts whose clock is out of step.
+
+    Fixing the Flux ``stop`` bound means a forward clock-skewed host's points
+    are no longer silently discarded — but including them is not the whole
+    story. Their timestamps are still displaced by the skew, so slicing "the
+    steady-state window" lands on a *different* stretch of that host's run than
+    everyone else's. Surfacing the offset is what stops that becoming a second
+    silent error in place of the first.
+
+    The reference is the **median** of the per-host ``metrics_ended_at``, not
+    the local clock: it needs no assumption about the machine running this
+    command, and a handful of skewed hosts cannot drag it.
+
+    A negative offset means the host's data ends *earlier* than its peers —
+    either a backward-skewed clock or a host that stopped reporting, which is
+    equally worth knowing about.
+    """
+    ends = sorted(
+        a["metrics_ended_at"] for a in aggregates if a.get("metrics_ended_at")
+    )
+    if len(ends) < 2:
+        return []
+    mid = len(ends) // 2
+    median = ends[mid] if len(ends) % 2 else ends[mid - 1]
+
+    offsets = []
+    for a in aggregates:
+        ended = a.get("metrics_ended_at")
+        if ended is None:
+            continue
+        delta = (ended - median).total_seconds()
+        if abs(delta) > threshold_secs:
+            offsets.append((a["host"], delta))
+    offsets.sort(key=lambda pair: abs(pair[1]), reverse=True)
+    return offsets
+
+
+def peak_rss_service(entry: dict) -> tuple[str, dict] | None:
+    """Return the ``(service, stats)`` of the host's heaviest node service.
+
+    Picked by peak (``max``) RSS, which is what matters when hunting a leak.
+    A *summary* scalar only — deliberately not a substitute for the per-service
+    breakdown, since the whole point of keying RSS by service is that one
+    service leaking is invisible in any host-level number.
+
+    ``None`` for hosts running no node services, and for entries recorded
+    before RSS capture existed.
+    """
+    best: tuple[str, dict] | None = None
+    for service, stats in (entry.get("rss_by_service") or {}).items():
+        if stats.get("max") is None:
+            continue
+        if best is None or stats["max"] > best[1]["max"]:
+            best = (service, stats)
+    return best
