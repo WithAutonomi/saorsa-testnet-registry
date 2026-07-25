@@ -44,7 +44,9 @@ def _capture(monkeypatch, module=influx, attr="_run_flux"):
 def test_host_metric_queries_all_bound_the_future(monkeypatch):
     seen = _capture(monkeypatch)
     fetch_host_metric_points(url="http://x", token="t", org="ant", bucket="b")
-    assert len(seen) == 5
+    # cpu, mem, net, disk, diskio, procstat. The count is asserted so a query
+    # added later cannot quietly skip the explicit stop bound.
+    assert len(seen) == 6
     for flux in seen:
         assert f"stop: {FLUX_FAR_FUTURE}" in flux
 

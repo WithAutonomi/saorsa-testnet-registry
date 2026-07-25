@@ -781,6 +781,61 @@ host total** — one leaking service is invisible in a 15-service mean. The
 `print-recorded-results` renders one row per (host, service). Client-tier RSS is a
 separate existing path in the `client-metrics` bucket and is unaffected.
 
+### Normalised per-GB metrics (`deployment_derived_metrics`)
+
+Raw measurements aren't comparable across runs — a longer run moves more bytes —
+which is why the rc.1 gate verdict recorded **outbound bytes per GB of user
+traffic** (directly the bandwidth bill) and **disk consumed per GB stored** as
+NOT ASSESSED. `record-analysis` now derives both at extraction time into
+**`deployment_derived_metrics`**, one row per `(deployment, metric,
+window_label)` carrying value + numerator + denominator + unit + `source` +
+`details` JSON. Ratios: `outbound_bytes_per_gb_uploaded`,
+`outbound_bytes_per_gb_traffic` (÷ uploaded + downloaded),
+`disk_bytes_per_gb_stored`. Components stored in their own right
+(`node_outbound_bytes_total`, `node_inbound_bytes_total`,
+`node_storage_growth_bytes`, `gb_uploaded`, `gb_downloaded`) so a ratio is
+debuggable and a later gate can renormalise — impossible once the run's InfluxDB
+is destroyed. Impl: `deploy/saorsa_deploy/derived_metrics.py` (pure functions),
+consumed by V2-721's comparison-report command.
+
+Invariants, all load-bearing:
+- **Node tier only, by construction** — the numerator covers the queried Influx
+  bucket, which defaults to `testnet-metrics`; client VMs report to
+  `client-metrics`, so the workload generator's egress is excluded with no
+  hostname heuristic.
+- **Outbound summed from raw counter deltas, never integrated from the stored
+  averages** — rate samples are emitted per interface and pooled by *averaging*,
+  so integrating them reports a 2-NIC host's mean, not its sum.
+- **Growth is `last - first`, not `max - min`** — a pruned host hasn't consumed
+  its peak; the peak goes in `details.peak_growth_bytes`.
+- **Denominator = successful ops whose `finished_at` is in the window**, from the
+  per-op `deployment_{upload,download}_records`. `deployment_file_results` is an
+  aggregate with no per-op timestamps and cannot be windowed. **Run
+  `record-results` BEFORE `record-analysis`** or the ratios have no denominator.
+- **Unmeasurable ⇒ omitted, never estimated** (empty denominator, or no
+  node-storage series). `--no-derived` skips the whole computation.
+
+This needed **filesystem occupancy**, which Telegraf collected (`[[inputs.disk]]`)
+but nothing ever queried — so "chunk-store size" was never in Postgres for any
+run, and `diskio` can't substitute (it counts I/O incl. rewrites/compaction, not
+what's resident). The `disk` measurement is tagged `volume_role=node-storage` by
+**mountpoint** (`path`), NOT device: `disk`'s `device` tag is the fstab-style
+source (`mapper/vg-lv`), never the kernel name `diskio` reports, so on LVM the two
+never match. `ANT_DATA_MOUNT` is resolved on the host beside `ANT_DATA_DEVICE`
+(`build_data_location_env_command`). Lands as `disk_usage_by_mount` in the rollup
+(with `first`/`last`/`growth_bytes`) and the `disk_used_bytes` bucket series
+(node-storage mount only). Retrofit a live deployment with `deployments
+provision-telegraf --name X`; **no past run can be backfilled**.
+
+`deployments derive-metrics --name X [--window-start/-end ISO] [--label L]`
+re-derives a window from Postgres alone after teardown. It is marked
+`source=buckets` (outbound integrated as `avg × width`, growth between first/last
+bucket average — approximate) versus `record-analysis`'s exact `source=capture`;
+never compare the two, and `--label full-run` is refused outright. Bucket width is
+**inferred** from the stored buckets (modal gap, so a collection gap can't move
+it) because it isn't recorded on the rows and a wrong width scales every byte
+total by exactly that factor.
+
 ### Clock-skewed hosts must not vanish from Influx capture
 
 **Every Flux `range()` in the query paths carries an explicit `stop`**

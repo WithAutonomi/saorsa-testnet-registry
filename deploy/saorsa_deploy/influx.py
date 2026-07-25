@@ -30,6 +30,7 @@ from saorsa_db.models.host_metric_bucket import (
     METRIC_BYTES_IN_PER_SEC,
     METRIC_BYTES_OUT_PER_SEC,
     METRIC_CPU_PERCENT,
+    METRIC_DISK_USED_BYTES,
     METRIC_MEM_PERCENT,
     METRIC_RSS_BYTES,
 )
@@ -365,6 +366,25 @@ HOST_FLUX_DISKIO = """from(bucket: "{bucket}")
             or r._field == "reads" or r._field == "writes"))
 """
 
+# Filesystem OCCUPANCY, per mountpoint. This is the numerator of "disk consumed
+# per GB stored" and is a different question from HOST_FLUX_DISKIO above: diskio
+# counts bytes written, which includes rewrites and compaction that leave
+# occupancy unchanged, so it cannot answer how much data is resident.
+#
+# `used` only. `total`/`free` describe the volume the operator provisioned
+# rather than anything the run did, and every extra field is another series per
+# mountpoint per host.
+#
+# Not filtered to the node storage mountpoint here: which mountpoint that is
+# varies per host (see the `volume_role` tag), and the whole-run rollup
+# deliberately keeps every mountpoint. The bucket writer is what narrows it.
+HOST_FLUX_DISK = """from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) =>
+       r._measurement == "disk"
+       and r._field == "used")
+"""
+
 # Per-service resident set size. Telegraf's node-tier config runs four
 # `[[inputs.procstat]]` blocks (ant-node-*, ant-bootstrap-*, ant-bootstrap,
 # ant-genesis-node) plus a regex processor deriving the `node_service` tag from
@@ -467,9 +487,9 @@ def fetch_host_metric_points(
     stop: str = FLUX_FAR_FUTURE,
     timeout: int = 30,
 ) -> dict:
-    """Run five Flux queries (cpu/mem/net/diskio/procstat) and return raw points.
+    """Run six Flux queries (cpu/mem/net/disk/diskio/procstat) and return raw points.
 
-    Returns a dict with keys ``cpu``, ``mem``, ``net``, ``diskio``,
+    Returns a dict with keys ``cpu``, ``mem``, ``net``, ``disk``, ``diskio``,
     ``procstat``, each mapping to a list of row dicts from
     :func:`_parse_flux_csv`.
 
@@ -487,6 +507,7 @@ def fetch_host_metric_points(
         ("cpu", HOST_FLUX_CPU),
         ("mem", HOST_FLUX_MEM),
         ("net", HOST_FLUX_NET),
+        ("disk", HOST_FLUX_DISK),
         ("diskio", HOST_FLUX_DISKIO),
         ("procstat", HOST_FLUX_PROCSTAT),
     ):
@@ -516,20 +537,57 @@ def _stats(samples: list[float]) -> dict:
     }
 
 
+def _usage_stats(pairs: list[tuple]) -> dict:
+    """Stats for an occupancy series, plus its endpoints and net growth.
+
+    ``first``/``last`` are the earliest and latest readings by timestamp, and
+    ``growth_bytes`` is ``last - first`` — what the run actually added, which is
+    the numerator of "disk consumed per GB stored".
+
+    ``max - min`` is deliberately NOT used as the growth figure: it would report
+    a run that filled the disk and was then pruned as if nothing had been
+    reclaimed. It is still recorded (as ``min``/``max``) so that case is
+    visible, and a ``growth_bytes`` well below ``max - min`` is exactly that
+    signal.
+    """
+    if not pairs:
+        return {
+            "avg": None,
+            "min": None,
+            "max": None,
+            "samples": 0,
+            "first": None,
+            "last": None,
+            "growth_bytes": None,
+        }
+    ordered = sorted(pairs, key=lambda pair: pair[0])
+    values = [value for _ts, value in ordered]
+    stats = _stats(values)
+    stats["first"] = ordered[0][1]
+    stats["last"] = ordered[-1][1]
+    stats["growth_bytes"] = ordered[-1][1] - ordered[0][1]
+    return stats
+
+
 class NormalisedHostMetrics(NamedTuple):
     """Output of :func:`normalise_host_metric_points`.
 
     ``samples`` is the flat, timestamped series — every counter already turned
-    into a rate, every gauge passed through. ``time_bounds`` and ``devices``
-    carry the two things the sample list alone cannot express: the observation
-    window of a host (which includes points that contributed no sample), and
-    the existence of a device that produced no rate at all because only one
-    point was collected for it.
+    into a rate, every gauge passed through. ``time_bounds``, ``devices`` and
+    ``mounts`` carry what the sample list alone cannot express: the observation
+    window of a host (which includes points that contributed no sample), the
+    existence of a device that produced no rate at all because only one point
+    was collected for it, and which mountpoint on each host holds the node
+    storage.
     """
 
     samples: list[dict]
     time_bounds: dict[str, list]
     devices: dict[str, dict]
+    # host -> {mountpoint: volume_role|None}, from the `disk` measurement.
+    # Defaulted so the three-field construction in older callers and tests still
+    # builds; never mutated by any consumer.
+    mounts: dict[str, dict] = {}
 
 
 def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostMetrics:
@@ -554,6 +612,7 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
     samples: list[dict] = []
     time_bounds: dict[str, list] = {}
     devices: dict[str, dict] = {}
+    mounts: dict[str, dict] = {}
 
     def track_time(host: str, ts: datetime) -> None:
         bounds = time_bounds.setdefault(host, [None, None])
@@ -610,6 +669,34 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
         if not host or not service or val is None:
             continue
         emit(host, METRIC_RSS_BYTES, p["_time"], val, service=service)
+        track_time(host, p["_time"])
+
+    # Filesystem occupancy is a gauge, like RSS -- no delta stage. Keyed by the
+    # `path` tag (the mountpoint), which is the only key that identifies the
+    # node storage volume on both raw-ext4 and LVM hosts; see the `disk`
+    # volume_role processor in telegraf_metrics.conf.
+    for p in points_by_measurement.get("disk", []):
+        host = p.get("host")
+        mount = p.get("path")
+        val = _to_float(p.get("_value"))
+        if not host or not mount or val is None:
+            continue
+        # Only the exact marker counts, exactly as for diskio devices: never
+        # infer the storage volume from the tag merely being present.
+        role = (
+            NODE_STORAGE_ROLE if p.get("volume_role") == NODE_STORAGE_ROLE else None
+        )
+        seen = mounts.setdefault(host, {})
+        if role is not None or mount not in seen:
+            seen[mount] = role
+        emit(
+            host,
+            METRIC_DISK_USED_BYTES,
+            p["_time"],
+            val,
+            device=mount,
+            volume_role=role,
+        )
         track_time(host, p["_time"])
 
     net_groups: dict[tuple[str, str, str], list[dict]] = {}
@@ -699,7 +786,7 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
             track_time(host, curr["_time"])
 
     return NormalisedHostMetrics(
-        samples=samples, time_bounds=time_bounds, devices=devices
+        samples=samples, time_bounds=time_bounds, devices=devices, mounts=mounts
     )
 
 
@@ -723,7 +810,13 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
       are not interchangeable, and averaging an idle root disk against a busy
       data volume produces a number that describes neither. The device whose
       ``volume_role`` is ``"node-storage"`` is the node storage volume (see
-      :func:`~saorsa_deploy.provisioning.telegraf_metrics.build_data_device_env_command`).
+      :func:`~saorsa_deploy.provisioning.telegraf_metrics.build_data_location_env_command`).
+    * ``disk_usage_by_mount`` — a dict keyed by mountpoint
+      (``/mnt/ant-node-storage``), each holding ``volume_role`` plus a
+      ``used_bytes`` stat dict that additionally carries ``first``, ``last`` and
+      ``growth_bytes``. This is OCCUPANCY, not I/O: it answers how much data is
+      resident, which ``disk_io_by_device`` cannot, since bytes written include
+      rewrites and compaction.
     * ``rss_by_service`` — a dict keyed by the ``node_service`` tag
       (``ant-node-3``), each holding stats of that service's resident set size
       in bytes. Likewise never pooled into a host total: the signal worth
@@ -760,11 +853,19 @@ def aggregate_normalised_host_metrics(
     """
     grouped: dict[tuple, list[float]] = {}
     services: dict[str, set] = {}
+    # Occupancy needs its samples in time order, which the flat value lists
+    # above deliberately discard: growth over the run is last - first, and that
+    # is the whole point of collecting it.
+    usage_series: dict[tuple[str, str], list[tuple]] = {}
     for s in normalised.samples:
         key = (s["host"], s["metric"], s["device"], s["service"])
         grouped.setdefault(key, []).append(s["value"])
         if s["metric"] == METRIC_RSS_BYTES:
             services.setdefault(s["host"], set()).add(s["service"])
+        elif s["metric"] == METRIC_DISK_USED_BYTES:
+            usage_series.setdefault((s["host"], s["device"]), []).append(
+                (s["ts"], s["value"])
+            )
 
     def stats_for(
         host: str,
@@ -802,6 +903,17 @@ def aggregate_normalised_host_metrics(
                         normalised.devices.get(host, {}).items()
                     )
                 },
+                "disk_usage_by_mount": {
+                    mount: {
+                        "volume_role": role,
+                        "used_bytes": _usage_stats(
+                            usage_series.get((host, mount), [])
+                        ),
+                    }
+                    for mount, role in sorted(
+                        normalised.mounts.get(host, {}).items()
+                    )
+                },
                 "rss_by_service": {
                     service: stats_for(
                         host, METRIC_RSS_BYTES, service=service
@@ -835,12 +947,14 @@ def bucket_host_metric_samples(
     windowing operation: every value being bucketed is a finished rate or a
     gauge reading, never a raw counter.
 
-    ``node_storage_only`` restricts the four disk series to the device tagged
+    ``node_storage_only`` restricts every per-device series — the four diskio
+    rates and ``disk_used_bytes`` — to the device (or mountpoint) tagged
     ``node-storage``. On a typical VM the untagged devices are the root disk's
     boot/ESP partitions, whose counters merely duplicate the whole-disk
     counters — on one measured staging run they were 348 of 421 device series,
     the majority of all stored rows, for no signal. The whole-run rollup keeps
-    every device regardless; this only bounds what is stored per bucket.
+    every device and mountpoint regardless; this only bounds what is stored per
+    bucket.
     """
     if bucket_secs <= 0:
         raise ValueError("bucket_secs must be positive")
@@ -896,6 +1010,20 @@ def node_storage_device(entry: dict) -> tuple[str, dict] | None:
     for device, stats in (entry.get("disk_io_by_device") or {}).items():
         if stats.get("volume_role") == NODE_STORAGE_ROLE:
             return device, stats
+    return None
+
+
+def node_storage_mount(entry: dict) -> tuple[str, dict] | None:
+    """Return the ``(mountpoint, stats)`` of a host entry's node storage volume.
+
+    The occupancy counterpart of :func:`node_storage_device`. ``None`` when the
+    host has no mountpoint tagged ``node-storage`` — a client VM, or a host
+    provisioned before the ``disk`` tag existed (i.e. every run before this
+    capture was added, since occupancy was never archived).
+    """
+    for mount, stats in (entry.get("disk_usage_by_mount") or {}).items():
+        if stats.get("volume_role") == NODE_STORAGE_ROLE:
+            return mount, stats
     return None
 
 

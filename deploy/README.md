@@ -898,6 +898,62 @@ Keyed by `node_service`, never by PID — services restart and PIDs churn, while
 
 CLIENT-role hosts additionally get the client `ant` service's **memory** recorded into `client-metrics`: a `procstat` input matching `system.slice/ant-*.service` (per-process RSS, tagged `metric_source=ant-client`, 2 s interval) and a `cgroup` input reading `memory.current` + `memory.peak` (whole-service live + high-water peak) for the same glob. These stanzas (`resources/monitoring/telegraf_metrics_client.conf`) are appended **only** on CLIENT hosts, so node configs are byte-identical and the cgroup input never logs a missing-path error on the node fleet. The single `ant-*` glob matches whichever client unit a VM runs (`ant-uploader`, `ant-downloader`, `ant-prod-uploader`, `ant-prod-downloader`, `ant-prod-canary-upload`, `ant-prod-canary-probe`). Query `procstat` filtered to `process_name == "ant"` for per-process RSS, or the `cgroup` measurement's `memory.peak` for the true per-run high-water mark (caught even when a sub-2 s terminal spike clips the sampled RSS). The local-* prod kinds run no systemd unit and are not covered.
 
+### Normalised per-GB metrics (`deployment_derived_metrics`)
+
+Raw measurements are not comparable across runs: a longer run moves more bytes, and a run with a different client mix stores a different amount of data. Two soft gates came out **NOT ASSESSED** in the rc.1 release-train verdict for exactly that reason — *outbound bytes per GB of user traffic* (which is directly the bandwidth bill) and *disk consumed per GB stored*. `record-analysis` now computes both at extraction time and persists them, with the components each is built from, to **`deployment_derived_metrics`**.
+
+| Metric | Numerator | Denominator |
+|--------|-----------|-------------|
+| `outbound_bytes_per_gb_uploaded` | node-tier outbound bytes in the window | GB successfully uploaded in the window |
+| `outbound_bytes_per_gb_traffic` | node-tier outbound bytes in the window | GB uploaded + GB downloaded |
+| `disk_bytes_per_gb_stored` | node-storage volume growth, summed over node hosts | GB successfully uploaded |
+
+Components stored in their own right: `node_outbound_bytes_total`, `node_inbound_bytes_total`, `node_storage_growth_bytes`, `gb_uploaded`, `gb_downloaded`. They are kept because a ratio alone cannot be sanity-checked, and because a later gate may want to normalise differently — which is impossible once the run's InfluxDB is destroyed.
+
+Each row carries its window (`window_label`, `window_start`, `window_end`), its `numerator`/`denominator`, a `unit`, a `details` JSON breakdown, and a **`source`**. There is one row per `(deployment, metric, window_label)`: recomputing replaces, so a baseline comparison never picks between rival answers.
+
+Four rules make the values trustworthy:
+
+- **Node tier only, by construction.** The numerator covers whatever hosts are in the queried Influx bucket, which defaults to `testnet-metrics` — node, bootstrap and genesis VMs. Client VMs report to the separate `client-metrics` bucket, so their egress (the workload *generator*, not our bill) is excluded without any hostname heuristic.
+- **Outbound bytes are summed from raw counter deltas, not integrated from the stored averages.** The rate samples are emitted per interface and pooled by *averaging*, so integrating them would report a two-NIC host's egress as the mean of its interfaces rather than their sum.
+- **Storage growth is `last - first`, not `max - min`.** A host that filled its volume and was then pruned has not consumed that peak, and reporting the peak would make a pruning run look like a regression. The peak is recorded in `details.peak_growth_bytes` so the case stays visible.
+- **The denominator counts successful ops that *finished* inside the window**, read from the per-op `deployment_upload_records` / `deployment_download_records` tables. `deployment_file_results` is an aggregate with no per-op timestamps and cannot be windowed at all. A failed upload stored nothing, so counting it would flatter the ratio exactly when the run went worst; its bytes are reported separately in `details`.
+
+A metric that cannot be measured is **omitted, never estimated**: a ratio with an empty denominator, or the disk metrics on a run where no host reported a node-storage series, produce no row rather than a zero. Run `deployments record-results` *before* `record-analysis`, or the ratios have no denominator to normalise against.
+
+This depends on filesystem occupancy, which Telegraf collected (`[[inputs.disk]]`) but nothing ever queried, so it reached the registry for the first time here. The node storage volume is identified by a `volume_role = "node-storage"` tag applied to the `disk` measurement's **`path`** (mountpoint) — not its `device` tag, whose value is the fstab-style source (`mapper/vg-lv`) and so never matches the kernel name `diskio` reports on an LVM-backed volume. The mountpoint is resolved on the host at provision time into `ANT_DATA_MOUNT`, alongside the existing `ANT_DATA_DEVICE`. Occupancy lands in `disk_usage_by_mount` in the rollup (with `first`, `last` and `growth_bytes`) and as the `disk_used_bytes` bucket series, restricted in buckets to the tagged mountpoint. **Retrofit a running deployment with `deployments provision-telegraf --name <name>`; no past run can be backfilled.**
+
+#### `deployments derive-metrics`
+
+Re-derives the same metrics for an arbitrary window from Postgres alone — bucket rows plus per-op records — so a phase can be sliced out **after** the monitoring stack is gone. This is what the bucketed host metrics exist for.
+
+```bash
+# Steady state only, for a like-for-like comparison against a baseline
+uv run saorsa-deploy deployments derive-metrics --name STG-01 \
+  --window-start 2026-07-25T11:00:00 --window-end 2026-07-25T14:00:00 \
+  --label steady-state
+
+# Whole stored span under a different label
+uv run saorsa-deploy deployments derive-metrics --name STG-01 --label whole-span
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--name` | *(required)* | Deployment name. |
+| `--window-start` | first stored bucket | ISO-8601 UTC start. A naive timestamp is read as UTC. |
+| `--window-end` | last bucket + one width | ISO-8601 UTC end (exclusive). |
+| `--label` | `steady-state` | Names the window so several coexist for one run. Re-running the same label replaces it. |
+| `--bucket-secs` | `0` (infer) | Override the width used to integrate averages into totals. Inference reads it from the stored buckets. |
+
+The two paths are **not** equivalent, and the `source` column says which is which:
+
+- `source=capture` — `record-analysis`, whole run, outbound summed from raw counter deltas. **Exact.**
+- `source=buckets` — `derive-metrics`, outbound integrated as `avg × bucket width` and growth taken between the first and last bucket average. **Approximate**, bounded by the bucket width.
+
+Never compare one against the other. `derive-metrics` refuses `--label full-run` outright, since that would replace an exact value with an approximation under the same name. The bucket width is **inferred** rather than assumed because it is not recorded on the rows, and integrating at the wrong width scales every byte total by exactly that factor with nothing to signal it; inference uses the most common gap between consecutive buckets, so a collection gap cannot move it.
+
+`deployments print-recorded-results` renders both the per-mountpoint occupancy table and every stored window's derived metrics.
+
 ### `monitoring info` command
 
 Print monitoring stack connection details from S3 state. Useful for retrieving credentials after provisioning, or for getting a ready-to-use Telegraf config for external setups.

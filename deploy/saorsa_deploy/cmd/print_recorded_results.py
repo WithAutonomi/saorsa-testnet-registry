@@ -43,6 +43,7 @@ from saorsa_db.models import (
     ProdUploadStatus,
 )
 
+from saorsa_deploy.derived_metrics import format_metric_value
 from saorsa_deploy.registry import get_repository
 
 _TESTNET_KIND = "testnet"
@@ -105,6 +106,9 @@ def cmd_print_recorded_results(args) -> None:
 
     host_result = repo.get_host_result_for_deployment(deployment.id)
     _print_analysis_section(host_result, deployment.name, console)
+    _print_derived_metrics_section(
+        repo.list_derived_metrics_for_deployment(deployment.id), console
+    )
 
     if kind == "prod-canary":
         from saorsa_deploy.cmd.prod_canary_results import (
@@ -216,7 +220,106 @@ def _print_analysis_section(
     console.print(table)
 
     _print_disk_io_table(metrics, console)
+    _print_disk_usage_table(metrics, console)
     _print_rss_table(metrics, console)
+
+
+def _print_disk_usage_table(metrics: list[dict], console: Console) -> None:
+    """Render filesystem occupancy, one row per (host, mountpoint).
+
+    Distinct from the disk I/O table above, and not a duplicate of it: I/O
+    counts bytes written, which includes rewrites and compaction, while this is
+    how much data is actually resident. Only the latter can answer "disk
+    consumed per GB stored".
+
+    `Growth` is `last - first` across the run, and is the figure that feeds the
+    derived metric. `Peak spread` (max - min) is shown alongside because a run
+    whose store was pruned mid-window has a growth well below its spread, and
+    that difference is the only way to tell the two apart afterwards.
+
+    Skipped entirely for runs recorded before occupancy capture existed — which
+    is every run before this landed, since `[[inputs.disk]]` was collected by
+    Telegraf but never queried. No backfill is possible.
+    """
+    if not any(entry.get("disk_usage_by_mount") for entry in metrics):
+        return
+
+    table = Table(
+        title="Disk usage — per mountpoint",
+        title_style="bold",
+    )
+    table.add_column("Host")
+    table.add_column("Mount")
+    table.add_column("Role")
+    table.add_column("First", justify="right")
+    table.add_column("Last", justify="right")
+    table.add_column("Growth", justify="right")
+    table.add_column("Peak spread", justify="right")
+
+    for entry in metrics:
+        mounts = entry.get("disk_usage_by_mount") or {}
+        host = entry.get("host") or "-"
+        for mount, stats in sorted(mounts.items()):
+            used = (stats or {}).get("used_bytes") or {}
+            role = (stats or {}).get("volume_role")
+            minimum, maximum = used.get("min"), used.get("max")
+            spread = (
+                maximum - minimum
+                if minimum is not None and maximum is not None
+                else None
+            )
+            table.add_row(
+                host,
+                mount,
+                f"[bold]{role}[/bold]" if role else "-",
+                _fmt_bytes(used.get("first")),
+                _fmt_bytes(used.get("last")),
+                _fmt_bytes(used.get("growth_bytes")),
+                _fmt_bytes(spread),
+            )
+    console.print(table)
+
+
+def _print_derived_metrics_section(rows: list, console: Console) -> None:
+    """Render the normalised per-run metrics, grouped by window.
+
+    Several windows can coexist for one run — the whole run captured exactly at
+    extraction time, plus any phase re-derived from buckets afterwards — so the
+    window and its source are columns rather than a heading: comparing a
+    `capture` value against a `buckets` value is precisely the mistake this
+    display should make hard.
+
+    Absent for every run recorded before this landed, and for any run whose
+    denominators were never recorded. Nothing is printed in that case.
+    """
+    if not rows:
+        return
+
+    console.print()
+    console.print("[bold]Derived per-run metrics[/bold]")
+
+    table = Table(title="Normalised metrics", title_style="bold")
+    table.add_column("Window")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_column("Numerator", justify="right")
+    table.add_column("Denominator", justify="right")
+    table.add_column("Source")
+    table.add_column("Window start (UTC)")
+    table.add_column("Window end (UTC)")
+
+    for row in rows:
+        table.add_row(
+            row.window_label,
+            row.metric,
+            format_metric_value(row.value, row.unit),
+            _fmt_bytes(row.numerator) if row.numerator is not None else "-",
+            f"{row.denominator:.2f} GB" if row.denominator is not None else "-",
+            row.source,
+            _fmt_dt(row.window_start),
+            _fmt_dt(row.window_end),
+        )
+    console.print(table)
 
 
 def _print_disk_io_table(metrics: list[dict], console: Console) -> None:

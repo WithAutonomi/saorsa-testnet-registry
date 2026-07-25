@@ -1270,6 +1270,78 @@ def main(argv=None):
             "If omitted, any existing summary on the row is preserved."
         ),
     )
+    deployments_record_analysis_parser.add_argument(
+        "--no-derived",
+        dest="derived",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip computing the normalised per-GB metrics (outbound bytes per "
+            "GB of user traffic, disk consumed per GB stored) into "
+            "deployment_derived_metrics. They are computed by default because "
+            "the raw data they need is destroyed with the monitoring stack."
+        ),
+    )
+
+    # deployments derive-metrics
+    deployments_derive_metrics_parser = deployments_subparsers.add_parser(
+        "derive-metrics",
+        help=(
+            "Re-derive the normalised per-GB metrics for an arbitrary window "
+            "from the stored host metric buckets and per-op records. Works "
+            "after the monitoring stack is destroyed; use it to slice out the "
+            "steady-state phase for a like-for-like comparison."
+        ),
+    )
+    deployments_derive_metrics_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match a row in the registry deployments table)",
+    )
+    deployments_derive_metrics_parser.add_argument(
+        "--window-start",
+        type=str,
+        default=None,
+        help=(
+            "ISO-8601 UTC start of the window, e.g. 2026-07-25T10:00:00. "
+            "Defaults to the first stored bucket."
+        ),
+    )
+    deployments_derive_metrics_parser.add_argument(
+        "--window-end",
+        type=str,
+        default=None,
+        help=(
+            "ISO-8601 UTC end of the window (exclusive). Defaults to the last "
+            "stored bucket."
+        ),
+    )
+    deployments_derive_metrics_parser.add_argument(
+        "--label",
+        type=str,
+        default="steady-state",
+        help=(
+            "Name for this window, stored alongside the values so several "
+            "windows can coexist for one run (default: steady-state). "
+            "Re-running with the same label replaces that window's values. "
+            "'full-run' is written by record-analysis from exact raw counters "
+            "-- reusing it here would overwrite an exact value with an "
+            "approximate one."
+        ),
+    )
+    deployments_derive_metrics_parser.add_argument(
+        "--bucket-secs",
+        type=int,
+        default=0,
+        help=(
+            "Override the bucket width used to integrate per-second averages "
+            "into byte totals. Default 0 infers it from the stored buckets, "
+            "which is almost always what you want -- the width is not recorded "
+            "on the rows, and a wrong value scales every byte total by exactly "
+            "that factor."
+        ),
+    )
 
     # deployments prune-host-buckets
     deployments_prune_buckets_parser = deployments_subparsers.add_parser(
@@ -4855,6 +4927,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.record_analysis import cmd_record_analysis
 
             cmd_record_analysis(args)
+        elif args.deployments_subcommand == "derive-metrics":
+            from saorsa_deploy.cmd.derive_metrics import cmd_derive_metrics
+
+            cmd_derive_metrics(args)
         elif args.deployments_subcommand == "prune-host-buckets":
             from saorsa_deploy.cmd.prune_host_buckets import cmd_prune_host_buckets
 

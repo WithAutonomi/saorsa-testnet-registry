@@ -7,7 +7,7 @@ while node-tier configs stay byte-identical (no regression / no node-fleet noise
 from saorsa_deploy.provisioning.telegraf_metrics import (
     NO_DATA_DEVICE,
     TelegrafMetricsProvisioner,
-    build_data_device_env_command,
+    build_data_location_env_command,
     build_telegraf_metrics_config,
 )
 
@@ -66,9 +66,23 @@ class TestDiskIoInput:
         assert "skip_serial_number = true" in config
 
 
+class TestDiskCapacityInput:
+    """`inputs.disk` is the OCCUPANCY series, the numerator of "disk consumed
+    per GB stored". It is not interchangeable with diskio, which counts I/O."""
+
+    def test_base_config_includes_disk(self):
+        config = build_telegraf_metrics_config()
+        assert "[[inputs.disk]]" in config
+
+    def test_disk_declared_exactly_once_on_client(self):
+        config = build_telegraf_metrics_config(include_client_services=True)
+        assert config.count("[[inputs.disk]]") == 1
+
+
 class TestNodeStorageVolumeTag:
-    """The node storage volume is picked out by a `volume_role` tag, because
-    diskio knows only kernel device names and never mountpoints."""
+    """The node storage volume is picked out by a `volume_role` tag on BOTH disk
+    measurements — but by different keys, because diskio knows only kernel
+    device names while disk knows only mountpoints."""
 
     def test_config_tags_the_data_device_with_volume_role(self):
         config = build_telegraf_metrics_config()
@@ -77,9 +91,26 @@ class TestNodeStorageVolumeTag:
         assert 'replacement = "node-storage"' in config
         assert 'result_key = "volume_role"' in config
 
-    def test_volume_role_processor_is_present_on_client_hosts_too(self):
+    def test_config_tags_the_data_mountpoint_with_volume_role(self):
+        # `disk` carries a `device` tag too, but its value is the fstab-style
+        # source ("mapper/vg-lv"), never the kernel name ANT_DATA_DEVICE holds,
+        # so matching on the mountpoint is the only thing that works on LVM.
+        config = build_telegraf_metrics_config()
+        assert 'namepass = ["disk"]' in config
+        assert 'pattern = "^${ANT_DATA_MOUNT}$"' in config
+        assert 'key = "path"' in config
+
+    def test_both_volume_role_processors_present_on_client_hosts_too(self):
         config = build_telegraf_metrics_config(include_client_services=True)
-        assert config.count('result_key = "volume_role"') == 1
+        assert config.count('result_key = "volume_role"') == 2
+
+    def test_disk_processor_does_not_capture_diskio(self):
+        # namepass globs are matched against the measurement name; "disk" must
+        # not swallow "diskio", or the device-keyed tag would be overwritten by
+        # a path-keyed miss.
+        config = build_telegraf_metrics_config()
+        assert 'namepass = ["disk"]' in config
+        assert 'namepass = ["diskio"]' in config
 
     def test_node_service_processor_is_untouched(self):
         # The pre-existing procstat regex processor must keep its own namepass;
@@ -89,51 +120,67 @@ class TestNodeStorageVolumeTag:
         assert 'result_key = "node_service"' in config
 
 
-class TestDataDeviceResolution:
-    """`ANT_DATA_DEVICE` is resolved ON THE HOST: the backing device differs by
-    provider and by raw-ext4 vs LVM, so it cannot be baked into the config."""
+class TestDataLocationResolution:
+    """`ANT_DATA_DEVICE` and `ANT_DATA_MOUNT` are resolved ON THE HOST: the
+    backing device differs by provider and by raw-ext4 vs LVM, and the
+    mountpoint differs between volume-backed and root-disk-only providers, so
+    neither can be baked into the config."""
 
     def test_resolves_from_the_node_storage_mount(self):
-        cmd = build_data_device_env_command(host_role="WAN_NODE")
+        cmd = build_data_location_env_command(host_role="WAN_NODE")
         assert 'findmnt -nro SOURCE "/mnt/ant-node-storage"' in cmd
         # lsblk KNAME maps /dev/sdb -> sdb and /dev/mapper/vg-lv -> dm-0, which
         # is what diskio actually reports as the device name.
         assert "lsblk -nro KNAME" in cmd
 
-    def test_node_hosts_fall_back_to_the_root_device(self):
+    def test_emits_both_the_device_and_the_mountpoint(self):
+        cmd = build_data_location_env_command(host_role="WAN_NODE")
+        assert "ANT_DATA_DEVICE=" in cmd
+        assert "ANT_DATA_MOUNT=" in cmd
+
+    def test_mount_is_the_node_storage_path_when_it_is_mounted(self):
+        cmd = build_data_location_env_command(host_role="WAN_NODE")
+        assert 'MNT="/mnt/ant-node-storage"' in cmd
+
+    def test_node_hosts_fall_back_to_the_root_device_and_root_mount(self):
         # Contabo and OVH 3-AZ are root-disk only: node data lives on the OS
-        # root filesystem, so that device IS the node storage.
-        cmd = build_data_device_env_command(host_role="WAN_NODE")
+        # root filesystem, so that device and `/` ARE the node storage.
+        cmd = build_data_location_env_command(host_role="WAN_NODE")
         assert "findmnt -nro SOURCE /" in cmd
+        assert "MNT=/;" in cmd
 
     def test_client_hosts_never_fall_back_to_root(self):
-        # A client VM runs no node storage at all; tagging its root disk
-        # "node-storage" would be simply untrue.
-        cmd = build_data_device_env_command(host_role="CLIENT")
-        assert 'SRC=$(findmnt -nro SOURCE / 2>/dev/null || true)' not in cmd
+        # A client VM runs no node storage at all; tagging its root disk or its
+        # root filesystem "node-storage" would be simply untrue.
+        cmd = build_data_location_env_command(host_role="CLIENT")
+        assert "findmnt -nro SOURCE / 2>/dev/null" not in cmd
+        assert "MNT=/;" not in cmd
         assert NO_DATA_DEVICE in cmd
 
-    def test_falls_back_to_a_sentinel_that_matches_no_device(self):
-        cmd = build_data_device_env_command(host_role="WAN_NODE")
+    def test_falls_back_to_a_sentinel_that_matches_no_device_or_path(self):
+        cmd = build_data_location_env_command(host_role="WAN_NODE")
         assert f"ANT_DATA_DEVICE={NO_DATA_DEVICE}" in cmd
+        assert f"ANT_DATA_MOUNT={NO_DATA_DEVICE}" in cmd
         # Must not be a valid kernel device name, or it would tag a real disk.
         assert not NO_DATA_DEVICE.isalnum()
+        # Must not be a valid mountpoint either: every real path starts with "/".
+        assert not NO_DATA_DEVICE.startswith("/")
 
     def test_appends_rather_than_truncating_the_env_file(self):
         # The static env content (InfluxDB creds, testnet name) is written
         # first; truncating here would destroy it.
-        cmd = build_data_device_env_command(host_role="WAN_NODE")
+        cmd = build_data_location_env_command(host_role="WAN_NODE")
         assert ">> /etc/default/telegraf-ant-metrics" in cmd
         assert "> /etc/default/telegraf-ant-metrics" not in cmd.replace(">>", "")
 
     def test_never_fails_the_provisioning_pass(self):
         # A missing disk tag must not break metrics provisioning.
-        cmd = build_data_device_env_command(host_role="WAN_NODE")
+        cmd = build_data_location_env_command(host_role="WAN_NODE")
         assert "|| true" in cmd
-        assert cmd.rstrip().endswith(
-            f'echo "ANT_DATA_DEVICE={NO_DATA_DEVICE}" '
-            ">> /etc/default/telegraf-ant-metrics"
-        )
+        # The fallback branch must set BOTH sentinels, not just the device one.
+        fallback = cmd.rsplit("} || ", 1)[1]
+        assert f"ANT_DATA_DEVICE={NO_DATA_DEVICE}" in fallback
+        assert f"ANT_DATA_MOUNT={NO_DATA_DEVICE}" in fallback
 
 
 class TestClientConfig:

@@ -21,34 +21,42 @@ TELEGRAF_SERVICE_NAME = "telegraf-ant-metrics"
 TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 
 NODE_STORAGE_MOUNT = "/mnt/ant-node-storage"
-# Matches no real kernel device name, so the config's volume_role regex tags
+# Matches no real kernel device name -- and no real mountpoint either, since
+# every path starts with "/" -- so the config's two volume_role regexes tag
 # nothing on hosts that have no node storage.
 NO_DATA_DEVICE = "__none__"
 
 
-def build_data_device_env_command(
+def build_data_location_env_command(
     *,
     host_role: str,
     mount_point: str = NODE_STORAGE_MOUNT,
     env_path: str = TELEGRAF_ENV_PATH,
 ) -> str:
-    """Shell that appends ``ANT_DATA_DEVICE=<kname>`` to the Telegraf env file.
+    """Shell that appends ``ANT_DATA_DEVICE`` and ``ANT_DATA_MOUNT`` to the env file.
 
-    The Telegraf config tags that device's ``diskio`` series with
-    ``volume_role = "node-storage"``, which is how the node storage volume is
-    picked out of the per-device metrics. It has to be resolved on the host:
-    the backing device varies by provider and by whether the volume is raw ext4
-    (``/dev/sdb``) or LVM-striped (``/dev/mapper/...`` -> ``dm-0``), so it
-    cannot be baked into the shared config. Resolution mirrors
-    ``set_reserved_blocks.py``: ``findmnt`` for the source, then ``lsblk KNAME``
-    to reach the kernel name ``diskio`` actually reports.
+    Two variables because the two disk measurements identify the node storage
+    volume differently, and neither can be baked into the shared config:
+
+    * ``ANT_DATA_DEVICE`` — the kernel device name (``sdb``, ``dm-0``) that
+      ``diskio`` reports. The backing device varies by provider and by whether
+      the volume is raw ext4 (``/dev/sdb``) or LVM-striped
+      (``/dev/mapper/...`` -> ``dm-0``). Resolution mirrors
+      ``set_reserved_blocks.py``: ``findmnt`` for the source, then
+      ``lsblk KNAME`` to reach the kernel name.
+    * ``ANT_DATA_MOUNT`` — the mountpoint that the ``disk`` (capacity)
+      measurement reports as its ``path`` tag. ``disk`` also carries a
+      ``device`` tag, but its value is the fstab-style source rather than the
+      kernel name (``mapper/vg-lv``, not ``dm-0``), so it cannot be matched
+      against ``ANT_DATA_DEVICE``. The mountpoint is the only key that lines up.
 
     On node-tier hosts with no separate data volume (Contabo and OVH 3-AZ are
     root-disk only) the node data lives on the OS root filesystem, so the root
-    device is tagged instead — that series then necessarily includes OS I/O.
+    device and ``/`` are tagged instead — those series then necessarily include
+    OS I/O and OS disk usage.
 
     CLIENT hosts run no node storage at all, so they never fall back to root;
-    they get the ``__none__`` sentinel and no device is tagged.
+    both variables get the ``__none__`` sentinel and nothing is tagged.
 
     Never fails the pass: every branch falls through to the sentinel, and the
     whole thing is ``|| true``-guarded, because a missing disk tag must not
@@ -57,19 +65,24 @@ def build_data_device_env_command(
     # Only node-tier hosts treat the root disk as node storage.
     root_fallback = (
         "" if host_role == "CLIENT"
-        else '  [ -n "$SRC" ] || SRC=$(findmnt -nro SOURCE / 2>/dev/null || true)\n'
+        else '  [ -n "$SRC" ] || { SRC=$(findmnt -nro SOURCE / 2>/dev/null'
+             ' || true); MNT=/; }\n'
     )
     return (
         "{\n"
         f'  SRC=$(findmnt -nro SOURCE "{mount_point}" 2>/dev/null || true)\n'
+        f'  MNT=""\n'
+        f'  [ -n "$SRC" ] && MNT="{mount_point}"\n'
         f"{root_fallback}"
         '  DEV=""\n'
         '  if [ -n "$SRC" ]; then\n'
         '    DEV=$(lsblk -nro KNAME "$SRC" 2>/dev/null | head -1)\n'
         "  fi\n"
         f'  echo "ANT_DATA_DEVICE=${{DEV:-{NO_DATA_DEVICE}}}" >> {env_path}\n'
+        f'  echo "ANT_DATA_MOUNT=${{MNT:-{NO_DATA_DEVICE}}}" >> {env_path}\n'
         "} || "
-        f'echo "ANT_DATA_DEVICE={NO_DATA_DEVICE}" >> {env_path}'
+        f'{{ echo "ANT_DATA_DEVICE={NO_DATA_DEVICE}" >> {env_path};'
+        f' echo "ANT_DATA_MOUNT={NO_DATA_DEVICE}" >> {env_path}; }}'
     )
 
 
@@ -159,9 +172,10 @@ class TelegrafMetricsProvisioner:
             name="Write Telegraf metrics environment file",
             commands=[
                 f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
-                # ANT_DATA_DEVICE cannot be baked into the static env content:
-                # it differs per host and is only knowable on the host itself.
-                build_data_device_env_command(host_role=self.host_role),
+                # The data device/mountpoint cannot be baked into the static env
+                # content: they differ per host and are only knowable on the
+                # host itself.
+                build_data_location_env_command(host_role=self.host_role),
             ],
         )
 
