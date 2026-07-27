@@ -1019,6 +1019,15 @@ def main(argv=None):
         help="Telegraf tails from the end of each existing log file (no backfill).",
     )
     deployments_provision_telegraf_parser.add_argument(
+        "--skip-metrics",
+        action="store_true",
+        help="Provision only the Elasticsearch log forwarder, leaving the "
+        "InfluxDB host-metrics forwarder untouched. Use when retrofitting a "
+        "log-forwarding change: --name is required for the ES index name but "
+        "otherwise also pulls monitoring state, which would regenerate and "
+        "restart telegraf-ant-metrics on every targeted host.",
+    )
+    deployments_provision_telegraf_parser.add_argument(
         "--drop-log-levels",
         type=str,
         default="DEBUG,TRACE",

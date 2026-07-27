@@ -64,27 +64,33 @@ def _resolve_backends(args, console):
             "branch_commit": branch_commit,
         }
 
-    influx_url = args.influxdb_url
-    influx_token = args.influxdb_token
-    influx_org = args.influxdb_org
-    influx_bucket = args.influxdb_bucket
-    if not influx_url and args.name:
-        try:
-            monitoring = load_monitoring_state(args.name)
-            influx_url = monitoring.get("influxdb_url", "")
-            influx_token = monitoring.get("influxdb_token", "")
-            influx_org = monitoring.get("influxdb_org", influx_org)
-            influx_bucket = monitoring.get("influxdb_bucket", influx_bucket)
-        except RuntimeError:
-            pass
+    # --skip-metrics narrows a run to the Elasticsearch forwarder alone. Needed
+    # because --name is what supplies the ES index name, but it *also* resolves
+    # monitoring state -- so without this there is no way to retrofit a log
+    # forwarding change without simultaneously regenerating (and restarting)
+    # the host-metrics forwarder on every targeted host.
     influx = None
-    if influx_url and influx_token:
-        influx = {
-            "influxdb_url": influx_url,
-            "influxdb_token": influx_token,
-            "influxdb_org": influx_org,
-            "influxdb_bucket": influx_bucket,
-        }
+    if not getattr(args, "skip_metrics", False):
+        influx_url = args.influxdb_url
+        influx_token = args.influxdb_token
+        influx_org = args.influxdb_org
+        influx_bucket = args.influxdb_bucket
+        if not influx_url and args.name:
+            try:
+                monitoring = load_monitoring_state(args.name)
+                influx_url = monitoring.get("influxdb_url", "")
+                influx_token = monitoring.get("influxdb_token", "")
+                influx_org = monitoring.get("influxdb_org", influx_org)
+                influx_bucket = monitoring.get("influxdb_bucket", influx_bucket)
+            except RuntimeError:
+                pass
+        if influx_url and influx_token:
+            influx = {
+                "influxdb_url": influx_url,
+                "influxdb_token": influx_token,
+                "influxdb_org": influx_org,
+                "influxdb_bucket": influx_bucket,
+            }
 
     if es is None and influx is None:
         console.print(

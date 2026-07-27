@@ -162,6 +162,37 @@ class TestResolveBackends:
         with pytest.raises(SystemExit):
             ptc._resolve_backends(_args(), MagicMock())
 
+    @patch.object(ptc, "load_monitoring_state")
+    @patch.object(ptc, "load_elastic_state")
+    def test_skip_metrics_suppresses_influx(self, mock_es, mock_mon):
+        """--skip-metrics keeps a log-forwarding retrofit off the metrics forwarder.
+
+        --name is required for the ES index name, so without this the monitoring
+        state it also resolves would regenerate and restart telegraf-ant-metrics
+        on every targeted host.
+        """
+        mock_es.return_value = {
+            "elasticsearch_url": "http://es:9200",
+            "elasticsearch_username": "u",
+            "elasticsearch_password": "p",
+        }
+        mock_mon.return_value = {
+            "influxdb_url": "http://mon:8086",
+            "influxdb_token": "tok",
+        }
+        es, influx = ptc._resolve_backends(_args(skip_metrics=True), MagicMock())
+        assert es is not None
+        assert influx is None
+        mock_mon.assert_not_called()
+
+    @patch.object(ptc, "load_monitoring_state")
+    @patch.object(ptc, "load_elastic_state")
+    def test_skip_metrics_still_exits_when_no_elastic(self, mock_es, mock_mon):
+        mock_es.side_effect = RuntimeError("no elastic state")
+        mock_mon.return_value = {"influxdb_url": "http://mon:8086", "influxdb_token": "t"}
+        with pytest.raises(SystemExit):
+            ptc._resolve_backends(_args(skip_metrics=True), MagicMock())
+
 
 # --------------------------------------------------------------------------- #
 # _provision_by_name: node combined pass + client metrics pass

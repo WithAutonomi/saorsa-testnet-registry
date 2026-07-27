@@ -294,32 +294,32 @@ class TelegrafProvisioner:
 
   data_format = "json"
 
-  json_string_fields = [
-    "message",
-    "level",
-    "target",
-    "peer_id",
-    "version",
-    "commit",
-    "relayer",
-    "allocated",
-    "peer",
-    "client",
-    "public_addr",
-    "address",
-    "kind",
-    "event",
-    "component",
-    # Relay-affinity reacquire-decision line (saorsa_core::reachability::
-    # acquisition, "relay acquisition: reacquire decision"). These are string
-    # fields; without whitelisting them the telegraf json parser silently drops
-    # them and only `message` reaches Elasticsearch. `present_in_candidates` is
-    # a JSON boolean (not capturable via json_string_fields) but is redundant
-    # with `previous_index` (== "None" iff the previous relayer was absent).
-    "previous_relayer",
-    "previous_index",
-    "chosen"
-  ]
+  # Capture EVERY non-numeric field, rather than a curated allow-list.
+  #
+  # Telegraf's json parser passes numbers through automatically but silently
+  # drops any other value not matched here -- so a curated list means every
+  # ant-node PR that logs a new string field loses it, with no error anywhere:
+  # the line still arrives, just missing fields. That failure recurred
+  # repeatedly (most recently ant-node#179's `peer_1_id`..`peer_10_id`), and
+  # the list also drifted per-host -- 49 of 66 ant-prod-01 VMs were still on a
+  # 6-entry version while 17 had the full list, so the same field was captured
+  # on some hosts and dropped on others.
+  #
+  # The pattern is a glob, so "*" matches everything. Verified against telegraf
+  # 1.33 that this captures strings, booleans, nested objects (flattened to
+  # `parent_child`) and arrays (`field_0`, `field_1`), while `json_time_key`
+  # below still consumes `timestamp` as the metric time and `tag_keys` still
+  # moves level/target to tags rather than duplicating them as fields.
+  #
+  # Cost is bounded: a 95k-line sample of live prod logs held 121 distinct keys,
+  # only 24 of them non-numeric, against Elasticsearch's 1000-field default --
+  # and `index.mapping.ignore_malformed` is set on the index template, so a
+  # field whose type conflicts with an earlier mapping is dropped rather than
+  # 400-ing (and wedging) the whole batch.
+  #
+  # NOT fixed by this: telegraf parses JSON numbers as float64, so integers
+  # above 2^53 (u64 ids) lose precision no matter how fields are selected.
+  json_string_fields = ["*"]
 
   json_time_key = "timestamp"
   json_time_format = "2006-01-02T15:04:05.999999999Z"
