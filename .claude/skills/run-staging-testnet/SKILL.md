@@ -28,24 +28,31 @@ Extract from the description:
 
 | What | Where | Example |
 |---|---|---|
-| Train date | Issue title, `Release Train — <date>` | `2026-07-21` |
-| `ant-node` RC version | `## Cut record` → Versions table, `ant-node` row, **New** column | `0.15.0-rc.1` |
-| `ant` RC version | Same table, **`ant-cli`** row, **New** column | `0.3.1-rc.1` |
-| Previous `ant-node` release | Same table, `ant-node` row, **Old** column | `0.14.4` |
+| Train date | Issue title, `Release Train — <date>` | `2026-07-28` |
+| `ant-node` RC version | `## Cut record` → versions table, `ant-node` row, **after** the arrow | `0.16.0-rc.1` |
+| `ant` RC version | Same table, **`ant-cli`** row, after the arrow | `0.3.2-rc.1` |
+| Previous `ant-node` release | Same table, `ant-node` row, **before** the arrow | `0.15.0` |
 | Risks to watch | `## Risks to watch in staging/canaries` | — |
 
 Notes:
 
+- **The table has no Old/New columns.** Its columns are `Crate | Version |
+  rc-branch head`, and the old and new versions share the single `Version` cell
+  as `0.15.0 → **0.16.0-rc.1**`. Read both sides of the arrow out of that one
+  cell: before it is the previous release, after it is the RC.
 - `ant-cli` is the crate; `ant` is the binary. The `ant-cli` version goes into the
   manifest's `testnet.binaries.ant`.
-- The Versions table is authoritative over the earlier "Final versions" bullets in
-  the manifest section — those can be superseded at cut time. Read the table.
-- The previous `ant-node` release (Old column) is the binary the mixed-version phase
-  runs.
+- The Cut record table is authoritative over the earlier "Final versions" table in
+  the manifest section — that one lists the *planned* release versions (`0.16.0`),
+  not the RC tags, and can be superseded at cut time. Read the Cut record.
+- The previous `ant-node` release (before the arrow) is the binary the
+  mixed-version phase runs.
 - If there is no `## Cut record` section, the cut has not happened. Stop.
 
 Then list the train's sub-issues (`list_issues` with `parentId`) and note the
-`Staging run — rc.N` one. You will update it at the end.
+`Staging run — rc.N` one. Move it to **In Progress** now — the run occupies it
+for the next five hours or so, and leaving it in Todo makes a train that is
+actively running look untouched. You will update it again at the end.
 
 Report the extracted values back before continuing.
 
@@ -229,7 +236,7 @@ deploy/manifests/runs/staging/STG-02.yaml
 Do not create a manifest on the fly. Edit two things in the existing one:
 
 - `extension.binaries.ant_node.version` → the previous `ant-node` release (the
-  **Old** column from the Cut record table).
+  version **before the arrow** in the Cut record table's `ant-node` row).
 - `purpose` → `"Release Train <date>: mixed-version phase, ant-node <previous release>."`
 
 Leave everything else alone. In particular the node distribution is deliberate:
