@@ -72,8 +72,10 @@ Notes:
   `evaluate-canary` has it in context.
 
 Then list the train's sub-issues (`list_issues` with `parentId`) and note the **`Canary
-deployment`** one. You will comment on it and close it at the end. (There is also a `Canary
-verification` sub-issue — that one belongs to `evaluate-canary`. Leave it alone.)
+deployment`** one. Move it to **In Progress** now — the deploy and its settle window occupy it for
+a while, and leaving it in Todo makes a train that is actively standing up a canary look
+untouched. You will comment on it and close it at the end. (There is also a `Canary verification`
+sub-issue — that one belongs to `evaluate-canary`. Leave it alone, in Todo.)
 
 Report the extracted values before continuing.
 
@@ -389,9 +391,10 @@ check it is greater than the id you noted in Step 2.
 
 Then:
 
-- **All three checks PASS** → move the `Canary deployment` sub-issue to **Done**.
-- **Any check FAILED** → leave the sub-issue **open**, leave the canary up, and hand back to the RM
-  naming the failure.
+- **All three checks PASS** → move the `Canary deployment` sub-issue from In Progress to **Done**.
+- **Any check FAILED** → leave the sub-issue **In Progress** (not Done, not back to Todo — the
+  canary is up and the work is genuinely mid-flight), leave the canary running, and hand back to
+  the RM naming the failure.
 
 Leave the `Canary verification` sub-issue alone — that is `evaluate-canary`'s to close.
 
