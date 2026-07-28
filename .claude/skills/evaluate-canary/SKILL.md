@@ -6,10 +6,11 @@ description: Evaluate a release train's production canary deployment (the ~10 RC
 # evaluate-canary
 
 Produces the **canary verification** for the current release train: the judgment-and-record
-counterpart to the canary *deployment* (which stands the canary up, runs periodic checks, and
-tears it down — a separate sub-issue, usually a separate session). This skill reviews a
-completed-or-still-running canary, writes a fixed-format report, records it on the
-`Canary verification` sub-issue, and closes that sub-issue.
+counterpart to the canary *deployment* (the `run-canary-deployment` skill, which stands the canary
+up, smoke-tests it and leaves it running — a separate sub-issue, usually a separate session;
+teardown belongs to Ship, after this verification). This skill reviews a still-running (or
+already-torn-down) canary, writes a fixed-format report, records it on the `Canary verification`
+sub-issue, and closes that sub-issue.
 
 Rules:
 
