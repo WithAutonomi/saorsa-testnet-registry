@@ -22,8 +22,8 @@ Rules:
 - **You do not issue the gate verdict.** That is `Gate verdict` (a separate skill, V2-724), which
   *consumes* this report. This skill stops at "canary verification recorded".
 - **Hard-gate FAIL never auto-closes.** On any hard-gate failure, post the report and hand back to
-  the RM with the sub-issue left open. Only an all-hard-gates-PASS run moves `Canary verification`
-  to Done.
+  the RM with the sub-issue left In Progress. Only an all-hard-gates-PASS run moves
+  `Canary verification` to Done.
 - **The canary is normally still up at verification time.** In the standard flow this runs on
   Wednesday, before Ship tears the canary down, so the live sources (SSH, the canary's ES and
   InfluxDB) are available. If the canary has already been torn down, say so and evaluate in
@@ -106,7 +106,15 @@ Then `list_issues` with `parentId` = the train issue and note **both**:
 - **`Canary deployment`** — the deploy sub-issue. Read it: the deploy skill records the canary's
   registry **name** (and often T0 / the start timestamp) here. This is your primary source for the
   deployment name and window.
-- **`Canary verification`** — the sub-issue you will close at the end.
+- **`Canary verification`** — the sub-issue you will close at the end. Move it to **In Progress**
+  now. The verification is a long read-only sweep (SSH probes across every service, ES and
+  InfluxDB queries, `record-analysis`), and leaving it in Todo makes the train look as though
+  nobody has picked the verification up while it is actively running.
+
+Leave `Canary deployment` in whatever state it is in — it belongs to `run-canary-deployment`. If
+it is still In Progress rather than Done, that means the deploy skill hit a failed smoke check and
+handed back; read its comment before going further, because you may be evaluating a canary that
+was already known to be degraded.
 
 Report the extracted values before continuing.
 
@@ -420,10 +428,12 @@ The binary is `ant`/`ant-node`; the RC version comes from the train's Cut record
    parent train issue. The parent's `Verdict` section is written later by `Gate verdict` (V2-724),
    which reads this report off the sub-issue; do not post to the parent or touch its Verdict.
 2. **If the hard-gate verdict is PASS** (both gates PASS): move the `Canary verification` sub-issue
-   to **Done**.
-3. **If any hard gate is FAIL or UNVERIFIABLE**: post the report, **leave `Canary verification`
-   open**, and hand back to the RM naming the failure. A hard-gate failure blocks the ship; a
-   canary torn down before verification is a process gap. Never auto-close either.
+   from In Progress to **Done**.
+3. **If any hard gate is FAIL or UNVERIFIABLE**: post the report, **leave `Canary verification` in
+   In Progress** (not Done, and not back to Todo — the verification ran and produced a report;
+   Todo would misreport it as never started), and hand back to the RM naming the failure. A
+   hard-gate failure blocks the ship; a canary torn down before verification is a process gap.
+   Never auto-close either.
 
 Ask the RM before closing if any observation is anomalous enough that you are unsure — the sub-issue
 closing is cheap to defer and expensive to reverse.
