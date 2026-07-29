@@ -58,6 +58,65 @@ The skill **auto-detects the kind** from the registry (Step 2) and adapts: if th
 instead deployed as `prod-nodes` **without** `--monitoring`/`--forward-logs`, there is no ES or
 InfluxDB and every ES/Influx check below degrades to SSH-only — call that out in the report.
 
+## RC artifacts are DEBUG builds — this changes how everything below is read
+
+**Every `ant-node` `-rc.N` release artifact is built without `--release`, deliberately.**
+`.github/workflows/release.yml` branches on `is_prerelease`: prerelease ⇒ `build_flags=""`,
+`profile_dir=debug`, *"Building DEBUG (RC pre-release: logging enabled)"*. Verify on the VM —
+a debug binary is ~460 MB and `file` reports *"with debug_info, not stripped"*; the optimised
+production binary is ~19 MB and stripped:
+
+```bash
+stat -c %s /usr/local/bin/ant-node; file /usr/local/bin/ant-node
+```
+
+Three consequences, all load-bearing:
+
+1. **`overflow-checks` are ON.** Arithmetic under/overflow **panics** on the canary where the
+   shipped release **wraps silently**. So an arithmetic panic seen only on an RC is **not
+   automatically a regression**, and a clean production journal is **not evidence of absence** —
+   release builds are structurally incapable of reporting it. Establish provenance by diffing the
+   source (Step 4), never by the RC-vs-prod presence/absence alone.
+2. **`panic = "abort"` does NOT apply.** ant-node's workspace `[profile.release]` sets
+   `panic = "abort"`, but a debug build uses `profile.dev` and **unwinds** — so tokio catches task
+   panics and the process survives with `NRestarts=0`. "Panicked but did not crash" on an RC does
+   not predict release behaviour; on the shipped profile the same panic aborts the process.
+3. **Resource and throughput numbers are not comparable to production.** CPU, RSS, log volume,
+   disk and network all reflect an unoptimised binary. Record them as NOT ASSESSED (Step 6).
+
+Note the asymmetry when reasoning about *other* runs: a staging comparison of **RC vs RC** is
+apples-to-apples and unaffected by any of this. Only a comparison that crosses the profile boundary
+(RC vs shipped release, or canary vs production fleet) is confounded — and it is confounded
+*against* the RC, so improvements measured that way are real and if anything understated.
+
+## Cross-check against production
+
+For any panic signature or anomaly, the production fleet is the natural control. The inventory is
+`~/.autonomi/testnets/ant-prod-01/inventory.json` (`node_vms[].ip`, key `~/.ssh/ant_deploy`) —
+**read-only, never mutate a production host from this skill.** Sample across all providers
+(OVH / Hetzner / Contabo); ~15–20 hosts is plenty. Run them in parallel with `timeout`:
+
+```bash
+timeout 150 ssh -i ~/.ssh/ant_deploy -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+  -o BatchMode=yes root@$ip '
+  echo "ver=$(/usr/local/bin/ant-node --version 2>/dev/null | head -1 | awk "{print \$2}")"
+  echo "journal_from=$(journalctl --no-pager -o short-iso 2>/dev/null | head -1 | cut -c1-10)"
+  journalctl --no-pager 2>/dev/null | grep -aA2 "The application panicked" \
+    | grep -aE "(Message:|Location:)" | sed "s/^.*\(Message:\|Location:\)/\1/" \
+    | paste - - | sort | uniq -c | sort -rn'
+```
+
+Always report `journal_from` alongside the counts — a zero over a two-day journal means much less
+than a zero over two months. Read the version **live**; the inventory's `binary.ant_node_version`
+is stale (prod auto-upgrades).
+
+Interpretation, in order:
+- Signature present on prod ⇒ pre-existing, not an RC regression.
+- Signature absent on prod **and** it is a `debug_assertions`-gated class (arithmetic overflow,
+  bounds) ⇒ **inconclusive** — prod cannot report it. Say so; do not call it RC-specific.
+- Signature absent on prod, class *can* fire in a release build, and the source differs between the
+  shipped tag and the RC hash ⇒ genuine regression.
+
 ## There is no node-evaluation CLI — this is important
 
 `deployments record-results` / `print-recorded-results` do **not** handle the `prod-debug-nodes`
@@ -214,8 +273,21 @@ per-service RSS from `procstat` (`_field=="memory_rss"`, group by `node_service`
 
 ## Step 4 — Hard gate 1: no crash, panic, OOM, or unexplained restart
 
-The signal is the **restart counter over the window**, not "is it running now". A service that
-crashed and was auto-restarted (`Restart=always`) is up again but has failed the gate.
+> **Read this before writing any grep.** A panic here typically leaves **no systemd trace at
+> all**, and **none** in Elasticsearch. On the 2026-07-29 canary the prescribed checks returned a
+> clean 0 while 49 real panics sat in the journal. The panic scan below is the *primary* signal,
+> not a cross-check, and it must run **unconditionally** — never gated on a unit first looking
+> unhealthy.
+>
+> Three traps, all hit on that run:
+> - **`grep "panicked at"` returns 0.** ant-node's **color-eyre** hook prints
+>   `The application panicked (crashed).` then `Message:  <msg>` then `Location: <file>:<line>`,
+>   *not* Rust's stock `thread '…' panicked at …`. Match **`The application panicked`**.
+> - **A task-level panic leaves every systemd signal green.** A panic inside a spawned tokio task
+>   unwinds only that task; the process survives, so `ActiveState=active`, `Result=success`,
+>   `NRestarts=0`, no coredump, and `--state=failed` lists nothing. (RC builds unwind — see
+>   "RC artifacts are debug builds". A *release* build with `panic = "abort"` would die instead.)
+> - **`grep -i oom` false-positives on `tokio::loom`** frames — `loom` contains `oom`.
 
 Probe every service on the VM. Parallelise with a per-host `timeout` (as in
 `bootstrap-upgrade-check`). Canonical per-node probe (loop `i` over `1..N`):
@@ -233,32 +305,79 @@ for i in $(seq 1 '"$N"'); do
     "$(systemctl show $u -p ExecMainStartTimestamp --value)"
 done
 echo "== binary ==";     /usr/local/bin/ant-node --version 2>&1 | head -1
+echo "== build ==";      stat -c %s /usr/local/bin/ant-node; file /usr/local/bin/ant-node
 echo "== coredumps ==";  ls -1 /mnt/ant-node-storage/coredumps/core.* 2>/dev/null | wc -l
-echo "== panics ==";     journalctl -u "ant-node-*" --since "'"$T0_UTC"'" --no-pager 2>/dev/null \
-                           | grep -icE "panicked at|SIGSEGV|SIGABRT|out of memory|oom-kill|core dumped"
+echo "== PANICS (authoritative) =="
+journalctl --since "'"$T0_UTC"'" --no-pager 2>/dev/null | grep -ac "The application panicked"
+echo "== panic messages + locations =="
+journalctl --since "'"$T0_UTC"'" --no-pager 2>/dev/null \
+  | grep -aA2 "The application panicked" \
+  | grep -aE "(Message:|Location:)" | sed "s/^.*\(Message:\|Location:\)/\1/" \
+  | paste - - | sort | uniq -c | sort -rn
+echo "== real OOM kills (kernel only) =="
+journalctl -k --since "'"$T0_UTC"'" --no-pager 2>/dev/null \
+  | grep -acE "invoked oom-killer|Out of memory: Killed process"
 '
 ```
 
-Cross-check ES over the window for panic/OOM signatures that on-disk log rotation may have pruned
-(the debug logs are pruned aggressively — default `--log-retention-days 1` — precisely because
-they are durable in ES):
+The `uniq -c` on message+location is the highest-value line in this skill: it collapses hundreds of
+backtrace lines into one row per distinct fault with a count, and immediately shows whether a
+signature is one known class or several.
 
+For any distinct signature found, pull the frames once to get the call path:
+
+```bash
+journalctl -u ant-node-<i> --since "<first-ts>" --until "<first-ts +40s>" --no-pager | head -40
 ```
-GET telegraf-ant-nodes-<name-lc>-*/_search
-{ "size": 20, "query": { "bool": {
-  "filter": [ { "range": { "@timestamp": { "gte": "<T0>" } } } ],
-  "should": [
-    { "match_phrase": { "tail.message": "panicked" } },
-    { "match_phrase": { "tail.message": "backtrace" } },
-    { "match_phrase": { "tail.message": "SIGABRT" } },
-    { "match_phrase": { "tail.message": "oom-kill" } }
-  ], "minimum_should_match": 1 } } }
-```
+
+**Do not rely on Elasticsearch for this gate.** Panics go to **stderr → journald**; telegraf tails
+the structured JSON log, which never contains them. An ES panic query returns 0 through a real
+panic storm. (ES remains right for log *content* — audit failures, WARN/ERROR rates, per-target
+counts.)
 
 **FAIL** if, for any service: `NRestarts > 0` without a benign explanation, `Result` is not
-`success`, any `core.*` file exists, or any panic/OOM appears in the journal or ES over the window.
-Report the offending service, the count, and the first backtrace/OOM line. `ActiveState=active`
-alone is **not** a pass — a service can be up with `NRestarts=3`.
+`success`, any `core.*` file exists, or a panic appears in the journal **that the shipping build
+could also produce**. Report the offending services, the per-service counts, the distinct
+message+location signatures, and the call path. `ActiveState=active` alone is **not** a pass — a
+service can be up with `NRestarts=3`, and with a task-level panic it can be up having panicked 49
+times.
+
+> **A debug-only panic on unchanged code is NOT a gate failure.** This gate asks whether the
+> *release being shipped* will crash in production. A panic that (a) can only fire under
+> `debug_assertions`/`overflow-checks` — arithmetic overflow, bounds checks — and (b) sits in code
+> byte-identical to the shipped tag, is a property of **how the canary was built**, not of the
+> artifact being released. The shipped binary compiles that check out and cannot produce it, so it
+> introduces no crash risk. Record it as a **finding** (its own section in the report, with a bug
+> to file), mark the gate **PASS**, and say explicitly why.
+>
+> Marking such a panic FAIL is self-contradictory: you cannot argue in one paragraph that
+> production is clean *because* release builds compile the check out, and in the next that the
+> release fails a crash gate on it. The 2026-07-29 canary was initially recorded FAIL on exactly
+> this mistake and had to be corrected.
+>
+> This is a narrow exemption, not a general one. It does **not** apply when the panic class can
+> fire in a release build (explicit `panic!`, `unwrap`, `expect`, `assert!`), nor when the source
+> differs from the shipped tag, nor to anything that actually killed or restarted a process. When
+> in doubt, FAIL and hand to the RM.
+>
+> Whether the *underlying* fault matters in production is a separate question, and usually yes —
+> an overflow that panics in debug **wraps silently** in release, which can be worse than a crash.
+> Say so in the finding, name the plausible production consequence, and mark it unverified unless
+> you have evidence. A gate PASS here means "this release does not crash", never "there is no bug".
+
+**Establish provenance before calling anything a regression** — a panic here is not automatically
+the RC's fault. Do all three:
+
+1. **Diff the source.** The `Location:` line names the crate, the git checkout hash and the file.
+   Compare that hash against the shipped tag:
+   `git log --oneline <shipped-tag>..<rc-hash> -- <file>` and
+   `git diff <shipped-tag> <rc-hash> -- <file>`. Identical code ⇒ **not a regression**, and say so
+   plainly. (On 2026-07-29 the only commit between them was the release chore, touching just
+   `Cargo.toml`/`Cargo.lock`.)
+2. **Scan production for the same signature** — see "Cross-check against production" below.
+3. **Check whether the signature is even *possible* in a release build.** Arithmetic overflow,
+   array-bounds and other `debug_assertions`-gated panics **cannot fire** in an optimised build;
+   they wrap or elide silently. For those, a clean production journal proves nothing.
 
 Also confirm the live binary is the RC: **`/usr/local/bin/ant-node --version`** (the binary lives
 at `/usr/local/bin/ant-node`; do **not** try to parse it out of `systemctl show -p ExecStart`,
@@ -324,16 +443,35 @@ anomaly here is an early warning worth calling out prominently.
 
   `paid_list.mdb` growing alongside `chunks.mdb` is the stronger evidence — it shows *paid* stores,
   not just inbound replication. (On STG-03 the stores were 14–33 GB/node and climbing.)
-- **Resource use vs production peers.** From `record-analysis` (Step 7) / InfluxDB: median CPU,
-  RSS, disk growth, and outbound bytes. Per-service RSS/CPU comes from the **`procstat`** measurement
-  (tag `node_service`, field `memory_rss` / `cpu_usage`) — *not* `prometheus`. Compare against the
-  **normal band for production nodes of comparable age**. There is no automated prod-peer baseline
-  wired in — obtain the fleet's normal band from the operator (or the prod dashboards) and compare
-  by hand; flag any figure running hot. (STG-03 showed a wide per-service RSS spread — most services
-  0.4–0.9 GB, three at 2.1–2.7 GB — the kind of thing to note and ask about.)
-- **Memory trend.** Per-service RSS slope should be **~flat after warm-up** (drop the first ~1h).
-  Trend `procstat`/`memory_rss` grouped by `node_service` across the window and report the slope; a
-  persistent upward climb is a leak signal at production scale (complements the staging leak gate).
+- **Resource use vs production peers — record as `NOT ASSESSED`.** The canary is a **debug** build
+  and the production fleet runs an **optimised** one (see "RC artifacts are debug builds"), so CPU,
+  RSS, disk growth, outbound bytes and log volume are **not comparable** across the two. Report the
+  raw figures from `record-analysis` (Step 7) / InfluxDB for the record, explicitly labelled as
+  debug-build numbers, and mark the comparison NOT ASSESSED. Do **not** ask the operator for a
+  production "normal band" and compare against it — that comparison cannot be made valid by better
+  baseline data, because the confound is the build profile.
+  What *is* still valid, and worth reporting: comparisons **within the canary** (service vs service,
+  same binary) and **trends over the window** (below).
+- **Memory trend — use `RssAnon`, not `memory_rss`.** `procstat`/`memory_rss` counts **mapped file
+  pages**, and ant-node mmaps its LMDB chunk store, so `memory_rss` tracks store size and reads as a
+  massive leak when there is none. On the 2026-07-29 canary two services showed 4.09/4.47 GB against
+  0.22–1.05 GB elsewhere — a ~20× apparent leak that was entirely LMDB page cache.
+  Telegraf does **not** collect `RssAnon`, so take it over SSH:
+
+  ```bash
+  ssh -i "$SSH_KEY" root@$IP 'for i in $(seq 1 '"$N"'); do
+    p=$(systemctl show ant-node-$i -p MainPID --value)
+    printf "ant-node-%-3s RSS=%s RssAnon=%s RssFile=%s\n" $i \
+      "$(awk "/VmRSS/{print \$2}"   /proc/$p/status)" \
+      "$(awk "/RssAnon/{print \$2}" /proc/$p/status)" \
+      "$(awk "/RssFile/{print \$2}" /proc/$p/status)"
+  done'
+  ```
+
+  `RssAnon` is the heap — that is the leak signal. A large `RssFile` is expected and benign.
+  Then trend `procstat`/`memory_rss` grouped by `node_service` across the window for the **slope**
+  (drop the first ~1h): a slope is a within-canary trend and stays meaningful, but read any absolute
+  RSS number against `RssAnon` before calling it a leak.
 - **Logs.** No **novel** ERROR/WARN signatures vs the current release, and known-error rates not
   elevated. Get the level histogram (`tag.level.keyword`) and the ERROR/WARN breakdown by
   `tag.target.keyword` (add `"track_total_hits": true`), then sample a few `tail.message` bodies per
@@ -380,53 +518,95 @@ uv run saorsa-deploy deployments print-recorded-results --id <id>   # NB: --id, 
 that the summary echoed back is the one you just wrote — a reused name has silently no-op'd this
 before.
 
-## Step 8 — The verification report (fixed format)
+## Step 8 — The verification report
 
-Emit exactly this structure. Every hard gate gets PASS / FAIL / UNVERIFIABLE with its reading;
-every observation gets its reading; anomalies are called out.
+Match the **house style of the staging verification** (see the first comment on any
+`Staging verification — rc.N` sub-issue, e.g. V2-778): a headline result, a summary table, a
+**prose** "What happened", then tables for the gate detail.
+
+**"What happened" is the part that matters and it must be prose, not bullets.** Write it for
+someone who was not on the run: say what the readings *mean*, not just what they were. Lead
+paragraphs with a bold sentence carrying the point. Translate figures into consequences ("grew
+their chunk stores from 26 GB to 217 GB … meaning they were being *paid* to store data, not merely
+receiving replicated copies"). State plainly what the run could **not** tell us. Never present a
+number whose comparison you know to be invalid without saying so in the same breath.
 
 ```
-# Canary verification — Release Train <date> (rc.N)
+# Canary verification — rc.N
 
-Canary:   <name> (registry id <id>, kind <kind>), <N> × ant-node <RC> on 1 VM
-Window:   T0 <ts> → <ts>  (warm-up first ~1h excluded from trends)
-Mode:     live | degraded (torn down before verification)
+**Result: PASS | FAIL** — <one clause naming the gate if FAIL, plus the key qualifier>
 
-## Hard gates — failure blocks the ship, no override
+| | |
+|---|---|
+| Canary | <name> **#<id>** — ant-node <RC>, <N> services on 1 VM |
+| Vehicle | `<kind>` — <provider> <region> <size>, <volume>GB volume |
+| Network | **Production** Autonomi mainnet |
+| Window | T0 <ts> → <ts> (<N>h; first ~1h warm-up excluded from trends) |
+| Build profile | **DEBUG** — every `-rc.N` artifact is built without `--release` by design |
+| Backends | InfluxDB <ip> · Elasticsearch `telegraf-ant-nodes-<name-lc>-*` |
+| Hard gates | **<n> pass, <n> fail** |
+| Mode | live | degraded (torn down before verification) |
 
-- [ ] Crashes/panics/OOM/restarts: PASS | FAIL | UNVERIFIABLE
-      <max NRestarts across services; coredump count; first panic/OOM line if any>
-- [ ] Joined & stayed connected:   PASS | FAIL | UNVERIFIABLE
-      <routing-table populated? stable? any ejection/flapping, with counts>
+## What happened
 
-HARD-GATE VERDICT: PASS | FAIL
+<Several prose paragraphs. Did it stay up and participate? What failed and what
+exactly is the fault? Is it a regression — and how do you know? What could not be
+measured, and why? Bold the lead sentence of each paragraph.>
 
-## Observations (recorded, not blocking)
+## Verdict
 
-- Participation:      <chunks-stored growth; requests served; routing stable>
-- Resource vs peers:  <CPU / RSS p50 / disk growth / outbound, vs normal band>
-- Memory trend:       <per-service RSS slope after warm-up — flat? rising?>
-- Logs:               <novel ERROR/WARN signatures; known-error rates>
-- Economics:          <quote/admission reject rate | N/A (no pricing change)>
+**Hard gates: <n> PASS, <n> FAIL.** <one line>
 
-## Anomalies
+<If FAIL: the gate verdict is not this skill's to issue — record the FAIL as
+measured, then list the material inputs for whoever does decide: is the code
+changed vs production, what is the blast radius per event, how does it manifest
+on the shipping build profile, and what the correct remedial output is.>
 
-<bullet list of anything off-band or novel, with the evidence — or "none">
+## Hard gates
 
-## Notes / gaps
+| Gate | Verdict | Detail |
+|---|---|---|
+| Crashes / panics / OOM / restarts | **PASS/FAIL** | <counts per service; distinct message+location signatures; call path; NRestarts/Result/coredumps/OOM-kills> |
+| Joined & stayed connected | **PASS** (inferred) / FAIL | <per-service inbound accepts and DHT connects; why inferred> |
 
-<any check that could not run: backend absent, degraded mode, prod-peer baseline
-supplied manually, binary-version mismatch, etc.>
+## Observations
+
+| Observation | Reading | Detail |
+|---|---|---|
+| Participation | | chunks.mdb + paid_list.mdb growth |
+| Memory trend | | RssAnon per service — the leak signal |
+| Resource vs peers | **NOT ASSESSED** | debug build; raw figures for the record only |
+| Logs | | level histogram; novel vs known signatures; key rates |
+| Economics | | payment-target WARN/ERROR, or N/A with the reason |
+
+## Production cross-check
+
+<Only when a panic/anomaly was found. Table: signature | production (version,
+build profile) | canary. Always state how far back the journals reach, and
+whether a production zero is meaningful for that signature class.>
+
+## Notes and gaps
+
+<Bullets: build profile, detection gaps, wrong-metric traps, checks that could
+not run, unresolved questions, and the fact the canary is left running.>
 ```
 
-The binary is `ant`/`ant-node`; the RC version comes from the train's Cut record. Fill every field
-— an unfillable field is itself a finding (say why).
+Fill every field — an unfillable field is itself a finding, so say why. Mark `UNVERIFIABLE` (not
+FAIL) for a gate that could not be checked because the canary was torn down early.
 
 ## Step 9 — Record on Linear and finalize
 
-1. Post the report (Step 8) as a **comment on the `Canary verification` sub-issue** — **not** the
-   parent train issue. The parent's `Verdict` section is written later by `Gate verdict` (V2-724),
-   which reads this report off the sub-issue; do not post to the parent or touch its Verdict.
+1. Post the report (Step 8) as **exactly one comment** on the `Canary verification` sub-issue —
+   **not** the parent train issue. The parent's `Verdict` section is written later by
+   `Gate verdict` (V2-724), which reads this report off the sub-issue; do not post to the parent or
+   touch its Verdict.
+
+   **One comment, always.** If later investigation changes the findings, **edit that comment**
+   (`save_comment` with its `id`) so the sub-issue always holds a single current report. Do not
+   append addenda or corrections as extra comments — a reader should never have to reconcile two
+   versions to learn the verdict. If a correction materially reverses an earlier conclusion, note
+   that inside the report where it belongs (e.g. "not a regression — the code is unchanged"), not
+   as a separate comment.
 2. **If the hard-gate verdict is PASS** (both gates PASS): move the `Canary verification` sub-issue
    from In Progress to **Done**.
 3. **If any hard gate is FAIL or UNVERIFIABLE**: post the report, **leave `Canary verification` in
@@ -449,10 +629,17 @@ State these in the report rather than working around them:
 - **"Collates, does not measure" is not yet true.** Nothing records per-node canary health, so this
   skill measures it live. When a deploy-side recording command exists (V2-723), prefer its recorded
   observations and reduce the live probing.
-- **No prod-peer baseline is wired in** for "resource vs peers" — it is a manual comparison against
-  the operator-supplied normal band.
+- **"Resource vs peers" is not assessable at all**, and no baseline can fix it: the canary is a
+  debug build, the production fleet is optimised. Record NOT ASSESSED with the raw debug-build
+  figures for the record. See "RC artifacts are debug builds".
 - **No stored ERROR/WARN signature set** for "novel vs current release" — a judgment call against
   operator/prior-canary knowledge.
+- **Panics are invisible to every check except a journald text scan** — not in Elasticsearch, and
+  a task-level panic leaves `NRestarts=0` / `Result=success` / nothing in `--state=failed`. The
+  stock `grep "panicked at"` also misses ant-node's color-eyre format. See Step 4.
+- **`memory_rss` cannot answer the leak question** on an LMDB-backed node — it counts mapped file
+  pages. `RssAnon` (per-process `/proc/<pid>/status`, SSH only — Telegraf does not collect it) is
+  the heap figure. See Step 6.
 - **Torn-down canary = unverifiable hard gates.** `destroy` deletes S3 state and, by default, the
   dedicated ES + InfluxDB. Verification must run before Ship; run it while the canary is up.
 - **ant-node emits no metrics** (verified STG-03): the node runs no metrics/OpenMetrics server, so

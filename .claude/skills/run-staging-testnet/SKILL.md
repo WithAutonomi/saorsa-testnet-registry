@@ -363,18 +363,53 @@ If extraction fails or returns nothing, stop. Leave the testnet up and hand back
 the RM. The data is still in InfluxDB while the monitoring stack is alive, and gone
 once it is destroyed.
 
-## Step 8 — Teardown
+## Step 8 — Teardown (compute only — leave the observability stack up)
 
-Order matters. `bootstraps destroy` refuses while a dependent extension exists, and
-`--force` does not override that.
+**Do not use `deployments down`.** It tears down everything including Elasticsearch
+and InfluxDB, and those are the only places the run's logs and metrics exist. The
+staging *verification* happens later, usually in a separate session; if it turns up
+something odd — a gate that moved unexpectedly, a figure that looks wrong — the
+evidence has to still be there to look at. Postgres holds the extracted aggregates,
+not the raw logs, and nothing can be recovered once the instances are gone.
+
+So destroy the compute tiers individually and keep the observability tiers:
 
 ```bash
-uv run saorsa-deploy deployments down --config deploy/manifests/runs/staging/STG-02.yaml
-uv run saorsa-deploy deployments down --config deploy/manifests/runs/staging/STG-01.yaml
+# STG-02 first — bootstraps destroy refuses while a dependent extension exists,
+# and --force does not override that.
+uv run saorsa-deploy nodes destroy --name STG-02
+uv run saorsa-deploy deployments unextend --name STG-02 --force
+
+# then STG-01's compute tiers
+uv run saorsa-deploy clients destroy --name STG-01
+uv run saorsa-deploy nodes destroy --name STG-01
+uv run saorsa-deploy bootstraps destroy --name STG-01
 ```
 
-Run these one at a time. OVH credentials must still be in the environment. Confirm
-both show `destroyed` in `deployments ls` before reporting done.
+Run these one at a time. OVH credentials must still be in the environment.
+
+**Deliberately NOT destroyed:** STG-01's `elastic` and `monitoring` instances, plus
+STG-02's monitoring. They stay up for the verification.
+
+Because `deployments down` is what flips the registry row, the STG-01 row will not
+read `destroyed` after this. That is expected — the deployment genuinely is not fully
+destroyed yet. Verify the compute tiers are gone by their own output rather than by
+the status column.
+
+### Handing over the surviving stack
+
+These VMs bill by the hour, so say plainly in the Step 9 report that they are still
+running, name them, and give the commands that finish the job once the verification
+is recorded:
+
+```bash
+uv run saorsa-deploy monitoring destroy --name STG-02
+uv run saorsa-deploy elastic destroy --name STG-01
+uv run saorsa-deploy monitoring destroy --name STG-01
+```
+
+An ES instance on the staging profile is an `s-8vcpu-16gb` with a 500GB volume — not
+something to leave running for a week because nobody was told it was there.
 
 ## Step 9 — Update Linear
 
@@ -386,6 +421,8 @@ Update the train's `Staging run — rc.N` sub-issue with:
 - Mixed-version phase: PASS or FAIL against both criteria, with the evidence.
 - Any hard-gate observation during steady state, or "none observed".
 - Any deviation from the standard phase durations.
+- **Which observability instances are still running**, and the commands to destroy
+  them once the verification is recorded (Step 8).
 
 Then move the sub-issue to Done. Ask first if any criterion is unresolved.
 
