@@ -107,16 +107,31 @@ That is a finding about the run, not about the release — say so plainly if it 
 
 ## Step 3 — Choose the window
 
-Default to `full-run`, which needs no preparation and uses each run's exact whole-run figures.
+**Prefer the steady-state phase. `full-run` is the fallback, not the default choice.**
 
-Compare the **steady-state phase** instead when the run had a materially idle stretch, or when the
-mixed-version extension would otherwise pollute the numbers. That needs the window re-derived on
-**both** sides first, with the same label:
+A `full-run` window is the span of each run's observed *metrics*, not the shape of the run. It
+opens when the first host started reporting — which the deliberate −3h node clock skew drags well
+before T0 — and closes when the last one stopped, sweeping in the mixed-version extension the
+baseline never ran. Measured on STG-01 #474 against #470: the candidate window carried 3h05m of
+pre-run data plus the mixed-version hour, and **both comparability guards still passed** (length
+1.13x, coverage 1.12x) because they check size and idleness, not phase composition. The command
+warns whenever `--window-label full-run` is used, for exactly this reason.
+
+The difference is not cosmetic. On that pair, moving to steady-state changed node CPU from +19.28%
+to +15.29%, disk bytes/GB from −2.35% to −1.07%, and brought both runs' absolute disk ratio to
+~8.7 GB/GB — much closer to the network's physical replication factor than the full-run figures.
+
+Re-derive the phase on **both** runs, with the same label, **using `--id`**:
 
 ```bash
-uv run saorsa-deploy deployments derive-metrics --name STG-01 \
-  --window-start 2026-07-28T18:00:00 --window-end 2026-07-28T21:00:00 --label steady-state
+uv run saorsa-deploy deployments derive-metrics --id 474 \
+  --window-start 2026-07-28T20:14:12 --window-end 2026-07-28T23:14:12 --label steady-state
+uv run saorsa-deploy deployments derive-metrics --id 470 \
+  --window-start 2026-07-25T17:00:55 --window-end 2026-07-25T20:00:55 --label steady-state
 ```
+
+`--name` resolves to the most recent run bearing it, so it cannot address a baseline of a reused
+name. Take each run's T0 and phase boundaries from its `Staging run — rc.N` sub-issue.
 
 Two rules the command enforces and you should not try to work around:
 
@@ -160,9 +175,10 @@ leaving two. Pass `--no-persist` only for an exploratory run.
 
 Read the output for:
 
-- **Warnings.** An activity-coverage warning means one run's window was materially idler than the
-  other's, which inflates the per-GB ratios on the idler side. Quote it in the report; do not
-  quietly drop the affected gates.
+- **Warnings.** A `full-run` warning means the windows may differ in phase composition — re-run on
+  a labelled phase if you can. An activity-coverage warning means one run's window was materially
+  idler than the other's, which inflates the per-GB ratios on the idler side. Quote either in the
+  report; do not quietly drop the affected gates.
 - **`[mean]` markers.** The process spec names node CPU *median* and node RSS *p50*. Runs recorded
   before percentile capture landed have no percentile and the tool substitutes a sample-weighted
   mean, marked in the report. Say which statistic was used. `[p50~]` means a windowed estimate

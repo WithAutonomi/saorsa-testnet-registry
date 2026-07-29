@@ -52,7 +52,10 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from saorsa_db.models.derived_metric import METRIC_DISK_BYTES_PER_GB_STORED
+from saorsa_db.models.derived_metric import (
+    METRIC_DISK_BYTES_PER_GB_STORED,
+    WINDOW_FULL_RUN,
+)
 from saorsa_db.models.host_metric_bucket import (
     METRIC_CPU_PERCENT,
     METRIC_RSS_BYTES,
@@ -816,6 +819,35 @@ def compare_runs(
     results.extend(_soft_derived_ratios(candidate, baseline, config, history))
 
     warnings: list[str] = []
+
+    # Neither comparability guard inspects what the windows CONTAIN.
+    #
+    # A `full-run` window is the span of the observed metrics, not the shape of
+    # the run: it opens when the first host started reporting -- which the
+    # deliberate -3h node clock skew drags well before T0 -- and closes when the
+    # last one stopped, sweeping in any post-measurement phase. On STG-01 #474
+    # that meant 3h05m of pre-run data plus the mixed-version hour, against a
+    # baseline that never ran a mixed-version phase at all. Both guards passed
+    # (length 1.13x, coverage 1.12x) because length and idleness were fine; the
+    # windows still described different things.
+    #
+    # This cannot be detected from stored data -- nothing records phase
+    # boundaries -- so it is stated rather than measured.
+    if candidate.window_label == WINDOW_FULL_RUN:
+        warnings.append(
+            "Comparing on the 'full-run' window. That window is the span of each "
+            "run's observed metrics, not the shape of the run: it includes "
+            "whatever preceded the measurement phase (the deliberate node clock "
+            "skew pushes a host's first points up to 3h before T0) and whatever "
+            "followed it, including a mixed-version extension the baseline may "
+            "not have run. The length and activity-coverage guards check the "
+            "windows' size and idleness, not what phases they contain. For a "
+            "like-for-like comparison, re-derive the measurement phase on BOTH "
+            "runs -- `deployments derive-metrics --id <id> --window-start ... "
+            "--window-end ... --label steady-state` -- and compare with "
+            "--window-label steady-state."
+        )
+
     cand_coverage = candidate.activity_coverage()
     base_coverage = baseline.activity_coverage()
     if cand_coverage and base_coverage:

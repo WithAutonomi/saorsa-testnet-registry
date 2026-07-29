@@ -88,13 +88,31 @@ def cmd_derive_metrics(args) -> None:
         )
         sys.exit(1)
 
-    deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
-    if deployment is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
-            "in the registry."
-        )
-        sys.exit(1)
+    # An id addresses one run unambiguously; a name resolves to the most recent
+    # row bearing it. Staging names are reused every train, so without the id
+    # path an earlier run -- a baseline -- cannot be given a window label at all,
+    # and `deployments compare --window-label` needs the label on both sides.
+    deployment_id = getattr(args, "id", None)
+    if deployment_id is not None:
+        deployment = repo.get(deployment_id)
+        if deployment is None:
+            console.print(
+                f"[bold red]Error:[/bold red] No deployment with id "
+                f"{deployment_id} in the registry."
+            )
+            sys.exit(1)
+    else:
+        deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
+        if deployment is None:
+            console.print(
+                f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
+                "in the registry."
+            )
+            sys.exit(1)
+
+    # Every message below names the run being written to, since a name may not
+    # have identified it.
+    target = f"{deployment.name} (#{deployment.id})"
 
     if args.label == WINDOW_FULL_RUN:
         # Refused rather than warned: `record-analysis` writes that label from
@@ -112,7 +130,7 @@ def cmd_derive_metrics(args) -> None:
     span = repo.get_host_metric_bucket_span(deployment.id)
     if span is None:
         console.print(
-            f"[bold red]Error:[/bold red] Deployment '{args.name}' has no host "
+            f"[bold red]Error:[/bold red] Deployment {target} has no host "
             "metric buckets, so no window can be re-derived. Either it was "
             "recorded before bucketing existed, its buckets were pruned, or "
             "`record-analysis` was run with --bucket-secs 0. No backfill is "
@@ -188,7 +206,7 @@ def cmd_derive_metrics(args) -> None:
     window_start = start or first_bucket
     window_end = end or (last_bucket + timedelta(seconds=bucket_secs))
     console.print(
-        f"[bold]Re-deriving '{args.label}' for '{args.name}' over "
+        f"[bold]Re-deriving '{args.label}' for {target} over "
         f"{window_start:%Y-%m-%d %H:%M:%S} — {window_end:%Y-%m-%d %H:%M:%S} "
         f"UTC (bucket width {bucket_secs}s)...[/bold]"
     )
@@ -214,7 +232,7 @@ def cmd_derive_metrics(args) -> None:
         console.print(
             "[yellow]No upload or download records for this deployment — the "
             "per-GB ratios have no denominator and will be omitted. Run "
-            f"`deployments record-results --name {args.name}` while the "
+            f"`deployments record-results --id {deployment.id}` while the "
             "monitoring stack is still up.[/yellow]"
         )
 
@@ -232,7 +250,7 @@ def cmd_derive_metrics(args) -> None:
     for row in rows:
         repo.upsert_derived_metric(deployment_id=deployment.id, **row)
 
-    table = Table(title=f"Derived metrics for '{args.name}' (window: {args.label})")
+    table = Table(title=f"Derived metrics for {target} (window: {args.label})")
     table.add_column("Metric")
     table.add_column("Value", justify="right")
     table.add_column("Denominator", justify="right")

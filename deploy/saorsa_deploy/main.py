@@ -1302,11 +1302,32 @@ def main(argv=None):
             "steady-state phase for a like-for-like comparison."
         ),
     )
-    deployments_derive_metrics_parser.add_argument(
+    # Exactly one of --id / --name. A name resolves to the most recently created
+    # row that bears it, which is fine for the run you just finished and useless
+    # for any earlier one -- and staging names are reused every train. Without
+    # --id a windowed comparison against a baseline is unreachable: only the
+    # newest run of a given name could ever be given a window label, while
+    # `deployments compare` requires the label on both sides.
+    deployments_derive_metrics_target = (
+        deployments_derive_metrics_parser.add_mutually_exclusive_group(required=True)
+    )
+    deployments_derive_metrics_target.add_argument(
+        "--id",
+        type=int,
+        default=None,
+        help=(
+            "Deployment id. Prefer this for any run that is not the latest of "
+            "its name -- a baseline, in particular."
+        ),
+    )
+    deployments_derive_metrics_target.add_argument(
         "--name",
         type=str,
-        required=True,
-        help="Deployment name (must match a row in the registry deployments table)",
+        default=None,
+        help=(
+            "Deployment name. Resolves to the most recent row with that name, so "
+            "use --id to target an earlier run of a reused name."
+        ),
     )
     deployments_derive_metrics_parser.add_argument(
         "--window-start",

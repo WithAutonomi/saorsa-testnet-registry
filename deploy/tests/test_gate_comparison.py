@@ -536,10 +536,37 @@ def test_activity_coverage_mismatch_warns_rather_than_refusing(config):
     assert verdict["candidate"]["activity_coverage"] is not None
 
 
-def test_matched_coverage_produces_no_warning(config):
+def test_matched_coverage_produces_no_coverage_warning(config):
     verdict = compare_runs(
         _full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config
     )
+    assert not any("Activity coverage" in w for w in verdict["warnings"])
+
+
+def test_full_run_window_warns_about_phase_composition(config):
+    """Neither guard inspects what the windows CONTAIN.
+
+    A full-run window is the span of observed metrics, not the run's shape: the
+    deliberate node clock skew drags a host's first points up to 3h before T0,
+    and any post-measurement phase is swept in too. On STG-01 #474 vs #470 both
+    guards passed (length 1.13x, coverage 1.12x) while the candidate window
+    carried 3h05m of pre-run data and a mixed-version hour the baseline never
+    ran.
+    """
+    verdict = compare_runs(
+        _full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config
+    )
+    assert any("full-run" in w for w in verdict["warnings"])
+
+
+def test_a_labelled_phase_window_does_not_warn(config):
+    candidate = _full_run(1, "STG-01", 20.0, 1e9)
+    baseline = _full_run(2, "STG-00", 20.0, 1e9)
+    for run in (candidate, baseline):
+        run.window_label = "steady-state"
+        for entry in run.derived.values():
+            entry["source"] = "buckets"
+    verdict = compare_runs(candidate, baseline, config)
     assert verdict["warnings"] == []
 
 

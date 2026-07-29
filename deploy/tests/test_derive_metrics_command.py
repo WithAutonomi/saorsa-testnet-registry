@@ -69,9 +69,9 @@ def _bucket(metric, start, avg, **extra):
     return row
 
 
-def _seed(repo, *, uploads=((1, "2026-07-01T00:10:00"),)):
+def _seed(repo, *, uploads=((1, "2026-07-01T00:10:00"),), name="DEV-03"):
     """One host, four 5-minute buckets of egress and a growing volume."""
-    deployment = repo.create(name="DEV-03", deploy_args={})
+    deployment = repo.create(name=name, deploy_args={})
     buckets = []
     for index, minute in enumerate(("00:00", "00:05", "00:10", "00:15")):
         start = f"2026-07-01T{minute}:00"
@@ -108,6 +108,7 @@ def _seed(repo, *, uploads=((1, "2026-07-01T00:10:00"),)):
 
 def _args(**overrides):
     base = dict(
+        id=None,
         name="DEV-03",
         window_start=None,
         window_end=None,
@@ -305,3 +306,42 @@ def test_an_explicit_width_overrides_inference(monkeypatch, repo):
     assert _stored(repo, deployment)[METRIC_NODE_OUTBOUND_BYTES_TOTAL].value == (
         4 * 60 * 1024 * 1024
     )
+
+
+# ---------------------------------------------------------------------------
+# Addressing a run by id
+#
+# A name resolves to the most recently created row bearing it. Staging names
+# are reused every train, so without --id an earlier run cannot be given a
+# window label at all -- and `deployments compare --window-label` requires the
+# label on BOTH sides, which made every windowed baseline comparison
+# unreachable. Reported from a live session against STG-01 #470 vs #474.
+# ---------------------------------------------------------------------------
+
+
+def test_id_targets_an_older_run_of_a_reused_name(monkeypatch, repo):
+    older = _seed(repo, name="STG-01")
+    newer = _seed(repo, name="STG-01")
+    assert newer.id > older.id
+
+    _run(monkeypatch, repo, _args(id=older.id, name=None))
+
+    # The window landed on the run that was asked for, not the newest namesake.
+    assert _stored(repo, older) != {}
+    assert _stored(repo, newer) == {}
+
+
+def test_name_still_resolves_to_the_most_recent_run(monkeypatch, repo):
+    older = _seed(repo, name="STG-01")
+    newer = _seed(repo, name="STG-01")
+
+    _run(monkeypatch, repo, _args(name="STG-01"))
+
+    assert _stored(repo, newer) != {}
+    assert _stored(repo, older) == {}
+
+
+def test_unknown_id_is_reported_as_such(monkeypatch, repo):
+    _seed(repo, name="STG-01")
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, repo, _args(id=999_999, name=None))

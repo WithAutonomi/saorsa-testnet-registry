@@ -928,18 +928,23 @@ This depends on filesystem occupancy, which Telegraf collected (`[[inputs.disk]]
 Re-derives the same metrics for an arbitrary window from Postgres alone — bucket rows plus per-op records — so a phase can be sliced out **after** the monitoring stack is gone. This is what the bucketed host metrics exist for.
 
 ```bash
-# Steady state only, for a like-for-like comparison against a baseline
-uv run saorsa-deploy deployments derive-metrics --name STG-01 \
-  --window-start 2026-07-25T11:00:00 --window-end 2026-07-25T14:00:00 \
+# Steady state only, for a like-for-like comparison against a baseline.
+# Use --id for anything that is not the latest run of its name -- a baseline in
+# particular, since staging names are reused every train.
+uv run saorsa-deploy deployments derive-metrics --id 470 \
+  --window-start 2026-07-25T17:00:55 --window-end 2026-07-25T20:00:55 \
   --label steady-state
 
-# Whole stored span under a different label
+# The latest run of a name can be addressed by name
 uv run saorsa-deploy deployments derive-metrics --name STG-01 --label whole-span
 ```
 
+Exactly one of `--id` / `--name`. **`--name` resolves to the most recently created run bearing it**, so an earlier run of a reused name is only reachable by id — and since `deployments compare --window-label` requires the label on *both* sides, a baseline comparison is unreachable without it.
+
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--name` | *(required)* | Deployment name. |
+| `--id` | *(one of these)* | Deployment id. Unambiguous; prefer it for a baseline. |
+| `--name` | *(one of these)* | Deployment name, resolving to the most recent run with that name. |
 | `--window-start` | first stored bucket | ISO-8601 UTC start. A naive timestamp is read as UTC. |
 | `--window-end` | last bucket + one width | ISO-8601 UTC end (exclusive). |
 | `--label` | `steady-state` | Names the window so several coexist for one run. Re-running the same label replaces it. |

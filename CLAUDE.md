@@ -865,6 +865,20 @@ ES dies at teardown), mixed-version chunk storage (SSH `chunks.mdb` check), and
 canaries (separate deployment). The **`evaluate-staging-run`** skill supplies
 those observationally and assembles the release-issue report.
 
+**Prefer a labelled phase window over `full-run`.** A full-run window is the span
+of observed *metrics*, not the run's shape: the −3h node clock skew drags a host's
+first points well before T0, and any post-measurement phase (the mixed-version
+hour) is swept in even when the baseline never ran one. Both guards passed on
+STG-01 #474 vs #470 (length 1.13x, coverage 1.12x) while the candidate carried
+3h05m of pre-run data plus that extra phase — they check size and idleness, not
+phase composition, and nothing records phase boundaries so it cannot be detected.
+`compare` therefore *warns* on `--window-label full-run`. Moving that pair to
+steady-state took CPU +19.28%→+15.29% and disk/GB −2.35%→−1.07%, with both runs
+landing at ~8.7 GB/GB. Slice with `derive-metrics --id <id> --window-start/-end
+--label steady-state` on **both** runs — **`--id`, not `--name`**: a name resolves
+to the newest run bearing it, so a reused-name baseline is unreachable otherwise,
+and `compare --window-label` needs the label on both sides.
+
 **Refuses** on mismatched `window_label`, mismatched derived-metric `source`
 (`capture` is exact, `buckets` approximate — comparing them measures the method),
 or window lengths differing >1.25x. **Warns** on **activity coverage** (op span ÷
