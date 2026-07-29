@@ -124,6 +124,12 @@ def cmd_destroy_bootstraps(args):
 
     # Clear the bootstrap slice. If no node slice either, tear down the whole
     # state file so it doesn't linger.
+    #
+    # The deployment is only *fully* destroyed when the whole state file goes,
+    # so that branch is also where the status flips to DESTROYED. When the node
+    # tier survives the row stays DESTROYING, which is honest: the deployment is
+    # partially torn down.
+    fully_destroyed = False
     if state.get("regions"):
         try:
             update_deployment_state(
@@ -138,12 +144,15 @@ def cmd_destroy_bootstraps(args):
         try:
             delete_deployment_state(args.name)
             console.print("[dim]Deployment state removed from S3.[/dim]")
+            fully_destroyed = True
         except Exception as e:
             console.print(
                 f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]"
             )
 
     record_event(args.name, "destroy_bootstraps_completed")
+    if fully_destroyed:
+        record_status(args.name, DeploymentStatus.DESTROYED)
     console.print(
         f"[bold green]Bootstrap VM(s) for '{args.name}' destroyed.[/bold green]"
     )

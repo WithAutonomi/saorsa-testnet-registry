@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from saorsa_db.models import DeploymentStatus
 
 from saorsa_deploy.cmd.destroy_bootstraps import cmd_destroy_bootstraps
 
@@ -79,6 +80,48 @@ class TestHappyPath:
         # With no remaining node slice, the state file should be removed outright.
         patches.delete_state.assert_called_once()
         patches.update_state.assert_not_called()
+
+
+class TestStatusFlip:
+    """`bootstraps destroy` is the last step of a full testnet teardown, so it is
+    what must flip the row to DESTROYED. Leaving it at DESTROYING makes a clean
+    teardown indistinguishable from one that stalled with live infrastructure."""
+
+    @staticmethod
+    def _statuses(patches):
+        return [c.args[1] for c in patches.record_status.call_args_list]
+
+    def test_records_destroyed_when_whole_state_file_removed(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [],
+            "terraform_variables": {"attached_volume_size": "50"},
+        }
+
+        cmd_destroy_bootstraps(_args())
+
+        assert self._statuses(patches) == [
+            DeploymentStatus.DESTROYING,
+            DeploymentStatus.DESTROYED,
+        ]
+
+    def test_does_not_record_destroyed_when_state_deletion_fails(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [],
+            "terraform_variables": {"attached_volume_size": "50"},
+        }
+        patches.delete_state.side_effect = Exception("s3 unavailable")
+
+        cmd_destroy_bootstraps(_args())
+
+        assert DeploymentStatus.DESTROYED not in self._statuses(patches)
 
 
 class TestRefusesWhenNodesPresent:

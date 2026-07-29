@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from saorsa_db.models import DeploymentStatus
 
 from saorsa_deploy.cmd.destroy_nodes import cmd_destroy_nodes
 from saorsa_deploy.terraform import TerraformResult
@@ -104,6 +105,58 @@ class TestHappyPath:
 
         patches.delete_state.assert_called_once()
         patches.update_state.assert_not_called()
+
+
+class TestStatusFlip:
+    """The row must reach DESTROYED when the whole deployment goes, and must not
+    when only the node tier does — otherwise a successful teardown is
+    indistinguishable from one that stalled with resources still billing."""
+
+    @staticmethod
+    def _statuses(patches):
+        return [c.args[1] for c in patches.record_status.call_args_list]
+
+    def test_records_destroyed_when_whole_state_file_removed(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [],
+            "regions": [["digitalocean", "lon1"]],
+            "terraform_variables": {"name": "DEV-02", "providers": {}},
+        }
+
+        cmd_destroy_nodes(_args())
+
+        assert self._statuses(patches) == [
+            DeploymentStatus.DESTROYING,
+            DeploymentStatus.DESTROYED,
+        ]
+
+    def test_stays_destroying_when_bootstraps_survive(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [["digitalocean", "lon1"]],
+            "terraform_variables": {"name": "DEV-02", "providers": {}},
+        }
+
+        cmd_destroy_nodes(_args())
+
+        assert self._statuses(patches) == [DeploymentStatus.DESTROYING]
+
+    def test_does_not_record_destroyed_when_state_deletion_fails(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [],
+            "regions": [["digitalocean", "lon1"]],
+            "terraform_variables": {"name": "DEV-02", "providers": {}},
+        }
+        patches.delete_state.side_effect = Exception("s3 unavailable")
+
+        cmd_destroy_nodes(_args())
+
+        assert DeploymentStatus.DESTROYED not in self._statuses(patches)
 
 
 class TestMissingStateFallback:
