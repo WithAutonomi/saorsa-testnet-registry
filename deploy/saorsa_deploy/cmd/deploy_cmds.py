@@ -23,6 +23,7 @@ from saorsa_deploy.orchestrator import (
     build_deploy_steps,
     build_destroy_steps,
     build_destroy_steps_from_state,
+    retained_observability,
 )
 from saorsa_deploy.orchestrator import journal as step_journal
 from saorsa_deploy.orchestrator.steps import StepGroup, iter_units
@@ -329,6 +330,52 @@ def cmd_up(args):
     console.print(f"\n[bold green]{manifest.name} is up.[/bold green]")
 
 
+def _manifest_keep_overrides(manifest) -> dict:
+    """Per-component keep intent as the manifest states it, for the report.
+
+    testnet/extension kinds carry it in their ``elastic:`` / ``monitoring:``
+    blocks; prod kinds carry the equivalent as spec-level ``keep_elastic`` /
+    ``keep_monitoring`` (which ride as flags on their own destroy command). Either
+    way the manifest is what decided the teardown, so it decides the report.
+    """
+    spec = getattr(manifest, "spec", None)
+    if spec is None:
+        return {}
+    elastic = getattr(spec, "elastic", None)
+    monitoring = getattr(spec, "monitoring", None)
+    return {
+        "elastic_kept": (
+            bool(elastic.keep_on_destroy)
+            if elastic is not None
+            else bool(getattr(spec, "keep_elastic", False))
+        ),
+        "monitoring_kept": (
+            bool(monitoring.keep_on_destroy)
+            if monitoring is not None
+            else bool(getattr(spec, "keep_monitoring", False))
+        ),
+    }
+
+
+def _print_retained(console: Console, retained: list[dict]) -> None:
+    """Report the observability stacks a teardown deliberately left running.
+
+    Keeping a stack means no destroy step is generated for it, so without this the
+    surviving VMs are invisible in the teardown output — and they keep billing
+    until someone remembers them. Print what survived, how to reach it, and the
+    exact command that removes it.
+    """
+    if not retained:
+        return
+    console.print()
+    console.print("[bold]Retained (keep_on_destroy) — still running:[/bold]")
+    for item in retained:
+        endpoint = item["endpoint"] or "(endpoint not recorded)"
+        console.print(f"  {item['component']} ({item['kind']}): {endpoint}")
+        console.print(f"    details:  {item['info_command']}")
+        console.print(f"    destroy:  {item['destroy_command']}")
+
+
 def cmd_down(args):
     console = Console()
 
@@ -336,18 +383,34 @@ def cmd_down(args):
     # mirror the manifest's components; with --name alone we derive the teardown
     # from what actually exists in S3 state.
     skip_drain_failures = getattr(args, "skip_drain_failures", False)
+    keep_overrides: dict = {}
     if getattr(args, "config", None):
         manifest = _load(args, console)
         name, kind = manifest.name, manifest.kind
         steps = build_destroy_steps(
             manifest, skip_drain_failures=skip_drain_failures
         )
+        # The manifest — not the stored flag — decided the destroy steps above, so
+        # it must also decide the retained report, or the two can disagree (a
+        # manifest that gained keep_on_destroy after `up` ran without it).
+        keep_overrides = _manifest_keep_overrides(manifest)
     elif getattr(args, "name", None):
         name, kind = args.name, "from state"
         steps = build_destroy_steps_from_state(
             name, skip_drain_failures=skip_drain_failures
         )
         if not steps:
+            # An all-kept observability stack also yields no steps, so check that
+            # before claiming there is nothing here — otherwise the operator is
+            # told "nothing to destroy" while two VMs keep billing.
+            retained = retained_observability(name)
+            if retained:
+                console.print(
+                    f"[yellow]Nothing left to destroy for '{name}' — every "
+                    "remaining component is marked keep_on_destroy.[/yellow]"
+                )
+                _print_retained(console, retained)
+                return
             console.print(
                 f"[yellow]No resources found in state for '{name}'. "
                 "Nothing to destroy.[/yellow]"
@@ -364,8 +427,14 @@ def cmd_down(args):
         )
         sys.exit(1)
 
+    # Read the retained set BEFORE the teardown runs: the destroy steps delete
+    # deployment state as they go, and a component's own state is what records
+    # both the keep intent and the endpoint we want to report.
+    retained = retained_observability(name, **keep_overrides)
+
     if getattr(args, "dry_run", False):
         _print_plan(console, name, kind, steps, "Destroy")
+        _print_retained(console, retained)
         return
     _print_plan(console, name, kind, steps, "Destroy")
     console.print()
@@ -373,7 +442,15 @@ def cmd_down(args):
     # Any step journal left by a failed `up` is now moot: the deployment is
     # gone, so a future run reusing this name must start from scratch.
     delete_step_journal(name)
-    console.print(f"\n[bold green]{name} has been destroyed.[/bold green]")
+    if retained:
+        # "has been destroyed" would be a lie with an ES/Influx VM still up.
+        console.print(
+            f"\n[bold green]{name} has been torn down "
+            "(observability stacks retained).[/bold green]"
+        )
+    else:
+        console.print(f"\n[bold green]{name} has been destroyed.[/bold green]")
+    _print_retained(console, retained)
 
 
 def cmd_plan(args):

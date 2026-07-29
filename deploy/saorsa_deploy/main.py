@@ -1940,6 +1940,15 @@ def main(argv=None):
         "digitalocean, b3-8 for ovh). Use a larger size for 5000+ node "
         "fleets.",
     )
+    elastic_infra_parser.add_argument(
+        "--keep-on-destroy",
+        action="store_true",
+        help="Record in this stack's state that `deployments down` must leave it "
+        "standing, so the testnet's logs stay queryable for a post-mortem after "
+        "the nodes are gone. Honoured by both `down --config` and `down --name`. "
+        "Clean the stack up afterwards with `elastic destroy --name <name> "
+        "--force`, which is never gated by this flag.",
+    )
 
     # elastic provision
     elastic_provision_parser = elastic_subparsers.add_parser(
@@ -2150,6 +2159,15 @@ def main(argv=None):
         default=False,
         help="Create the separate Grafana VM (default: off — InfluxDB only). "
         "Pass --grafana to opt in; --no-grafana is the explicit default.",
+    )
+    monitoring_infra_parser.add_argument(
+        "--keep-on-destroy",
+        action="store_true",
+        help="Record in this stack's state that `deployments down` must leave it "
+        "standing, so the testnet's metrics stay queryable for a post-mortem after "
+        "the nodes are gone. Honoured by both `down --config` and `down --name`. "
+        "Clean the stack up afterwards with `monitoring destroy --name <name> "
+        "--force`, which is never gated by this flag.",
     )
 
     # monitoring provision

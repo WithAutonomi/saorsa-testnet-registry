@@ -361,3 +361,86 @@ def test_bootstrap_cache_parsed_on_local_kinds(tmp_path):
     """
     m = load_manifest(_write(tmp_path, "ld.yaml", body))
     assert m.prod_local_downloads.bootstrap_cache is False
+
+
+_TESTNET_KEEP = """\
+    name: DEV-01
+    kind: testnet
+    purpose: p
+    testnet:
+      binaries:
+        ant_node: {{ version: "1.0" }}
+      bootstraps: {{ count: 1 }}
+      nodes:
+        per_vm: 5
+        providers:
+          digital_ocean: {{ vm_count: 2, regions: 3 }}
+      elastic:
+{elastic}
+      monitoring:
+{monitoring}
+"""
+
+
+def _keep_manifest(tmp_path, elastic: str, monitoring: str):
+    return _write(
+        tmp_path,
+        "keep.yaml",
+        _TESTNET_KEEP.format(elastic=elastic, monitoring=monitoring),
+    )
+
+
+def test_keep_on_destroy_defaults_false(tmp_path):
+    p = _keep_manifest(tmp_path, "        enabled: true\n", "        enabled: true\n")
+    m = load_manifest(p)
+    assert m.testnet.elastic.keep_on_destroy is False
+    assert m.testnet.monitoring.keep_on_destroy is False
+
+
+def test_keep_on_destroy_parsed(tmp_path):
+    p = _keep_manifest(
+        tmp_path,
+        "        enabled: true\n        keep_on_destroy: true\n",
+        "        enabled: true\n        keep_on_destroy: true\n",
+    )
+    m = load_manifest(p)
+    assert m.testnet.elastic.keep_on_destroy is True
+    assert m.testnet.monitoring.keep_on_destroy is True
+
+
+def test_elastic_keep_without_enabled_rejected(tmp_path):
+    # elastic.enabled defaults False, so this would silently keep nothing.
+    p = _keep_manifest(tmp_path, "        keep_on_destroy: true\n", "        enabled: true\n")
+    with pytest.raises(ManifestError, match="elastic.keep_on_destroy requires"):
+        load_manifest(p)
+
+
+def test_monitoring_keep_without_enabled_rejected(tmp_path):
+    p = _keep_manifest(
+        tmp_path,
+        "        enabled: true\n",
+        "        enabled: false\n        keep_on_destroy: true\n",
+    )
+    with pytest.raises(ManifestError, match="monitoring.keep_on_destroy requires"):
+        load_manifest(p)
+
+
+def test_keep_on_destroy_on_extension(tmp_path):
+    body = """\
+        name: DEV-02
+        kind: testnet-extension
+        purpose: p
+        extension:
+          source: DEV-01
+          binaries:
+            ant_node: { version: "1.0" }
+          nodes:
+            per_vm: 5
+            providers:
+              digital_ocean: { vm_count: 2, regions: 3 }
+          elastic: { enabled: true, keep_on_destroy: true }
+          monitoring: { enabled: true, keep_on_destroy: true }
+    """
+    m = load_manifest(_write(tmp_path, "ext.yaml", body))
+    assert m.extension.elastic.keep_on_destroy is True
+    assert m.extension.monitoring.keep_on_destroy is True

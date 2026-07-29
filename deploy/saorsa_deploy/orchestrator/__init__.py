@@ -21,6 +21,7 @@ __all__ = [
     "build_deploy_steps",
     "build_destroy_steps",
     "build_destroy_steps_from_state",
+    "retained_observability",
 ]
 
 
@@ -81,6 +82,14 @@ def build_destroy_steps_from_state(
     prod-* kinds are single-command deployments with no testnet state — use
     their ``prod <kind> destroy --name`` command (or ``down --config``).
 
+    An elastic / monitoring stack whose state records ``keep_on_destroy: true``
+    (written at ``infra`` time from the manifest's
+    ``elastic.keep_on_destroy`` / ``monitoring.keep_on_destroy``) is deliberately
+    left standing, so the run's logs/metrics stay queryable once the testnet is
+    gone. Reading the intent back off the stored state is what makes this
+    manifest-less path behave the same as ``down --config``. State docs written
+    before the option existed have no such key, so they destroy exactly as before.
+
     When ``skip_drain_failures`` is set, the clients-destroy step is told to
     proceed with teardown even if draining a per-uploader wallet fails (the
     abandoned dust is reported but no longer blocks the destroy).
@@ -98,6 +107,16 @@ def build_destroy_steps_from_state(
         except Exception:
             return False
 
+    def _destroyable(loader) -> bool:
+        """True when the component exists AND has not asked to be kept."""
+        try:
+            state = loader(name)
+        except Exception:
+            return False
+        if state is None:
+            return False
+        return not bool(state.get("keep_on_destroy", False))
+
     steps: list[Step] = []
     if _exists(load_client_state):
         clients_argv = ["clients", "destroy", "--name", name, "--force"]
@@ -114,11 +133,11 @@ def build_destroy_steps_from_state(
                 "Destroy bootstraps",
             )
         )
-    if _exists(load_elastic_state):
+    if _destroyable(load_elastic_state):
         steps.append(
             Step(["elastic", "destroy", "--name", name, "--force"], "Destroy Elasticsearch")
         )
-    if _exists(load_monitoring_state):
+    if _destroyable(load_monitoring_state):
         steps.append(
             Step(
                 ["monitoring", "destroy", "--name", name, "--force"],
@@ -126,3 +145,68 @@ def build_destroy_steps_from_state(
             )
         )
     return steps
+
+
+def retained_observability(
+    name: str,
+    *,
+    elastic_kept: bool | None = None,
+    monitoring_kept: bool | None = None,
+) -> list[dict]:
+    """Components that exist in S3 state and will survive a teardown.
+
+    Returned as ``[{"component", "kind", "endpoint", "destroy_command"}, ...]`` so
+    ``down`` can tell the operator exactly what is still running (and still
+    billing) and the one command that removes it. Empty when nothing was kept,
+    which is the default.
+
+    Deliberately separate from the step builders: keeping a stack means *no step
+    is generated*, so without this the retained VMs would be invisible in the
+    teardown output.
+
+    ``elastic_kept`` / ``monitoring_kept`` override the stored flag with the
+    manifest's own value, and MUST be passed on the ``down --config`` path. The
+    two can legitimately disagree: a manifest edited to add ``keep_on_destroy``
+    after ``up`` already ran leaves the stored flag false, yet ``down --config``
+    generates no destroy step for it — so reading state alone would report
+    nothing retained and then claim the deployment "has been destroyed" with the
+    VM still up. Whichever source decided the destroy steps must also decide this
+    report. ``None`` means "read it from state" (the name-only path, which has no
+    manifest).
+    """
+    from saorsa_deploy.state import load_elastic_state, load_monitoring_state
+
+    def _kept(loader, override: bool | None) -> dict | None:
+        try:
+            state = loader(name)
+        except Exception:
+            return None
+        if state is None:
+            return None
+        kept = override if override is not None else bool(state.get("keep_on_destroy", False))
+        return state if kept else None
+
+    retained: list[dict] = []
+    elastic = _kept(load_elastic_state, elastic_kept)
+    if elastic is not None:
+        retained.append(
+            {
+                "component": "Elasticsearch",
+                "kind": "logs",
+                "endpoint": elastic.get("elasticsearch_url") or elastic.get("vm_ip", ""),
+                "info_command": f"saorsa-deploy elastic info --name {name}",
+                "destroy_command": f"saorsa-deploy elastic destroy --name {name} --force",
+            }
+        )
+    monitoring = _kept(load_monitoring_state, monitoring_kept)
+    if monitoring is not None:
+        retained.append(
+            {
+                "component": "InfluxDB",
+                "kind": "metrics",
+                "endpoint": monitoring.get("influxdb_url") or monitoring.get("vm_ip", ""),
+                "info_command": f"saorsa-deploy monitoring info --name {name}",
+                "destroy_command": f"saorsa-deploy monitoring destroy --name {name} --force",
+            }
+        )
+    return retained

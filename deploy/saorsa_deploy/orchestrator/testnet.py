@@ -13,7 +13,9 @@ invariants that previously lived as prose in the ``deploy-runbook`` skill:
   bootstraps provision (only when bootstrap count > 1) → nodes provision →
   nodes start → (telegraf) → (clients provision/start) → generate-inventory
 - ``--testnet`` and ``--upgrade-channel`` go on all three node-provision commands
-- destroy runs in reverse: clients → nodes → bootstraps → elastic → monitoring
+- destroy runs in reverse: clients → nodes → bootstraps → elastic → monitoring,
+  except that an ``elastic``/``monitoring`` block with ``keep_on_destroy: true`` is
+  left standing so the run's logs/metrics survive the teardown for a post-mortem
 """
 
 from __future__ import annotations
@@ -157,6 +159,11 @@ def _elastic_infra_argv(name: str, elastic: Elastic) -> list[str]:
         argv += ["--droplet-size", elastic.droplet_size]
     if elastic.volume_size is not None:
         argv += ["--volume-size", str(elastic.volume_size)]
+    # Record the keep-through-teardown intent in the elastic S3 state at create
+    # time, so a name-only `down` (which has no manifest to consult) honours it
+    # too. Only appended when set, so existing manifests' argv stays identical.
+    if elastic.keep_on_destroy:
+        argv += ["--keep-on-destroy"]
     return argv
 
 
@@ -166,6 +173,9 @@ def _monitoring_infra_argv(name: str, monitoring: Monitoring) -> list[str]:
     # manifests' step argv (and `up` journal hashes) stay byte-identical.
     if monitoring.grafana:
         argv += ["--grafana"]
+    # See _elastic_infra_argv — persists the intent for the name-only `down`.
+    if monitoring.keep_on_destroy:
+        argv += ["--keep-on-destroy"]
     return argv
 
 
@@ -176,6 +186,31 @@ def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
     for d in clients.downloaders:
         argv += ["--downloader", _downloader_spec(d)]
     return argv
+
+
+def _observability_destroy_steps(
+    name: str, elastic: Elastic, monitoring: Monitoring
+) -> list[Step]:
+    """Elastic / monitoring teardown steps, honouring ``keep_on_destroy``.
+
+    A kept stack is simply never destroyed: the testnet tiers go away and its
+    logs/metrics stay queryable for a post-mortem on the run. Cleaning it up
+    afterwards is a deliberate ``elastic destroy`` / ``monitoring destroy`` — those
+    primitives stay unconditional precisely because they are the cleanup route.
+
+    Shared by the testnet and extension destroy builders so the two kinds cannot
+    drift apart on this.
+    """
+    steps: list[Step] = []
+    if elastic.enabled and not elastic.keep_on_destroy:
+        steps.append(
+            Step(["elastic", "destroy", "--name", name, "--force"], "Destroy Elasticsearch")
+        )
+    if monitoring.enabled and not monitoring.keep_on_destroy:
+        steps.append(
+            Step(["monitoring", "destroy", "--name", name, "--force"], "Destroy monitoring")
+        )
+    return steps
 
 
 def _clients_destroy_argv(
@@ -442,14 +477,7 @@ def build_testnet_destroy_steps(
         )
     steps.append(Step(["nodes", "destroy", "--name", name, "--force"], "Destroy nodes"))
     steps.append(Step(["bootstraps", "destroy", "--name", name, "--force"], "Destroy bootstraps"))
-    if spec.elastic.enabled:
-        steps.append(
-            Step(["elastic", "destroy", "--name", name, "--force"], "Destroy Elasticsearch")
-        )
-    if spec.monitoring.enabled:
-        steps.append(
-            Step(["monitoring", "destroy", "--name", name, "--force"], "Destroy monitoring")
-        )
+    steps += _observability_destroy_steps(name, spec.elastic, spec.monitoring)
     return steps
 
 
@@ -557,14 +585,7 @@ def build_extension_destroy_steps(
             )
         )
     steps.append(Step(["nodes", "destroy", "--name", name, "--force"], "Destroy nodes"))
-    if spec.elastic.enabled:
-        steps.append(
-            Step(["elastic", "destroy", "--name", name, "--force"], "Destroy Elasticsearch")
-        )
-    if spec.monitoring.enabled:
-        steps.append(
-            Step(["monitoring", "destroy", "--name", name, "--force"], "Destroy monitoring")
-        )
+    steps += _observability_destroy_steps(name, spec.elastic, spec.monitoring)
     steps.append(
         Step(["deployments", "unextend", "--name", name, "--force"], "Remove extension state")
     )

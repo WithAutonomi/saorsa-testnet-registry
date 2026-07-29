@@ -19,6 +19,7 @@ from saorsa_deploy.state import (
     delete_terraform_state,
     load_monitoring_state,
     save_monitoring_state,
+    update_monitoring_state,
 )
 from saorsa_deploy.terraform import TerraformRunConfig
 
@@ -40,6 +41,7 @@ def cmd_monitoring_infra(args):
     # grafana size; it's simply ignored when enable_grafana is false.
     enable_grafana = bool(getattr(args, "grafana", False))
     volume_type = getattr(args, "volume_type", None) or "high-speed"
+    keep_on_destroy = bool(getattr(args, "keep_on_destroy", False))
 
     resources_dir = get_resources_dir()
     tf_source = resources_dir / f"{provider}-monitoring"
@@ -71,6 +73,25 @@ def cmd_monitoring_infra(args):
             f"[bold]Reusing existing monitoring VM for '{args.name}' "
             f"({existing['vm_ip']}, {existing_region}).[/bold]"
         )
+        # The reuse branch returns before any state write, so the keep-on-destroy
+        # intent has to be merged in here too — otherwise it is silently dropped
+        # on every re-run and on a resumed `up`, and the deployment's teardown
+        # would destroy a stack the manifest asked to keep. The manifest is the
+        # desired state, so an omitted flag resets the stored value; report the
+        # flip so it is never a silent behaviour change.
+        if bool(existing.get("keep_on_destroy", False)) != keep_on_destroy:
+            try:
+                update_monitoring_state(args.name, {"keep_on_destroy": keep_on_destroy})
+                console.print(
+                    "[dim]Recorded keep_on_destroy="
+                    f"{str(keep_on_destroy).lower()}: `deployments down` will "
+                    f"{'leave this stack standing' if keep_on_destroy else 'destroy it'}"
+                    ".[/dim]"
+                )
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: Failed to update monitoring state: {e}[/yellow]"
+                )
         return
 
     if check_terraform_state_exists(state_key):
@@ -169,8 +190,15 @@ def cmd_monitoring_infra(args):
             grafana_ip=grafana_ip,
             provider=provider,
             grafana_enabled=enable_grafana,
+            keep_on_destroy=keep_on_destroy,
         )
         console.print("[dim]Monitoring state saved to S3.[/dim]")
+        if keep_on_destroy:
+            console.print(
+                "[dim]keep_on_destroy is set: `deployments down` will leave this "
+                "stack standing. Clean it up with `monitoring destroy --name "
+                f"{args.name} --force`.[/dim]"
+            )
     except Exception as e:
         console.print(
             f"[bold red]Error: Failed to save monitoring state: {e}[/bold red]"

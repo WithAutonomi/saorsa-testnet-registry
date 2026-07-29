@@ -878,3 +878,117 @@ def test_client_forward_buffer_limit_omitted_when_unset():
     steps = build_deploy_steps(m)
     cprov = next(s for s in steps if s.argv[:2] == ["clients", "provision"])
     assert "--forward-buffer-limit" not in cprov.argv
+
+
+# --------------------------------------------------------------------------- #
+# keep_on_destroy — leave the ES / InfluxDB stack standing through `down` so the
+# run's logs and metrics stay queryable after the testnet tiers are gone.
+# --------------------------------------------------------------------------- #
+def _elastic_infra_argv(steps):
+    return next(s.argv for s in steps if s.argv[:2] == ["elastic", "infra"])
+
+
+def _destroy_cmds(manifest):
+    return [s.argv[:2] for s in build_destroy_steps(manifest)]
+
+
+def test_keep_on_destroy_off_by_default_keeps_infra_argv_identical():
+    # The flag must only appear when asked for: an existing manifest's step argv
+    # (and therefore its `up` journal hash) has to stay byte-identical.
+    m = _minimal(elastic={"enabled": True}, monitoring={"enabled": True})
+    steps = build_deploy_steps(m)
+    assert _elastic_infra_argv(steps) == ["elastic", "infra", "--name", "DEV-01"]
+    assert _monitoring_infra_argv(steps) == ["monitoring", "infra", "--name", "DEV-01"]
+    # ...and both stacks are still destroyed.
+    assert ["elastic", "destroy"] in _destroy_cmds(m)
+    assert ["monitoring", "destroy"] in _destroy_cmds(m)
+
+
+def test_elastic_keep_on_destroy_flags_infra_and_omits_destroy():
+    m = _minimal(
+        elastic={"enabled": True, "keep_on_destroy": True},
+        monitoring={"enabled": True},
+    )
+    assert _elastic_infra_argv(build_deploy_steps(m)) == [
+        "elastic",
+        "infra",
+        "--name",
+        "DEV-01",
+        "--keep-on-destroy",
+    ]
+    cmds = _destroy_cmds(m)
+    assert ["elastic", "destroy"] not in cmds
+    # monitoring did not opt in, so it is still torn down
+    assert ["monitoring", "destroy"] in cmds
+
+
+def test_monitoring_keep_on_destroy_flags_infra_and_omits_destroy():
+    m = _minimal(
+        elastic={"enabled": True},
+        monitoring={"enabled": True, "keep_on_destroy": True},
+    )
+    assert _monitoring_infra_argv(build_deploy_steps(m)) == [
+        "monitoring",
+        "infra",
+        "--name",
+        "DEV-01",
+        "--keep-on-destroy",
+    ]
+    cmds = _destroy_cmds(m)
+    assert ["monitoring", "destroy"] not in cmds
+    assert ["elastic", "destroy"] in cmds
+
+
+def test_keep_on_destroy_composes_with_grafana():
+    # Both flags on the same step; --grafana stays first so the argv is stable.
+    m = _minimal(
+        monitoring={"enabled": True, "grafana": True, "keep_on_destroy": True}
+    )
+    assert _monitoring_infra_argv(build_deploy_steps(m)) == [
+        "monitoring",
+        "infra",
+        "--name",
+        "DEV-01",
+        "--grafana",
+        "--keep-on-destroy",
+    ]
+
+
+def test_both_keeps_leave_only_the_testnet_tiers_in_destroy():
+    m = _minimal(
+        elastic={"enabled": True, "keep_on_destroy": True},
+        monitoring={"enabled": True, "keep_on_destroy": True},
+    )
+    assert _argvs(build_destroy_steps(m)) == [
+        ["nodes", "destroy", "--name", "DEV-01", "--force"],
+        ["bootstraps", "destroy", "--name", "DEV-01", "--force"],
+    ]
+
+
+def test_keep_on_destroy_extension():
+    m = Manifest.model_validate(
+        {
+            "name": "DEV-02",
+            "kind": "testnet-extension",
+            "purpose": "compat test",
+            "ssh_key_path": SSH,
+            "extension": {
+                "source": "DEV-01",
+                "binaries": {"ant_node": {"version": "2.0"}},
+                "nodes": {
+                    "per_vm": 10,
+                    "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+                },
+                "elastic": {"enabled": True, "keep_on_destroy": True},
+                "monitoring": {"enabled": True, "keep_on_destroy": True},
+            },
+        }
+    )
+    steps = build_deploy_steps(m)
+    assert "--keep-on-destroy" in _elastic_infra_argv(steps)
+    assert "--keep-on-destroy" in _monitoring_infra_argv(steps)
+    # nodes destroy + unextend only; the observability stacks survive
+    assert _argvs(build_destroy_steps(m)) == [
+        ["nodes", "destroy", "--name", "DEV-02", "--force"],
+        ["deployments", "unextend", "--name", "DEV-02", "--force"],
+    ]

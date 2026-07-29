@@ -278,6 +278,24 @@ class Elastic(_Base):
     retention_days: Optional[int] = None
     drop_log_levels: Optional[str] = None
     buffer_limit: Optional[int] = None
+    # Survive `deployments down`: the testnet tiers (clients/nodes/bootstraps) are
+    # torn down but this VM is left standing so the run's logs stay queryable for
+    # a post-mortem. Default false — teardown destroys everything, as before.
+    # NOTE retention is deliberately NOT coupled to this: the index still expires
+    # on the ILM policy (`retention_days`, default 7), so set that explicitly if
+    # the investigation needs longer.
+    keep_on_destroy: bool = False
+
+    @model_validator(mode="after")
+    def _keep_needs_enabled(self) -> "Elastic":
+        # enabled defaults False here, so `elastic: {keep_on_destroy: true}` on its
+        # own would silently keep nothing at all. Fail loudly instead.
+        if self.keep_on_destroy and not self.enabled:
+            raise ValueError(
+                "elastic.keep_on_destroy requires elastic.enabled: true "
+                "(there is no Elasticsearch stack to keep otherwise)"
+            )
+        return self
 
 
 class Monitoring(_Base):
@@ -288,6 +306,19 @@ class Monitoring(_Base):
     # The separate Grafana VM is opt-in (off by default — InfluxDB only). Enable
     # dashboards with `monitoring: { enabled: true, grafana: true }`.
     grafana: bool = False
+    # Survive `deployments down` — see Elastic.keep_on_destroy. The InfluxDB
+    # bucket's own retention defaults to infinite for testnets, so kept metrics
+    # stay queryable indefinitely.
+    keep_on_destroy: bool = False
+
+    @model_validator(mode="after")
+    def _keep_needs_enabled(self) -> "Monitoring":
+        if self.keep_on_destroy and not self.enabled:
+            raise ValueError(
+                "monitoring.keep_on_destroy requires monitoring.enabled: true "
+                "(there is no monitoring stack to keep otherwise)"
+            )
+        return self
 
 
 class TestnetSpec(_Base):

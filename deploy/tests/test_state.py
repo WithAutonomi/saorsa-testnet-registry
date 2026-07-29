@@ -278,3 +278,71 @@ class TestTerraformStateAttributes:
         assert terraform_state_attributes(
             self.TFSTATE, "digitalocean_droplet", "monitoring"
         ) is None
+
+
+class TestKeepOnDestroyState:
+    """`keep_on_destroy` is the only record of the keep intent once the manifest
+    is out of the picture, so it has to survive a save and a merge-update."""
+
+    def test_elastic_save_records_the_flag(self, mock_s3):
+        from saorsa_deploy.state import S3_ELASTIC_KEY_PREFIX, save_elastic_state
+
+        save_elastic_state(
+            name="DEV-01",
+            region="lon1",
+            vm_ip="10.0.0.1",
+            keep_on_destroy=True,
+        )
+        kwargs = mock_s3.put_object.call_args.kwargs
+        assert kwargs["Key"] == f"{S3_ELASTIC_KEY_PREFIX}/DEV-01.json"
+        assert json.loads(kwargs["Body"])["keep_on_destroy"] is True
+
+    def test_elastic_save_defaults_to_destroy(self, mock_s3):
+        from saorsa_deploy.state import save_elastic_state
+
+        save_elastic_state(name="DEV-01", region="lon1", vm_ip="10.0.0.1")
+        assert json.loads(mock_s3.put_object.call_args.kwargs["Body"])[
+            "keep_on_destroy"
+        ] is False
+
+    def test_monitoring_save_records_the_flag(self, mock_s3):
+        from saorsa_deploy.state import S3_MONITORING_KEY_PREFIX, save_monitoring_state
+
+        save_monitoring_state(
+            name="DEV-01",
+            region="lon1",
+            vm_ip="10.0.0.1",
+            keep_on_destroy=True,
+        )
+        kwargs = mock_s3.put_object.call_args.kwargs
+        assert kwargs["Key"] == f"{S3_MONITORING_KEY_PREFIX}/DEV-01.json"
+        assert json.loads(kwargs["Body"])["keep_on_destroy"] is True
+
+    def test_monitoring_save_defaults_to_destroy(self, mock_s3):
+        from saorsa_deploy.state import save_monitoring_state
+
+        save_monitoring_state(name="DEV-01", region="lon1", vm_ip="10.0.0.1")
+        assert json.loads(mock_s3.put_object.call_args.kwargs["Body"])[
+            "keep_on_destroy"
+        ] is False
+
+    def test_update_merges_the_flag_into_existing_state(self, mock_s3):
+        # The idempotent-reuse path in `elastic infra` sets the flag this way, on
+        # a state doc that predates the option and has no such key.
+        from saorsa_deploy.state import update_elastic_state
+
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(
+                read=MagicMock(
+                    return_value=json.dumps(
+                        {"name": "DEV-01", "vm_ip": "10.0.0.1", "region": "lon1"}
+                    ).encode()
+                )
+            )
+        }
+        update_elastic_state("DEV-01", {"keep_on_destroy": True})
+        body = json.loads(mock_s3.put_object.call_args.kwargs["Body"])
+        assert body["keep_on_destroy"] is True
+        # the pre-existing fields survive the merge
+        assert body["vm_ip"] == "10.0.0.1"
+        assert body["region"] == "lon1"

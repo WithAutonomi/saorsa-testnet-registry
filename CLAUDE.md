@@ -270,6 +270,28 @@ SigV4 max expiry) — both paths avoid the VM signing anything, so clock-skewed
 clients (whose own SigV4 requests S3 rejects at ~±15min) keep publishing and
 consuming addresses.
 
+**Keeping the observability stack past teardown.** Testnet/extension manifests
+accept **`keep_on_destroy: true`** inside the `elastic:` and/or `monitoring:`
+block: `deployments down` then destroys the clients/nodes/bootstraps but leaves
+that VM standing, so a run that went wrong stays investigable without paying for
+the node fleet. Both teardown paths honour it, because the intent is persisted
+into the **component's own S3 state** at create time (`elastic infra` /
+`monitoring infra` gain `--keep-on-destroy`, recorded next to `grafana_enabled`) —
+so a manifest-less `down --name X` behaves exactly like `down --config`. Default
+false; state docs predating the option have no key, which also means destroy. The
+key requires the matching `enabled: true` (a keep with no stack is a silent
+no-op, so it is a validation error). Two deliberate non-couplings: retention is
+untouched (a kept ES index still expires on `elastic.retention_days`, default 7 —
+raise it if needed; the testnet Influx bucket is infinite by default), and the
+primitive `elastic destroy` / `monitoring destroy` are never gated by the flag
+since they are the cleanup route. `down` prints each retained stack's endpoint and
+its exact destroy command, and says "torn down (observability stacks retained)"
+rather than "has been destroyed". The registry status flip is unaffected —
+`DESTROYED` is recorded by whichever command deletes the whole deployment state.
+Logic: `_observability_destroy_steps` in `orchestrator/testnet.py`,
+`build_destroy_steps_from_state` + `retained_observability` in
+`orchestrator/__init__.py`.
+
 A top-level `slack_post: true` (valid for **every** kind) appends a final
 `deployments slack-post --name <name>` step to `up`, posting a deployment
 summary once it's up. `slack-post` has two paths: when
@@ -623,7 +645,7 @@ commands to opt in.
 
 ### Commands
 
-- `monitoring infra` — create the InfluxDB VM via Terraform (and the Grafana VM only with `--grafana`). `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (InfluxDB VM; default `s-4vcpu-8gb` do / `b3-8` ovh), `--grafana`/`--no-grafana` (default off), `--grafana-size` (default `s-1vcpu-2gb` do / `d2-4` ovh; only used with `--grafana`), `--volume-size`, `--volume-type` (ovh). OVH needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an `ant_deploy` SSH key in the project.
+- `monitoring infra` — create the InfluxDB VM via Terraform (and the Grafana VM only with `--grafana`). `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (InfluxDB VM; default `s-4vcpu-8gb` do / `b3-8` ovh), `--grafana`/`--no-grafana` (default off), `--grafana-size` (default `s-1vcpu-2gb` do / `d2-4` ovh; only used with `--grafana`), `--volume-size`, `--volume-type` (ovh), `--keep-on-destroy` (record that `deployments down` must leave this stack standing — see "Keeping the observability stack past teardown" above). OVH needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an `ant_deploy` SSH key in the project.
 - `monitoring provision` — install InfluxDB (InfluxDB VM) and, when Grafana was enabled, Grafana (Grafana VM); prints connection details. `--retention-days N` caps InfluxDB bucket retention (default `0` = infinite, the dev default; set e.g. 14 for prod). Retention is applied to both buckets at first provision.
 - `deployments provision-telegraf` — install Telegraf for host metrics (CPU, mem, disk, net) → InfluxDB **and** node log forwarding → Elasticsearch in one pass (see "Telegraf provisioning" below). Metrics-only when only monitoring state exists. Retrofit path (`--inventory-path`/`--host-ips-file`) provisions Tier-1 host+procstat metrics only; the Prometheus app-metrics scrape is only wired on the `--name` path with `node_count > 0`.
 - `monitoring info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
@@ -999,7 +1021,7 @@ SSH-key prerequisites as monitoring).
 
 ### Commands
 
-- `elastic infra` — create Elasticsearch VM via Terraform. `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (default `s-4vcpu-8gb` do / `b3-8` ovh; bump for large testnets), `--volume-size`, `--volume-type` (ovh)
+- `elastic infra` — create Elasticsearch VM via Terraform. `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (default `s-4vcpu-8gb` do / `b3-8` ovh; bump for large testnets), `--volume-size`, `--volume-type` (ovh), `--keep-on-destroy` (record that `deployments down` must leave this stack standing — see "Keeping the observability stack past teardown" under Declarative manifests). NB a kept index still expires on the ILM policy, so raise `--retention-days` if the logs are needed for longer.
 - `elastic provision` — install Elasticsearch 8.x, create index template, user + API key. `--retention-days` (default 7, ILM) + `--shards`
 - `elastic info` — print connection details (URL, user, password, API key)
 - `elastic destroy` — tear down Elasticsearch infrastructure

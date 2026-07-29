@@ -234,6 +234,26 @@ reaches ES; for high-volume trace runs, **`elastic.buffer_limit`** is now also
 applied to the client forwarder (via `clients provision --forward-buffer-limit`) so
 its small default output buffer doesn't overflow and drop forwarded lines.
 
+**Keeping the logs/metrics after teardown:** `elastic.keep_on_destroy: true` and
+`monitoring.keep_on_destroy: true` (testnet and testnet-extension kinds) make
+`deployments down` tear down the clients, nodes and bootstraps but leave that
+observability VM standing, so a run that went wrong can still be investigated
+without paying for the node fleet. Both `down` paths honour it: the intent is
+recorded in the component's own S3 state at `infra` time (via `elastic infra
+--keep-on-destroy` / `monitoring infra --keep-on-destroy`), so `down --name
+<deployment>` behaves the same as `down --config <manifest>` with no manifest in
+hand. Default is `false` — teardown destroys everything, as before — and the key
+requires the matching `enabled: true`, since keeping a stack that was never
+created is a silent no-op.
+
+Two things it deliberately does *not* do. It does **not** extend retention: a kept
+Elasticsearch index still expires on its ILM policy (`elastic.retention_days`,
+default 7 days), so raise that if the investigation needs longer. The testnet
+InfluxDB bucket's retention is infinite by default, so kept metrics persist. And it
+does **not** gate the primitive `elastic destroy` / `monitoring destroy` commands —
+those are how you clean the retained stack up, and `down` prints the exact command
+plus the endpoint for each stack it left running.
+
 **Reuse:** `extends:` (deep-merge a base; lists replace wholesale), `--set
 dotted.key=value` (override one value, e.g. `--set testnet.nodes.nat_percent=0`),
 and `--name NEW`. **Secrets** are never in a manifest — prod kinds name an env var
@@ -766,6 +786,7 @@ uv run saorsa-deploy monitoring infra --name PROD-MON --provider ovh \
 | `--droplet-size` | string | No | `s-4vcpu-8gb` (do) / `b3-8` (ovh) | InfluxDB VM size; bump for production fleets with many metric-forwarding VMs |
 | `--grafana` / `--no-grafana` | flag | No | `--no-grafana` | Also create the separate Grafana VM. Off by default (InfluxDB only) |
 | `--grafana-size` | string | No | `s-1vcpu-2gb` (do) / `d2-4` (ovh) | Grafana VM size (only used with `--grafana`; it only renders panels, so it stays small) |
+| `--keep-on-destroy` | flag | No | off | Record in this stack's state that `deployments down` must leave it standing, so the metrics stay queryable after the testnet is gone. Honoured by both `down --config` and `down --name`. `monitoring destroy` is never gated by it |
 
 ### `monitoring provision` command
 

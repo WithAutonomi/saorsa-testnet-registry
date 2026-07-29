@@ -93,6 +93,7 @@ testnet:
     retention_days: 7            # ILM retention before deletion
     drop_log_levels: DEBUG,TRACE # node forwarder drops these levels before shipping to ES. OMIT to auto-derive from nodes.log_level (trace→keep all, debug→drop only TRACE, info→DEBUG,TRACE). Set explicitly to override — e.g. "" force-keeps everything; "DEBUG,TRACE" keeps verbose logs on disk but out of ES.
     buffer_limit: 2000000        # telegraf output buffer (lines); applied to BOTH the node forwarder and (via clients provision --forward-buffer-limit) the client forwarder — bump for high-volume TRACE runs
+    keep_on_destroy: false       # `true` = `deployments down` tears down clients/nodes/bootstraps but LEAVES this ES VM running, so the run's logs stay queryable for a post-mortem. Honoured by both `down --config` and `down --name` (persisted into the elastic S3 state at infra time). Requires enabled: true. Retention is NOT extended — the index still expires on retention_days, so raise that if the investigation needs longer. Clean up afterwards with `elastic destroy --name <name> --force`.
 
   monitoring:                # InfluxDB metrics stack. ON by default — set
     enabled: true            # `enabled: false` to opt out.
@@ -100,3 +101,10 @@ testnet:
                              # default (InfluxDB only); set `true` to also
                              # stand up a Grafana VM. Data stays queryable via
                              # InfluxDB/Flux regardless.
+    keep_on_destroy: false   # `true` = `deployments down` leaves the InfluxDB
+                             # (+ Grafana) VM(s) running so the run's metrics stay
+                             # queryable after the testnet is gone. Same semantics
+                             # as elastic.keep_on_destroy above; the testnet bucket's
+                             # retention is infinite by default, so kept metrics
+                             # persist. Clean up with `monitoring destroy --name
+                             # <name> --force`.

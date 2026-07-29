@@ -143,6 +143,7 @@ def save_monitoring_state(
     influxdb_bucket: str = "",
     grafana_url: str = "",
     grafana_enabled: bool = True,
+    keep_on_destroy: bool = False,
 ) -> None:
     """Save monitoring stack metadata to S3.
 
@@ -153,6 +154,12 @@ def save_monitoring_state(
     provision/destroy can tell a deliberately Grafana-less stack apart from a
     legacy single-VM stack (which has no ``grafana_enabled`` key and defaults
     to True → co-locate Grafana on the InfluxDB VM).
+
+    ``keep_on_destroy`` records that ``deployments down`` must leave this stack
+    standing (metrics stay queryable after the testnet is gone). It is read by
+    the name-only teardown path, which has no manifest to consult. Defaults
+    False, and pre-existing state docs lack the key entirely — both mean
+    "destroy", i.e. the behaviour before this option existed.
     """
     state = {
         "name": name,
@@ -161,6 +168,7 @@ def save_monitoring_state(
         "vm_ip": vm_ip,
         "grafana_ip": grafana_ip,
         "grafana_enabled": grafana_enabled,
+        "keep_on_destroy": keep_on_destroy,
         "influxdb_url": influxdb_url,
         "influxdb_token": influxdb_token,
         "influxdb_org": influxdb_org,
@@ -230,17 +238,25 @@ def save_elastic_state(
     elasticsearch_password: str = "",
     elasticsearch_api_key: str = "",
     elasticsearch_index_pattern: str = "",
+    keep_on_destroy: bool = False,
 ) -> None:
     """Save Elasticsearch stack metadata to S3.
 
     ``provider`` records which cloud the stack runs on so destroy can select
     the right Terraform module.
+
+    ``keep_on_destroy`` records that ``deployments down`` must leave this stack
+    standing (logs stay queryable after the testnet is gone). It is read by the
+    name-only teardown path, which has no manifest to consult. Defaults False,
+    and pre-existing state docs lack the key entirely — both mean "destroy",
+    i.e. the behaviour before this option existed.
     """
     state = {
         "name": name,
         "region": region,
         "provider": provider,
         "vm_ip": vm_ip,
+        "keep_on_destroy": keep_on_destroy,
         "elasticsearch_url": elasticsearch_url,
         "elasticsearch_username": elasticsearch_username,
         "elasticsearch_password": elasticsearch_password,
