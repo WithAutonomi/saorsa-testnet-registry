@@ -998,7 +998,7 @@ Transfer-duration percentiles are exact — they come from the per-op `deploymen
 
 #### What it deliberately does NOT cover
 
-Four hard gates from the release process are **not derivable from anything the registry stores**, and the report names them explicitly so their absence never reads as a pass: **data integrity** (no content verification exists anywhere in the system), **crashes** (panics reach stderr/journald, not the JSON logs Telegraf forwards, and Elasticsearch dies at teardown), **mixed-version chunk storage** (an SSH check on `chunks.mdb` growth), and **production canaries** (a separate deployment with its own assessment). Those are supplied observationally through the `evaluate-staging-run` skill.
+Four hard gates from the release process are **not derivable from anything the registry stores**: **data integrity** (no content verification exists anywhere in the system), **crashes** (panics reach stderr/journald, not the JSON logs Telegraf forwards, and Elasticsearch dies at teardown), **mixed-version chunk storage** (an SSH check on `chunks.mdb` growth), and **production canaries** (a separate deployment with its own assessment). Those are gathered observationally and recorded by the `evaluate-staging-run` skill, alongside this report.
 
 #### Comparability guards
 

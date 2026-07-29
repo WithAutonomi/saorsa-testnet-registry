@@ -858,8 +858,8 @@ leak slope, outbound bytes/GB, disk bytes/GB). Transfer percentiles are exact �
 from the per-op `deployment_{upload,download}_records`. **`deployment_file_results`
 is unusable**: an aggregate with no per-op timestamps, so it cannot be windowed.
 
-**Deliberately does NOT cover** four hard gates, named explicitly in every report
-so silence never reads as a pass: data integrity (no content verification exists
+**Deliberately does NOT cover** four hard gates — the report is silent on them
+entirely: data integrity (no content verification exists
 anywhere), crashes (panics → stderr/journald, not the JSON logs telegraf tails;
 ES dies at teardown), mixed-version chunk storage (SSH `chunks.mdb` check), and
 canaries (separate deployment). The **`evaluate-staging-run`** skill supplies

@@ -649,15 +649,6 @@ def test_missing_derived_metric_is_not_assessed_never_zero(config):
     assert verdict["overall"] == PASS
 
 
-def test_observational_hard_gates_are_named_as_not_evaluated(config):
-    verdict = compare_runs(
-        _full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config
-    )
-    text = " ".join(verdict["not_evaluated_by_this_tool"]).lower()
-    for expected in ("data integrity", "crashes", "mixed-version", "canaries"):
-        assert expected in text
-
-
 # ---------------------------------------------------------------------------
 # Determinism -- the whole point of the tool
 # ---------------------------------------------------------------------------

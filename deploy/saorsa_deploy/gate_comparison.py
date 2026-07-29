@@ -906,17 +906,6 @@ def compare_runs(
             NOT_ASSESSED: verdicts.count(NOT_ASSESSED),
         },
         "gates": [r.to_dict() for r in results],
-        # Named explicitly rather than left implicit: a reader must be able to
-        # tell the difference between "this gate passed" and "this tool never
-        # looks at that gate".
-        "not_evaluated_by_this_tool": [
-            "Data integrity (no content verification exists in the system)",
-            "Crashes (panics reach journald, not the JSON logs Telegraf tails; "
-            "Elasticsearch is destroyed with the testnet)",
-            "Mixed-version phase (previous-version nodes storing chunks is an "
-            "SSH check against chunks.mdb growth)",
-            "Canaries (a separate production deployment with its own assessment)",
-        ],
     }
 
 

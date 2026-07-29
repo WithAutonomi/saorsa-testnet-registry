@@ -44,7 +44,9 @@ Rules:
 | soft | Outbound bytes per GB of traffic | `deployment_derived_metrics` |
 | soft | Disk bytes per GB stored | `deployment_derived_metrics` |
 
-It does **not** cover, and the report must say so rather than let silence read as a pass:
+It does **not** cover the following. The command's report says nothing about them at all, so it is
+**your** report's Observational hard gates table (Step 7) that must account for each one — silence
+there would read as a pass:
 
 - **Data integrity** — no content verification exists anywhere in the system. There is nothing to
   query. Unless the run did something bespoke, this is NOT ASSESSED and should be stated as a

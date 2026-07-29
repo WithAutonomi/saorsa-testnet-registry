@@ -161,10 +161,7 @@ def render_report(verdict: dict, computed_at: str | None = None) -> str:
 
     lines.append("## Hard gates")
     lines.append("")
-    lines.append(
-        "Failure blocks the ship; no override exists. Only the gates derivable "
-        "from stored metrics appear here -- see *Not evaluated by this tool* below."
-    )
+    lines.append("Failure blocks the ship; no override exists.")
     lines.append("")
     lines.extend(_gate_table(hard) if hard else ["_No hard gates evaluated._"])
     lines.append("")
@@ -214,17 +211,5 @@ def render_report(verdict: dict, computed_at: str | None = None) -> str:
         for gate in sorted(unassessed, key=lambda g: g["gate"]):
             lines.append(f"- **{gate['gate']}**: {_escape(gate.get('detail', ''))}")
         lines.append("")
-
-    lines.append("## Not evaluated by this tool")
-    lines.append("")
-    lines.append(
-        "These hard gates are not derivable from anything the registry stores. "
-        "They are observational and must be supplied separately; their absence "
-        "here is not evidence that they passed."
-    )
-    lines.append("")
-    for item in verdict.get("not_evaluated_by_this_tool", []):
-        lines.append(f"- {item}")
-    lines.append("")
 
     return "\n".join(lines)
