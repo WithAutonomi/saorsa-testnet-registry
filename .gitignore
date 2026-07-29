@@ -31,3 +31,7 @@ runbooks/
 deploy/manifests/runs/
 
 .claude/scheduled_tasks.lock
+
+# Mirrors of the committed skills under .claude/skills/. Two copies of the same
+# file drift silently, and .claude/ is the one that is read.
+.agents/
