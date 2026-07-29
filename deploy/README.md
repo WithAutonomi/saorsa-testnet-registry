@@ -954,6 +954,83 @@ Never compare one against the other. `derive-metrics` refuses `--label full-run`
 
 `deployments print-recorded-results` renders both the per-mountpoint occupancy table and every stored window's derived metrics.
 
+### Staging gate comparison (`deployments compare`)
+
+Compares one recorded run against a baseline run on their stored metrics, applies versioned gate thresholds, and emits a per-gate **PASS / FAIL / GRAY / NOT ASSESSED** verdict as machine-readable JSON plus a fixed-format markdown report. Deterministic by construction: same inputs, byte-identical report.
+
+```bash
+# Compare an RC staging run against the run the last shipped release passed on
+uv run saorsa-deploy deployments compare --id 474 --baseline-id 470
+
+# A steady-state slice (both sides must be re-derived under the same label first)
+uv run saorsa-deploy deployments compare --id 474 --baseline-id 470 \
+  --window-label steady-state --markdown-out report.md
+```
+
+Both runs are named by **deployment id, never by name** — staging names are reused every train, and a name lookup resolves to whichever run was most recent.
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--id` | int | Yes | - | Deployment id of the candidate run |
+| `--baseline-id` | int | Yes | - | Deployment id of the baseline run |
+| `--window-label` | string | No | `full-run` | Which stored window to compare on both sides |
+| `--thresholds` | path | No | bundled | Threshold config YAML (`resources/gates/staging-thresholds.yaml`) |
+| `--history` | string | No | - | Comma-separated ids of prior **accepted** runs, for the 2σ noise criterion |
+| `--json-out` | path | No | - | Write the machine-readable verdict here |
+| `--markdown-out` | path | No | - | Write the fixed-format markdown report here |
+| `--print-markdown` | flag | No | - | Also print the report to stdout |
+| `--no-persist` | flag | No | - | Do not store the verdict in the registry |
+
+Exits `2` on a hard-gate failure (which blocks the ship with no override); soft-gate failures and GRAY exit `0`, since those are judgment calls.
+
+#### What it covers
+
+Two hard gates (upload success floor < 99%, download success floor < 99.5%) and eight soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored.
+
+Transfer-duration percentiles are exact — they come from the per-op `deployment_upload_records` / `deployment_download_records`, which carry each operation's own `duration_ms` and timestamps. `deployment_file_results` is not used: it is an aggregate with no per-op timestamps and therefore cannot be windowed.
+
+#### What it deliberately does NOT cover
+
+Four hard gates from the release process are **not derivable from anything the registry stores**, and the report names them explicitly so their absence never reads as a pass: **data integrity** (no content verification exists anywhere in the system), **crashes** (panics reach stderr/journald, not the JSON logs Telegraf forwards, and Elasticsearch dies at teardown), **mixed-version chunk storage** (an SSH check on `chunks.mdb` growth), and **production canaries** (a separate deployment with its own assessment). Those are supplied observationally through the `evaluate-staging-run` skill.
+
+#### Comparability guards
+
+The command refuses outright when the two runs cannot be validly compared:
+
+- **Different `window_label`s** — a steady-state slice and a full run are not the same measurement.
+- **Different derived-metric `source`s** — `capture` sums raw counter deltas and is exact, `buckets` integrates averaged rates and is approximate. Comparing them measures the method, not the release.
+- **Window lengths differing by more than `max_window_length_ratio` (1.25x)** — replication continues after an upload completes, so a shorter window truncates the disk numerator while still counting the full denominator.
+
+It **warns** (rather than refusing) when the two runs' **activity coverage** — the fraction of the window in which clients were actually transferring — differs by more than `max_activity_coverage_ratio` (1.3x). The per-GB numerators accumulate through idle time while the denominators do not, so a mostly-idle window inflates every ratio. Measured across four recorded runs: 39.2% coverage → 14.86 GB/GB, against 52–61% coverage → 9.1–10.1 GB/GB. A window-*length* check cannot catch this, because the length can be perfectly ordinary.
+
+A metric that is legitimately absent (an empty denominator produces no row at all) is **NOT ASSESSED**, never a zero — a zero would trip every threshold and read as a catastrophic regression.
+
+#### Statistics, and one honest substitution
+
+The process spec names node CPU **median** and node RSS **p50**. Host metric buckets historically stored only `{avg, min, max, samples}`, so percentiles were unrecoverable. `record-analysis` now captures `p50`/`p95` at extraction time — exactly, in the whole-run rollup, and per bucket — but **no past run can be backfilled**, because the source InfluxDB is destroyed with the monitoring stack.
+
+The report therefore marks which statistic each figure is:
+
+- `[p50]` — the exact whole-run percentile from the rollup.
+- `[p50~]` — a window's percentile *estimated* from per-bucket percentiles. Percentiles do not compose across buckets the way `avg`/`min`/`max` do.
+- `[mean]` — no percentile was captured; a sample-weighted mean stands in.
+
+Comparing two different statistics against each other is refused as NOT ASSESSED rather than attributing the method's difference to the release.
+
+Node RSS is compared at a **percentile across services** (default p95), not the fleet maximum. With ~1000 services the maximum is an extreme order statistic that moves with the single unluckiest one: measured 470 → 474, the max moved +64% while the median moved +3.8% and the p95 +1.8%. The worst service is always reported in the gate detail, so an outlier is visible without deciding the gate alone. Set `node_rss_service_percentile: 100` to restore worst-service behaviour.
+
+The **memory leak** check is absolute (a property of the run, not a comparison — a leaking baseline should not excuse the candidate) and is evaluated on the **median** service's fitted RSS slope. A tail percentile does not work here: fitting a line through 2h of a jittery RSS signal produces slopes symmetric about zero — measured across four runs, p5 of −40 to −60 %/h against p95 of +37 to +60 %/h, with ~50% of services showing a negative slope and the positive tail matching the negative tail to within a few points. A threshold on p95 would measure how noisy RSS is, not whether it leaks. A **tail asymmetry** figure is reported alongside (the negative tail is a free, self-calibrating noise reference for a leak confined to a subset of services) but is deliberately not gated on yet — four runs is too little history to set a threshold.
+
+#### Thresholds
+
+All thresholds live in `deploy/saorsa_deploy/resources/gates/staging-thresholds.yaml`, git-versioned and carrying a `version:` key that is echoed into every report and stored on the persisted verdict. The release process schedules a quarterly recalibration against accumulated run history; that must not require a release of the tool. Override with `--thresholds PATH`. Validation is strict and fails loudly — a threshold silently defaulting to zero would turn a gate into a rubber stamp while still printing PASS.
+
+#### Persistence
+
+The verdict is upserted into `deployment_gate_verdicts`, keyed `(deployment_id, baseline_deployment_id, window_label)` so re-running replaces its previous answer rather than accumulating rival ones. The row stores the full JSON payload, the rendered markdown, and the threshold config version, so the exact text attached to a release issue can be recovered later without recomputing anything.
+
 ### `monitoring info` command
 
 Print monitoring stack connection details from S3 state. Useful for retrieving credentials after provisioning, or for getting a ready-to-use Telegraf config for external setups.

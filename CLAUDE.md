@@ -836,6 +836,79 @@ never compare the two, and `--label full-run` is refused outright. Bucket width 
 it) because it isn't recorded on the rows and a wrong width scales every byte
 total by exactly that factor.
 
+### Deterministic staging gate comparison (`deployments compare`)
+
+`deployments compare --id <candidate> --baseline-id <baseline>` compares two
+recorded runs on their **stored metrics alone**, applies versioned thresholds,
+and emits per-gate PASS / FAIL / GRAY / **NOT ASSESSED** as JSON plus a
+fixed-format markdown report — upserted into **`deployment_gate_verdicts`**
+keyed `(candidate, baseline, window_label)` so a re-run replaces rather than
+accumulates. Same inputs ⇒ byte-identical report (the renderer never reads the
+clock; `computed_at` is passed in). Exits `2` on a hard-gate fail only.
+
+Both runs are identified by **deployment id, never name** — staging names are
+reused every train. There is deliberately **no run-identity plumbing**: no
+`staging_runs` table, no RC↔deployment FK, no `profile_version` column, no
+"last shipped release" resolution. The baseline is the operator's judgment,
+supplied as an id.
+
+**Covers**: 2 hard gates (upload floor 99%, download floor 99.5%) + 8 soft gates
+(success rate, transfer p50/p95 **per file-size bucket**, node CPU, node RSS,
+leak slope, outbound bytes/GB, disk bytes/GB). Transfer percentiles are exact —
+from the per-op `deployment_{upload,download}_records`. **`deployment_file_results`
+is unusable**: an aggregate with no per-op timestamps, so it cannot be windowed.
+
+**Deliberately does NOT cover** four hard gates, named explicitly in every report
+so silence never reads as a pass: data integrity (no content verification exists
+anywhere), crashes (panics → stderr/journald, not the JSON logs telegraf tails;
+ES dies at teardown), mixed-version chunk storage (SSH `chunks.mdb` check), and
+canaries (separate deployment). The **`evaluate-staging-run`** skill supplies
+those observationally and assembles the release-issue report.
+
+**Refuses** on mismatched `window_label`, mismatched derived-metric `source`
+(`capture` is exact, `buckets` approximate — comparing them measures the method),
+or window lengths differing >1.25x. **Warns** on **activity coverage** (op span ÷
+window) differing >1.3x: the per-GB numerators accumulate through idle time while
+the denominators don't. Measured — 39.2% coverage → 14.86 GB/GB vs 52–61% → 9.1–10.1.
+A window-*length* check cannot catch this; the length can be perfectly ordinary.
+
+**Statistics.** The spec names CPU *median* / RSS *p50*; buckets historically held
+only `{avg,min,max,samples}`. `_stats` in `influx.py` now captures `p50`/`p95` —
+exact in the rollup, per-bucket in `deployment_host_metric_buckets` (nullable, **no
+backfill possible**). Reports mark `[p50]` (exact whole-run), `[p50~]` (window
+*estimated* from per-bucket percentiles — they don't compose like avg/min/max), or
+`[mean]` (no percentile captured). Comparing two different statistics is NOT
+ASSESSED, never silently blended. Full-run comparisons read the **rollup** (exact);
+windowed ones read buckets.
+
+Node RSS compares a **percentile across services** (default p95), not the fleet
+max — with ~1000 services the max is an extreme order statistic (470→474: max
++64%, median +3.8%, p95 +1.8%). Worst service always in the detail.
+
+The **leak check is absolute** (a leaking baseline shouldn't excuse the candidate)
+and uses the **median** service slope, not a tail. Fitting a line through 2h of
+jittery RSS gives slopes **symmetric about zero**: p5 −40…−60 %/h vs p95 +37…+60
+%/h, ~50% of services negative, positive tail ≈ negative tail. A p95 threshold
+would measure how noisy RSS is, not whether it leaks. Threshold 5%/h on the median
+is calibrated against the **noise floor** (observed medians +2.44/−2.06/−0.66/−1.54),
+**not** against a known leak — a PASS means "no fleet-wide RSS trend". A **tail
+asymmetry** figure is reported (the negative tail is a free self-calibrating noise
+reference for a subset leak) but not gated on.
+
+The leak window is computed **per host**, from that host's own last bucket: the
+profile skews node clocks ±3h and telegraf stamps by the host's clock, so a
+fleet-wide `max(bucket_start)` assessed **15 of 997 services** on run 470.
+
+Thresholds live in `resources/gates/staging-thresholds.yaml` (git-versioned,
+`version:` echoed into every report and stored on the verdict) — the process
+schedules a quarterly recalibration that must not need a tool release. Override
+with `--thresholds`. Validation fails loudly; a threshold silently defaulting to
+zero would be a rubber stamp printing PASS. `--history <ids>` supplies prior
+**accepted** runs for the 2σ criterion — *selecting* them is judgment and belongs
+to the operator/skill, only the arithmetic is in the tool; below the minimum the
+percentage threshold stands alone. Impl: `gate_config.py`, `gate_comparison.py`
+(pure), `gate_report.py`, `cmd/compare_runs.py`.
+
 ### Clock-skewed hosts must not vanish from Influx capture
 
 **Every Flux `range()` in the query paths carries an explicit `stop`**

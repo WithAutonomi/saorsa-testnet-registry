@@ -1,0 +1,217 @@
+# Staging release-gate thresholds (V2-721).
+#
+# These are CONFIG, not code, deliberately: the release process schedules a
+# quarterly threshold review that recalibrates the soft-gate percentages against
+# accumulated run history, and enables the 2-sigma noise criterion per metric as
+# its history reaches ~5 accepted runs. Neither should require a release of
+# saorsa-deploy.
+#
+# `version` is echoed into every verdict and stored on the persisted row. Bump
+# it whenever a number below changes, so two reports can never disagree without
+# the difference being visible. Comparing verdicts produced under different
+# threshold versions is meaningless -- the version is what tells you that.
+version: 1
+
+# ---------------------------------------------------------------------------
+# Hard gates the command can evaluate from stored metrics.
+#
+# The other four hard gates in the process spec -- data integrity, crashes,
+# mixed-version chunk storage, and production canaries -- are NOT here and are
+# NOT evaluated by this command. Nothing in Postgres records them: content
+# verification does not exist anywhere in the system, node panics go to
+# stderr/journald rather than the JSON logs Telegraf tails (and Elasticsearch is
+# destroyed with the testnet), and the canary is a separate deployment assessed
+# by its own skill. They are supplied by the operator/agent via the accompanying
+# skill and merged into the release-issue report there.
+hard_gates:
+  # Absolute floors, not comparisons against the baseline. A run that meets the
+  # floor still faces the `success_rate_drop_pp` soft gate below, which is what
+  # catches a slow slide that never quite breaches the floor.
+  upload_success_floor_percent: 99.0
+  download_success_floor_percent: 99.5
+
+# ---------------------------------------------------------------------------
+# Soft gates: candidate vs baseline, subject to the noise rule.
+#
+# Every threshold is expressed as the point at which the gate FAILS. All the
+# percentage entries are one-sided -- an improvement is never a regression.
+soft_gates:
+  # Percentage-point drop below the baseline's success rate. Unlike every other
+  # entry this is in points, not percent: a fall from 99.6% to 98.9% is a 0.7 pp
+  # drop, and expressing it as a relative percentage of a number already near
+  # 100 would make the threshold nearly meaningless.
+  success_rate_drop_pp: 1.0
+
+  # Transfer duration, evaluated per file-size bucket rather than pooled: a
+  # regression confined to large files is invisible in a pooled percentile
+  # dominated by the many small ones.
+  transfer_duration_p50_increase_percent: 10.0
+  transfer_duration_p95_increase_percent: 20.0
+
+  # Node-tier host metrics.
+  #
+  # NOTE the process spec names node CPU *median* and node RSS *p50*. Host
+  # metric buckets store only {avg, min, max, samples}, so a percentile is not
+  # recoverable from any run recorded before percentile capture landed, and no
+  # backfill is possible. Where percentiles are absent the comparison falls back
+  # to the sample-weighted mean and says so, per-metric, in the report. The
+  # threshold value is the same either way; what changes is the statistic it is
+  # applied to.
+  node_cpu_increase_percent: 15.0
+  node_rss_increase_percent: 15.0
+
+  # Which percentile ACROSS SERVICES the node RSS gate is evaluated on.
+  #
+  # RSS is measured per `node_service` and there are ~1000 of them on a staging
+  # fleet. The maximum of a thousand samples is an extreme order statistic: it
+  # moves with the single unluckiest service and says nothing about the fleet.
+  # Measured on STG-01 470 -> 474, the max moved +64% (1.314 -> 2.156 GiB) while
+  # the median moved +3.8% and the p95 moved +1.8% -- one outlier, not a
+  # fleet-wide regression.
+  #
+  # p95 keeps the gate sensitive to a broad shift and to a leak affecting a
+  # meaningful slice of the fleet, without firing on a single service. Set to
+  # 100 to restore the strict worst-service behaviour.
+  node_rss_service_percentile: 95
+
+  # Normalised per-GB ratios from `deployment_derived_metrics`.
+  outbound_bytes_per_gb_increase_percent: 10.0
+  disk_bytes_per_gb_increase_percent: 10.0
+
+# ---------------------------------------------------------------------------
+# Memory leak check.
+#
+# The spec's condition is a "non-flat RSS slope over the final 2h of steady
+# state". Flatness needs a tolerance -- no real slope is exactly zero -- so it is
+# expressed as growth relative to the service's own mean RSS over the regression
+# window. That normalisation matters: an absolute bytes-per-hour threshold would
+# be far stricter on a small service than a large one, and the fleet's services
+# differ in size.
+#
+# Evaluated per `node_service` and never pooled into a host mean: one leaking
+# service among fifteen is exactly the signal, and a mean dilutes it away.
+memory_leak:
+  window_hours: 2.0
+
+  # Fail when the fleet statistic below implies growth of more than this
+  # percentage of the service's own mean RSS per hour.
+  #
+  # Calibrated against four recorded runs (registry deployments 470, 471, 472,
+  # 474; ~990 services each, 2h window). Observed medians: +2.44, -2.06, -0.66,
+  # -1.54 %/h. 5%/h gives roughly 2x headroom over the worst clean observation
+  # and passes all four.
+  #
+  # This calibrates the NOISE FLOOR, not the detection threshold: none of those
+  # four runs is known to contain a real leak, so nothing here says how large a
+  # leak must be before the median moves. Revisit at the quarterly review.
+  max_growth_percent_per_hour: 5.0
+
+  # Which percentile ACROSS SERVICES the check is evaluated on. 50 = the median,
+  # and the median is the point of this gate.
+  #
+  # A tail percentile does NOT work here, which is worth spelling out because it
+  # is the obvious choice and it is wrong. Fitting a line through 2h of a jittery
+  # RSS signal produces a spread of slopes that is symmetric about zero: measured
+  # across those same four runs, p5 ran -40 to -60 %/h against a p95 of +37 to
+  # +60 %/h, with ~50% of services "growing" and the fraction above +25%/h
+  # matching the fraction below -25%/h to within a few points. Half the fleet
+  # showing a negative slope is not half the fleet shrinking -- it is fit noise.
+  # Widening the window 2h -> 3h roughly halves that spread, which is what
+  # regression noise does and leakage does not.
+  #
+  # So a threshold on p95 measures how noisy RSS is, not whether it leaks. The
+  # median is what a real leak shifts and symmetric noise does not.
+  #
+  # The trade-off is that a leak confined to a small subset of services will not
+  # move the median. The tail asymmetry reported alongside this gate is the
+  # signal for that case; it is deliberately not gated on yet, because four runs
+  # is too little history to set a threshold.
+  service_percentile: 50
+
+  # Slopes at least this far from zero count toward the reported tail
+  # asymmetry. Under symmetric noise the two tails match, so the negative tail
+  # is a free, self-calibrating reference for the positive one.
+  tail_threshold_percent_per_hour: 25.0
+
+  # A regression over too few points is noise. Skip (NOT ASSESSED), never pass.
+  min_points: 6
+
+# ---------------------------------------------------------------------------
+# File-size buckets for the transfer-duration gates.
+#
+# Edges in megabytes, each bucket half-open [lower, upper). The staging profile
+# currently uses discrete sizes (20/25/50/100/300/500/1000 MB) so grouping by
+# exact byte size would work today, but edges survive a profile tweak without
+# fragmenting the comparison into buckets that exist on only one side.
+#
+# A bucket present on only one side of the comparison is NOT ASSESSED, never a
+# pass: it means the two runs did not do the same work.
+file_size_buckets_mb: [0, 32, 64, 128, 384, 768, 1536]
+
+# ---------------------------------------------------------------------------
+# Which normalised outbound ratio the gate is evaluated on.
+#
+# `record-analysis` stores both `outbound_bytes_per_gb_uploaded` and
+# `outbound_bytes_per_gb_traffic`, deliberately, because serving downloads and
+# replicating uploads are different egress drivers and choosing between them is
+# a calibration decision. The spec's wording is "outbound bytes per GB of user
+# traffic", so the traffic ratio is the default. Recapture is impossible once a
+# run's InfluxDB is destroyed, which is why both are stored and this is a config
+# key rather than a code constant.
+outbound_ratio_metric: outbound_bytes_per_gb_traffic
+
+# ---------------------------------------------------------------------------
+# Noise rule.
+#
+# A regression counts as real when it exceeds the percentage threshold AND,
+# once enough accepted runs of history exist for that metric, also exceeds
+# `sigma_multiplier` times the metric's observed run-to-run standard deviation.
+# Tripping one criterion but not the other is GRAY: RM judgment, recorded either
+# way.
+#
+# History runs are supplied to the command explicitly (`--history`); which runs
+# count as "accepted" is a judgment call that lives with the operator and the
+# skill, not with the tool. With fewer than `min_history_runs`, the percentage
+# threshold stands alone and the report says so.
+noise_rule:
+  min_history_runs: 5
+  sigma_multiplier: 2.0
+
+# ---------------------------------------------------------------------------
+# Window comparability guard.
+#
+# `disk_bytes_per_gb_stored` in particular needs a window long enough for
+# replication to settle: replication continues after an upload completes, so a
+# short window truncates the numerator's growth while still counting the full
+# denominator. Measured on DEV-03, 7.75 GB/GB over a full run against 3.85 GB/GB
+# over a 10-minute slice of the same run -- a 2x swing from window length alone.
+#
+# Comparing windows of materially different length therefore measures the
+# windows, not the release. Above this ratio the comparison refuses to run.
+max_window_length_ratio: 1.25
+
+# ---------------------------------------------------------------------------
+# Activity coverage warning.
+#
+# `max_window_length_ratio` compares the LENGTH of the two windows. It does not
+# catch a window of the right length that is mostly idle -- and that is the
+# failure mode that actually bites, because the per-GB numerators (storage
+# growth, outbound bytes) keep accumulating through idle time while the
+# denominator only accumulates while clients are transferring.
+#
+# Measured across four recorded runs, disk GB/GB against the fraction of the
+# window in which client operations were running:
+#
+#   run 471: 39.2% coverage -> 14.86 GB/GB
+#   run 472: 52.2% coverage -> 10.08 GB/GB
+#   run 470: 54.6% coverage ->  9.34 GB/GB
+#   run 474: 61.0% coverage ->  9.12 GB/GB
+#
+# Run 471's recorded window is ~10h around a ~4h measurement (a mid-run machine
+# crash), and its disk ratio is inflated by ~55% as a result -- entirely an
+# artifact of the window, not of the release.
+#
+# This is a WARNING, not a refusal. Four runs is too little history to justify
+# blocking a release on it, and the coverage figures are printed in the report
+# either way so the reader can judge.
+max_activity_coverage_ratio: 1.3

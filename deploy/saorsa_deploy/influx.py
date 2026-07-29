@@ -526,13 +526,47 @@ def _to_float(value) -> float | None:
         return None
 
 
+def _percentile(ordered: list[float], fraction: float) -> float:
+    """Linear-interpolated percentile over an ALREADY SORTED list.
+
+    Implemented rather than taken from numpy so the stored numbers cannot move
+    under us when a dependency changes its default method: these values feed a
+    release gate that is required to be reproducible.
+    """
+    if len(ordered) == 1:
+        return float(ordered[0])
+    position = fraction * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return float(ordered[lower] * (1 - weight) + ordered[upper] * weight)
+
+
 def _stats(samples: list[float]) -> dict:
+    """Summary statistics for one series.
+
+    ``p50``/``p95`` are captured because the release process's soft gates name
+    node CPU *median* and node RSS *p50*, and avg/min/max cannot yield either.
+    Computed here, at the point the raw samples are still in hand -- once a run's
+    InfluxDB is destroyed with its monitoring stack there is no second chance,
+    and no past run can be backfilled.
+    """
     if not samples:
-        return {"avg": None, "min": None, "max": None, "samples": 0}
+        return {
+            "avg": None,
+            "min": None,
+            "max": None,
+            "p50": None,
+            "p95": None,
+            "samples": 0,
+        }
+    ordered = sorted(samples)
     return {
         "avg": sum(samples) / len(samples),
-        "min": min(samples),
-        "max": max(samples),
+        "min": ordered[0],
+        "max": ordered[-1],
+        "p50": _percentile(ordered, 0.50),
+        "p95": _percentile(ordered, 0.95),
         "samples": len(samples),
     }
 
@@ -995,6 +1029,12 @@ def bucket_host_metric_samples(
                 "avg": stats["avg"],
                 "min": stats["min"],
                 "max": stats["max"],
+                # Per-bucket percentiles. Exact within a bucket; a percentile
+                # over a multi-bucket window can only ever be estimated from
+                # them, which is why the window path labels its result as
+                # approximate rather than passing it off as a true p50.
+                "p50": stats["p50"],
+                "p95": stats["p95"],
                 "samples": stats["samples"],
             }
         )

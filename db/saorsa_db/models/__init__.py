@@ -16,6 +16,13 @@ from saorsa_db.models.derived_metric import (
     DeploymentDerivedMetric,
 )
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
+from saorsa_db.models.gate_verdict import (
+    OVERALL_GRAY,
+    OVERALL_HARD_FAIL,
+    OVERALL_PASS,
+    OVERALL_SOFT_FAIL,
+    DeploymentGateVerdict,
+)
 from saorsa_db.models.host_metric_bucket import (
     DISK_METRICS,
     METRIC_BYTES_IN_PER_SEC,
@@ -82,8 +89,13 @@ __all__ = [
     "DeploymentStatus",
     "DeploymentDownloadRecord",
     "DeploymentFileResult",
+    "DeploymentGateVerdict",
     "DeploymentHostMetricBucket",
     "DeploymentHostResult",
+    "OVERALL_GRAY",
+    "OVERALL_HARD_FAIL",
+    "OVERALL_PASS",
+    "OVERALL_SOFT_FAIL",
     "DISK_METRICS",
     "METRIC_BYTES_IN_PER_SEC",
     "METRIC_BYTES_OUT_PER_SEC",

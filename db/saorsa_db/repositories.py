@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, insert, select
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
 from saorsa_db.models.derived_metric import DeploymentDerivedMetric
+from saorsa_db.models.gate_verdict import DeploymentGateVerdict
 from saorsa_db.models.host_metric_bucket import (
     DISK_METRICS,
     METRIC_DISK_USED_BYTES,
@@ -299,6 +300,31 @@ class DeploymentRepository(ABC):
     def delete_derived_metrics(
         self, deployment_id: int, window_label: str | None = None
     ) -> int:
+        ...
+
+    @abstractmethod
+    def upsert_gate_verdict(
+        self,
+        deployment_id: int,
+        baseline_deployment_id: int,
+        window_label: str,
+        overall: str,
+        threshold_config_version: int,
+        verdict: dict,
+        report_markdown: str | None = None,
+    ) -> DeploymentGateVerdict:
+        ...
+
+    @abstractmethod
+    def list_gate_verdicts_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentGateVerdict]:
+        ...
+
+    @abstractmethod
+    def get_gate_verdict(
+        self, deployment_id: int, baseline_deployment_id: int, window_label: str
+    ) -> DeploymentGateVerdict | None:
         ...
 
     @abstractmethod
@@ -883,6 +909,8 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                     "avg": b.get("avg"),
                     "min": b.get("min"),
                     "max": b.get("max"),
+                    "p50": b.get("p50"),
+                    "p95": b.get("p95"),
                     "samples": b.get("samples") or 0,
                     "recorded_at": now,
                 }
@@ -953,6 +981,14 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             (weighted_sum / func.nullif(total_samples, 0)).label("avg"),
             func.min(DeploymentHostMetricBucket.min).label("min"),
             func.max(DeploymentHostMetricBucket.max).label("max"),
+            # An ESTIMATE, not the window's true percentile -- percentiles do
+            # not compose across buckets the way avg/min/max do. The mean of the
+            # per-bucket medians converges on the window median for a stationary
+            # series and is bounded by the bucket width otherwise. Flagged as
+            # approximate in the returned stats so a consumer cannot mistake it
+            # for the exact whole-run figure the rollup carries.
+            func.avg(DeploymentHostMetricBucket.p50).label("p50"),
+            func.avg(DeploymentHostMetricBucket.p95).label("p95"),
             total_samples.label("samples"),
             func.min(DeploymentHostMetricBucket.bucket_start).label("first_bucket"),
             func.max(DeploymentHostMetricBucket.bucket_start).label("last_bucket"),
@@ -991,6 +1027,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 "avg": float(row.avg) if row.avg is not None else None,
                 "min": float(row.min) if row.min is not None else None,
                 "max": float(row.max) if row.max is not None else None,
+                "p50": float(row.p50) if row.p50 is not None else None,
+                "p95": float(row.p95) if row.p95 is not None else None,
+                # Always true on this path: a window's percentile is estimated
+                # from per-bucket percentiles. The rollup's percentiles, computed
+                # from every raw sample, carry no such flag.
+                "percentile_approx": True,
                 "samples": int(row.samples or 0),
             }
             if row.metric in DISK_METRICS:
@@ -1288,6 +1330,76 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         result = self.session.execute(statement)
         self.session.commit()
         return result.rowcount or 0
+
+    def upsert_gate_verdict(
+        self,
+        deployment_id: int,
+        baseline_deployment_id: int,
+        window_label: str,
+        overall: str,
+        threshold_config_version: int,
+        verdict: dict,
+        report_markdown: str | None = None,
+    ) -> DeploymentGateVerdict:
+        """Insert or update the one verdict for this (run, baseline, window).
+
+        Re-running a comparison replaces its previous answer rather than adding
+        a second one. The comparison is a deterministic function of stored data
+        and a threshold config, so two rows for the same key could only ever
+        differ because the inputs changed -- and leaving both would make "the
+        verdict for this run" ambiguous at exactly the moment it matters.
+        """
+        existing = self.session.execute(
+            select(DeploymentGateVerdict)
+            .where(DeploymentGateVerdict.deployment_id == deployment_id)
+            .where(
+                DeploymentGateVerdict.baseline_deployment_id
+                == baseline_deployment_id
+            )
+            .where(DeploymentGateVerdict.window_label == window_label)
+        ).scalar_one_or_none()
+
+        if existing is None:
+            existing = DeploymentGateVerdict(
+                deployment_id=deployment_id,
+                baseline_deployment_id=baseline_deployment_id,
+                window_label=window_label,
+            )
+            self.session.add(existing)
+
+        existing.overall = overall
+        existing.threshold_config_version = threshold_config_version
+        existing.verdict = verdict
+        existing.report_markdown = report_markdown
+        self.session.commit()
+        self.session.refresh(existing)
+        return existing
+
+    def list_gate_verdicts_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentGateVerdict]:
+        query = (
+            select(DeploymentGateVerdict)
+            .where(DeploymentGateVerdict.deployment_id == deployment_id)
+            .order_by(
+                DeploymentGateVerdict.window_label,
+                DeploymentGateVerdict.baseline_deployment_id,
+            )
+        )
+        return list(self.session.execute(query).scalars().all())
+
+    def get_gate_verdict(
+        self, deployment_id: int, baseline_deployment_id: int, window_label: str
+    ) -> DeploymentGateVerdict | None:
+        return self.session.execute(
+            select(DeploymentGateVerdict)
+            .where(DeploymentGateVerdict.deployment_id == deployment_id)
+            .where(
+                DeploymentGateVerdict.baseline_deployment_id
+                == baseline_deployment_id
+            )
+            .where(DeploymentGateVerdict.window_label == window_label)
+        ).scalar_one_or_none()
 
     def upsert_prod_upload_result(
         self,

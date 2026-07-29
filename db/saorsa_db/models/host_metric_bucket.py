@@ -119,6 +119,22 @@ class DeploymentHostMetricBucket(Base):
     avg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Percentiles WITHIN this bucket, where they are exact.
+    #
+    # The release gates name node CPU *median* and node RSS *p50*, which
+    # avg/min/max cannot yield at any bucket width. Captured here because once a
+    # run's InfluxDB dies with its monitoring stack the raw samples are gone --
+    # nullable precisely because no past run can be backfilled.
+    #
+    # Unlike avg/min/max these do NOT compose across buckets: `MIN(min)` and
+    # `MAX(max)` are exact for a window and a sample-weighted `avg` is exact,
+    # but there is no way to recover a window's true median from per-bucket
+    # medians. Consumers windowing across buckets must treat the result as an
+    # estimate and label it as such.
+    p50: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    p95: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
     samples: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     recorded_at: Mapped[datetime] = mapped_column(
@@ -140,6 +156,8 @@ class DeploymentHostMetricBucket(Base):
             "avg": self.avg,
             "min": self.min,
             "max": self.max,
+            "p50": self.p50,
+            "p95": self.p95,
             "samples": self.samples,
             "recorded_at": self.recorded_at.isoformat(),
         }

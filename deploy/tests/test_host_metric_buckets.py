@@ -299,6 +299,10 @@ def test_aggregate_reports_rss_per_service_without_pooling():
         "avg": 2_000.0,
         "min": 1_000.0,
         "max": 3_000.0,
+        # Exact whole-run percentiles, captured because the release gates name
+        # node RSS p50 and avg/min/max cannot yield it.
+        "p50": 2_000.0,
+        "p95": 2_900.0,
         "samples": 2,
     }
     assert entry["rss_by_service"]["ant-node-2"]["avg"] == 500.0
@@ -808,3 +812,54 @@ def test_summarize_reports_only_what_a_prune_would_remove(repo):
     assert len(rows) == 1
     assert rows[0]["name"] == "DEV-TEST"
     assert rows[0]["rows"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Percentile capture (V2-721)
+#
+# The release gates name node CPU *median* and node RSS *p50*, which
+# avg/min/max cannot yield at any bucket width. Captured at extraction time
+# because once a run's InfluxDB dies with its monitoring stack there is
+# nothing left to recompute from, and no past run can be backfilled.
+# ---------------------------------------------------------------------------
+
+
+def test_bucket_rows_carry_percentiles():
+    from saorsa_deploy.influx import (
+        bucket_host_metric_samples,
+        normalise_host_metric_points,
+    )
+
+    points = {
+        "cpu": [
+            _cpu_point("h1", f"2026-07-01T00:00:{s:02d}", float(v))
+            for s, v in zip(range(0, 50, 10), [10, 20, 30, 40, 50])
+        ]
+    }
+    rows = bucket_host_metric_samples(
+        normalise_host_metric_points(points), bucket_secs=300
+    )
+    # `_cpu_point` takes idle, and cpu_percent is 100 - idle, so the series is
+    # 90, 80, 70, 60, 50.
+    row = next(r for r in rows if r["metric"] == "cpu_percent")
+    assert row["p50"] == 70.0
+    assert row["p95"] == pytest.approx(88.0)
+    # avg/min/max unchanged -- percentiles are additive to what was stored.
+    assert row["avg"] == 70.0
+    assert row["min"] == 50.0
+    assert row["max"] == 90.0
+
+
+def test_percentile_of_a_single_sample_is_that_sample():
+    from saorsa_deploy.influx import _stats
+
+    assert _stats([42.0])["p50"] == 42.0
+    assert _stats([42.0])["p95"] == 42.0
+
+
+def test_percentiles_of_an_empty_series_are_none_not_zero():
+    from saorsa_deploy.influx import _stats
+
+    stats = _stats([])
+    assert stats["p50"] is None
+    assert stats["p95"] is None

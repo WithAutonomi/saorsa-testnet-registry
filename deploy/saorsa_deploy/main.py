@@ -1352,6 +1352,104 @@ def main(argv=None):
         ),
     )
 
+    # deployments compare
+    deployments_compare_parser = deployments_subparsers.add_parser(
+        "compare",
+        help=(
+            "Deterministically compare a run against a baseline run on their "
+            "recorded metrics, apply the versioned gate thresholds, and emit a "
+            "per-gate PASS/FAIL/GRAY verdict as JSON plus a fixed-format "
+            "markdown report. Evaluates only what the registry stores: the two "
+            "success floors and the eight soft gates. Data integrity, crashes, "
+            "mixed-version chunk storage and the production canaries are "
+            "observational and are NOT covered -- the report names them so "
+            "their absence never reads as a pass."
+        ),
+    )
+    deployments_compare_parser.add_argument(
+        "--id",
+        type=int,
+        required=True,
+        help=(
+            "Deployment id of the candidate run. An id, not a name: staging "
+            "names are reused every train and a name lookup would silently "
+            "resolve to whichever run was most recent."
+        ),
+    )
+    deployments_compare_parser.add_argument(
+        "--baseline-id",
+        dest="baseline_id",
+        type=int,
+        required=True,
+        help=(
+            "Deployment id of the baseline run -- by the process, the staging "
+            "run the last shipped release passed on."
+        ),
+    )
+    deployments_compare_parser.add_argument(
+        "--window-label",
+        dest="window_label",
+        type=str,
+        default="full-run",
+        help=(
+            "Which stored window to compare on both sides (default: full-run). "
+            "Use the label given to `deployments derive-metrics --label` to "
+            "compare a steady-state slice. Both runs must carry the same label "
+            "and the same derived-metric source."
+        ),
+    )
+    deployments_compare_parser.add_argument(
+        "--thresholds",
+        type=str,
+        default=None,
+        help=(
+            "Path to a threshold config YAML. Defaults to the versioned one "
+            "shipped with the package (resources/gates/staging-thresholds.yaml)."
+        ),
+    )
+    deployments_compare_parser.add_argument(
+        "--history",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated deployment ids of prior ACCEPTED runs, used for "
+            "the 2-sigma noise criterion. Which runs count as accepted is a "
+            "judgment call and is yours to make; only the arithmetic lives in "
+            "this command. Below the configured minimum the percentage "
+            "threshold stands alone and the report says so."
+        ),
+    )
+    deployments_compare_parser.add_argument(
+        "--json-out",
+        dest="json_out",
+        type=str,
+        default=None,
+        help="Write the machine-readable verdict to this path.",
+    )
+    deployments_compare_parser.add_argument(
+        "--markdown-out",
+        dest="markdown_out",
+        type=str,
+        default=None,
+        help="Write the fixed-format markdown report to this path.",
+    )
+    deployments_compare_parser.add_argument(
+        "--print-markdown",
+        dest="print_markdown",
+        action="store_true",
+        help="Print the markdown report to stdout as well as the summary table.",
+    )
+    deployments_compare_parser.add_argument(
+        "--no-persist",
+        dest="no_persist",
+        action="store_true",
+        help=(
+            "Do not store the verdict in the registry. By default it is upserted "
+            "against (candidate, baseline, window) so a re-run replaces its "
+            "previous answer rather than leaving two."
+        ),
+    )
+
     # deployments prune-host-buckets
     deployments_prune_buckets_parser = deployments_subparsers.add_parser(
         "prune-host-buckets",
@@ -5005,6 +5103,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.derive_metrics import cmd_derive_metrics
 
             cmd_derive_metrics(args)
+        elif args.deployments_subcommand == "compare":
+            from saorsa_deploy.cmd.compare_runs import cmd_compare_runs
+
+            cmd_compare_runs(args)
         elif args.deployments_subcommand == "prune-host-buckets":
             from saorsa_deploy.cmd.prune_host_buckets import cmd_prune_host_buckets
 
