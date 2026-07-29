@@ -274,11 +274,6 @@ def cmd_compare_runs(args) -> None:
         f"{counts[FAIL]} fail, {counts[GRAY]} gray, {counts[NOT_ASSESSED]} not "
         f"assessed (threshold config v{config.version})."
     )
-    console.print(
-        "[dim]Not evaluated by this tool: data integrity, crashes, "
-        "mixed-version chunk storage, canaries. Their absence is not a pass.[/dim]"
-    )
-
     if args.json_out:
         with open(args.json_out, "w") as f:
             json.dump(verdict, f, indent=2, sort_keys=True)
