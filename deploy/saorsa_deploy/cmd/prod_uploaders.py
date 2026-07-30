@@ -35,6 +35,10 @@ from saorsa_deploy.prod_bootstraps import (
     fetch_prod_bootstraps,
 )
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
+from saorsa_deploy.provisioning.network_profile import (
+    NetworkProfileError,
+    resolve_network,
+)
 from saorsa_deploy.provisioning.prod_uploader import (
     SERVICE_NAME,
     ProdUploaderProvisioner,
@@ -59,6 +63,7 @@ _KNOWN_SPEC_KEYS = (
     "payment",
     "log_level",
     "clock_skew",
+    "network",
     "bootstrap_cache",
     "forward_logs",
     "memory_profiling",
@@ -112,6 +117,17 @@ def _parse_log_level_token(spec: str, value: str) -> str:
         )
     return value
 
+
+def _parse_network_token(spec: str, value: str) -> str:
+    """Validate a ``network=`` uploader-spec token.
+
+    Fails fast so an unknown profile surfaces before any VM is created.
+    """
+    try:
+        resolve_network(value)
+    except NetworkProfileError as e:
+        raise ValueError(f"Invalid spec '{spec}': {e}")
+    return value
 
 def _parse_clock_skew_token(spec: str, value: str) -> int:
     """Validate a ``clock_skew=`` uploader-spec token into signed seconds.
@@ -207,6 +223,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         if "log_level" in options
         else None
     )
+    network = _parse_network_token(spec, options["network"]) if "network" in options else None
     clock_skew = (
         _parse_clock_skew_token(spec, options["clock_skew"])
         if "clock_skew" in options
@@ -236,6 +253,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "payment_type": payment_type,
         "log_level": log_level,
         "clock_skew": clock_skew,
+        "network": network,
         "bootstrap_cache": bootstrap_cache,
         "forward_logs": forward_logs,
         "memory_profiling": memory_profiling,
@@ -556,6 +574,7 @@ def _provision_uploaders(
             "payment_type": spec.get("payment_type"),
             "log_level": spec.get("log_level"),
             "clock_skew": spec.get("clock_skew", False),
+            "network": resolve_network(spec.get("network")),
             "bootstrap_cache": spec.get("bootstrap_cache", True),
             "forward_logs": spec.get("forward_logs"),
             "memory_profiling": spec.get("memory_profiling"),

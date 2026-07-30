@@ -571,6 +571,59 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
 See `deploy/README.md` §"Running crash-debug nodes against production" for the
 full argument table.
 
+### Simulating residential connections on client VMs (`network`)
+
+Client VMs sit on ~gigabit cloud links, which is not how real users reach the
+network — and upstream rate, which dominates uploads, is where a home line differs
+most. Any client VM can be shaped with `tc` to behave like a residential
+connection via a **`network:`** key taking either a built-in profile name or an
+inline mapping. Supported on `prod uploaders` (per-entry), `prod downloaders` /
+`prod continuous-downloader` (spec-level, CLI `--network`) — **the primary use
+case** — and on testnet/extension `clients.uploaders[]`/`downloaders[]`
+(secondary; CLI spec token `network=NAME`). NOT wired to `prod canary` or the
+`local-*` kinds. Omitting it leaves a deployment byte-identical to before.
+
+Profiles live in `deploy/saorsa_deploy/resources/network/profiles.yaml`,
+git-versioned with a `version:` echoed into every recorded run: `home-adsl`
+(10/1 Mbit), **`home-calibrated`** (27.4/6.29 Mbit, 12.7 ms — the only *measured*
+one, a real TalkTalk line as of 2026-07-30), `home-fttc` (60/18), `home-fttp`
+(300/50), `mobile-4g` (30/8, 60 ms, 20 ms jitter, 0.5% loss). Its loss is 0
+because 0/300 packets were lost — *below that sample's resolution*, not a proven
+lossless line. Impl: `provisioning/network_profile.py` (pure functions, mirroring
+the `clock_skew` seam), injected by `provisioning/{client,prod_uploader,
+prod_downloader}.py`.
+
+Four invariants, all load-bearing:
+- **Monitoring and SSH are exempt** (TCP 22/8086/9200 into an unshaped `htb`
+  class). Otherwise the VM's own Telegraf metrics and forwarded client logs
+  compete with the transfer for the capped uplink — the measured transfer comes
+  out slower than a real user's (no user ships their own logs) and the run's
+  results can arrive incomplete, degrading the instrument taking the measurement.
+  Keyed on **port, not address**, because the ES VM is created *after* the client
+  VMs are provisioned, so its address does not exist when shaping is applied.
+- **Delay is applied once, loss per direction.** RTT is a round-trip property, so
+  `delay`/`jitter` go on egress only (both paths would double it); loss goes on
+  both, since inbound loss is what makes a *download* behave like a home download.
+- **Queue depth is not a knob but is always a choice.** A rate cap implies a
+  queue; left to chance it gives either tail-drop collapse (throughput far below
+  the cap) or bufferbloat (standing delay that swamps `delay`). An explicit AQM is
+  pinned — `cake`, falling back to `fq_codel`. Relatedly every htb class sets an
+  explicit `quantum`: shaped and unshaped classes are four orders of magnitude
+  apart, so no single `r2q` avoids htb's "quantum too big/small" warnings.
+- **Ingress needs an `ifb` mirror** — `tc` shapes egress only, so without it the
+  downstream cap would not apply to downloads at all.
+
+Applied by a systemd oneshot (`ant-network-impairment.service`) so shaping
+survives reboot; the script is **convergent** (re-provisioning replaces rules
+rather than stacking — two `netem delay 30ms` would be 60 ms). The profile *name*
+is recorded on the four `deployment_*_records`/`_results` tables
+(`network_profile`, NULL = unshaped = every pre-feature row); the full resolved
+knob set lives once in `deploy_args`. Client egress is ~4x payload (fan-out), so
+at `home-adsl`'s 1 Mbit up a 100 MB upload takes ~67 min and 1 GB ~11 hours — size
+runs accordingly. **Never enable on a staging gate run**: `deployments compare`
+gates on transfer p50/p95 and shaped percentiles are not comparable to an unshaped
+baseline. See `deploy/README.md` §"Simulating a residential connection".
+
 ### Cloud provider: Contabo (nodes + monitoring/logging)
 
 **Contabo** is supported as a node provider (alongside DigitalOcean/Hetzner/

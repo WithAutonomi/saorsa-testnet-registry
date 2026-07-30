@@ -42,6 +42,10 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
 )
+from saorsa_deploy.provisioning.network_profile import (
+    build_network_impairment_command,
+    format_network_label,
+)
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -158,6 +162,7 @@ class ProdUploaderProvisioner:
             )
 
             self._add_clock_skew_ops(state)
+            self._add_network_impairment_ops(state)
 
             heaptrack_dirs = f" {HEAPTRACK_DIR}" if self._any_memory_profiling() else ""
             add_op(
@@ -202,6 +207,37 @@ class ProdUploaderProvisioner:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
             raise RuntimeError(
                 f"{len(failed)} host(s) failed prod-uploader provisioning"
+            )
+
+    def _add_network_impairment_ops(self, state: State) -> None:
+        """Shape any uploader whose spec sets a `network` profile.
+
+        This is the primary use case for the feature: a cloud VM's ~gigabit uplink
+        is nothing like the connection a real user uploads from, and upstream rate
+        is what dominates an upload. One op per host — each VM carries its own
+        profile, so a run can compare a shaped uploader against an unshaped control.
+        """
+        by_ip = {
+            u["ip"]: u["network"]
+            for u in self.uploaders
+            if u.get("ip") and u.get("network")
+        }
+        if not by_ip:
+            return
+        for host in state.inventory.get_active_hosts():
+            profile = by_ip.get(host.name)
+            if not profile:
+                continue
+            self.console.print(
+                f"[cyan]Network impairment on {host.name}: "
+                f"{format_network_label(profile)}[/cyan]"
+            )
+            add_op(
+                state,
+                server.shell,
+                name=f"Apply network impairment ({profile.name})",
+                commands=[build_network_impairment_command(profile)],
+                host=[host],
             )
 
     def _add_clock_skew_ops(self, state: State) -> None:

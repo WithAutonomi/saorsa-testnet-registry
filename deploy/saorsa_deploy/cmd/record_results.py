@@ -33,7 +33,7 @@ from saorsa_deploy.slack_results import (
     file_ops_result_blocks,
     prod_upload_result_blocks,
 )
-from saorsa_deploy.state import load_monitoring_state
+from saorsa_deploy.state import load_client_state, load_monitoring_state
 
 _TESTNET_KIND = "testnet"
 
@@ -296,6 +296,77 @@ def _record_file_ops(
     return file_ops_result_blocks(aggregates, op_records=op_records)
 
 
+def _build_network_profile_lookup(deployment):
+    """Return host -> network profile name for a deployment, or a constant None.
+
+    The shaping applied to a client VM is recorded in ``deploy_args`` at deploy
+    time (that is the authoritative record, holding the full knob set); this
+    denormalises just the *name* onto each op row so a run's transfers can be
+    filtered and compared without joining through JSON.
+
+    Two shapes are handled: a single ``network`` entry (the single-VM download
+    kinds) applies to every host, while ``network_by_host`` maps each client VM
+    to its own profile for the multi-VM kinds where a shaped uploader may run
+    alongside an unshaped control. Anything unrecognised yields None, i.e. the
+    row simply records no profile — never a wrong one.
+    """
+    deploy_args = getattr(deployment, "deploy_args", None) or {}
+
+    by_host = deploy_args.get("network_by_host")
+    if isinstance(by_host, dict) and by_host:
+        return lambda host: (by_host.get(host) or {}).get("name") if isinstance(
+            by_host.get(host), dict
+        ) else by_host.get(host)
+
+    single = deploy_args.get("network")
+    if isinstance(single, dict):
+        name = single.get("name")
+        return lambda host: name
+    if isinstance(single, str) and single:
+        return lambda host: single
+
+    # Multi-VM kinds (prod uploaders, testnet clients) keep their per-VM spec in
+    # the deployment's client state rather than deploy_args, so a shaped uploader
+    # and an unshaped control in the same run stay distinguishable. Hostname is
+    # derived exactly as `_build_payment_map` in print_file_ops does, from the
+    # client terraform module's naming.
+    by_host = _network_map_from_client_state(getattr(deployment, "name", "") or "")
+    if by_host:
+        return lambda host: by_host.get(host)
+
+    return lambda host: None
+
+
+def _network_map_from_client_state(name: str) -> dict[str, str]:
+    """Map hostname -> network profile name from the deployment's client state.
+
+    Missing or unreadable state yields an empty map, so recording degrades to "no
+    profile recorded" rather than failing — the results themselves matter far more
+    than this annotation.
+    """
+    if not name:
+        return {}
+    try:
+        state = load_client_state(name)
+    except (RuntimeError, FileNotFoundError):
+        return {}
+    out: dict[str, str] = {}
+    for c in state.get("clients", []):
+        network = c.get("network")
+        if not network:
+            continue
+        label = network.get("name") if isinstance(network, dict) else str(network)
+        if not label or "=" in label:
+            # An inline (ad-hoc) set has no name worth denormalising; the full
+            # definition stays in deploy_args.
+            label = "inline"
+        out[
+            f"{name}-ant-client-{c.get('role', 'upload')}-"
+            f"{c.get('region')}-{c.get('client_index')}"
+        ] = label
+    return out
+
+
 def _record_file_op_records(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
@@ -307,6 +378,7 @@ def _record_file_op_records(
     ``--window`` is ignored so re-runs naturally backfill the full history.
     Idempotent via the ``(deployment_id, host, start_ns)`` upsert key.
     """
+    network_profile_for_host = _build_network_profile_lookup(deployment)
     console.print(
         "[bold]Fetching per-operation records (full range)...[/bold]"
     )
@@ -361,6 +433,7 @@ def _record_file_op_records(
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
+            network_profile=network_profile_for_host(p["host"]),
         )
         if measurement == "upload":
             repo.upsert_upload_record(**kwargs)

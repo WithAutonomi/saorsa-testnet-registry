@@ -6,6 +6,10 @@ from saorsa_deploy.binary_descriptor import build_binary_descriptor
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
+from saorsa_deploy.provisioning.network_profile import (
+    NetworkProfileError,
+    resolve_network,
+)
 from saorsa_deploy.registry import record_deploy_args_update
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import (
@@ -498,6 +502,17 @@ def cmd_provision_clients(args):
         es_url, es_username, es_password = _resolve_elastic_config(
             clients, args.name, console
         )
+
+    # The client state stores `network` as its unresolved token (a profile name or
+    # an inline set), exactly as clock_skew stores its duration string. Resolve it
+    # once here so the provisioner gets a NetworkProfile and an unknown profile
+    # fails before any SSH session is opened.
+    try:
+        for c in clients:
+            c["network"] = resolve_network(c.get("network"))
+    except NetworkProfileError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
 
     host_ips = [c["ip"] for c in clients if c.get("ip")]
     console.print(f"  Bootstrap peers: {', '.join(bootstrap_peers)}")

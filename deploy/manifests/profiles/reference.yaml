@@ -77,13 +77,28 @@ testnet:
     # never mingled with node logs) — it REQUIRES elastic.enabled below. rust_log
     # (per-client) sets RUST_LOG on the client service, OVERRIDING the -v verbosity
     # flag; in a CLI spec it must come last (its value can contain ':').
-    uploaders:               # one --uploader per entry: provider:region:file_size_mb[:vm_size][:payment][:ant][:eth][:clock_skew][:bootstrap_cache][:forward_logs][:rust_log]
+    # network (per-client) simulates a residential connection on that VM with tc:
+    # asymmetric rate caps, added RTT/jitter and packet loss. Built-in profiles:
+    # home-adsl, home-calibrated (measured from a real line), home-fttc, home-fttp,
+    # mobile-4g — or an inline mapping (see the uploader below) for an ad-hoc set.
+    # Traffic to InfluxDB/Elasticsearch/SSH is exempt, so instrumentation never
+    # competes with the transfer for the capped bandwidth. Omit for an unshaped
+    # cloud link (the default; a manifest without it is unchanged).
+    # NB shaped clients make a run's transfer percentiles incomparable to an
+    # unshaped baseline — do NOT enable on a staging gate run. The primary use case
+    # is the prod upload/download kinds, not testnets.
+    uploaders:               # one --uploader per entry: provider:region:file_size_mb[:vm_size][:payment][:ant][:eth][:clock_skew][:bootstrap_cache][:forward_logs][:network][:rust_log]
       - { provider: vultr,         region: syd,  file_size_mb: 1000, vm_size: vc2-2c-4gb, payment: merkle,    ant: 1000, eth: 0.1, clock_skew: 2h }  # disable timesync + shift this VM's clock by a signed Go-style duration (e.g. 2h, -2h, 30m)
       - { provider: ovh,           region: UK1,  file_size_mb: 500,  vm_size: b3-8,       payment: no-merkle, ant: 500,  eth: 0.1, bootstrap_cache: false, forward_logs: true, rust_log: "ant_cli=info,saorsa_core::dht_network_manager=debug" }  # forward this uploader's ant logs to ES (needs elastic.enabled) and run it at a custom RUST_LOG
-      - { provider: digital_ocean, region: nyc1, file_size_mb: 100,  vm_size: s-2vcpu-4gb }   # payment/ant/eth/bootstrap_cache/forward_logs/rust_log omitted => CLI defaults
-    downloaders:             # one --downloader per entry: provider:region[:vm_size][:clock_skew][:bootstrap_cache][:forward_logs][:rust_log]
+      - { provider: digital_ocean, region: nyc1, file_size_mb: 100,  vm_size: s-2vcpu-4gb, network: home-calibrated }  # shaped: 27.4/6.29 Mbit, +12.7ms RTT — a real measured home line
+      - provider: digital_ocean          # an INLINE set instead of a named profile (manifest-only; the CLI token takes a bare name)
+        region: sfo3
+        file_size_mb: 100
+        network: { rate_down: 30mbit, rate_up: 5mbit, delay: 25ms, jitter: 5ms, loss: 0.2 }
+    downloaders:             # one --downloader per entry: provider:region[:vm_size][:clock_skew][:bootstrap_cache][:forward_logs][:network][:rust_log]
       - { provider: digital_ocean, region: tor1, vm_size: s-2vcpu-4gb, forward_logs: true }   # forward this downloader's ant logs to ES (needs elastic.enabled)
       - { provider: digital_ocean, region: lon1, clock_skew: -2h, bootstrap_cache: false }   # clock_skew applies to downloaders too (negative = clock runs slow); bootstrap_cache likewise per-downloader
+      - { provider: digital_ocean, region: ams3, network: home-adsl }   # the downstream cap is what matters for a downloader
 
   elastic:                   # optional log-forwarding stack. Remove the block (or set enabled: false) to skip.
     enabled: true

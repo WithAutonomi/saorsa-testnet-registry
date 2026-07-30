@@ -25,6 +25,7 @@ from saorsa_deploy.orchestrator.steps import (
     build_steps_for_branches,
     node_binary_flags,
 )
+from saorsa_deploy.provisioning.network_profile import format_network_token
 
 
 def _prod_uploader_spec(u) -> str:
@@ -41,6 +42,8 @@ def _prod_uploader_spec(u) -> str:
         spec += f":forward_logs={str(u.forward_logs).lower()}"
     if u.memory_profiling is not None:
         spec += f":memory_profiling={str(u.memory_profiling).lower()}"
+    if u.network is not None:
+        spec += f":network={format_network_token(u.network)}"
     # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
     if u.rust_log is not None:
         spec += f":rust_log={u.rust_log}"
@@ -123,6 +126,8 @@ def _downloaders(manifest: Manifest) -> list[Step]:
         argv += ["--addresses-path", spec.addresses_path]
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
+    if spec.network is not None:
+        argv += ["--network", format_network_token(spec.network)]
     argv += _bootstrap_cache_flag(spec)
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)
@@ -168,6 +173,8 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
         argv += ["--log-retention-days", str(spec.log_retention_days)]
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
+    if spec.network is not None:
+        argv += ["--network", format_network_token(spec.network)]
     argv += _bootstrap_cache_flag(spec)
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)

@@ -61,6 +61,7 @@ class TestParseSpec:
             "forward_logs": None,
             "memory_profiling": None,
             "rust_log": None,
+            "network": None,
         }
 
     def test_missing_urls_rejected(self):

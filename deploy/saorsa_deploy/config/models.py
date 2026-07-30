@@ -11,11 +11,30 @@ for a real cloud deployment.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
+from saorsa_deploy.provisioning.network_profile import resolve_network
+
+
+def _validate_network(value: Union[str, dict]) -> Union[str, dict]:
+    """Validate a client ``network`` value — a profile name or an inline mapping.
+
+    Resolution runs here purely to fail fast: an unknown profile name or a
+    malformed inline definition is an error at ``config validate`` time rather than
+    half-way through a deploy that has already created infrastructure. The value is
+    stored unresolved and resolved again at provisioning time, exactly as
+    ``clock_skew`` stores its string form.
+    """
+    resolve_network(value)
+    return value
+
+
+# Either a built-in profile name ("home-fttc") or an inline mapping of the same
+# fields for an ad-hoc condition. Omitting it entirely means unshaped.
+Network = Annotated[Union[str, dict], AfterValidator(_validate_network)]
 
 
 def _validate_clock_skew(value: str) -> str:
@@ -211,6 +230,11 @@ class Uploader(_Base):
     ant: Optional[str] = None  # wallet funding (ANT tokens)
     eth: Optional[str] = None  # wallet funding (ETH)
     clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # Simulated residential link conditions on this VM: a built-in profile name
+    # ("home-fttc") or an inline mapping. Omit for an unshaped cloud connection.
+    # NB shaped clients make a run's transfer percentiles incomparable to an
+    # unshaped baseline — do not enable on a staging gate run.
+    network: Optional[Network] = None
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
@@ -227,6 +251,9 @@ class Downloader(_Base):
     region: str
     vm_size: Optional[str] = None
     clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # Simulated residential link conditions on this VM — see Uploader.network.
+    # The downstream cap is what matters for a downloader.
+    network: Optional[Network] = None
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
@@ -391,6 +418,10 @@ class ProdUploader(_Base):
     memory_profiling: Optional[bool] = None
     # RUST_LOG to set on this uploader's service; OVERRIDES the verbosity flag.
     rust_log: Optional[str] = None
+    # Simulated residential link conditions on this uploader VM: a built-in profile
+    # name ("home-calibrated") or an inline mapping. This is the primary use case —
+    # a cloud VM's ~gigabit uplink is not how real users upload.
+    network: Optional[Network] = None
 
 
 class ProdUploadersSpec(_Base):
@@ -430,6 +461,10 @@ class ProdDownloadersSpec(_Base):
     memory_profiling: Optional[bool] = None
     # RUST_LOG to set on the downloader service; OVERRIDES the verbosity flag.
     rust_log: Optional[str] = None
+    # Simulated residential link conditions on the client VM: a built-in profile
+    # name ("home-calibrated") or an inline mapping. Inherited by
+    # ProdContinuousDownloaderSpec below, so it covers both download kinds.
+    network: Optional[Network] = None
 
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):

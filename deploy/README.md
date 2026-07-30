@@ -1942,6 +1942,133 @@ Because `up` is resumable, a re-run after a mid-sequence failure skips the
 already-done ~10-minute debug build. See
 `manifests/profiles/prod-nodes.yaml`.
 
+### Simulating a residential connection (`network`)
+
+Client VMs sit on ~gigabit cloud links, which is not how real users reach the
+network — and upstream rate, the thing that dominates an upload, is where a home
+line differs most (a cloud VM uploads at roughly a gigabit; UK FTTC manages 18
+Mbit, ADSL 1 Mbit). Any client VM can therefore be shaped with `tc` to behave
+like a residential connection, selected by a named profile so runs are
+reproducible and comparable across trains.
+
+Supported on `prod uploaders`, `prod downloaders`, `prod continuous-downloader`
+(the primary use case) and on testnet/extension `clients.uploaders[]` /
+`clients.downloaders[]` (secondary). Not wired to `prod canary` or the `local-*`
+kinds. Omitting it leaves a deployment byte-identical to one built before the
+feature existed.
+
+#### Profiles
+
+Shipped in `saorsa_deploy/resources/network/profiles.yaml`, git-versioned with a
+`version:` that is echoed into every recorded run — bump it when a profile's
+numbers change, or two runs labelled `home-fttc` will mean different things.
+
+| Profile | Down | Up | Added RTT | Jitter | Loss |
+|---|---|---|---|---|---|
+| `home-adsl` | 10 Mbit | 1 Mbit | 30 ms | 5 ms | 0.2% |
+| `home-calibrated` | 27.4 Mbit | 6.29 Mbit | 12.7 ms | 0.2 ms | 0 |
+| `home-fttc` | 60 Mbit | 18 Mbit | 15 ms | 3 ms | 0.05% |
+| `home-fttp` | 300 Mbit | 50 Mbit | 8 ms | 2 ms | 0.01% |
+| `mobile-4g` | 30 Mbit | 8 Mbit | 60 ms | 20 ms | 0.5% |
+
+`home-calibrated` is the only measured profile (a real TalkTalk line, 2026-07-30);
+the rest are representative figures. Its loss is recorded as 0 because 0/300
+packets were lost — that is *below the resolution of that sample*, not proof of a
+lossless line.
+
+**Sizing the run.** Client egress is roughly 4x payload (chunk fan-out), so at
+`home-adsl`'s 1 Mbit up a 100 MB upload takes ~67 minutes and 1 GB takes ~11
+hours. `home-fttc` is the practical choice for most runs while still being ~50x
+slower than the VM's native link.
+
+#### Usage
+
+```yaml
+# testnet — per client VM, so one run can span several conditions plus a control
+clients:
+  uploaders:
+    - { provider: digital_ocean, region: nyc1, file_size_mb: 100, network: home-fttc }
+    - { provider: digital_ocean, region: sfo3, file_size_mb: 100 }   # unshaped control
+  downloaders:
+    - { provider: digital_ocean, region: tor1, network: home-adsl }
+
+# prod uploaders — per entry
+prod_uploaders:
+  uploaders:
+    - { region: lon1, vm_size: s-4vcpu-8gb, urls: lists/a.txt, network: home-calibrated }
+
+# prod downloaders / continuous-downloader — spec-level
+prod_continuous_downloader:
+  spec: fsn1:cpx41
+  network: home-fttc
+```
+
+An ad-hoc set can be given inline instead of a name (manifest only — the CLI
+token takes a bare name, since client specs are colon-delimited):
+
+```yaml
+    network: { rate_down: 30mbit, rate_up: 5mbit, delay: 25ms, jitter: 5ms, loss: 0.2 }
+```
+
+CLI equivalents:
+
+```
+--uploader digital_ocean:nyc1:100:s-2vcpu-4gb:network=home-fttc
+--downloader digital_ocean:tor1:network=home-adsl
+prod continuous-downloader deploy --network home-fttc ...
+prod downloaders deploy --network 'rate_down=30mbit,rate_up=5mbit,delay=25ms'
+```
+
+| Field | Meaning |
+|---|---|
+| `rate_down` / `rate_up` | tc rate tokens (`kbit`/`mbit`). Both required. Asymmetry is the point. |
+| `delay` | Added to **round-trip** time, counted once. Applied on egress only, so it is not doubled. This is added latency on top of the VM's own RTT to peers, not an absolute target. |
+| `jitter` | Variation around `delay`, normally distributed. |
+| `loss` | Percent, applied **per direction**. Inbound loss is what makes a download behave like a home download. |
+
+#### What is exempt, and why
+
+Traffic on TCP ports 22 (SSH), 8086 (InfluxDB) and 9200 (Elasticsearch) bypasses
+the shaper. Without that, a shaped VM's own Telegraf metrics and forwarded client
+logs would compete with the transfer for the capped bandwidth: the measured
+transfer would come out slower than a real user's (no real user ships their own
+logs), and the run's results could arrive incomplete — degrading the instrument
+being used to take the measurement. The exemption is keyed on port rather than
+address because the Elasticsearch VM is created *after* the client VMs are
+provisioned, so its address does not exist when shaping is applied.
+
+#### Implementation notes
+
+* An `htb` hierarchy with a shaped default class and an unshaped exempt class;
+  `netem` for delay/jitter/loss; `cake` (falling back to `fq_codel`) pinned as the
+  AQM at the leaf. Queue depth is deliberately not a user knob — a rate cap always
+  implies a queue, and leaving its depth to chance gives either tail-drop collapse
+  or bufferbloat that silently swamps the configured `delay`.
+* Ingress is shaped via an `ifb` mirror device, because `tc` shapes egress only.
+  Without it the downstream cap would not apply to downloads at all.
+* Applied by a systemd oneshot unit (`ant-network-impairment.service`), so the
+  shaping survives a reboot — `tc` state is otherwise kernel-only. The apply script
+  is convergent: re-provisioning replaces the rules rather than stacking them (two
+  `netem delay 30ms` rules would be 60 ms).
+* Verify on a live VM with `tc qdisc show` and by comparing idle RTT to RTT under
+  load; a profile configured for 15 ms that shows 900 ms loaded means the queue is
+  misbehaving.
+
+#### Recording
+
+The profile *name* is written to the `network_profile` column on
+`deployment_upload_records`, `deployment_download_records`,
+`deployment_prod_upload_results` and `deployment_prod_download_results`, so a run's
+transfers can be filtered and compared without joining through JSON. The full
+resolved knob set (rates, delay, jitter, loss, profile-set version) is stored once
+in the deployment's `deploy_args` — that is what keeps a past run interpretable
+after the profile file has moved on. NULL means unshaped, which is every row
+predating the feature.
+
+**Do not enable this on a staging gate run.** `deployments compare` gates on
+transfer p50/p95, and a shaped client's percentiles are not comparable to an
+unshaped baseline.
+
 ### Running tests
 
 ```bash

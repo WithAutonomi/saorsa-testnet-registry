@@ -553,7 +553,7 @@ def main(argv=None):
         default=[],
         help="Uploader VM spec: "
         "'provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]"
-        "[:clock_skew=DURATION][:bootstrap_cache=BOOL]'. "
+        "[:clock_skew=DURATION][:bootstrap_cache=BOOL][:network=PROFILE]'. "
         "provider is mandatory: digital_ocean, vultr, hetzner, or ovh. "
         "Region names and VM sizes vary per provider and are passed through "
         "verbatim (supply valid strings). Repeat for multiple uploaders. "
@@ -574,6 +574,7 @@ def main(argv=None):
         action="append",
         default=[],
         help="Downloader VM spec: 'provider:region[:vm_size][:clock_skew=DURATION]"
+        "[:network=PROFILE]"
         "[:bootstrap_cache=BOOL]'. "
         "provider is "
         "mandatory: digital_ocean, vultr, hetzner, or ovh. Repeat for "
@@ -3181,6 +3182,18 @@ def main(argv=None):
         "2h, -2h, 30m). For testing clock-independence of the network.",
     )
     prod_cd_deploy_parser.add_argument(
+        "--network",
+        type=str,
+        default=None,
+        metavar="PROFILE",
+        help="Simulate a residential connection on the client VM: a built-in "
+        "profile name (home-adsl, home-calibrated, home-fttc, home-fttp, "
+        "mobile-4g) or a comma-separated set such as "
+        "'rate_down=30mbit,rate_up=5mbit,delay=25ms,loss=0.2'. Traffic to the "
+        "monitoring/Elasticsearch endpoints and SSH is exempt so instrumentation "
+        "never competes with the transfer. Omit for an unshaped cloud link.",
+    )
+    prod_cd_deploy_parser.add_argument(
         "--bootstrap-cache",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -3422,6 +3435,18 @@ def main(argv=None):
         help="Inject intentional clock skew on the downloader VM: disable time "
         "sync and shift the system clock by a signed Go-style duration (e.g. "
         "2h, -2h, 30m). For testing clock-independence of the network.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--network",
+        type=str,
+        default=None,
+        metavar="PROFILE",
+        help="Simulate a residential connection on the client VM: a built-in "
+        "profile name (home-adsl, home-calibrated, home-fttc, home-fttp, "
+        "mobile-4g) or a comma-separated set such as "
+        "'rate_down=30mbit,rate_up=5mbit,delay=25ms,loss=0.2'. Traffic to the "
+        "monitoring/Elasticsearch endpoints and SSH is exempt so instrumentation "
+        "never competes with the transfer. Omit for an unshaped cloud link.",
     )
     prod_dl_deploy_parser.add_argument(
         "--bootstrap-cache",
@@ -3946,7 +3971,7 @@ def main(argv=None):
         action="append",
         default=[],
         metavar=(
-            "REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION]"
+            "REGION:VM_SIZE:urls=PATH[:payment=MODE][:clock_skew=DURATION][:network=PROFILE]"
             "[:bootstrap_cache=BOOL]"
         ),
         help=(

@@ -1,0 +1,94 @@
+# Simulated residential network conditions for client VMs (V2-733).
+#
+# A cloud VM uploads at roughly a gigabit; the users we care about upload from a
+# home line. These profiles reshape a client VM's connection to look like one, so
+# the low-bandwidth suite is reproducible and automatable instead of depending on
+# one person's home connection.
+#
+# Selected by name from a manifest (`network: home-fttc`) or a CLI spec token
+# (`network=home-fttc`). A manifest may also supply an inline mapping instead of a
+# name for an ad-hoc condition — see deploy/README.md.
+#
+# `version` is echoed into every recorded run. BUMP IT whenever a profile's numbers
+# change: results are compared across release trains, and a silently-edited profile
+# would make two runs labelled `home-fttc` mean different things.
+#
+# ---- field semantics (read before editing) ----
+#   rate_down / rate_up  tc rate tokens (`kbit`, `mbit`). Asymmetry is the defining
+#                        feature of a residential line and the whole point of the
+#                        exercise: rate_up dominates upload tests.
+#   delay                Added to ROUND-TRIP time, counted once (applied on egress
+#                        only, never on both paths — that would double it). This is
+#                        *added* latency on top of the VM's own RTT to its peers,
+#                        not an absolute target RTT.
+#   jitter               Variation around `delay`, normally distributed.
+#   loss                 Percent, applied per direction (egress AND ingress), because
+#                        real loss is a per-direction property. Loss on the inbound
+#                        path is what makes a download behave like a home download.
+#
+# Queue depth is deliberately NOT a field. A rate cap always implies a queue, so the
+# depth exists whether or not it is exposed; leaving it to chance gives either
+# tail-drop collapse (throughput far below the cap) or bufferbloat (hundreds of ms of
+# standing delay that silently swamps `delay`). The provisioner pins an explicit AQM
+# (`cake`, falling back to `fq_codel`) so the baseline is a competent modern router.
+
+version: 1
+
+profiles:
+  home-adsl:
+    description: >-
+      Copper ADSL2+. The worst case still in real-world use. NB at 1 Mbit/s up and
+      ~4x client egress from chunk fan-out, a 100 MB upload takes ~67 minutes and a
+      1 GB upload ~11 hours — size the file list and run duration accordingly.
+    rate_down: 10mbit
+    rate_up: 1mbit
+    delay: 30ms
+    jitter: 5ms
+    loss: 0.2
+
+  home-calibrated:
+    description: >-
+      Measured from the operator's own line on 2026-07-30 (AS13285/TalkTalk, wired,
+      via Manchester): 27.4 Mbit down, 6.29 Mbit up, 12.7 ms idle RTT, jitter 0.2 ms,
+      0 loss over 300 packets. Download proved a hard rate cap — 10/25/50 MB transfers
+      agreed within 0.5%. Bufferbloat was negligible (+2 ms under a saturating upload).
+      This is the everyday realistic profile; the others are representative figures.
+    rate_down: 27400kbit
+    rate_up: 6290kbit
+    delay: 12.7ms
+    jitter: 0.2ms
+    # Measured 0/300 packets, i.e. below the ~0.33% this sample size can resolve —
+    # NOT proven to be exactly zero. Encoded as 0 rather than inventing a plausible
+    # small value; raise it if a longer measurement ever resolves real loss.
+    loss: 0.0
+
+  home-fttc:
+    description: >-
+      UK FTTC/VDSL at a typical 60/18 package — a step above the calibrated line but
+      short of full fibre.
+    rate_down: 60mbit
+    rate_up: 18mbit
+    delay: 15ms
+    jitter: 3ms
+    loss: 0.05
+
+  home-fttp:
+    description: >-
+      Modern full fibre. Fast enough that the link is rarely the bottleneck; useful as
+      the optimistic end of the range.
+    rate_down: 300mbit
+    rate_up: 50mbit
+    delay: 8ms
+    jitter: 2ms
+    loss: 0.01
+
+  mobile-4g:
+    description: >-
+      Mobile broadband. Close to the calibrated line on raw rate, so its character
+      comes from latency, jitter and loss rather than bandwidth — that is the point of
+      including it.
+    rate_down: 30mbit
+    rate_up: 8mbit
+    delay: 60ms
+    jitter: 20ms
+    loss: 0.5

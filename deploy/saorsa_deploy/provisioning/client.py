@@ -26,6 +26,10 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
 )
+from saorsa_deploy.provisioning.network_profile import (
+    build_network_impairment_command,
+    format_network_label,
+)
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
@@ -373,6 +377,35 @@ class AntClientProvisioner:
                         server.shell,
                         name=f"Inject clock skew ({format_skew_offset(offset)})",
                         commands=[build_clock_skew_command(offset)],
+                        host=[host],
+                    )
+
+            # Apply simulated residential link conditions on any client whose
+            # spec sets a `network` profile. Secondary to the prod kinds: a shaped
+            # client makes a run's transfer percentiles incomparable to an unshaped
+            # baseline, so this must not be used on a staging gate run.
+            network_by_ip = {
+                c["ip"]: c["network"]
+                for c in self.clients
+                if c.get("ip") and c.get("network")
+            }
+            if network_by_ip:
+                self.console.print(
+                    f"[cyan]Network impairment on {len(network_by_ip)}/"
+                    f"{len(host_ips)} client host(s).[/cyan]"
+                )
+                for host in list(state.inventory.get_active_hosts()):
+                    profile = network_by_ip.get(host.name)
+                    if not profile:
+                        continue
+                    self.console.print(
+                        f"[cyan]  {host.name}: {format_network_label(profile)}[/cyan]"
+                    )
+                    add_op(
+                        state,
+                        server.shell,
+                        name=f"Apply network impairment ({profile.name})",
+                        commands=[build_network_impairment_command(profile)],
                         host=[host],
                     )
 

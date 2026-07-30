@@ -44,6 +44,10 @@ from saorsa_deploy.prod_bootstraps import (
     fetch_prod_bootstraps,
 )
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
+from saorsa_deploy.provisioning.network_profile import (
+    NetworkProfileError,
+    resolve_network,
+)
 from saorsa_deploy.provisioning.prod_downloader import (
     SERVICE_NAME as PROD_DOWNLOADER_SERVICE_NAME,
 )
@@ -278,6 +282,7 @@ def _provision_prod_downloader(
             "region": c.get("region", "unknown"),
             "addresses_file_content": addresses_file_content,
             "clock_skew": _resolve_clock_skew(args),
+            "network": _resolve_network(args),
             "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         }
         for c in clients
@@ -394,6 +399,18 @@ def _resolve_clock_skew(args):
     return parse_skew_duration(raw)
 
 
+def _resolve_network(args):
+    """Resolve ``--network PROFILE`` into a NetworkProfile (or None when unset).
+
+    Raises :class:`NetworkProfileError` for an unknown profile or a malformed
+    inline set, so a typo fails before any infrastructure is created.
+    """
+    raw = getattr(args, "network", None)
+    if not raw:
+        return None
+    return resolve_network(raw)
+
+
 def cmd_prod_continuous_downloader_deploy(args):
     """Deploy a prod continuous-downloader testbed against the Autonomi prod network."""
     console = Console()
@@ -412,6 +429,12 @@ def cmd_prod_continuous_downloader_deploy(args):
     try:
         clock_skew_seconds = _resolve_clock_skew(args)
     except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    try:
+        network_profile = _resolve_network(args)
+    except NetworkProfileError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
@@ -452,6 +475,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         "monitoring_name": args.name,
         "spec": args.spec,
         "clock_skew": clock_skew_seconds,
+        "network": network_profile.to_dict() if network_profile else None,
         "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         "forward_logs": getattr(args, "forward_logs", False),
         "rust_log": getattr(args, "rust_log", None),
