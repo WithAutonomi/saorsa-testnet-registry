@@ -60,6 +60,7 @@ DEFAULT_MONITORING_VOLUME_SIZE = 50
 # when it contains ':' (RUST_LOG module paths use '::'); keep it last in a spec.
 _KNOWN_SPEC_KEYS = (
     "urls",
+    "pool",
     "payment",
     "log_level",
     "clock_skew",
@@ -200,16 +201,35 @@ def parse_prod_uploader_spec(spec: str) -> dict:
             )
         options[key] = value
 
-    if "urls" not in options:
+    # Exactly one source of files. `pool=` draws from the managed pool, which
+    # guarantees the files have never been uploaded; `urls=` is the legacy
+    # hand-written list, where that guarantee comes only from the name-based
+    # duplicate preflight.
+    has_urls = bool(options.get("urls"))
+    has_pool = bool(options.get("pool"))
+    if has_urls and has_pool:
         raise ValueError(
-            f"Invalid uploader spec '{spec}'. urls=PATH is required."
+            f"Invalid uploader spec '{spec}': set either urls=PATH or "
+            "pool=CLASS:COUNT, not both."
+        )
+    if not has_urls and not has_pool:
+        raise ValueError(
+            f"Invalid uploader spec '{spec}'. One of urls=PATH or "
+            "pool=CLASS:COUNT (e.g. pool=small:3,medium:2) is required."
         )
 
-    urls_file = options["urls"]
-    if not urls_file:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}': urls path cannot be empty."
+    urls_file = options.get("urls") or None
+    pool_request = None
+    if has_pool:
+        from saorsa_deploy.pool_selection import (
+            PoolSelectionError,
+            parse_request_token,
         )
+
+        try:
+            pool_request = parse_request_token(options["pool"])
+        except (PoolSelectionError, ValueError) as exc:
+            raise ValueError(f"Invalid uploader spec '{spec}': {exc}") from exc
 
     payment_type: str | None = options.get("payment")
     if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
@@ -250,6 +270,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "region": region,
         "vm_size": vm_size,
         "urls_file": urls_file,
+        "pool_request": pool_request,
         "payment_type": payment_type,
         "log_level": log_level,
         "clock_skew": clock_skew,
@@ -692,16 +713,24 @@ def cmd_prod_uploaders_deploy(args):
     for raw in args.uploader:
         try:
             spec = parse_prod_uploader_spec(raw)
-            spec["_urls_file_content"] = _read_urls_file(spec["urls_file"])
+            if spec.get("urls_file"):
+                spec["_urls_file_content"] = _read_urls_file(spec["urls_file"])
         except ValueError as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
         parsed_specs.append(spec)
 
-    # Earliest possible gate: refuse before any infrastructure is created if a
-    # file to be uploaded is already present in the prod uploads list.
+    # Draw from the pool before any infrastructure exists. A shortfall found
+    # after Terraform has stood up VMs against a funded mainnet wallet costs
+    # real money and leaves a half-built deployment behind.
+    pool_selections = _select_pool_files(args, parsed_specs, console)
+
+    # Earliest possible gate for the legacy urls= path: refuse before any
+    # infrastructure is created if a file to be uploaded is already present in
+    # the prod uploads list. Pool-backed uploaders skip this by construction —
+    # selection cannot return a file that has already been handed out.
     _check_for_duplicate_files(
-        parsed_specs,
+        [s for s in parsed_specs if s.get("_urls_file_content")],
         getattr(args, "allow_duplicate_files", False),
         console,
     )
@@ -713,9 +742,10 @@ def cmd_prod_uploaders_deploy(args):
             1 for line in spec["_urls_file_content"].splitlines()
             if line.strip() and not line.strip().startswith("#")
         )
+        source = "pool" if spec.get("pool_request") else "urls"
         console.print(
             f"  Uploader #{i}: {spec['region']} ({spec['vm_size']}, "
-            f"urls={url_count})"
+            f"{source}={url_count})"
         )
     console.print()
 
@@ -728,6 +758,11 @@ def cmd_prod_uploaders_deploy(args):
                 "region": s["region"],
                 "vm_size": s["vm_size"],
                 "urls_file": s["urls_file"],
+                "pool_request": (
+                    {k.value: v for k, v in s["pool_request"].items()}
+                    if s.get("pool_request")
+                    else None
+                ),
                 "file_names": _extract_file_names(s["_urls_file_content"]),
                 "payment_type": s.get("payment_type"),
                 "clock_skew": s.get("clock_skew", False),
@@ -744,7 +779,11 @@ def cmd_prod_uploaders_deploy(args):
             debug=getattr(args, "debug", False),
         ),
     }
-    record_deployment_created(args.name, deploy_args_payload)
+    deployment_id = record_deployment_created(args.name, deploy_args_payload)
+    # Claims were taken before this row existed — selection has to run before
+    # any infrastructure, and record_deployment_created always inserts a fresh
+    # row, so the id cannot be known any earlier.
+    _attach_pool_claims(pool_selections, deployment_id, args.name)
     record_event(args.name, "prod_uploaders_deploy_started", deploy_args_payload)
 
     try:
@@ -828,6 +867,13 @@ def cmd_prod_uploaders_destroy(args):
 
     console = Console()
     console.print(f"[bold]prod uploaders destroy: {args.name}[/bold]")
+
+    # Before anything is destroyed: this teardown takes the monitoring VM, and
+    # with it any per-file results that were never recorded to Postgres.
+    if not getattr(args, "skip_results_check", False):
+        from saorsa_deploy.results_guard import check_before_destroy
+
+        check_before_destroy(console, args.name, "prod-uploaders")
 
     record_event(args.name, "prod_uploaders_destroy_started")
     record_status(args.name, DeploymentStatus.DESTROYING)
@@ -925,3 +971,84 @@ def _stop_uploaders(args, console: Console) -> None:
         run_ops(state_obj)
     finally:
         disconnect_all(state_obj)
+
+
+def _select_pool_files(args, parsed_specs: list[dict], console: Console) -> list:
+    """Resolve every ``pool=`` uploader spec into concrete URLs.
+
+    Each uploader VM is its own selection slot, so a resumed deploy hands each
+    VM back the files it already had rather than drawing a fresh set and
+    permanently burning the first one.
+
+    The chosen URLs are written into the same ``_urls_file_content`` the rest of
+    this command already distributes, so nothing downstream — provisioning, the
+    VM-side fetch, the recorded ``file_names`` — needs to know the pool exists.
+    """
+    from saorsa_db.models.prod_file_pool import ClaimSource, PoolFileKind
+
+    from saorsa_deploy.pool_selection import (
+        PoolSelectionError,
+        render_selection,
+        select_for_deployment,
+    )
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    pooled = [s for s in parsed_specs if s.get("pool_request")]
+    if not pooled:
+        return []
+
+    repo = get_file_pool_repository()
+    if repo is None:
+        # Unlike the old name-based duplicate check, this cannot degrade to a
+        # warning: the pool IS the never-reuse guarantee, and without it there
+        # is no list of files to upload at all.
+        console.print(
+            "[bold red]Error:[/bold red] an uploader asks for pool=… but no "
+            "DATABASE_URL is configured. The file pool lives in the registry "
+            "database.\nNo infrastructure was created."
+        )
+        sys.exit(1)
+
+    console.print("  Pool selection")
+    selections = []
+    for index, spec in enumerate(parsed_specs, start=1):
+        if not spec.get("pool_request"):
+            continue
+        try:
+            selected = select_for_deployment(
+                repo,
+                name=args.name,
+                slot=f"uploader-{index}",
+                kind=PoolFileKind.URL,
+                request=spec["pool_request"],
+                source=ClaimSource.PROD_UPLOADERS,
+            )
+        except PoolSelectionError as exc:
+            console.print(f"\n[bold red]Error:[/bold red] {exc}")
+            sys.exit(1)
+        render_selection(
+            console,
+            f"uploader #{index} ({spec['region']})",
+            spec["pool_request"],
+            selected,
+        )
+        spec["_urls_file_content"] = "\n".join(e.locator for e in selected) + "\n"
+        selections.append(selected)
+
+    total = sum(len(s) for s in selections)
+    console.print(
+        f"    {total} file(s) claimed; selection persisted to S3 state "
+        "(a resume reuses it)."
+    )
+    return selections
+
+
+def _attach_pool_claims(selections: list, deployment_id, name: str) -> None:
+    if not selections or not deployment_id:
+        return
+    from saorsa_deploy.pool_selection import attach_deployment
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    repo = get_file_pool_repository()
+    if repo is not None:
+        attach_deployment(repo, selections, deployment_id, name)

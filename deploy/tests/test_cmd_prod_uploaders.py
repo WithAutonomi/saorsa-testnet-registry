@@ -54,6 +54,9 @@ class TestParseSpec:
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
             "urls_file": str(urls_file),
+            # None for a urls= spec: the file list is the hand-written one, not
+            # a draw from the managed pool.
+            "pool_request": None,
             "payment_type": None,
             "log_level": None,
             "clock_skew": None,

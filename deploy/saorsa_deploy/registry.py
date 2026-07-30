@@ -14,8 +14,10 @@ from saorsa_db.models import Deployment, DeploymentStatus
 from saorsa_db.models.prod_service_audit import ProdServiceAuditAction
 from saorsa_db.repositories import (
     DeploymentRepository,
+    ProdFilePoolRepository,
     ProdFleetRepository,
     SqlAlchemyDeploymentRepository,
+    SqlAlchemyProdFilePoolRepository,
     SqlAlchemyProdFleetRepository,
 )
 
@@ -37,6 +39,26 @@ def _try_get_repository() -> DeploymentRepository | None:
 
 def get_repository() -> DeploymentRepository | None:
     return _try_get_repository()
+
+
+def get_file_pool_repository() -> ProdFilePoolRepository | None:
+    """Repository for the production upload file pool.
+
+    Returns None when DATABASE_URL is unset or unreachable, like every other
+    accessor here — but callers must think harder about that case than usual.
+    The pool is the mechanism that stops a file being uploaded twice, so a
+    pool-backed deploy cannot silently proceed without it the way the old
+    name-based duplicate check did: it must refuse and say why.
+    """
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        return None
+    try:
+        factory = get_session_factory(database_url)
+        return SqlAlchemyProdFilePoolRepository(factory())
+    except Exception:
+        logger.debug("Could not connect to registry database", exc_info=True)
+        return None
 
 
 def record_deployment_created(

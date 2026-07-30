@@ -1,9 +1,15 @@
 """Print every file uploaded to production Autonomi, grouped by upload run.
 
-Reads the ``deployment_prod_upload_results`` Postgres table (populated by
-``deployments record-results`` for both ``prod-uploaders`` and
-``prod-local-uploads`` deployments) and prints one section per deployment
-("upload run"), with the files uploaded under that run inside it.
+Reads **both** upload tables: ``deployment_prod_upload_results`` (populated by
+``deployments record-results`` for ``prod-uploaders``, and written directly by
+``prod-local-uploads``) and ``prod_canary_uploads``. Canary uploads live in
+their own table and are the larger share of what production holds — 1006
+against 538 as at 2026-07-30 — so a view reading only the former was silently
+missing two thirds of it, and answering "has this file been uploaded?" from it
+was answering a different question than the one asked.
+
+One section per deployment ("upload run"), with the files uploaded under that
+run inside it.
 
 Within each successful section, rows are deduplicated by datamap address
 (same file uploaded twice in the same run = one entry, using the earliest
@@ -26,7 +32,12 @@ def cmd_prod_files(args) -> None:
         )
         return
 
-    rows = repo.list_all_prod_upload_results(failed_only=args.failed)
+    rows = list(repo.list_all_prod_upload_results(failed_only=args.failed))
+    if not args.failed:
+        # Canary uploads have no failure states of the same shape (a canary
+        # that failed to upload simply has no row), so they are only included
+        # in the success view.
+        rows += [_CanaryRow(row) for row in repo.list_all_prod_canary_uploads()]
     if not rows:
         if args.failed:
             console.print("[yellow]No failed prod uploads recorded.[/yellow]")
@@ -133,3 +144,23 @@ def _format_size(num_bytes) -> str:
             return f"{size:.2f} {unit}"
         size /= 1024.0
     return f"{num_bytes} B"
+
+
+class _CanaryRow:
+    """Adapts a canary upload to the shape this view already renders.
+
+    The two tables describe the same thing under different names —
+    ``top_address`` for ``address``, ``uploaded_at`` for ``started_at`` — so
+    rather than branching every render path on which table a row came from, the
+    canary row is presented in the vocabulary the printer already speaks.
+    """
+
+    def __init__(self, row):
+        self._row = row
+        self.deployment_id = row.deployment_id
+        self.file_name = row.file_name
+        self.file_size_bytes = row.file_size_bytes
+        self.address = row.top_address
+        self.started_at = row.uploaded_at
+        self.status = ProdUploadStatus.SUCCESS
+        self.reason = None

@@ -1,9 +1,11 @@
+import hashlib
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import delete, func, insert, select
+from sqlalchemy.exc import IntegrityError
 
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
 from saorsa_db.models.file_result import DeploymentFileResult, FileOpType
@@ -45,6 +47,15 @@ from saorsa_db.models.prod_download_result import (
     DeploymentProdDownloadResult,
     ProdDownloadStatus,
 )
+from saorsa_db.models.prod_file_pool import (
+    SELF_RESOLVING_SOURCES,
+    ClaimSource,
+    ClaimStatus,
+    PoolFileKind,
+    ProdFilePool,
+    ProdFilePoolClaim,
+    ProdFilePoolDigest,
+)
 from saorsa_db.models.prod_service_audit import (
     ProdServiceAudit,
     ProdServiceAuditAction,
@@ -58,6 +69,8 @@ from saorsa_db.models.release_candidate import (
     ReleaseCandidateCrate,
     ReleaseCandidatePR,
 )
+from saorsa_db.size_class import SizeClass, byte_range
+from saorsa_db.size_class import ordered as size_class_ordered
 
 
 class DeploymentRepository(ABC):
@@ -433,6 +446,18 @@ class DeploymentRepository(ABC):
     def list_prod_canary_uploads_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentProdCanaryUpload]:
+        ...
+
+    @abstractmethod
+    def list_all_prod_canary_uploads(self) -> list[DeploymentProdCanaryUpload]:
+        """Every canary upload across all deployments, oldest first.
+
+        Canary uploads live in their own table and are NOT in
+        ``deployment_prod_upload_results`` — so anything asking "what is
+        already on the production network?" that reads only the latter misses
+        the larger share of it. Measured on 2026-07-30: 1006 canary files
+        against 538 from prod-uploaders runs.
+        """
         ...
 
     @abstractmethod
@@ -1708,6 +1733,13 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .all()
         )
 
+    def list_all_prod_canary_uploads(self) -> list[DeploymentProdCanaryUpload]:
+        return (
+            self.session.query(DeploymentProdCanaryUpload)
+            .order_by(DeploymentProdCanaryUpload.uploaded_at)
+            .all()
+        )
+
     def list_prod_canary_probes_for_canary(
         self, canary_id
     ) -> list[DeploymentProdCanaryProbe]:
@@ -2400,3 +2432,887 @@ class SqlAlchemyProdFleetRepository(ProdFleetRepository):
         if until is not None:
             query = query.filter(ProdServiceAudit.occurred_at <= until)
         return query.order_by(ProdServiceAudit.occurred_at.asc()).all()
+
+
+#: Operator-facing availability states for a pooled file. These map onto claim
+#: status, not onto columns of ``prod_file_pool``: a file is AVAILABLE when it
+#: carries no blocking claim, CLAIMED while one is open, and UPLOADED once that
+#: claim resolves. Keeping CLAIMED distinct from UPLOADED matters in both
+#: directions — a forgotten desktop checkout must not read as "on the network",
+#: and a released claim must not read as spent forever.
+POOL_STATUS_AVAILABLE = "available"
+POOL_STATUS_CLAIMED = "claimed"
+POOL_STATUS_UPLOADED = "uploaded"
+POOL_STATUSES = (POOL_STATUS_AVAILABLE, POOL_STATUS_CLAIMED, POOL_STATUS_UPLOADED)
+
+
+def locator_digest(locator: str) -> str:
+    """SHA256 of a locator, used as its uniqueness key.
+
+    Uniqueness is enforced on this rather than on ``locator`` itself: a btree
+    unique index over a long URL can exceed Postgres' per-entry size limit, and
+    a fixed 64-char index is materially smaller across the hundreds of
+    thousands of rows a local dataset contributes.
+    """
+    return hashlib.sha256(locator.encode("utf-8")).hexdigest()
+
+class InsufficientPoolInventory(Exception):
+    """Raised when the pool cannot satisfy a size request.
+
+    Carries the shortfall per size class so the caller can tell the operator
+    exactly what to top up. Deliberately an exception rather than a partial
+    result: a canary asked for 350 files and given 200 would silently produce a
+    smaller experiment than the one that was designed.
+    """
+
+    def __init__(self, kind: PoolFileKind, shortfall: dict):
+        self.kind = kind
+        #: {size_class_value: {"requested": int, "available": int}}
+        self.shortfall = shortfall
+        parts = ", ".join(
+            f"{cls} {detail['requested']} requested / {detail['available']} available"
+            for cls, detail in sorted(shortfall.items())
+        )
+        super().__init__(
+            f"the {kind.value} pool cannot satisfy the request: {parts}"
+        )
+
+
+class ProdFilePoolRepository(ABC):
+    """The pool of real files available for uploading to production Autonomi.
+
+    Standalone (no ``deployment_id`` on the catalogue), like
+    ``ProdFleetRepository``: the pool outlives any single run, is populated and
+    inspected independently of deployments, and serves a GUI desktop
+    application that has no link to this database at all.
+    """
+
+    @abstractmethod
+    def add_pool_file(
+        self,
+        kind: PoolFileKind,
+        locator: str,
+        name: str,
+        size_bytes: int | None = None,
+        digests: dict[str, str] | None = None,
+        tags: list[str] | None = None,
+        provenance: str | None = None,
+        notes: str | None = None,
+    ) -> tuple[ProdFilePool, bool]:
+        """Catalogue a file, returning ``(file, created)``.
+
+        Re-adding a known locator is a no-op returning ``created=False``, so
+        re-running an acquisition over an overlapping listing is safe.
+
+        When any supplied digest matches an existing file, the new row is
+        linked to it via ``duplicate_of`` instead of becoming a rival entry.
+        That is what stops an Internet Archive URL and a local copy of the same
+        content from both being handed out: consuming either spends both.
+        """
+        ...
+
+    @abstractmethod
+    def get_pool_file(self, file_id: int) -> ProdFilePool | None:
+        ...
+
+    @abstractmethod
+    def get_pool_file_by_locator(self, locator: str) -> ProdFilePool | None:
+        ...
+
+    @abstractmethod
+    def find_pool_file_by_digests(
+        self, digests: dict[str, str]
+    ) -> ProdFilePool | None:
+        """The first catalogued file sharing any (algorithm, value) supplied.
+
+        Matching on *any* shared algorithm is the point: the Internet Archive
+        publishes MD5 and SHA1, a local file is hashed with SHA1 and SHA256, and
+        the two can only ever meet on the algorithm they have in common.
+        """
+        ...
+
+    @abstractmethod
+    def add_pool_file_digests(self, file_id: int, digests: dict[str, str]) -> None:
+        """Attach digests to a file, ignoring any algorithm it already carries."""
+        ...
+
+    @abstractmethod
+    def update_pool_file_size(self, file_id: int, size_bytes: int | None) -> None:
+        ...
+
+    @abstractmethod
+    def set_pool_file_active(self, file_id: int, active: bool) -> None:
+        """Retire (or restore) an entry — a URL that 404s, a path that is gone.
+
+        Deactivation rather than deletion, because a retired file may still
+        carry the claim proving its content is on the network.
+        """
+        ...
+
+    @abstractmethod
+    def canonical_pool_file_id(self, file_id: int) -> int:
+        """The id owning this file's content: itself, or what it duplicates."""
+        ...
+
+    @abstractmethod
+    def list_pool_files(
+        self,
+        kind: PoolFileKind | None = None,
+        size_class: SizeClass | None = None,
+        status: str | None = None,
+        tags: list[str] | None = None,
+        active: bool | None = True,
+        limit: int | None = None,
+        added_since: datetime | None = None,
+    ) -> list[ProdFilePool]:
+        ...
+
+    @abstractmethod
+    def pool_stats(self) -> dict:
+        """Availability counts per (kind, size class), plus unknown-size totals.
+
+        Reported per kind because the two kinds are separate inventories: a
+        remote uploader cannot use a local path, so "4 medium available" is
+        meaningless without saying which pool it is in.
+        """
+        ...
+
+
+    @abstractmethod
+    def claim_pool_files(
+        self,
+        kind: PoolFileKind,
+        request: dict,
+        source: ClaimSource,
+        label: str | None = None,
+        deployment_id: int | None = None,
+        deployment_name: str | None = None,
+        when: datetime | None = None,
+    ) -> list[ProdFilePoolClaim]:
+        """Claim files matching a {SizeClass: count} request, atomically.
+
+        Raises :class:`InsufficientPoolInventory` if any class cannot be
+        satisfied, having claimed nothing — a half-filled request would produce
+        a smaller experiment than the one designed.
+
+        Concurrency is arbitrated by the database, not by this method: the
+        partial unique index refuses a second blocking claim, so two runs racing
+        for the last large file cannot both win however they interleave. A loser
+        moves on to the next candidate rather than failing.
+        """
+        ...
+
+    @abstractmethod
+    def list_pool_claims(
+        self,
+        status: ClaimStatus | None = None,
+        source: ClaimSource | None = None,
+        label: str | None = None,
+        stale_before: datetime | None = None,
+        unresolvable: bool = False,
+        deployment_id: int | None = None,
+        file_id: int | None = None,
+    ) -> list[ProdFilePoolClaim]:
+        """Claims matching the filters, newest first.
+
+        ``unresolvable`` narrows to open claims that no ``record-results`` run
+        can ever close — the deployment row is gone, or the deployment was
+        destroyed, which means its InfluxDB went with it. Those need the
+        operator, and surfacing them is the difference between a wedged claim
+        and a known one.
+        """
+        ...
+
+    @abstractmethod
+    def open_claim_for_file(self, file_id: int) -> ProdFilePoolClaim | None:
+        """The blocking claim on this file's content, if any."""
+        ...
+
+    @abstractmethod
+    def resolve_pool_claim(
+        self,
+        claim_id: int,
+        address: str | None = None,
+        chunks_stored: int | None = None,
+        chunks_failed: int | None = None,
+        total_chunks: int | None = None,
+        storage_cost_atto: Decimal | None = None,
+        gas_cost_wei: Decimal | None = None,
+        locator_used: str | None = None,
+        note: str | None = None,
+        when: datetime | None = None,
+    ) -> ProdFilePoolClaim:
+        """Mark a claim uploaded, recording what the network gave back.
+
+        An UPSERT rather than a one-shot: ``record-results`` is idempotent and
+        re-runnable, and a later run can revise costs. Re-resolving an already
+        resolved claim updates it in place.
+        """
+        ...
+
+    @abstractmethod
+    def release_pool_claim(
+        self,
+        claim_id: int,
+        note: str | None = None,
+        when: datetime | None = None,
+    ) -> ProdFilePoolClaim:
+        """Give a claimed file back to the pool. Never automatic — a claim that
+        might correspond to a real upload must not be released by a sweep."""
+        ...
+
+    @abstractmethod
+    def blocking_claims_for_files(self, file_ids: list[int]) -> dict:
+        """Map file id → its blocking claim, for a batch of files.
+
+        Batched rather than per-row because a listing renders each file's state
+        alongside it, and one query per row would make `pool list` quadratic on
+        a catalogue holding hundreds of thousands of entries. Duplicate rows are
+        resolved to their canonical content, so a mirror reports the claim taken
+        through its counterpart.
+        """
+        ...
+
+    @abstractmethod
+    def get_pool_file_by_address(self, address: str) -> ProdFilePool | None:
+        """Reverse lookup: which pooled file produced this datamap address?
+
+        Answerable only because the address is recorded on the claim when it
+        resolves; there is no other route from an address back to its content.
+        """
+        ...
+
+    @abstractmethod
+    def seed_uploaded_claim(
+        self,
+        file_id: int,
+        source: ClaimSource,
+        address: str | None = None,
+        chunks_stored: int | None = None,
+        chunks_failed: int | None = None,
+        total_chunks: int | None = None,
+        storage_cost_atto: Decimal | None = None,
+        gas_cost_wei: Decimal | None = None,
+        deployment_id: int | None = None,
+        deployment_name: str | None = None,
+        when: datetime | None = None,
+        note: str | None = None,
+    ) -> ProdFilePoolClaim | None:
+        """Record a file as already uploaded, in one step.
+
+        Distinct from claim-then-resolve: this is for content whose upload
+        already happened elsewhere — historical results being imported, or an
+        upload made outside the pool. Returns None if the file already carries a
+        blocking claim, so re-running is safe.
+        """
+        ...
+
+    @abstractmethod
+    def attach_deployment_to_claims(
+        self, claim_ids: list[int], deployment_id: int, deployment_name: str
+    ) -> None:
+        """Backfill the deployment on claims taken before its row existed.
+
+        Selection has to happen before any infrastructure is created, but
+        ``record_deployment_created`` always inserts a *fresh* row — so the id
+        cannot be known at claim time and must be attached afterwards.
+        """
+        ...
+
+
+class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
+    def __init__(self, session):
+        self.session = session
+
+    # ---------------------------------------------------------------- helpers
+
+    def _canonical_id_expr(self):
+        """SQL for "the id owning this row's content".
+
+        Duplicate links are kept flat by :meth:`add_pool_file` — a duplicate
+        always points at a canonical row, never at another duplicate — so one
+        COALESCE resolves the group without a recursive walk.
+        """
+        return func.coalesce(ProdFilePool.duplicate_of, ProdFilePool.id)
+
+    def _blocking_claim_exists(self):
+        """EXISTS predicate: this row's content already carries a claim that
+        makes it unusable (open, or already uploaded).
+
+        Anchored on the *canonical* id so a duplicate entry is blocked by a
+        claim taken against the content through its other locator.
+        """
+        return (
+            select(ProdFilePoolClaim.id)
+            .where(
+                ProdFilePoolClaim.file_id == self._canonical_id_expr(),
+                ProdFilePoolClaim.status != ClaimStatus.RELEASED,
+            )
+            .exists()
+        )
+
+    def _status_filter(self, query, status: str | None):
+        if status is None:
+            return query
+        if status == POOL_STATUS_AVAILABLE:
+            return query.filter(~self._blocking_claim_exists())
+        if status in (POOL_STATUS_CLAIMED, POOL_STATUS_UPLOADED):
+            wanted = (
+                ClaimStatus.CLAIMED
+                if status == POOL_STATUS_CLAIMED
+                else ClaimStatus.UPLOADED
+            )
+            return query.filter(
+                select(ProdFilePoolClaim.id)
+                .where(
+                    ProdFilePoolClaim.file_id == self._canonical_id_expr(),
+                    ProdFilePoolClaim.status == wanted,
+                )
+                .exists()
+            )
+        raise ValueError(
+            f"unknown pool status '{status}'. Valid: {', '.join(POOL_STATUSES)}"
+        )
+
+    # ------------------------------------------------------------- catalogue
+
+    def add_pool_file(
+        self,
+        kind: PoolFileKind,
+        locator: str,
+        name: str,
+        size_bytes: int | None = None,
+        digests: dict[str, str] | None = None,
+        tags: list[str] | None = None,
+        provenance: str | None = None,
+        notes: str | None = None,
+    ) -> tuple[ProdFilePool, bool]:
+        existing = self.get_pool_file_by_locator(locator)
+        if existing is not None:
+            # Re-adding a known locator refreshes what we have learned about it
+            # (a size resolved on a later pass, extra digests) without creating
+            # a rival row or disturbing its claims.
+            if size_bytes is not None and existing.size_bytes is None:
+                existing.size_bytes = size_bytes
+            if digests:
+                self.add_pool_file_digests(existing.id, digests)
+            self.session.commit()
+            return existing, False
+
+        duplicate_of = None
+        if digests:
+            match = self.find_pool_file_by_digests(digests)
+            if match is not None:
+                # Flatten: point at the canonical row, never at another
+                # duplicate, so availability resolves in one COALESCE.
+                duplicate_of = match.duplicate_of or match.id
+
+        pool_file = ProdFilePool(
+            kind=kind,
+            locator=locator,
+            locator_sha256=locator_digest(locator),
+            name=name,
+            size_bytes=size_bytes,
+            tags=list(tags) if tags else None,
+            provenance=provenance,
+            notes=notes,
+            duplicate_of=duplicate_of,
+        )
+        self.session.add(pool_file)
+        self.session.flush()
+        if digests:
+            self._add_digests_no_commit(pool_file.id, digests, set())
+        self.session.commit()
+        return pool_file, True
+
+    def get_pool_file(self, file_id: int) -> ProdFilePool | None:
+        return self.session.get(ProdFilePool, file_id)
+
+    def get_pool_file_by_locator(self, locator: str) -> ProdFilePool | None:
+        return (
+            self.session.query(ProdFilePool)
+            .filter(ProdFilePool.locator_sha256 == locator_digest(locator))
+            .one_or_none()
+        )
+
+    def find_pool_file_by_digests(
+        self, digests: dict[str, str]
+    ) -> ProdFilePool | None:
+        if not digests:
+            return None
+        clauses = [
+            (ProdFilePoolDigest.algo == algo.lower().strip())
+            & (ProdFilePoolDigest.value == value.lower().strip())
+            for algo, value in digests.items()
+            if algo and value
+        ]
+        if not clauses:
+            return None
+        predicate = clauses[0]
+        for clause in clauses[1:]:
+            predicate = predicate | clause
+        row = (
+            self.session.query(ProdFilePoolDigest)
+            .filter(predicate)
+            .order_by(ProdFilePoolDigest.file_id)
+            .first()
+        )
+        return self.session.get(ProdFilePool, row.file_id) if row else None
+
+    def _add_digests_no_commit(
+        self, file_id: int, digests: dict[str, str], existing_algos: set[str]
+    ) -> None:
+        for algo, value in digests.items():
+            if not algo or not value:
+                continue
+            normalised = algo.lower().strip()
+            if normalised in existing_algos:
+                continue
+            existing_algos.add(normalised)
+            self.session.add(
+                ProdFilePoolDigest(
+                    file_id=file_id,
+                    algo=normalised,
+                    value=value.lower().strip(),
+                )
+            )
+
+    def add_pool_file_digests(self, file_id: int, digests: dict[str, str]) -> None:
+        if not digests:
+            return
+        present = {
+            row.algo
+            for row in self.session.query(ProdFilePoolDigest).filter(
+                ProdFilePoolDigest.file_id == file_id
+            )
+        }
+        self._add_digests_no_commit(file_id, digests, present)
+        self.session.commit()
+
+    def update_pool_file_size(self, file_id: int, size_bytes: int | None) -> None:
+        pool_file = self.session.get(ProdFilePool, file_id)
+        if pool_file is None:
+            return
+        pool_file.size_bytes = size_bytes
+        self.session.commit()
+
+    def set_pool_file_active(self, file_id: int, active: bool) -> None:
+        pool_file = self.session.get(ProdFilePool, file_id)
+        if pool_file is None:
+            return
+        pool_file.active = active
+        self.session.commit()
+
+    def canonical_pool_file_id(self, file_id: int) -> int:
+        pool_file = self.session.get(ProdFilePool, file_id)
+        if pool_file is None:
+            raise ValueError(f"no pool file with id {file_id}")
+        return pool_file.duplicate_of or pool_file.id
+
+    def list_pool_files(
+        self,
+        kind: PoolFileKind | None = None,
+        size_class: SizeClass | None = None,
+        status: str | None = None,
+        tags: list[str] | None = None,
+        active: bool | None = True,
+        limit: int | None = None,
+        added_since: datetime | None = None,
+    ) -> list[ProdFilePool]:
+        query = self.session.query(ProdFilePool)
+        if added_since is not None:
+            query = query.filter(ProdFilePool.added_at >= added_since)
+        if kind is not None:
+            query = query.filter(ProdFilePool.kind == kind)
+        if active is not None:
+            query = query.filter(ProdFilePool.active == active)
+        if size_class is not None:
+            lower, upper = byte_range(size_class)
+            # Filters the indexed byte column rather than classifying per row —
+            # the difference between an index range scan and a full scan of a
+            # catalogue holding hundreds of thousands of local files.
+            query = query.filter(ProdFilePool.size_bytes >= lower)
+            if upper is not None:
+                query = query.filter(ProdFilePool.size_bytes < upper)
+        query = self._status_filter(query, status)
+        rows = query.order_by(ProdFilePool.id).all()
+        if tags:
+            wanted = {t.lower() for t in tags}
+            rows = [
+                row
+                for row in rows
+                if row.tags and wanted & {str(t).lower() for t in row.tags}
+            ]
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+
+    def pool_stats(self) -> dict:
+        stats: dict = {}
+        for kind in PoolFileKind:
+            per_class: dict[str, dict[str, int]] = {}
+            for size_class in size_class_ordered():
+                total = len(
+                    self.list_pool_files(kind=kind, size_class=size_class, status=None)
+                )
+                available = len(
+                    self.list_pool_files(
+                        kind=kind,
+                        size_class=size_class,
+                        status=POOL_STATUS_AVAILABLE,
+                    )
+                )
+                per_class[size_class.value] = {
+                    "available": available,
+                    "total": total,
+                }
+            # Entries whose size could not be resolved are invisible to every
+            # size-class request, so they are counted separately rather than
+            # inflating a class the selector will never draw them from.
+            unknown = (
+                self.session.query(func.count(ProdFilePool.id))
+                .filter(
+                    ProdFilePool.kind == kind,
+                    ProdFilePool.active.is_(True),
+                    ProdFilePool.size_bytes.is_(None),
+                )
+                .scalar()
+            )
+            stats[kind.value] = {"by_class": per_class, "unknown_size": int(unknown)}
+        return stats
+
+    # ------------------------------------------------------------ selection
+
+    #: How many candidates to fetch per file needed. Selection takes the
+    #: oldest-first window and shuffles *within* it, rather than ordering the
+    #: whole filtered set randomly: `ORDER BY random()` sorts every matching row,
+    #: which on a catalogue of hundreds of thousands of local files is a full
+    #: scan per request. The overfetch also supplies the fallbacks needed when a
+    #: concurrent run claims a candidate first.
+    _CANDIDATE_OVERFETCH = 5
+    _CANDIDATE_FLOOR = 32
+
+    def _candidates(
+        self, kind: PoolFileKind, size_class: SizeClass, needed: int
+    ) -> list[ProdFilePool]:
+        window = max(needed * self._CANDIDATE_OVERFETCH, self._CANDIDATE_FLOOR)
+        return self.list_pool_files(
+            kind=kind,
+            size_class=size_class,
+            status=POOL_STATUS_AVAILABLE,
+            active=True,
+            limit=window,
+        )
+
+    def claim_pool_files(
+        self,
+        kind: PoolFileKind,
+        request: dict,
+        source: ClaimSource,
+        label: str | None = None,
+        deployment_id: int | None = None,
+        deployment_name: str | None = None,
+        when: datetime | None = None,
+    ) -> list[ProdFilePoolClaim]:
+        import random
+
+        stamp = when or datetime.now(timezone.utc)
+
+        # Check the whole request before claiming anything. Claiming class by
+        # class would leave the earlier classes spent when a later one runs
+        # short, quietly burning inventory on a run that then aborts.
+        shortfall: dict = {}
+        plan: dict = {}
+        for size_class, count in request.items():
+            if count <= 0:
+                continue
+            candidates = self._candidates(kind, size_class, count)
+            if len(candidates) < count:
+                available = len(
+                    self.list_pool_files(
+                        kind=kind,
+                        size_class=size_class,
+                        status=POOL_STATUS_AVAILABLE,
+                        active=True,
+                    )
+                )
+                if available < count:
+                    shortfall[size_class.value] = {
+                        "requested": count,
+                        "available": available,
+                    }
+                    continue
+                candidates = self.list_pool_files(
+                    kind=kind,
+                    size_class=size_class,
+                    status=POOL_STATUS_AVAILABLE,
+                    active=True,
+                )
+            random.shuffle(candidates)
+            plan[size_class] = (candidates, count)
+
+        if shortfall:
+            raise InsufficientPoolInventory(kind, shortfall)
+
+        claims: list[ProdFilePoolClaim] = []
+        for size_class, (candidates, count) in plan.items():
+            taken = 0
+            for candidate in candidates:
+                if taken == count:
+                    break
+                canonical = candidate.duplicate_of or candidate.id
+                claim = ProdFilePoolClaim(
+                    file_id=canonical,
+                    source=source,
+                    label=label,
+                    deployment_id=deployment_id,
+                    deployment_name=deployment_name,
+                    status=ClaimStatus.CLAIMED,
+                    locator_used=candidate.locator,
+                    claimed_at=stamp,
+                )
+                # A savepoint per insert: the unique index is the arbiter, so a
+                # candidate another run claimed first raises here and we simply
+                # move to the next one instead of failing the whole request.
+                nested = self.session.begin_nested()
+                try:
+                    self.session.add(claim)
+                    self.session.flush()
+                    nested.commit()
+                except IntegrityError:
+                    nested.rollback()
+                    continue
+                claims.append(claim)
+                taken += 1
+            if taken < count:
+                # Lost too many races to fill the request. Nothing is committed
+                # yet, so rolling back leaves the pool exactly as it was.
+                self.session.rollback()
+                raise InsufficientPoolInventory(
+                    kind,
+                    {
+                        size_class.value: {
+                            "requested": count,
+                            "available": taken,
+                        }
+                    },
+                )
+
+        self.session.commit()
+        return claims
+
+    # --------------------------------------------------------------- claims
+
+    def list_pool_claims(
+        self,
+        status: ClaimStatus | None = None,
+        source: ClaimSource | None = None,
+        label: str | None = None,
+        stale_before: datetime | None = None,
+        unresolvable: bool = False,
+        deployment_id: int | None = None,
+        file_id: int | None = None,
+    ) -> list[ProdFilePoolClaim]:
+        query = self.session.query(ProdFilePoolClaim)
+        if status is not None:
+            query = query.filter(ProdFilePoolClaim.status == status)
+        if source is not None:
+            query = query.filter(ProdFilePoolClaim.source == source)
+        if label is not None:
+            query = query.filter(ProdFilePoolClaim.label == label)
+        if deployment_id is not None:
+            query = query.filter(ProdFilePoolClaim.deployment_id == deployment_id)
+        if file_id is not None:
+            query = query.filter(ProdFilePoolClaim.file_id == file_id)
+        if stale_before is not None:
+            query = query.filter(ProdFilePoolClaim.claimed_at < stale_before)
+        if unresolvable:
+            # Open, expected to self-resolve, but nothing will ever resolve it:
+            # the deployment row is gone, or the deployment was destroyed, which
+            # took its InfluxDB — and with it the results — permanently.
+            destroyed = select(Deployment.id).where(
+                Deployment.status == DeploymentStatus.DESTROYED
+            )
+            query = query.filter(
+                ProdFilePoolClaim.status == ClaimStatus.CLAIMED,
+                ProdFilePoolClaim.source.in_(tuple(SELF_RESOLVING_SOURCES)),
+                (ProdFilePoolClaim.deployment_id.is_(None))
+                | (ProdFilePoolClaim.deployment_id.in_(destroyed)),
+            )
+        return query.order_by(ProdFilePoolClaim.claimed_at.desc()).all()
+
+    def open_claim_for_file(self, file_id: int) -> ProdFilePoolClaim | None:
+        pool_file = self.session.get(ProdFilePool, file_id)
+        if pool_file is None:
+            return None
+        canonical = pool_file.duplicate_of or pool_file.id
+        return (
+            self.session.query(ProdFilePoolClaim)
+            .filter(
+                ProdFilePoolClaim.file_id == canonical,
+                ProdFilePoolClaim.status != ClaimStatus.RELEASED,
+            )
+            .one_or_none()
+        )
+
+    def resolve_pool_claim(
+        self,
+        claim_id: int,
+        address: str | None = None,
+        chunks_stored: int | None = None,
+        chunks_failed: int | None = None,
+        total_chunks: int | None = None,
+        storage_cost_atto: Decimal | None = None,
+        gas_cost_wei: Decimal | None = None,
+        locator_used: str | None = None,
+        note: str | None = None,
+        when: datetime | None = None,
+    ) -> ProdFilePoolClaim:
+        claim = self.session.get(ProdFilePoolClaim, claim_id)
+        if claim is None:
+            raise ValueError(f"no pool claim with id {claim_id}")
+        if claim.status is ClaimStatus.RELEASED:
+            raise ValueError(
+                f"claim {claim_id} was released and cannot be resolved as uploaded"
+            )
+        claim.status = ClaimStatus.UPLOADED
+        claim.resolved_at = when or datetime.now(timezone.utc)
+        # Only overwrite with something. A re-run of record-results that has
+        # lost a field must not blank what an earlier run captured.
+        if address is not None:
+            claim.address = address
+        if chunks_stored is not None:
+            claim.chunks_stored = chunks_stored
+        if chunks_failed is not None:
+            claim.chunks_failed = chunks_failed
+        if total_chunks is not None:
+            claim.total_chunks = total_chunks
+        if storage_cost_atto is not None:
+            claim.storage_cost_atto = storage_cost_atto
+        if gas_cost_wei is not None:
+            claim.gas_cost_wei = gas_cost_wei
+        if locator_used is not None:
+            claim.locator_used = locator_used
+        if note is not None:
+            claim.note = note
+        self.session.commit()
+        return claim
+
+    def release_pool_claim(
+        self,
+        claim_id: int,
+        note: str | None = None,
+        when: datetime | None = None,
+    ) -> ProdFilePoolClaim:
+        claim = self.session.get(ProdFilePoolClaim, claim_id)
+        if claim is None:
+            raise ValueError(f"no pool claim with id {claim_id}")
+        if claim.status is ClaimStatus.UPLOADED:
+            raise ValueError(
+                f"claim {claim_id} is already uploaded; releasing it would return "
+                "a file that is on the network to the pool"
+            )
+        claim.status = ClaimStatus.RELEASED
+        claim.resolved_at = when or datetime.now(timezone.utc)
+        if note is not None:
+            claim.note = note
+        self.session.commit()
+        return claim
+
+    def attach_deployment_to_claims(
+        self, claim_ids: list[int], deployment_id: int, deployment_name: str
+    ) -> None:
+        if not claim_ids:
+            return
+        for claim in (
+            self.session.query(ProdFilePoolClaim)
+            .filter(ProdFilePoolClaim.id.in_(claim_ids))
+            .all()
+        ):
+            claim.deployment_id = deployment_id
+            claim.deployment_name = deployment_name
+        self.session.commit()
+
+    def blocking_claims_for_files(self, file_ids: list[int]) -> dict:
+        if not file_ids:
+            return {}
+        files = (
+            self.session.query(ProdFilePool)
+            .filter(ProdFilePool.id.in_(file_ids))
+            .all()
+        )
+        canonical_by_file = {f.id: (f.duplicate_of or f.id) for f in files}
+        canonical_ids = set(canonical_by_file.values())
+        claims = (
+            self.session.query(ProdFilePoolClaim)
+            .filter(
+                ProdFilePoolClaim.file_id.in_(canonical_ids),
+                ProdFilePoolClaim.status != ClaimStatus.RELEASED,
+            )
+            .all()
+        )
+        by_canonical = {claim.file_id: claim for claim in claims}
+        return {
+            file_id: by_canonical[canonical]
+            for file_id, canonical in canonical_by_file.items()
+            if canonical in by_canonical
+        }
+
+    def get_pool_file_by_address(self, address: str) -> ProdFilePool | None:
+        claim = (
+            self.session.query(ProdFilePoolClaim)
+            .filter(ProdFilePoolClaim.address == address)
+            .first()
+        )
+        if claim is None:
+            return None
+        return self.session.get(ProdFilePool, claim.file_id)
+
+    def seed_uploaded_claim(
+        self,
+        file_id: int,
+        source: ClaimSource,
+        address: str | None = None,
+        chunks_stored: int | None = None,
+        chunks_failed: int | None = None,
+        total_chunks: int | None = None,
+        storage_cost_atto: Decimal | None = None,
+        gas_cost_wei: Decimal | None = None,
+        deployment_id: int | None = None,
+        deployment_name: str | None = None,
+        when: datetime | None = None,
+        note: str | None = None,
+    ) -> ProdFilePoolClaim | None:
+        pool_file = self.session.get(ProdFilePool, file_id)
+        if pool_file is None:
+            return None
+        canonical = pool_file.duplicate_of or pool_file.id
+        stamp = when or datetime.now(timezone.utc)
+        claim = ProdFilePoolClaim(
+            file_id=canonical,
+            source=source,
+            deployment_id=deployment_id,
+            deployment_name=deployment_name,
+            status=ClaimStatus.UPLOADED,
+            address=address,
+            chunks_stored=chunks_stored,
+            chunks_failed=chunks_failed,
+            total_chunks=total_chunks,
+            storage_cost_atto=storage_cost_atto,
+            gas_cost_wei=gas_cost_wei,
+            claimed_at=stamp,
+            resolved_at=stamp,
+            note=note,
+        )
+        nested = self.session.begin_nested()
+        try:
+            self.session.add(claim)
+            self.session.flush()
+            nested.commit()
+        except IntegrityError:
+            # Already spent or claimed — the partial unique index says so, which
+            # is what makes re-running this safe.
+            nested.rollback()
+            return None
+        self.session.commit()
+        return claim

@@ -28,8 +28,28 @@ from saorsa_deploy.orchestrator.steps import (
 from saorsa_deploy.provisioning.network_profile import format_network_token
 
 
+def _format_pool_request(pool: dict) -> str:
+    """Render a {class: count} request as the CLI spec token body.
+
+    Order follows the size-class order rather than dict insertion, so the same
+    manifest always produces the same argv — which matters because the step
+    journal compares argv to decide whether a resumed run matches its plan.
+    """
+    from saorsa_db.size_class import ordered as size_class_ordered
+
+    known = {c.value: c for c in size_class_ordered()}
+    ordered_keys = [c.value for c in size_class_ordered() if c.value in pool]
+    # Anything unrecognised is passed through (and rejected downstream with a
+    # message naming the valid classes) rather than silently dropped.
+    ordered_keys += [k for k in pool if k not in known]
+    return ",".join(f"{key}:{pool[key]}" for key in ordered_keys)
+
+
 def _prod_uploader_spec(u) -> str:
-    spec = f"{u.region}:{u.vm_size}:urls={u.urls}"
+    if u.pool:
+        spec = f"{u.region}:{u.vm_size}:pool={_format_pool_request(u.pool)}"
+    else:
+        spec = f"{u.region}:{u.vm_size}:urls={u.urls}"
     if u.payment:
         spec += f":payment={u.payment}"
     if u.log_level:
@@ -202,7 +222,10 @@ def _canary(manifest: Manifest) -> list[Step]:
     ]
     for p in spec.probes:
         argv += ["--probe-spec", _probe_spec(p)]
-    argv += ["--urls-file", spec.urls_file]
+    if spec.pool is not None:
+        argv += ["--pool", _format_pool_request(spec.pool)]
+    else:
+        argv += ["--urls-file", spec.urls_file]
     if spec.upload_sleep_secs is not None:
         argv += ["--upload-sleep-secs", str(spec.upload_sleep_secs)]
     if spec.probe_concurrency is not None:
@@ -220,7 +243,9 @@ def _canary(manifest: Manifest) -> list[Step]:
 def _local_uploads(manifest: Manifest) -> list[Step]:
     spec = manifest.prod_local_uploads
     argv = ["prod", "local-uploads", "--name", manifest.name, "--purpose", manifest.purpose]
-    if spec.urls is not None:
+    if spec.pool is not None:
+        argv += ["--from-pool", _format_pool_request(spec.pool)]
+    elif spec.urls is not None:
         argv += ["--urls", spec.urls]
     else:
         argv += ["--local-dir-path", spec.local_dir]

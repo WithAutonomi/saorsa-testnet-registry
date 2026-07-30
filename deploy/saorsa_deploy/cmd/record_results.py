@@ -13,6 +13,7 @@ The CLI entry point ``cmd_record_results`` resolves the deployment's
   uploads/downloads write directly to Postgres at run time; there is
   nothing to record.
 """
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -93,6 +94,11 @@ def cmd_record_results(args):
             influx_url, influx_token, influx_org, influx_bucket,
         )
 
+    # Close the pool claims this deployment took. Only reached for the remote
+    # kinds: prod-local-uploads resolves its claims inline as it uploads, and
+    # returns above before ever getting here.
+    _resolve_pool_claims(repo, deployment, kind, console)
+
     if getattr(args, "update_slack", False):
         _post_results_to_slack(repo, deployment, console, results_blocks)
 
@@ -154,6 +160,9 @@ def _results_header_block(deployment) -> dict:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_kind(deploy_args) -> str:
@@ -569,3 +578,117 @@ def _record_prod_upload(
     )
 
     return prod_upload_result_blocks(points)
+
+
+def _resolve_pool_claims(repo, deployment, kind: str, console) -> None:
+    """Mark this deployment's pool claims as uploaded, with what the network gave back.
+
+    The two source tables describe the same concepts under different names —
+    ``address``/``top_address``, ``total_chunks``/``num_chunks`` — so each kind
+    needs its own reader rather than one generic path.
+
+    An **upsert**, not an insert-once: ``record-results`` is idempotent and
+    re-runnable, and a later pass can carry revised costs. A claim whose file
+    has no matching result row is left open rather than guessed at — an upload
+    that did not happen must not be recorded as though it did.
+    """
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    pool_repo = get_file_pool_repository()
+    if pool_repo is None:
+        return
+
+    try:
+        _resolve_pool_claims_inner(repo, pool_repo, deployment, kind, console)
+    except Exception:
+        # Closing pool claims is auxiliary to recording results. A registry
+        # that predates the pool migration, or any other read failure here,
+        # must not cost the operator the results themselves — those live in an
+        # InfluxDB that the teardown is about to destroy.
+        logger.debug("Could not resolve file-pool claims", exc_info=True)
+        console.print(
+            "[dim]Could not resolve file-pool claims (the pool tables may not "
+            "exist yet); results were recorded normally.[/dim]"
+        )
+
+
+def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) -> None:
+    # Released claims are excluded, but already-uploaded ones are NOT: a later
+    # pass can carry revised costs, and skipping them would make this
+    # insert-once in practice however the resolve method behaves.
+    from saorsa_db.models.prod_file_pool import ClaimStatus
+    from saorsa_db.models.prod_upload_result import ProdUploadStatus
+
+    claims = [
+        claim
+        for claim in pool_repo.list_pool_claims(deployment_id=deployment.id)
+        if claim.status is not ClaimStatus.RELEASED
+    ]
+    if not claims:
+        return
+
+    by_name: dict[str, dict] = {}
+    if kind == "prod-uploaders":
+        for row in repo.list_prod_upload_results_for_deployment(deployment.id):
+            if row.status is not ProdUploadStatus.SUCCESS:
+                continue
+            by_name[row.file_name] = {
+                "address": row.address,
+                "chunks_stored": row.chunks_stored,
+                "chunks_failed": row.chunks_failed,
+                "total_chunks": row.total_chunks,
+                "storage_cost_atto": row.storage_cost_atto,
+                "gas_cost_wei": row.gas_cost_wei,
+            }
+    elif kind == "prod-canary":
+        for row in repo.list_prod_canary_uploads_for_deployment(deployment.id):
+            by_name[row.file_name] = {
+                "address": row.top_address,
+                "chunks_stored": None,
+                "chunks_failed": None,
+                "total_chunks": row.num_chunks,
+                "storage_cost_atto": row.storage_cost_atto,
+                "gas_cost_wei": row.gas_cost_wei,
+            }
+    else:
+        return
+
+    newly_resolved = 0
+    refreshed = 0
+    still_open = 0
+    for claim in claims:
+        pool_file = pool_repo.get_pool_file(claim.file_id)
+        if pool_file is None:
+            continue
+        payload = by_name.get(pool_file.name)
+        if payload is None:
+            if claim.is_open:
+                still_open += 1
+            continue
+        was_open = claim.is_open
+        pool_repo.resolve_pool_claim(claim.id, **payload)
+        if was_open:
+            newly_resolved += 1
+        else:
+            refreshed += 1
+
+    if newly_resolved:
+        console.print(
+            f"[dim]Resolved {newly_resolved} file-pool claim(s) for this "
+            "deployment.[/dim]"
+        )
+    if refreshed:
+        console.print(
+            f"[dim]Refreshed {refreshed} already-resolved file-pool "
+            "claim(s).[/dim]"
+        )
+    if still_open:
+        # Not silently ignored: an unresolved claim means a file was handed out
+        # and has no recorded upload, which is exactly the state the operator
+        # needs to see rather than have assumed away.
+        console.print(
+            f"[yellow]{still_open} file-pool claim(s) have no matching upload "
+            "result and remain open. See `prod pool claims "
+            f"--consumer {deployment.name}` or `prod pool claims "
+            "--unresolvable`.[/yellow]"
+        )

@@ -398,6 +398,82 @@ metrics. Impl: `deploy/saorsa_deploy/cmd/upgrade_ant_binary.py`,
 
 See `deploy/README.md` §"Upgrading the `ant` binary in place" for the full argument table.
 
+### The production upload file pool (`prod pool`)
+
+Production uploads must use **real files**, and a file must **never be uploaded
+twice** — a canary measuring chunk loss on content already on the network for
+months measures nothing. `prod pool` is the catalogue those files come from plus
+the ledger of what has been handed out. Three tables in the registry:
+`prod_file_pool` (references, never bytes), `prod_file_pool_digests` (one row per
+file+algorithm) and `prod_file_pool_claims` (one row per hand-out). Impl:
+`db/saorsa_db/{size_class,models/prod_file_pool}.py`,
+`deploy/saorsa_deploy/{pool_selection,pool_sources,results_guard}.py`,
+`cmd/prod_pool.py`.
+
+Two kinds live in one catalogue — `url` (fetchable by a VM) and `local` (a path
+on the operator's machine) — and **the consumer chooses the kind, never a flag**,
+so no manifest can ask an uploader VM for a file on the laptop. Selection is by
+**size class** derived from bytes (`tiny` <10MiB, `small` <100MiB, `medium`
+<1GiB, `large` <5GiB, `xlarge` ≥5GiB; binary, half-open). Deliberately NOT the
+`file_size_buckets_mb` in `resources/gates/staging-thresholds.yaml`, which bucket
+transfer *durations* for the gates.
+
+A file is `available` (no blocking claim), `claimed` (handed out, unconfirmed) or
+`uploaded` (confirmed, address recorded). `claimed` is **not** evidence anything
+reached production. A **partial unique index** on `prod_file_pool_claims`
+excluding `released` makes "at most one blocking claim per file" a database
+guarantee — two concurrent deploys racing for the last large file cannot both
+win, and an `uploaded` file can never be reclaimed.
+
+**Consumers.** `prod uploaders` (`pool=small:3,medium:2` spec token / per-uploader
+`pool:` manifest key, exclusive with `urls`), `prod canary` (`--pool` /
+`pool:`, exclusive with `urls_file`), `prod local-uploads` (`--from-pool` /
+`pool:`, exclusive with `urls`/`local_dir`), and manual `prod pool checkout` for
+the **desktop application** — which has no DB link, so the *checkout* spends the
+file, not the upload. Four invariants: selection runs **before any
+infrastructure** (a shortfall aborts with no VMs and no mainnet spend, naming
+which inventory fell short); it is **all-or-nothing** across classes; the
+selection is **persisted to S3** so `up --resume` reuses it rather than drawing a
+fresh ~350 files; and claims attach to the **canonical** file so a duplicate
+group is spent once.
+
+**Claim resolution.** `record-results` closes claims for `prod-uploaders` (from
+`deployment_prod_upload_results`) and `prod-canary` (from `prod_canary_uploads` —
+different column names for the same concepts), recording address, chunks and
+ANT/ETH cost; it upserts, so a re-run can revise. `prod-local-uploads` resolves
+inline per file (a failed upload **releases** rather than spends). Wrapped so a
+registry predating the migration cannot cost the operator their results.
+
+**Scale.** The canary is the dominant consumer: ~350 distinct files burned
+permanently per run (382/311/313 measured), small+medium only. `prod pool add
+--from-listing internet-archive:<item>` reads IA item metadata — name, size, MD5
+and SHA1 per file — so hundreds of entries are catalogued without downloading
+anything, and those real checksums are what let an IA URL and a local copy be
+recognised as one piece of content (`duplicate_of`).
+
+**Two honest limits.** `import-history` matches on **file name** — all the
+recorded history holds — and errs toward marking spent, since a false match is
+undone by `release` while a missed one ruins a canary. And a URL from a source
+publishing no checksum that is never downloaded **cannot** be deduplicated before
+upload; `verify` reports how many entries are in that state, and the datamap
+address (verified content-deterministic: 15/15 repeat uploads produced one
+address each) catches it afterwards.
+
+**Teardown guard.** Remote upload results sit in the deployment's InfluxDB until
+`record-results` runs, and teardown destroys that VM. `prod uploaders destroy`
+(and `prod canary destroy --no-keep-monitoring`) compare recorded rows against
+the deployment's pool claims — which say exactly how many files the run took —
+and **warn loudly rather than block**: refusing on a non-TTY would strand
+billable infrastructure when `down` runs unattended. `--skip-results-check`
+silences it. Impl: `results_guard.py`.
+
+**`prod files` now reads both upload tables.** It previously read only
+`deployment_prod_upload_results` and so could not see the ~1006 canary files —
+two thirds of what production holds.
+
+See `deploy/README.md` §"Managing the production file pool" for the full command
+and argument reference.
+
 ### Running prod uploaders
 
 `prod uploaders deploy` is the upload-side equivalent of `prod continuous-downloader`: it stands up one or more client VMs that each upload a list of public files to the production Autonomi network with `ant --json file upload --public`, then exit when the list is exhausted. Per-file results (chunks_stored / chunks_failed / address / file size / duration) are emitted to a `prod_upload` Influx measurement on a paired monitoring VM.

@@ -400,7 +400,12 @@ class ExtensionSpec(_Base):
 class ProdUploader(_Base):
     region: str
     vm_size: str
-    urls: str  # path to URL list (uploaded with --public)
+    # Exactly one file source. `urls` is the legacy hand-written list, where
+    # "not already uploaded" is only checked by a name-based preflight.
+    # `pool` is a {size_class: count} request against the managed file pool,
+    # which cannot return a file that has ever been handed out.
+    urls: Optional[str] = None  # path to URL list (uploaded with --public)
+    pool: Optional[dict[str, int]] = None
     payment: Optional[Payment] = None
     # ant log verbosity for this VM's uploads; None omits the token (defaults
     # to info on the VM). info=-v, debug=-vv, trace=-vvv.
@@ -422,6 +427,14 @@ class ProdUploader(_Base):
     # name ("home-calibrated") or an inline mapping. This is the primary use case —
     # a cloud VM's ~gigabit uplink is not how real users upload.
     network: Optional[Network] = None
+
+    @model_validator(mode="after")
+    def _one_file_source(self) -> "ProdUploader":
+        if bool(self.urls) == bool(self.pool):
+            raise ValueError(
+                "prod_uploaders.uploaders[]: set exactly one of `urls` or `pool`"
+            )
+        return self
 
 
 class ProdUploadersSpec(_Base):
@@ -500,7 +513,11 @@ class ProdCanarySpec(_Base):
     secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
     upload_spec: str  # 'REGION[:VM_SIZE]'
     probes: list[ProdProbe]
-    urls_file: str
+    # Exactly one file source. `pool` is a {size_class: count} request against
+    # the managed pool; a canary consumes ~350 distinct files per run and they
+    # must never have been uploaded before, or the loss measurement is void.
+    urls_file: Optional[str] = None
+    pool: Optional[dict[str, int]] = None
     upload_sleep_secs: Optional[int] = None
     probe_concurrency: Optional[int] = None
     monitoring_volume_size: Optional[int] = None
@@ -520,6 +537,10 @@ class ProdCanarySpec(_Base):
     def _at_least_one_probe(self) -> "ProdCanarySpec":
         if not self.probes:
             raise ValueError("prod_canary.probes: at least one probe is required")
+        if bool(self.urls_file) == bool(self.pool):
+            raise ValueError(
+                "prod_canary: set exactly one of `urls_file` or `pool`"
+            )
         return self
 
 
@@ -528,6 +549,9 @@ class ProdLocalUploadsSpec(_Base):
     secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
     urls: Optional[str] = None
     local_dir: Optional[str] = None
+    # {size_class: count} against the managed pool. LOCAL entries only — this
+    # kind uploads from the operator's disk, so a URL entry is meaningless here.
+    pool: Optional[dict[str, int]] = None
     payment: Optional[Payment] = None
     # ant log verbosity (info=default, debug, trace). The documented knob.
     log_level: Optional[LogLevel] = None
@@ -540,8 +564,11 @@ class ProdLocalUploadsSpec(_Base):
 
     @model_validator(mode="after")
     def _input_mode(self) -> "ProdLocalUploadsSpec":
-        if bool(self.urls) == bool(self.local_dir):
-            raise ValueError("prod_local_uploads: set exactly one of `urls` or `local_dir`")
+        chosen = sum(1 for value in (self.urls, self.local_dir, self.pool) if value)
+        if chosen != 1:
+            raise ValueError(
+                "prod_local_uploads: set exactly one of `urls`, `local_dir` or `pool`"
+            )
         return self
 
 

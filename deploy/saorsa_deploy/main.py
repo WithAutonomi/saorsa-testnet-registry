@@ -4094,6 +4094,14 @@ def main(argv=None):
     )
 
     # --- prod canary ---
+    prod_up_destroy_parser.add_argument(
+        "--skip-results-check",
+        action="store_true",
+        help="Skip the warning about results that were never recorded to "
+        "Postgres. Destroying the monitoring VM destroys its InfluxDB, and "
+        "anything unrecorded goes with it permanently.",
+    )
+
     prod_canary_parser = prod_subparsers.add_parser(
         "canary",
         help=(
@@ -4287,6 +4295,14 @@ def main(argv=None):
     )
 
     # --- prod canary provision-reporter ---
+    prod_canary_destroy_parser.add_argument(
+        "--skip-results-check",
+        action="store_true",
+        help="Skip the warning about results that were never recorded to "
+        "Postgres. Destroying the monitoring VM destroys its InfluxDB, and "
+        "anything unrecorded goes with it permanently.",
+    )
+
     prod_canary_pr_parser = prod_canary_subparsers.add_parser(
         "provision-reporter",
         help=(
@@ -4372,6 +4388,16 @@ def main(argv=None):
     )
 
     # --- prod local-uploads ---
+    prod_canary_parser.add_argument(
+        "--pool",
+        type=str,
+        metavar="CLASS:COUNT",
+        help="Draw the canary's files from the managed pool instead of "
+        "--urls-file, e.g. tiny:40,small:230,medium:110. Selected files have "
+        "never been uploaded to production — which is what makes a loss "
+        "measurement meaningful.",
+    )
+
     prod_lu_parser = prod_subparsers.add_parser(
         "local-uploads",
         help=(
@@ -4480,6 +4506,15 @@ def main(argv=None):
     )
 
     # --- prod local-downloads ---
+    prod_lu_parser.add_argument(
+        "--from-pool",
+        type=str,
+        metavar="CLASS:COUNT",
+        help="Draw LOCAL files from the managed pool instead of --urls or "
+        "--local-dir-path, e.g. tiny:10,small:2. Selected files have never "
+        "been uploaded to production.",
+    )
+
     prod_ld_parser = prod_subparsers.add_parser(
         "local-downloads",
         help=(
@@ -4800,6 +4835,301 @@ def main(argv=None):
     )
 
     # --- prod files ---
+    # =========================================================================
+    # === prod pool — the catalogue of real files for production uploads ===
+    # =========================================================================
+    prod_pool_parser = prod_subparsers.add_parser(
+        "pool",
+        help="Manage the pool of real files available for production uploads: "
+        "public URLs for remote uploader VMs, local paths for local uploads "
+        "and the desktop application. A pooled file is never handed out twice.",
+    )
+    prod_pool_subparsers = prod_pool_parser.add_subparsers(
+        dest="prod_pool_action", required=True
+    )
+
+    prod_pool_add_parser = prod_pool_subparsers.add_parser(
+        "add",
+        help="Catalogue files from URLs or the local filesystem.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--url",
+        action="append",
+        help="A public URL to catalogue. Repeatable.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--urls-file",
+        type=str,
+        help="File of newline-separated URLs (# comments allowed).",
+    )
+    prod_pool_add_parser.add_argument(
+        "--dir",
+        type=str,
+        help="Directory to catalogue recursively, as local entries.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--path",
+        type=str,
+        help="A single local file to catalogue.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--tag",
+        action="append",
+        help="Label to attach for grouping (e.g. video, corpus). Repeatable.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--provenance",
+        type=str,
+        help="Where these files came from, kept so a curated pool stays auditable.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--allow-unknown-size",
+        action="store_true",
+        help="Catalogue a URL whose host publishes no Content-Length. Such an "
+        "entry is INVISIBLE to size-class selection until `pool verify` "
+        "resolves its size.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--hash",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compute SHA1+SHA256 for local files (default on). SHA1 is what "
+        "the Internet Archive publishes, and is the only way a local file and "
+        "a remote URL can be recognised as the same content.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--materialise",
+        type=str,
+        metavar="DIR",
+        help="Download each URL into DIR and catalogue the local copy instead "
+        "of the URL, so one piece of content is one entry.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--from-listing",
+        type=str,
+        metavar="KIND:ID",
+        help="Bulk-catalogue a public collection, e.g. "
+        "internet-archive:<item-id>. Entries arrive pre-sized and pre-hashed "
+        "from the source's own metadata — nothing is downloaded, and the real "
+        "checksums are what let these be matched against local copies. A "
+        "canary run consumes ~350 files, so this is the practical way to keep "
+        "the pool stocked.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--size",
+        choices=["tiny", "small", "medium", "large", "xlarge"],
+        help="With --from-listing, take only files in this size class.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--limit",
+        type=int,
+        help="With --from-listing, take at most this many files.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --from-listing, show what would be catalogued.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--originals-only",
+        action="store_true",
+        help="With --from-listing, restrict to files the source marks as "
+        "originals. On Internet Archive media items this usually EXCLUDES the "
+        "real content — the ingested media is marked 'derivative' and the only "
+        "originals are metadata and a torrent — so it is off by default.",
+    )
+
+    prod_pool_list_parser = prod_pool_subparsers.add_parser(
+        "list",
+        help="List catalogued files and their state.",
+    )
+    prod_pool_list_parser.add_argument(
+        "--status",
+        choices=["available", "claimed", "uploaded"],
+        help="available = never handed out; claimed = handed out but not "
+        "confirmed on the network; uploaded = confirmed, with a datamap "
+        "address. A claimed file is NOT on the network.",
+    )
+    prod_pool_list_parser.add_argument(
+        "--kind", choices=["url", "local"], help="Restrict to one inventory."
+    )
+    prod_pool_list_parser.add_argument(
+        "--size",
+        choices=["tiny", "small", "medium", "large", "xlarge"],
+        help="Restrict to one size class.",
+    )
+    prod_pool_list_parser.add_argument(
+        "--tag", action="append", help="Restrict to entries carrying a tag."
+    )
+    prod_pool_list_parser.add_argument(
+        "--since", type=str, help="Only entries added since (ISO date, or 7d / 24h)."
+    )
+    prod_pool_list_parser.add_argument("--limit", type=int, help="Cap the rows shown.")
+    prod_pool_list_parser.add_argument(
+        "--all", action="store_true", help="Include retired (inactive) entries."
+    )
+
+    prod_pool_show_parser = prod_pool_subparsers.add_parser(
+        "show",
+        help="Show one file in full, including its upload result if it has one.",
+    )
+    prod_pool_show_parser.add_argument(
+        "file_id", type=int, nargs="?", help="Pool file id."
+    )
+    prod_pool_show_parser.add_argument(
+        "--address",
+        type=str,
+        help="Reverse lookup: find the file that produced this datamap address.",
+    )
+
+    prod_pool_subparsers.add_parser(
+        "stats",
+        help="Availability per size class, split by kind. The two kinds are "
+        "separate inventories and are never summed.",
+    )
+
+    prod_pool_checkout_parser = prod_pool_subparsers.add_parser(
+        "checkout",
+        help="Take a file out of the pool by hand — for the desktop "
+        "application, or anything else with no link to this database. The "
+        "checkout is what spends the file, not the upload.",
+    )
+    prod_pool_checkout_parser.add_argument(
+        "--size",
+        required=True,
+        choices=["tiny", "small", "medium", "large", "xlarge"],
+        help="Which size class to draw from.",
+    )
+    prod_pool_checkout_parser.add_argument(
+        "--count", type=int, default=1, help="How many files (default 1)."
+    )
+    prod_pool_checkout_parser.add_argument(
+        "--kind",
+        choices=["local", "url"],
+        default="local",
+        help="Default local, since the desktop application reads from disk.",
+    )
+    prod_pool_checkout_parser.add_argument(
+        "--consumer",
+        type=str,
+        help="Free-text label so you can find these claims again "
+        "(e.g. desktop-app). Defaults to 'manual'.",
+    )
+    prod_pool_checkout_parser.add_argument(
+        "--reuse-open",
+        action="store_true",
+        help="Show the claims this consumer already holds instead of spending "
+        "another file.",
+    )
+
+    prod_pool_claims_parser = prod_pool_subparsers.add_parser(
+        "claims",
+        help="Show what is currently checked out. Open claims by default — "
+        "this is how you find a file you took earlier and never resolved.",
+    )
+    prod_pool_claims_parser.add_argument(
+        "--consumer", type=str, help="Only claims carrying this label."
+    )
+    prod_pool_claims_parser.add_argument(
+        "--source",
+        choices=["prod-uploaders", "prod-local-uploads", "prod-canary", "manual"],
+        help="Only claims taken by this consumer type.",
+    )
+    prod_pool_claims_parser.add_argument(
+        "--status",
+        choices=["claimed", "uploaded", "released"],
+        help="Filter by claim status (default: open claims only).",
+    )
+    prod_pool_claims_parser.add_argument(
+        "--stale",
+        type=str,
+        metavar="AGE",
+        help="Only claims open longer than AGE (e.g. 7d, 24h). Excludes "
+        "deployment-backed claims, which are pending rather than forgotten.",
+    )
+    prod_pool_claims_parser.add_argument(
+        "--include-deployments",
+        action="store_true",
+        help="With --stale, also show deployment-backed claims.",
+    )
+    prod_pool_claims_parser.add_argument(
+        "--unresolvable",
+        action="store_true",
+        help="Only claims no record-results run can ever close, because their "
+        "deployment — and its InfluxDB — is gone.",
+    )
+    prod_pool_claims_parser.add_argument(
+        "--all", action="store_true", help="Include resolved and released claims."
+    )
+
+    prod_pool_verify_parser = prod_pool_subparsers.add_parser(
+        "verify",
+        help="Re-check entries against reality: URLs that have rotted, local "
+        "files that moved, sizes that changed. Finding out mid-deploy on a "
+        "funded mainnet wallet is the expensive way.",
+    )
+    prod_pool_verify_parser.add_argument(
+        "--kind", choices=["url", "local"], help="Restrict to one inventory."
+    )
+    prod_pool_verify_parser.add_argument(
+        "--limit", type=int, help="Check at most this many entries."
+    )
+    prod_pool_verify_parser.add_argument(
+        "--rehash",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Re-hash a local file whose size changed (default on).",
+    )
+
+    prod_pool_import_parser = prod_pool_subparsers.add_parser(
+        "import-history",
+        help="Mark pooled files that are already on the production network as "
+        "spent, from BOTH recorded upload tables (prod-uploaders results AND "
+        "canary uploads). Idempotent — re-run it whenever uploads happen "
+        "outside the pool.",
+    )
+    prod_pool_import_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be marked spent without writing anything.",
+    )
+
+    prod_pool_history_parser = prod_pool_subparsers.add_parser(
+        "history", help="Every claim ever made against one file."
+    )
+    prod_pool_history_parser.add_argument("file_id", type=int)
+
+    prod_pool_release_parser = prod_pool_subparsers.add_parser(
+        "release",
+        help="Return claimed file(s) to the pool. Never automatic — a claim "
+        "that might correspond to a real upload must not be freed by a sweep.",
+    )
+    prod_pool_release_parser.add_argument("file_ids", type=int, nargs="+")
+    prod_pool_release_parser.add_argument("--note", type=str, help="Why.")
+
+    prod_pool_mark_parser = prod_pool_subparsers.add_parser(
+        "mark-uploaded",
+        help="Record that a checked-out file reached the network.",
+    )
+    prod_pool_mark_parser.add_argument("file_id", type=int)
+    prod_pool_mark_parser.add_argument(
+        "--address", type=str, help="The datamap address the upload produced."
+    )
+    prod_pool_mark_parser.add_argument("--chunks-stored", type=int)
+    prod_pool_mark_parser.add_argument("--chunks-failed", type=int)
+    prod_pool_mark_parser.add_argument("--total-chunks", type=int)
+    prod_pool_mark_parser.add_argument(
+        "--storage-cost-atto",
+        type=str,
+        help="Storage cost in atto (a whole number, not ANT).",
+    )
+    prod_pool_mark_parser.add_argument(
+        "--gas-cost-wei",
+        type=str,
+        help="Gas cost in wei (a whole number, not ETH).",
+    )
+    prod_pool_mark_parser.add_argument("--note", type=str)
+
     prod_files_parser = prod_subparsers.add_parser(
         "files",
         help="List every file uploaded to the production Autonomi network "
@@ -5504,6 +5834,56 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_survey_report
 
             cmd_prod_services_survey_report(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "add":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_add
+
+            cmd_prod_pool_add(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "list":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_list
+
+            cmd_prod_pool_list(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "show":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_show
+
+            cmd_prod_pool_show(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "stats":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_stats
+
+            cmd_prod_pool_stats(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "checkout":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_checkout
+
+            cmd_prod_pool_checkout(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "claims":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_claims
+
+            cmd_prod_pool_claims(args)
+        elif (
+            args.prod_subcommand == "pool"
+            and args.prod_pool_action == "import-history"
+        ):
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_import_history
+
+            cmd_prod_pool_import_history(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "verify":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_verify
+
+            cmd_prod_pool_verify(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "history":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_history
+
+            cmd_prod_pool_history(args)
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "release":
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_release
+
+            cmd_prod_pool_release(args)
+        elif (
+            args.prod_subcommand == "pool"
+            and args.prod_pool_action == "mark-uploaded"
+        ):
+            from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_mark_uploaded
+
+            cmd_prod_pool_mark_uploaded(args)
         elif args.prod_subcommand == "files":
             from saorsa_deploy.cmd.prod_files import cmd_prod_files
 

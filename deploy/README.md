@@ -1393,6 +1393,172 @@ Only `prod-downloaders` and `prod-continuous-downloader` deployments are support
 
 **`--no-restart` note**: the `prod_downloader.py` service has no checkpoint/resume state — every start walks its full address list from the beginning. For `prod-continuous-downloader` this is harmless (it loops forever anyway), but restarting a `prod-downloaders` (one-shot) deployment that has already completed its single pass re-runs the entire address list, duplicating Influx points and any already-recorded results. Pass `--no-restart` for a completed one-shot deployment and restart the service manually only when you actually want another full pass.
 
+### Managing the production file pool (`prod pool`)
+
+Production uploads must use **real files**, and a file must **never be uploaded
+twice** — a canary measuring chunk loss on content that has already been on the
+network for months is measuring nothing. The pool is the catalogue those files
+come from and the ledger of what has been handed out.
+
+Two kinds of entry live in one catalogue:
+
+| Kind | What it is | Who can use it |
+|------|-----------|----------------|
+| `url` | a public URL | `prod uploaders`, `prod canary` (a VM fetches it at runtime) |
+| `local` | an absolute path on this machine | `prod local-uploads`, the desktop application |
+
+**The consumer chooses the kind, never a flag.** A remote uploader VM cannot
+read a path on your laptop, so there is deliberately no way to write a manifest
+that asks it to.
+
+#### Size classes
+
+Selection is by size class, derived from the file's byte count — never stored,
+so a boundary change reclassifies the whole catalogue at once.
+
+| Class | Range (binary, half-open) |
+|-------|---------------------------|
+| `tiny` | 0 – 10 MiB |
+| `small` | 10 – 100 MiB |
+| `medium` | 100 MiB – 1 GiB |
+| `large` | 1 – 5 GiB |
+| `xlarge` | 5 GiB+ |
+
+Exactly 10 MiB is `small`. Note a file of 1,045,869,721 bytes reads as "1.05 GB"
+decimal but is 997 MiB, so it is `medium`.
+
+These are **not** the `file_size_buckets_mb` in
+`resources/gates/staging-thresholds.yaml`, which bucket *transfer durations* for
+the staging gates and are recalibrated quarterly. Do not wire one into the other.
+
+#### The three states of a file
+
+| State | Meaning |
+|-------|---------|
+| `available` | never handed out |
+| `claimed` | handed out, not confirmed on the network |
+| `uploaded` | confirmed, with a datamap address recorded |
+
+`claimed` is **not** evidence that anything reached production. For a
+deployment-backed claim it usually means "uploaded but `record-results` has not
+run yet"; for a manual checkout it means you still have to say what happened.
+
+#### Commands
+
+| Command | What it does |
+|---------|--------------|
+| `prod pool add --url/--urls-file/--dir/--path` | Catalogue files. URLs are size-probed; local files are hashed SHA1+SHA256. |
+| `prod pool add --from-listing internet-archive:<item>` | Bulk-catalogue a public collection. Entries arrive pre-sized and pre-hashed from the source's metadata — nothing is downloaded. |
+| `prod pool list [--status] [--kind] [--size] [--tag] [--since] [--limit] [--all]` | What is in the pool and what state it is in. |
+| `prod pool show <file> \| --address <addr>` | One file in full, including its upload result and costs. Reverse lookup by datamap address. |
+| `prod pool stats` | Availability per size class, split by kind. |
+| `prod pool checkout --size CLASS [--count N] [--kind] [--consumer LABEL] [--reuse-open]` | Take a file by hand, for the desktop application or anything else. |
+| `prod pool claims [--consumer] [--source] [--stale AGE] [--unresolvable] [--all]` | What is checked out. Open claims by default. |
+| `prod pool history <file>` | Every claim ever made against one file. |
+| `prod pool mark-uploaded <file> --address <addr> [--chunks-stored …] [--storage-cost-atto …]` | Record that a checked-out file reached the network. |
+| `prod pool release <file>…` | Give claimed file(s) back. |
+| `prod pool verify [--kind] [--limit] [--no-rehash]` | Re-check entries: rotted URLs, moved files, changed sizes. |
+| `prod pool import-history [--dry-run]` | Mark files already on the network as spent, from **both** upload tables. |
+
+Everything is addressed by **file id**, never claim id — a file carries at most
+one blocking claim, so a claim id is an implementation detail.
+
+#### The desktop-application flow
+
+Nothing in a GUI application can write to this database, so the **checkout** is
+what spends the file, not the upload:
+
+```bash
+saorsa-deploy prod pool checkout --size small --count 1 --consumer desktop-app
+# … upload it in the app …
+saorsa-deploy prod pool mark-uploaded 118 --address <datamap-address>
+# or, if it did not happen:
+saorsa-deploy prod pool release 118
+```
+
+Come back later without the id? `prod pool claims` lists everything open, and
+`--consumer desktop-app` narrows it to yours.
+
+#### Drawing from the pool in a deploy
+
+| Kind | Manifest | CLI |
+|------|----------|-----|
+| `prod-uploaders` | `pool: {small: 3, medium: 2}` per uploader, exclusive with `urls` | `--uploader lon1:s-4vcpu-8gb:pool=small:3,medium:2` |
+| `prod-canary` | `pool: {…}`, exclusive with `urls_file` | `--pool tiny:40,small:230,medium:110` |
+| `prod-local-uploads` | `pool: {…}`, exclusive with `urls`/`local_dir` | `--from-pool tiny:10` |
+
+```yaml
+kind: prod-uploaders
+name: PROD-UL-05
+binary:
+  ant:
+    version: 0.5.2
+prod_uploaders:
+  uploaders:
+    - region: lon1
+      vm_size: s-4vcpu-8gb
+      concurrency: 4
+      pool:
+        small: 3
+        medium: 2
+```
+
+Four things this guarantees:
+
+* **Selection runs before any infrastructure.** A shortfall aborts with no VMs
+  created and no mainnet spend, and the error names which inventory fell short —
+  plenty of large *local* files are no help to a remote uploader.
+* **Selection is all-or-nothing.** A request for 40 tiny + 230 small + 110
+  medium that runs short on medium claims *nothing*, rather than burning 270
+  files on a run that then aborts.
+* **`up --resume` reuses the same files.** The selection is persisted to S3, so
+  a retried deploy does not draw a fresh set while the first sits claimed.
+* **The duplicate preflight becomes redundant.** `--allow-duplicate-files` and
+  the name-based check still apply to the legacy `urls=` path, but a pool
+  selection cannot return a spent file by construction.
+
+#### Keeping the pool stocked
+
+A canary run consumes roughly **350 distinct files, permanently**, once per
+release train — measured at 382 / 311 / 313 across the three runs to date,
+concentrated in `small` and `medium` with none at all in `large`/`xlarge`. Hand
+curation cannot feed that, which is what `--from-listing` is for:
+
+```bash
+saorsa-deploy prod pool add --from-listing internet-archive:<item> --size small --limit 250
+saorsa-deploy prod pool stats
+```
+
+Internet Archive item metadata publishes name, size, MD5 and SHA1 for every
+file, so hundreds of entries are catalogued in seconds without downloading
+anything — and those real checksums are what let an IA URL and a local copy of
+the same file be recognised as one piece of content, so the pool cannot hand out
+both.
+
+#### Two honest limits
+
+**`import-history` matches on file name.** That is all the recorded history
+holds — no digests, and no way to add them now. A false match costs you a pool
+entry (undone with `release`); a missed match re-uploads content already on the
+network. The direction of that error is deliberate.
+
+**A URL from a source publishing no checksum, which you never download, cannot
+be deduplicated before upload.** `verify` reports how many entries are in that
+state rather than implying a coverage the tool does not have. The datamap
+address catches it afterwards; `pool add --materialise` avoids it entirely by
+downloading once and cataloguing a single local entry.
+
+#### Before you tear a run down
+
+Remote upload results live in the deployment's InfluxDB until
+`deployments record-results` pulls them into Postgres — and the teardown
+destroys that VM. `prod uploaders destroy` (and `prod canary destroy
+--no-keep-monitoring`) therefore check first and warn loudly if results are
+missing, comparing recorded rows against the deployment's pool claims, which say
+exactly how many files the run took. It **warns rather than blocks**: refusing on
+a non-TTY would strand billable infrastructure when `down` runs unattended.
+`--skip-results-check` silences it.
+
 ### Running uploaders against production (`prod uploaders`)
 
 `prod uploaders deploy` stands up one or more client VMs that each upload a list of public files to the canonical Autonomi production network with `ant --json file upload --public`, recording per-file metrics in InfluxDB. Each VM downloads its source files at runtime from the URL list you supply, uploads each one in turn, and exits when its list is exhausted — teardown is explicit via `prod uploaders destroy`.
