@@ -29,6 +29,12 @@ provisioned, so at the moment shaping is applied its address does not yet exist.
 address-based rule would silently miss log forwarding on exactly the runs that
 enable it. Explicit IPs can still be supplied and are exempted as well.
 
+The **source fetch** is exempt on the same principle but for a different reason (see
+:data:`FETCH_EXEMPT_PORTS`): before it can upload anything, the harness must pull the
+file from a public URL over HTTP(S). A real user already has their file, so that
+transfer is scaffolding — shaping it measures nothing and can dominate the run, since
+it is inbound and therefore capped by ``rate_down`` *and* by loss.
+
 **Queue depth is not a knob, but it is always a choice.** A rate cap implies a
 queue; its depth decides whether the link tail-drops (throughput far below the cap,
 looking like heavy loss) or bloats (hundreds of ms of standing delay that silently
@@ -102,6 +108,34 @@ IFB_DEVICE = "ifb-ant0"
 # The risk of over-exempting is negligible: ant is a UDP/QUIC peer-to-peer client
 # on ephemeral ports and never speaks TCP to these three.
 EXEMPT_PORTS = (22, 8086, 9200)
+
+# TCP ports carrying the *source fetch*, likewise bypassing the shaper.
+#
+#   80/443  HTTP(S) — the uploader pulls each source file from a public URL before
+#           it can upload anything (`_download` in prod_uploader.py, ahead of the
+#           `ant` invocation in the same loop iteration).
+#
+# This is scaffolding, not measurement. A real home user already HAS the file on
+# disk; only this harness has to fetch it first, so shaping that transfer measures
+# nothing and costs the whole run its wall-clock. It costs the most on exactly the
+# profiles the exercise cares about most: the fetch is inbound, so it is capped by
+# `rate_down` AND by loss, and a measured mobile-4g run spent 1h45m fetching 1.41 GB
+# of a 2.33 GB file without reaching the upload at all.
+#
+# Safe for the same reason the instrumentation exemption is: the measured path —
+# ant storing chunks to its peers — is UDP/QUIC on ephemeral ports and never TCP
+# 80/443, so nothing being measured lands in the exempt class. The one other thing
+# that does is the Arbitrum One payment RPC (HTTPS). That is a few KB per payment
+# batch against gigabytes of chunks, and it is latency- and chain-bound rather than
+# bandwidth-bound, so leaving it unshaped does not flatter the result.
+#
+# Deliberately a separate tuple from EXEMPT_PORTS: the two exist for different
+# reasons, and anyone who later wants the fetch shaped on purpose should be able to
+# drop this one without also un-exempting Telegraf.
+FETCH_EXEMPT_PORTS = (80, 443)
+
+# Everything filtered into the unshaped class, in the order emitted to the script.
+ALL_EXEMPT_PORTS = EXEMPT_PORTS + FETCH_EXEMPT_PORTS
 
 # Ceiling for the root and exempt classes: effectively "unshaped". Well above any
 # provider's client VM link, so the exempt class is never itself a bottleneck.
@@ -512,7 +546,7 @@ def build_network_impairment_script(
     exempt_ip_lines = "\n".join(
         f'    EXEMPT_IPS="$EXEMPT_IPS {ip}"' for ip in ips
     ) or "    :"
-    exempt_ports = " ".join(str(port) for port in EXEMPT_PORTS)
+    exempt_ports = " ".join(str(port) for port in ALL_EXEMPT_PORTS)
 
     return f"""\
 #!/bin/sh
@@ -526,7 +560,10 @@ loss {_trim(profile.loss_percent)}%
 #
 # Traffic to the exempt endpoints (InfluxDB / Elasticsearch) and SSH is filtered
 # into an unshaped class so instrumentation never competes with the transfer for
-# the capped bandwidth.
+# the capped bandwidth. HTTP(S) is exempt too: that is the harness fetching the
+# source file before the upload, which a real user would never do, so shaping it
+# would only burn wall-clock. The measured path is ant over UDP/QUIC and is
+# unaffected by either exemption.
 set -eu
 
 IFB="{IFB_DEVICE}"

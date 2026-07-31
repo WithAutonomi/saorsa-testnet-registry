@@ -1,8 +1,10 @@
 import pytest
 
 from saorsa_deploy.provisioning.network_profile import (
+    ALL_EXEMPT_PORTS,
     EXEMPT_CLASSID,
     EXEMPT_PORTS,
+    FETCH_EXEMPT_PORTS,
     IFB_DEVICE,
     MARKER,
     SCRIPT_PATH,
@@ -132,7 +134,7 @@ class TestShippedProfiles:
     def test_every_profile_is_asymmetric_and_versioned(self):
         for name, profile in load_profiles().items():
             assert profile.rate_down_bps > profile.rate_up_bps, name
-            assert profile.profile_set_version == 1, name
+            assert profile.profile_set_version == 2, name
             assert profile.source == "builtin", name
             assert profile.description, name
 
@@ -244,7 +246,7 @@ class TestBuildScript:
     def test_observability_and_ssh_exempt_by_port(self):
         """Port, not address: the ES VM does not exist yet when shaping is applied."""
         script = build_network_impairment_script(_profile())
-        assert 'EXEMPT_PORTS="22 8086 9200"' in script
+        assert 'EXEMPT_PORTS="22 8086 9200 80 443"' in script
         # Matched in both directions on both devices, so the filter loop must cover
         # sport and dport rather than assuming which end initiated.
         assert 'match ip dport "$port" 0xffff' in script
@@ -253,6 +255,35 @@ class TestBuildScript:
 
     def test_exempt_ports_cover_influx_and_elasticsearch(self):
         assert EXEMPT_PORTS == (22, 8086, 9200)
+
+    def test_source_fetch_is_exempt(self):
+        """The harness pulls each source file over HTTP(S) before it can upload it.
+
+        A real user already has the file; only this harness fetches it, so shaping
+        that transfer measures nothing. It is also the expensive one to get wrong —
+        the fetch is inbound, so it pays `rate_down` AND the loss penalty, and a
+        measured mobile-4g run spent 1h45m fetching 1.41 GB of a 2.33 GB file
+        without ever reaching the upload.
+        """
+        assert FETCH_EXEMPT_PORTS == (80, 443)
+        script = build_network_impairment_script(_profile())
+        for port in FETCH_EXEMPT_PORTS:
+            assert str(port) in script.split('EXEMPT_PORTS="')[1].split('"')[0]
+
+    def test_fetch_exemption_is_separable_from_instrumentation(self):
+        """Two exemptions, two reasons. Someone who later wants the fetch shaped on
+        purpose must be able to drop it without un-exempting Telegraf."""
+        assert not set(EXEMPT_PORTS) & set(FETCH_EXEMPT_PORTS)
+        assert ALL_EXEMPT_PORTS == EXEMPT_PORTS + FETCH_EXEMPT_PORTS
+
+    def test_the_measured_path_is_never_exempt(self):
+        """ant stores chunks over UDP/QUIC on ephemeral ports. If any exempt port
+        collided with the measured path, the shaping would be reported but not
+        applied to the thing under test — worse than not shaping at all."""
+        assert all(port not in ALL_EXEMPT_PORTS for port in (5000, 12000, 40000))
+        script = build_network_impairment_script(_profile())
+        # Exemptions are TCP-only; QUIC is UDP and cannot match protocol 6.
+        assert "match ip protocol 6 0xff" in script
 
     def test_exempt_endpoints_are_emitted(self):
         script = build_network_impairment_script(_profile(), ["10.1.2.3", "10.1.2.4"])
@@ -270,7 +301,7 @@ class TestBuildScript:
     def test_no_exempt_endpoints_is_valid(self):
         script = build_network_impairment_script(_profile(), [])
         # Port-based exemptions still apply with no explicit endpoints resolved.
-        assert 'EXEMPT_PORTS="22 8086 9200"' in script
+        assert 'EXEMPT_PORTS="22 8086 9200 80 443"' in script
 
     def test_ingress_uses_an_ifb_mirror(self):
         """Without this the downstream cap would not apply to downloads at all."""
@@ -345,7 +376,7 @@ class TestToDict:
             "delay_ms": 30.0,
             "jitter_ms": 5.0,
             "loss_percent": 0.2,
-            "profile_set_version": 1,
+            "profile_set_version": 2,
             "source": "builtin",
         }
 

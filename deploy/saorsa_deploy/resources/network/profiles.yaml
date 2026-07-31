@@ -32,7 +32,7 @@
 # standing delay that silently swamps `delay`). The provisioner pins an explicit AQM
 # (`cake`, falling back to `fq_codel`) so the baseline is a competent modern router.
 
-version: 1
+version: 2
 
 profiles:
   home-adsl:
@@ -86,9 +86,31 @@ profiles:
     description: >-
       Mobile broadband. Close to the calibrated line on raw rate, so its character
       comes from latency, jitter and loss rather than bandwidth — that is the point of
-      including it.
+      including it. Representative LTE in good-to-average conditions, NOT a
+      marginal-signal or mid-handover link.
     rate_down: 30mbit
     rate_up: 8mbit
-    delay: 60ms
-    jitter: 20ms
-    loss: 0.5
+    # v2: was 60ms. `delay` is ADDED to the VM's own RTT to its peers (see the field
+    # semantics above), so 60ms stacked on a real inter-region RTT put the effective
+    # figure near 90-140ms — congested-3G territory, not LTE. 30ms added lands the
+    # total in the 40-70ms band real LTE actually shows.
+    delay: 30ms
+    jitter: 10ms
+    # v2: was 0.5, which was an assumed figure and by far the least defensible number
+    # in this file — 10x home-fttc and 2.5x the worst wired profile. LTE retransmits
+    # beneath IP (MAC-layer HARQ plus RLC acknowledged mode), so residual loss seen by
+    # TCP on a healthy link is ~0.01-0.1%, not 0.5%.
+    #
+    # It also made the profile self-contradictory. netem models loss as Bernoulli —
+    # independent and uniform — which is the most destructive pattern per unit of loss,
+    # because congestion signals arrive evenly spaced and cwnd never grows. The Mathis
+    # ceiling for a single flow, MSS/(RTT*sqrt(p)), came to ~1.8 Mbit/s, and a measured
+    # run hit exactly that: the 30mbit/8mbit tokens below were unreachable by any single
+    # TCP stream, so the profile measured "TCP under uniform loss" rather than 4G rate.
+    # At 0.1% the ceiling is ~6 Mbit/s single-stream, so the rate tokens bind again
+    # (ant uploads over many parallel connections) and the shaping means what it says.
+    #
+    # NB real mobile loss is bursty and handover-correlated, not uniform. Modelling that
+    # honestly needs netem's Gilbert-Elliott mode (`loss gemodel`), which this schema
+    # does not yet expose; 0.1 uniform is the closest defensible single number.
+    loss: 0.1

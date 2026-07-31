@@ -547,7 +547,7 @@ class TestNetworkProfileIsPersisted:
         assert recorded["name"] == "mobile-4g"
         assert recorded["rate_up"] == "8mbit"
         assert recorded["rate_down"] == "30mbit"
-        assert recorded["profile_set_version"] == 1
+        assert recorded["profile_set_version"] == 2
 
     def test_slack_post_renders_a_shaped_uploader(self):
         from saorsa_deploy.cmd.slack_post import _prod_uploaders_blocks
