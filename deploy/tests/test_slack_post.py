@@ -1147,3 +1147,84 @@ def test_bootstrap_cache_omitted_for_old_records():
     )
     text = _all_text(build_slack_blocks(deployment, {}, None))
     assert "Bootstrap cache" not in text
+
+
+class TestNetworkImpairmentSurfacing:
+    """A shaped run must say so, and say what the link actually was.
+
+    The profile NAME alone is not enough: nobody has the profile set memorised,
+    and on a post announcing a low-bandwidth run the rate is the most interesting
+    fact on the line.
+    """
+
+    def test_unshaped_client_renders_exactly_as_before(self):
+        """Backwards compatibility — an ordinary run's post must not change."""
+        from saorsa_deploy.cmd.slack_post import _network_suffix
+
+        assert _network_suffix({"region": "lon1"}) == ""
+        assert _network_suffix({"region": "lon1", "network": None}) == ""
+
+    def test_resolved_dict_from_deploy_args(self):
+        from saorsa_deploy.cmd.slack_post import _network_suffix
+
+        suffix = _network_suffix(
+            {"network": {"name": "home-calibrated", "rate_down": "27400kbit",
+                         "rate_up": "6290kbit"}}
+        )
+        assert suffix == " — 🐌 home-calibrated (27400kbit/6290kbit)"
+
+    def test_bare_profile_name_is_resolved_to_its_rates(self):
+        """Client state stores the name unresolved; the rates must be recovered."""
+        from saorsa_deploy.cmd.slack_post import _network_suffix
+
+        assert _network_suffix({"network": "home-adsl"}) == " — 🐌 home-adsl (10mbit/1mbit)"
+
+    def test_inline_set_shows_its_rates(self):
+        """The case that matters most: an ad-hoc profile cannot be looked up."""
+        from saorsa_deploy.cmd.slack_post import _network_suffix
+
+        suffix = _network_suffix({"network": "rate_down=30mbit,rate_up=5mbit"})
+        assert suffix == " — 🐌 inline (30mbit/5mbit)"
+
+    def test_unknown_profile_degrades_instead_of_raising(self):
+        """A profile since renamed or deleted must not stop the post going out."""
+        from saorsa_deploy.cmd.slack_post import _network_suffix
+
+        assert _network_suffix({"network": "home-deleted"}) == " — 🐌 home-deleted"
+
+    def test_spec_level_field_spells_the_rates_out(self):
+        from saorsa_deploy.cmd.slack_post import _format_network_field
+
+        assert _format_network_field("home-fttc") == "🐌 home-fttc (60mbit down / 18mbit up)"
+
+    def test_prod_uploaders_block_marks_only_the_shaped_vm(self):
+        """A shaped uploader and an unshaped control in one run must be tellable apart."""
+        from saorsa_deploy.cmd.slack_post import _prod_uploaders_blocks
+
+        text = "\n".join(
+            b.get("text", {}).get("text", "")
+            for b in _prod_uploaders_blocks(
+                {
+                    "uploaders": [
+                        {"region": "lon1", "vm_size": "s-4vcpu-8gb", "network": "home-adsl"},
+                        {"region": "lon1", "vm_size": "s-4vcpu-8gb"},
+                    ]
+                }
+            )
+        )
+        shaped, control = [ln for ln in text.splitlines() if ln.startswith("• lon1")]
+        assert "🐌 home-adsl (10mbit/1mbit)" in shaped
+        assert "🐌" not in control
+
+    def test_testnet_clients_block_marks_both_roles(self):
+        from saorsa_deploy.cmd.slack_post import _clients_block
+
+        text = _clients_block(
+            [
+                {"role": "upload", "region": "nyc1", "vm_size": "s-2vcpu-4gb",
+                 "file_size_mb": 100, "network": "home-fttc"},
+                {"role": "download", "region": "tor1", "vm_size": "s-2vcpu-4gb",
+                 "network": "home-fttc"},
+            ]
+        )["text"]["text"]
+        assert text.count("🐌 home-fttc (60mbit/18mbit)") == 2

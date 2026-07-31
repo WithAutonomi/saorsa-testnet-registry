@@ -750,34 +750,66 @@ def cmd_slack_post(args):
     )
 
 
+def _network_rates(network) -> tuple[str, str | None, str | None]:
+    """Resolve a client's ``network`` value to ``(name, rate_down, rate_up)``.
+
+    Three shapes reach here: a resolved dict (from ``deploy_args``), a bare
+    profile name, or an inline comma-delimited set (both from client state, which
+    stores the value unresolved). Names and inline sets are resolved against the
+    shipped profile file to recover the rates.
+
+    Best-effort by design — a profile since renamed or deleted from the file must
+    not stop a deployment summary being posted, so resolution failure degrades to
+    the label alone rather than raising.
+    """
+    if isinstance(network, dict):
+        return (
+            network.get("name") or "inline",
+            network.get("rate_down"),
+            network.get("rate_up"),
+        )
+
+    label = str(network)
+    try:
+        from saorsa_deploy.provisioning.network_profile import resolve_network
+
+        profile = resolve_network(label)
+    except Exception:
+        profile = None
+    if profile is None:
+        # An inline set's raw token is unreadable in a summary; the name at least
+        # says "this VM was shaped".
+        return ("inline" if "=" in label else label, None, None)
+    return (profile.name, profile.rate_down, profile.rate_up)
+
+
 def _network_suffix(client: dict) -> str:
     """Render a client's simulated link conditions for the per-VM listing.
+
+    Includes the rates, not just the profile name: "home-adsl" means nothing to a
+    reader who has not memorised the profile set, and on a post announcing a
+    low-bandwidth run the rate is the most interesting fact. It matters most for
+    an inline set, which is precisely the one nobody can look up.
 
     Empty string when unshaped, so an ordinary run's post is unchanged.
     """
     network = client.get("network")
     if not network:
         return ""
-    if isinstance(network, dict):
-        label = network.get("name") or "inline"
-    else:
-        label = str(network)
-        if "=" in label:
-            label = "inline"
-    return f" — 🐌 {label}"
+    name, down, up = _network_rates(network)
+    if down and up:
+        return f" — 🐌 {name} ({down}/{up})"
+    return f" — 🐌 {name}"
 
 
 def _format_network_field(network) -> str:
     """Render the spec-level network profile, including its rates when known.
 
-    The rates matter in a summary: "home-adsl" means nothing to a reader who has
-    not memorised the profile set, and the whole point of the run is the link.
+    Spelt out more fully than the per-VM suffix — this is a standalone field with
+    room for it, rather than one marker among several on a crowded line.
     """
-    if isinstance(network, dict):
-        name = network.get("name") or "inline"
-        down, up = network.get("rate_down"), network.get("rate_up")
-        if down and up:
-            return f"🐌 {name} ({down} down / {up} up)"
-        return f"🐌 {name}"
-    return f"🐌 {network}"
+    name, down, up = _network_rates(network)
+    if down and up:
+        return f"🐌 {name} ({down} down / {up} up)"
+    return f"🐌 {name}"
 
