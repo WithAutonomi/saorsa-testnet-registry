@@ -455,6 +455,20 @@ other branch too — `import-history` makes both calls. `prod-local-uploads` res
 inline per file (a failed upload **releases** rather than spends). Wrapped so a
 registry predating the migration cannot cost the operator their results.
 
+**Bulk cataloguing.** `pool add --dir` batches through
+`add_pool_files_bulk` — a fixed ~7 statements per 500-file batch instead of ~4
+statements plus a COMMIT *per file*. The per-file path measured 163ms/file
+against the managed Postgres while reading and hashing the file took 1ms, so
+~99% was round-trip latency; 300k files would have been ~13.6 hours. Two traps
+found while building it, both caught by a test asserting statement count is flat
+in file count rather than by timing: ORM `session.add` per row issues
+INSERT..RETURNING per object (use Core `insert()` with a list), and a
+`session.refresh()` loop plus a lazy relationship load reintroduced a SELECT per
+row after the inserts were already batched. Re-runs are flat too — an
+interrupted import skips known files without a round-trip each. Semantics match
+the per-file path exactly, including duplicate-digest linking *within* a batch,
+where the pre-flight query cannot see an uncommitted sibling.
+
 **Scale.** Three things narrow in SQL rather than in Python, which matters once
 the local dataset lands: `list`'s LIMIT reaches the database (slicing a
 materialised list cost 2.28s to return ten rows from a 200k catalogue), tags are

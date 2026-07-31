@@ -262,6 +262,118 @@ def _add_local(
         report.linked_duplicates.append((pool_file.name, pool_file.duplicate_of))
 
 
+def _progress_columns():
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        SpinnerColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
+
+    return (
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TextColumn("eta"),
+        TimeRemainingColumn(),
+    )
+
+
+def _with_progress(console, items, label: str, verbose: bool, describe):
+    """Yield items while showing what is being worked on.
+
+    Cataloguing is dominated by per-file database round-trips, not by reading
+    the files, so a long run looks identical to a hung one without this. The
+    rate and ETA are the point as much as the bar: they are what tell an
+    operator that a large import is going to take hours before they leave it
+    running.
+
+    ``verbose`` prints a persistent line per item instead. Useful for a small
+    directory; unusable for the hundreds of thousands of rows the local dataset
+    will produce, which is why it is not the default.
+    """
+    from rich.progress import Progress
+
+    items = list(items)
+    if verbose:
+        for index, item in enumerate(items, start=1):
+            console.print(f"[dim][{index}/{len(items)}][/dim] {describe(item)}")
+            yield item
+        return
+
+    with Progress(*_progress_columns(), console=console, transient=True) as progress:
+        task = progress.add_task(label, total=len(items))
+        for item in items:
+            progress.update(task, description=_truncate(describe(item)))
+            yield item
+            progress.advance(task)
+
+
+def _truncate(text: str, width: int = 48) -> str:
+    return text if len(text) <= width else "…" + text[-(width - 1):]
+
+
+def _add_local_bulk(
+    repo, console, report, files, *, tags, provenance, do_hash, verbose,
+    batch_size: int = 500,
+) -> None:
+    """Catalogue a directory in batches rather than a round-trip per file.
+
+    Reading and hashing a file takes about a millisecond; the per-file path
+    spent ~160ms per file talking to the database. Everything expensive here is
+    local, so the loop below stays per-file — it is only the database work that
+    is batched.
+
+    A file that cannot be read is recorded and skipped. One unreadable file in a
+    directory of thousands must not cost the whole batch.
+    """
+    pending: list[dict] = []
+
+    def flush():
+        if not pending:
+            return
+        result = repo.add_pool_files_bulk(pending, batch_size=batch_size)
+        report.added.extend(result["created"])
+        report.skipped_existing += result["skipped"]
+        report.linked_duplicates.extend(result["linked"])
+        pending.clear()
+
+    for path in _with_progress(
+        console, files, "cataloguing", verbose, lambda p: p.name
+    ):
+        locator = str(path.resolve())
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            report.failed.append((locator, str(exc)))
+            continue
+        digests = None
+        if do_hash:
+            try:
+                digests = hash_local_file(path)
+            except OSError as exc:
+                report.failed.append((locator, f"could not hash: {exc}"))
+                continue
+        pending.append(
+            {
+                "kind": PoolFileKind.LOCAL,
+                "locator": locator,
+                "name": path.name,
+                "size_bytes": size,
+                "digests": digests,
+                "tags": tags,
+                "provenance": provenance,
+            }
+        )
+        if len(pending) >= batch_size:
+            flush()
+    flush()
+
+
 def _read_url_list(path: Path) -> list[str]:
     urls: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -304,7 +416,10 @@ def cmd_prod_pool_add(args) -> None:
             _materialise_urls(repo, console, report, urls, args, tags, provenance)
         else:
             console.print(f"Resolving {len(urls)} URL(s)…")
-            for url in urls:
+            for url in _with_progress(
+                console, urls, "resolving", getattr(args, "verbose", False),
+                lambda u: _url_name(u),
+            ):
                 _add_url(
                     repo,
                     console,
@@ -326,11 +441,11 @@ def cmd_prod_pool_add(args) -> None:
                 "[yellow]--no-hash:[/yellow] entries will carry no digest, so "
                 "they cannot be recognised as the same content as a URL entry."
             )
-        for path in files:
-            _add_local(
-                repo, console, report, path,
-                tags=tags, provenance=provenance, do_hash=args.hash,
-            )
+        _add_local_bulk(
+            repo, console, report, files,
+            tags=tags, provenance=provenance, do_hash=args.hash,
+            verbose=getattr(args, "verbose", False),
+        )
     else:
         path = Path(args.path).resolve()
         if not path.is_file():
@@ -353,7 +468,13 @@ def _materialise_urls(repo, console, report, urls, args, tags, provenance) -> No
     """
     target = Path(args.materialise).resolve()
     console.print(f"Materialising {len(urls)} URL(s) into {target}…")
-    for index, url in enumerate(urls, start=1):
+    for index, url in enumerate(
+        _with_progress(
+            console, urls, "downloading", getattr(args, "verbose", False),
+            lambda u: _url_name(u),
+        ),
+        start=1,
+    ):
         dest = target / _url_name(url, index)
         if dest.exists():
             console.print(f"[dim]  exists, not re-fetching: {dest.name}[/dim]")
@@ -1072,7 +1193,10 @@ def cmd_prod_pool_verify(args) -> None:
     gone: list[tuple] = []
     undigested: list = []
 
-    for row in rows:
+    for row in _with_progress(
+        console, rows, "verifying", getattr(args, "verbose", False),
+        lambda r: r.name,
+    ):
         if not row.digests:
             undigested.append(row)
 
@@ -1436,7 +1560,10 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
             console.print(f"[dim]  … and {len(selected) - 20} more[/dim]")
         return
 
-    for candidate in selected:
+    for candidate in _with_progress(
+        console, selected, "cataloguing", getattr(args, "verbose", False),
+        lambda c: c.name,
+    ):
         existing = repo.get_pool_file_by_locator(candidate.url)
         if existing is not None:
             report.skipped_existing += 1

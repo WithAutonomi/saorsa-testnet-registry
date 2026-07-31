@@ -4931,6 +4931,12 @@ def main(argv=None):
         help="With --from-listing, show what would be catalogued.",
     )
     prod_pool_add_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print a line per file instead of a progress bar. Readable for a "
+        "small directory; unusable for a large one.",
+    )
+    prod_pool_add_parser.add_argument(
         "--originals-only",
         action="store_true",
         help="With --from-listing, restrict to files the source marks as "
@@ -5073,6 +5079,12 @@ def main(argv=None):
     )
     prod_pool_verify_parser.add_argument(
         "--kind", choices=["url", "local"], help="Restrict to one inventory."
+    )
+    prod_pool_verify_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print a line per file instead of a progress bar. Readable for a "
+        "small directory; unusable for a large one.",
     )
     prod_pool_verify_parser.add_argument(
         "--limit", type=int, help="Check at most this many entries."

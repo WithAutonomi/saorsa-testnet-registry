@@ -1460,7 +1460,7 @@ number that looks credible and is not.
 
 | Command | What it does |
 |---------|--------------|
-| `prod pool add --url/--urls-file/--dir/--path` | Catalogue files. URLs are size-probed; local files are hashed SHA1+SHA256. |
+| `prod pool add --url/--urls-file/--dir/--path` | Catalogue files. URLs are size-probed; local files are hashed SHA1+SHA256. `--dir` batches its database work, so a directory of thousands takes seconds rather than minutes. `--verbose` prints a line per file instead of a progress bar. |
 | `prod pool add --from-listing internet-archive:<item>` | Bulk-catalogue a public collection. Entries arrive pre-sized and pre-hashed from the source's metadata — nothing is downloaded. |
 | `prod pool list [--status available\|claimed\|uploaded\|partial] [--kind] [--size] [--tag] [--since] [--limit] [--all]` | What is in the pool and what state it is in. |
 | `prod pool show <file> \| --address <addr>` | One file in full, including its upload result and costs. Reverse lookup by datamap address. |
