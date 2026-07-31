@@ -612,7 +612,7 @@ def cmd_prod_local_uploads(args) -> None:
                     continue
 
                 try:
-                    ok = _process_one_upload(
+                    url_status = _process_one_upload(
                         repo=repo,
                         deployment_id=deployment_id,
                         host=host,
@@ -634,7 +634,7 @@ def cmd_prod_local_uploads(args) -> None:
                     )
                 finally:
                     local_path.unlink(missing_ok=True)
-                if not ok:
+                if url_status is not ProdUploadStatus.SUCCESS:
                     failures += 1
         finally:
             try:
@@ -657,7 +657,7 @@ def cmd_prod_local_uploads(args) -> None:
                 console.print(f"  [red]stat FAILED:[/red] {e}")
                 failures += 1
                 continue
-            ok = _process_one_upload(
+            upload_status = _process_one_upload(
                 repo=repo,
                 deployment_id=deployment_id,
                 host=host,
@@ -677,13 +677,13 @@ def cmd_prod_local_uploads(args) -> None:
                 log_dir=log_dir,
                 idx=idx,
             )
-            if not ok:
+            if upload_status is not ProdUploadStatus.SUCCESS:
                 failures += 1
             # Resolve this file's pool claim immediately. Unlike the remote
             # kinds, this command writes its result rows inline, so there is no
             # later `record-results` pass to close the claim — and leaving it
             # open would make a finished upload look merely checked out.
-            _resolve_pool_claim(pool_claims, rel_name, ok, console)
+            _resolve_pool_claim(pool_claims, rel_name, upload_status, console)
 
     record_status(args.name, DeploymentStatus.STOPPED)
     console.print(
@@ -781,7 +781,7 @@ def _process_one_upload(
         gas_cost_wei=gas_cost_wei,
     )
 
-    return status == ProdUploadStatus.SUCCESS
+    return status
 
 
 __all__ = ["cmd_prod_local_uploads"]
@@ -873,8 +873,14 @@ def _select_from_pool(args, console: Console):
     return pairs, claims
 
 
-def _resolve_pool_claim(pool_claims: list, file_name: str, ok: bool, console) -> None:
-    """Close the claim for one file as soon as its upload finishes."""
+def _resolve_pool_claim(pool_claims: list, file_name: str, status, console) -> None:
+    """Close the claim for one file as soon as its upload finishes.
+
+    Three outcomes, not two. A success spends the file; a *partial* upload put
+    real chunks in production but did not finish, so the file goes back marked
+    partial; anything else never reached the network at all and is simply
+    released.
+    """
     if not pool_claims:
         return
     entry = next((c for c in pool_claims if c["name"] == file_name), None)
@@ -887,13 +893,18 @@ def _resolve_pool_claim(pool_claims: list, file_name: str, ok: bool, console) ->
     if repo is None:
         return
     try:
-        if ok:
+        if status is ProdUploadStatus.SUCCESS:
             repo.resolve_pool_claim(
                 entry["claim_id"], note="uploaded by prod local-uploads"
             )
+        elif status is ProdUploadStatus.PARTIAL_UPLOAD:
+            repo.mark_pool_claim_partial(
+                entry["claim_id"],
+                note="prod local-uploads: upload was partial",
+            )
         else:
-            # A failed upload did not put the content on the network, so the
-            # file goes back rather than being burned by an attempt.
+            # Nothing reached the network, so the file goes back untouched
+            # rather than being burned by the attempt.
             repo.release_pool_claim(
                 entry["claim_id"], note="prod local-uploads upload failed"
             )

@@ -418,11 +418,16 @@ so no manifest can ask an uploader VM for a file on the laptop. Selection is by
 `file_size_buckets_mb` in `resources/gates/staging-thresholds.yaml`, which bucket
 transfer *durations* for the gates.
 
-A file is `available` (no blocking claim), `claimed` (handed out, unconfirmed) or
-`uploaded` (confirmed, address recorded). `claimed` is **not** evidence anything
-reached production. A **partial unique index** on `prod_file_pool_claims`
-excluding `released` makes "at most one blocking claim per file" a database
-guarantee — two concurrent deploys racing for the last large file cannot both
+A file is `available` (no blocking claim), `claimed` (handed out, unconfirmed),
+`uploaded` (confirmed, address recorded) or **`partial`** (an upload stored some
+chunks and stopped). `claimed` is **not** evidence anything reached production.
+`partial` is the awkward middle: the file goes back in the pool because
+completing it is useful work, but chunks of it ARE in production — so it is a
+status of its own rather than a `released` claim, it keeps the chunk counts, and
+**canary selection excludes it by construction** (not via a flag, so no manifest
+can opt into a contaminated loss measurement). A **partial unique index** on
+`prod_file_pool_claims` excluding `released` and `partial` makes "at most one
+blocking claim per file" a database guarantee — two concurrent deploys racing for the last large file cannot both
 win, and an `uploaded` file can never be reclaimed.
 
 **Consumers.** `prod uploaders` (`pool=small:3,medium:2` spec token / per-uploader
@@ -440,7 +445,13 @@ group is spent once.
 **Claim resolution.** `record-results` closes claims for `prod-uploaders` (from
 `deployment_prod_upload_results`) and `prod-canary` (from `prod_canary_uploads` —
 different column names for the same concepts), recording address, chunks and
-ANT/ETH cost; it upserts, so a re-run can revise. `prod-local-uploads` resolves
+ANT/ETH cost; it upserts, so a re-run can revise. A `partial_upload` row
+resolves the claim to `partial` rather than leaving it open — previously such a
+file was reported as "no matching upload result", which reads as "the run never
+touched this file", the opposite of what happened. A success beats a partial for
+the same file. NB `list_all_prod_upload_results` **partitions** on success
+(`failed_only=False` returns ONLY successes), so reaching partials needs the
+other branch too — `import-history` makes both calls. `prod-local-uploads` resolves
 inline per file (a failed upload **releases** rather than spends). Wrapped so a
 registry predating the migration cannot cost the operator their results.
 

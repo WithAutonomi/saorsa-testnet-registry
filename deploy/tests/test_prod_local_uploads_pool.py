@@ -12,6 +12,7 @@ import argparse
 import pytest
 from saorsa_db.db import Base
 from saorsa_db.models.prod_file_pool import ClaimSource, ClaimStatus, PoolFileKind
+from saorsa_db.models.prod_upload_result import ProdUploadStatus
 from saorsa_db.repositories import SqlAlchemyProdFilePoolRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -156,11 +157,28 @@ class TestInlineResolution:
         _, claims = prod_local_uploads._select_from_pool(_args(), Console())
 
         prod_local_uploads._resolve_pool_claim(
-            claims, claims[0]["name"], True, Console()
+            claims, claims[0]["name"], ProdUploadStatus.SUCCESS, Console()
         )
         claim = wired.list_pool_claims(status=ClaimStatus.UPLOADED)
         assert len(claim) == 1
         assert claim[0].source is ClaimSource.PROD_LOCAL_UPLOADS
+
+    def test_partial_upload_marks_the_claim_partial(self, wired, tmp_path):
+        # Real chunks reached the network, so it is neither spent nor untouched.
+        from rich.console import Console
+
+        _seed_files(wired, tmp_path, count=2)
+        _, claims = prod_local_uploads._select_from_pool(_args(), Console())
+
+        prod_local_uploads._resolve_pool_claim(
+            claims, claims[0]["name"], ProdUploadStatus.PARTIAL_UPLOAD, Console()
+        )
+        partial = wired.list_pool_claims(status=ClaimStatus.PARTIAL)
+        assert len(partial) == 1
+        # Back in the pool — completing it is useful work. The other file of
+        # the pair is still claimed, so exactly one becomes available.
+        available = {f.id for f in wired.list_pool_files(status="available")}
+        assert available == {partial[0].file_id}
 
     def test_failed_upload_releases_the_file(self, wired, tmp_path):
         # It never reached the network, so it goes back to the pool rather than
@@ -171,7 +189,7 @@ class TestInlineResolution:
         _, claims = prod_local_uploads._select_from_pool(_args(), Console())
 
         prod_local_uploads._resolve_pool_claim(
-            claims, claims[0]["name"], False, Console()
+            claims, claims[0]["name"], ProdUploadStatus.DOWNLOAD_FAILED, Console()
         )
         assert len(wired.list_pool_claims(status=ClaimStatus.RELEASED)) == 1
         assert len(wired.list_pool_files(status="available")) == 1
@@ -181,13 +199,17 @@ class TestInlineResolution:
 
         _seed_files(wired, tmp_path, count=2)
         _, claims = prod_local_uploads._select_from_pool(_args(), Console())
-        prod_local_uploads._resolve_pool_claim(claims, "nope.tar", True, Console())
+        prod_local_uploads._resolve_pool_claim(
+            claims, "nope.tar", ProdUploadStatus.SUCCESS, Console()
+        )
         assert wired.list_pool_claims(status=ClaimStatus.UPLOADED) == []
 
     def test_no_claims_is_a_noop(self):
         from rich.console import Console
 
-        prod_local_uploads._resolve_pool_claim([], "a", True, Console())
+        prod_local_uploads._resolve_pool_claim(
+            [], "a", ProdUploadStatus.SUCCESS, Console()
+        )
 
 
 class TestManifest:

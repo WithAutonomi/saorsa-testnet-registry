@@ -4945,10 +4945,13 @@ def main(argv=None):
     )
     prod_pool_list_parser.add_argument(
         "--status",
-        choices=["available", "claimed", "uploaded"],
+        choices=["available", "claimed", "uploaded", "partial"],
         help="available = never handed out; claimed = handed out but not "
         "confirmed on the network; uploaded = confirmed, with a datamap "
-        "address. A claimed file is NOT on the network.",
+        "address; partial = an upload stored some chunks and stopped. A "
+        "claimed file is NOT on the network. A partial file IS still "
+        "available (completing it is useful work), but is excluded from "
+        "canary selection because chunks of it are already stored.",
     )
     prod_pool_list_parser.add_argument(
         "--kind", choices=["url", "local"], help="Restrict to one inventory."
@@ -5037,7 +5040,7 @@ def main(argv=None):
     )
     prod_pool_claims_parser.add_argument(
         "--status",
-        choices=["claimed", "uploaded", "released"],
+        choices=["claimed", "uploaded", "released", "partial"],
         help="Filter by claim status (default: open claims only).",
     )
     prod_pool_claims_parser.add_argument(

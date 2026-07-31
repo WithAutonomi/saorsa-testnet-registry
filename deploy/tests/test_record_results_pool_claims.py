@@ -125,11 +125,51 @@ class TestProdUploaders:
         assert "1 file-pool claim(s) have no matching upload result" in out
         assert "prod pool claims" in out
 
-    def test_failed_upload_does_not_close_the_claim(self, env):
+    def test_partial_upload_is_recorded_as_partial_not_left_open(self, env, capsys):
+        # Leaving it open reported "no matching upload result", which reads as
+        # "the run never touched this file" — the opposite of what happened.
         from rich.console import Console
 
         pool_repo, deployment_repo, session, deployment = env
-        _pooled_claim(pool_repo, deployment)
+        pool_file, _ = _pooled_claim(pool_repo, deployment)
+        session.add(
+            DeploymentProdUploadResult(
+                deployment_id=deployment.id,
+                client_hostname="host-1",
+                region="lon1",
+                source_url="https://example.org/a.bin",
+                file_name="a.bin",
+                file_size_bytes=50 * MIB,
+                status=ProdUploadStatus.PARTIAL_UPLOAD,
+                address="a7f3c2",
+                chunks_stored=342,
+                chunks_failed=58,
+                total_chunks=400,
+                started_at=NOW,
+                finished_at=NOW,
+            )
+        )
+        session.commit()
+
+        _resolve_pool_claims(
+            deployment_repo, deployment, "prod-uploaders", Console()
+        )
+
+        claim = pool_repo.list_pool_claims()[0]
+        assert claim.status is ClaimStatus.PARTIAL
+        # How far it got is kept, not just that it did not finish.
+        assert claim.chunks_stored == 342
+        assert claim.total_chunks == 400
+        out = " ".join(capsys.readouterr().out.split())
+        assert "uploaded only partially" in out
+        assert "excluded from canary selection" in out
+
+    def test_partial_returns_the_file_to_the_pool(self, env):
+        from rich.console import Console
+        from saorsa_db.repositories import POOL_STATUS_AVAILABLE
+
+        pool_repo, deployment_repo, session, deployment = env
+        pool_file, _ = _pooled_claim(pool_repo, deployment)
         session.add(
             DeploymentProdUploadResult(
                 deployment_id=deployment.id,
@@ -144,11 +184,42 @@ class TestProdUploaders:
             )
         )
         session.commit()
+        _resolve_pool_claims(
+            deployment_repo, deployment, "prod-uploaders", Console()
+        )
+        available = pool_repo.list_pool_files(status=POOL_STATUS_AVAILABLE)
+        assert pool_file.id in {f.id for f in available}
+
+    def test_a_success_beats_a_partial_for_the_same_file(self, env):
+        # Two attempts, one of which finished: the file IS on the network.
+        from rich.console import Console
+
+        pool_repo, deployment_repo, session, deployment = env
+        _pooled_claim(pool_repo, deployment)
+        for status, host in (
+            (ProdUploadStatus.PARTIAL_UPLOAD, "host-1"),
+            (ProdUploadStatus.SUCCESS, "host-2"),
+        ):
+            session.add(
+                DeploymentProdUploadResult(
+                    deployment_id=deployment.id,
+                    client_hostname=host,
+                    region="lon1",
+                    source_url="https://example.org/a.bin",
+                    file_name="a.bin",
+                    file_size_bytes=50 * MIB,
+                    status=status,
+                    address="a7f3c2",
+                    started_at=NOW,
+                    finished_at=NOW,
+                )
+            )
+        session.commit()
 
         _resolve_pool_claims(
             deployment_repo, deployment, "prod-uploaders", Console()
         )
-        assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
+        assert pool_repo.list_pool_claims()[0].status is ClaimStatus.UPLOADED
 
     def test_rerunning_is_idempotent_and_can_revise(self, env):
         # record-results is re-runnable and a later pass may carry revised

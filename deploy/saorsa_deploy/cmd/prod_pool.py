@@ -1130,8 +1130,25 @@ def _history_rows(deployment_repo):
     """
     from saorsa_db.models.prod_upload_result import ProdUploadStatus
 
-    for row in deployment_repo.list_all_prod_upload_results(failed_only=False):
-        if row.status is not ProdUploadStatus.SUCCESS:
+    # Successes AND partials. A partial upload put real chunks in production,
+    # so presenting that file as untouched would misreport what is stored — but
+    # it is not spent either, since the file is not there in full.
+    #
+    # Two passes, because `list_all_prod_upload_results` partitions on success:
+    # failed_only=False returns ONLY successes, so partials are reachable only
+    # through the other branch, mixed in with genuine failures.
+    rows = list(deployment_repo.list_all_prod_upload_results(failed_only=False))
+    rows += [
+        row
+        for row in deployment_repo.list_all_prod_upload_results(failed_only=True)
+        if row.status is ProdUploadStatus.PARTIAL_UPLOAD
+    ]
+    for row in rows:
+        if row.status is ProdUploadStatus.SUCCESS:
+            complete = True
+        elif row.status is ProdUploadStatus.PARTIAL_UPLOAD:
+            complete = False
+        else:
             continue
         yield (
             row.file_name,
@@ -1142,6 +1159,7 @@ def _history_rows(deployment_repo):
             row.gas_cost_wei,
             row.finished_at,
             "prod-uploaders",
+            complete,
         )
 
     for row in deployment_repo.list_all_prod_canary_uploads():
@@ -1154,6 +1172,7 @@ def _history_rows(deployment_repo):
             row.gas_cost_wei,
             row.uploaded_at,
             "prod-canary",
+            True,
         )
 
 
@@ -1173,7 +1192,7 @@ def cmd_prod_pool_import_history(args) -> None:
     Idempotent and re-runnable: uploads made outside the pool keep happening,
     so this is not a one-shot migration.
     """
-    from saorsa_db.models.prod_file_pool import ClaimSource
+    from saorsa_db.models.prod_file_pool import ClaimSource, ClaimStatus
 
     from saorsa_deploy.registry import get_repository
 
@@ -1197,6 +1216,7 @@ def cmd_prod_pool_import_history(args) -> None:
         by_name.setdefault(pool_file.name, []).append(pool_file)
 
     imported = 0
+    partial = 0
     already = 0
     unmatched = 0
     size_mismatch: list[tuple[str, int, int]] = []
@@ -1207,7 +1227,7 @@ def cmd_prod_pool_import_history(args) -> None:
         + "…"
     )
 
-    for (name, size, address, chunks, storage, gas, when, source) in history:
+    for (name, size, address, chunks, storage, gas, when, source, complete) in history:
         candidates = by_name.get(name)
         if not candidates:
             unmatched += 1
@@ -1225,7 +1245,10 @@ def cmd_prod_pool_import_history(args) -> None:
             continue
 
         if args.dry_run:
-            imported += 1
+            if complete:
+                imported += 1
+            else:
+                partial += 1
             continue
 
         # Not `claim_pool_files`, which resolves a *size request* against
@@ -1239,6 +1262,7 @@ def cmd_prod_pool_import_history(args) -> None:
                 if source == "prod-canary"
                 else ClaimSource.PROD_UPLOADERS
             ),
+            status=ClaimStatus.UPLOADED if complete else ClaimStatus.PARTIAL,
             address=address,
             chunks_stored=chunks[0],
             chunks_failed=chunks[1],
@@ -1246,13 +1270,27 @@ def cmd_prod_pool_import_history(args) -> None:
             storage_cost_atto=storage,
             gas_cost_wei=gas,
             when=when,
-            note="imported from recorded upload history",
+            note=(
+                "imported from recorded upload history"
+                if complete
+                else "imported from recorded history — upload was partial"
+            ),
         )
         if claim is not None:
-            imported += 1
+            if complete:
+                imported += 1
+            else:
+                partial += 1
 
     console.print()
     console.print(f"  imported   {imported:>5}   marked as already uploaded")
+    if partial:
+        # Still available: the file is not on the network in full, and
+        # completing it is useful work. Canary selection skips them.
+        console.print(
+            f"  partial    {partial:>5}   part-uploaded — still available to "
+            "uploaders, excluded from canaries"
+        )
     console.print(f"  already    {already:>5}   pool entry was spent or claimed")
     console.print(
         f"  unmatched  {unmatched:>5}   uploaded historically, not in the pool"

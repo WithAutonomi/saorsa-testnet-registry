@@ -630,9 +630,23 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
     by_name: dict[str, dict] = {}
     if kind == "prod-uploaders":
         for row in repo.list_prod_upload_results_for_deployment(deployment.id):
-            if row.status is not ProdUploadStatus.SUCCESS:
+            # Partials matter as much as successes. A part-uploaded file put
+            # real chunks in production; leaving its claim open would report it
+            # as "no matching upload result", which reads as "the run never
+            # touched this file" — the opposite of what happened.
+            if row.status is ProdUploadStatus.SUCCESS:
+                complete = True
+            elif row.status is ProdUploadStatus.PARTIAL_UPLOAD:
+                complete = False
+            else:
+                continue
+            existing = by_name.get(row.file_name)
+            if existing is not None and existing["complete"] and not complete:
+                # A file uploaded successfully on one attempt and partially on
+                # another is on the network: the success wins.
                 continue
             by_name[row.file_name] = {
+                "complete": complete,
                 "address": row.address,
                 "chunks_stored": row.chunks_stored,
                 "chunks_failed": row.chunks_failed,
@@ -643,6 +657,7 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
     elif kind == "prod-canary":
         for row in repo.list_prod_canary_uploads_for_deployment(deployment.id):
             by_name[row.file_name] = {
+                "complete": True,
                 "address": row.top_address,
                 "chunks_stored": None,
                 "chunks_failed": None,
@@ -655,17 +670,29 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
 
     newly_resolved = 0
     refreshed = 0
+    partial = 0
     still_open = 0
     for claim in claims:
         pool_file = pool_repo.get_pool_file(claim.file_id)
         if pool_file is None:
             continue
-        payload = by_name.get(pool_file.name)
-        if payload is None:
+        payload = dict(by_name.get(pool_file.name) or {})
+        if not payload:
             if claim.is_open:
                 still_open += 1
             continue
+        complete = payload.pop("complete")
         was_open = claim.is_open
+        if not complete:
+            payload.pop("storage_cost_atto", None)
+            payload.pop("gas_cost_wei", None)
+            pool_repo.mark_pool_claim_partial(
+                claim.id,
+                note="upload was partial — file returned to the pool",
+                **payload,
+            )
+            partial += 1
+            continue
         pool_repo.resolve_pool_claim(claim.id, **payload)
         if was_open:
             newly_resolved += 1
@@ -681,6 +708,15 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
         console.print(
             f"[dim]Refreshed {refreshed} already-resolved file-pool "
             "claim(s).[/dim]"
+        )
+    if partial:
+        # Said plainly: these files are back in the pool, but they are NOT
+        # untouched — some of their chunks are in production.
+        console.print(
+            f"[yellow]{partial} file(s) uploaded only partially. They are "
+            "available to uploaders again (completing them is useful work) but "
+            "are excluded from canary selection, since chunks of them are "
+            "already stored.[/yellow]"
         )
     if still_open:
         # Not silently ignored: an unresolved claim means a file was handed out

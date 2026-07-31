@@ -27,11 +27,18 @@ Three tables:
     is what lets the pool serve a GUI desktop application that has no link to
     this database at all: the checkout burns the file, not the upload record.
 
-The three operator-facing states of a file map onto claim status directly:
-available (no open claim), claimed (``CLAIMED``, handed out but not confirmed
-on the network) and uploaded (``UPLOADED``). Keeping ``CLAIMED`` distinct from
+The operator-facing states of a file map onto claim status directly: available
+(no blocking claim), claimed (``CLAIMED``, handed out but not confirmed on the
+network) and uploaded (``UPLOADED``). Keeping ``CLAIMED`` distinct from
 ``UPLOADED`` matters in both directions — a forgotten desktop checkout must not
 read as "on the network", and a released claim must not read as spent forever.
+
+``PARTIAL`` is the fourth: an upload that stored some chunks and stopped. The
+file goes back in the pool because completing it is useful work, but it is not
+untouched — chunks from it are in production right now, which is why it is a
+status of its own rather than a ``RELEASED``, and why canary selection excludes
+it. A loss measurement over content that is already partly stored, possibly for
+months, is measuring something other than what it claims to.
 """
 
 import enum
@@ -98,11 +105,23 @@ class ClaimStatus(enum.Enum):
     CLAIMED = "claimed"
     UPLOADED = "uploaded"
     RELEASED = "released"
+    #: The upload started and stored some chunks but did not finish. The file is
+    #: NOT on the network in full, so it returns to the pool — completing it is
+    #: useful work. Distinct from RELEASED, which means nothing was uploaded at
+    #: all: a partial file has real chunks in production, and a view that showed
+    #: it as untouched would be lying about what production holds.
+    PARTIAL = "partial"
 
 
-#: Statuses that make a file unavailable. A ``RELEASED`` claim returns the file
-#: to the pool; an ``UPLOADED`` one spends it permanently.
+#: Statuses that make a file unavailable. A ``RELEASED`` or ``PARTIAL`` claim
+#: returns the file to the pool; an ``UPLOADED`` one spends it permanently.
 BLOCKING_STATUSES = frozenset({ClaimStatus.CLAIMED, ClaimStatus.UPLOADED})
+
+#: Statuses that leave the file drawable again. Kept as a set rather than
+#: inlined, because the partial unique index predicate must exclude exactly
+#: these — if the two drift apart, the database and the availability query stop
+#: agreeing about what "available" means.
+NON_BLOCKING_STATUSES = frozenset({ClaimStatus.RELEASED, ClaimStatus.PARTIAL})
 
 
 class ProdFilePool(Base):
@@ -220,11 +239,11 @@ class ProdFilePoolClaim(Base):
         # because two concurrent deploys racing for the last large file is
         # exactly the case that must not both succeed.
         #
-        # The predicate excludes RELEASED rather than matching only CLAIMED, so
-        # it covers the stronger rule: a file that has been UPLOADED can never
-        # be claimed again either. A released claim does not block, so a file
-        # handed out and given back can be handed out again — and a file may
-        # accumulate several released claims over its life.
+        # The predicate excludes the non-blocking statuses rather than matching
+        # only CLAIMED, so it covers the stronger rule: a file that has been
+        # UPLOADED can never be claimed again either. RELEASED and PARTIAL do
+        # not block — a file handed back, or only part-uploaded, can be handed
+        # out again, and may accumulate several such claims over its life.
         #
         # Partial indexes work on both Postgres and the SQLite used in tests, so
         # this guarantee is exercised by the suite rather than only asserted.
@@ -232,8 +251,8 @@ class ProdFilePoolClaim(Base):
             "uq_prod_file_pool_claims_blocking",
             "file_id",
             unique=True,
-            postgresql_where=text("status <> 'released'"),
-            sqlite_where=text("status <> 'released'"),
+            postgresql_where=text("status NOT IN ('released', 'partial')"),
+            sqlite_where=text("status NOT IN ('released', 'partial')"),
         ),
         Index("ix_prod_file_pool_claims_status", "status"),
         Index("ix_prod_file_pool_claims_deployment", "deployment_id"),
@@ -306,6 +325,11 @@ class ProdFilePoolClaim(Base):
     @property
     def is_open(self) -> bool:
         return self.status is ClaimStatus.CLAIMED
+
+    @property
+    def blocks_selection(self) -> bool:
+        """Whether this claim stops the file being handed out again."""
+        return self.status in BLOCKING_STATUSES
 
     @property
     def self_resolving(self) -> bool:

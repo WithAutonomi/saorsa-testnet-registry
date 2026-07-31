@@ -1431,17 +1431,30 @@ These are **not** the `file_size_buckets_mb` in
 `resources/gates/staging-thresholds.yaml`, which bucket *transfer durations* for
 the staging gates and are recalibrated quarterly. Do not wire one into the other.
 
-#### The three states of a file
+#### The states of a file
 
-| State | Meaning |
-|-------|---------|
-| `available` | never handed out |
-| `claimed` | handed out, not confirmed on the network |
-| `uploaded` | confirmed, with a datamap address recorded |
+| State | Meaning | Drawable again? |
+|-------|---------|-----------------|
+| `available` | never handed out | yes |
+| `claimed` | handed out, not confirmed on the network | no |
+| `uploaded` | confirmed, with a datamap address recorded | no, ever |
+| `partial` | an upload stored some chunks and stopped | **yes, except by canaries** |
 
 `claimed` is **not** evidence that anything reached production. For a
 deployment-backed claim it usually means "uploaded but `record-results` has not
 run yet"; for a manual checkout it means you still have to say what happened.
+
+`partial` is the awkward middle. The file is not on the network in full, so it
+goes back in the pool — completing it is useful work, and re-uploading missing
+chunks is a real test case. But chunks of it **are** in production, sometimes
+for months, so it is not untouched either. That distinction is why it is a
+status of its own rather than a `released` claim, and the claim keeps the chunk
+counts (`342 of 400 stored`) rather than only recording that it failed.
+
+**Canary selection excludes partials by construction** — not via a flag, so no
+manifest can opt into it. A loss measurement over content that is already partly
+stored is measuring something other than what it reports, and would produce a
+number that looks credible and is not.
 
 #### Commands
 
@@ -1449,7 +1462,7 @@ run yet"; for a manual checkout it means you still have to say what happened.
 |---------|--------------|
 | `prod pool add --url/--urls-file/--dir/--path` | Catalogue files. URLs are size-probed; local files are hashed SHA1+SHA256. |
 | `prod pool add --from-listing internet-archive:<item>` | Bulk-catalogue a public collection. Entries arrive pre-sized and pre-hashed from the source's metadata — nothing is downloaded. |
-| `prod pool list [--status] [--kind] [--size] [--tag] [--since] [--limit] [--all]` | What is in the pool and what state it is in. |
+| `prod pool list [--status available\|claimed\|uploaded\|partial] [--kind] [--size] [--tag] [--since] [--limit] [--all]` | What is in the pool and what state it is in. |
 | `prod pool show <file> \| --address <addr>` | One file in full, including its upload result and costs. Reverse lookup by datamap address. |
 | `prod pool stats` | Availability per size class, split by kind. |
 | `prod pool checkout --size CLASS [--count N] [--kind] [--consumer LABEL] [--reuse-open]` | Take a file by hand, for the desktop application or anything else. |
@@ -1458,7 +1471,7 @@ run yet"; for a manual checkout it means you still have to say what happened.
 | `prod pool mark-uploaded <file> --address <addr> [--chunks-stored …] [--storage-cost-atto …]` | Record that a checked-out file reached the network. |
 | `prod pool release <file>…` | Give claimed file(s) back. |
 | `prod pool verify [--kind] [--limit] [--no-rehash]` | Re-check entries: rotted URLs, moved files, changed sizes. |
-| `prod pool import-history [--dry-run]` | Mark files already on the network as spent, from **both** upload tables. |
+| `prod pool import-history [--dry-run]` | Mark files already on the network as spent, from **both** upload tables. Partially-uploaded history lands as `partial`, not as spent. |
 
 Everything is addressed by **file id**, never claim id — a file carries at most
 one blocking claim, so a claim id is an implementation detail.

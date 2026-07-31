@@ -148,7 +148,17 @@ def select_for_deployment(
         ]
 
     try:
-        claims = repo.claim_pool_files(kind, request, source)
+        claims = repo.claim_pool_files(
+            kind,
+            request,
+            source,
+            # A canary measures loss on content it puts there. A partially
+            # uploaded file already has chunks in production, possibly months
+            # old, so drawing one would produce a number that looks like a loss
+            # measurement and is not. Excluded by construction rather than by a
+            # flag, so no manifest can opt into a contaminated run.
+            exclude_partial=(source is ClaimSource.PROD_CANARY),
+        )
     except InsufficientPoolInventory as exc:
         raise PoolSelectionError(_shortfall_message(exc)) from exc
 

@@ -48,6 +48,7 @@ from saorsa_db.models.prod_download_result import (
     ProdDownloadStatus,
 )
 from saorsa_db.models.prod_file_pool import (
+    NON_BLOCKING_STATUSES,
     SELF_RESOLVING_SOURCES,
     ClaimSource,
     ClaimStatus,
@@ -2443,7 +2444,16 @@ class SqlAlchemyProdFleetRepository(ProdFleetRepository):
 POOL_STATUS_AVAILABLE = "available"
 POOL_STATUS_CLAIMED = "claimed"
 POOL_STATUS_UPLOADED = "uploaded"
-POOL_STATUSES = (POOL_STATUS_AVAILABLE, POOL_STATUS_CLAIMED, POOL_STATUS_UPLOADED)
+#: Not a fourth *availability* state — a partially-uploaded file IS available —
+#: but a filter operators need, because those files have chunks in production
+#: already and are the ones worth completing.
+POOL_STATUS_PARTIAL = "partial"
+POOL_STATUSES = (
+    POOL_STATUS_AVAILABLE,
+    POOL_STATUS_CLAIMED,
+    POOL_STATUS_UPLOADED,
+    POOL_STATUS_PARTIAL,
+)
 
 
 def locator_digest(locator: str) -> str:
@@ -2564,6 +2574,7 @@ class ProdFilePoolRepository(ABC):
         active: bool | None = True,
         limit: int | None = None,
         added_since: datetime | None = None,
+        exclude_partial: bool = False,
     ) -> list[ProdFilePool]:
         ...
 
@@ -2588,6 +2599,7 @@ class ProdFilePoolRepository(ABC):
         deployment_id: int | None = None,
         deployment_name: str | None = None,
         when: datetime | None = None,
+        exclude_partial: bool = False,
     ) -> list[ProdFilePoolClaim]:
         """Claim files matching a {SizeClass: count} request, atomically.
 
@@ -2599,6 +2611,11 @@ class ProdFilePoolRepository(ABC):
         partial unique index refuses a second blocking claim, so two runs racing
         for the last large file cannot both win however they interleave. A loser
         moves on to the next candidate rather than failing.
+
+        ``exclude_partial`` skips files carrying a PARTIAL claim. Set by canary
+        selection: those files already have chunks in production, possibly
+        months old, so a loss measurement over them would be measuring something
+        other than what it reports.
         """
         ...
 
@@ -2651,6 +2668,25 @@ class ProdFilePoolRepository(ABC):
         ...
 
     @abstractmethod
+    def mark_pool_claim_partial(
+        self,
+        claim_id: int,
+        address: str | None = None,
+        chunks_stored: int | None = None,
+        chunks_failed: int | None = None,
+        total_chunks: int | None = None,
+        note: str | None = None,
+        when: datetime | None = None,
+    ) -> ProdFilePoolClaim:
+        """Record that an upload stored some chunks and stopped.
+
+        The file returns to the pool — it is not on the network in full — but
+        the chunk counts are kept, so an operator can see how far it got rather
+        than being told only that it failed.
+        """
+        ...
+
+    @abstractmethod
     def release_pool_claim(
         self,
         claim_id: int,
@@ -2687,6 +2723,7 @@ class ProdFilePoolRepository(ABC):
         self,
         file_id: int,
         source: ClaimSource,
+        status: ClaimStatus = ClaimStatus.UPLOADED,
         address: str | None = None,
         chunks_stored: int | None = None,
         chunks_failed: int | None = None,
@@ -2746,7 +2783,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             select(ProdFilePoolClaim.id)
             .where(
                 ProdFilePoolClaim.file_id == self._canonical_id_expr(),
-                ProdFilePoolClaim.status != ClaimStatus.RELEASED,
+                ProdFilePoolClaim.status.notin_(tuple(NON_BLOCKING_STATUSES)),
             )
             .exists()
         )
@@ -2756,12 +2793,12 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             return query
         if status == POOL_STATUS_AVAILABLE:
             return query.filter(~self._blocking_claim_exists())
-        if status in (POOL_STATUS_CLAIMED, POOL_STATUS_UPLOADED):
-            wanted = (
-                ClaimStatus.CLAIMED
-                if status == POOL_STATUS_CLAIMED
-                else ClaimStatus.UPLOADED
-            )
+        if status in (POOL_STATUS_CLAIMED, POOL_STATUS_UPLOADED, POOL_STATUS_PARTIAL):
+            wanted = {
+                POOL_STATUS_CLAIMED: ClaimStatus.CLAIMED,
+                POOL_STATUS_UPLOADED: ClaimStatus.UPLOADED,
+                POOL_STATUS_PARTIAL: ClaimStatus.PARTIAL,
+            }[status]
             return query.filter(
                 select(ProdFilePoolClaim.id)
                 .where(
@@ -2918,8 +2955,11 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         active: bool | None = True,
         limit: int | None = None,
         added_since: datetime | None = None,
+        exclude_partial: bool = False,
     ) -> list[ProdFilePool]:
         query = self.session.query(ProdFilePool)
+        if exclude_partial:
+            query = query.filter(~self._has_partial_claim())
         if added_since is not None:
             query = query.filter(ProdFilePool.added_at >= added_since)
         if kind is not None:
@@ -2992,17 +3032,33 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
     _CANDIDATE_OVERFETCH = 5
     _CANDIDATE_FLOOR = 32
 
+    def _has_partial_claim(self):
+        return (
+            select(ProdFilePoolClaim.id)
+            .where(
+                ProdFilePoolClaim.file_id == self._canonical_id_expr(),
+                ProdFilePoolClaim.status == ClaimStatus.PARTIAL,
+            )
+            .exists()
+        )
+
     def _candidates(
-        self, kind: PoolFileKind, size_class: SizeClass, needed: int
+        self,
+        kind: PoolFileKind,
+        size_class: SizeClass,
+        needed: int,
+        exclude_partial: bool = False,
     ) -> list[ProdFilePool]:
         window = max(needed * self._CANDIDATE_OVERFETCH, self._CANDIDATE_FLOOR)
-        return self.list_pool_files(
+        rows = self.list_pool_files(
             kind=kind,
             size_class=size_class,
             status=POOL_STATUS_AVAILABLE,
             active=True,
-            limit=window,
+            limit=None if exclude_partial else window,
+            exclude_partial=exclude_partial,
         )
+        return rows[:window]
 
     def claim_pool_files(
         self,
@@ -3013,6 +3069,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         deployment_id: int | None = None,
         deployment_name: str | None = None,
         when: datetime | None = None,
+        exclude_partial: bool = False,
     ) -> list[ProdFilePoolClaim]:
         import random
 
@@ -3026,7 +3083,9 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         for size_class, count in request.items():
             if count <= 0:
                 continue
-            candidates = self._candidates(kind, size_class, count)
+            candidates = self._candidates(
+                kind, size_class, count, exclude_partial=exclude_partial
+            )
             if len(candidates) < count:
                 available = len(
                     self.list_pool_files(
@@ -3034,6 +3093,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
                         size_class=size_class,
                         status=POOL_STATUS_AVAILABLE,
                         active=True,
+                        exclude_partial=exclude_partial,
                     )
                 )
                 if available < count:
@@ -3047,6 +3107,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
                     size_class=size_class,
                     status=POOL_STATUS_AVAILABLE,
                     active=True,
+                    exclude_partial=exclude_partial,
                 )
             random.shuffle(candidates)
             plan[size_class] = (candidates, count)
@@ -3150,7 +3211,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             self.session.query(ProdFilePoolClaim)
             .filter(
                 ProdFilePoolClaim.file_id == canonical,
-                ProdFilePoolClaim.status != ClaimStatus.RELEASED,
+                ProdFilePoolClaim.status.notin_(tuple(NON_BLOCKING_STATUSES)),
             )
             .one_or_none()
         )
@@ -3193,6 +3254,41 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             claim.gas_cost_wei = gas_cost_wei
         if locator_used is not None:
             claim.locator_used = locator_used
+        if note is not None:
+            claim.note = note
+        self.session.commit()
+        return claim
+
+    def mark_pool_claim_partial(
+        self,
+        claim_id: int,
+        address: str | None = None,
+        chunks_stored: int | None = None,
+        chunks_failed: int | None = None,
+        total_chunks: int | None = None,
+        note: str | None = None,
+        when: datetime | None = None,
+    ) -> ProdFilePoolClaim:
+        claim = self.session.get(ProdFilePoolClaim, claim_id)
+        if claim is None:
+            raise ValueError(f"no pool claim with id {claim_id}")
+        if claim.status is ClaimStatus.UPLOADED:
+            raise ValueError(
+                f"claim {claim_id} is already recorded as fully uploaded; "
+                "downgrading it to partial would misreport what is on the network"
+            )
+        claim.status = ClaimStatus.PARTIAL
+        claim.resolved_at = when or datetime.now(timezone.utc)
+        # Same only-overwrite-with-something rule as resolve: a later pass that
+        # has lost a field must not blank what an earlier one captured.
+        if address is not None:
+            claim.address = address
+        if chunks_stored is not None:
+            claim.chunks_stored = chunks_stored
+        if chunks_failed is not None:
+            claim.chunks_failed = chunks_failed
+        if total_chunks is not None:
+            claim.total_chunks = total_chunks
         if note is not None:
             claim.note = note
         self.session.commit()
@@ -3247,7 +3343,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             self.session.query(ProdFilePoolClaim)
             .filter(
                 ProdFilePoolClaim.file_id.in_(canonical_ids),
-                ProdFilePoolClaim.status != ClaimStatus.RELEASED,
+                ProdFilePoolClaim.status.notin_(tuple(NON_BLOCKING_STATUSES)),
             )
             .all()
         )
@@ -3272,6 +3368,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         self,
         file_id: int,
         source: ClaimSource,
+        status: ClaimStatus = ClaimStatus.UPLOADED,
         address: str | None = None,
         chunks_stored: int | None = None,
         chunks_failed: int | None = None,
@@ -3293,7 +3390,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             source=source,
             deployment_id=deployment_id,
             deployment_name=deployment_name,
-            status=ClaimStatus.UPLOADED,
+            status=status,
             address=address,
             chunks_stored=chunks_stored,
             chunks_failed=chunks_failed,
