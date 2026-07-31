@@ -513,6 +513,7 @@ def _record_prod_upload(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
 ) -> list[dict] | None:
+    network_profile_for_host = _build_network_profile_lookup(deployment)
     console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
     try:
         points = fetch_prod_upload_points(
@@ -546,6 +547,7 @@ def _record_prod_upload(
         repo.upsert_prod_upload_result(
             deployment_id=deployment.id,
             client_hostname=p["host"],
+            network_profile=network_profile_for_host(p["host"]),
             region=p.get("region") or "",
             source_url=source_url,
             file_name=p.get("file_name") or "",

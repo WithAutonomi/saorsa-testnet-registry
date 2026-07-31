@@ -366,6 +366,7 @@ class DeploymentRepository(ABC):
         reason: str | None = None,
         storage_cost_atto: Optional[Decimal] = None,
         gas_cost_wei: Optional[Decimal] = None,
+        network_profile: str | None = None,
     ) -> DeploymentProdUploadResult:
         ...
 
@@ -396,6 +397,7 @@ class DeploymentRepository(ABC):
         started_at: datetime,
         finished_at: datetime,
         reason: str | None = None,
+        network_profile: str | None = None,
     ) -> DeploymentProdDownloadResult:
         ...
 
@@ -1458,6 +1460,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         reason: str | None = None,
         storage_cost_atto: Optional[Decimal] = None,
         gas_cost_wei: Optional[Decimal] = None,
+        network_profile: str | None = None,
     ) -> DeploymentProdUploadResult:
         existing = (
             self.session.query(DeploymentProdUploadResult)
@@ -1488,10 +1491,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 reason=reason,
                 storage_cost_atto=storage_cost_atto,
                 gas_cost_wei=gas_cost_wei,
+                network_profile=network_profile,
             )
             self.session.add(existing)
         else:
             existing.region = region
+            existing.network_profile = network_profile
             existing.file_name = file_name
             existing.file_size_bytes = file_size_bytes
             existing.status = status
@@ -1559,6 +1564,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         started_at: datetime,
         finished_at: datetime,
         reason: str | None = None,
+        network_profile: str | None = None,
     ) -> DeploymentProdDownloadResult:
         existing = (
             self.session.query(DeploymentProdDownloadResult)
@@ -1583,10 +1589,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 started_at=started_at,
                 finished_at=finished_at,
                 reason=reason,
+                network_profile=network_profile,
             )
             self.session.add(existing)
         else:
             existing.region = region
+            existing.network_profile = network_profile
             existing.status = status
             existing.output_path = output_path
             existing.file_size_bytes = file_size_bytes

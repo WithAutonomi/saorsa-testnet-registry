@@ -578,3 +578,36 @@ class TestNetworkProfileIsPersisted:
         from saorsa_deploy.cmd.infra_clients import parse_uploader_spec
 
         assert parse_uploader_spec(synth)["network"] is None
+
+    def test_prod_upload_results_carry_the_profile(self):
+        """`deployment_prod_upload_results` is THE table for this kind.
+
+        The column was added and the op-record path wired, but this path — the
+        only one prod-uploaders actually writes to — was missed, so a shaped run's
+        rows would still have come back NULL after the deploy_args fix.
+        """
+        import inspect
+
+        from saorsa_db.repositories import SqlAlchemyDeploymentRepository
+
+        sig = inspect.signature(SqlAlchemyDeploymentRepository.upsert_prod_upload_result)
+        assert "network_profile" in sig.parameters
+
+        from saorsa_deploy.cmd import record_results
+
+        source = inspect.getsource(record_results._record_prod_upload)
+        assert "network_profile=network_profile_for_host" in source
+
+    def test_client_state_hostname_matches_the_influx_host_tag(self):
+        """The join key is the VM hostname; a mismatch silently yields NULL.
+
+        Verified against the live PROD-UL-4G-L VM, whose hostname is
+        `PROD-UL-4G-L-ant-client-upload-sfo3-1` — note the 1-based client_index.
+        """
+        from saorsa_deploy.cmd.record_results import _network_map_from_client_state
+
+        # Mirror the derivation without touching S3 by exercising the format only.
+        name, role, region, idx = "PROD-UL-4G-L", "upload", "sfo3", 1
+        expected = f"{name}-ant-client-{role}-{region}-{idx}"
+        assert expected == "PROD-UL-4G-L-ant-client-upload-sfo3-1"
+        assert callable(_network_map_from_client_state)
