@@ -331,33 +331,45 @@ def _add_local_bulk(
     A file that cannot be read is recorded and skipped. One unreadable file in a
     directory of thousands must not cost the whole batch.
     """
-    pending: list[dict] = []
+    from rich.progress import Progress
 
-    def flush():
+    pending: list[dict] = []
+    saved = 0
+
+    def flush(progress=None, task=None):
+        nonlocal saved
         if not pending:
             return
+        # The save is a separate phase and can take a while on a slow link.
+        # Without saying so, the command looks hung at exactly the point where
+        # the per-file progress has stopped moving.
+        if progress is not None:
+            progress.update(
+                task, description=f"saving {len(pending)} to the registry…"
+            )
+        elif verbose:
+            console.print(f"[dim]  saving {len(pending)} file(s) to the registry…[/dim]")
         result = repo.add_pool_files_bulk(pending, batch_size=batch_size)
         report.added.extend(result["created"])
         report.skipped_existing += result["skipped"]
         report.linked_duplicates.extend(result["linked"])
+        saved += len(pending)
         pending.clear()
 
-    for path in _with_progress(
-        console, files, "cataloguing", verbose, lambda p: p.name
-    ):
+    def handle(path):
         locator = str(path.resolve())
         try:
             size = path.stat().st_size
         except OSError as exc:
             report.failed.append((locator, str(exc)))
-            continue
+            return
         digests = None
         if do_hash:
             try:
                 digests = hash_local_file(path)
             except OSError as exc:
                 report.failed.append((locator, f"could not hash: {exc}"))
-                continue
+                return
         pending.append(
             {
                 "kind": PoolFileKind.LOCAL,
@@ -369,9 +381,28 @@ def _add_local_bulk(
                 "provenance": provenance,
             }
         )
-        if len(pending) >= batch_size:
-            flush()
-    flush()
+
+    if verbose:
+        for index, path in enumerate(files, start=1):
+            console.print(f"[dim][{index}/{len(files)}][/dim] {path.name}")
+            handle(path)
+            if len(pending) >= batch_size:
+                flush()
+        flush()
+        return
+
+    with Progress(*_progress_columns(), console=console, transient=True) as progress:
+        task = progress.add_task("cataloguing", total=len(files))
+        for path in files:
+            progress.update(task, description=_truncate(path.name))
+            handle(path)
+            if len(pending) >= batch_size:
+                flush(progress, task)
+            progress.advance(task)
+        # The final save happens INSIDE the progress context on purpose: it is
+        # the batch that used to run after the bar disappeared, which is what
+        # made the command look hung.
+        flush(progress, task)
 
 
 def _read_url_list(path: Path) -> list[str]:

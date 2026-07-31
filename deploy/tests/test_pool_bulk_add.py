@@ -203,6 +203,56 @@ class TestRoundTrips:
         two_batches = self._statements(self._entries(600), batch_size=500)
         assert two_batches == one_batch * 2
 
+    def test_duplicates_do_not_cost_a_round_trip_each(self):
+        """The gap that let a real bug through.
+
+        The flat-count tests above give every file a unique digest, so no
+        duplicate links are written and the per-link UPDATE path is never
+        exercised. A real archive directory produced 207 links and 5.3s of
+        round-trips writing them one at a time.
+        """
+        unique = self._statements(
+            [
+                _entry(f"/data/u{i}.bin", f"u{i}.bin", digests={"sha1": f"{i:040d}"})
+                for i in range(100)
+            ]
+        )
+        # Same file count, but every one after the first is a duplicate.
+        duplicated = self._statements(
+            [
+                _entry(f"/data/d{i}.bin", f"d{i}.bin", digests={"sha1": "a" * 40})
+                for i in range(100)
+            ]
+        )
+        assert duplicated <= unique + 2, (
+            f"{duplicated} statements with 99 duplicate links "
+            f"vs {unique} with none"
+        )
+
+    def test_returned_records_can_be_read_without_touching_the_database(self):
+        """The other gap, and the one that caused the visible hang.
+
+        session.commit() expires every ORM instance it manages, so returning
+        them meant the caller's summary line re-fetched each row — two
+        statements each, ~46 seconds for 1156 files, all after the progress bar
+        had closed.
+        """
+        repo = _repo()
+        result = repo.add_pool_files_bulk(self._entries(40))
+
+        seen = []
+
+        @event.listens_for(repo.session.bind, "before_cursor_execute")
+        def _cap(conn, cursor, statement, params, context, executemany):
+            seen.append(statement)
+
+        for record in result["created"]:
+            _ = (record.id, record.name, record.size_bytes, record.kind,
+                 record.duplicate_of)
+        repo.session.close()
+
+        assert seen == [], f"reading {len(result['created'])} records cost {len(seen)}"
+
     def test_a_rerun_is_also_flat(self):
         # An interrupted import gets re-run over files that are already
         # catalogued; skipping them must not cost a round-trip each.

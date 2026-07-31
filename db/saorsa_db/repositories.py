@@ -1,10 +1,11 @@
 import hashlib
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from saorsa_db.models.deployment import Deployment, DeploymentEvent, DeploymentStatus
@@ -2457,6 +2458,25 @@ POOL_STATUSES = (
 )
 
 
+@dataclass
+class PoolFileRecord:
+    """A catalogued file, detached from the session.
+
+    Bulk cataloguing deliberately does NOT hand back ORM instances.
+    ``session.commit()`` expires every instance it manages, so a caller that
+    later reads an attribute triggers a re-fetch — measured at two statements
+    per row, which turned reading the summary for 1156 files into ~46 seconds
+    of round-trips after the work was already done. These are plain values and
+    cannot talk to the database.
+    """
+
+    id: int
+    kind: PoolFileKind
+    name: str
+    size_bytes: int | None
+    duplicate_of: int | None = None
+
+
 def locator_digest(locator: str) -> str:
     """SHA256 of a locator, used as its uniqueness key.
 
@@ -3074,6 +3094,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
 
         created: list = []
         link_report: list = []
+        link_report_ids: list = []
         if new_files:
             # (4) One bulk insert for the files.
             self.session.execute(insert(ProdFilePool), new_files)
@@ -3112,22 +3133,50 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
                 if resolved != file_id:
                     links.append({"row_id": file_id, "target": resolved})
             name_by_id = {row.id: row.name for row in created}
-            for link in links:
-                self.session.query(ProdFilePool).filter(
-                    ProdFilePool.id == link["row_id"]
-                ).update({"duplicate_of": link["target"]}, synchronize_session=False)
-                link_report.append((name_by_id.get(link["row_id"], ""), link["target"]))
+            if links:
+                # One executemany, not an UPDATE per link. A directory with 207
+                # duplicates cost 5.3s of round-trips doing this one at a time,
+                # and a duplicate-heavy directory is exactly the common case for
+                # an archive dump.
+                # ORM bulk update by primary key: one executemany, not an
+                # UPDATE per link. A directory with 207 duplicates cost 5.3s of
+                # round-trips doing these one at a time, and a duplicate-heavy
+                # directory is exactly what an archive dump looks like.
+                self.session.execute(
+                    update(ProdFilePool),
+                    [
+                        {"id": link["row_id"], "duplicate_of": link["target"]}
+                        for link in links
+                    ],
+                )
+                link_report_ids = [
+                    (link["row_id"], link["target"]) for link in links
+                ]
+                link_report.extend(
+                    (name_by_id.get(row_id, ""), target)
+                    for row_id, target in link_report_ids
+                )
 
         # (7) and (8): one bulk insert each for digests and tags.
         if extra_digests:
             self.session.execute(insert(ProdFilePoolDigest), extra_digests)
         if extra_tags:
             self.session.execute(insert(ProdFilePoolTag), extra_tags)
+        # Snapshot before committing. After the commit these instances are
+        # expired, and every attribute read would go back to the database.
+        dup_by_id = {row_id: target for row_id, target in link_report_ids}
+        records = [
+            PoolFileRecord(
+                id=row.id,
+                kind=row.kind,
+                name=row.name,
+                size_bytes=row.size_bytes,
+                duplicate_of=dup_by_id.get(row.id),
+            )
+            for row in created
+        ]
         self.session.commit()
-        # Deliberately no refresh loop here: it cost a SELECT per row (plus a
-        # lazy tag load each), which was the bulk of the statements this method
-        # exists to remove. The links are already known from the pass above.
-        return created, link_report, skipped
+        return records, link_report, skipped
 
     def get_pool_file(self, file_id: int) -> ProdFilePool | None:
         return self.session.get(ProdFilePool, file_id)

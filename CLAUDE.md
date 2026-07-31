@@ -464,8 +464,14 @@ found while building it, both caught by a test asserting statement count is flat
 in file count rather than by timing: ORM `session.add` per row issues
 INSERT..RETURNING per object (use Core `insert()` with a list), and a
 `session.refresh()` loop plus a lazy relationship load reintroduced a SELECT per
-row after the inserts were already batched. Re-runs are flat too — an
-interrupted import skips known files without a round-trip each. Semantics match
+row after the inserts were already batched. Two further per-row traps found only by running it against a real archive
+directory: the duplicate links were written with an UPDATE each (207 links =
+5.3s), now one ORM bulk-update-by-primary-key; and the method returned ORM
+instances, which `session.commit()` expires — so the caller's summary re-fetched
+every row at two statements each, ~46s for 1156 files, *after* the progress bar
+had closed. It now returns detached `PoolFileRecord` values that cannot talk to
+the database. Re-runs are flat too — an interrupted import skips known files
+without a round-trip each. Semantics match
 the per-file path exactly, including duplicate-digest linking *within* a batch,
 where the pre-flight query cannot see an uncommitted sibling.
 
