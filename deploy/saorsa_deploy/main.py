@@ -4414,6 +4414,14 @@ def main(argv=None):
     )
     prod_lu_input_group = prod_lu_parser.add_mutually_exclusive_group(required=True)
     prod_lu_input_group.add_argument(
+        "--from-pool",
+        type=str,
+        metavar="CLASS:COUNT",
+        help="Draw LOCAL files from the managed pool, e.g. tiny:10,small:2. "
+        "Selected files have never been uploaded to production. A third input "
+        "source alongside --urls and --local-dir-path — exactly one is required.",
+    )
+    prod_lu_input_group.add_argument(
         "--urls",
         type=str,
         default=None,
@@ -4505,7 +4513,6 @@ def main(argv=None):
         "(cache disabled).",
     )
 
-    # --- prod local-downloads ---
     prod_lu_parser.add_argument(
         "--exclude-partial",
         action="store_true",
@@ -4513,15 +4520,8 @@ def main(argv=None):
         "network. A partially uploaded file has ant skip what is stored, so it "
         "does not exercise a full upload.",
     )
-    prod_lu_parser.add_argument(
-        "--from-pool",
-        type=str,
-        metavar="CLASS:COUNT",
-        help="Draw LOCAL files from the managed pool instead of --urls or "
-        "--local-dir-path, e.g. tiny:10,small:2. Selected files have never "
-        "been uploaded to production.",
-    )
 
+    # --- prod local-downloads ---
     prod_ld_parser = prod_subparsers.add_parser(
         "local-downloads",
         help=(

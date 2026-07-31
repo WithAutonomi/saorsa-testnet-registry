@@ -240,3 +240,75 @@ class TestManifest:
         assert "--from-pool" in argv
         # Smallest-first ordering, so the step journal sees stable argv.
         assert argv[argv.index("--from-pool") + 1] == "tiny:10,small:2"
+
+
+class TestCommandLineSurface:
+    """Parse real argv, not a hand-built Namespace.
+
+    Every other test here calls `_select_from_pool` with a Namespace it
+    constructed itself, which bypasses argparse entirely — so `--from-pool` was
+    added *outside* the mutually-exclusive input group and argparse went on
+    requiring --urls or --local-dir-path. The manifests validated, the plan
+    rendered, and the run died at step 1 with "one of the arguments --urls
+    --local-dir-path is required".
+    """
+
+    def _parse(self, argv):
+        import contextlib
+        import io
+
+        from saorsa_deploy.main import main
+
+        # main() dispatches after parsing; capture the parsed args by making the
+        # dispatch raise before doing anything.
+        captured = {}
+
+        def _spy(args):
+            captured["args"] = args
+            raise SystemExit(0)
+
+        import saorsa_deploy.cmd.prod_local_uploads as mod
+
+        real = mod.cmd_prod_local_uploads
+        mod.cmd_prod_local_uploads = _spy
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                with pytest.raises(SystemExit):
+                    main(argv)
+        finally:
+            mod.cmd_prod_local_uploads = real
+        return captured.get("args")
+
+    def test_from_pool_alone_is_accepted(self):
+        args = self._parse([
+            "prod", "local-uploads", "--name", "LOCAL-UL-MED",
+            "--purpose", "test", "--from-pool", "medium:1", "--exclude-partial",
+            "--ant-version", "0.3.2",
+        ])
+        assert args is not None, "--from-pool alone must satisfy the parser"
+        assert args.from_pool == "medium:1"
+        assert args.exclude_partial is True
+        assert args.urls is None and args.local_dir_path is None
+
+    def test_urls_alone_still_accepted(self):
+        args = self._parse([
+            "prod", "local-uploads", "--name", "X", "--purpose", "t",
+            "--urls", "/tmp/list.txt",
+        ])
+        assert args is not None
+        assert args.urls == "/tmp/list.txt"
+        assert args.from_pool is None
+
+    def test_from_pool_with_urls_is_rejected(self):
+        # Three input sources, exactly one required — the same rule the
+        # manifest validator enforces.
+        assert self._parse([
+            "prod", "local-uploads", "--name", "X", "--purpose", "t",
+            "--from-pool", "tiny:1", "--urls", "/tmp/list.txt",
+        ]) is None
+
+    def test_no_input_source_is_rejected(self):
+        assert self._parse([
+            "prod", "local-uploads", "--name", "X", "--purpose", "t",
+        ]) is None
