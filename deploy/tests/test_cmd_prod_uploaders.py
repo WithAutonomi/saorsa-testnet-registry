@@ -513,3 +513,68 @@ class TestDestroy:
             cmd_prod_uploaders_destroy(_destroy_args())
         final_status = destroy_patches.record_status.call_args_list[-1].args[1]
         assert final_status.value == "failed"
+
+
+class TestNetworkProfileIsPersisted:
+    """Regression: PROD-UL-4G-L (2026-07-31) ran correctly shaped at mobile-4g, but
+    reported nothing. The profile reached the provisioner — so the VM really was
+    shaped — while both places that *persist* it were missed: the deploy_args
+    uploader entry (which slack-post renders) and the synthesised client-infra spec
+    (which writes S3 client state). A shaped run that does not say so is worse than
+    an unshaped one, because the results get read as if the link were normal.
+    """
+
+    def test_spec_parses_the_network_token(self):
+        from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
+
+        spec = parse_prod_uploader_spec("sfo3:s-4vcpu-8gb:urls=a.txt:network=mobile-4g")
+        assert spec["network"] == "mobile-4g"
+
+    def test_synthesised_client_spec_carries_the_profile(self):
+        """The client-infra spec is what writes S3 state; it dropped the profile."""
+        from saorsa_deploy.cmd.infra_clients import parse_uploader_spec
+
+        synth = (
+            "digital_ocean:sfo3:0:s-4vcpu-8gb:bootstrap_cache=true:network=mobile-4g"
+        )
+        assert parse_uploader_spec(synth)["network"] == "mobile-4g"
+
+    def test_deploy_args_entry_holds_the_resolved_knob_set(self):
+        """Not the bare name — the rates are what make a past run interpretable."""
+        from saorsa_deploy.provisioning.network_profile import resolve_network
+
+        recorded = resolve_network("mobile-4g").to_dict()
+        assert recorded["name"] == "mobile-4g"
+        assert recorded["rate_up"] == "8mbit"
+        assert recorded["rate_down"] == "30mbit"
+        assert recorded["profile_set_version"] == 1
+
+    def test_slack_post_renders_a_shaped_uploader(self):
+        from saorsa_deploy.cmd.slack_post import _prod_uploaders_blocks
+        from saorsa_deploy.provisioning.network_profile import resolve_network
+
+        text = "\n".join(
+            b.get("text", {}).get("text", "")
+            for b in _prod_uploaders_blocks(
+                {
+                    "uploaders": [
+                        {
+                            "region": "sfo3",
+                            "vm_size": "s-4vcpu-8gb",
+                            "network": resolve_network("mobile-4g").to_dict(),
+                        }
+                    ]
+                }
+            )
+        )
+        assert "🐌 mobile-4g (30mbit/8mbit)" in text
+
+    def test_an_unshaped_uploader_still_records_nothing(self):
+        from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
+
+        spec = parse_prod_uploader_spec("sfo3:s-4vcpu-8gb:urls=a.txt")
+        assert spec["network"] is None
+        synth = "digital_ocean:sfo3:0:s-4vcpu-8gb:bootstrap_cache=true"
+        from saorsa_deploy.cmd.infra_clients import parse_uploader_spec
+
+        assert parse_uploader_spec(synth)["network"] is None

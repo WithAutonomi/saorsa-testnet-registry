@@ -148,10 +148,17 @@ def _ensure_client_infra(args, console: Console) -> None:
     cache_token = (
         f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
     )
+    # network likewise, so client_state records the link conditions this VM ran
+    # under rather than leaving the per-VM listing blank on a shaped run.
+    network_token = (
+        f":network={getattr(args, 'network', None)}"
+        if getattr(args, "network", None)
+        else ""
+    )
     infra_args = SimpleNamespace(
         name=args.name,
         uploader=[],
-        downloader=[f"digital_ocean:{args.spec}:{cache_token}"],
+        downloader=[f"digital_ocean:{args.spec}:{cache_token}{network_token}"],
         force=False,
     )
     cmd_infra_clients(infra_args)

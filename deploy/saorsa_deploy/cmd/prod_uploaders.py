@@ -543,11 +543,13 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
         )
         return
 
-    # bootstrap_cache is carried through so client_state records the real
-    # per-VM cache mode (the print/slack surfaces read it from there).
+    # bootstrap_cache and network are carried through so client_state records
+    # the real per-VM cache mode and link conditions — the print/slack surfaces
+    # read them from there, and a run that is shaped must say so.
     synth_uploader_specs = [
         f"digital_ocean:{s['region']}:0:{s['vm_size']}"
         f":bootstrap_cache={str(s.get('bootstrap_cache', True)).lower()}"
+        + (f":network={s['network']}" if s.get("network") else "")
         for s in parsed_specs
     ]
     console.print(
@@ -779,6 +781,14 @@ def cmd_prod_uploaders_deploy(args):
                 "forward_logs": s.get("forward_logs"),
                 "memory_profiling": s.get("memory_profiling"),
                 "rust_log": s.get("rust_log"),
+                # Resolved knob set, not the bare name: this is the record that
+                # keeps a past run interpretable after the profile file moves on,
+                # and it is what `slack-post` renders the rates from.
+                "network": (
+                    resolve_network(s.get("network")).to_dict()
+                    if s.get("network")
+                    else None
+                ),
             }
             for s in parsed_specs
         ],
