@@ -2710,6 +2710,22 @@ class ProdFilePoolRepository(ABC):
         ...
 
     @abstractmethod
+    def files_with_partial_claims(self, file_ids: list[int]) -> set:
+        """Which of these files carry a PARTIAL claim.
+
+        Batched alongside :meth:`blocking_claims_for_files` because a listing
+        needs both to describe a row: a partial claim does NOT block, so it is
+        invisible to the blocking lookup, and a file that has had chunks stored
+        would otherwise render identically to one nobody has ever touched.
+        """
+        ...
+
+    @abstractmethod
+    def latest_partial_claim_for_file(self, file_id: int) -> ProdFilePoolClaim | None:
+        """The most recent PARTIAL claim on this file's content, if any."""
+        ...
+
+    @abstractmethod
     def get_pool_file_by_address(self, address: str) -> ProdFilePool | None:
         """Reverse lookup: which pooled file produced this datamap address?
 
@@ -3353,6 +3369,45 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             for file_id, canonical in canonical_by_file.items()
             if canonical in by_canonical
         }
+
+    def files_with_partial_claims(self, file_ids: list[int]) -> set:
+        if not file_ids:
+            return set()
+        files = (
+            self.session.query(ProdFilePool)
+            .filter(ProdFilePool.id.in_(file_ids))
+            .all()
+        )
+        canonical_by_file = {f.id: (f.duplicate_of or f.id) for f in files}
+        partial_canonicals = {
+            row.file_id
+            for row in self.session.query(ProdFilePoolClaim)
+            .filter(
+                ProdFilePoolClaim.file_id.in_(set(canonical_by_file.values())),
+                ProdFilePoolClaim.status == ClaimStatus.PARTIAL,
+            )
+            .all()
+        }
+        return {
+            file_id
+            for file_id, canonical in canonical_by_file.items()
+            if canonical in partial_canonicals
+        }
+
+    def latest_partial_claim_for_file(self, file_id: int) -> ProdFilePoolClaim | None:
+        pool_file = self.session.get(ProdFilePool, file_id)
+        if pool_file is None:
+            return None
+        canonical = pool_file.duplicate_of or pool_file.id
+        return (
+            self.session.query(ProdFilePoolClaim)
+            .filter(
+                ProdFilePoolClaim.file_id == canonical,
+                ProdFilePoolClaim.status == ClaimStatus.PARTIAL,
+            )
+            .order_by(ProdFilePoolClaim.claimed_at.desc())
+            .first()
+        )
 
     def get_pool_file_by_address(self, address: str) -> ProdFilePool | None:
         claim = (

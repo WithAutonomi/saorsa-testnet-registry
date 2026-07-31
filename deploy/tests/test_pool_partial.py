@@ -308,3 +308,86 @@ class TestImportHistory:
         out = " ".join(capsys.readouterr().out.split())
         assert "part-uploaded" in out
         assert "excluded from canaries" in out
+
+
+class TestListAndShowRendering:
+    """A part-uploaded file must not look identical to an untouched one.
+
+    Partial claims do not block, so they are invisible to the blocking-claim
+    lookup that drives both views. Without an explicit fallback, `list` shows
+    `available` and `show` renders the file as pristine — no chunk counts, no
+    hint that anything was ever stored.
+    """
+
+    def _wired(self, repo, monkeypatch):
+        from saorsa_deploy.cmd import prod_pool
+
+        monkeypatch.setattr(prod_pool, "get_file_pool_repository", lambda: repo)
+        return prod_pool
+
+    def _list_args(self, **kwargs):
+        base = dict(status=None, kind=None, size=None, tag=None, since=None,
+                    limit=None, all=False)
+        base.update(kwargs)
+        return argparse.Namespace(**base)
+
+    def test_list_marks_a_partial_file_with_an_asterisk(
+        self, repo, monkeypatch, capsys
+    ):
+        prod_pool = self._wired(repo, monkeypatch)
+        files = _seed(repo, 2)
+        _partial_specific(repo, files[0], chunks_stored=342, total_chunks=400)
+
+        prod_pool.cmd_prod_pool_list(self._list_args())
+        out = capsys.readouterr().out
+        assert "available*" in out
+        assert "partially uploaded" in " ".join(out.split())
+
+    def test_the_legend_only_appears_when_relevant(self, repo, monkeypatch, capsys):
+        prod_pool = self._wired(repo, monkeypatch)
+        _seed(repo, 2)
+        prod_pool.cmd_prod_pool_list(self._list_args())
+        out = " ".join(capsys.readouterr().out.split())
+        assert "*" not in out.replace("**", "")
+        assert "partially uploaded" not in out
+
+    def test_a_fully_uploaded_file_is_not_marked(self, repo, monkeypatch, capsys):
+        # Once it is on the network the partial history is superseded; flagging
+        # it would only confuse.
+        prod_pool = self._wired(repo, monkeypatch)
+        files = _seed(repo, 1)
+        _partial_specific(repo, files[0])
+        claim = repo.claim_pool_files(
+            PoolFileKind.URL, {SizeClass.SMALL: 1}, ClaimSource.PROD_UPLOADERS
+        )[0]
+        repo.resolve_pool_claim(claim.id, address="a7f3c2")
+
+        prod_pool.cmd_prod_pool_list(self._list_args())
+        out = capsys.readouterr().out
+        assert "uploaded" in out
+        assert "uploaded*" not in out
+
+    def test_show_surfaces_the_earlier_partial(self, repo, monkeypatch, capsys):
+        prod_pool = self._wired(repo, monkeypatch)
+        files = _seed(repo, 1)
+        _partial_specific(
+            repo, files[0], chunks_stored=342, total_chunks=400, address="a7f3c2"
+        )
+
+        prod_pool.cmd_prod_pool_show(
+            argparse.Namespace(file_id=files[0].id, address=None)
+        )
+        out = " ".join(capsys.readouterr().out.split())
+        assert "partially uploaded before" in out
+        assert "342 of 400 chunk(s) stored" in out
+        assert "excluded from canary selection" in out
+
+    def test_show_is_unchanged_for_an_untouched_file(self, repo, monkeypatch, capsys):
+        prod_pool = self._wired(repo, monkeypatch)
+        files = _seed(repo, 1)
+        prod_pool.cmd_prod_pool_show(
+            argparse.Namespace(file_id=files[0].id, address=None)
+        )
+        out = " ".join(capsys.readouterr().out.split())
+        assert "status available" in out
+        assert "partially uploaded" not in out

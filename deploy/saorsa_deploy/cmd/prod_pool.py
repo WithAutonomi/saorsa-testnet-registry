@@ -460,6 +460,10 @@ def cmd_prod_pool_list(args) -> None:
         return
 
     claims = repo.blocking_claims_for_files([r.id for r in rows])
+    # A partial claim does not block, so it is invisible to the lookup above.
+    # Without this a file with chunks already stored renders identically to one
+    # nobody has ever touched.
+    partial_ids = repo.files_with_partial_claims([r.id for r in rows])
 
     table = Table(box=None, pad_edge=False)
     table.add_column("FILE", style="bold")
@@ -474,17 +478,24 @@ def cmd_prod_pool_list(args) -> None:
         table.add_column("ADDRESS")
 
     unknown_size = 0
+    partial_shown = 0
     for row in rows:
         claim = claims.get(row.id)
         if row.size_bytes is None:
             unknown_size += 1
+        state = _state_of(claim)
+        # Marked once fully uploaded the partial history is superseded — the
+        # file IS on the network, so flagging it would only confuse.
+        if row.id in partial_ids and state != "uploaded":
+            state = f"{state}*"
+            partial_shown += 1
         cells = [
             f"#{row.id}",
             row.kind.value,
             classify(row.size_bytes).value if row.size_bytes is not None else "?",
             format_size(row.size_bytes),
             row.name,
-            _state_of(claim),
+            state,
             _claim_owner(claim),
         ]
         if show_address:
@@ -494,6 +505,12 @@ def cmd_prod_pool_list(args) -> None:
     console.print(table)
     console.print()
     console.print(f"  {len(rows)} shown")
+    if partial_shown:
+        console.print(
+            "[dim]  * partially uploaded — some chunks are already stored. "
+            "Still drawable by uploaders (completing it is useful work), but "
+            "excluded from canary selection.[/dim]"
+        )
     if unknown_size:
         # Never let these pass as ordinary rows: they cannot satisfy any
         # size-class request, so a pool that looks stocked may not be.
@@ -522,6 +539,12 @@ def cmd_prod_pool_show(args) -> None:
             sys.exit(1)
 
     claim = repo.open_claim_for_file(pool_file.id)
+    # A partial claim does not block, so open_claim_for_file returns None for
+    # it. Falling back here is what stops a file with chunks already stored
+    # rendering as though nothing had ever happened to it.
+    partial_claim = (
+        repo.latest_partial_claim_for_file(pool_file.id) if claim is None else None
+    )
     size_class = (
         classify(pool_file.size_bytes).value
         if pool_file.size_bytes is not None
@@ -548,6 +571,34 @@ def cmd_prod_pool_show(args) -> None:
         )
     if not pool_file.active:
         console.print("        [yellow]retired (inactive)[/yellow]")
+
+    if partial_claim is not None:
+        console.print("        status    available (partially uploaded before)")
+        stored = partial_claim.chunks_stored
+        total = partial_claim.total_chunks
+        if total:
+            console.print(
+                f"        progress  {stored or 0} of {total} chunk(s) stored on "
+                "an earlier attempt"
+            )
+        else:
+            console.print(
+                "        progress  an earlier upload stored some chunks and "
+                "stopped"
+            )
+        when = _aware(partial_claim.resolved_at or partial_claim.claimed_at)
+        console.print(
+            f"        attempt   {_claim_owner(partial_claim)}"
+            f"        {when:%Y-%m-%d %H:%M}"
+        )
+        if partial_claim.address:
+            console.print(f"        address   {partial_claim.address}")
+        console.print(
+            "[dim]        Drawable by uploaders — completing it is useful work "
+            "— but excluded from canary selection.[/dim]"
+        )
+        console.print()
+        return
 
     console.print(f"        status    {_state_of(claim)}")
     if claim is not None:
