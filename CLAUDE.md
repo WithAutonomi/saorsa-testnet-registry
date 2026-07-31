@@ -455,7 +455,14 @@ other branch too — `import-history` makes both calls. `prod-local-uploads` res
 inline per file (a failed upload **releases** rather than spends). Wrapped so a
 registry predating the migration cannot cost the operator their results.
 
-**Scale.** The canary is the dominant consumer: ~350 distinct files burned
+**Scale.** Three things narrow in SQL rather than in Python, which matters once
+the local dataset lands: `list`'s LIMIT reaches the database (slicing a
+materialised list cost 2.28s to return ten rows from a 200k catalogue), tags are
+an indexed `prod_file_pool_tags` side table rather than a JSON column (2.11s →
+0.00s), and `pool_stats` COUNTs rather than materialising twenty result sets
+(4.47s → 0.15s). Tag matching is OR across the given tags, lower-cased on write.
+
+**Scale of demand.** The canary is the dominant consumer: ~350 distinct files burned
 permanently per run (382/311/313 measured), small+medium only. `prod pool add
 --from-listing internet-archive:<item>` reads IA item metadata — name, size, MD5
 and SHA1 per file — so hundreds of entries are catalogued without downloading

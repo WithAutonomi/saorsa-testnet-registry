@@ -1476,6 +1476,10 @@ number that looks credible and is not.
 Everything is addressed by **file id**, never claim id — a file carries at most
 one blocking claim, so a claim id is an implementation detail.
 
+Tags are repeatable on both `add` and `list` (`--tag prc --tag video`), stored
+lower-cased in an indexed side table, and `list --tag a --tag b` matches **any**
+of them, not all.
+
 #### The desktop-application flow
 
 Nothing in a GUI application can write to this database, so the **checkout** is

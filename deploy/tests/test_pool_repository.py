@@ -310,3 +310,134 @@ class TestDigests:
         # The first value for an algorithm wins; a second must not conflict with
         # the unique constraint nor silently replace what we already trusted.
         assert by_algo == {"sha1": "aaa", "sha256": "ccc"}
+
+
+class TestScaleBehaviour:
+    """Queries must narrow in the database, not in Python.
+
+    Measured on a synthetic 200k-row pool before these were fixed: `pool_stats`
+    took 4.47s and `list --limit 10` took 2.28s to return ten rows, because
+    every candidate row was materialised as an ORM object and only then sliced.
+    The local dataset will be larger than that.
+    """
+
+    def test_limit_reaches_the_database(self, repo):
+        from sqlalchemy import event
+
+        for i in range(20):
+            repo.add_pool_file(
+                PoolFileKind.URL,
+                f"https://example.org/{i}",
+                f"{i}.bin",
+                size_bytes=50 * MIB,
+            )
+
+        seen = []
+
+        @event.listens_for(repo.session.bind, "before_cursor_execute")
+        def _capture(conn, cursor, statement, params, context, executemany):
+            seen.append(statement)
+
+        repo.list_pool_files(limit=5)
+        event.remove(repo.session.bind, "before_cursor_execute", _capture)
+
+        selects = [s for s in seen if s.lstrip().upper().startswith("SELECT")]
+        assert selects, "expected a SELECT"
+        # The LIMIT must be in the SQL, not applied to a materialised list.
+        assert any("LIMIT" in s.upper() for s in selects)
+
+    def test_tag_filter_is_a_sql_predicate(self, repo):
+        from sqlalchemy import event
+
+        for i in range(10):
+            repo.add_pool_file(
+                PoolFileKind.URL,
+                f"https://example.org/{i}",
+                f"{i}.bin",
+                size_bytes=50 * MIB,
+                tags=["photos"] if i == 0 else ["corpus"],
+            )
+
+        seen = []
+
+        @event.listens_for(repo.session.bind, "before_cursor_execute")
+        def _capture(conn, cursor, statement, params, context, executemany):
+            seen.append(statement)
+
+        rows = repo.list_pool_files(tags=["photos"], limit=5)
+        event.remove(repo.session.bind, "before_cursor_execute", _capture)
+
+        assert len(rows) == 1
+        selects = [s for s in seen if s.lstrip().upper().startswith("SELECT")]
+        assert any("prod_file_pool_tags" in s for s in selects)
+
+    def test_stats_counts_rather_than_materialising(self, repo):
+        from sqlalchemy import event
+
+        for i in range(10):
+            repo.add_pool_file(
+                PoolFileKind.URL,
+                f"https://example.org/{i}",
+                f"{i}.bin",
+                size_bytes=50 * MIB,
+            )
+
+        seen = []
+
+        @event.listens_for(repo.session.bind, "before_cursor_execute")
+        def _capture(conn, cursor, statement, params, context, executemany):
+            seen.append(statement)
+
+        stats = repo.pool_stats()
+        event.remove(repo.session.bind, "before_cursor_execute", _capture)
+
+        assert stats["url"]["by_class"]["small"]["total"] == 10
+        selects = [s for s in seen if s.lstrip().upper().startswith("SELECT")]
+        # Every stats query is a COUNT; none of them fetch rows.
+        assert selects
+        assert all("count(" in s.lower() for s in selects)
+
+
+class TestTagStorage:
+    def test_tags_are_lower_cased(self, repo):
+        pool_file, _ = repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/a", "a", tags=["Video", " PRC "]
+        )
+        assert pool_file.tags == ["prc", "video"]
+
+    def test_lookup_is_case_insensitive(self, repo):
+        repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/a", "a", tags=["Video"]
+        )
+        assert len(repo.list_pool_files(tags=["VIDEO"])) == 1
+
+    def test_readding_merges_tags_without_duplicating(self, repo):
+        pool_file, _ = repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/a", "a", tags=["video"]
+        )
+        again, created = repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/a", "a", tags=["video", "prc"]
+        )
+        assert created is False
+        assert again.id == pool_file.id
+        assert again.tags == ["prc", "video"]
+
+    def test_any_tag_matches(self, repo):
+        # OR, matching what the JSON implementation did.
+        repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/a", "a", tags=["video"]
+        )
+        repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/b", "b", tags=["audio"]
+        )
+        assert len(repo.list_pool_files(tags=["video", "audio"])) == 2
+
+    def test_deleting_a_file_removes_its_tags(self, repo):
+        from saorsa_db.models.prod_file_pool import ProdFilePoolTag
+
+        pool_file, _ = repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/a", "a", tags=["video"]
+        )
+        repo.session.delete(pool_file)
+        repo.session.commit()
+        assert repo.session.query(ProdFilePoolTag).count() == 0

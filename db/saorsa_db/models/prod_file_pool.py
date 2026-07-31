@@ -54,7 +54,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     String,
     Text,
@@ -157,11 +156,19 @@ class ProdFilePool(Base):
     # letting it sit in the pool looking usable.
     size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
-    # Free-form labels for grouping (e.g. "video", "corpus"). Stored as JSON
-    # rather than a side table: tag filtering is a convenience on a few thousand
-    # curated URL entries, not part of the hot selection path. If it ever
-    # becomes hot on the large local set, this wants a proper (tag, file) table.
-    tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # Tags live in ``prod_file_pool_tags``, not here. They began as a JSON
+    # column, which filtered in Python after materialising every row —
+    # measured at 2.11s to return ten rows from a 200k catalogue, and there is
+    # no way to LIMIT before filtering. The side table is indexed on
+    # ``(tag, file_id)`` so a tag lookup is a range scan.
+    tag_rows: Mapped[list["ProdFilePoolTag"]] = relationship(
+        back_populates="file", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    @property
+    def tags(self) -> list[str]:
+        """Tag values, so callers read the same shape the JSON column gave."""
+        return sorted(row.tag for row in self.tag_rows)
 
     # Where the entry came from, e.g. "internet-archive:<item>" or a dataset
     # name. Kept so a curated pool stays auditable long after the fact.
@@ -197,13 +204,39 @@ class ProdFilePool(Base):
             "locator": self.locator,
             "name": self.name,
             "size_bytes": self.size_bytes,
-            "tags": self.tags or [],
+            "tags": self.tags,
             "provenance": self.provenance,
             "duplicate_of": self.duplicate_of,
             "active": self.active,
             "notes": self.notes,
             "added_at": self.added_at.isoformat(),
         }
+
+
+class ProdFilePoolTag(Base):
+    """One (file, tag) pair.
+
+    A side table rather than a JSON column because tag filtering has to happen
+    in SQL. With tags on the row, a ``--tag`` query had to load every candidate
+    into Python to inspect them, and a LIMIT could only be applied afterwards —
+    so asking for ten tagged files read the whole catalogue.
+    """
+
+    __tablename__ = "prod_file_pool_tags"
+    __table_args__ = (
+        UniqueConstraint("file_id", "tag", name="uq_prod_file_pool_tags_file_tag"),
+        # The lookup direction that matters: given a tag, which files carry it.
+        Index("ix_prod_file_pool_tags_lookup", "tag", "file_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    file_id: Mapped[int] = mapped_column(
+        ForeignKey("prod_file_pool.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Lower-cased on write by the repository, so a lookup cannot miss on case.
+    tag: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    file: Mapped["ProdFilePool"] = relationship(back_populates="tag_rows")
 
 
 class ProdFilePoolDigest(Base):

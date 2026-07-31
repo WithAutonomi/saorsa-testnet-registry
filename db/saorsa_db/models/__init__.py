@@ -72,6 +72,7 @@ from saorsa_db.models.prod_file_pool import (
     ProdFilePool,
     ProdFilePoolClaim,
     ProdFilePoolDigest,
+    ProdFilePoolTag,
 )
 from saorsa_db.models.prod_download_result import (
     DeploymentProdDownloadResult,
@@ -100,6 +101,7 @@ __all__ = [
     "ProdFilePool",
     "ProdFilePoolClaim",
     "ProdFilePoolDigest",
+    "ProdFilePoolTag",
     "SELF_RESOLVING_SOURCES",
     "Deployment",
     "DeploymentDerivedMetric",
