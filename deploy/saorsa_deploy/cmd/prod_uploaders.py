@@ -61,6 +61,7 @@ DEFAULT_MONITORING_VOLUME_SIZE = 50
 _KNOWN_SPEC_KEYS = (
     "urls",
     "pool",
+    "exclude_partial",
     "payment",
     "log_level",
     "clock_skew",
@@ -266,11 +267,18 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     )
     rust_log = options.get("rust_log") or None
 
+    exclude_partial = (
+        _parse_bootstrap_cache_token(spec, options["exclude_partial"])
+        if "exclude_partial" in options
+        else False
+    )
+
     return {
         "region": region,
         "vm_size": vm_size,
         "urls_file": urls_file,
         "pool_request": pool_request,
+        "exclude_partial": exclude_partial,
         "payment_type": payment_type,
         "log_level": log_level,
         "clock_skew": clock_skew,
@@ -763,6 +771,7 @@ def cmd_prod_uploaders_deploy(args):
                     if s.get("pool_request")
                     else None
                 ),
+                "exclude_partial": s.get("exclude_partial", False),
                 "file_names": _extract_file_names(s["_urls_file_content"]),
                 "payment_type": s.get("payment_type"),
                 "clock_skew": s.get("clock_skew", False),
@@ -1022,6 +1031,7 @@ def _select_pool_files(args, parsed_specs: list[dict], console: Console) -> list
                 kind=PoolFileKind.URL,
                 request=spec["pool_request"],
                 source=ClaimSource.PROD_UPLOADERS,
+                exclude_partial=spec.get("exclude_partial", False),
             )
         except PoolSelectionError as exc:
             console.print(f"\n[bold red]Error:[/bold red] {exc}")

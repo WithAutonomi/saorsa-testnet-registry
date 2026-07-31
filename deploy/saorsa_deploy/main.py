@@ -4507,6 +4507,13 @@ def main(argv=None):
 
     # --- prod local-downloads ---
     prod_lu_parser.add_argument(
+        "--exclude-partial",
+        action="store_true",
+        help="With --from-pool, draw only files with no chunks already on the "
+        "network. A partially uploaded file has ant skip what is stored, so it "
+        "does not exercise a full upload.",
+    )
+    prod_lu_parser.add_argument(
         "--from-pool",
         type=str,
         metavar="CLASS:COUNT",

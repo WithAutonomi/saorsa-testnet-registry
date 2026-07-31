@@ -48,6 +48,8 @@ def _format_pool_request(pool: dict) -> str:
 def _prod_uploader_spec(u) -> str:
     if u.pool:
         spec = f"{u.region}:{u.vm_size}:pool={_format_pool_request(u.pool)}"
+        if u.exclude_partial:
+            spec += ":exclude_partial=true"
     else:
         spec = f"{u.region}:{u.vm_size}:urls={u.urls}"
     if u.payment:
@@ -245,6 +247,8 @@ def _local_uploads(manifest: Manifest) -> list[Step]:
     argv = ["prod", "local-uploads", "--name", manifest.name, "--purpose", manifest.purpose]
     if spec.pool is not None:
         argv += ["--from-pool", _format_pool_request(spec.pool)]
+        if spec.exclude_partial:
+            argv += ["--exclude-partial"]
     elif spec.urls is not None:
         argv += ["--urls", spec.urls]
     else:

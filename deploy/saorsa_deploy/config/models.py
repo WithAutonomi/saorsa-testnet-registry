@@ -406,6 +406,11 @@ class ProdUploader(_Base):
     # which cannot return a file that has ever been handed out.
     urls: Optional[str] = None  # path to URL list (uploaded with --public)
     pool: Optional[dict[str, int]] = None
+    # Draw only files with no chunks already on the network. A partially
+    # uploaded file has ant skip what is stored and send only the remainder, so
+    # a run testing whether an upload can be sustained over a slow link would
+    # not be testing that at all.
+    exclude_partial: bool = False
     payment: Optional[Payment] = None
     # ant log verbosity for this VM's uploads; None omits the token (defaults
     # to info on the VM). info=-v, debug=-vv, trace=-vvv.
@@ -552,6 +557,9 @@ class ProdLocalUploadsSpec(_Base):
     # {size_class: count} against the managed pool. LOCAL entries only — this
     # kind uploads from the operator's disk, so a URL entry is meaningless here.
     pool: Optional[dict[str, int]] = None
+    # Draw only files with no chunks already on the network — see the note on
+    # ProdUploader.exclude_partial.
+    exclude_partial: bool = False
     payment: Optional[Payment] = None
     # ant log verbosity (info=default, debug, trace). The documented knob.
     log_level: Optional[LogLevel] = None

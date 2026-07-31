@@ -832,6 +832,7 @@ def _select_from_pool(args, console: Console):
             kind=PoolFileKind.LOCAL,
             request=request,
             source=ClaimSource.PROD_LOCAL_UPLOADS,
+            exclude_partial=getattr(args, "exclude_partial", False),
         )
     except PoolSelectionError as exc:
         console.print(f"\n[bold red]Error:[/bold red] {exc}")

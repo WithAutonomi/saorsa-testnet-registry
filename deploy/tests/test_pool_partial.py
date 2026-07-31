@@ -391,3 +391,69 @@ class TestListAndShowRendering:
         out = " ".join(capsys.readouterr().out.split())
         assert "status available" in out
         assert "partially uploaded" not in out
+
+
+class TestExplicitExclusion:
+    """Uploaders can ask for pristine files; canaries always get them.
+
+    A canary must never draw a partial — that is enforced by source, not by a
+    flag. An uploader run may legitimately want either: completing a partial is
+    useful work, but a run testing whether an upload can be *sustained* over a
+    slow link learns nothing from a file that is 85% uploaded, because ant
+    sends only the chunks that are missing.
+    """
+
+    def test_uploaders_can_opt_out_of_partials(self, repo, fake_s3):
+        files = _seed(repo, 3)
+        _partial_specific(repo, files[0])
+        selected = pool_selection.select_for_deployment(
+            repo, name="PROD-UL-07", slot="uploader-1", kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            exclude_partial=True,
+        )
+        assert files[0].id not in {entry.file_id for entry in selected}
+
+    def test_uploaders_still_draw_partials_by_default(self, repo, fake_s3):
+        _seed(repo, 1)
+        _partial_specific(repo, repo.list_pool_files()[0])
+        selected = pool_selection.select_for_deployment(
+            repo, name="PROD-UL-08", slot="uploader-1", kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 1}, source=ClaimSource.PROD_UPLOADERS,
+        )
+        assert len(selected) == 1
+
+    def test_the_flag_cannot_re_enable_partials_for_a_canary(self, repo, fake_s3):
+        _seed(repo, 1)
+        _partial_specific(repo, repo.list_pool_files()[0])
+        with pytest.raises(pool_selection.PoolSelectionError):
+            pool_selection.select_for_deployment(
+                repo, name="PROD-CANARY-05", slot="canary-upload",
+                kind=PoolFileKind.URL, request={SizeClass.SMALL: 1},
+                source=ClaimSource.PROD_CANARY, exclude_partial=False,
+            )
+
+    def test_manifest_maps_to_the_spec_token(self):
+        from saorsa_deploy.config.models import ProdUploader
+        from saorsa_deploy.orchestrator.prod import _prod_uploader_spec
+
+        uploader = ProdUploader(
+            region="lon1", vm_size="s-4vcpu-8gb", pool={"medium": 1},
+            exclude_partial=True,
+        )
+        assert _prod_uploader_spec(uploader) == (
+            "lon1:s-4vcpu-8gb:pool=medium:1:exclude_partial=true"
+        )
+
+    def test_spec_token_round_trips(self):
+        from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
+
+        spec = parse_prod_uploader_spec(
+            "lon1:s-4vcpu-8gb:pool=medium:1:exclude_partial=true"
+        )
+        assert spec["exclude_partial"] is True
+
+    def test_absent_token_defaults_to_false(self):
+        from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
+
+        spec = parse_prod_uploader_spec("lon1:s-4vcpu-8gb:pool=medium:1")
+        assert spec["exclude_partial"] is False

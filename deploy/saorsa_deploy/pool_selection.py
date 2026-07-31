@@ -133,6 +133,7 @@ def select_for_deployment(
     kind: PoolFileKind,
     request: dict,
     source: ClaimSource,
+    exclude_partial: bool = False,
 ) -> list[SelectedFile]:
     """Claim files for one slot of a deployment, or return the previous draw.
 
@@ -152,12 +153,15 @@ def select_for_deployment(
             kind,
             request,
             source,
-            # A canary measures loss on content it puts there. A partially
-            # uploaded file already has chunks in production, possibly months
-            # old, so drawing one would produce a number that looks like a loss
-            # measurement and is not. Excluded by construction rather than by a
-            # flag, so no manifest can opt into a contaminated run.
-            exclude_partial=(source is ClaimSource.PROD_CANARY),
+            # Always for a canary — a loss measurement over content that is
+            # already partly stored is not the measurement it reports, and no
+            # manifest may opt into that. Optional for everything else: a run
+            # testing whether an upload can be *sustained* over a slow link
+            # learns nothing from a file that is 85% uploaded already, because
+            # ant skips the chunks that are stored and only sends the rest.
+            exclude_partial=(
+                exclude_partial or source is ClaimSource.PROD_CANARY
+            ),
         )
     except InsufficientPoolInventory as exc:
         raise PoolSelectionError(_shortfall_message(exc)) from exc
