@@ -1322,6 +1322,38 @@ def _url_reachable(url: str) -> bool:
 # =============================================================================
 
 
+def _deployment_lookup(deployment_repo, deployment_ids):
+    """Map deployment id → (ClaimSource, name).
+
+    ``deployment_prod_upload_results`` is written by **two** kinds — remote
+    ``prod-uploaders`` runs (via ``record-results``) and ``prod-local-uploads``,
+    which writes its rows inline. The table itself carries no hint of which, so
+    attribution has to come from the deployment's ``deploy_args.kind``.
+    Measured on the live registry: 444 of 583 rows are local uploads, so
+    assuming the remote kind mislabels the majority.
+    """
+    from saorsa_db.models.prod_file_pool import ClaimSource
+
+    by_kind = {
+        "prod-local-uploads": ClaimSource.PROD_LOCAL_UPLOADS,
+        "prod-uploaders": ClaimSource.PROD_UPLOADERS,
+        "prod-canary": ClaimSource.PROD_CANARY,
+    }
+    lookup = {}
+    for deployment_id in set(deployment_ids):
+        deployment = deployment_repo.get(deployment_id)
+        if deployment is None:
+            continue
+        kind = ""
+        if isinstance(deployment.deploy_args, dict):
+            kind = deployment.deploy_args.get("kind") or ""
+        lookup[deployment_id] = (
+            by_kind.get(kind, ClaimSource.PROD_UPLOADERS),
+            deployment.name,
+        )
+    return lookup
+
+
 def _history_rows(deployment_repo):
     """Every file already uploaded to production, from BOTH result tables.
 
@@ -1332,8 +1364,12 @@ def _history_rows(deployment_repo):
     invisible and let the pool re-issue files that are already stored.
 
     Yields ``(file_name, size_bytes, address, chunks, storage_atto, gas_wei,
-    when, source_label)``.
+    when, deployment_id, known_source, complete)``. ``known_source`` is set
+    only where the table itself settles the question — a canary row can only
+    have come from a canary — and is None for the shared upload-results table,
+    whose rows the caller attributes from the deployment's kind.
     """
+    from saorsa_db.models.prod_file_pool import ClaimSource
     from saorsa_db.models.prod_upload_result import ProdUploadStatus
 
     # Successes AND partials. A partial upload put real chunks in production,
@@ -1364,7 +1400,10 @@ def _history_rows(deployment_repo):
             row.storage_cost_atto,
             row.gas_cost_wei,
             row.finished_at,
-            "prod-uploaders",
+            row.deployment_id,
+            # Ambiguous table: both prod-uploaders and prod-local-uploads write
+            # here, so the source has to come from the deployment's kind.
+            None,
             complete,
         )
 
@@ -1377,7 +1416,10 @@ def _history_rows(deployment_repo):
             row.storage_cost_atto,
             row.gas_cost_wei,
             row.uploaded_at,
-            "prod-canary",
+            row.deployment_id,
+            # Unambiguous: only canaries write to prod_canary_uploads, so the
+            # table itself settles it and no deploy_args lookup is needed.
+            ClaimSource.PROD_CANARY,
             True,
         )
 
@@ -1424,6 +1466,7 @@ def cmd_prod_pool_import_history(args) -> None:
     imported = 0
     partial = 0
     already = 0
+    corrected = 0
     unmatched = 0
     size_mismatch: list[tuple[str, int, int]] = []
 
@@ -1433,7 +1476,18 @@ def cmd_prod_pool_import_history(args) -> None:
         + "…"
     )
 
-    for (name, size, address, chunks, storage, gas, when, source, complete) in history:
+    lookup = _deployment_lookup(
+        deployment_repo, [row[7] for row in history if row[7] is not None]
+    )
+
+    for (
+        name, size, address, chunks, storage, gas, when, deployment_id,
+        known_source, complete,
+    ) in history:
+        resolved_source, deployment_name = lookup.get(
+            deployment_id, (ClaimSource.PROD_UPLOADERS, None)
+        )
+        source = known_source or resolved_source
         candidates = by_name.get(name)
         if not candidates:
             unmatched += 1
@@ -1446,8 +1500,27 @@ def cmd_prod_pool_import_history(args) -> None:
         ):
             size_mismatch.append((name, target.size_bytes, size))
 
-        if repo.open_claim_for_file(target.id) is not None:
-            already += 1
+        open_claim = repo.open_claim_for_file(target.id)
+        if open_claim is not None:
+            # Correct the attribution of a claim a previous import got wrong.
+            # This command is a sync, not a one-shot, so a re-run should fix
+            # what an earlier version of it mislabelled — but only for claims
+            # this command created, never for one a real deployment took.
+            if (
+                open_claim.note
+                and "imported from recorded" in open_claim.note
+                and (
+                    open_claim.source is not source
+                    or open_claim.deployment_id != deployment_id
+                )
+            ):
+                if not args.dry_run:
+                    repo.reattribute_pool_claim(
+                        open_claim.id, source, deployment_id, deployment_name
+                    )
+                corrected += 1
+            else:
+                already += 1
             continue
 
         if args.dry_run:
@@ -1463,11 +1536,9 @@ def cmd_prod_pool_import_history(args) -> None:
         canonical = repo.canonical_pool_file_id(target.id)
         claim = repo.seed_uploaded_claim(
             canonical,
-            source=(
-                ClaimSource.PROD_CANARY
-                if source == "prod-canary"
-                else ClaimSource.PROD_UPLOADERS
-            ),
+            source=source,
+            deployment_id=deployment_id,
+            deployment_name=deployment_name,
             status=ClaimStatus.UPLOADED if complete else ClaimStatus.PARTIAL,
             address=address,
             chunks_stored=chunks[0],
@@ -1496,6 +1567,11 @@ def cmd_prod_pool_import_history(args) -> None:
         console.print(
             f"  partial    {partial:>5}   part-uploaded — still available to "
             "uploaders, excluded from canaries"
+        )
+    if corrected:
+        console.print(
+            f"  corrected  {corrected:>5}   attribution fixed on a previously "
+            "imported claim"
         )
     console.print(f"  already    {already:>5}   pool entry was spent or claimed")
     console.print(

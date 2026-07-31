@@ -2801,6 +2801,24 @@ class ProdFilePoolRepository(ABC):
         ...
 
     @abstractmethod
+    def reattribute_pool_claim(
+        self,
+        claim_id: int,
+        source: ClaimSource,
+        deployment_id: int | None,
+        deployment_name: str | None,
+    ) -> ProdFilePoolClaim | None:
+        """Correct which run a claim is attributed to.
+
+        Exists for ``import-history``, which is a re-runnable sync: an earlier
+        version attributed every row of ``deployment_prod_upload_results`` to
+        ``prod-uploaders``, when in fact both that kind and
+        ``prod-local-uploads`` write there. Re-running should fix the record
+        rather than leave the mistake in place.
+        """
+        ...
+
+    @abstractmethod
     def attach_deployment_to_claims(
         self, claim_ids: list[int], deployment_id: int, deployment_name: str
     ) -> None:
@@ -3676,6 +3694,22 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         claim.resolved_at = when or datetime.now(timezone.utc)
         if note is not None:
             claim.note = note
+        self.session.commit()
+        return claim
+
+    def reattribute_pool_claim(
+        self,
+        claim_id: int,
+        source: ClaimSource,
+        deployment_id: int | None,
+        deployment_name: str | None,
+    ) -> ProdFilePoolClaim | None:
+        claim = self.session.get(ProdFilePoolClaim, claim_id)
+        if claim is None:
+            return None
+        claim.source = source
+        claim.deployment_id = deployment_id
+        claim.deployment_name = deployment_name
         self.session.commit()
         return claim
 

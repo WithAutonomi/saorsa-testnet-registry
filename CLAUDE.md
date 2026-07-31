@@ -489,6 +489,17 @@ and SHA1 per file — so hundreds of entries are catalogued without downloading
 anything, and those real checksums are what let an IA URL and a local copy be
 recognised as one piece of content (`duplicate_of`).
 
+**Attribution.** `deployment_prod_upload_results` is written by **two** kinds —
+remote `prod-uploaders` runs via `record-results`, and `prod-local-uploads`
+inline — and the table carries no hint of which. Measured on the live registry:
+444 of 583 rows are local uploads, so attributing the table to `prod-uploaders`
+mislabels the majority. `import-history` therefore resolves the source from the
+deployment's `deploy_args.kind`. `prod_canary_uploads` needs no such lookup —
+only a canary writes there, so the table settles it. Because the command is a
+re-runnable sync rather than a one-shot, a re-run **corrects** the attribution of
+claims a previous import got wrong, but only ones it created itself (identified
+by their note) — never a claim a real run took.
+
 **Two honest limits.** `import-history` matches on **file name** — all the
 recorded history holds — and errs toward marking spent, since a false match is
 undone by `release` while a missed one ruins a canary. And a URL from a source

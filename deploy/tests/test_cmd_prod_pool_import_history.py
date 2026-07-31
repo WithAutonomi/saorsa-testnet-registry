@@ -164,6 +164,120 @@ class TestBothTablesAreRead:
             )
 
 
+class TestAttribution:
+    """Which run a file came from, when two kinds share one table.
+
+    `deployment_prod_upload_results` is written by remote `prod-uploaders` runs
+    AND by `prod-local-uploads`, which writes its rows inline. The table carries
+    no hint of which. Measured on the live registry: 444 of 583 rows are local
+    uploads, so assuming the remote kind mislabels the majority of them.
+    """
+
+    def _deployment(self, session, name, kind):
+        deployment = Deployment(name=name, deploy_args={"kind": kind})
+        session.add(deployment)
+        session.commit()
+        return deployment
+
+    def test_local_uploads_are_not_labelled_prod_uploaders(self, wired):
+        pool_repo, _, session = wired
+        pool_repo.add_pool_file(
+            PoolFileKind.LOCAL, "/data/a.bin", "a.bin", size_bytes=50 * MIB
+        )
+        deployment = self._deployment(
+            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
+        )
+        _upload_result(session, deployment, "a.bin")
+
+        prod_pool.cmd_prod_pool_import_history(_args())
+
+        claim = pool_repo.list_pool_claims()[0]
+        assert claim.source is ClaimSource.PROD_LOCAL_UPLOADS
+        assert claim.deployment_name == "PROD-LOCAL-UL-01"
+        assert claim.deployment_id == deployment.id
+
+    def test_remote_uploads_keep_their_kind(self, wired):
+        pool_repo, _, session = wired
+        pool_repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/b.bin", "b.bin", size_bytes=50 * MIB
+        )
+        deployment = self._deployment(session, "PROD-UL-05", "prod-uploaders")
+        _upload_result(session, deployment, "b.bin")
+
+        prod_pool.cmd_prod_pool_import_history(_args())
+        assert pool_repo.list_pool_claims()[0].source is ClaimSource.PROD_UPLOADERS
+
+    def test_canary_is_settled_by_its_table_not_deploy_args(self, wired):
+        # prod_canary_uploads can only have come from a canary, so the source
+        # must not depend on deploy_args being populated.
+        pool_repo, _, session = wired
+        pool_repo.add_pool_file(
+            PoolFileKind.URL, "https://example.org/c.mkv", "c.mkv", size_bytes=50 * MIB
+        )
+        deployment = Deployment(name="PROD-CANARY-03", deploy_args={})
+        session.add(deployment)
+        session.commit()
+        _canary_upload(session, deployment, "c.mkv")
+
+        prod_pool.cmd_prod_pool_import_history(_args())
+        assert pool_repo.list_pool_claims()[0].source is ClaimSource.PROD_CANARY
+
+    def test_a_rerun_corrects_a_previous_mislabelling(self, wired, capsys):
+        # This command is a sync, not a one-shot: re-running it should repair
+        # what an earlier version got wrong.
+        from saorsa_db.models.prod_file_pool import ClaimStatus
+
+        pool_repo, _, session = wired
+        pool_file, _ = pool_repo.add_pool_file(
+            PoolFileKind.LOCAL, "/data/a.bin", "a.bin", size_bytes=50 * MIB
+        )
+        deployment = self._deployment(
+            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
+        )
+        _upload_result(session, deployment, "a.bin")
+        # Simulate what the buggy version left behind.
+        pool_repo.seed_uploaded_claim(
+            pool_file.id,
+            source=ClaimSource.PROD_UPLOADERS,
+            status=ClaimStatus.UPLOADED,
+            note="imported from recorded upload history",
+        )
+
+        prod_pool.cmd_prod_pool_import_history(_args())
+
+        claim = pool_repo.list_pool_claims()[0]
+        assert claim.source is ClaimSource.PROD_LOCAL_UPLOADS
+        assert claim.deployment_name == "PROD-LOCAL-UL-01"
+        assert "corrected" in _flat(capsys.readouterr().out)
+
+    def test_a_real_deployment_claim_is_never_reattributed(self, wired):
+        # Only claims this command created carry that note. A claim taken by an
+        # actual run must not be rewritten by an import.
+        from saorsa_db.models.prod_file_pool import ClaimStatus
+
+        pool_repo, _, session = wired
+        pool_file, _ = pool_repo.add_pool_file(
+            PoolFileKind.LOCAL, "/data/a.bin", "a.bin", size_bytes=50 * MIB
+        )
+        deployment = self._deployment(
+            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
+        )
+        _upload_result(session, deployment, "a.bin")
+        pool_repo.seed_uploaded_claim(
+            pool_file.id,
+            source=ClaimSource.PROD_UPLOADERS,
+            status=ClaimStatus.UPLOADED,
+            deployment_name="SOME-REAL-RUN",
+            note="claimed during the run",
+        )
+
+        prod_pool.cmd_prod_pool_import_history(_args())
+
+        claim = pool_repo.list_pool_claims()[0]
+        assert claim.source is ClaimSource.PROD_UPLOADERS
+        assert claim.deployment_name == "SOME-REAL-RUN"
+
+
 class TestIdempotence:
     def test_rerunning_imports_nothing_new(self, wired, capsys):
         pool_repo, _, session = wired
