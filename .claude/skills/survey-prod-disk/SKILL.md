@@ -86,8 +86,8 @@ and the network heals back to full replication by re-storing those records on th
 remaining neighbours. **Removing several nodes at once — especially nodes near each other in the
 keyspace — can push a chunk below its minimum replica count before the heal completes, losing data.**
 So remove as a **drain**: strictly sequential, one service at a time, with a wait between each for
-the network to re-replicate the removed node's records. (It need not be glacial — a few minutes per
-removal is enough for the periodic replication cycle to restore redundancy.)
+the network to re-replicate the removed node's records. (It need not be glacial, but give the
+periodic replication cycle room to restore redundancy — roughly ten minutes per removal.)
 
 For each approved service, in order (smallest / most-pressured first):
 1. Remove exactly one:
@@ -97,7 +97,7 @@ For each approved service, in order (smallest / most-pressured first):
      --name <host> --service-name ant-node-N
    ```
    (Records an audit row with the reclaimed size automatically. Removal is permanent.)
-2. **Wait the drain interval** — default **~5 minutes** (`--interval`-style pace; the user can ask
+2. **Wait the drain interval** — default **~10 minutes** (`--interval`-style pace; the user can ask
    for faster/slower, but do not skip it) — before touching the next service, so the network
    re-replicates the departed node's records. Run this wait as a background sleep (foreground sleep
    is blocked), or poll a lightweight signal (e.g. that the host's remaining services are still
