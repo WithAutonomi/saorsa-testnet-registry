@@ -4303,6 +4303,31 @@ def main(argv=None):
         "anything unrecorded goes with it permanently.",
     )
 
+    # --- prod canary report ---
+    prod_canary_report_parser = prod_canary_subparsers.add_parser(
+        "report",
+        help=(
+            "Render the canary digest locally, to the terminal. Runs the same "
+            "analysis as the on-VM reporter but posts nothing to Slack, and "
+            "keeps its own state file so the daily message's deltas are "
+            "unaffected."
+        ),
+    )
+    prod_canary_report_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Canary deployment name (also the monitoring stack name).",
+    )
+    prod_canary_report_parser.add_argument(
+        "--no-save-state",
+        action="store_true",
+        help=(
+            "Don't update the local snapshot, so the next run still compares "
+            "against the same baseline."
+        ),
+    )
+
     prod_canary_pr_parser = prod_canary_subparsers.add_parser(
         "provision-reporter",
         help=(
@@ -5783,6 +5808,15 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_canary import cmd_prod_canary_destroy
 
             cmd_prod_canary_destroy(args)
+        elif (
+            args.prod_subcommand == "canary"
+            and args.prod_canary_action == "report"
+        ):
+            from saorsa_deploy.cmd.prod_canary_report import (
+                cmd_prod_canary_report,
+            )
+
+            cmd_prod_canary_report(args)
         elif (
             args.prod_subcommand == "canary"
             and args.prod_canary_action == "provision-reporter"
