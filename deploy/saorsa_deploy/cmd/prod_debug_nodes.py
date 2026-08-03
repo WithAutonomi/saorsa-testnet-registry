@@ -42,6 +42,7 @@ from saorsa_deploy.cmd.provision_genesis import _resolve_binary_source
 from saorsa_deploy.cmd.provision_nodes import _resolve_root_disk_ips
 from saorsa_deploy.prod_bootstraps import PROD_BOOTSTRAPS_URL
 from saorsa_deploy.provisioning.node import COREDUMP_DIR, LOG_DIR, AntNodeProvisioner
+from saorsa_deploy.provisioning.telegraf import TELEGRAF_SERVICE_NAME
 from saorsa_deploy.registry import (
     record_deploy_args_update,
     record_deployment_created,
@@ -316,6 +317,14 @@ def _provision_debug_nodes(args, console: Console) -> None:
             ssh_user="root",
             drop_log_levels=_resolve_node_drop_log_levels(args),
             buffer_limit=None,
+            # This kind's daily log prune restarts the forwarder to release the
+            # descriptors it holds on the deleted logs, and telegraf keeps no
+            # tail offset across restarts. Reading from the beginning would
+            # therefore re-ingest every remaining DEBUG log on every prune, into
+            # an Elasticsearch that is already the bottleneck. Resume at the end
+            # instead: the cost is the lines written while the forwarder was
+            # down, which the SIGKILL-terminated restart drops anyway.
+            from_beginning=False,
             console=console,
         )
 
@@ -359,6 +368,117 @@ def _provision_debug_nodes(args, console: Console) -> None:
     update_deployment_state(args.name, {"node_count": args.node_count})
 
 
+COREDUMP_PRUNE_UNIT = "ant-node-coredump-logprune"
+DEBUG_LOG_PRUNE_UNIT = "ant-node-debug-logprune"
+
+
+def build_coredump_prune_units(retention_days: int) -> tuple[str, str]:
+    """Return ``(service_unit, timer_unit)`` for the daily core-dump prune.
+
+    Core dumps are not tailed by anything, so a plain ``find -delete`` frees the
+    blocks immediately — unlike the debug-log prune below, this needs no
+    coordination with the log forwarder.
+    """
+    service_unit = (
+        "[Unit]\n"
+        "Description=Prune old ant-node core dumps\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart=/usr/bin/find {COREDUMP_DIR} -type f -name 'core.*' "
+        f"-mtime +{retention_days} -delete\n"
+    )
+    timer_unit = (
+        "[Unit]\n"
+        "Description=Daily ant-node core-dump prune\n\n"
+        "[Timer]\n"
+        "OnCalendar=daily\n"
+        "Persistent=true\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+    return service_unit, timer_unit
+
+
+def build_debug_logprune_units(retention_days: int) -> tuple[str, str]:
+    """Return ``(service_unit, timer_unit)`` for the daily debug-log prune.
+
+    The prune **must** restart the Elasticsearch log forwarder after unlinking
+    the logs, or it reclaims nothing. Telegraf's ``tail`` input holds an open
+    descriptor for every file it matches and has no idle-close, so
+    ``find -delete`` only removes the directory entries: the files vanish from
+    ``du`` while ext4 cannot release the blocks, and ``df`` keeps climbing to
+    100%. Measured on ant-prod-debug-01 (2026-08-02): 694 GiB across 70
+    descriptors on a 968 GB root disk that reported 0 bytes free while only
+    271 GB was visible. Restarting the forwarder released all of it.
+
+    The restart is:
+
+    - **ordered after** the ``find`` — the unlink has to land first; the restart
+      is what actually frees the blocks;
+    - ``try-restart``, so it is a no-op when the forwarder is not running (the
+      kind supports ``--no-forward-logs``) rather than starting it;
+    - prefixed ``-``, so a forwarder that fails to come back does not fail the
+      prune, which has already done its job by then;
+    - **unconditional**, not gated on the ``find`` having deleted something.
+      ant-node self-prunes its own rotated logs via ``--log-max-files``, and
+      those deletions strand descriptors in exactly the same way, so a run that
+      deletes nothing itself can still have blocks to release.
+
+    Note the restart is effectively a SIGKILL: a backlogged forwarder does not
+    finish its flush inside ``TimeoutStopSec``, so whatever it had buffered is
+    dropped. That is why this kind provisions the forwarder with
+    ``from_beginning=False`` — otherwise every restart would re-read every
+    remaining log from byte 0 into an already-backlogged Elasticsearch.
+    """
+    service_unit = (
+        "[Unit]\n"
+        "Description=Prune old ant-node debug logs\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart=/usr/bin/find {LOG_DIR} -type f "
+        f"-mtime +{retention_days} -delete\n"
+        "# Telegraf holds the unlinked logs open, so the blocks are only\n"
+        "# released once the forwarder is restarted. Ignore failures: the\n"
+        "# prune itself has already succeeded by this point.\n"
+        f"ExecStart=-/usr/bin/systemctl try-restart {TELEGRAF_SERVICE_NAME}.service\n"
+    )
+    timer_unit = (
+        "[Unit]\n"
+        "Description=Daily ant-node debug-log prune\n\n"
+        "[Timer]\n"
+        "OnCalendar=daily\n"
+        "Persistent=true\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+    return service_unit, timer_unit
+
+
+def build_prune_install_commands(
+    unit_name: str,
+    service_unit: str,
+    timer_unit: str,
+    *,
+    run_now: bool = False,
+) -> list[str]:
+    """Return the shell commands installing a prune service + its daily timer.
+
+    ``run_now`` additionally fires the prune once immediately, so a disk that is
+    already full gets relief without waiting for the next scheduled run.
+    """
+    commands = [
+        f"cat > /etc/systemd/system/{unit_name}.service "
+        f"<< 'SVC_EOF'\n{service_unit}SVC_EOF",
+        f"cat > /etc/systemd/system/{unit_name}.timer "
+        f"<< 'TMR_EOF'\n{timer_unit}TMR_EOF",
+        "systemctl daemon-reload",
+        f"systemctl enable --now {unit_name}.timer",
+    ]
+    if run_now:
+        commands.append(f"systemctl start {unit_name}.service")
+    return commands
+
+
 def _install_coredump_logprune(args, console: Console) -> None:
     """Install a daily systemd timer pruning core dumps older than N days.
 
@@ -387,31 +507,10 @@ def _install_coredump_logprune(args, console: Console) -> None:
         f"[dim]Installing core-dump prune timer "
         f"(delete cores older than {args.coredump_retention_days}d).[/dim]"
     )
-    service_unit = (
-        "[Unit]\n"
-        "Description=Prune old ant-node core dumps\n\n"
-        "[Service]\n"
-        "Type=oneshot\n"
-        f"ExecStart=/usr/bin/find {COREDUMP_DIR} -type f -name 'core.*' "
-        f"-mtime +{args.coredump_retention_days} -delete\n"
+    service_unit, timer_unit = build_coredump_prune_units(args.coredump_retention_days)
+    commands = build_prune_install_commands(
+        COREDUMP_PRUNE_UNIT, service_unit, timer_unit
     )
-    timer_unit = (
-        "[Unit]\n"
-        "Description=Daily ant-node core-dump prune\n\n"
-        "[Timer]\n"
-        "OnCalendar=daily\n"
-        "Persistent=true\n\n"
-        "[Install]\n"
-        "WantedBy=timers.target\n"
-    )
-    commands = [
-        f"cat > /etc/systemd/system/ant-node-coredump-logprune.service "
-        f"<< 'SVC_EOF'\n{service_unit}SVC_EOF",
-        f"cat > /etc/systemd/system/ant-node-coredump-logprune.timer "
-        f"<< 'TMR_EOF'\n{timer_unit}TMR_EOF",
-        "systemctl daemon-reload",
-        "systemctl enable --now ant-node-coredump-logprune.timer",
-    ]
 
     clear_known_hosts(host_ips, console)
     hosts_data = [
@@ -444,6 +543,9 @@ def _install_debug_logprune(args, console: Console) -> None:
     ``--log-retention-days 0`` keeps them forever (no timer). Also runs the
     prune once immediately so a full disk gets relief right away instead of
     waiting for the next scheduled run.
+
+    The installed unit restarts the log forwarder after the delete — without
+    that the prune reclaims nothing. See :func:`build_debug_logprune_units`.
     """
     from pyinfra.api import Config, Inventory, State
     from pyinfra.api.connect import connect_all, disconnect_all
@@ -468,32 +570,10 @@ def _install_debug_logprune(args, console: Console) -> None:
         f"[dim]Installing debug-log prune timer "
         f"(delete rotated logs older than {args.log_retention_days}d).[/dim]"
     )
-    service_unit = (
-        "[Unit]\n"
-        "Description=Prune old ant-node debug logs\n\n"
-        "[Service]\n"
-        "Type=oneshot\n"
-        f"ExecStart=/usr/bin/find {LOG_DIR} -type f "
-        f"-mtime +{args.log_retention_days} -delete\n"
+    service_unit, timer_unit = build_debug_logprune_units(args.log_retention_days)
+    commands = build_prune_install_commands(
+        DEBUG_LOG_PRUNE_UNIT, service_unit, timer_unit, run_now=True
     )
-    timer_unit = (
-        "[Unit]\n"
-        "Description=Daily ant-node debug-log prune\n\n"
-        "[Timer]\n"
-        "OnCalendar=daily\n"
-        "Persistent=true\n\n"
-        "[Install]\n"
-        "WantedBy=timers.target\n"
-    )
-    commands = [
-        f"cat > /etc/systemd/system/ant-node-debug-logprune.service "
-        f"<< 'SVC_EOF'\n{service_unit}SVC_EOF",
-        f"cat > /etc/systemd/system/ant-node-debug-logprune.timer "
-        f"<< 'TMR_EOF'\n{timer_unit}TMR_EOF",
-        "systemctl daemon-reload",
-        "systemctl enable --now ant-node-debug-logprune.timer",
-        "systemctl start ant-node-debug-logprune.service",
-    ]
 
     clear_known_hosts(host_ips, console)
     hosts_data = [

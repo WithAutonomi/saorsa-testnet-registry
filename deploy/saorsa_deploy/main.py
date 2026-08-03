@@ -3833,8 +3833,14 @@ def main(argv=None):
         "Contabo V10 VDS).")
     prod_dbg_deploy.add_argument("--vm-count", type=int, default=1,
         help="Number of node VMs to create in the region (default: 1).")
-    prod_dbg_deploy.add_argument("--node-count", type=int, default=15,
-        help="ant-node services per VM (default: 15, matching the prod fleet).")
+    prod_dbg_deploy.add_argument("--node-count", type=int, default=4,
+        help="ant-node services per VM (default: 4). Deliberately NOT the prod "
+        "fleet's 15: at --log-level debug each service emits ~758 log lines/s, "
+        "and one telegraf forwarder tops out around 2700 lines/s, so 15 (or "
+        "even 10) services produce far more than can reach Elasticsearch. "
+        "Measured on ant-prod-debug-01 2026-08-02: 10 services produced 7577 "
+        "lines/s of which only ~36% was forwarded. Raise it only if you accept "
+        "that ES holds a partial sample and the on-disk logs are the record.")
     prod_dbg_deploy.add_argument("--volume-size", type=int, default=100,
         help="Attached data-volume size in GB per node VM (default: 100). "
         "Ignored on providers with no attachable volume (Contabo: root disk).")
@@ -3854,13 +3860,15 @@ def main(argv=None):
     prod_dbg_deploy.add_argument("--coredump-retention-days", type=int, default=7,
         help="Install a daily timer deleting core dumps older than N days "
         "(default: 7). 0 keeps them forever.")
-    prod_dbg_deploy.add_argument("--log-retention-days", type=int, default=1,
+    prod_dbg_deploy.add_argument("--log-retention-days", type=int, default=2,
         help="Install a daily timer deleting rotated ant-node debug logs "
-        "under /mnt/ant-node-storage/log older than N days (default: 1 — "
-        "unlike coredumps, logs are already durably forwarded to "
-        "Elasticsearch via --forward-logs, so there's no reason to keep "
-        "more than the unavoidable ~1-day rotation floor). 0 keeps them "
-        "forever.")
+        "under /mnt/ant-node-storage/log older than N days (default: 2). "
+        "Do NOT assume Elasticsearch is a complete copy: forwarding is "
+        "lossy whenever the services out-produce the single telegraf "
+        "forwarder, so the on-disk logs are the authoritative record and "
+        "this timer is what discards them. 2 days is what the disk affords "
+        "at the default --node-count alongside the chunk store. 0 keeps "
+        "them forever.")
     prod_dbg_deploy.add_argument("--heaptrack", action=argparse.BooleanOptionalAction,
         default=False, help="Also wrap services in heaptrack memory profiling "
         "(default: off — use `prod nodes` for the heaptrack-focused kind).")

@@ -1733,13 +1733,13 @@ saorsa-deploy prod debug-nodes deploy \
 | `--provider {digitalocean,hetzner,vultr,ovh,contabo}` | no | Node VM provider (default digitalocean). |
 | `--region REGION` | yes | Node region (e.g. `lon1`, `fsn1`, `GRA9`, `EU`). |
 | `--vm-size SIZE` | no | Node VM size/plan/flavor/product-id (per-provider default; Contabo default `V10` VDS). |
-| `--vm-count N` / `--node-count N` | no | VMs per region (default 1) / ant-node services per VM (default 15). |
+| `--vm-count N` / `--node-count N` | no | VMs per region (default 1) / ant-node services per VM (default **4** — deliberately not the prod fleet's 15; see "Log volume is forwarder-bound" below). |
 | `--volume-size GB` | no | Attached data volume (default 100). **Ignored on Contabo** (root disk only). |
 | `--log-level {info,debug,trace}` | no | Single global level (default `debug`). ant-node has no per-module env filter, so per-module `RUST_LOG` targeting is not possible. |
 | `--rust-backtrace VAL` | no | `RUST_BACKTRACE` on each service (default `full`; `1` for a terser trace, or `""` to disable). Services also always get `COLORBT_SHOW_HIDDEN=1`. |
 | `--coredumps` / `--no-coredumps` | no | Enable core dumps (`LimitCORE=infinity` + `kernel.core_pattern` under the data path) **and install `gdb` + `elfutils` on the VM to read them**. Default on. |
 | `--coredump-retention-days N` | no | Daily prune of cores older than N days (default 7; 0 = keep forever). |
-| `--log-retention-days N` | no | Daily prune of rotated ant-node debug logs under `/mnt/ant-node-storage/log` older than N days (default **1** — much shorter than coredumps' default since logs are already forwarded to Elasticsearch; 0 = keep forever). Also runs once immediately on install for prompt relief on a full disk. |
+| `--log-retention-days N` | no | Daily prune of rotated ant-node debug logs under `/mnt/ant-node-storage/log` older than N days (default **2**; 0 = keep forever). Also runs once immediately on install for prompt relief on a full disk. The prune **restarts the ES log forwarder** — see below. |
 | `--heaptrack` / `--no-heaptrack` | no | Also wrap services in heaptrack (default off — use `prod nodes` for that). |
 | `--monitoring` / `--no-monitoring` | no | Dedicated InfluxDB (default on). `--monitoring-provider {digitalocean,ovh,contabo}`, `--monitoring-region`, `--monitoring-droplet-size`, `--monitoring-volume-size`, `--grafana`, `--influx-retention-days` (default 7). |
 | `--forward-logs` / `--no-forward-logs` | no | Dedicated Elasticsearch for node logs (default on). `--elastic-provider {digitalocean,ovh,contabo}`, `--elastic-region`, `--elastic-droplet-size`, `--elastic-volume-size`, `--elastic-retention-days` (default 3), `--elastic-shards` (default 1), `--elastic-drop-log-levels`. |
@@ -1748,7 +1748,39 @@ saorsa-deploy prod debug-nodes deploy \
 | `--contabo-ssh-public-key-path PATH` | no | Operator public key registered as a `contabo_secret` (default `~/.ssh/id_rsa.pub`). |
 | `--rewards-address` / `--port` / `--ssh-key-path` | no | Prod rewards address / initial listen port (default 10000) / SSH key. |
 
-`prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy — the on-disk debug logs are pruned much sooner by `--log-retention-days` and are already durable in Elasticsearch, so there's no equivalent scp step needed for them.
+**The log prune must restart the log forwarder.** Telegraf's `tail` input holds an
+open descriptor for every file it matches and has no idle-close, so a plain
+`find … -delete` only removes the directory entry: the file leaves `du` while
+ext4 keeps the blocks, and `df` climbs to 100% while the visible tree looks
+small. Measured on ant-prod-debug-01 (2026-08-02): **694 GiB across 70
+descriptors** on a 968 GB root disk reporting **0 bytes free** with only 271 GB
+visible. The `ant-node-debug-logprune.service` unit therefore carries a second
+`ExecStart` — `-/usr/bin/systemctl try-restart telegraf-ant-elasticsearch.service`
+— ordered after the `find` (the unlink must land first; the restart is what
+frees the blocks). It is `try-restart` so it no-ops under `--no-forward-logs`,
+and `-`-prefixed so a forwarder that fails to return cannot fail the prune. It
+is unconditional rather than gated on the `find` having deleted anything,
+because ant-node's own `--log-max-files` self-pruning strands descriptors the
+same way. Consequently this kind provisions the forwarder with
+`from_beginning = false`: telegraf keeps no tail offset across restarts, so
+reading from the beginning would re-ingest every remaining log on every prune.
+**Any new prune timer that deletes files something else is tailing needs the
+same treatment.**
+
+**Log volume is forwarder-bound — Elasticsearch is a sample, not a copy.** At
+`--log-level debug` each ant-node service emits roughly **758 log lines/s**
+(222 bytes average), and a single telegraf forwarder tops out near **2 700
+lines/s** — it is CPU-bound in the JSON parse plus the `rename`/`starlark`/
+`strings` processor chain, not blocked on Elasticsearch (measured from the node
+VM, ES accepted ~8 000 docs/s at telegraf's own batch size, with 0 write
+rejections and 13% CPU). So `--node-count` sets how much of your debug logging
+survives: at 10 services only ~36% of lines reached ES, and the forwarder had
+previously wedged for three days (190M docs/day → 5 684). The default of **4**
+keeps production under that ceiling. Raise it only if you accept that ES holds a
+partial sample and the **on-disk logs are the authoritative record** — which
+`--log-retention-days` then discards, so raise that too.
+
+`prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy — and, if the run mattered, the debug logs under `/mnt/ant-node-storage/log` too: Elasticsearch is only a partial copy of them (see above).
 
 Fully declarative via `deployments up/plan/down --config` (`kind: prod-debug-nodes`); example manifest at `manifests/profiles/prod-debug-nodes.yaml`. `up` is resumable, so a retry skips the ~10-minute debug build.
 

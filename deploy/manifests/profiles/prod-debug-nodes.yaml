@@ -47,7 +47,11 @@ prod_debug_nodes:
   region: EU                 # Contabo: EU, US-central/east/west, UK, SIN, AUS, JPN, IND
   vm_size: V10               # Contabo VDS product id (verify: cntb get products)
   vm_count: 1
-  node_count: 15
+  node_count: 4              # NOT the prod fleet's 15: at log_level debug each
+                             # service emits ~758 log lines/s and one telegraf
+                             # forwarder tops out ~2700 lines/s, so more services
+                             # just means a smaller share reaches Elasticsearch
+                             # (measured: 10 services -> ~36% forwarded).
   # volume_size: 100         # attached data volume (GB); IGNORED on Contabo
 
   # Contabo image UUID + operator public key (registered as a contabo_secret).
@@ -62,9 +66,13 @@ prod_debug_nodes:
   rust_backtrace: "full"     # "full" | "1" | "" (disable); COLORBT_SHOW_HIDDEN=1 always set
   coredumps: true            # LimitCORE=infinity + kernel.core_pattern under data dir
   coredump_retention_days: 7 # prune cores older than N days; 0 = keep forever
-  log_retention_days: 1      # prune rotated debug logs older than N days; 0 = keep
-                             # forever. Default 1 (not 7 like coredumps) because
-                             # logs are already forwarded to Elasticsearch below.
+  log_retention_days: 2      # prune rotated debug logs older than N days; 0 =
+                             # keep forever. Do NOT assume Elasticsearch is a
+                             # complete copy — forwarding is lossy above ~2700
+                             # lines/s, so these on-disk logs are the record and
+                             # this setting is what discards them. The prune also
+                             # restarts the ES forwarder (it holds deleted files
+                             # open, so find -delete alone frees nothing).
   # heaptrack: false         # off by default (use prod-nodes for heaptrack)
 
   # --- Dedicated small InfluxDB (host/RSS metrics) ---
@@ -96,6 +104,6 @@ prod_debug_nodes:
 #
 # Retrieve core dumps before teardown (or before the daily prune deletes them):
 #   scp root@<vm>:/mnt/ant-node-storage/coredumps/core.* ./cores/
-# Debug logs are pruned much sooner (log_retention_days above) since they're
-# already durable in Elasticsearch — pull any you need from
-# /mnt/ant-node-storage/log/ant-node-<N>/ promptly if not relying on ES.
+# Debug logs are pruned by log_retention_days above. Elasticsearch holds only
+# a partial copy of them (the forwarder cannot keep up at DEBUG), so pull any
+# you need from /mnt/ant-node-storage/log/ant-node-<N>/ before the prune runs.
