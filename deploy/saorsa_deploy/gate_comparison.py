@@ -345,6 +345,11 @@ def node_rss_statistic(
     labels = {v["statistic"] for v in services.values()}
     statistic = labels.pop() if len(labels) == 1 else "mean"
     worst_key = max(services, key=lambda k: services[k]["value"])
+    # Same percentile across services, taken over their means -- the fallback for
+    # a baseline that predates percentile capture. Same shape, shared statistic.
+    mean_values = [
+        v["mean_value"] for v in services.values() if v.get("mean_value") is not None
+    ]
     return {
         "value": percentile(values, service_percentile / 100.0),
         "statistic": statistic,
@@ -352,6 +357,9 @@ def node_rss_statistic(
         "worst_service": worst_key,
         "worst_value": services[worst_key]["value"],
         "percentile": service_percentile,
+        "mean_value": (
+            percentile(mean_values, service_percentile / 100.0) if mean_values else None
+        ),
     }
 
 
@@ -382,12 +390,23 @@ def _single_host_statistic(stats: dict | None) -> dict | None:
     samples = int(stats.get("samples") or 0)
     if samples <= 0:
         return None
+    mean_value = None if stats.get("avg") is None else float(stats["avg"])
     label = _statistic_label(stats)
     if label != "mean":
-        return {"value": float(stats["p50"]), "statistic": label, "samples": samples}
-    if stats.get("avg") is None:
+        return {
+            "value": float(stats["p50"]),
+            "statistic": label,
+            "samples": samples,
+            "mean_value": mean_value,
+        }
+    if mean_value is None:
         return None
-    return {"value": float(stats["avg"]), "statistic": "mean", "samples": samples}
+    return {
+        "value": mean_value,
+        "statistic": "mean",
+        "samples": samples,
+        "mean_value": mean_value,
+    }
 
 
 def _pooled_host_statistic(stats_list: list) -> dict | None:
@@ -413,11 +432,23 @@ def _pooled_host_statistic(stats_list: list) -> dict | None:
         total += samples
     if total == 0:
         return None
+    # Always carry the sample-weighted mean alongside the chosen statistic, so a
+    # comparison against a run that never captured percentiles can fall back to
+    # the statistic both sides share instead of dropping the gate.
+    mean_weighted, mean_total = 0.0, 0
+    for stats in usable:
+        avg = stats.get("avg")
+        if avg is None:
+            continue
+        samples = int(stats["samples"])
+        mean_weighted += float(avg) * samples
+        mean_total += samples
     return {
         "value": weighted / total,
         "statistic": statistic,
         "samples": total,
         "hosts": len(usable),
+        "mean_value": (mean_weighted / mean_total) if mean_total else None,
     }
 
 
@@ -710,22 +741,48 @@ def _compare_scalar(
         )
 
     # Mixed statistics would compare a median against a mean and attribute the
-    # difference to the release. Refuse rather than mislead.
+    # difference to the release, so they are never compared as-is. But refusing
+    # outright drops the gate entirely, which silently removed node CPU and node
+    # RSS from every comparison whose baseline predated percentile capture --
+    # precisely the run those gates were last measured against. Measured on
+    # STG-01 504 vs 474: both dropped, though 474 carried a mean for each and CPU
+    # had FAILED on that same mean the previous train.
+    #
+    # So when one side has NO percentile at all, degrade both to the mean they
+    # share and label it, mirroring _pooled_host_statistic's within-run
+    # degradation. An exact p50 against a windowed p50~ is a different case and
+    # stays refused: both captured percentiles, so that mismatch is a real
+    # methodological difference to be fixed by matching the windows, not papered
+    # over by coarsening a comparison that could be made properly.
+    degraded = ""
     if cand_stat and base_stat and cand_stat != base_stat:
-        return GateResult(
-            gate=gate,
-            kind="soft",
-            verdict=NOT_ASSESSED,
-            candidate=cand_value,
-            baseline=base_value,
-            threshold=threshold,
-            unit=unit,
-            statistic=f"{cand_stat} vs {base_stat}",
-            detail=(
-                f"candidate reports {cand_stat} but baseline reports {base_stat}; "
-                "comparing them would measure the statistic, not the release"
-            ),
+        cand_mean = candidate.get("mean_value") if isinstance(candidate, dict) else None
+        base_mean = baseline.get("mean_value") if isinstance(baseline, dict) else None
+        can_degrade = (
+            "mean" in {cand_stat, base_stat}
+            and cand_mean is not None
+            and base_mean is not None
         )
+        if not can_degrade:
+            return GateResult(
+                gate=gate,
+                kind="soft",
+                verdict=NOT_ASSESSED,
+                candidate=cand_value,
+                baseline=base_value,
+                threshold=threshold,
+                unit=unit,
+                statistic=f"{cand_stat} vs {base_stat}",
+                detail=(
+                    f"candidate reports {cand_stat} but baseline reports {base_stat}; "
+                    "comparing them would measure the statistic, not the release"
+                ),
+            )
+        degraded = (
+            f"degraded to mean: candidate reported {cand_stat}, baseline {base_stat}"
+        )
+        cand_value, base_value = float(cand_mean), float(base_mean)
+        cand_stat = base_stat = "mean"
 
     delta = _relative_change(cand_value, base_value)
     verdict, noise = apply_noise_rule(delta, threshold, history, config)
@@ -743,7 +800,7 @@ def _compare_scalar(
         detail=(
             "baseline is zero, so a relative change is undefined"
             if delta is None
-            else ""
+            else degraded
         ),
     )
 
