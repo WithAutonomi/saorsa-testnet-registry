@@ -48,13 +48,29 @@ Notes:
 - The previous `ant-node` release (before the arrow) is the binary the
   mixed-version phase runs.
 - If there is no `## Cut record` section, the cut has not happened. Stop.
+- **A crate with no row in the versions table had no PRs on this train.** A
+  single-crate RC is normal (e.g. an ant-node-only train leaves `ant-cli` out
+  entirely). That crate has no RC, so the run uses its **current shipped
+  release** — confirm which that is with
+  `gh release list --repo WithAutonomi/<repo> --limit 5`. Do **not** carry
+  forward the `-rc.N` pin already sitting in the manifest: it belongs to the
+  previous train and has almost certainly shipped since, so it is a superseded
+  prerelease.
 
 Then list the train's sub-issues (`list_issues` with `parentId`) and note the
 `Staging run — rc.N` one. Move it to **In Progress** now — the run occupies it
 for the next five hours or so, and leaving it in Todo makes a train that is
 actively running look untouched. You will update it again at the end.
 
-Report the extracted values back before continuing.
+**Stop here and confirm the versions with the user before continuing.** Report the
+`ant-node` RC, the `ant` version, and the previous `ant-node` release, and wait for
+an answer. Do not edit a manifest or deploy anything until you have one.
+
+This is the one hard stop in the runbook. If the versions are wrong the whole
+five-hour run is invalid — it costs real money, it is not comparable to the
+baseline, and nothing downstream detects it. Everything else here is a standard,
+well-known configuration that runs unattended; the versions are the only input
+read out of prose, and they change every train.
 
 ## Step 2 — Check preconditions
 
@@ -126,8 +142,10 @@ Validate the edit:
 uv run saorsa-deploy deployments config validate --config deploy/manifests/runs/staging/STG-01.yaml
 ```
 
-The run is unattended. Do not stop to show the plan or ask for approval — this is a
-standard, well-known configuration.
+Once the versions are confirmed at Step 1, the rest of the run is unattended. Do not
+stop to show the plan or ask for approval — the network shape is a standard,
+well-known configuration and the profile is not edited here. This applies to the
+plan and config only; it does not license skipping the Step 1 version confirmation.
 
 ## Step 4 — Deploy
 
