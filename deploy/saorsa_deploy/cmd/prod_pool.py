@@ -1619,7 +1619,9 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
 
     try:
         candidates = fetch_candidates(
-            args.from_listing, originals_only=getattr(args, "originals_only", False)
+            args.from_listing,
+            originals_only=getattr(args, "originals_only", False),
+            path_prefix=getattr(args, "path_prefix", None),
         )
     except (ValueError, SourceError) as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")

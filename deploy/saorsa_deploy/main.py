@@ -4977,6 +4977,15 @@ def main(argv=None):
         "small directory; unusable for a large one.",
     )
     prod_pool_add_parser.add_argument(
+        "--path-prefix",
+        type=str,
+        metavar="PATH",
+        help="With --from-listing, take only files under this directory within "
+        "the item. Percent-decoded first, so it can be pasted from a browser "
+        "URL. An item's file names are its full internal paths, so a large "
+        "item can be catalogued a directory at a time.",
+    )
+    prod_pool_add_parser.add_argument(
         "--originals-only",
         action="store_true",
         help="With --from-listing, restrict to files the source marks as "

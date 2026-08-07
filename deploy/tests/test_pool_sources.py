@@ -96,7 +96,7 @@ def _add_args(**kwargs):
         url=None, urls_file=None, dir=None, path=None, tag=None, provenance=None,
         allow_unknown_size=False, hash=True, materialise=None,
         from_listing=None, size=None, limit=None, dry_run=False,
-        originals_only=False,
+        originals_only=False, path_prefix=None,
     )
     base.update(kwargs)
     return argparse.Namespace(**base)
@@ -322,3 +322,72 @@ class TestAddFromListing:
                     from_listing="internet-archive:x", url=["https://example.org/a"]
                 )
             )
+
+
+class TestPathPrefix:
+    """A large item is catalogued a directory at a time.
+
+    IA file names are full item-internal paths, so an item holding several
+    releases can be narrowed to one. Without this the only options are taking
+    the whole item or deleting what you did not want afterwards.
+    """
+
+    PAYLOAD = {
+        "files": [
+            {"name": "Release_03/Release 3/Photographer 1/a.jpg",
+             "format": "JPEG", "size": "14515", "md5": "aa", "sha1": "bb"},
+            {"name": "Release_03/Release 3/Photographer 2/b.jpg",
+             "format": "JPEG", "size": "25975", "md5": "cc", "sha1": "dd"},
+            {"name": "Release_04/other.jpg", "format": "JPEG", "size": "999"},
+            {"name": "Release_03/NIST FOIA Terms of Use.txt",
+             "format": "Text", "size": "512"},
+            {"name": "item_torrent.txt", "format": "BitTorrentContents",
+             "size": "300"},
+        ]
+    }
+
+    def _resp(self, monkeypatch):
+        monkeypatch.setattr(
+            pool_sources.requests, "get", lambda url, **kw: _Response(self.PAYLOAD)
+        )
+
+    def test_narrows_to_the_directory(self, monkeypatch):
+        self._resp(monkeypatch)
+        names = {
+            c.name
+            for c in pool_sources.fetch_internet_archive_item(
+                "item", path_prefix="Release_03/Release 3/"
+            )
+        }
+        assert names == {"a.jpg", "b.jpg"}
+
+    def test_accepts_a_percent_encoded_prefix(self, monkeypatch):
+        # So it can be pasted straight from a browser URL.
+        self._resp(monkeypatch)
+        names = {
+            c.name
+            for c in pool_sources.fetch_internet_archive_item(
+                "item", path_prefix="Release_03/Release%203/"
+            )
+        }
+        assert names == {"a.jpg", "b.jpg"}
+
+    def test_without_a_prefix_the_whole_item_is_offered(self, monkeypatch):
+        self._resp(monkeypatch)
+        names = {c.name for c in pool_sources.fetch_internet_archive_item("item")}
+        # The torrent-contents listing is an archive artefact and stays excluded
+        # either way; the Terms-of-Use text is real content and is not.
+        assert "other.jpg" in names
+        assert "item_torrent.txt" not in names
+        assert "NIST FOIA Terms of Use.txt" in names
+
+    def test_urls_encode_spaces_in_the_path(self, monkeypatch):
+        # An item-internal path routinely contains spaces; an unencoded URL
+        # 404s when the uploader VM fetches it.
+        self._resp(monkeypatch)
+        c = next(
+            c for c in pool_sources.fetch_internet_archive_item("item")
+            if c.name == "a.jpg"
+        )
+        assert " " not in c.url
+        assert c.url.endswith("Release_03/Release%203/Photographer%201/a.jpg")

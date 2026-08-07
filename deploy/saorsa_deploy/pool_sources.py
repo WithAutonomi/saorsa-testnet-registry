@@ -13,6 +13,7 @@ content — the case that would otherwise let the pool hand out both.
 """
 
 from dataclasses import dataclass, field
+from urllib.parse import quote, unquote
 
 import requests
 
@@ -47,6 +48,9 @@ _ARTEFACT_FORMATS = frozenset(
         "web archive gz",
         "cue",
         "log",
+        # A listing of what a torrent contains — an artefact of the archive's
+        # own distribution, not content anyone uploaded.
+        "bittorrentcontents",
     }
 )
 
@@ -96,13 +100,19 @@ def parse_source_spec(spec: str) -> tuple[str, str]:
     return kind, identifier
 
 
-def fetch_candidates(spec: str, originals_only: bool = False) -> list[PoolCandidate]:
+def fetch_candidates(
+    spec: str, originals_only: bool = False, path_prefix: str | None = None
+) -> list[PoolCandidate]:
     kind, identifier = parse_source_spec(spec)
-    return SOURCES[kind](identifier, originals_only=originals_only)
+    return SOURCES[kind](
+        identifier, originals_only=originals_only, path_prefix=path_prefix
+    )
 
 
 def fetch_internet_archive_item(
-    identifier: str, originals_only: bool = False
+    identifier: str,
+    originals_only: bool = False,
+    path_prefix: str | None = None,
 ) -> list[PoolCandidate]:
     """Enumerate the content files of one Internet Archive item.
 
@@ -113,6 +123,11 @@ def fetch_internet_archive_item(
     excluded by format and by name. ``originals_only`` additionally restricts to
     IA's ``source == "original"``, which on many media items excludes the real
     files — see the note on ``_ORIGINAL_SOURCE``.
+
+    ``path_prefix`` narrows to one directory within the item. An item's file
+    names are its full internal paths, so a large item can be catalogued a
+    directory at a time. The prefix is percent-decoded first, so it can be
+    pasted straight from a browser URL where spaces appear as ``%20``.
     """
     url = f"https://archive.org/metadata/{identifier}"
     try:
@@ -133,10 +148,14 @@ def fetch_internet_archive_item(
             "identifier (an unknown item returns an empty result, not a 404)."
         )
 
+    prefix = unquote(path_prefix) if path_prefix else None
+
     candidates: list[PoolCandidate] = []
     for entry in files:
         name = entry.get("name")
         if not name or _is_metadata_file(name):
+            continue
+        if prefix and not name.startswith(prefix):
             continue
         if str(entry.get("format", "")).strip().lower() in _ARTEFACT_FORMATS:
             continue
@@ -157,7 +176,13 @@ def fetch_internet_archive_item(
 
         candidates.append(
             PoolCandidate(
-                url=f"https://archive.org/download/{identifier}/{name}",
+                url=(
+                    f"https://archive.org/download/{identifier}/"
+                    # The name is an item-internal path and routinely contains
+                    # spaces; the URL has to carry them encoded or the fetch
+                    # 404s on the VM.
+                    + quote(name)
+                ),
                 name=name.rsplit("/", 1)[-1],
                 size_bytes=size_bytes,
                 digests=digests,
