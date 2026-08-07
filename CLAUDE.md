@@ -418,6 +418,25 @@ so no manifest can ask an uploader VM for a file on the laptop. Selection is by
 `file_size_buckets_mb` in `resources/gates/staging-thresholds.yaml`, which bucket
 transfer *durations* for the gates.
 
+A class is sometimes too coarse, so every consumer also accepts
+**`pool_min_size`/`pool_max_size`** (manifest key on `prod_uploaders.uploaders[]`
+/ `prod_canary` / `prod_local_uploads`; spec tokens `pool_min_size=`/
+`pool_max_size=` on `--uploader`; `--pool-min-size`/`--pool-max-size` on the
+canary and local-uploads CLIs; `--min-size`/`--max-size` on `pool add
+--from-listing` and `pool list`). They **narrow** each requested class without
+changing the counts, so a selection's shape survives. The motivating case: the
+**chunk floor is 4**, so a 14 KB file buys the same minimum loss observation as
+a 5 MB one at the same cost of one permanently-spent entry — "`tiny`, but ≥5 MB"
+is not a class. Units are binary and a bare number is bytes; **min inclusive,
+max exclusive**, so `10MB`/`100MB` is *exactly* `small`. Bounds that exclude a
+requested class are refused at manifest-validate time rather than surfacing as
+"0 available", which reads as an empty pool. Impl: `size_class.parse_size` /
+`bounded_byte_range`, `pool_selection.parse_size_bounds` / `validate_bounds`.
+NB `--pool` and friends live on `prod canary **deploy**`, not the `prod canary`
+group parser — a group-parser option must precede the subcommand, so the argv
+the orchestrator emits would not parse. `test_pool_size_bounds_plumbing.py`
+guards that every pool-kind argv the orchestrator emits actually parses.
+
 A file is `available` (no blocking claim), `claimed` (handed out, unconfirmed),
 `uploaded` (confirmed, address recorded) or **`partial`** (an upload stored some
 chunks and stopped). `claimed` is **not** evidence anything reached production.

@@ -37,6 +37,72 @@ def _validate_network(value: Union[str, dict]) -> Union[str, dict]:
 Network = Annotated[Union[str, dict], AfterValidator(_validate_network)]
 
 
+def _validate_pool_size(value: Union[str, int]) -> Union[str, int]:
+    """Validate a ``pool_min_size``/``pool_max_size`` value at manifest time.
+
+    Parsed here only to fail fast — the value is stored in its written form and
+    re-parsed at selection time, exactly as ``clock_skew`` and ``network`` do.
+    """
+    from saorsa_db.size_class import parse_size
+
+    parse_size(value)
+    return value
+
+
+# A byte size written the way an operator writes it: "5MB", "1.5GB", or a bare
+# number of bytes. Binary units, matching how sizes are displayed.
+PoolSize = Annotated[Union[str, int], AfterValidator(_validate_pool_size)]
+
+
+def _check_pool_bounds(spec, label: str, pool_field: str = "pool") -> None:
+    """Validate ``pool_min_size``/``pool_max_size`` against their ``pool``.
+
+    Three failures, all of which would otherwise surface only after the deploy
+    had started: bounds with no pool request (which would silently do nothing),
+    an inverted pair, and bounds that exclude a class the request asks for.
+    """
+    from saorsa_db.size_class import bounded_byte_range, describe_bounds, parse_size
+    from saorsa_db.size_class import parse as parse_size_class
+
+    minimum = getattr(spec, "pool_min_size", None)
+    maximum = getattr(spec, "pool_max_size", None)
+    if minimum is None and maximum is None:
+        return
+
+    pool = getattr(spec, pool_field, None)
+    if not pool:
+        raise ValueError(
+            f"{label}: pool_min_size/pool_max_size narrow a `{pool_field}` "
+            f"request; they have no effect without one"
+        )
+
+    min_bytes = parse_size(minimum) if minimum is not None else None
+    max_bytes = parse_size(maximum) if maximum is not None else None
+    if max_bytes == 0:
+        raise ValueError(f"{label}: pool_max_size of 0 selects nothing")
+    if min_bytes is not None and max_bytes is not None and min_bytes >= max_bytes:
+        raise ValueError(
+            f"{label}: pool_min_size must be below pool_max_size, which is "
+            f"exclusive"
+        )
+
+    for name, count in pool.items():
+        if not count:
+            continue
+        try:
+            size_class = parse_size_class(str(name))
+        except ValueError:
+            # An unknown class name is reported by the request parser itself.
+            continue
+        if bounded_byte_range(size_class, min_bytes, max_bytes) is None:
+            raise ValueError(
+                f"{label}: the size bounds "
+                f"({describe_bounds(min_bytes, max_bytes)}) exclude the "
+                f"'{size_class.value}' class entirely, but the request asks "
+                f"for {count} of them"
+            )
+
+
 def _validate_clock_skew(value: str) -> str:
     """Validate a client ``clock_skew`` value as a Go-style signed duration.
 
@@ -406,6 +472,10 @@ class ProdUploader(_Base):
     # which cannot return a file that has ever been handed out.
     urls: Optional[str] = None  # path to URL list (uploaded with --public)
     pool: Optional[dict[str, int]] = None
+    # Byte bounds narrowing every class in `pool`: min inclusive, max exclusive,
+    # counts unchanged. "5MB" / 5242880 are both accepted.
+    pool_min_size: Optional[PoolSize] = None
+    pool_max_size: Optional[PoolSize] = None
     # Draw only files with no chunks already on the network. A partially
     # uploaded file has ant skip what is stored and send only the remainder, so
     # a run testing whether an upload can be sustained over a slow link would
@@ -439,6 +509,7 @@ class ProdUploader(_Base):
             raise ValueError(
                 "prod_uploaders.uploaders[]: set exactly one of `urls` or `pool`"
             )
+        _check_pool_bounds(self, "prod_uploaders.uploaders[]")
         return self
 
 
@@ -523,6 +594,11 @@ class ProdCanarySpec(_Base):
     # must never have been uploaded before, or the loss measurement is void.
     urls_file: Optional[str] = None
     pool: Optional[dict[str, int]] = None
+    # Byte bounds narrowing every class in `pool`. The canary's reason for
+    # wanting them: the chunk floor is 4, so a 14 KB file buys the same minimum
+    # loss observation as a 5 MB one, at the same cost of one pool entry.
+    pool_min_size: Optional[PoolSize] = None
+    pool_max_size: Optional[PoolSize] = None
     upload_sleep_secs: Optional[int] = None
     probe_concurrency: Optional[int] = None
     monitoring_volume_size: Optional[int] = None
@@ -546,6 +622,7 @@ class ProdCanarySpec(_Base):
             raise ValueError(
                 "prod_canary: set exactly one of `urls_file` or `pool`"
             )
+        _check_pool_bounds(self, "prod_canary")
         return self
 
 
@@ -557,6 +634,9 @@ class ProdLocalUploadsSpec(_Base):
     # {size_class: count} against the managed pool. LOCAL entries only — this
     # kind uploads from the operator's disk, so a URL entry is meaningless here.
     pool: Optional[dict[str, int]] = None
+    # Byte bounds narrowing every class in `pool`: min inclusive, max exclusive.
+    pool_min_size: Optional[PoolSize] = None
+    pool_max_size: Optional[PoolSize] = None
     # Draw only files with no chunks already on the network — see the note on
     # ProdUploader.exclude_partial.
     exclude_partial: bool = False
@@ -577,6 +657,7 @@ class ProdLocalUploadsSpec(_Base):
             raise ValueError(
                 "prod_local_uploads: set exactly one of `urls`, `local_dir` or `pool`"
             )
+        _check_pool_bounds(self, "prod_local_uploads")
         return self
 
 

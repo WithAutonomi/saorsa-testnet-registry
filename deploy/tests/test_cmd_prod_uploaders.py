@@ -57,6 +57,8 @@ class TestParseSpec:
             # None for a urls= spec: the file list is the hand-written one, not
             # a draw from the managed pool.
             "pool_request": None,
+            "pool_min_size_bytes": None,
+            "pool_max_size_bytes": None,
             "exclude_partial": False,
             "payment_type": None,
             "log_level": None,

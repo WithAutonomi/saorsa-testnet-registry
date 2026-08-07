@@ -1461,8 +1461,8 @@ number that looks credible and is not.
 | Command | What it does |
 |---------|--------------|
 | `prod pool add --url/--urls-file/--dir/--path` | Catalogue files. URLs are size-probed; local files are hashed SHA1+SHA256. `--dir` batches its database work, so a directory of thousands takes seconds rather than minutes. `--verbose` prints a line per file instead of a progress bar. |
-| `prod pool add --from-listing internet-archive:<item>` | Bulk-catalogue a public collection. Entries arrive pre-sized and pre-hashed from the source's metadata — nothing is downloaded. |
-| `prod pool list [--status available\|claimed\|uploaded\|partial] [--kind] [--size] [--tag] [--since] [--limit] [--all]` | What is in the pool and what state it is in. |
+| `prod pool add --from-listing internet-archive:<item> [--size CLASS] [--min-size SIZE] [--max-size SIZE] [--limit N]` | Bulk-catalogue a public collection. Entries arrive pre-sized and pre-hashed from the source's metadata — nothing is downloaded. `--min-size`/`--max-size` express what a class cannot, e.g. `--size tiny --min-size 5MB`. |
+| `prod pool list [--status available\|claimed\|uploaded\|partial] [--kind] [--size] [--min-size] [--max-size] [--tag] [--since] [--limit] [--all]` | What is in the pool and what state it is in. `--min-size`/`--max-size` are the same bounds a manifest applies. |
 | `prod pool show <file> \| --address <addr>` | One file in full, including its upload result and costs. Reverse lookup by datamap address. |
 | `prod pool stats` | Availability per size class, split by kind. |
 | `prod pool checkout --size CLASS [--count N] [--kind] [--consumer LABEL] [--reuse-open]` | Take a file by hand, for the desktop application or anything else. |
@@ -1533,6 +1533,50 @@ Four things this guarantees:
 * **The duplicate preflight becomes redundant.** `--allow-duplicate-files` and
   the name-based check still apply to the legacy `urls=` path, but a pool
   selection cannot return a spent file by construction.
+
+#### Narrowing a request by byte size
+
+A size class is sometimes too coarse. The canary is the case that forced this:
+it measures chunk loss, the **chunk floor is 4**, so a 14 KB file buys exactly
+the same minimum observation as a 5 MB one while costing the same single,
+permanently-spent pool entry. "`tiny`, but at least 5 MB" is not a class.
+
+Every pool consumer therefore accepts **`pool_min_size`** and
+**`pool_max_size`**, which *narrow* each requested class without touching the
+counts — so the shape of a selection (37 tiny / 233 small / 112 medium) is
+preserved.
+
+| Kind | Manifest | CLI |
+|------|----------|-----|
+| `prod-uploaders` | `pool_min_size: 5MB` per uploader | spec tokens `:pool_min_size=5MB:pool_max_size=1GB` |
+| `prod-canary` | `pool_min_size: 5MB` | `--pool-min-size 5MB --pool-max-size 1GB` |
+| `prod-local-uploads` | `pool_min_size: 5MB` | `--pool-min-size 5MB --pool-max-size 1GB` |
+
+```yaml
+prod_canary:
+  pool:
+    tiny: 37
+    small: 233
+    medium: 112
+  pool_min_size: 5MB       # keeps the sub-5MB bottom of `tiny` out
+```
+
+* **Units are binary and a bare number is bytes** — `5MB` is 5 MiB, matching how
+  every size in this tool is displayed, so a bound pasted back from output
+  selects the file it was read from. `1.5GB`, `512KB` and `5242880` all work.
+* **`min` is inclusive, `max` exclusive**, matching the half-open class
+  boundaries. `pool_min_size: 10MB` with `pool_max_size: 100MB` is therefore
+  *exactly* the `small` class, not almost.
+* **Bounds that exclude a requested class are refused at validate time** —
+  `pool_max_size: 5MB` alongside `small: 3` errors immediately rather than
+  surfacing later as "0 available", which reads as an empty pool and sends you
+  cataloguing files that would not have been selected either.
+* **A shortfall names the bound.** "2 available" without it reads as a
+  whole-class figure.
+
+The same bounds work on `prod pool list --min-size/--max-size`, so inventory can
+be checked against the exact selection a run will make, and on `prod pool add
+--from-listing --min-size/--max-size` when sourcing for it.
 
 #### Keeping the pool stocked
 

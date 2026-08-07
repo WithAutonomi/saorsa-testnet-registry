@@ -61,6 +61,8 @@ DEFAULT_MONITORING_VOLUME_SIZE = 50
 _KNOWN_SPEC_KEYS = (
     "urls",
     "pool",
+    "pool_min_size",
+    "pool_max_size",
     "exclude_partial",
     "payment",
     "log_level",
@@ -221,16 +223,32 @@ def parse_prod_uploader_spec(spec: str) -> dict:
 
     urls_file = options.get("urls") or None
     pool_request = None
+    pool_min_size_bytes = None
+    pool_max_size_bytes = None
     if has_pool:
         from saorsa_deploy.pool_selection import (
             PoolSelectionError,
             parse_request_token,
+            parse_size_bounds,
+            validate_bounds,
         )
 
         try:
             pool_request = parse_request_token(options["pool"])
+            pool_min_size_bytes, pool_max_size_bytes = parse_size_bounds(
+                options.get("pool_min_size"), options.get("pool_max_size")
+            )
+            validate_bounds(pool_request, pool_min_size_bytes, pool_max_size_bytes)
         except (PoolSelectionError, ValueError) as exc:
             raise ValueError(f"Invalid uploader spec '{spec}': {exc}") from exc
+    elif options.get("pool_min_size") or options.get("pool_max_size"):
+        # Silently ignoring them would leave the operator believing a size
+        # restriction is in force over a hand-written URL list, which the pool
+        # is not selecting from at all.
+        raise ValueError(
+            f"Invalid uploader spec '{spec}': pool_min_size/pool_max_size only "
+            "apply to pool=… selection, not to urls=…"
+        )
 
     payment_type: str | None = options.get("payment")
     if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
@@ -278,6 +296,8 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "vm_size": vm_size,
         "urls_file": urls_file,
         "pool_request": pool_request,
+        "pool_min_size_bytes": pool_min_size_bytes,
+        "pool_max_size_bytes": pool_max_size_bytes,
         "exclude_partial": exclude_partial,
         "payment_type": payment_type,
         "log_level": log_level,
@@ -773,6 +793,8 @@ def cmd_prod_uploaders_deploy(args):
                     if s.get("pool_request")
                     else None
                 ),
+                "pool_min_size_bytes": s.get("pool_min_size_bytes"),
+                "pool_max_size_bytes": s.get("pool_max_size_bytes"),
                 "exclude_partial": s.get("exclude_partial", False),
                 "file_names": _extract_file_names(s["_urls_file_content"]),
                 "payment_type": s.get("payment_type"),
@@ -1042,6 +1064,8 @@ def _select_pool_files(args, parsed_specs: list[dict], console: Console) -> list
                 request=spec["pool_request"],
                 source=ClaimSource.PROD_UPLOADERS,
                 exclude_partial=spec.get("exclude_partial", False),
+                min_size_bytes=spec.get("pool_min_size_bytes"),
+                max_size_bytes=spec.get("pool_max_size_bytes"),
             )
         except PoolSelectionError as exc:
             console.print(f"\n[bold red]Error:[/bold red] {exc}")
@@ -1051,6 +1075,8 @@ def _select_pool_files(args, parsed_specs: list[dict], console: Console) -> list
             f"uploader #{index} ({spec['region']})",
             spec["pool_request"],
             selected,
+            spec.get("pool_min_size_bytes"),
+            spec.get("pool_max_size_bytes"),
         )
         spec["_urls_file_content"] = "\n".join(e.locator for e in selected) + "\n"
         selections.append(selected)

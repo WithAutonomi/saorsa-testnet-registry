@@ -257,6 +257,56 @@ class TestAddFromListing:
         assert {r.name for r in wired.list_pool_files()} == {"film.mkv"}
         assert "did not match --size medium" in _flat(capsys.readouterr().out)
 
+    def test_min_size_expresses_what_a_class_cannot(self, wired, monkeypatch, capsys):
+        # Both files here are catalogued by the unbounded run; a class filter
+        # can only say "tiny" (which takes the 1 KB notes) or "medium" (which
+        # takes the 800 MB film). "at least 5 MB" needs the byte bound.
+        monkeypatch.setattr(
+            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
+        )
+        prod_pool.cmd_prod_pool_add(
+            _add_args(from_listing="internet-archive:my-item", min_size="5MB")
+        )
+        assert {r.name for r in wired.list_pool_files()} == {"film.mkv"}
+        assert "did not match ≥ 5.00 MB" in _flat(capsys.readouterr().out)
+
+    def test_max_size_applies(self, wired, monkeypatch):
+        monkeypatch.setattr(
+            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
+        )
+        prod_pool.cmd_prod_pool_add(
+            _add_args(from_listing="internet-archive:my-item", max_size="5MB")
+        )
+        assert {r.name for r in wired.list_pool_files()} == {"notes.txt"}
+
+    def test_bounds_combine_with_a_class(self, wired, monkeypatch, capsys):
+        monkeypatch.setattr(
+            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
+        )
+        prod_pool.cmd_prod_pool_add(
+            _add_args(
+                from_listing="internet-archive:my-item", size="tiny", min_size="5MB"
+            )
+        )
+        assert wired.list_pool_files() == []
+        assert "did not match --size tiny and ≥ 5.00 MB" in _flat(
+            capsys.readouterr().out
+        )
+
+    def test_inverted_bounds_are_refused(self, wired, monkeypatch, capsys):
+        monkeypatch.setattr(
+            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
+        )
+        with pytest.raises(SystemExit):
+            prod_pool.cmd_prod_pool_add(
+                _add_args(
+                    from_listing="internet-archive:my-item",
+                    min_size="100MB",
+                    max_size="10MB",
+                )
+            )
+        assert "must be below" in _flat(capsys.readouterr().out)
+
     def test_limit_applies(self, wired, monkeypatch):
         monkeypatch.setattr(
             pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)

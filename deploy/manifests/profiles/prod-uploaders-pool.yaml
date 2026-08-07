@@ -37,4 +37,16 @@ prod_uploaders:
       pool:
         large: 2
 
+    # `pool_min_size`/`pool_max_size` narrow every class in this uploader's
+    # request without changing the counts, so the shape of the selection is
+    # preserved. A class is sometimes too coarse: "tiny, but at least 5 MB" is
+    # not a class, and below ~5 MB every file yields the same 4-chunk minimum.
+    # min is inclusive, max exclusive — 10MB/100MB is exactly the `small` class.
+    # Units are binary ("5MB" is 5 MiB); a bare number is bytes.
+    - region: fra1
+      vm_size: s-4vcpu-8gb
+      pool:
+        tiny: 5
+      pool_min_size: 5MB
+
 slack_post: true

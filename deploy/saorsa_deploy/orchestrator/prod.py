@@ -45,9 +45,25 @@ def _format_pool_request(pool: dict) -> str:
     return ",".join(f"{key}:{pool[key]}" for key in ordered_keys)
 
 
+def _pool_bound_flags(spec, prefix: str = "--pool") -> list[str]:
+    """Emit ``--pool-min-size``/``--pool-max-size`` when the manifest set them."""
+    argv: list[str] = []
+    if getattr(spec, "pool_min_size", None) is not None:
+        argv += [f"{prefix}-min-size", str(spec.pool_min_size)]
+    if getattr(spec, "pool_max_size", None) is not None:
+        argv += [f"{prefix}-max-size", str(spec.pool_max_size)]
+    return argv
+
+
 def _prod_uploader_spec(u) -> str:
     if u.pool:
         spec = f"{u.region}:{u.vm_size}:pool={_format_pool_request(u.pool)}"
+        # Before exclude_partial and everything after it, so the token order is
+        # a function of the manifest alone — the step journal compares argv.
+        if u.pool_min_size is not None:
+            spec += f":pool_min_size={u.pool_min_size}"
+        if u.pool_max_size is not None:
+            spec += f":pool_max_size={u.pool_max_size}"
         if u.exclude_partial:
             spec += ":exclude_partial=true"
     else:
@@ -226,6 +242,7 @@ def _canary(manifest: Manifest) -> list[Step]:
         argv += ["--probe-spec", _probe_spec(p)]
     if spec.pool is not None:
         argv += ["--pool", _format_pool_request(spec.pool)]
+        argv += _pool_bound_flags(spec)
     else:
         argv += ["--urls-file", spec.urls_file]
     if spec.upload_sleep_secs is not None:
@@ -247,6 +264,7 @@ def _local_uploads(manifest: Manifest) -> list[Step]:
     argv = ["prod", "local-uploads", "--name", manifest.name, "--purpose", manifest.purpose]
     if spec.pool is not None:
         argv += ["--from-pool", _format_pool_request(spec.pool)]
+        argv += _pool_bound_flags(spec)
         if spec.exclude_partial:
             argv += ["--exclude-partial"]
     elif spec.urls is not None:

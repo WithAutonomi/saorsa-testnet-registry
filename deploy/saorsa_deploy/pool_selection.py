@@ -25,7 +25,13 @@ from dataclasses import dataclass
 
 from saorsa_db.models.prod_file_pool import ClaimSource, PoolFileKind
 from saorsa_db.repositories import InsufficientPoolInventory
-from saorsa_db.size_class import classify, format_size
+from saorsa_db.size_class import (
+    bounded_byte_range,
+    classify,
+    describe_bounds,
+    format_size,
+    parse_size,
+)
 from saorsa_db.size_class import ordered as size_class_ordered
 from saorsa_db.size_class import parse as parse_size_class
 
@@ -116,13 +122,73 @@ def parse_request_token(token: str) -> dict:
     return parse_request(raw)
 
 
-def describe_request(request: dict) -> str:
+def parse_size_bounds(
+    min_raw: str | int | None, max_raw: str | int | None
+) -> tuple[int | None, int | None]:
+    """Parse optional ``min_size``/``max_size`` bounds into bytes.
+
+    Both are operator-supplied strings such as ``5MB``. ``min`` is inclusive and
+    ``max`` exclusive, so ``10MB``/``100MB`` is exactly the ``small`` class.
+    """
+    min_bytes = None
+    max_bytes = None
+    if min_raw is not None and str(min_raw).strip() != "":
+        try:
+            min_bytes = parse_size(min_raw)
+        except ValueError as exc:
+            raise PoolSelectionError(f"invalid min_size: {exc}") from exc
+    if max_raw is not None and str(max_raw).strip() != "":
+        try:
+            max_bytes = parse_size(max_raw)
+        except ValueError as exc:
+            raise PoolSelectionError(f"invalid max_size: {exc}") from exc
+    if max_bytes is not None and max_bytes == 0:
+        raise PoolSelectionError("max_size of 0 selects nothing")
+    if min_bytes is not None and max_bytes is not None and min_bytes >= max_bytes:
+        raise PoolSelectionError(
+            f"min_size ({format_size(min_bytes)}) must be below max_size "
+            f"({format_size(max_bytes)}); max_size is exclusive"
+        )
+    return min_bytes, max_bytes
+
+
+def validate_bounds(
+    request: dict, min_size_bytes: int | None, max_size_bytes: int | None
+) -> None:
+    """Refuse a request whose bounds exclude one of its own size classes.
+
+    ``max_size: 5MB`` alongside ``small: 3`` can never be satisfied, and the
+    honest moment to say so is now — not as a shortfall of "0 available", which
+    reads as an empty pool and sends the operator off cataloguing files that
+    would not have been selected either.
+    """
+    if min_size_bytes is None and max_size_bytes is None:
+        return
+    for size_class in size_class_ordered():
+        count = request.get(size_class)
+        if not count:
+            continue
+        if bounded_byte_range(size_class, min_size_bytes, max_size_bytes) is None:
+            raise PoolSelectionError(
+                f"the size bounds ({describe_bounds(min_size_bytes, max_size_bytes)}) "
+                f"exclude the '{size_class.value}' class entirely, but the request "
+                f"asks for {count} of them"
+            )
+
+
+def describe_request(
+    request: dict,
+    min_size_bytes: int | None = None,
+    max_size_bytes: int | None = None,
+) -> str:
     """Render a request in a stable, smallest-first order."""
-    return ", ".join(
+    rendered = ", ".join(
         f"{size_class.value} {request[size_class]}"
         for size_class in size_class_ordered()
         if request.get(size_class)
     )
+    bounds = describe_bounds(min_size_bytes, max_size_bytes)
+    return f"{rendered} ({bounds})" if bounds else rendered
 
 
 def select_for_deployment(
@@ -134,6 +200,8 @@ def select_for_deployment(
     request: dict,
     source: ClaimSource,
     exclude_partial: bool = False,
+    min_size_bytes: int | None = None,
+    max_size_bytes: int | None = None,
 ) -> list[SelectedFile]:
     """Claim files for one slot of a deployment, or return the previous draw.
 
@@ -147,6 +215,8 @@ def select_for_deployment(
             SelectedFile.from_dict(entry)
             for entry in persisted["slots"][slot]["files"]
         ]
+
+    validate_bounds(request, min_size_bytes, max_size_bytes)
 
     try:
         claims = repo.claim_pool_files(
@@ -162,6 +232,8 @@ def select_for_deployment(
             exclude_partial=(
                 exclude_partial or source is ClaimSource.PROD_CANARY
             ),
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
         )
     except InsufficientPoolInventory as exc:
         raise PoolSelectionError(_shortfall_message(exc)) from exc
@@ -186,6 +258,11 @@ def select_for_deployment(
     persisted.setdefault("slots", {})[slot] = {
         "kind": kind.value,
         "request": {k.value: v for k, v in request.items()},
+        # Recorded so the persisted draw explains itself. A resume returns the
+        # files already drawn whatever the manifest now says, so these describe
+        # the selection that happened, not a filter applied on read.
+        "min_size_bytes": min_size_bytes,
+        "max_size_bytes": max_size_bytes,
         "files": [entry.to_dict() for entry in selected],
     }
     save_pool_selection(name, persisted)
@@ -199,8 +276,9 @@ def _shortfall_message(exc: InsufficientPoolInventory) -> str:
             f"{size_class} {detail['requested']} requested, "
             f"{detail['available']} available"
         )
+    within = f" within {exc.bounds}" if getattr(exc, "bounds", "") else ""
     return (
-        f"the {exc.kind.value} pool cannot satisfy this request "
+        f"the {exc.kind.value} pool cannot satisfy this request{within} "
         f"({'; '.join(parts)}).\n"
         f"Add more with `saorsa-deploy prod pool add --from-listing "
         f"internet-archive:<item>`, or free a stale claim with "
@@ -222,14 +300,24 @@ def attach_deployment(repo, selections: list[list[SelectedFile]], deployment_id,
     repo.attach_deployment_to_claims(claim_ids, deployment_id, name)
 
 
-def render_selection(console, slot_label: str, request: dict, selected: list) -> None:
+def render_selection(
+    console,
+    slot_label: str,
+    request: dict,
+    selected: list,
+    min_size_bytes: int | None = None,
+    max_size_bytes: int | None = None,
+) -> None:
     """Print a selection compactly.
 
     Summarised per size class rather than listed file by file, because a canary
     draws ~350 files and 350 lines of output buries everything around it. The
     full list is always recoverable from `prod pool claims`.
     """
-    console.print(f"    {slot_label}:   {describe_request(request)}")
+    console.print(
+        f"    {slot_label}:   "
+        f"{describe_request(request, min_size_bytes, max_size_bytes)}"
+    )
     by_class: dict[str, list] = {}
     for entry in selected:
         key = (

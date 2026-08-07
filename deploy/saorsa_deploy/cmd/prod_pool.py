@@ -582,6 +582,7 @@ def _state_of(claim) -> str:
 def cmd_prod_pool_list(args) -> None:
     from rich.table import Table
     from saorsa_db.size_class import parse as parse_size_class
+    from saorsa_db.size_class import parse_size
 
     console = Console()
     repo = _require_repo(console)
@@ -589,10 +590,18 @@ def cmd_prod_pool_list(args) -> None:
     kind = PoolFileKind(args.kind) if getattr(args, "kind", None) else None
 
     try:
-        # Inside the guard: an unknown size class or status must report itself,
-        # not raise a traceback at the operator.
+        # Inside the guard: an unknown size class, size bound or status must
+        # report itself, not raise a traceback at the operator.
         size_class = (
             parse_size_class(args.size) if getattr(args, "size", None) else None
+        )
+        # The same bounds a manifest applies, so inventory can be checked
+        # against the exact selection a run will make.
+        min_size_bytes = (
+            parse_size(args.min_size) if getattr(args, "min_size", None) else None
+        )
+        max_size_bytes = (
+            parse_size(args.max_size) if getattr(args, "max_size", None) else None
         )
         rows = repo.list_pool_files(
             kind=kind,
@@ -602,6 +611,8 @@ def cmd_prod_pool_list(args) -> None:
             active=None if getattr(args, "all", False) else True,
             limit=getattr(args, "limit", None),
             added_since=_parse_since(getattr(args, "since", None)),
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
         )
     except ValueError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
@@ -1681,8 +1692,10 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
     entries be recognised as the same content as a local copy.
     """
     from saorsa_db.size_class import classify as _classify
+    from saorsa_db.size_class import describe_bounds
     from saorsa_db.size_class import parse as parse_size_class
 
+    from saorsa_deploy.pool_selection import PoolSelectionError, parse_size_bounds
     from saorsa_deploy.pool_sources import SourceError, fetch_candidates
 
     try:
@@ -1700,21 +1713,44 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
     )
 
     wanted_class = None
+    min_bytes = max_bytes = None
     if getattr(args, "size", None):
         try:
             wanted_class = parse_size_class(args.size)
         except ValueError as exc:
             console.print(f"[bold red]Error:[/bold red] {exc}")
             sys.exit(1)
+    try:
+        min_bytes, max_bytes = parse_size_bounds(
+            getattr(args, "min_size", None), getattr(args, "max_size", None)
+        )
+    except PoolSelectionError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
+    criteria = " and ".join(
+        part
+        for part in (
+            f"--size {args.size}" if wanted_class else "",
+            describe_bounds(min_bytes, max_bytes),
+        )
+        if part
+    )
 
     selected = []
     skipped_class = 0
     for candidate in candidates:
-        if wanted_class is not None:
+        if wanted_class is not None or min_bytes is not None or max_bytes is not None:
             if candidate.size_bytes is None:
                 skipped_class += 1
                 continue
-            if _classify(candidate.size_bytes) is not wanted_class:
+            if wanted_class is not None and _classify(candidate.size_bytes) is not wanted_class:
+                skipped_class += 1
+                continue
+            if min_bytes is not None and candidate.size_bytes < min_bytes:
+                skipped_class += 1
+                continue
+            if max_bytes is not None and candidate.size_bytes >= max_bytes:
                 skipped_class += 1
                 continue
         selected.append(candidate)
@@ -1722,9 +1758,7 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
             break
 
     if skipped_class:
-        console.print(
-            f"[dim]  {skipped_class} did not match --size {args.size}[/dim]"
-        )
+        console.print(f"[dim]  {skipped_class} did not match {criteria}[/dim]")
 
     if args.dry_run:
         console.print("\n[dim]Dry run — nothing was written.[/dim]")

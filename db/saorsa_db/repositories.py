@@ -72,7 +72,7 @@ from saorsa_db.models.release_candidate import (
     ReleaseCandidateCrate,
     ReleaseCandidatePR,
 )
-from saorsa_db.size_class import SizeClass, byte_range
+from saorsa_db.size_class import SizeClass, bounded_byte_range, byte_range, describe_bounds
 from saorsa_db.size_class import ordered as size_class_ordered
 
 
@@ -2504,16 +2504,21 @@ class InsufficientPoolInventory(Exception):
     smaller experiment than the one that was designed.
     """
 
-    def __init__(self, kind: PoolFileKind, shortfall: dict):
+    def __init__(self, kind: PoolFileKind, shortfall: dict, bounds: str = ""):
         self.kind = kind
         #: {size_class_value: {"requested": int, "available": int}}
         self.shortfall = shortfall
+        #: Rendered byte bounds the counts were measured under, if any. Without
+        #: it "1 available" reads as a whole-class figure and sends the operator
+        #: looking for files the bounds were always going to exclude.
+        self.bounds = bounds
         parts = ", ".join(
             f"{cls} {detail['requested']} requested / {detail['available']} available"
             for cls, detail in sorted(shortfall.items())
         )
+        qualifier = f" within {bounds}" if bounds else ""
         super().__init__(
-            f"the {kind.value} pool cannot satisfy the request: {parts}"
+            f"the {kind.value} pool cannot satisfy the request{qualifier}: {parts}"
         )
 
 
@@ -2623,6 +2628,8 @@ class ProdFilePoolRepository(ABC):
         limit: int | None = None,
         added_since: datetime | None = None,
         exclude_partial: bool = False,
+        min_size_bytes: int | None = None,
+        max_size_bytes: int | None = None,
     ) -> list[ProdFilePool]:
         ...
 
@@ -2648,6 +2655,8 @@ class ProdFilePoolRepository(ABC):
         deployment_name: str | None = None,
         when: datetime | None = None,
         exclude_partial: bool = False,
+        min_size_bytes: int | None = None,
+        max_size_bytes: int | None = None,
     ) -> list[ProdFilePoolClaim]:
         """Claim files matching a {SizeClass: count} request, atomically.
 
@@ -2664,6 +2673,11 @@ class ProdFilePoolRepository(ABC):
         selection: those files already have chunks in production, possibly
         months old, so a loss measurement over them would be measuring something
         other than what it reports.
+
+        ``min_size_bytes`` / ``max_size_bytes`` narrow every class in the
+        request to a byte window (min inclusive, max exclusive). They do not
+        replace the class request: the counts still say how many of each class
+        to take, so the shape of the selection is preserved.
         """
         ...
 
@@ -3318,6 +3332,8 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         limit: int | None = None,
         added_since: datetime | None = None,
         exclude_partial: bool = False,
+        min_size_bytes: int | None = None,
+        max_size_bytes: int | None = None,
     ) -> list[ProdFilePool]:
         query = self.session.query(ProdFilePool)
         if exclude_partial:
@@ -3329,13 +3345,24 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         if active is not None:
             query = query.filter(ProdFilePool.active == active)
         if size_class is not None:
-            lower, upper = byte_range(size_class)
+            window = bounded_byte_range(size_class, min_size_bytes, max_size_bytes)
+            if window is None:
+                # The bounds exclude the class entirely. Callers validate this
+                # up front, so reaching here means a caller that did not —
+                # return nothing rather than a query that ignores a bound.
+                return []
+            lower, upper = window
             # Filters the indexed byte column rather than classifying per row —
             # the difference between an index range scan and a full scan of a
             # catalogue holding hundreds of thousands of local files.
             query = query.filter(ProdFilePool.size_bytes >= lower)
             if upper is not None:
                 query = query.filter(ProdFilePool.size_bytes < upper)
+        else:
+            if min_size_bytes is not None:
+                query = query.filter(ProdFilePool.size_bytes >= min_size_bytes)
+            if max_size_bytes is not None:
+                query = query.filter(ProdFilePool.size_bytes < max_size_bytes)
         if tags:
             # In SQL, not in Python. Filtering after the query returned meant
             # materialising every candidate row to inspect it, and a LIMIT could
@@ -3438,6 +3465,8 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         size_class: SizeClass,
         needed: int,
         exclude_partial: bool = False,
+        min_size_bytes: int | None = None,
+        max_size_bytes: int | None = None,
     ) -> list[ProdFilePool]:
         window = max(needed * self._CANDIDATE_OVERFETCH, self._CANDIDATE_FLOOR)
         rows = self.list_pool_files(
@@ -3447,6 +3476,8 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             active=True,
             limit=None if exclude_partial else window,
             exclude_partial=exclude_partial,
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
         )
         return rows[:window]
 
@@ -3460,6 +3491,8 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         deployment_name: str | None = None,
         when: datetime | None = None,
         exclude_partial: bool = False,
+        min_size_bytes: int | None = None,
+        max_size_bytes: int | None = None,
     ) -> list[ProdFilePoolClaim]:
         import random
 
@@ -3474,7 +3507,12 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             if count <= 0:
                 continue
             candidates = self._candidates(
-                kind, size_class, count, exclude_partial=exclude_partial
+                kind,
+                size_class,
+                count,
+                exclude_partial=exclude_partial,
+                min_size_bytes=min_size_bytes,
+                max_size_bytes=max_size_bytes,
             )
             if len(candidates) < count:
                 available = len(
@@ -3484,6 +3522,8 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
                         status=POOL_STATUS_AVAILABLE,
                         active=True,
                         exclude_partial=exclude_partial,
+                        min_size_bytes=min_size_bytes,
+                        max_size_bytes=max_size_bytes,
                     )
                 )
                 if available < count:
@@ -3498,12 +3538,16 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
                     status=POOL_STATUS_AVAILABLE,
                     active=True,
                     exclude_partial=exclude_partial,
+                    min_size_bytes=min_size_bytes,
+                    max_size_bytes=max_size_bytes,
                 )
             random.shuffle(candidates)
             plan[size_class] = (candidates, count)
 
         if shortfall:
-            raise InsufficientPoolInventory(kind, shortfall)
+            raise InsufficientPoolInventory(
+                kind, shortfall, describe_bounds(min_size_bytes, max_size_bytes)
+            )
 
         claims: list[ProdFilePoolClaim] = []
         for size_class, (candidates, count) in plan.items():

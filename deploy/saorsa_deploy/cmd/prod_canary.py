@@ -471,6 +471,14 @@ def cmd_prod_canary_deploy(args):
             "cannot return a file that has already been uploaded."
         )
         sys.exit(1)
+    if not getattr(args, "pool", None) and (
+        getattr(args, "pool_min_size", None) or getattr(args, "pool_max_size", None)
+    ):
+        console.print(
+            "[bold red]Error:[/bold red] --pool-min-size/--pool-max-size narrow "
+            "a --pool selection; they have no effect on --urls-file."
+        )
+        sys.exit(1)
     if args.upload_sleep_secs < 0:
         console.print(
             "[bold red]Error:[/bold red] --upload-sleep-secs must be >= 0."
@@ -732,6 +740,7 @@ def _select_canary_pool_files(args, console: Console):
     from saorsa_deploy.pool_selection import (
         PoolSelectionError,
         parse_request_token,
+        parse_size_bounds,
         render_selection,
         select_for_deployment,
     )
@@ -748,6 +757,14 @@ def _select_canary_pool_files(args, console: Console):
 
     try:
         request = parse_request_token(args.pool)
+        # A canary measures chunk loss, and the chunk floor is 4 — a 14 KB file
+        # buys the same minimum observation as a 5 MB one while costing a pool
+        # entry either way. --pool-min-size is how an operator keeps the run off
+        # the bottom of the tiny class.
+        min_size_bytes, max_size_bytes = parse_size_bounds(
+            getattr(args, "pool_min_size", None),
+            getattr(args, "pool_max_size", None),
+        )
     except (PoolSelectionError, ValueError) as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
@@ -760,13 +777,17 @@ def _select_canary_pool_files(args, console: Console):
             kind=PoolFileKind.URL,
             request=request,
             source=ClaimSource.PROD_CANARY,
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
         )
     except PoolSelectionError as exc:
         console.print(f"\n[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
 
     console.print("  Pool selection")
-    render_selection(console, "canary upload", request, selected)
+    render_selection(
+        console, "canary upload", request, selected, min_size_bytes, max_size_bytes
+    )
     console.print(
         f"    {len(selected)} file(s) claimed; selection persisted to S3 state "
         "(a resume reuses it)."

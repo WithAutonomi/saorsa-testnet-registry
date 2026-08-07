@@ -481,6 +481,16 @@ def cmd_prod_local_uploads(args) -> None:
         )
         sys.exit(1)
 
+    if not getattr(args, "from_pool", None) and (
+        getattr(args, "pool_min_size", None) or getattr(args, "pool_max_size", None)
+    ):
+        console.print(
+            "[bold red]Error:[/bold red] --pool-min-size/--pool-max-size narrow "
+            "a --from-pool selection; they have no effect on --urls or "
+            "--local-dir-path."
+        )
+        sys.exit(1)
+
     pool_claims: list = []
     if getattr(args, "from_pool", None):
         local_files, pool_claims = _select_from_pool(args, console)
@@ -805,6 +815,7 @@ def _select_from_pool(args, console: Console):
     from saorsa_deploy.pool_selection import (
         PoolSelectionError,
         parse_request_token,
+        parse_size_bounds,
         render_selection,
         select_for_deployment,
     )
@@ -820,6 +831,10 @@ def _select_from_pool(args, console: Console):
 
     try:
         request = parse_request_token(args.from_pool)
+        min_size_bytes, max_size_bytes = parse_size_bounds(
+            getattr(args, "pool_min_size", None),
+            getattr(args, "pool_max_size", None),
+        )
     except (PoolSelectionError, ValueError) as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
@@ -833,13 +848,17 @@ def _select_from_pool(args, console: Console):
             request=request,
             source=ClaimSource.PROD_LOCAL_UPLOADS,
             exclude_partial=getattr(args, "exclude_partial", False),
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
         )
     except PoolSelectionError as exc:
         console.print(f"\n[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
 
     console.print("  Pool selection")
-    render_selection(console, "local-uploads", request, selected)
+    render_selection(
+        console, "local-uploads", request, selected, min_size_bytes, max_size_bytes
+    )
 
     pairs = []
     claims = []

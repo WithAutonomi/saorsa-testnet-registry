@@ -42,7 +42,7 @@ def wired(repo, monkeypatch):
 
 def _list_args(**kwargs):
     base = dict(status=None, kind=None, size=None, tag=None, since=None,
-                limit=None, all=False)
+                limit=None, all=False, min_size=None, max_size=None)
     base.update(kwargs)
     return argparse.Namespace(**base)
 
@@ -59,6 +59,36 @@ def _seed(repo):
         PoolFileKind.LOCAL, "/data/l.bin", "l.bin", size_bytes=5 * MIB
     )
     return made
+
+
+class TestListSizeBounds:
+    """`list` takes the same bounds a manifest does, so inventory can be
+    checked against the exact selection a run will make."""
+
+    def test_min_size_narrows(self, wired, capsys):
+        made = _seed(wired)
+        prod_pool.cmd_prod_pool_list(_list_args(min_size="10MB"))
+        out = capsys.readouterr().out
+        assert f"#{made['small'].id}" in out
+        assert f"#{made['tiny'].id}" not in out
+
+    def test_max_size_is_exclusive(self, wired, capsys):
+        made = _seed(wired)
+        prod_pool.cmd_prod_pool_list(_list_args(max_size="50MB"))
+        out = capsys.readouterr().out
+        assert f"#{made['small'].id}" not in out
+        assert f"#{made['tiny'].id}" in out
+
+    def test_bounds_intersect_with_a_class(self, wired, capsys):
+        _seed(wired)
+        prod_pool.cmd_prod_pool_list(_list_args(size="tiny", min_size="10MB"))
+        assert "No pool files match" in capsys.readouterr().out
+
+    def test_unparseable_bound_reports_itself(self, wired, capsys):
+        _seed(wired)
+        with pytest.raises(SystemExit):
+            prod_pool.cmd_prod_pool_list(_list_args(min_size="lots"))
+        assert "could not parse size" in capsys.readouterr().out
 
 
 class TestList:

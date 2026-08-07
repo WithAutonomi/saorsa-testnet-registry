@@ -156,7 +156,7 @@ class TestConcurrency:
 
         real_candidates = repo._candidates
 
-        def stale_window(kind, size_class, needed, exclude_partial=False):
+        def stale_window(kind, size_class, needed, exclude_partial=False, **kwargs):
             candidates = real_candidates(kind, size_class, needed)
             # Simulate the race: another run claims the first candidate after
             # this window was read but before we insert.
@@ -187,7 +187,7 @@ class TestConcurrency:
     def test_losing_too_many_races_fails_without_claiming(self, repo, monkeypatch):
         _seed(repo, PoolFileKind.URL, 5 * MIB, 2, "t")
 
-        def everything_taken(kind, size_class, needed, exclude_partial=False):
+        def everything_taken(kind, size_class, needed, exclude_partial=False, **kwargs):
             candidates = repo.list_pool_files(
                 kind=kind, size_class=size_class, active=True
             )

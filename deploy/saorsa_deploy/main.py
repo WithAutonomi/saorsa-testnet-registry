@@ -4163,8 +4163,9 @@ def main(argv=None):
     prod_canary_deploy_parser.add_argument(
         "--urls-file",
         type=str,
-        required=True,
-        help="Local path to a newline-separated list of public source URLs.",
+        help="Local path to a newline-separated list of public source URLs. "
+        "Exactly one of --urls-file or --pool is required; the command checks "
+        "that itself, so this is not argparse-required.",
     )
     prod_canary_deploy_parser.add_argument(
         "--upload-sleep-secs",
@@ -4420,8 +4421,10 @@ def main(argv=None):
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
-    # --- prod local-uploads ---
-    prod_canary_parser.add_argument(
+    # These belong to `canary deploy`, not to the `canary` group: an option on
+    # the group parser has to be written BEFORE the subcommand, so `prod canary
+    # deploy --pool …` — exactly what the orchestrator emits — was rejected.
+    prod_canary_deploy_parser.add_argument(
         "--pool",
         type=str,
         metavar="CLASS:COUNT",
@@ -4430,7 +4433,26 @@ def main(argv=None):
         "never been uploaded to production — which is what makes a loss "
         "measurement meaningful.",
     )
+    prod_canary_deploy_parser.add_argument(
+        "--pool-min-size",
+        type=str,
+        metavar="SIZE",
+        help="With --pool, take only files of at least this size, e.g. 5MB. "
+        "Narrows every requested class without changing the counts. The chunk "
+        "floor is 4, so a 14KB file buys the same minimum loss observation as a "
+        "5MB one — this is how a canary avoids spending pool entries on it. "
+        "Units are binary and a bare number is bytes.",
+    )
+    prod_canary_deploy_parser.add_argument(
+        "--pool-max-size",
+        type=str,
+        metavar="SIZE",
+        help="With --pool, take only files below this size, e.g. 500MB. "
+        "Exclusive, so --pool-min-size 10MB --pool-max-size 100MB is exactly "
+        "the `small` class.",
+    )
 
+    # --- prod local-uploads ---
     prod_lu_parser = prod_subparsers.add_parser(
         "local-uploads",
         help=(
@@ -4552,6 +4574,22 @@ def main(argv=None):
         help="With --from-pool, draw only files with no chunks already on the "
         "network. A partially uploaded file has ant skip what is stored, so it "
         "does not exercise a full upload.",
+    )
+    prod_lu_parser.add_argument(
+        "--pool-min-size",
+        type=str,
+        metavar="SIZE",
+        help="With --from-pool, take only files of at least this size, e.g. "
+        "5MB. Narrows every requested class without changing the counts. Units "
+        "are binary and a bare number is bytes.",
+    )
+    prod_lu_parser.add_argument(
+        "--pool-max-size",
+        type=str,
+        metavar="SIZE",
+        help="With --from-pool, take only files below this size, e.g. 500MB. "
+        "Exclusive, so --pool-min-size 10MB --pool-max-size 100MB is exactly "
+        "the `small` class.",
     )
 
     # --- prod local-downloads ---
@@ -4961,6 +4999,23 @@ def main(argv=None):
         help="With --from-listing, take only files in this size class.",
     )
     prod_pool_add_parser.add_argument(
+        "--min-size",
+        type=str,
+        metavar="SIZE",
+        help="With --from-listing, take only files of at least this size, e.g. "
+        "5MB. Combines with --size, and expresses what a class cannot: 'tiny "
+        "but at least 5MB' is the band a canary wants, because the chunk floor "
+        "is 4 and a 14KB file buys the same minimum observation. Units are "
+        "binary; a bare number is bytes.",
+    )
+    prod_pool_add_parser.add_argument(
+        "--max-size",
+        type=str,
+        metavar="SIZE",
+        help="With --from-listing, take only files below this size (exclusive), "
+        "e.g. 1GB.",
+    )
+    prod_pool_add_parser.add_argument(
         "--limit",
         type=int,
         help="With --from-listing, take at most this many files.",
@@ -5015,6 +5070,20 @@ def main(argv=None):
         "--size",
         choices=["tiny", "small", "medium", "large", "xlarge"],
         help="Restrict to one size class.",
+    )
+    prod_pool_list_parser.add_argument(
+        "--min-size",
+        type=str,
+        metavar="SIZE",
+        help="Restrict to files of at least this size, e.g. 5MB. The same "
+        "bounds a manifest's pool_min_size applies, so inventory can be checked "
+        "against the exact selection a run will make.",
+    )
+    prod_pool_list_parser.add_argument(
+        "--max-size",
+        type=str,
+        metavar="SIZE",
+        help="Restrict to files below this size (exclusive), e.g. 100MB.",
     )
     prod_pool_list_parser.add_argument(
         "--tag", action="append", help="Restrict to entries carrying a tag."
