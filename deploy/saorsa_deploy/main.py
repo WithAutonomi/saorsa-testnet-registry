@@ -5157,6 +5157,26 @@ def main(argv=None):
         action="store_true",
         help="Report what would be marked spent without writing anything.",
     )
+    prod_pool_import_parser.add_argument(
+        "--catalogue-missing",
+        action="store_true",
+        help="Also CREATE pool entries for recorded uploads the pool does not "
+        "hold, already marked spent. Built entirely from the registry — the "
+        "source URL, name and byte size were recorded at upload time — so it "
+        "needs no network access and works for URLs that have since died. "
+        "Without this, such uploads are only counted as unmatched.",
+    )
+    prod_pool_import_parser.add_argument(
+        "--deployment",
+        type=str,
+        metavar="NAME",
+        help="Only consider uploads recorded against this deployment.",
+    )
+    prod_pool_import_parser.add_argument(
+        "--tag",
+        action="append",
+        help="Tag to apply to entries created by --catalogue-missing. Repeatable.",
+    )
 
     prod_pool_history_parser = prod_pool_subparsers.add_parser(
         "history", help="Every claim ever made against one file."

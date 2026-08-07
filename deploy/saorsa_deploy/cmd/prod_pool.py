@@ -1363,8 +1363,8 @@ def _history_rows(deployment_repo):
     duplicate preflight does, would leave two thirds of production's contents
     invisible and let the pool re-issue files that are already stored.
 
-    Yields ``(file_name, size_bytes, address, chunks, storage_atto, gas_wei,
-    when, deployment_id, known_source, complete)``. ``known_source`` is set
+    Yields ``(file_name, source_url, size_bytes, address, chunks, storage_atto,
+    gas_wei, when, deployment_id, known_source, complete)``. ``known_source`` is set
     only where the table itself settles the question — a canary row can only
     have come from a canary — and is None for the shared upload-results table,
     whose rows the caller attributes from the deployment's kind.
@@ -1394,6 +1394,7 @@ def _history_rows(deployment_repo):
             continue
         yield (
             row.file_name,
+            row.source_url,
             row.file_size_bytes,
             row.address,
             (row.chunks_stored, row.chunks_failed, row.total_chunks),
@@ -1410,6 +1411,7 @@ def _history_rows(deployment_repo):
     for row in deployment_repo.list_all_prod_canary_uploads():
         yield (
             row.file_name,
+            row.source_url,
             row.file_size_bytes,
             row.top_address,
             (None, None, row.num_chunks),
@@ -1468,6 +1470,9 @@ def cmd_prod_pool_import_history(args) -> None:
     already = 0
     corrected = 0
     unmatched = 0
+    catalogued = 0
+    tags = list(getattr(args, "tag", None) or []) or None
+    to_catalogue: list[dict] = []
     size_mismatch: list[tuple[str, int, int]] = []
 
     console.print(
@@ -1477,11 +1482,30 @@ def cmd_prod_pool_import_history(args) -> None:
     )
 
     lookup = _deployment_lookup(
-        deployment_repo, [row[7] for row in history if row[7] is not None]
+        deployment_repo, [row[8] for row in history if row[8] is not None]
     )
 
+    # Scope to one deployment when asked. The whole history is the default,
+    # since the command exists to keep the pool honest about everything already
+    # on the network.
+    wanted = getattr(args, "deployment", None)
+    if wanted:
+        keep = {
+            did for did, (_, dname) in lookup.items() if dname == wanted
+        }
+        if not keep:
+            console.print(
+                f"[bold red]Error:[/bold red] no deployment named '{wanted}' has "
+                "recorded uploads."
+            )
+            sys.exit(1)
+        history = [row for row in history if row[8] in keep]
+        console.print(
+            f"[dim]Scoped to {wanted}: {len(history)} recorded upload(s).[/dim]"
+        )
+
     for (
-        name, size, address, chunks, storage, gas, when, deployment_id,
+        name, source_url, size, address, chunks, storage, gas, when, deployment_id,
         known_source, complete,
     ) in history:
         resolved_source, deployment_name = lookup.get(
@@ -1490,7 +1514,41 @@ def cmd_prod_pool_import_history(args) -> None:
         source = known_source or resolved_source
         candidates = by_name.get(name)
         if not candidates:
-            unmatched += 1
+            if not getattr(args, "catalogue_missing", False):
+                unmatched += 1
+                continue
+            # Create the entry from what the registry already knows. The
+            # source URL, name and byte size were all recorded at upload time,
+            # so nothing here touches the network — and the size is the one
+            # actually uploaded rather than whatever the host reports today.
+            if not source_url:
+                unmatched += 1
+                continue
+            to_catalogue.append(
+                {
+                    "kind": (
+                        PoolFileKind.URL
+                        if source_url.startswith(("http://", "https://"))
+                        else PoolFileKind.LOCAL
+                    ),
+                    "locator": source_url,
+                    "name": name,
+                    "size_bytes": size,
+                    "tags": tags,
+                    "provenance": f"imported from {deployment_name or 'recorded history'}",
+                    "_claim": {
+                        "source": source,
+                        "deployment_id": deployment_id,
+                        "deployment_name": deployment_name,
+                        "complete": complete,
+                        "address": address,
+                        "chunks": chunks,
+                        "storage": storage,
+                        "gas": gas,
+                        "when": when,
+                    },
+                }
+            )
             continue
         target = candidates[0]
         if (
@@ -1559,7 +1617,17 @@ def cmd_prod_pool_import_history(args) -> None:
             else:
                 partial += 1
 
+    if to_catalogue and not args.dry_run:
+        catalogued = _catalogue_history_entries(repo, to_catalogue, console)
+    elif to_catalogue:
+        catalogued = len(to_catalogue)
+
     console.print()
+    if catalogued:
+        console.print(
+            f"  catalogued {catalogued:>5}   added to the pool AND marked spent, "
+            "from the recorded upload"
+        )
     console.print(f"  imported   {imported:>5}   marked as already uploaded")
     if partial:
         # Still available: the file is not on the network in full, and
@@ -1694,3 +1762,55 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
             report.unknown_size.append(candidate.url)
         if pool_file.duplicate_of:
             report.linked_duplicates.append((pool_file.name, pool_file.duplicate_of))
+
+
+def _catalogue_history_entries(repo, entries: list[dict], console) -> int:
+    """Create pool entries for recorded uploads, already spent.
+
+    These files went to production before the pool existed, or through a route
+    that never catalogued them. Cataloguing them now is what stops a later
+    bulk-add of the same source handing them out again — the never-reuse
+    guarantee only covers what the pool knows about.
+
+    Everything comes from the registry: the source URL, the file name and the
+    byte size as it was at upload time. No HEAD requests, no downloads, and it
+    works for URLs that have since gone dead.
+    """
+    from saorsa_db.models.prod_file_pool import ClaimStatus
+
+    claims_by_locator = {e["locator"]: e.pop("_claim") for e in entries}
+    result = repo.add_pool_files_bulk(entries)
+
+    created = 0
+    for record in result["created"]:
+        pool_file = repo.get_pool_file(record.id)
+        if pool_file is None:
+            continue
+        claim = claims_by_locator.get(pool_file.locator)
+        if claim is None:
+            continue
+        seeded = repo.seed_uploaded_claim(
+            record.id,
+            source=claim["source"],
+            status=(
+                ClaimStatus.UPLOADED if claim["complete"] else ClaimStatus.PARTIAL
+            ),
+            address=claim["address"],
+            chunks_stored=claim["chunks"][0],
+            chunks_failed=claim["chunks"][1],
+            total_chunks=claim["chunks"][2],
+            storage_cost_atto=claim["storage"] if claim["complete"] else None,
+            gas_cost_wei=claim["gas"] if claim["complete"] else None,
+            deployment_id=claim["deployment_id"],
+            deployment_name=claim["deployment_name"],
+            when=claim["when"],
+            note="catalogued from recorded upload history",
+        )
+        if seeded is not None:
+            created += 1
+    if result["skipped"]:
+        console.print(
+            f"[dim]  {result['skipped']} were already catalogued under the same "
+            "locator.[/dim]"
+        )
+    return created

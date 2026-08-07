@@ -58,8 +58,11 @@ def wired(repos, monkeypatch):
     return pool_repo, deployment_repo, session
 
 
-def _args(dry_run=False):
-    return argparse.Namespace(dry_run=dry_run)
+def _args(dry_run=False, catalogue_missing=False, deployment=None, tag=None):
+    return argparse.Namespace(
+        dry_run=dry_run, catalogue_missing=catalogue_missing,
+        deployment=deployment, tag=tag,
+    )
 
 
 def _flat(text):
@@ -368,3 +371,136 @@ class TestMatching:
     def test_nothing_recorded_says_so(self, wired, capsys):
         prod_pool.cmd_prod_pool_import_history(_args())
         assert "No recorded production uploads" in capsys.readouterr().out
+
+
+class TestCatalogueMissing:
+    """Uploads that happened before the pool existed.
+
+    A file uploaded by a hand-written URL list is on the network but unknown to
+    the pool, so a later bulk-add of the same source would hand it out again.
+    The registry already holds its URL, name, byte size and datamap address, so
+    the entry can be created and marked spent without touching the network.
+    """
+
+    def _deployment(self, session, name, kind):
+        deployment = Deployment(name=name, deploy_args={"kind": kind})
+        session.add(deployment)
+        session.commit()
+        return deployment
+
+    def test_creates_the_entry_and_marks_it_spent(self, wired):
+        pool_repo, _, session = wired
+        deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
+        _canary_upload(session, deployment, "clip.avi")
+
+        prod_pool.cmd_prod_pool_import_history(
+            _args(catalogue_missing=True, tag=["nsia-911"])
+        )
+
+        rows = pool_repo.list_pool_files(active=None)
+        assert len(rows) == 1
+        entry = rows[0]
+        assert entry.kind is PoolFileKind.URL
+        assert entry.locator == "https://archive.org/download/i/clip.avi"
+        assert entry.size_bytes == 50 * MIB
+        assert entry.tags == ["nsia-911"]
+
+        claim = pool_repo.open_claim_for_file(entry.id)
+        assert claim.status is ClaimStatus.UPLOADED
+        assert claim.source is ClaimSource.PROD_CANARY
+        # The address is the point: a canary report names the file when its
+        # chunks go missing, and that needs the datamap carried across.
+        assert claim.address == "caddr1"
+        assert claim.deployment_name == "PROD-CANARY-03"
+
+    def test_catalogued_files_cannot_be_handed_out(self, wired):
+        from saorsa_db.repositories import InsufficientPoolInventory
+        from saorsa_db.size_class import SizeClass
+
+        pool_repo, _, session = wired
+        deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
+        _canary_upload(session, deployment, "clip.avi")
+        prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True))
+
+        with pytest.raises(InsufficientPoolInventory):
+            pool_repo.claim_pool_files(
+                PoolFileKind.URL, {SizeClass.SMALL: 1}, ClaimSource.PROD_CANARY
+            )
+
+    def test_without_the_flag_nothing_is_created(self, wired, capsys):
+        pool_repo, _, session = wired
+        deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
+        _canary_upload(session, deployment, "clip.avi")
+
+        prod_pool.cmd_prod_pool_import_history(_args())
+
+        assert pool_repo.list_pool_files(active=None) == []
+        assert "unmatched" in _flat(capsys.readouterr().out)
+
+    def test_dry_run_creates_nothing(self, wired, capsys):
+        pool_repo, _, session = wired
+        deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
+        _canary_upload(session, deployment, "clip.avi")
+
+        prod_pool.cmd_prod_pool_import_history(
+            _args(catalogue_missing=True, dry_run=True)
+        )
+        assert pool_repo.list_pool_files(active=None) == []
+        assert "catalogued" in _flat(capsys.readouterr().out)
+
+    def test_deployment_scopes_the_import(self, wired, capsys):
+        pool_repo, _, session = wired
+        wanted = self._deployment(session, "PROD-CANARY-03", "prod-canary")
+        other = self._deployment(session, "PROD-CANARY-02", "prod-canary")
+        _canary_upload(session, wanted, "keep.avi")
+        _canary_upload(session, other, "skip.avi", address="other")
+
+        prod_pool.cmd_prod_pool_import_history(
+            _args(catalogue_missing=True, deployment="PROD-CANARY-03")
+        )
+
+        names = {f.name for f in pool_repo.list_pool_files(active=None)}
+        assert names == {"keep.avi"}
+
+    def test_unknown_deployment_is_rejected(self, wired, capsys):
+        pool_repo, _, session = wired
+        deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
+        _canary_upload(session, deployment, "clip.avi")
+
+        with pytest.raises(SystemExit):
+            prod_pool.cmd_prod_pool_import_history(
+                _args(catalogue_missing=True, deployment="NOPE")
+            )
+        assert "no deployment named" in _flat(capsys.readouterr().out)
+
+    def test_a_local_upload_becomes_a_local_entry(self, wired):
+        # prod-local-uploads records an absolute path as its source_url, so the
+        # kind must follow the locator rather than being assumed.
+        pool_repo, _, session = wired
+        deployment = self._deployment(
+            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
+        )
+        session.add(
+            DeploymentProdUploadResult(
+                deployment_id=deployment.id, client_hostname="h", region="r",
+                source_url="/mnt/data/movie.wmv", file_name="movie.wmv",
+                file_size_bytes=50 * MIB, status=ProdUploadStatus.SUCCESS,
+                address="a", started_at=NOW, finished_at=NOW,
+            )
+        )
+        session.commit()
+
+        prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True))
+        entry = pool_repo.list_pool_files(active=None)[0]
+        assert entry.kind is PoolFileKind.LOCAL
+
+    def test_rerunning_does_not_duplicate(self, wired):
+        pool_repo, _, session = wired
+        deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
+        _canary_upload(session, deployment, "clip.avi")
+
+        prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True))
+        prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True))
+
+        assert len(pool_repo.list_pool_files(active=None)) == 1
+        assert len(pool_repo.list_pool_claims()) == 1
