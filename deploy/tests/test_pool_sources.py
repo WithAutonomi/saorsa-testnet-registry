@@ -441,3 +441,102 @@ class TestPathPrefix:
         )
         assert " " not in c.url
         assert c.url.endswith("Release_03/Release%203/Photographer%201/a.jpg")
+
+
+class TestDuplicateBasenames:
+    """Distinct files sharing one basename get a distinguishing ancestor.
+
+    Measured on ``NIST_9-11_Release_20``: eleven DVD rips, eleven distinct
+    MD5s, every one of them named ``VTS_01_1.VOB`` under its own
+    ``42A00<nn> - FBI#<n>/VIDEO_TS/`` directory. The pool keys on the locator
+    and the digest so those catalogue correctly, but ``name`` is what
+    ``import-history`` matches recorded uploads against and what the legacy
+    ``urls=`` duplicate preflight compares — neither can tell eleven identical
+    names apart.
+    """
+
+    PAYLOAD = {
+        "files": [
+            {"name": "Rel/42A0059 - FBI#1/VIDEO_TS/VTS_01_1.VOB",
+             "format": "MPEG2", "size": "127619645", "md5": "a1"},
+            {"name": "Rel/42A0060 - FBI#2/VIDEO_TS/VTS_01_1.VOB",
+             "format": "MPEG2", "size": "189531648", "md5": "a2"},
+            {"name": "Rel/42A0061 - FBI#3/VIDEO_TS/VTS_01_1.VOB",
+             "format": "MPEG2", "size": "1073203200", "md5": "a3"},
+            {"name": "Rel/42A0059 - FBI#1/VIDEO_TS/VIDEO_TS.IFO",
+             "format": "Unknown", "size": "12288", "md5": "b1"},
+            {"name": "Rel/42A0060 - FBI#2/VIDEO_TS/VIDEO_TS.IFO",
+             "format": "Unknown", "size": "12288", "md5": "b2"},
+            {"name": "Rel/NIST FOIA Terms of Use.txt",
+             "format": "Text", "size": "1424", "md5": "c1"},
+        ]
+    }
+
+    def _fetch(self, monkeypatch, payload=None):
+        monkeypatch.setattr(
+            pool_sources.requests,
+            "get",
+            lambda url, **kw: _Response(payload or self.PAYLOAD),
+        )
+        return pool_sources.fetch_internet_archive_item("item")
+
+    def test_colliding_names_become_unique(self, monkeypatch):
+        candidates = self._fetch(monkeypatch)
+        names = [c.name for c in candidates]
+        assert len(set(names)) == len(names)
+
+    def test_the_nearest_discriminating_ancestor_is_used(self, monkeypatch):
+        # VIDEO_TS is the immediate parent of all three and discriminates
+        # nothing, so it is skipped in favour of the directory that does.
+        names = {c.name for c in self._fetch(monkeypatch)}
+        assert "42A0061 - FBI#3 - VTS_01_1.VOB" in names
+        assert "VIDEO_TS - VTS_01_1.VOB" not in names
+
+    def test_a_unique_name_is_left_alone(self, monkeypatch):
+        # Renaming unconditionally would change the name of every entry already
+        # catalogued from a listing, breaking the very matching this protects.
+        names = {c.name for c in self._fetch(monkeypatch)}
+        assert "NIST FOIA Terms of Use.txt" in names
+
+    def test_each_colliding_group_is_resolved_independently(self, monkeypatch):
+        names = {c.name for c in self._fetch(monkeypatch)}
+        assert "42A0059 - FBI#1 - VIDEO_TS.IFO" in names
+        assert "42A0060 - FBI#2 - VIDEO_TS.IFO" in names
+
+    def test_the_full_path_is_kept_for_reference(self, monkeypatch):
+        c = next(
+            c for c in self._fetch(monkeypatch)
+            if c.name == "42A0061 - FBI#3 - VTS_01_1.VOB"
+        )
+        assert c.path == "Rel/42A0061 - FBI#3/VIDEO_TS/VTS_01_1.VOB"
+        # The URL is built from the path, so it is unaffected by the rename.
+        assert c.url.endswith("VIDEO_TS/VTS_01_1.VOB")
+
+    def test_the_full_path_is_the_fallback_when_an_ancestor_would_collide(
+        self, monkeypatch
+    ):
+        # The ancestor rename would produce "x - f.bin", which the third file
+        # already holds — so taking it would trade one collision for another.
+        payload = {
+            "files": [
+                {"name": "d/x/f.bin", "format": "Bin", "size": "10", "md5": "1"},
+                {"name": "d/y/f.bin", "format": "Bin", "size": "20", "md5": "2"},
+                {"name": "d/x - f.bin", "format": "Bin", "size": "30", "md5": "3"},
+            ]
+        }
+        names = [c.name for c in self._fetch(monkeypatch, payload)]
+        assert len(set(names)) == len(names)
+        assert "d - x - f.bin" in names
+        assert "x - f.bin" in names  # the pre-existing name is untouched
+
+    def test_a_file_with_no_ancestor_keeps_its_bare_name(self, monkeypatch):
+        # Nothing to prepend for the root-level one; the other still gets its
+        # directory, which is enough to separate them.
+        payload = {
+            "files": [
+                {"name": "f.bin", "format": "Bin", "size": "10", "md5": "1"},
+                {"name": "d/f.bin", "format": "Bin", "size": "20", "md5": "2"},
+            ]
+        }
+        names = [c.name for c in self._fetch(monkeypatch, payload)]
+        assert names == ["f.bin", "d - f.bin"]

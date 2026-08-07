@@ -76,6 +76,9 @@ class PoolCandidate:
     size_bytes: int | None = None
     digests: dict[str, str] = field(default_factory=dict)
     provenance: str = ""
+    #: The source-internal path this came from, kept so a repeated basename can
+    #: be disambiguated. Display and matching still use ``name``.
+    path: str = ""
 
 
 class SourceError(Exception):
@@ -187,9 +190,75 @@ def fetch_internet_archive_item(
                 size_bytes=size_bytes,
                 digests=digests,
                 provenance=f"internet-archive:{identifier}",
+                path=name,
             )
         )
+    return disambiguate_names(candidates)
+
+
+def disambiguate_names(candidates: list[PoolCandidate]) -> list[PoolCandidate]:
+    """Give repeated basenames a distinguishing ancestor directory.
+
+    An item can hold many distinct files sharing one basename — measured on
+    ``NIST_9-11_Release_20``, whose eleven DVD rips are all
+    ``…/42A00<nn> - FBI#<n>/VIDEO_TS/VTS_01_1.VOB``: eleven different MD5s,
+    one name. The pool keys on the locator and the digest, so those catalogue
+    correctly and selection can never confuse them, but ``name`` is what
+    ``import-history`` matches recorded uploads against and what the legacy
+    ``urls=`` duplicate preflight compares — neither can tell eleven identical
+    names apart.
+
+    The nearest ancestor directory that makes the name unique is prepended, so
+    the eleven become ``42A0061 - FBI#3 - VTS_01_1.VOB`` and so on. Intervening
+    directories that discriminate nothing (``VIDEO_TS`` here) are skipped, and
+    the full relative path is the last resort.
+
+    **Only colliding names are touched.** Renaming unconditionally would change
+    the name of every entry already catalogued from a listing, breaking exactly
+    the ``import-history`` matching this exists to protect.
+    """
+    by_name: dict[str, list[PoolCandidate]] = {}
+    for candidate in candidates:
+        by_name.setdefault(candidate.name, []).append(candidate)
+
+    for name, group in by_name.items():
+        if len(group) < 2:
+            continue
+        # A rename must not land on a name something else already holds, so
+        # every name outside this group counts against it too. Compared by
+        # identity: two candidates can be field-equal without being the same
+        # entry, and `in` over a list would make this quadratic besides.
+        group_ids = {id(c) for c in group}
+        taken = {c.name for c in candidates if id(c) not in group_ids}
+        # Ancestors nearest-first: the parent, then its parent, and so on.
+        depth = max(len(c.path.split("/")) for c in group)
+        for level in range(2, depth + 1):
+            proposed = [(c, _with_ancestor(c, level)) for c in group]
+            names = [new for _, new in proposed]
+            if len(set(names)) == len(group) and not (set(names) & taken):
+                for candidate, new_name in proposed:
+                    candidate.name = new_name
+                break
+        else:
+            # No single ancestor separates them — either they are equally deep
+            # under identically-named directories, or the name an ancestor
+            # would produce is one another file already holds. The full path
+            # always separates them, because a listing cannot offer one path
+            # twice.
+            proposed = [(c, c.path.replace("/", " - ")) for c in group]
+            names = [new for _, new in proposed]
+            if len(set(names)) == len(group) and not (set(names) & taken):
+                for candidate, new_name in proposed:
+                    candidate.name = new_name
     return candidates
+
+
+def _with_ancestor(candidate: PoolCandidate, level: int) -> str:
+    """``name`` prefixed with the ancestor ``level`` segments up, if there is one."""
+    parts = candidate.path.split("/")
+    if len(parts) < level:
+        return candidate.name
+    return f"{parts[-level]} - {candidate.name}"
 
 
 def _is_metadata_file(name: str) -> bool:
