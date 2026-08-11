@@ -1383,6 +1383,27 @@ Default off, because the flag only exists on instrumented `ant` builds — a sto
 
 Both options are also available on `prod continuous-downloader deploy` and as manifest keys (`provider`, `monitoring_provider`, `monitoring_region`, `monitoring_droplet_size`, `monitoring_volume_type`, `download_diagnostics`) under `prod_downloaders:` / `prod_continuous_downloader:`.
 
+**Inventory.** `deployments generate-inventory --name <name>` works for both download kinds, writing `~/.autonomi/testnets/<name>/inventory.json` (override with `--output`):
+
+```bash
+uv run saorsa-deploy deployments generate-inventory --name PROD-DL-OS-01 --ssh-key-path ~/.ssh/ant_deploy
+```
+
+These kinds keep no deployment state of their own — they join production rather than standing up nodes — so the inventory is built from the S3 client/monitoring state plus the registry row. `node_vms` and `bootstrap_vms` are empty (listing production's peers as our VMs would mislead anything that tried to SSH into them) and no devnet manifest is written, but `client_vms` carries the VM's IP, provider, region and SSH details, `observability_vms` carries the InfluxDB/Grafana/Elasticsearch VMs, and a `client_config` section (schema 5) describes the run:
+
+| Field | Description |
+|-------|-------------|
+| `kind` / `one_shot` | Which download kind, and whether it exits after one pass |
+| `addresses` / `address_count` / `addresses_file` | The exact address list the run walks |
+| `binary` | The resolved `ant` source (release version, or branch + owner) |
+| `spec` / `provider` / `monitoring_provider` | Where it runs |
+| `settings` | `bootstrap_cache`, `download_diagnostics`, `memory_profiling`, `forward_logs`, `rust_log`, `clock_skew_seconds`, `network_profile`, `sleep_interval_secs` |
+| `paths` | On-VM service name, binary, env file, download dir, log dir, and globs for the `.stdout` / `.stderr` / `.diag.jsonl` / heaptrack artefacts |
+
+The `paths` block matters at teardown: nothing collects the per-op logs or the diagnostics JSONL automatically and they die with the VM, so `scp` them off first.
+
+The address list is only recorded in the registry, so `client_config` needs a reachable `DATABASE_URL`. Without one the command still writes the VM and observability sections and warns that the configuration is missing, rather than failing.
+
 Teardown:
 
 ```bash
@@ -1974,7 +1995,7 @@ saorsa-deploy prod set-volume-reserve \
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `--inventory-path` | yes | — | `generate-inventory` JSON (schema_version 3 or 4). |
+| `--inventory-path` | yes | — | `generate-inventory` JSON (schema_version 3, 4 or 5). |
 | `--reserve-percent` | no | `1` | ext4 reserved-block percentage to set. |
 | `--provider` | no | all | Restrict to one provider (`aws`/`digitalocean`/`hetzner`/`ovh`/`vultr`/`contabo`). |
 | `--limit-to` | no | all | Comma-separated VM names to restrict the run to. |
@@ -2018,7 +2039,7 @@ saorsa-deploy prod services add \
 
 | Argument | Required | Default | Applies to | Description |
 |----------|----------|---------|------------|-------------|
-| `--inventory-path` | yes | — | all | Inventory JSON (schema_version 3 or 4) containing the host. |
+| `--inventory-path` | yes | — | all | Inventory JSON (schema_version 3, 4 or 5) containing the host. |
 | `--name` | yes | — | all | Host name, matched against the inventory's `name` field. |
 | `--service-name` | `ls`: no / `rm`, `add`: yes | `ls`: list all | all | `ant-node-<N>`. On `ls`, restricts output to one service; omit to list every service on the host. |
 | `--ssh-key-path` | no | host's inventory `ssh_key` | all | Override the SSH key for this one host. |

@@ -7,6 +7,27 @@ from pathlib import Path
 from rich.console import Console
 
 from saorsa_deploy.evm import get_evm_network_info
+from saorsa_deploy.provisioning.prod_downloader import (
+    ADDRESSES_PATH as PROD_DOWNLOADER_ADDRESSES_PATH,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    ANT_INSTALL_PATH as PROD_DOWNLOADER_ANT_INSTALL_PATH,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    DOWNLOAD_DIR as PROD_DOWNLOADER_DOWNLOAD_DIR,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    ENV_PATH as PROD_DOWNLOADER_ENV_PATH,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    HEAPTRACK_DIR as PROD_DOWNLOADER_HEAPTRACK_DIR,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    LOG_DIR as PROD_DOWNLOADER_LOG_DIR,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    SERVICE_NAME as PROD_DOWNLOADER_SERVICE_NAME,
+)
 from saorsa_deploy.provisioning.volume import MOUNT_POINT
 from saorsa_deploy.state import (
     load_client_state,
@@ -15,7 +36,7 @@ from saorsa_deploy.state import (
     load_monitoring_state,
 )
 
-INVENTORY_SCHEMA_VERSION = 4
+INVENTORY_SCHEMA_VERSION = 5
 DEFAULT_SSH_USER = "root"
 DEFAULT_SSH_KEY = "~/.ssh/id_rsa"
 DEFAULT_OUTPUT_TEMPLATE = "~/.autonomi/testnets/{name}/inventory.json"
@@ -135,11 +156,10 @@ def _build_bootstrap_vms_field(state: dict, ssh_key: str) -> list[dict]:
 
 
 def _build_client_vms_field(
-    state: dict, clients: list[dict] | None, ssh_key: str
+    name: str, clients: list[dict] | None, ssh_key: str
 ) -> list[dict]:
     if not clients:
         return []
-    name = state["name"]
 
     entries = []
     for client in sorted(clients, key=lambda c: c.get("client_index", 0)):
@@ -257,10 +277,133 @@ def build_inventory(
         "firewalls": _build_firewalls_field(state, clients),
         "bootstrap_vms": _build_bootstrap_vms_field(state, ssh_key),
         "node_vms": _build_node_vms_field(state, ssh_key, resolved_node_count),
-        "client_vms": _build_client_vms_field(state, clients, ssh_key),
+        "client_vms": _build_client_vms_field(state["name"], clients, ssh_key),
         "observability_vms": _build_observability_vms_field(
             state["name"], ssh_key, monitoring_state, elastic_state
         ),
+        # Only populated for the client-only prod kinds (see
+        # build_client_inventory); a node-bearing deployment has no single
+        # client workload to describe.
+        "client_config": None,
+    }
+
+
+# Kinds that deploy client VMs against the PRODUCTION network and keep no
+# deployment state of their own — `generate-inventory` builds their inventory
+# from client state + the registry row instead.
+PROD_DOWNLOAD_KINDS = frozenset({"prod-downloaders", "prod-continuous-downloader"})
+
+
+def build_client_config(deploy_args: dict | None) -> dict | None:
+    """Describe how a prod download deployment is configured.
+
+    The VM IP alone doesn't say what the run is doing. This carries the address
+    list it walks, the knobs that change how `ant` is invoked, and the on-VM
+    paths where the evidence lands — the things you need to interpret a result
+    or go fetch the artefacts before teardown.
+
+    Sourced from the registry's ``deploy_args`` because it is the only place
+    the resolved address list is recorded; returns None when that is
+    unavailable, so a caller can still emit the VM sections.
+    """
+    if not deploy_args:
+        return None
+
+    kind = deploy_args.get("kind")
+    addresses = deploy_args.get("addresses") or []
+    diagnostics = bool(deploy_args.get("download_diagnostics", False))
+
+    config = {
+        "kind": kind,
+        "one_shot": kind == "prod-downloaders",
+        "evm_network": "arbitrum-one",
+        "bootstrap_peers_url": deploy_args.get("prod_bootstraps_url"),
+        "addresses_file": deploy_args.get("addresses_file"),
+        "address_count": len(addresses),
+        "addresses": list(addresses),
+        "binary": deploy_args.get("ant_binary"),
+        "spec": deploy_args.get("spec"),
+        "provider": deploy_args.get("provider"),
+        "monitoring_provider": deploy_args.get("monitoring_provider"),
+        "monitoring_name": deploy_args.get("monitoring_name"),
+        "settings": {
+            "bootstrap_cache": deploy_args.get("bootstrap_cache"),
+            "download_diagnostics": diagnostics,
+            "memory_profiling": bool(deploy_args.get("memory_profiling", False)),
+            "forward_logs": bool(deploy_args.get("forward_logs", False)),
+            "rust_log": deploy_args.get("rust_log"),
+            "clock_skew_seconds": deploy_args.get("clock_skew"),
+            "network_profile": deploy_args.get("network"),
+            # Only meaningful for the continuous kind; a one-shot run exits
+            # after a single pass.
+            "sleep_interval_secs": deploy_args.get("sleep_interval_secs"),
+        },
+        # Where the run's artefacts live on the VM. The per-op logs and the
+        # diagnostics JSONL are destroyed with the VM and nothing collects them
+        # automatically, so a consumer needs these paths to scp them off first.
+        "paths": {
+            "service_name": PROD_DOWNLOADER_SERVICE_NAME,
+            "ant_binary": PROD_DOWNLOADER_ANT_INSTALL_PATH,
+            "env_file": PROD_DOWNLOADER_ENV_PATH,
+            "addresses_file": PROD_DOWNLOADER_ADDRESSES_PATH,
+            "download_dir": PROD_DOWNLOADER_DOWNLOAD_DIR,
+            "log_dir": PROD_DOWNLOADER_LOG_DIR,
+            "stdout_glob": f"{PROD_DOWNLOADER_LOG_DIR}/*.stdout",
+            "stderr_glob": f"{PROD_DOWNLOADER_LOG_DIR}/*.stderr",
+            "diagnostics_glob": (
+                f"{PROD_DOWNLOADER_LOG_DIR}/*.diag.jsonl" if diagnostics else None
+            ),
+            "heaptrack_dir": (
+                PROD_DOWNLOADER_HEAPTRACK_DIR
+                if deploy_args.get("memory_profiling")
+                else None
+            ),
+        },
+    }
+    return config
+
+
+def build_client_inventory(
+    name: str,
+    clients: list[dict] | None,
+    ssh_key: str = DEFAULT_SSH_KEY,
+    deploy_args: dict | None = None,
+    monitoring_state: dict | None = None,
+    elastic_state: dict | None = None,
+    created_at: str | None = None,
+) -> dict:
+    """Build the inventory for a client-only deployment against production.
+
+    Same schema as :func:`build_inventory`, with ``node_vms`` and
+    ``bootstrap_vms`` empty — these kinds join the production network rather
+    than standing up their own — plus a populated ``client_config``.
+
+    Pure function, like its node-bearing sibling.
+    """
+    if not clients:
+        raise ValueError(
+            f"No client VMs recorded for '{name}'. The deployment has no "
+            "client state — was it created, and not yet destroyed?"
+        )
+
+    created = created_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    providers = {c.get("provider", "digitalocean") for c in clients}
+
+    return {
+        "schema_version": INVENTORY_SCHEMA_VERSION,
+        "testnet_id": name,
+        "created_at": created,
+        # No ant-node runs in these deployments; the `ant` client binary is
+        # described by client_config.binary instead.
+        "binary": {"ant_node_version": "", "ant_node_release_url": ""},
+        "firewalls": {p: FIREWALL_PLACEHOLDER for p in sorted(providers)},
+        "bootstrap_vms": [],
+        "node_vms": [],
+        "client_vms": _build_client_vms_field(name, clients, ssh_key),
+        "observability_vms": _build_observability_vms_field(
+            name, ssh_key, monitoring_state, elastic_state
+        ),
+        "client_config": build_client_config(deploy_args),
     }
 
 
@@ -352,16 +495,120 @@ def _resolve_wallet_secret_key(args) -> str:
     return key
 
 
+def _load_deploy_args(name: str) -> dict | None:
+    """Read the deployment's ``deploy_args`` from the registry, if reachable.
+
+    Best-effort by design: the registry is optional everywhere else in this
+    tool, so an unset DATABASE_URL degrades the inventory rather than failing
+    it.
+    """
+    from saorsa_deploy.registry import get_repository
+
+    repo = get_repository()
+    if repo is None:
+        return None
+    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+    if deployment is None:
+        return None
+    return deployment.deploy_args or None
+
+
+def _write_client_inventory(
+    args,
+    clients: list[dict],
+    monitoring_state: dict | None,
+    elastic_state: dict | None,
+    state_error: str | None,
+    console: Console,
+) -> None:
+    """Emit an inventory for a client-only deployment against production.
+
+    Reached when there is no deployment state. That is the normal shape for the
+    prod download kinds; for anything else it means the deployment doesn't
+    exist, so say so with the original error rather than inventing an empty
+    inventory.
+    """
+    if not clients:
+        console.print(f"[bold red]Error:[/bold red] {state_error}")
+        console.print(
+            "[dim]No client VMs are recorded for this name either, so there is "
+            "nothing to describe.[/dim]"
+        )
+        sys.exit(1)
+
+    deploy_args = _load_deploy_args(args.name)
+    kind = (deploy_args or {}).get("kind")
+    if deploy_args is None:
+        console.print(
+            "[yellow]No registry row reachable (is DATABASE_URL set?) — "
+            "writing VM details without the download configuration.[/yellow]"
+        )
+    elif kind not in PROD_DOWNLOAD_KINDS:
+        # Emit anyway rather than refuse: the VM/observability sections are
+        # still accurate. Only client_config is kind-specific, and its on-VM
+        # paths would be wrong for another kind's service.
+        console.print(
+            f"[yellow]'{args.name}' is a {kind} deployment, not one of "
+            f"{sorted(PROD_DOWNLOAD_KINDS)} — writing VM details without the "
+            "download configuration.[/yellow]"
+        )
+        deploy_args = None
+
+    try:
+        inventory = build_client_inventory(
+            args.name,
+            clients=clients,
+            ssh_key=args.ssh_key_path,
+            deploy_args=deploy_args,
+            monitoring_state=monitoring_state,
+            elastic_state=elastic_state,
+        )
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    if args.output:
+        output_path = Path(os.path.expanduser(args.output))
+    else:
+        output_path = _default_output_path(args.name)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(inventory, indent=2) + "\n")
+
+    console.print(f"[bold green]Wrote inventory to {output_path}[/bold green]")
+    for vm in inventory["client_vms"]:
+        console.print(
+            f"  client VM {vm['name']} — {vm['provider']}/{vm['region']} "
+            f"{vm['ip']}"
+        )
+    console.print(f"  {len(inventory['observability_vms'])} observability VM(s)")
+
+    config = inventory["client_config"]
+    if config:
+        console.print(
+            f"  {config['address_count']} address(es), "
+            f"{'one-shot' if config['one_shot'] else 'continuous'}, "
+            f"diagnostics={'on' if config['settings']['download_diagnostics'] else 'off'}"
+        )
+    console.print(
+        "[dim]Production deployment (joins the production network) — no node "
+        "VMs, no bootstrap VMs, no devnet manifest.[/dim]"
+    )
+
+
 def cmd_generate_inventory(args):
     """Generate a schema-version-4 inventory.json for a deployment."""
     console = Console()
 
     console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
+    # The prod client kinds (downloaders / continuous-downloader) never write
+    # deployment state — they join production rather than standing up nodes —
+    # so an absent state is not necessarily an error.
+    state_error: str | None = None
     try:
         state = load_deployment_state(args.name)
     except RuntimeError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        sys.exit(1)
+        state = None
+        state_error = str(e)
 
     clients: list[dict] = []
     try:
@@ -380,6 +627,12 @@ def cmd_generate_inventory(args):
         elastic_state = load_elastic_state(args.name)
     except RuntimeError:
         elastic_state = None
+
+    if state is None:
+        _write_client_inventory(
+            args, clients, monitoring_state, elastic_state, state_error, console
+        )
+        return
 
     try:
         inventory = build_inventory(

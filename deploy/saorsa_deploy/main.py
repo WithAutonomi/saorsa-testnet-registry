@@ -4776,7 +4776,7 @@ def main(argv=None):
         "--inventory-path",
         type=str,
         required=True,
-        help="Path to the production inventory JSON (schema_version 3 or 4).",
+        help="Path to the production inventory JSON (schema_version 3, 4 or 5).",
     )
     prod_svr_parser.add_argument(
         "--reserve-percent",
@@ -4832,7 +4832,7 @@ def main(argv=None):
             "--inventory-path",
             type=str,
             required=True,
-            help="Path to the inventory JSON (schema_version 3 or 4) containing the host.",
+            help="Path to the inventory JSON (schema_version 3, 4 or 5) containing the host.",
         )
         parser.add_argument(
             "--name",
@@ -4862,7 +4862,7 @@ def main(argv=None):
         "--inventory-path",
         type=str,
         required=True,
-        help="Path to the inventory JSON (schema_version 3 or 4) containing the host.",
+        help="Path to the inventory JSON (schema_version 3, 4 or 5) containing the host.",
     )
     prod_services_ls_parser.add_argument(
         "--name",

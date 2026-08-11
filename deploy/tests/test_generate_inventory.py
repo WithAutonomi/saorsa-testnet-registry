@@ -101,6 +101,10 @@ class TestBuildInventory:
             "node_vms",
             "client_vms",
             "observability_vms",
+            # Schema 5: describes the workload of a client-only prod
+            # deployment. Always None here — a node-bearing deployment has no
+            # single client workload to describe.
+            "client_config",
         }
         assert inv["schema_version"] == INVENTORY_SCHEMA_VERSION
         assert inv["testnet_id"] == "DEV-02"
