@@ -21,6 +21,13 @@ from saorsa_deploy.cmd.obs_provider import (
     default_region,
     state_key_abbrev,
 )
+from saorsa_deploy.cmd.prod_debug_nodes import (
+    COREDUMP_PRUNE_UNIT,
+    DEBUG_LOG_PRUNE_UNIT,
+    build_coredump_prune_units,
+    build_debug_logprune_units,
+    build_prune_install_commands,
+)
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.contabo import CONTABO_REGIONS, missing_contabo_env
 from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
@@ -28,9 +35,11 @@ from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.provisioning.node import (
     COREDUMP_DIR,
     INSTALL_DEBUG_TOOLS_COMMAND,
+    LOG_DIR,
     _build_node_unit_file,
     build_coredump_setup_command,
 )
+from saorsa_deploy.provisioning.telegraf import TELEGRAF_SERVICE_NAME
 
 # --------------------------------------------------------------------------- #
 # node unit file: debug knobs are additive and default-off
@@ -326,3 +335,113 @@ class TestDebugNodesSchema:
     def test_log_level_enum_enforced(self):
         with pytest.raises(ValidationError):
             _debug_manifest(log_level="verbose")
+
+
+# --------------------------------------------------------------------------- #
+# prune timers: the debug-log prune MUST restart the ES log forwarder
+# --------------------------------------------------------------------------- #
+class TestDebugLogPruneUnits:
+    """A plain ``find -delete`` reclaims nothing while telegraf holds the files.
+
+    Telegraf's ``tail`` input keeps an open descriptor for every file it
+    matches and has no idle-close, so unlinking only removes the directory
+    entry: the file leaves ``du`` while ext4 keeps the blocks. Measured on
+    ant-prod-debug-01 (2026-08-02): 694 GiB across 70 descriptors on a 968 GB
+    root disk reporting 0 bytes free with 271 GB visible. Restarting the
+    forwarder released all of it.
+    """
+
+    def test_prune_deletes_then_restarts_the_forwarder(self):
+        service, _ = build_debug_logprune_units(2)
+        lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
+        assert len(lines) == 2
+        assert lines[0] == (
+            f"ExecStart=/usr/bin/find {LOG_DIR} -type f -mtime +2 -delete"
+        )
+        assert lines[1] == (
+            "ExecStart=-/usr/bin/systemctl try-restart "
+            f"{TELEGRAF_SERVICE_NAME}.service"
+        )
+
+    def test_restart_is_ordered_after_the_delete(self):
+        # The unlink has to land first; the restart is what frees the blocks.
+        service, _ = build_debug_logprune_units(1)
+        assert service.index("/usr/bin/find") < service.index("try-restart")
+
+    def test_restart_failure_cannot_fail_the_prune(self):
+        # The `-` prefix: by the time the restart runs the prune has already
+        # done its job, so a forwarder that won't come back must not mark the
+        # unit failed (which would also stop `Persistent=true` catch-up runs).
+        service, _ = build_debug_logprune_units(1)
+        assert "ExecStart=-/usr/bin/systemctl" in service
+
+    def test_uses_try_restart_so_it_is_a_no_op_when_absent(self):
+        # The kind supports --no-forward-logs, in which case there is no
+        # forwarder installed at all. `try-restart` does nothing rather than
+        # starting one.
+        service, _ = build_debug_logprune_units(1)
+        assert "try-restart" in service
+        assert "systemctl restart" not in service
+        assert "systemctl start" not in service
+
+    def test_retention_days_is_interpolated(self):
+        for days in (1, 2, 7):
+            service, _ = build_debug_logprune_units(days)
+            assert f"-mtime +{days} -delete" in service
+
+    def test_timer_is_daily_and_persistent(self):
+        _, timer = build_debug_logprune_units(1)
+        assert "OnCalendar=daily" in timer
+        assert "Persistent=true" in timer
+        assert "WantedBy=timers.target" in timer
+
+
+class TestCoredumpPruneUnits:
+    def test_coredump_prune_does_not_restart_the_forwarder(self):
+        """Core dumps are not tailed, so nothing holds them open.
+
+        Restarting the forwarder here would drop buffered log lines for no
+        reclaim at all.
+        """
+        service, _ = build_coredump_prune_units(7)
+        lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
+        assert len(lines) == 1
+        assert "systemctl" not in service
+        assert TELEGRAF_SERVICE_NAME not in service
+
+    def test_coredump_prune_targets_only_core_files(self):
+        service, _ = build_coredump_prune_units(7)
+        assert f"/usr/bin/find {COREDUMP_DIR} -type f -name 'core.*'" in service
+        assert "-mtime +7 -delete" in service
+
+
+class TestPruneInstallCommands:
+    def test_writes_units_reloads_and_enables(self):
+        service, timer = build_debug_logprune_units(2)
+        cmds = build_prune_install_commands(
+            DEBUG_LOG_PRUNE_UNIT, service, timer, run_now=True
+        )
+        assert f"/etc/systemd/system/{DEBUG_LOG_PRUNE_UNIT}.service" in cmds[0]
+        assert f"/etc/systemd/system/{DEBUG_LOG_PRUNE_UNIT}.timer" in cmds[1]
+        assert cmds[2] == "systemctl daemon-reload"
+        assert cmds[3] == f"systemctl enable --now {DEBUG_LOG_PRUNE_UNIT}.timer"
+
+    def test_run_now_fires_the_prune_immediately(self):
+        # A disk that is already full should get relief without waiting for
+        # the next scheduled run.
+        service, timer = build_debug_logprune_units(2)
+        with_now = build_prune_install_commands(
+            DEBUG_LOG_PRUNE_UNIT, service, timer, run_now=True
+        )
+        without = build_prune_install_commands(
+            DEBUG_LOG_PRUNE_UNIT, service, timer
+        )
+        assert with_now[-1] == f"systemctl start {DEBUG_LOG_PRUNE_UNIT}.service"
+        assert without == with_now[:-1]
+
+    def test_coredump_prune_does_not_run_immediately(self):
+        service, timer = build_coredump_prune_units(7)
+        cmds = build_prune_install_commands(
+            COREDUMP_PRUNE_UNIT, service, timer
+        )
+        assert not any(c.startswith("systemctl start") for c in cmds)

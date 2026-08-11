@@ -1,0 +1,116 @@
+# Simulated residential network conditions for client VMs (V2-733).
+#
+# A cloud VM uploads at roughly a gigabit; the users we care about upload from a
+# home line. These profiles reshape a client VM's connection to look like one, so
+# the low-bandwidth suite is reproducible and automatable instead of depending on
+# one person's home connection.
+#
+# Selected by name from a manifest (`network: home-fttc`) or a CLI spec token
+# (`network=home-fttc`). A manifest may also supply an inline mapping instead of a
+# name for an ad-hoc condition — see deploy/README.md.
+#
+# `version` is echoed into every recorded run. BUMP IT whenever a profile's numbers
+# change: results are compared across release trains, and a silently-edited profile
+# would make two runs labelled `home-fttc` mean different things.
+#
+# ---- field semantics (read before editing) ----
+#   rate_down / rate_up  tc rate tokens (`kbit`, `mbit`). Asymmetry is the defining
+#                        feature of a residential line and the whole point of the
+#                        exercise: rate_up dominates upload tests.
+#   delay                Added to ROUND-TRIP time, counted once (applied on egress
+#                        only, never on both paths — that would double it). This is
+#                        *added* latency on top of the VM's own RTT to its peers,
+#                        not an absolute target RTT.
+#   jitter               Variation around `delay`, normally distributed.
+#   loss                 Percent, applied per direction (egress AND ingress), because
+#                        real loss is a per-direction property. Loss on the inbound
+#                        path is what makes a download behave like a home download.
+#
+# Queue depth is deliberately NOT a field. A rate cap always implies a queue, so the
+# depth exists whether or not it is exposed; leaving it to chance gives either
+# tail-drop collapse (throughput far below the cap) or bufferbloat (hundreds of ms of
+# standing delay that silently swamps `delay`). The provisioner pins an explicit AQM
+# (`cake`, falling back to `fq_codel`) so the baseline is a competent modern router.
+
+version: 2
+
+profiles:
+  home-adsl:
+    description: >-
+      Copper ADSL2+. The worst case still in real-world use. NB at 1 Mbit/s up and
+      ~4x client egress from chunk fan-out, a 100 MB upload takes ~67 minutes and a
+      1 GB upload ~11 hours — size the file list and run duration accordingly.
+    rate_down: 10mbit
+    rate_up: 1mbit
+    delay: 30ms
+    jitter: 5ms
+    loss: 0.2
+
+  home-calibrated:
+    description: >-
+      Measured from the operator's own line on 2026-07-30 (AS13285/TalkTalk, wired,
+      via Manchester): 27.4 Mbit down, 6.29 Mbit up, 12.7 ms idle RTT, jitter 0.2 ms,
+      0 loss over 300 packets. Download proved a hard rate cap — 10/25/50 MB transfers
+      agreed within 0.5%. Bufferbloat was negligible (+2 ms under a saturating upload).
+      This is the everyday realistic profile; the others are representative figures.
+    rate_down: 27400kbit
+    rate_up: 6290kbit
+    delay: 12.7ms
+    jitter: 0.2ms
+    # Measured 0/300 packets, i.e. below the ~0.33% this sample size can resolve —
+    # NOT proven to be exactly zero. Encoded as 0 rather than inventing a plausible
+    # small value; raise it if a longer measurement ever resolves real loss.
+    loss: 0.0
+
+  home-fttc:
+    description: >-
+      UK FTTC/VDSL at a typical 60/18 package — a step above the calibrated line but
+      short of full fibre.
+    rate_down: 60mbit
+    rate_up: 18mbit
+    delay: 15ms
+    jitter: 3ms
+    loss: 0.05
+
+  home-fttp:
+    description: >-
+      Modern full fibre. Fast enough that the link is rarely the bottleneck; useful as
+      the optimistic end of the range.
+    rate_down: 300mbit
+    rate_up: 50mbit
+    delay: 8ms
+    jitter: 2ms
+    loss: 0.01
+
+  mobile-4g:
+    description: >-
+      Mobile broadband. Close to the calibrated line on raw rate, so its character
+      comes from latency, jitter and loss rather than bandwidth — that is the point of
+      including it. Representative LTE in good-to-average conditions, NOT a
+      marginal-signal or mid-handover link.
+    rate_down: 30mbit
+    rate_up: 8mbit
+    # v2: was 60ms. `delay` is ADDED to the VM's own RTT to its peers (see the field
+    # semantics above), so 60ms stacked on a real inter-region RTT put the effective
+    # figure near 90-140ms — congested-3G territory, not LTE. 30ms added lands the
+    # total in the 40-70ms band real LTE actually shows.
+    delay: 30ms
+    jitter: 10ms
+    # v2: was 0.5, which was an assumed figure and by far the least defensible number
+    # in this file — 10x home-fttc and 2.5x the worst wired profile. LTE retransmits
+    # beneath IP (MAC-layer HARQ plus RLC acknowledged mode), so residual loss seen by
+    # TCP on a healthy link is ~0.01-0.1%, not 0.5%.
+    #
+    # It also made the profile self-contradictory. netem models loss as Bernoulli —
+    # independent and uniform — which is the most destructive pattern per unit of loss,
+    # because congestion signals arrive evenly spaced and cwnd never grows. The Mathis
+    # ceiling for a single flow, MSS/(RTT*sqrt(p)), came to ~1.8 Mbit/s, and a measured
+    # run hit exactly that: the 30mbit/8mbit tokens below were unreachable by any single
+    # TCP stream, so the profile measured "TCP under uniform loss" rather than 4G rate.
+    # At 0.1% the ceiling is ~6 Mbit/s single-stream, so the rate tokens bind again
+    # (ant uploads over many parallel connections) and the shaping means what it says.
+    #
+    # NB real mobile loss is bursty and handover-correlated, not uniform. Modelling that
+    # honestly needs netem's Gilbert-Elliott mode (`loss gemodel`), which this schema
+    # does not yet expose; 0.1 uniform is the closest defensible single number.
+    loss: 0.1

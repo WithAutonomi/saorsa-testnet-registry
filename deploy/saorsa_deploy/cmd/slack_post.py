@@ -275,13 +275,14 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
         payment = u.get("payment_type") or "default"
         file_names = u.get("file_names") or []
         skew_str = " — ⏰ clock-skew" if u.get("clock_skew") else ""
+        net_str = _network_suffix(u)
         cache_str = _bootstrap_cache_marker(u.get("bootstrap_cache"))
         fwd_str = _forward_logs_marker(u.get("forward_logs"))
         rust_str = _rust_log_marker(u.get("rust_log"))
         prof_str = _memory_profiling_marker(u.get("memory_profiling"))
         lines.append(
             f"• {region} ({vm_size}) — payment: {payment}"
-            f"{cache_str}{skew_str}{fwd_str}{rust_str}{prof_str}"
+            f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}{prof_str}"
         )
         if file_names:
             for name in file_names:
@@ -400,6 +401,9 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
 
     if deploy_args.get("clock_skew"):
         fields.append(("Clock skew", "enabled ⏰"))
+    network = deploy_args.get("network")
+    if network:
+        fields.append(("Network", _format_network_field(network)))
 
     if "bootstrap_cache" in deploy_args:
         fields.append(
@@ -449,6 +453,7 @@ def _clients_block(clients: list[dict]) -> dict:
         region = c.get("region", "?")
         vm_size = c.get("vm_size", "?")
         skew_str = " — ⏰ clock-skew" if c.get("clock_skew") else ""
+        net_str = _network_suffix(c)
         cache_str = _bootstrap_cache_marker(c.get("bootstrap_cache"))
         fwd_str = _forward_logs_marker(c.get("forward_logs"))
         rust_str = _rust_log_marker(c.get("rust_log"))
@@ -461,12 +466,12 @@ def _clients_block(clients: list[dict]) -> dict:
             payment = c.get("payment_type") or "default"
             lines.append(
                 f"• upload — {region} ({vm_size}{size_str}) — "
-                f"payment: {payment}{cache_str}{skew_str}{fwd_str}{rust_str}"
+                f"payment: {payment}{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
             )
         else:
             lines.append(
                 f"• download — {region} ({vm_size})"
-                f"{cache_str}{skew_str}{fwd_str}{rust_str}"
+                f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
             )
     return _section("*Clients:*\n" + "\n".join(lines))
 
@@ -743,3 +748,68 @@ def cmd_slack_post(args):
         "(via incoming webhook — no thread reference recorded; set "
         "ANT_DEPLOY_SLACK_BOT_TOKEN to enable threaded result updates.)"
     )
+
+
+def _network_rates(network) -> tuple[str, str | None, str | None]:
+    """Resolve a client's ``network`` value to ``(name, rate_down, rate_up)``.
+
+    Three shapes reach here: a resolved dict (from ``deploy_args``), a bare
+    profile name, or an inline comma-delimited set (both from client state, which
+    stores the value unresolved). Names and inline sets are resolved against the
+    shipped profile file to recover the rates.
+
+    Best-effort by design — a profile since renamed or deleted from the file must
+    not stop a deployment summary being posted, so resolution failure degrades to
+    the label alone rather than raising.
+    """
+    if isinstance(network, dict):
+        return (
+            network.get("name") or "inline",
+            network.get("rate_down"),
+            network.get("rate_up"),
+        )
+
+    label = str(network)
+    try:
+        from saorsa_deploy.provisioning.network_profile import resolve_network
+
+        profile = resolve_network(label)
+    except Exception:
+        profile = None
+    if profile is None:
+        # An inline set's raw token is unreadable in a summary; the name at least
+        # says "this VM was shaped".
+        return ("inline" if "=" in label else label, None, None)
+    return (profile.name, profile.rate_down, profile.rate_up)
+
+
+def _network_suffix(client: dict) -> str:
+    """Render a client's simulated link conditions for the per-VM listing.
+
+    Includes the rates, not just the profile name: "home-adsl" means nothing to a
+    reader who has not memorised the profile set, and on a post announcing a
+    low-bandwidth run the rate is the most interesting fact. It matters most for
+    an inline set, which is precisely the one nobody can look up.
+
+    Empty string when unshaped, so an ordinary run's post is unchanged.
+    """
+    network = client.get("network")
+    if not network:
+        return ""
+    name, down, up = _network_rates(network)
+    if down and up:
+        return f" — 🐌 {name} ({down}/{up})"
+    return f" — 🐌 {name}"
+
+
+def _format_network_field(network) -> str:
+    """Render the spec-level network profile, including its rates when known.
+
+    Spelt out more fully than the per-VM suffix — this is a standalone field with
+    room for it, rather than one marker among several on a crowded line.
+    """
+    name, down, up = _network_rates(network)
+    if down and up:
+        return f"🐌 {name} ({down} down / {up} up)"
+    return f"🐌 {name}"
+

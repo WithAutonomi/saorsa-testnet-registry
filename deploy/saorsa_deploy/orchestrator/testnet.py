@@ -35,6 +35,7 @@ from saorsa_deploy.orchestrator.steps import (
     build_steps_for_branches,
     node_binary_flags,
 )
+from saorsa_deploy.provisioning.network_profile import format_network_token
 
 # provider key -> (vm_count, regions, regions_list, size) flag names
 _PROVIDER_FLAGS = {
@@ -73,6 +74,8 @@ def _uploader_spec(u) -> str:
         parts.append(f"bootstrap_cache={str(u.bootstrap_cache).lower()}")
     if u.forward_logs is not None:
         parts.append(f"forward_logs={str(u.forward_logs).lower()}")
+    if u.network is not None:
+        parts.append(f"network={format_network_token(u.network)}")
     # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
     if u.rust_log is not None:
         parts.append(f"rust_log={u.rust_log}")
@@ -89,6 +92,8 @@ def _downloader_spec(d) -> str:
         parts.append(f"bootstrap_cache={str(d.bootstrap_cache).lower()}")
     if d.forward_logs is not None:
         parts.append(f"forward_logs={str(d.forward_logs).lower()}")
+    if d.network is not None:
+        parts.append(f"network={format_network_token(d.network)}")
     # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
     if d.rust_log is not None:
         parts.append(f"rust_log={d.rust_log}")

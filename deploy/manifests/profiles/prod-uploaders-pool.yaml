@@ -1,0 +1,52 @@
+# prod-uploaders drawing its files from the managed file pool.
+#
+# `pool:` replaces `urls:` and the two are mutually exclusive. Each uploader VM
+# gets its own selection, so a resumed `deployments up` hands each one back the
+# files it already had rather than drawing a fresh set — which would burn the
+# first set permanently.
+#
+# Files come from the `url` inventory only: a VM cannot read a path on the
+# operator's machine, and there is deliberately no flag to make it try.
+#
+# Check inventory before running:
+#     saorsa-deploy prod pool stats
+# Top it up from a public collection:
+#     saorsa-deploy prod pool add --from-listing internet-archive:<item>
+kind: prod-uploaders
+name: PROD-UL-05
+purpose: "Upload real files to production from the managed pool"
+
+prod_uploaders:
+  binary:
+    version: 0.5.2
+  # Funded Arbitrum One mainnet wallet — real ETH. Deliberately distinct from
+  # the testnet ANT_DEPLOY_SECRET_KEY.
+  secret_key_env: ARBITRUM_ONE_SECRET_KEY
+
+  uploaders:
+    - region: lon1
+      vm_size: s-4vcpu-8gb
+      # A shortfall here aborts before any infrastructure is created, naming the
+      # class and the inventory that fell short.
+      pool:
+        small: 3
+        medium: 2
+
+    - region: nyc3
+      vm_size: s-8vcpu-16gb
+      pool:
+        large: 2
+
+    # `pool_min_size`/`pool_max_size` narrow every class in this uploader's
+    # request without changing the counts, so the shape of the selection is
+    # preserved. A class is sometimes too coarse: "tiny, but at least 5 MB" is
+    # not a class, and below ~5 MB every file yields the same 4-chunk minimum.
+    # min is inclusive, max exclusive — 10MB/100MB is exactly the `small` class.
+    # Units are binary ("5MB" is 5 MiB); a bare number is bytes.
+    - region: fra1
+      vm_size: s-4vcpu-8gb
+      pool:
+        tiny: 5
+      pool_min_size: 5MB
+
+slack_post: true

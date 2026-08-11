@@ -535,3 +535,55 @@ def list_extensions_of(source_name: str) -> list[str]:
                 if name and name != source_name:
                     extensions.append(name)
     return extensions
+
+
+S3_POOL_SELECTION_KEY_PREFIX = "saorsa-deploy/pool-selections"
+
+
+def save_pool_selection(name: str, selection: dict) -> None:
+    """Persist the file-pool selection a deploy run drew.
+
+    ``deployments up`` is resumable: a run that fails part-way is re-run and
+    skips the steps already recorded in its journal. Without this, a resumed
+    deploy would draw a *fresh* set of files from the pool while the first set
+    sat claimed — permanently burning inventory on every retry.
+
+    Keyed by deployment name, like every other piece of run state. That is
+    unambiguous within a run's lifetime: names are reused freely, but reusing
+    one means the previous deployment's state was destroyed first. The
+    deployment *id* is no better an anchor and is not even available here —
+    ``registry.record_deployment_created`` always inserts a fresh row, and it
+    runs after selection.
+    """
+    client = _get_s3_client()
+    client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_POOL_SELECTION_KEY_PREFIX}/{name}.json",
+        Body=json.dumps(selection, indent=2),
+        ContentType="application/json",
+    )
+
+
+def load_pool_selection(name: str) -> dict | None:
+    """Load a previously persisted pool selection, or None if there is none.
+
+    Absence is the normal case for a first run, so it is not an error.
+    """
+    client = _get_s3_client()
+    try:
+        resp = client.get_object(
+            Bucket=S3_BUCKET,
+            Key=f"{S3_POOL_SELECTION_KEY_PREFIX}/{name}.json",
+        )
+        return json.loads(resp["Body"].read())
+    except client.exceptions.NoSuchKey:
+        return None
+
+
+def delete_pool_selection(name: str) -> None:
+    """Delete a persisted pool selection (idempotent)."""
+    client = _get_s3_client()
+    client.delete_object(
+        Bucket=S3_BUCKET,
+        Key=f"{S3_POOL_SELECTION_KEY_PREFIX}/{name}.json",
+    )

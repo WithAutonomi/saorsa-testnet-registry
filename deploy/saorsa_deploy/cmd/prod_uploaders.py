@@ -35,6 +35,10 @@ from saorsa_deploy.prod_bootstraps import (
     fetch_prod_bootstraps,
 )
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
+from saorsa_deploy.provisioning.network_profile import (
+    NetworkProfileError,
+    resolve_network,
+)
 from saorsa_deploy.provisioning.prod_uploader import (
     SERVICE_NAME,
     ProdUploaderProvisioner,
@@ -56,9 +60,14 @@ DEFAULT_MONITORING_VOLUME_SIZE = 50
 # when it contains ':' (RUST_LOG module paths use '::'); keep it last in a spec.
 _KNOWN_SPEC_KEYS = (
     "urls",
+    "pool",
+    "pool_min_size",
+    "pool_max_size",
+    "exclude_partial",
     "payment",
     "log_level",
     "clock_skew",
+    "network",
     "bootstrap_cache",
     "forward_logs",
     "memory_profiling",
@@ -112,6 +121,17 @@ def _parse_log_level_token(spec: str, value: str) -> str:
         )
     return value
 
+
+def _parse_network_token(spec: str, value: str) -> str:
+    """Validate a ``network=`` uploader-spec token.
+
+    Fails fast so an unknown profile surfaces before any VM is created.
+    """
+    try:
+        resolve_network(value)
+    except NetworkProfileError as e:
+        raise ValueError(f"Invalid spec '{spec}': {e}")
+    return value
 
 def _parse_clock_skew_token(spec: str, value: str) -> int:
     """Validate a ``clock_skew=`` uploader-spec token into signed seconds.
@@ -184,15 +204,50 @@ def parse_prod_uploader_spec(spec: str) -> dict:
             )
         options[key] = value
 
-    if "urls" not in options:
+    # Exactly one source of files. `pool=` draws from the managed pool, which
+    # guarantees the files have never been uploaded; `urls=` is the legacy
+    # hand-written list, where that guarantee comes only from the name-based
+    # duplicate preflight.
+    has_urls = bool(options.get("urls"))
+    has_pool = bool(options.get("pool"))
+    if has_urls and has_pool:
         raise ValueError(
-            f"Invalid uploader spec '{spec}'. urls=PATH is required."
+            f"Invalid uploader spec '{spec}': set either urls=PATH or "
+            "pool=CLASS:COUNT, not both."
+        )
+    if not has_urls and not has_pool:
+        raise ValueError(
+            f"Invalid uploader spec '{spec}'. One of urls=PATH or "
+            "pool=CLASS:COUNT (e.g. pool=small:3,medium:2) is required."
         )
 
-    urls_file = options["urls"]
-    if not urls_file:
+    urls_file = options.get("urls") or None
+    pool_request = None
+    pool_min_size_bytes = None
+    pool_max_size_bytes = None
+    if has_pool:
+        from saorsa_deploy.pool_selection import (
+            PoolSelectionError,
+            parse_request_token,
+            parse_size_bounds,
+            validate_bounds,
+        )
+
+        try:
+            pool_request = parse_request_token(options["pool"])
+            pool_min_size_bytes, pool_max_size_bytes = parse_size_bounds(
+                options.get("pool_min_size"), options.get("pool_max_size")
+            )
+            validate_bounds(pool_request, pool_min_size_bytes, pool_max_size_bytes)
+        except (PoolSelectionError, ValueError) as exc:
+            raise ValueError(f"Invalid uploader spec '{spec}': {exc}") from exc
+    elif options.get("pool_min_size") or options.get("pool_max_size"):
+        # Silently ignoring them would leave the operator believing a size
+        # restriction is in force over a hand-written URL list, which the pool
+        # is not selecting from at all.
         raise ValueError(
-            f"Invalid uploader spec '{spec}': urls path cannot be empty."
+            f"Invalid uploader spec '{spec}': pool_min_size/pool_max_size only "
+            "apply to pool=… selection, not to urls=…"
         )
 
     payment_type: str | None = options.get("payment")
@@ -207,6 +262,7 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         if "log_level" in options
         else None
     )
+    network = _parse_network_token(spec, options["network"]) if "network" in options else None
     clock_skew = (
         _parse_clock_skew_token(spec, options["clock_skew"])
         if "clock_skew" in options
@@ -229,13 +285,24 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     )
     rust_log = options.get("rust_log") or None
 
+    exclude_partial = (
+        _parse_bootstrap_cache_token(spec, options["exclude_partial"])
+        if "exclude_partial" in options
+        else False
+    )
+
     return {
         "region": region,
         "vm_size": vm_size,
         "urls_file": urls_file,
+        "pool_request": pool_request,
+        "pool_min_size_bytes": pool_min_size_bytes,
+        "pool_max_size_bytes": pool_max_size_bytes,
+        "exclude_partial": exclude_partial,
         "payment_type": payment_type,
         "log_level": log_level,
         "clock_skew": clock_skew,
+        "network": network,
         "bootstrap_cache": bootstrap_cache,
         "forward_logs": forward_logs,
         "memory_profiling": memory_profiling,
@@ -496,11 +563,13 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
         )
         return
 
-    # bootstrap_cache is carried through so client_state records the real
-    # per-VM cache mode (the print/slack surfaces read it from there).
+    # bootstrap_cache and network are carried through so client_state records
+    # the real per-VM cache mode and link conditions — the print/slack surfaces
+    # read them from there, and a run that is shaped must say so.
     synth_uploader_specs = [
         f"digital_ocean:{s['region']}:0:{s['vm_size']}"
         f":bootstrap_cache={str(s.get('bootstrap_cache', True)).lower()}"
+        + (f":network={s['network']}" if s.get("network") else "")
         for s in parsed_specs
     ]
     console.print(
@@ -556,6 +625,7 @@ def _provision_uploaders(
             "payment_type": spec.get("payment_type"),
             "log_level": spec.get("log_level"),
             "clock_skew": spec.get("clock_skew", False),
+            "network": resolve_network(spec.get("network")),
             "bootstrap_cache": spec.get("bootstrap_cache", True),
             "forward_logs": spec.get("forward_logs"),
             "memory_profiling": spec.get("memory_profiling"),
@@ -673,16 +743,24 @@ def cmd_prod_uploaders_deploy(args):
     for raw in args.uploader:
         try:
             spec = parse_prod_uploader_spec(raw)
-            spec["_urls_file_content"] = _read_urls_file(spec["urls_file"])
+            if spec.get("urls_file"):
+                spec["_urls_file_content"] = _read_urls_file(spec["urls_file"])
         except ValueError as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
         parsed_specs.append(spec)
 
-    # Earliest possible gate: refuse before any infrastructure is created if a
-    # file to be uploaded is already present in the prod uploads list.
+    # Draw from the pool before any infrastructure exists. A shortfall found
+    # after Terraform has stood up VMs against a funded mainnet wallet costs
+    # real money and leaves a half-built deployment behind.
+    pool_selections = _select_pool_files(args, parsed_specs, console)
+
+    # Earliest possible gate for the legacy urls= path: refuse before any
+    # infrastructure is created if a file to be uploaded is already present in
+    # the prod uploads list. Pool-backed uploaders skip this by construction —
+    # selection cannot return a file that has already been handed out.
     _check_for_duplicate_files(
-        parsed_specs,
+        [s for s in parsed_specs if s.get("_urls_file_content")],
         getattr(args, "allow_duplicate_files", False),
         console,
     )
@@ -694,9 +772,10 @@ def cmd_prod_uploaders_deploy(args):
             1 for line in spec["_urls_file_content"].splitlines()
             if line.strip() and not line.strip().startswith("#")
         )
+        source = "pool" if spec.get("pool_request") else "urls"
         console.print(
             f"  Uploader #{i}: {spec['region']} ({spec['vm_size']}, "
-            f"urls={url_count})"
+            f"{source}={url_count})"
         )
     console.print()
 
@@ -709,6 +788,14 @@ def cmd_prod_uploaders_deploy(args):
                 "region": s["region"],
                 "vm_size": s["vm_size"],
                 "urls_file": s["urls_file"],
+                "pool_request": (
+                    {k.value: v for k, v in s["pool_request"].items()}
+                    if s.get("pool_request")
+                    else None
+                ),
+                "pool_min_size_bytes": s.get("pool_min_size_bytes"),
+                "pool_max_size_bytes": s.get("pool_max_size_bytes"),
+                "exclude_partial": s.get("exclude_partial", False),
                 "file_names": _extract_file_names(s["_urls_file_content"]),
                 "payment_type": s.get("payment_type"),
                 "clock_skew": s.get("clock_skew", False),
@@ -716,6 +803,14 @@ def cmd_prod_uploaders_deploy(args):
                 "forward_logs": s.get("forward_logs"),
                 "memory_profiling": s.get("memory_profiling"),
                 "rust_log": s.get("rust_log"),
+                # Resolved knob set, not the bare name: this is the record that
+                # keeps a past run interpretable after the profile file moves on,
+                # and it is what `slack-post` renders the rates from.
+                "network": (
+                    resolve_network(s.get("network")).to_dict()
+                    if s.get("network")
+                    else None
+                ),
             }
             for s in parsed_specs
         ],
@@ -725,7 +820,11 @@ def cmd_prod_uploaders_deploy(args):
             debug=getattr(args, "debug", False),
         ),
     }
-    record_deployment_created(args.name, deploy_args_payload)
+    deployment_id = record_deployment_created(args.name, deploy_args_payload)
+    # Claims were taken before this row existed — selection has to run before
+    # any infrastructure, and record_deployment_created always inserts a fresh
+    # row, so the id cannot be known any earlier.
+    _attach_pool_claims(pool_selections, deployment_id, args.name)
     record_event(args.name, "prod_uploaders_deploy_started", deploy_args_payload)
 
     try:
@@ -809,6 +908,13 @@ def cmd_prod_uploaders_destroy(args):
 
     console = Console()
     console.print(f"[bold]prod uploaders destroy: {args.name}[/bold]")
+
+    # Before anything is destroyed: this teardown takes the monitoring VM, and
+    # with it any per-file results that were never recorded to Postgres.
+    if not getattr(args, "skip_results_check", False):
+        from saorsa_deploy.results_guard import check_before_destroy
+
+        check_before_destroy(console, args.name, "prod-uploaders")
 
     record_event(args.name, "prod_uploaders_destroy_started")
     record_status(args.name, DeploymentStatus.DESTROYING)
@@ -906,3 +1012,89 @@ def _stop_uploaders(args, console: Console) -> None:
         run_ops(state_obj)
     finally:
         disconnect_all(state_obj)
+
+
+def _select_pool_files(args, parsed_specs: list[dict], console: Console) -> list:
+    """Resolve every ``pool=`` uploader spec into concrete URLs.
+
+    Each uploader VM is its own selection slot, so a resumed deploy hands each
+    VM back the files it already had rather than drawing a fresh set and
+    permanently burning the first one.
+
+    The chosen URLs are written into the same ``_urls_file_content`` the rest of
+    this command already distributes, so nothing downstream — provisioning, the
+    VM-side fetch, the recorded ``file_names`` — needs to know the pool exists.
+    """
+    from saorsa_db.models.prod_file_pool import ClaimSource, PoolFileKind
+
+    from saorsa_deploy.pool_selection import (
+        PoolSelectionError,
+        render_selection,
+        select_for_deployment,
+    )
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    pooled = [s for s in parsed_specs if s.get("pool_request")]
+    if not pooled:
+        return []
+
+    repo = get_file_pool_repository()
+    if repo is None:
+        # Unlike the old name-based duplicate check, this cannot degrade to a
+        # warning: the pool IS the never-reuse guarantee, and without it there
+        # is no list of files to upload at all.
+        console.print(
+            "[bold red]Error:[/bold red] an uploader asks for pool=… but no "
+            "DATABASE_URL is configured. The file pool lives in the registry "
+            "database.\nNo infrastructure was created."
+        )
+        sys.exit(1)
+
+    console.print("  Pool selection")
+    selections = []
+    for index, spec in enumerate(parsed_specs, start=1):
+        if not spec.get("pool_request"):
+            continue
+        try:
+            selected = select_for_deployment(
+                repo,
+                name=args.name,
+                slot=f"uploader-{index}",
+                kind=PoolFileKind.URL,
+                request=spec["pool_request"],
+                source=ClaimSource.PROD_UPLOADERS,
+                exclude_partial=spec.get("exclude_partial", False),
+                min_size_bytes=spec.get("pool_min_size_bytes"),
+                max_size_bytes=spec.get("pool_max_size_bytes"),
+            )
+        except PoolSelectionError as exc:
+            console.print(f"\n[bold red]Error:[/bold red] {exc}")
+            sys.exit(1)
+        render_selection(
+            console,
+            f"uploader #{index} ({spec['region']})",
+            spec["pool_request"],
+            selected,
+            spec.get("pool_min_size_bytes"),
+            spec.get("pool_max_size_bytes"),
+        )
+        spec["_urls_file_content"] = "\n".join(e.locator for e in selected) + "\n"
+        selections.append(selected)
+
+    total = sum(len(s) for s in selections)
+    console.print(
+        f"    {total} file(s) claimed; selection persisted to S3 state "
+        "(a resume reuses it)."
+    )
+    return selections
+
+
+def _attach_pool_claims(selections: list, deployment_id, name: str) -> None:
+    if not selections or not deployment_id:
+        return
+    from saorsa_deploy.pool_selection import attach_deployment
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    repo = get_file_pool_repository()
+    if repo is not None:
+        attach_deployment(repo, selections, deployment_id, name)

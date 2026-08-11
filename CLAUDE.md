@@ -398,6 +398,150 @@ metrics. Impl: `deploy/saorsa_deploy/cmd/upgrade_ant_binary.py`,
 
 See `deploy/README.md` §"Upgrading the `ant` binary in place" for the full argument table.
 
+### The production upload file pool (`prod pool`)
+
+Production uploads must use **real files**, and a file must **never be uploaded
+twice** — a canary measuring chunk loss on content already on the network for
+months measures nothing. `prod pool` is the catalogue those files come from plus
+the ledger of what has been handed out. Three tables in the registry:
+`prod_file_pool` (references, never bytes), `prod_file_pool_digests` (one row per
+file+algorithm) and `prod_file_pool_claims` (one row per hand-out). Impl:
+`db/saorsa_db/{size_class,models/prod_file_pool}.py`,
+`deploy/saorsa_deploy/{pool_selection,pool_sources,results_guard}.py`,
+`cmd/prod_pool.py`.
+
+Two kinds live in one catalogue — `url` (fetchable by a VM) and `local` (a path
+on the operator's machine) — and **the consumer chooses the kind, never a flag**,
+so no manifest can ask an uploader VM for a file on the laptop. Selection is by
+**size class** derived from bytes (`tiny` <10MiB, `small` <100MiB, `medium`
+<1GiB, `large` <5GiB, `xlarge` ≥5GiB; binary, half-open). Deliberately NOT the
+`file_size_buckets_mb` in `resources/gates/staging-thresholds.yaml`, which bucket
+transfer *durations* for the gates.
+
+A class is sometimes too coarse, so every consumer also accepts
+**`pool_min_size`/`pool_max_size`** (manifest key on `prod_uploaders.uploaders[]`
+/ `prod_canary` / `prod_local_uploads`; spec tokens `pool_min_size=`/
+`pool_max_size=` on `--uploader`; `--pool-min-size`/`--pool-max-size` on the
+canary and local-uploads CLIs; `--min-size`/`--max-size` on `pool add
+--from-listing` and `pool list`). They **narrow** each requested class without
+changing the counts, so a selection's shape survives. The motivating case: the
+**chunk floor is 4**, so a 14 KB file buys the same minimum loss observation as
+a 5 MB one at the same cost of one permanently-spent entry — "`tiny`, but ≥5 MB"
+is not a class. Units are binary and a bare number is bytes; **min inclusive,
+max exclusive**, so `10MB`/`100MB` is *exactly* `small`. Bounds that exclude a
+requested class are refused at manifest-validate time rather than surfacing as
+"0 available", which reads as an empty pool. Impl: `size_class.parse_size` /
+`bounded_byte_range`, `pool_selection.parse_size_bounds` / `validate_bounds`.
+NB `--pool` and friends live on `prod canary **deploy**`, not the `prod canary`
+group parser — a group-parser option must precede the subcommand, so the argv
+the orchestrator emits would not parse. `test_pool_size_bounds_plumbing.py`
+guards that every pool-kind argv the orchestrator emits actually parses.
+
+A file is `available` (no blocking claim), `claimed` (handed out, unconfirmed),
+`uploaded` (confirmed, address recorded) or **`partial`** (an upload stored some
+chunks and stopped). `claimed` is **not** evidence anything reached production.
+`partial` is the awkward middle: the file goes back in the pool because
+completing it is useful work, but chunks of it ARE in production — so it is a
+status of its own rather than a `released` claim, it keeps the chunk counts, and
+**canary selection excludes it by construction** (not via a flag, so no manifest
+can opt into a contaminated loss measurement). A **partial unique index** on
+`prod_file_pool_claims` excluding `released` and `partial` makes "at most one
+blocking claim per file" a database guarantee — two concurrent deploys racing for the last large file cannot both
+win, and an `uploaded` file can never be reclaimed.
+
+**Consumers.** `prod uploaders` (`pool=small:3,medium:2` spec token / per-uploader
+`pool:` manifest key, exclusive with `urls`), `prod canary` (`--pool` /
+`pool:`, exclusive with `urls_file`), `prod local-uploads` (`--from-pool` /
+`pool:`, exclusive with `urls`/`local_dir`), and manual `prod pool checkout` for
+the **desktop application** — which has no DB link, so the *checkout* spends the
+file, not the upload. Four invariants: selection runs **before any
+infrastructure** (a shortfall aborts with no VMs and no mainnet spend, naming
+which inventory fell short); it is **all-or-nothing** across classes; the
+selection is **persisted to S3** so `up --resume` reuses it rather than drawing a
+fresh ~350 files; and claims attach to the **canonical** file so a duplicate
+group is spent once.
+
+**Claim resolution.** `record-results` closes claims for `prod-uploaders` (from
+`deployment_prod_upload_results`) and `prod-canary` (from `prod_canary_uploads` —
+different column names for the same concepts), recording address, chunks and
+ANT/ETH cost; it upserts, so a re-run can revise. A `partial_upload` row
+resolves the claim to `partial` rather than leaving it open — previously such a
+file was reported as "no matching upload result", which reads as "the run never
+touched this file", the opposite of what happened. A success beats a partial for
+the same file. NB `list_all_prod_upload_results` **partitions** on success
+(`failed_only=False` returns ONLY successes), so reaching partials needs the
+other branch too — `import-history` makes both calls. `prod-local-uploads` resolves
+inline per file (a failed upload **releases** rather than spends). Wrapped so a
+registry predating the migration cannot cost the operator their results.
+
+**Bulk cataloguing.** `pool add --dir` batches through
+`add_pool_files_bulk` — a fixed ~7 statements per 500-file batch instead of ~4
+statements plus a COMMIT *per file*. The per-file path measured 163ms/file
+against the managed Postgres while reading and hashing the file took 1ms, so
+~99% was round-trip latency; 300k files would have been ~13.6 hours. Two traps
+found while building it, both caught by a test asserting statement count is flat
+in file count rather than by timing: ORM `session.add` per row issues
+INSERT..RETURNING per object (use Core `insert()` with a list), and a
+`session.refresh()` loop plus a lazy relationship load reintroduced a SELECT per
+row after the inserts were already batched. Two further per-row traps found only by running it against a real archive
+directory: the duplicate links were written with an UPDATE each (207 links =
+5.3s), now one ORM bulk-update-by-primary-key; and the method returned ORM
+instances, which `session.commit()` expires — so the caller's summary re-fetched
+every row at two statements each, ~46s for 1156 files, *after* the progress bar
+had closed. It now returns detached `PoolFileRecord` values that cannot talk to
+the database. Re-runs are flat too — an interrupted import skips known files
+without a round-trip each. Semantics match
+the per-file path exactly, including duplicate-digest linking *within* a batch,
+where the pre-flight query cannot see an uncommitted sibling.
+
+**Scale.** Three things narrow in SQL rather than in Python, which matters once
+the local dataset lands: `list`'s LIMIT reaches the database (slicing a
+materialised list cost 2.28s to return ten rows from a 200k catalogue), tags are
+an indexed `prod_file_pool_tags` side table rather than a JSON column (2.11s →
+0.00s), and `pool_stats` COUNTs rather than materialising twenty result sets
+(4.47s → 0.15s). Tag matching is OR across the given tags, lower-cased on write.
+
+**Scale of demand.** The canary is the dominant consumer: ~350 distinct files burned
+permanently per run (382/311/313 measured), small+medium only. `prod pool add
+--from-listing internet-archive:<item>` reads IA item metadata — name, size, MD5
+and SHA1 per file — so hundreds of entries are catalogued without downloading
+anything, and those real checksums are what let an IA URL and a local copy be
+recognised as one piece of content (`duplicate_of`).
+
+**Attribution.** `deployment_prod_upload_results` is written by **two** kinds —
+remote `prod-uploaders` runs via `record-results`, and `prod-local-uploads`
+inline — and the table carries no hint of which. Measured on the live registry:
+444 of 583 rows are local uploads, so attributing the table to `prod-uploaders`
+mislabels the majority. `import-history` therefore resolves the source from the
+deployment's `deploy_args.kind`. `prod_canary_uploads` needs no such lookup —
+only a canary writes there, so the table settles it. Because the command is a
+re-runnable sync rather than a one-shot, a re-run **corrects** the attribution of
+claims a previous import got wrong, but only ones it created itself (identified
+by their note) — never a claim a real run took.
+
+**Two honest limits.** `import-history` matches on **file name** — all the
+recorded history holds — and errs toward marking spent, since a false match is
+undone by `release` while a missed one ruins a canary. And a URL from a source
+publishing no checksum that is never downloaded **cannot** be deduplicated before
+upload; `verify` reports how many entries are in that state, and the datamap
+address (verified content-deterministic: 15/15 repeat uploads produced one
+address each) catches it afterwards.
+
+**Teardown guard.** Remote upload results sit in the deployment's InfluxDB until
+`record-results` runs, and teardown destroys that VM. `prod uploaders destroy`
+(and `prod canary destroy --no-keep-monitoring`) compare recorded rows against
+the deployment's pool claims — which say exactly how many files the run took —
+and **warn loudly rather than block**: refusing on a non-TTY would strand
+billable infrastructure when `down` runs unattended. `--skip-results-check`
+silences it. Impl: `results_guard.py`.
+
+**`prod files` now reads both upload tables.** It previously read only
+`deployment_prod_upload_results` and so could not see the ~1006 canary files —
+two thirds of what production holds.
+
+See `deploy/README.md` §"Managing the production file pool" for the full command
+and argument reference.
+
 ### Running prod uploaders
 
 `prod uploaders deploy` is the upload-side equivalent of `prod continuous-downloader`: it stands up one or more client VMs that each upload a list of public files to the production Autonomi network with `ant --json file upload --public`, then exit when the list is exhausted. Per-file results (chunks_stored / chunks_failed / address / file size / duration) are emitted to a `prod_upload` Influx measurement on a paired monitoring VM.
@@ -535,11 +679,9 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
     data volume). NB the release binary is stripped, so symbols are limited
     without an unstripped build; the live COLORBT backtrace is the higher-value
     signal. `--coredump-retention-days` (default 7) installs a daily prune timer.
-  - **`--log-retention-days`** (default **1**) installs a daily systemd timer
+  - **`--log-retention-days`** (default **2**) installs a daily systemd timer
     (`ant-node-debug-logprune`) pruning rotated ant-node debug logs under
-    `/mnt/ant-node-storage/log` — deliberately much shorter than the coredump
-    default, since logs (unlike core dumps) are already durably forwarded to
-    Elasticsearch via `--forward-logs`. ant-node rotates `--log-dir` output
+    `/mnt/ant-node-storage/log`. ant-node rotates `--log-dir` output
     daily on its own (one `ant-node.YYYY-MM-DD.log` per service per day) and
     self-prunes to `--log-max-files`/`ANT_LOG_MAX_FILES` (default 7), but at
     DEBUG level that built-in cap alone can still vastly outgrow the disk; this
@@ -547,6 +689,33 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
     the prune once immediately (not just enabling the timer) so a disk that's
     already full gets relief right away rather than waiting for the next
     scheduled run.
+    **The prune unit restarts the ES log forwarder, and must.** Telegraf's
+    `tail` input holds an open fd per matched file with no idle-close, so
+    `find -delete` alone unlinks without freeing: files leave `du` while ext4
+    keeps the blocks and `df` hits 100%. Measured on ant-prod-debug-01
+    (2026-08-02): **694 GiB across 70 fds** on a 968 GB disk showing 0 free with
+    271 GB visible; restarting the forwarder released all of it. So the unit has
+    a second `ExecStart=-/usr/bin/systemctl try-restart
+    telegraf-ant-elasticsearch.service` **after** the `find` — `try-restart` so
+    it no-ops under `--no-forward-logs`, `-`-prefixed so a forwarder failure
+    can't fail the prune, and unconditional because ant-node's own
+    `--log-max-files` self-pruning strands fds identically. This forces
+    **`from_beginning=false`** for the kind (threaded via
+    `build_node_telegraf_providers(from_beginning=...)`, default `True` so every
+    other kind's TOML is byte-identical): telegraf keeps no tail offset across
+    restarts, so backfill-from-start would re-ingest every remaining log on
+    every prune. Any new prune timer deleting files something else tails needs
+    the same treatment.
+  - **`--node-count` (default 4) is forwarder-bound, not fleet-matched.** At
+    `--log-level debug` each service emits ~758 lines/s (222 B avg) and one
+    telegraf tops out ~2 700 lines/s — CPU-bound in the JSON parse + `rename`/
+    `starlark`/`strings` chain, NOT blocked on ES (from the node VM, ES took
+    ~8 000 docs/s at telegraf's own batch size, 0 write rejections, 13% CPU;
+    bigger batches and `force_document_id=false` measured as no help). At 10
+    services only **~36%** of lines reached ES and the forwarder had wedged for
+    three days (190M docs/day → 5 684). So **Elasticsearch is a sample, not a
+    copy**, and the on-disk logs are the authoritative record — which
+    `--log-retention-days` discards. Raising one means raising the other.
   - **`--log-level`** (default `debug`). **ant-node has NO per-module env filter**
     — a single global level is the only option, so the requested per-module
     `RUST_LOG` targeting (`saorsa_transport`, `saorsa_core::*`,
@@ -570,6 +739,59 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
 
 See `deploy/README.md` §"Running crash-debug nodes against production" for the
 full argument table.
+
+### Simulating residential connections on client VMs (`network`)
+
+Client VMs sit on ~gigabit cloud links, which is not how real users reach the
+network — and upstream rate, which dominates uploads, is where a home line differs
+most. Any client VM can be shaped with `tc` to behave like a residential
+connection via a **`network:`** key taking either a built-in profile name or an
+inline mapping. Supported on `prod uploaders` (per-entry), `prod downloaders` /
+`prod continuous-downloader` (spec-level, CLI `--network`) — **the primary use
+case** — and on testnet/extension `clients.uploaders[]`/`downloaders[]`
+(secondary; CLI spec token `network=NAME`). NOT wired to `prod canary` or the
+`local-*` kinds. Omitting it leaves a deployment byte-identical to before.
+
+Profiles live in `deploy/saorsa_deploy/resources/network/profiles.yaml`,
+git-versioned with a `version:` echoed into every recorded run: `home-adsl`
+(10/1 Mbit), **`home-calibrated`** (27.4/6.29 Mbit, 12.7 ms — the only *measured*
+one, a real TalkTalk line as of 2026-07-30), `home-fttc` (60/18), `home-fttp`
+(300/50), `mobile-4g` (30/8, 60 ms, 20 ms jitter, 0.5% loss). Its loss is 0
+because 0/300 packets were lost — *below that sample's resolution*, not a proven
+lossless line. Impl: `provisioning/network_profile.py` (pure functions, mirroring
+the `clock_skew` seam), injected by `provisioning/{client,prod_uploader,
+prod_downloader}.py`.
+
+Four invariants, all load-bearing:
+- **Monitoring and SSH are exempt** (TCP 22/8086/9200 into an unshaped `htb`
+  class). Otherwise the VM's own Telegraf metrics and forwarded client logs
+  compete with the transfer for the capped uplink — the measured transfer comes
+  out slower than a real user's (no user ships their own logs) and the run's
+  results can arrive incomplete, degrading the instrument taking the measurement.
+  Keyed on **port, not address**, because the ES VM is created *after* the client
+  VMs are provisioned, so its address does not exist when shaping is applied.
+- **Delay is applied once, loss per direction.** RTT is a round-trip property, so
+  `delay`/`jitter` go on egress only (both paths would double it); loss goes on
+  both, since inbound loss is what makes a *download* behave like a home download.
+- **Queue depth is not a knob but is always a choice.** A rate cap implies a
+  queue; left to chance it gives either tail-drop collapse (throughput far below
+  the cap) or bufferbloat (standing delay that swamps `delay`). An explicit AQM is
+  pinned — `cake`, falling back to `fq_codel`. Relatedly every htb class sets an
+  explicit `quantum`: shaped and unshaped classes are four orders of magnitude
+  apart, so no single `r2q` avoids htb's "quantum too big/small" warnings.
+- **Ingress needs an `ifb` mirror** — `tc` shapes egress only, so without it the
+  downstream cap would not apply to downloads at all.
+
+Applied by a systemd oneshot (`ant-network-impairment.service`) so shaping
+survives reboot; the script is **convergent** (re-provisioning replaces rules
+rather than stacking — two `netem delay 30ms` would be 60 ms). The profile *name*
+is recorded on the four `deployment_*_records`/`_results` tables
+(`network_profile`, NULL = unshaped = every pre-feature row); the full resolved
+knob set lives once in `deploy_args`. Client egress is ~4x payload (fan-out), so
+at `home-adsl`'s 1 Mbit up a 100 MB upload takes ~67 min and 1 GB ~11 hours — size
+runs accordingly. **Never enable on a staging gate run**: `deployments compare`
+gates on transfer p50/p95 and shaped percentiles are not comparable to an unshaped
+baseline. See `deploy/README.md` §"Simulating a residential connection".
 
 ### Cloud provider: Contabo (nodes + monitoring/logging)
 

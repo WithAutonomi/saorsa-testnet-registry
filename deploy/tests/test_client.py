@@ -47,6 +47,7 @@ class TestParseUploaderSpec:
             "bootstrap_cache": True,
             "forward_logs": None,
             "rust_log": None,
+            "network": None,
         }
 
     def test_provider_region_file_size_and_vm_size(self):
@@ -64,6 +65,7 @@ class TestParseUploaderSpec:
             "bootstrap_cache": True,
             "forward_logs": None,
             "rust_log": None,
+            "network": None,
         }
 
     @pytest.mark.parametrize(
@@ -154,6 +156,7 @@ class TestParseDownloaderSpec:
             "bootstrap_cache": True,
             "forward_logs": None,
             "rust_log": None,
+            "network": None,
         }
 
     def test_provider_region_and_vm_size(self):
@@ -167,6 +170,7 @@ class TestParseDownloaderSpec:
             "bootstrap_cache": True,
             "forward_logs": None,
             "rust_log": None,
+            "network": None,
         }
 
     def test_missing_provider_rejected(self):

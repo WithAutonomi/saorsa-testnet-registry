@@ -481,7 +481,24 @@ def cmd_prod_local_uploads(args) -> None:
         )
         sys.exit(1)
 
-    if args.urls:
+    if not getattr(args, "from_pool", None) and (
+        getattr(args, "pool_min_size", None) or getattr(args, "pool_max_size", None)
+    ):
+        console.print(
+            "[bold red]Error:[/bold red] --pool-min-size/--pool-max-size narrow "
+            "a --from-pool selection; they have no effect on --urls or "
+            "--local-dir-path."
+        )
+        sys.exit(1)
+
+    pool_claims: list = []
+    if getattr(args, "from_pool", None):
+        local_files, pool_claims = _select_from_pool(args, console)
+        input_mode = "pool"
+        input_path = f"pool:{args.from_pool}"
+        file_count = len(local_files)
+        urls = []
+    elif args.urls:
         urls = _read_url_list(Path(args.urls))
         if not urls:
             console.print(
@@ -605,7 +622,7 @@ def cmd_prod_local_uploads(args) -> None:
                     continue
 
                 try:
-                    ok = _process_one_upload(
+                    url_status = _process_one_upload(
                         repo=repo,
                         deployment_id=deployment_id,
                         host=host,
@@ -627,7 +644,7 @@ def cmd_prod_local_uploads(args) -> None:
                     )
                 finally:
                     local_path.unlink(missing_ok=True)
-                if not ok:
+                if url_status is not ProdUploadStatus.SUCCESS:
                     failures += 1
         finally:
             try:
@@ -650,7 +667,7 @@ def cmd_prod_local_uploads(args) -> None:
                 console.print(f"  [red]stat FAILED:[/red] {e}")
                 failures += 1
                 continue
-            ok = _process_one_upload(
+            upload_status = _process_one_upload(
                 repo=repo,
                 deployment_id=deployment_id,
                 host=host,
@@ -670,8 +687,13 @@ def cmd_prod_local_uploads(args) -> None:
                 log_dir=log_dir,
                 idx=idx,
             )
-            if not ok:
+            if upload_status is not ProdUploadStatus.SUCCESS:
                 failures += 1
+            # Resolve this file's pool claim immediately. Unlike the remote
+            # kinds, this command writes its result rows inline, so there is no
+            # later `record-results` pass to close the claim — and leaving it
+            # open would make a finished upload look merely checked out.
+            _resolve_pool_claim(pool_claims, rel_name, upload_status, console)
 
     record_status(args.name, DeploymentStatus.STOPPED)
     console.print(
@@ -769,7 +791,142 @@ def _process_one_upload(
         gas_cost_wei=gas_cost_wei,
     )
 
-    return status == ProdUploadStatus.SUCCESS
+    return status
 
 
 __all__ = ["cmd_prod_local_uploads"]
+
+
+def _select_from_pool(args, console: Console):
+    """Draw local files from the managed pool.
+
+    Returns the same ``(absolute_path, relative_name)`` pairs the
+    ``--local-dir-path`` mode produces, so the upload loop is untouched — the
+    name recorded against each result stays the file's own name, and nothing
+    downstream needs to know the pool exists.
+
+    LOCAL entries only, and not overridable: this command reads from disk, so a
+    URL entry would be meaningless here.
+    """
+    from pathlib import Path as _Path
+
+    from saorsa_db.models.prod_file_pool import ClaimSource, PoolFileKind
+
+    from saorsa_deploy.pool_selection import (
+        PoolSelectionError,
+        parse_request_token,
+        parse_size_bounds,
+        render_selection,
+        select_for_deployment,
+    )
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    repo = get_file_pool_repository()
+    if repo is None:
+        console.print(
+            "[bold red]Error:[/bold red] --from-pool needs DATABASE_URL — the "
+            "file pool lives in the registry database."
+        )
+        sys.exit(1)
+
+    try:
+        request = parse_request_token(args.from_pool)
+        min_size_bytes, max_size_bytes = parse_size_bounds(
+            getattr(args, "pool_min_size", None),
+            getattr(args, "pool_max_size", None),
+        )
+    except (PoolSelectionError, ValueError) as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
+    try:
+        selected = select_for_deployment(
+            repo,
+            name=args.name,
+            slot="local-uploads",
+            kind=PoolFileKind.LOCAL,
+            request=request,
+            source=ClaimSource.PROD_LOCAL_UPLOADS,
+            exclude_partial=getattr(args, "exclude_partial", False),
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
+        )
+    except PoolSelectionError as exc:
+        console.print(f"\n[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
+    console.print("  Pool selection")
+    render_selection(
+        console, "local-uploads", request, selected, min_size_bytes, max_size_bytes
+    )
+
+    pairs = []
+    claims = []
+    missing = []
+    for entry in selected:
+        path = _Path(entry.locator)
+        if not path.is_file():
+            # The catalogue holds a reference, not the bytes. A file that has
+            # moved since it was catalogued must fail loudly here rather than
+            # partway through a paid upload run.
+            missing.append(entry)
+            continue
+        pairs.append((path, path.name))
+        claims.append({"name": path.name, "claim_id": entry.claim_id})
+
+    if missing:
+        console.print(
+            f"[bold red]Error:[/bold red] {len(missing)} selected file(s) are no "
+            "longer on disk:"
+        )
+        for entry in missing[:10]:
+            console.print(f"[red]  #{entry.file_id} {entry.locator}[/red]")
+        console.print(
+            "Run `saorsa-deploy prod pool verify --kind local` to retire "
+            "entries whose files have moved, then release this selection with "
+            "`prod pool release "
+            + " ".join(str(e.file_id) for e in missing[:10])
+            + "`."
+        )
+        sys.exit(1)
+
+    return pairs, claims
+
+
+def _resolve_pool_claim(pool_claims: list, file_name: str, status, console) -> None:
+    """Close the claim for one file as soon as its upload finishes.
+
+    Three outcomes, not two. A success spends the file; a *partial* upload put
+    real chunks in production but did not finish, so the file goes back marked
+    partial; anything else never reached the network at all and is simply
+    released.
+    """
+    if not pool_claims:
+        return
+    entry = next((c for c in pool_claims if c["name"] == file_name), None)
+    if entry is None or entry.get("claim_id") is None:
+        return
+
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    repo = get_file_pool_repository()
+    if repo is None:
+        return
+    try:
+        if status is ProdUploadStatus.SUCCESS:
+            repo.resolve_pool_claim(
+                entry["claim_id"], note="uploaded by prod local-uploads"
+            )
+        elif status is ProdUploadStatus.PARTIAL_UPLOAD:
+            repo.mark_pool_claim_partial(
+                entry["claim_id"],
+                note="prod local-uploads: upload was partial",
+            )
+        else:
+            # Nothing reached the network, so the file goes back untouched
+            # rather than being burned by the attempt.
+            repo.release_pool_claim(
+                entry["claim_id"], note="prod local-uploads upload failed"
+            )
+    except ValueError as exc:
+        console.print(f"[yellow]Warning:[/yellow] could not resolve pool claim: {exc}")

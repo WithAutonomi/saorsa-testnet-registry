@@ -11,11 +11,96 @@ for a real cloud deployment.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
+from saorsa_deploy.provisioning.network_profile import resolve_network
+
+
+def _validate_network(value: Union[str, dict]) -> Union[str, dict]:
+    """Validate a client ``network`` value — a profile name or an inline mapping.
+
+    Resolution runs here purely to fail fast: an unknown profile name or a
+    malformed inline definition is an error at ``config validate`` time rather than
+    half-way through a deploy that has already created infrastructure. The value is
+    stored unresolved and resolved again at provisioning time, exactly as
+    ``clock_skew`` stores its string form.
+    """
+    resolve_network(value)
+    return value
+
+
+# Either a built-in profile name ("home-fttc") or an inline mapping of the same
+# fields for an ad-hoc condition. Omitting it entirely means unshaped.
+Network = Annotated[Union[str, dict], AfterValidator(_validate_network)]
+
+
+def _validate_pool_size(value: Union[str, int]) -> Union[str, int]:
+    """Validate a ``pool_min_size``/``pool_max_size`` value at manifest time.
+
+    Parsed here only to fail fast — the value is stored in its written form and
+    re-parsed at selection time, exactly as ``clock_skew`` and ``network`` do.
+    """
+    from saorsa_db.size_class import parse_size
+
+    parse_size(value)
+    return value
+
+
+# A byte size written the way an operator writes it: "5MB", "1.5GB", or a bare
+# number of bytes. Binary units, matching how sizes are displayed.
+PoolSize = Annotated[Union[str, int], AfterValidator(_validate_pool_size)]
+
+
+def _check_pool_bounds(spec, label: str, pool_field: str = "pool") -> None:
+    """Validate ``pool_min_size``/``pool_max_size`` against their ``pool``.
+
+    Three failures, all of which would otherwise surface only after the deploy
+    had started: bounds with no pool request (which would silently do nothing),
+    an inverted pair, and bounds that exclude a class the request asks for.
+    """
+    from saorsa_db.size_class import bounded_byte_range, describe_bounds, parse_size
+    from saorsa_db.size_class import parse as parse_size_class
+
+    minimum = getattr(spec, "pool_min_size", None)
+    maximum = getattr(spec, "pool_max_size", None)
+    if minimum is None and maximum is None:
+        return
+
+    pool = getattr(spec, pool_field, None)
+    if not pool:
+        raise ValueError(
+            f"{label}: pool_min_size/pool_max_size narrow a `{pool_field}` "
+            f"request; they have no effect without one"
+        )
+
+    min_bytes = parse_size(minimum) if minimum is not None else None
+    max_bytes = parse_size(maximum) if maximum is not None else None
+    if max_bytes == 0:
+        raise ValueError(f"{label}: pool_max_size of 0 selects nothing")
+    if min_bytes is not None and max_bytes is not None and min_bytes >= max_bytes:
+        raise ValueError(
+            f"{label}: pool_min_size must be below pool_max_size, which is "
+            f"exclusive"
+        )
+
+    for name, count in pool.items():
+        if not count:
+            continue
+        try:
+            size_class = parse_size_class(str(name))
+        except ValueError:
+            # An unknown class name is reported by the request parser itself.
+            continue
+        if bounded_byte_range(size_class, min_bytes, max_bytes) is None:
+            raise ValueError(
+                f"{label}: the size bounds "
+                f"({describe_bounds(min_bytes, max_bytes)}) exclude the "
+                f"'{size_class.value}' class entirely, but the request asks "
+                f"for {count} of them"
+            )
 
 
 def _validate_clock_skew(value: str) -> str:
@@ -211,6 +296,11 @@ class Uploader(_Base):
     ant: Optional[str] = None  # wallet funding (ANT tokens)
     eth: Optional[str] = None  # wallet funding (ETH)
     clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # Simulated residential link conditions on this VM: a built-in profile name
+    # ("home-fttc") or an inline mapping. Omit for an unshaped cloud connection.
+    # NB shaped clients make a run's transfer percentiles incomparable to an
+    # unshaped baseline — do not enable on a staging gate run.
+    network: Optional[Network] = None
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
@@ -227,6 +317,9 @@ class Downloader(_Base):
     region: str
     vm_size: Optional[str] = None
     clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # Simulated residential link conditions on this VM — see Uploader.network.
+    # The downstream cap is what matters for a downloader.
+    network: Optional[Network] = None
     # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
     # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
     bootstrap_cache: Optional[bool] = None
@@ -373,7 +466,21 @@ class ExtensionSpec(_Base):
 class ProdUploader(_Base):
     region: str
     vm_size: str
-    urls: str  # path to URL list (uploaded with --public)
+    # Exactly one file source. `urls` is the legacy hand-written list, where
+    # "not already uploaded" is only checked by a name-based preflight.
+    # `pool` is a {size_class: count} request against the managed file pool,
+    # which cannot return a file that has ever been handed out.
+    urls: Optional[str] = None  # path to URL list (uploaded with --public)
+    pool: Optional[dict[str, int]] = None
+    # Byte bounds narrowing every class in `pool`: min inclusive, max exclusive,
+    # counts unchanged. "5MB" / 5242880 are both accepted.
+    pool_min_size: Optional[PoolSize] = None
+    pool_max_size: Optional[PoolSize] = None
+    # Draw only files with no chunks already on the network. A partially
+    # uploaded file has ant skip what is stored and send only the remainder, so
+    # a run testing whether an upload can be sustained over a slow link would
+    # not be testing that at all.
+    exclude_partial: bool = False
     payment: Optional[Payment] = None
     # ant log verbosity for this VM's uploads; None omits the token (defaults
     # to info on the VM). info=-v, debug=-vv, trace=-vvv.
@@ -391,6 +498,19 @@ class ProdUploader(_Base):
     memory_profiling: Optional[bool] = None
     # RUST_LOG to set on this uploader's service; OVERRIDES the verbosity flag.
     rust_log: Optional[str] = None
+    # Simulated residential link conditions on this uploader VM: a built-in profile
+    # name ("home-calibrated") or an inline mapping. This is the primary use case —
+    # a cloud VM's ~gigabit uplink is not how real users upload.
+    network: Optional[Network] = None
+
+    @model_validator(mode="after")
+    def _one_file_source(self) -> "ProdUploader":
+        if bool(self.urls) == bool(self.pool):
+            raise ValueError(
+                "prod_uploaders.uploaders[]: set exactly one of `urls` or `pool`"
+            )
+        _check_pool_bounds(self, "prod_uploaders.uploaders[]")
+        return self
 
 
 class ProdUploadersSpec(_Base):
@@ -430,6 +550,10 @@ class ProdDownloadersSpec(_Base):
     memory_profiling: Optional[bool] = None
     # RUST_LOG to set on the downloader service; OVERRIDES the verbosity flag.
     rust_log: Optional[str] = None
+    # Simulated residential link conditions on the client VM: a built-in profile
+    # name ("home-calibrated") or an inline mapping. Inherited by
+    # ProdContinuousDownloaderSpec below, so it covers both download kinds.
+    network: Optional[Network] = None
 
 
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
@@ -465,7 +589,16 @@ class ProdCanarySpec(_Base):
     secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
     upload_spec: str  # 'REGION[:VM_SIZE]'
     probes: list[ProdProbe]
-    urls_file: str
+    # Exactly one file source. `pool` is a {size_class: count} request against
+    # the managed pool; a canary consumes ~350 distinct files per run and they
+    # must never have been uploaded before, or the loss measurement is void.
+    urls_file: Optional[str] = None
+    pool: Optional[dict[str, int]] = None
+    # Byte bounds narrowing every class in `pool`. The canary's reason for
+    # wanting them: the chunk floor is 4, so a 14 KB file buys the same minimum
+    # loss observation as a 5 MB one, at the same cost of one pool entry.
+    pool_min_size: Optional[PoolSize] = None
+    pool_max_size: Optional[PoolSize] = None
     upload_sleep_secs: Optional[int] = None
     probe_concurrency: Optional[int] = None
     monitoring_volume_size: Optional[int] = None
@@ -485,6 +618,11 @@ class ProdCanarySpec(_Base):
     def _at_least_one_probe(self) -> "ProdCanarySpec":
         if not self.probes:
             raise ValueError("prod_canary.probes: at least one probe is required")
+        if bool(self.urls_file) == bool(self.pool):
+            raise ValueError(
+                "prod_canary: set exactly one of `urls_file` or `pool`"
+            )
+        _check_pool_bounds(self, "prod_canary")
         return self
 
 
@@ -493,6 +631,15 @@ class ProdLocalUploadsSpec(_Base):
     secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
     urls: Optional[str] = None
     local_dir: Optional[str] = None
+    # {size_class: count} against the managed pool. LOCAL entries only — this
+    # kind uploads from the operator's disk, so a URL entry is meaningless here.
+    pool: Optional[dict[str, int]] = None
+    # Byte bounds narrowing every class in `pool`: min inclusive, max exclusive.
+    pool_min_size: Optional[PoolSize] = None
+    pool_max_size: Optional[PoolSize] = None
+    # Draw only files with no chunks already on the network — see the note on
+    # ProdUploader.exclude_partial.
+    exclude_partial: bool = False
     payment: Optional[Payment] = None
     # ant log verbosity (info=default, debug, trace). The documented knob.
     log_level: Optional[LogLevel] = None
@@ -505,8 +652,12 @@ class ProdLocalUploadsSpec(_Base):
 
     @model_validator(mode="after")
     def _input_mode(self) -> "ProdLocalUploadsSpec":
-        if bool(self.urls) == bool(self.local_dir):
-            raise ValueError("prod_local_uploads: set exactly one of `urls` or `local_dir`")
+        chosen = sum(1 for value in (self.urls, self.local_dir, self.pool) if value)
+        if chosen != 1:
+            raise ValueError(
+                "prod_local_uploads: set exactly one of `urls`, `local_dir` or `pool`"
+            )
+        _check_pool_bounds(self, "prod_local_uploads")
         return self
 
 
@@ -567,9 +718,12 @@ class ProdDebugNodesSpec(_Base):
     is root-disk only (no attachable volume). Set ``binary.branch`` +
     ``binary.debug: true`` to build a debug ant-node. ``None`` means "use the CLI
     default"; the CLI defaults ``log_level=debug``, ``rust_backtrace=full``,
-    ``coredumps``/``monitoring``/``forward_logs`` on, ``log_retention_days=1``
-    (logs are already forwarded to Elasticsearch, so unlike core dumps there's
-    no reason to keep more than a day of them on disk). Every service also gets
+    ``coredumps``/``monitoring``/``forward_logs`` on, ``node_count=4`` and
+    ``log_retention_days=2``. Those last two are coupled: at DEBUG each service
+    emits ~758 log lines/s and a single telegraf forwarder tops out near 2700
+    lines/s, so a bigger ``node_count`` silently makes Elasticsearch a partial
+    sample and leaves the on-disk logs as the only complete record — which this
+    retention then discards. Every service also gets
     ``COLORBT_SHOW_HIDDEN=1`` (unconditional for this kind) and, when
     ``coredumps`` is on, ``gdb``/``elfutils`` installed to read the file cores.
     """
@@ -579,13 +733,13 @@ class ProdDebugNodesSpec(_Base):
     provider: Optional[str] = None  # digitalocean|hetzner|vultr|ovh|contabo
     vm_size: Optional[str] = None
     vm_count: Optional[int] = None  # default 1
-    node_count: Optional[int] = None  # default 15
+    node_count: Optional[int] = None  # default 4 (forwarder-bound; see docstring)
     volume_size: Optional[int] = None  # ignored on Contabo (root disk)
     log_level: Optional[LogLevel] = None  # default 'debug'
     rust_backtrace: Optional[str] = None  # default 'full'; '1' or '' also valid
     coredumps: Optional[bool] = None  # default on
     coredump_retention_days: Optional[int] = None  # default 7; 0 = keep forever
-    log_retention_days: Optional[int] = None  # default 1; 0 = keep forever
+    log_retention_days: Optional[int] = None  # default 2; 0 = keep forever
     heaptrack: Optional[bool] = None  # default off (use prod-nodes for heaptrack)
     monitoring: Optional[bool] = None  # dedicated InfluxDB; default on
     monitoring_provider: Optional[str] = None  # digitalocean|ovh|contabo

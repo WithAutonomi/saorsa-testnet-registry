@@ -464,9 +464,19 @@ def cmd_prod_canary_deploy(args):
             "[bold red]Error:[/bold red] At least one --probe-spec is required."
         )
         sys.exit(1)
-    if not args.urls_file:
+    if bool(args.urls_file) == bool(getattr(args, "pool", None)):
         console.print(
-            "[bold red]Error:[/bold red] --urls-file is required."
+            "[bold red]Error:[/bold red] exactly one of --urls-file or --pool "
+            "is required. --pool draws from the managed file pool, which "
+            "cannot return a file that has already been uploaded."
+        )
+        sys.exit(1)
+    if not getattr(args, "pool", None) and (
+        getattr(args, "pool_min_size", None) or getattr(args, "pool_max_size", None)
+    ):
+        console.print(
+            "[bold red]Error:[/bold red] --pool-min-size/--pool-max-size narrow "
+            "a --pool selection; they have no effect on --urls-file."
         )
         sys.exit(1)
     if args.upload_sleep_secs < 0:
@@ -483,10 +493,19 @@ def cmd_prod_canary_deploy(args):
     try:
         upload_spec = parse_upload_spec(args.upload_spec)
         probe_specs = [parse_probe_spec(s) for s in args.probe_spec]
-        urls_content = _read_urls_file(args.urls_file)
+        urls_content = (
+            _read_urls_file(args.urls_file) if args.urls_file else None
+        )
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
+
+    # Before any infrastructure and before the wallet check: a canary consumes
+    # ~350 distinct files permanently, so a shortfall must surface here rather
+    # than after VMs exist.
+    pool_selection_result = None
+    if getattr(args, "pool", None):
+        urls_content, pool_selection_result = _select_canary_pool_files(args, console)
 
     # Eagerly resolve the wallet so we fail fast before spinning up infra.
     if not getattr(args, "secret_key", None):
@@ -537,7 +556,16 @@ def cmd_prod_canary_deploy(args):
             args.branch_name, args.repo_owner, args.ant_version
         ),
     }
-    record_deployment_created(args.name, deploy_args_payload)
+    deployment_id = record_deployment_created(args.name, deploy_args_payload)
+    if pool_selection_result:
+        from saorsa_deploy.pool_selection import attach_deployment
+        from saorsa_deploy.registry import get_file_pool_repository
+
+        pool_repo = get_file_pool_repository()
+        if pool_repo is not None and deployment_id:
+            attach_deployment(
+                pool_repo, [pool_selection_result], deployment_id, args.name
+            )
     record_event(args.name, "prod_canary_deploy_started", deploy_args_payload)
 
     try:
@@ -622,6 +650,15 @@ def cmd_prod_canary_destroy(args):
     console = Console()
     console.print(f"[bold]prod canary destroy: {args.name}[/bold]")
 
+    # Only when monitoring is going too. A canary keeps its InfluxDB by default
+    # — the dataset IS the product — so the usual teardown leaves the results
+    # recoverable and there is nothing to warn about.
+    keep_monitoring = getattr(args, "keep_monitoring", True)
+    if not keep_monitoring and not getattr(args, "skip_results_check", False):
+        from saorsa_deploy.results_guard import check_before_destroy
+
+        check_before_destroy(console, args.name, "prod-canary")
+
     record_event(args.name, "prod_canary_destroy_started")
     record_status(args.name, DeploymentStatus.DESTROYING)
 
@@ -682,3 +719,77 @@ def cmd_prod_canary_destroy(args):
 # Re-exported for external use (kept here so tests can import without depending
 # on monitoring_volume_size's default living in two places).
 DEFAULT_MONITORING_VOLUME = DEFAULT_MONITORING_VOLUME_SIZE
+
+
+def _select_canary_pool_files(args, console: Console):
+    """Draw this canary's files from the pool.
+
+    The canary is the pool's dominant consumer — measured at 382, 311 and 313
+    distinct files across the three runs to date, all of them permanently
+    spent. Two consequences shape this function: the selection is summarised
+    per size class rather than listed (350 lines would bury everything else),
+    and a resumed deploy must reuse the persisted selection rather than drawing
+    another ~350 files.
+
+    Returns ``(urls_content, selected)`` where ``urls_content`` is the same flat
+    list the rest of the command already distributes, so provisioning and the
+    VM-side fetch are untouched.
+    """
+    from saorsa_db.models.prod_file_pool import ClaimSource, PoolFileKind
+
+    from saorsa_deploy.pool_selection import (
+        PoolSelectionError,
+        parse_request_token,
+        parse_size_bounds,
+        render_selection,
+        select_for_deployment,
+    )
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    repo = get_file_pool_repository()
+    if repo is None:
+        console.print(
+            "[bold red]Error:[/bold red] --pool needs DATABASE_URL — the file "
+            "pool lives in the registry database.\n"
+            "No infrastructure was created."
+        )
+        sys.exit(1)
+
+    try:
+        request = parse_request_token(args.pool)
+        # A canary measures chunk loss, and the chunk floor is 4 — a 14 KB file
+        # buys the same minimum observation as a 5 MB one while costing a pool
+        # entry either way. --pool-min-size is how an operator keeps the run off
+        # the bottom of the tiny class.
+        min_size_bytes, max_size_bytes = parse_size_bounds(
+            getattr(args, "pool_min_size", None),
+            getattr(args, "pool_max_size", None),
+        )
+    except (PoolSelectionError, ValueError) as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
+    try:
+        selected = select_for_deployment(
+            repo,
+            name=args.name,
+            slot="canary-upload",
+            kind=PoolFileKind.URL,
+            request=request,
+            source=ClaimSource.PROD_CANARY,
+            min_size_bytes=min_size_bytes,
+            max_size_bytes=max_size_bytes,
+        )
+    except PoolSelectionError as exc:
+        console.print(f"\n[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
+    console.print("  Pool selection")
+    render_selection(
+        console, "canary upload", request, selected, min_size_bytes, max_size_bytes
+    )
+    console.print(
+        f"    {len(selected)} file(s) claimed; selection persisted to S3 state "
+        "(a resume reuses it)."
+    )
+    return "\n".join(entry.locator for entry in selected) + "\n", selected

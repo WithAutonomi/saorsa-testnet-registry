@@ -42,6 +42,13 @@ class DeploymentProdUploadResult(Base):
         ForeignKey("deployments.id", ondelete="CASCADE"), nullable=False, index=True
     )
     client_hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Name of the simulated residential network profile this client VM ran
+    # under (V2-733), or NULL for an unshaped cloud link — which is every row
+    # predating the feature. Denormalised onto each op so a run's transfers can
+    # be filtered and compared across trains without joining through
+    # deploy_args JSON; the full resolved knob set (rates, delay, loss, profile
+    # set version) lives once in the deployment's deploy_args.
+    network_profile: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     region: Mapped[str] = mapped_column(String(64), nullable=False)
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     file_name: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -89,6 +96,7 @@ class DeploymentProdUploadResult(Base):
             "id": self.id,
             "deployment_id": self.deployment_id,
             "client_hostname": self.client_hostname,
+            "network_profile": self.network_profile,
             "region": self.region,
             "source_url": self.source_url,
             "file_name": self.file_name,

@@ -26,6 +26,13 @@ class _BaseOpRecord:
         ForeignKey("deployments.id", ondelete="CASCADE"), nullable=False, index=True
     )
     client_hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Name of the simulated residential network profile this client VM ran
+    # under (V2-733), or NULL for an unshaped cloud link — which is every row
+    # predating the feature. Denormalised onto each op so a run's transfers can
+    # be filtered and compared across trains without joining through
+    # deploy_args JSON; the full resolved knob set (rates, delay, loss, profile
+    # set version) lives once in the deployment's deploy_args.
+    network_profile: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     region: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[OpRecordStatus] = mapped_column(
@@ -55,6 +62,7 @@ class _BaseOpRecord:
             "id": self.id,
             "deployment_id": self.deployment_id,
             "client_hostname": self.client_hostname,
+            "network_profile": self.network_profile,
             "region": self.region,
             "file_size_bytes": self.file_size_bytes,
             "status": self.status.value,

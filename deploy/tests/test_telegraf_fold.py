@@ -80,6 +80,54 @@ def test_drop_log_levels_and_buffer_threaded_to_es(mock_es, mock_mon):
 
 @patch.object(tf, "load_monitoring_state")
 @patch.object(tf, "load_elastic_state")
+def test_from_beginning_defaults_true_and_renders_true(mock_es, mock_mon):
+    """Every kind except prod-debug-nodes must keep backfill-from-start.
+
+    Asserted on the rendered TOML, not just the attribute, so a change to the
+    template can't silently flip what the node fleet actually runs.
+    """
+    mock_es.return_value = _ES
+    mock_mon.side_effect = RuntimeError("no monitoring state")
+    es = _build()[0]
+    assert es.from_beginning is True
+    assert "from_beginning = true" in es._build_telegraf_config()
+
+
+@patch.object(tf, "load_monitoring_state")
+@patch.object(tf, "load_elastic_state")
+def test_from_beginning_false_is_threaded_to_es(mock_es, mock_mon):
+    """prod-debug-nodes restarts the forwarder on every log prune.
+
+    Telegraf keeps no tail offset across restarts, so reading from the
+    beginning would re-ingest every remaining log on each prune.
+    """
+    mock_es.return_value = _ES
+    mock_mon.side_effect = RuntimeError("no monitoring state")
+    es = _build(from_beginning=False)[0]
+    assert es.from_beginning is False
+    assert "from_beginning = false" in es._build_telegraf_config()
+
+
+@patch.object(tf, "load_monitoring_state")
+@patch.object(tf, "load_elastic_state")
+def test_from_beginning_does_not_disturb_other_config(mock_es, mock_mon):
+    """Only the one line differs between the two renderings."""
+    mock_es.return_value = _ES
+    mock_mon.side_effect = RuntimeError("no monitoring state")
+    default_cfg = _build()[0]._build_telegraf_config()
+    debug_cfg = _build(from_beginning=False)[0]._build_telegraf_config()
+    differing = [
+        (a, b)
+        for a, b in zip(default_cfg.splitlines(), debug_cfg.splitlines())
+        if a != b
+    ]
+    assert differing == [
+        ("  from_beginning = true", "  from_beginning = false")
+    ]
+
+
+@patch.object(tf, "load_monitoring_state")
+@patch.object(tf, "load_elastic_state")
 def test_genesis_provider_flags(mock_es, mock_mon):
     mock_es.side_effect = RuntimeError("no elastic state")
     mock_mon.return_value = _INFLUX

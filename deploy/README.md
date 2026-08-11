@@ -1393,6 +1393,233 @@ Only `prod-downloaders` and `prod-continuous-downloader` deployments are support
 
 **`--no-restart` note**: the `prod_downloader.py` service has no checkpoint/resume state — every start walks its full address list from the beginning. For `prod-continuous-downloader` this is harmless (it loops forever anyway), but restarting a `prod-downloaders` (one-shot) deployment that has already completed its single pass re-runs the entire address list, duplicating Influx points and any already-recorded results. Pass `--no-restart` for a completed one-shot deployment and restart the service manually only when you actually want another full pass.
 
+### Managing the production file pool (`prod pool`)
+
+Production uploads must use **real files**, and a file must **never be uploaded
+twice** — a canary measuring chunk loss on content that has already been on the
+network for months is measuring nothing. The pool is the catalogue those files
+come from and the ledger of what has been handed out.
+
+Two kinds of entry live in one catalogue:
+
+| Kind | What it is | Who can use it |
+|------|-----------|----------------|
+| `url` | a public URL | `prod uploaders`, `prod canary` (a VM fetches it at runtime) |
+| `local` | an absolute path on this machine | `prod local-uploads`, the desktop application |
+
+**The consumer chooses the kind, never a flag.** A remote uploader VM cannot
+read a path on your laptop, so there is deliberately no way to write a manifest
+that asks it to.
+
+#### Size classes
+
+Selection is by size class, derived from the file's byte count — never stored,
+so a boundary change reclassifies the whole catalogue at once.
+
+| Class | Range (binary, half-open) |
+|-------|---------------------------|
+| `tiny` | 0 – 10 MiB |
+| `small` | 10 – 100 MiB |
+| `medium` | 100 MiB – 1 GiB |
+| `large` | 1 – 5 GiB |
+| `xlarge` | 5 GiB+ |
+
+Exactly 10 MiB is `small`. Note a file of 1,045,869,721 bytes reads as "1.05 GB"
+decimal but is 997 MiB, so it is `medium`.
+
+These are **not** the `file_size_buckets_mb` in
+`resources/gates/staging-thresholds.yaml`, which bucket *transfer durations* for
+the staging gates and are recalibrated quarterly. Do not wire one into the other.
+
+#### The states of a file
+
+| State | Meaning | Drawable again? |
+|-------|---------|-----------------|
+| `available` | never handed out | yes |
+| `claimed` | handed out, not confirmed on the network | no |
+| `uploaded` | confirmed, with a datamap address recorded | no, ever |
+| `partial` | an upload stored some chunks and stopped | **yes, except by canaries** |
+
+`claimed` is **not** evidence that anything reached production. For a
+deployment-backed claim it usually means "uploaded but `record-results` has not
+run yet"; for a manual checkout it means you still have to say what happened.
+
+`partial` is the awkward middle. The file is not on the network in full, so it
+goes back in the pool — completing it is useful work, and re-uploading missing
+chunks is a real test case. But chunks of it **are** in production, sometimes
+for months, so it is not untouched either. That distinction is why it is a
+status of its own rather than a `released` claim, and the claim keeps the chunk
+counts (`342 of 400 stored`) rather than only recording that it failed.
+
+**Canary selection excludes partials by construction** — not via a flag, so no
+manifest can opt into it. A loss measurement over content that is already partly
+stored is measuring something other than what it reports, and would produce a
+number that looks credible and is not.
+
+#### Commands
+
+| Command | What it does |
+|---------|--------------|
+| `prod pool add --url/--urls-file/--dir/--path` | Catalogue files. URLs are size-probed; local files are hashed SHA1+SHA256. `--dir` batches its database work, so a directory of thousands takes seconds rather than minutes. `--verbose` prints a line per file instead of a progress bar. |
+| `prod pool add --from-listing internet-archive:<item> [--size CLASS] [--min-size SIZE] [--max-size SIZE] [--limit N]` | Bulk-catalogue a public collection. Entries arrive pre-sized and pre-hashed from the source's metadata — nothing is downloaded. `--min-size`/`--max-size` express what a class cannot, e.g. `--size tiny --min-size 5MB`. |
+| `prod pool list [--status available\|claimed\|uploaded\|partial] [--kind] [--size] [--min-size] [--max-size] [--tag] [--since] [--limit] [--all]` | What is in the pool and what state it is in. `--min-size`/`--max-size` are the same bounds a manifest applies. |
+| `prod pool show <file> \| --address <addr>` | One file in full, including its upload result and costs. Reverse lookup by datamap address. |
+| `prod pool stats` | Availability per size class, split by kind. |
+| `prod pool checkout --size CLASS [--count N] [--kind] [--consumer LABEL] [--reuse-open]` | Take a file by hand, for the desktop application or anything else. |
+| `prod pool claims [--consumer] [--source] [--stale AGE] [--unresolvable] [--all]` | What is checked out. Open claims by default. |
+| `prod pool history <file>` | Every claim ever made against one file. |
+| `prod pool mark-uploaded <file> --address <addr> [--chunks-stored …] [--storage-cost-atto …]` | Record that a checked-out file reached the network. |
+| `prod pool release <file>…` | Give claimed file(s) back. |
+| `prod pool verify [--kind] [--limit] [--no-rehash]` | Re-check entries: rotted URLs, moved files, changed sizes. |
+| `prod pool import-history [--dry-run]` | Mark files already on the network as spent, from **both** upload tables. Partially-uploaded history lands as `partial`, not as spent. |
+
+Everything is addressed by **file id**, never claim id — a file carries at most
+one blocking claim, so a claim id is an implementation detail.
+
+Tags are repeatable on both `add` and `list` (`--tag prc --tag video`), stored
+lower-cased in an indexed side table, and `list --tag a --tag b` matches **any**
+of them, not all.
+
+#### The desktop-application flow
+
+Nothing in a GUI application can write to this database, so the **checkout** is
+what spends the file, not the upload:
+
+```bash
+saorsa-deploy prod pool checkout --size small --count 1 --consumer desktop-app
+# … upload it in the app …
+saorsa-deploy prod pool mark-uploaded 118 --address <datamap-address>
+# or, if it did not happen:
+saorsa-deploy prod pool release 118
+```
+
+Come back later without the id? `prod pool claims` lists everything open, and
+`--consumer desktop-app` narrows it to yours.
+
+#### Drawing from the pool in a deploy
+
+| Kind | Manifest | CLI |
+|------|----------|-----|
+| `prod-uploaders` | `pool: {small: 3, medium: 2}` per uploader, exclusive with `urls` | `--uploader lon1:s-4vcpu-8gb:pool=small:3,medium:2` |
+| `prod-canary` | `pool: {…}`, exclusive with `urls_file` | `--pool tiny:40,small:230,medium:110` |
+| `prod-local-uploads` | `pool: {…}`, exclusive with `urls`/`local_dir` | `--from-pool tiny:10` |
+
+```yaml
+kind: prod-uploaders
+name: PROD-UL-05
+binary:
+  ant:
+    version: 0.5.2
+prod_uploaders:
+  uploaders:
+    - region: lon1
+      vm_size: s-4vcpu-8gb
+      concurrency: 4
+      pool:
+        small: 3
+        medium: 2
+```
+
+Four things this guarantees:
+
+* **Selection runs before any infrastructure.** A shortfall aborts with no VMs
+  created and no mainnet spend, and the error names which inventory fell short —
+  plenty of large *local* files are no help to a remote uploader.
+* **Selection is all-or-nothing.** A request for 40 tiny + 230 small + 110
+  medium that runs short on medium claims *nothing*, rather than burning 270
+  files on a run that then aborts.
+* **`up --resume` reuses the same files.** The selection is persisted to S3, so
+  a retried deploy does not draw a fresh set while the first sits claimed.
+* **The duplicate preflight becomes redundant.** `--allow-duplicate-files` and
+  the name-based check still apply to the legacy `urls=` path, but a pool
+  selection cannot return a spent file by construction.
+
+#### Narrowing a request by byte size
+
+A size class is sometimes too coarse. The canary is the case that forced this:
+it measures chunk loss, the **chunk floor is 4**, so a 14 KB file buys exactly
+the same minimum observation as a 5 MB one while costing the same single,
+permanently-spent pool entry. "`tiny`, but at least 5 MB" is not a class.
+
+Every pool consumer therefore accepts **`pool_min_size`** and
+**`pool_max_size`**, which *narrow* each requested class without touching the
+counts — so the shape of a selection (37 tiny / 233 small / 112 medium) is
+preserved.
+
+| Kind | Manifest | CLI |
+|------|----------|-----|
+| `prod-uploaders` | `pool_min_size: 5MB` per uploader | spec tokens `:pool_min_size=5MB:pool_max_size=1GB` |
+| `prod-canary` | `pool_min_size: 5MB` | `--pool-min-size 5MB --pool-max-size 1GB` |
+| `prod-local-uploads` | `pool_min_size: 5MB` | `--pool-min-size 5MB --pool-max-size 1GB` |
+
+```yaml
+prod_canary:
+  pool:
+    tiny: 37
+    small: 233
+    medium: 112
+  pool_min_size: 5MB       # keeps the sub-5MB bottom of `tiny` out
+```
+
+* **Units are binary and a bare number is bytes** — `5MB` is 5 MiB, matching how
+  every size in this tool is displayed, so a bound pasted back from output
+  selects the file it was read from. `1.5GB`, `512KB` and `5242880` all work.
+* **`min` is inclusive, `max` exclusive**, matching the half-open class
+  boundaries. `pool_min_size: 10MB` with `pool_max_size: 100MB` is therefore
+  *exactly* the `small` class, not almost.
+* **Bounds that exclude a requested class are refused at validate time** —
+  `pool_max_size: 5MB` alongside `small: 3` errors immediately rather than
+  surfacing later as "0 available", which reads as an empty pool and sends you
+  cataloguing files that would not have been selected either.
+* **A shortfall names the bound.** "2 available" without it reads as a
+  whole-class figure.
+
+The same bounds work on `prod pool list --min-size/--max-size`, so inventory can
+be checked against the exact selection a run will make, and on `prod pool add
+--from-listing --min-size/--max-size` when sourcing for it.
+
+#### Keeping the pool stocked
+
+A canary run consumes roughly **350 distinct files, permanently**, once per
+release train — measured at 382 / 311 / 313 across the three runs to date,
+concentrated in `small` and `medium` with none at all in `large`/`xlarge`. Hand
+curation cannot feed that, which is what `--from-listing` is for:
+
+```bash
+saorsa-deploy prod pool add --from-listing internet-archive:<item> --size small --limit 250
+saorsa-deploy prod pool stats
+```
+
+Internet Archive item metadata publishes name, size, MD5 and SHA1 for every
+file, so hundreds of entries are catalogued in seconds without downloading
+anything — and those real checksums are what let an IA URL and a local copy of
+the same file be recognised as one piece of content, so the pool cannot hand out
+both.
+
+#### Two honest limits
+
+**`import-history` matches on file name.** That is all the recorded history
+holds — no digests, and no way to add them now. A false match costs you a pool
+entry (undone with `release`); a missed match re-uploads content already on the
+network. The direction of that error is deliberate.
+
+**A URL from a source publishing no checksum, which you never download, cannot
+be deduplicated before upload.** `verify` reports how many entries are in that
+state rather than implying a coverage the tool does not have. The datamap
+address catches it afterwards; `pool add --materialise` avoids it entirely by
+downloading once and cataloguing a single local entry.
+
+#### Before you tear a run down
+
+Remote upload results live in the deployment's InfluxDB until
+`deployments record-results` pulls them into Postgres — and the teardown
+destroys that VM. `prod uploaders destroy` (and `prod canary destroy
+--no-keep-monitoring`) therefore check first and warn loudly if results are
+missing, comparing recorded rows against the deployment's pool claims, which say
+exactly how many files the run took. It **warns rather than blocks**: refusing on
+a non-TTY would strand billable infrastructure when `down` runs unattended.
+`--skip-results-check` silences it.
+
 ### Running uploaders against production (`prod uploaders`)
 
 `prod uploaders deploy` stands up one or more client VMs that each upload a list of public files to the canonical Autonomi production network with `ant --json file upload --public`, recording per-file metrics in InfluxDB. Each VM downloads its source files at runtime from the URL list you supply, uploads each one in turn, and exits when its list is exhausted — teardown is explicit via `prod uploaders destroy`.
@@ -1550,13 +1777,13 @@ saorsa-deploy prod debug-nodes deploy \
 | `--provider {digitalocean,hetzner,vultr,ovh,contabo}` | no | Node VM provider (default digitalocean). |
 | `--region REGION` | yes | Node region (e.g. `lon1`, `fsn1`, `GRA9`, `EU`). |
 | `--vm-size SIZE` | no | Node VM size/plan/flavor/product-id (per-provider default; Contabo default `V10` VDS). |
-| `--vm-count N` / `--node-count N` | no | VMs per region (default 1) / ant-node services per VM (default 15). |
+| `--vm-count N` / `--node-count N` | no | VMs per region (default 1) / ant-node services per VM (default **4** — deliberately not the prod fleet's 15; see "Log volume is forwarder-bound" below). |
 | `--volume-size GB` | no | Attached data volume (default 100). **Ignored on Contabo** (root disk only). |
 | `--log-level {info,debug,trace}` | no | Single global level (default `debug`). ant-node has no per-module env filter, so per-module `RUST_LOG` targeting is not possible. |
 | `--rust-backtrace VAL` | no | `RUST_BACKTRACE` on each service (default `full`; `1` for a terser trace, or `""` to disable). Services also always get `COLORBT_SHOW_HIDDEN=1`. |
 | `--coredumps` / `--no-coredumps` | no | Enable core dumps (`LimitCORE=infinity` + `kernel.core_pattern` under the data path) **and install `gdb` + `elfutils` on the VM to read them**. Default on. |
 | `--coredump-retention-days N` | no | Daily prune of cores older than N days (default 7; 0 = keep forever). |
-| `--log-retention-days N` | no | Daily prune of rotated ant-node debug logs under `/mnt/ant-node-storage/log` older than N days (default **1** — much shorter than coredumps' default since logs are already forwarded to Elasticsearch; 0 = keep forever). Also runs once immediately on install for prompt relief on a full disk. |
+| `--log-retention-days N` | no | Daily prune of rotated ant-node debug logs under `/mnt/ant-node-storage/log` older than N days (default **2**; 0 = keep forever). Also runs once immediately on install for prompt relief on a full disk. The prune **restarts the ES log forwarder** — see below. |
 | `--heaptrack` / `--no-heaptrack` | no | Also wrap services in heaptrack (default off — use `prod nodes` for that). |
 | `--monitoring` / `--no-monitoring` | no | Dedicated InfluxDB (default on). `--monitoring-provider {digitalocean,ovh,contabo}`, `--monitoring-region`, `--monitoring-droplet-size`, `--monitoring-volume-size`, `--grafana`, `--influx-retention-days` (default 7). |
 | `--forward-logs` / `--no-forward-logs` | no | Dedicated Elasticsearch for node logs (default on). `--elastic-provider {digitalocean,ovh,contabo}`, `--elastic-region`, `--elastic-droplet-size`, `--elastic-volume-size`, `--elastic-retention-days` (default 3), `--elastic-shards` (default 1), `--elastic-drop-log-levels`. |
@@ -1565,7 +1792,39 @@ saorsa-deploy prod debug-nodes deploy \
 | `--contabo-ssh-public-key-path PATH` | no | Operator public key registered as a `contabo_secret` (default `~/.ssh/id_rsa.pub`). |
 | `--rewards-address` / `--port` / `--ssh-key-path` | no | Prod rewards address / initial listen port (default 10000) / SSH key. |
 
-`prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy — the on-disk debug logs are pruned much sooner by `--log-retention-days` and are already durable in Elasticsearch, so there's no equivalent scp step needed for them.
+**The log prune must restart the log forwarder.** Telegraf's `tail` input holds an
+open descriptor for every file it matches and has no idle-close, so a plain
+`find … -delete` only removes the directory entry: the file leaves `du` while
+ext4 keeps the blocks, and `df` climbs to 100% while the visible tree looks
+small. Measured on ant-prod-debug-01 (2026-08-02): **694 GiB across 70
+descriptors** on a 968 GB root disk reporting **0 bytes free** with only 271 GB
+visible. The `ant-node-debug-logprune.service` unit therefore carries a second
+`ExecStart` — `-/usr/bin/systemctl try-restart telegraf-ant-elasticsearch.service`
+— ordered after the `find` (the unlink must land first; the restart is what
+frees the blocks). It is `try-restart` so it no-ops under `--no-forward-logs`,
+and `-`-prefixed so a forwarder that fails to return cannot fail the prune. It
+is unconditional rather than gated on the `find` having deleted anything,
+because ant-node's own `--log-max-files` self-pruning strands descriptors the
+same way. Consequently this kind provisions the forwarder with
+`from_beginning = false`: telegraf keeps no tail offset across restarts, so
+reading from the beginning would re-ingest every remaining log on every prune.
+**Any new prune timer that deletes files something else is tailing needs the
+same treatment.**
+
+**Log volume is forwarder-bound — Elasticsearch is a sample, not a copy.** At
+`--log-level debug` each ant-node service emits roughly **758 log lines/s**
+(222 bytes average), and a single telegraf forwarder tops out near **2 700
+lines/s** — it is CPU-bound in the JSON parse plus the `rename`/`starlark`/
+`strings` processor chain, not blocked on Elasticsearch (measured from the node
+VM, ES accepted ~8 000 docs/s at telegraf's own batch size, with 0 write
+rejections and 13% CPU). So `--node-count` sets how much of your debug logging
+survives: at 10 services only ~36% of lines reached ES, and the forwarder had
+previously wedged for three days (190M docs/day → 5 684). The default of **4**
+keeps production under that ceiling. Raise it only if you accept that ES holds a
+partial sample and the **on-disk logs are the authoritative record** — which
+`--log-retention-days` then discards, so raise that too.
+
+`prod debug-nodes destroy --name <name>` tears down the node VMs and, by default, the paired monitoring + Elasticsearch stacks (`--keep-monitoring` / `--keep-elastic` to retain them). `scp root@<vm>:/mnt/ant-node-storage/coredumps/core.*` off the box before destroy — and, if the run mattered, the debug logs under `/mnt/ant-node-storage/log` too: Elasticsearch is only a partial copy of them (see above).
 
 Fully declarative via `deployments up/plan/down --config` (`kind: prod-debug-nodes`); example manifest at `manifests/profiles/prod-debug-nodes.yaml`. `up` is resumable, so a retry skips the ~10-minute debug build.
 
@@ -1941,6 +2200,133 @@ Fully declarative via `deployments up/plan/down --config` (`kind: prod-nodes`).
 Because `up` is resumable, a re-run after a mid-sequence failure skips the
 already-done ~10-minute debug build. See
 `manifests/profiles/prod-nodes.yaml`.
+
+### Simulating a residential connection (`network`)
+
+Client VMs sit on ~gigabit cloud links, which is not how real users reach the
+network — and upstream rate, the thing that dominates an upload, is where a home
+line differs most (a cloud VM uploads at roughly a gigabit; UK FTTC manages 18
+Mbit, ADSL 1 Mbit). Any client VM can therefore be shaped with `tc` to behave
+like a residential connection, selected by a named profile so runs are
+reproducible and comparable across trains.
+
+Supported on `prod uploaders`, `prod downloaders`, `prod continuous-downloader`
+(the primary use case) and on testnet/extension `clients.uploaders[]` /
+`clients.downloaders[]` (secondary). Not wired to `prod canary` or the `local-*`
+kinds. Omitting it leaves a deployment byte-identical to one built before the
+feature existed.
+
+#### Profiles
+
+Shipped in `saorsa_deploy/resources/network/profiles.yaml`, git-versioned with a
+`version:` that is echoed into every recorded run — bump it when a profile's
+numbers change, or two runs labelled `home-fttc` will mean different things.
+
+| Profile | Down | Up | Added RTT | Jitter | Loss |
+|---|---|---|---|---|---|
+| `home-adsl` | 10 Mbit | 1 Mbit | 30 ms | 5 ms | 0.2% |
+| `home-calibrated` | 27.4 Mbit | 6.29 Mbit | 12.7 ms | 0.2 ms | 0 |
+| `home-fttc` | 60 Mbit | 18 Mbit | 15 ms | 3 ms | 0.05% |
+| `home-fttp` | 300 Mbit | 50 Mbit | 8 ms | 2 ms | 0.01% |
+| `mobile-4g` | 30 Mbit | 8 Mbit | 60 ms | 20 ms | 0.5% |
+
+`home-calibrated` is the only measured profile (a real TalkTalk line, 2026-07-30);
+the rest are representative figures. Its loss is recorded as 0 because 0/300
+packets were lost — that is *below the resolution of that sample*, not proof of a
+lossless line.
+
+**Sizing the run.** Client egress is roughly 4x payload (chunk fan-out), so at
+`home-adsl`'s 1 Mbit up a 100 MB upload takes ~67 minutes and 1 GB takes ~11
+hours. `home-fttc` is the practical choice for most runs while still being ~50x
+slower than the VM's native link.
+
+#### Usage
+
+```yaml
+# testnet — per client VM, so one run can span several conditions plus a control
+clients:
+  uploaders:
+    - { provider: digital_ocean, region: nyc1, file_size_mb: 100, network: home-fttc }
+    - { provider: digital_ocean, region: sfo3, file_size_mb: 100 }   # unshaped control
+  downloaders:
+    - { provider: digital_ocean, region: tor1, network: home-adsl }
+
+# prod uploaders — per entry
+prod_uploaders:
+  uploaders:
+    - { region: lon1, vm_size: s-4vcpu-8gb, urls: lists/a.txt, network: home-calibrated }
+
+# prod downloaders / continuous-downloader — spec-level
+prod_continuous_downloader:
+  spec: fsn1:cpx41
+  network: home-fttc
+```
+
+An ad-hoc set can be given inline instead of a name (manifest only — the CLI
+token takes a bare name, since client specs are colon-delimited):
+
+```yaml
+    network: { rate_down: 30mbit, rate_up: 5mbit, delay: 25ms, jitter: 5ms, loss: 0.2 }
+```
+
+CLI equivalents:
+
+```
+--uploader digital_ocean:nyc1:100:s-2vcpu-4gb:network=home-fttc
+--downloader digital_ocean:tor1:network=home-adsl
+prod continuous-downloader deploy --network home-fttc ...
+prod downloaders deploy --network 'rate_down=30mbit,rate_up=5mbit,delay=25ms'
+```
+
+| Field | Meaning |
+|---|---|
+| `rate_down` / `rate_up` | tc rate tokens (`kbit`/`mbit`). Both required. Asymmetry is the point. |
+| `delay` | Added to **round-trip** time, counted once. Applied on egress only, so it is not doubled. This is added latency on top of the VM's own RTT to peers, not an absolute target. |
+| `jitter` | Variation around `delay`, normally distributed. |
+| `loss` | Percent, applied **per direction**. Inbound loss is what makes a download behave like a home download. |
+
+#### What is exempt, and why
+
+Traffic on TCP ports 22 (SSH), 8086 (InfluxDB) and 9200 (Elasticsearch) bypasses
+the shaper. Without that, a shaped VM's own Telegraf metrics and forwarded client
+logs would compete with the transfer for the capped bandwidth: the measured
+transfer would come out slower than a real user's (no real user ships their own
+logs), and the run's results could arrive incomplete — degrading the instrument
+being used to take the measurement. The exemption is keyed on port rather than
+address because the Elasticsearch VM is created *after* the client VMs are
+provisioned, so its address does not exist when shaping is applied.
+
+#### Implementation notes
+
+* An `htb` hierarchy with a shaped default class and an unshaped exempt class;
+  `netem` for delay/jitter/loss; `cake` (falling back to `fq_codel`) pinned as the
+  AQM at the leaf. Queue depth is deliberately not a user knob — a rate cap always
+  implies a queue, and leaving its depth to chance gives either tail-drop collapse
+  or bufferbloat that silently swamps the configured `delay`.
+* Ingress is shaped via an `ifb` mirror device, because `tc` shapes egress only.
+  Without it the downstream cap would not apply to downloads at all.
+* Applied by a systemd oneshot unit (`ant-network-impairment.service`), so the
+  shaping survives a reboot — `tc` state is otherwise kernel-only. The apply script
+  is convergent: re-provisioning replaces the rules rather than stacking them (two
+  `netem delay 30ms` rules would be 60 ms).
+* Verify on a live VM with `tc qdisc show` and by comparing idle RTT to RTT under
+  load; a profile configured for 15 ms that shows 900 ms loaded means the queue is
+  misbehaving.
+
+#### Recording
+
+The profile *name* is written to the `network_profile` column on
+`deployment_upload_records`, `deployment_download_records`,
+`deployment_prod_upload_results` and `deployment_prod_download_results`, so a run's
+transfers can be filtered and compared without joining through JSON. The full
+resolved knob set (rates, delay, jitter, loss, profile-set version) is stored once
+in the deployment's `deploy_args` — that is what keeps a past run interpretable
+after the profile file has moved on. NULL means unshaped, which is every row
+predating the feature.
+
+**Do not enable this on a staging gate run.** `deployments compare` gates on
+transfer p50/p95, and a shaped client's percentiles are not comparable to an
+unshaped baseline.
 
 ### Running tests
 

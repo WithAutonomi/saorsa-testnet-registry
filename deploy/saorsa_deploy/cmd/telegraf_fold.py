@@ -42,12 +42,22 @@ def build_node_telegraf_providers(
     ssh_user: str = "root",
     drop_log_levels: str | None = None,
     buffer_limit: int | None = None,
+    from_beginning: bool = True,
     console: Console | None = None,
 ) -> list:
     """Resolve ES + InfluxDB telegraf provisioners for a node-tier host group.
 
     Returns an ordered list (ES log-forwarder first, then InfluxDB metrics) of
     whichever backends have state. Empty when neither does.
+
+    ``from_beginning`` controls whether the ES forwarder's ``tail`` input reads
+    each log file from byte 0 (the default, and what every kind has always done)
+    or resumes at the end of the existing files. Telegraf keeps no tail offset
+    across restarts, so ``True`` means every forwarder restart re-ingests
+    whatever logs are still on disk. Pass ``False`` on kinds that restart the
+    forwarder as part of normal operation — currently ``prod-debug-nodes``,
+    whose daily log prune must restart it to release the descriptors it holds on
+    the deleted files.
     """
     console = console or Console()
     providers: list = []
@@ -75,6 +85,7 @@ def build_node_telegraf_providers(
                     elasticsearch_username=es_user,
                     elasticsearch_password=es_pass,
                     drop_log_levels=_parse_drop_log_levels(drop_log_levels),
+                    from_beginning=from_beginning,
                     console=console,
                     **metric_buffer,
                 )

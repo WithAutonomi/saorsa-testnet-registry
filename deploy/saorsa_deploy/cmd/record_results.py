@@ -13,6 +13,7 @@ The CLI entry point ``cmd_record_results`` resolves the deployment's
   uploads/downloads write directly to Postgres at run time; there is
   nothing to record.
 """
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ from saorsa_deploy.slack_results import (
     file_ops_result_blocks,
     prod_upload_result_blocks,
 )
-from saorsa_deploy.state import load_monitoring_state
+from saorsa_deploy.state import load_client_state, load_monitoring_state
 
 _TESTNET_KIND = "testnet"
 
@@ -92,6 +93,11 @@ def cmd_record_results(args):
             repo, deployment, args, console,
             influx_url, influx_token, influx_org, influx_bucket,
         )
+
+    # Close the pool claims this deployment took. Only reached for the remote
+    # kinds: prod-local-uploads resolves its claims inline as it uploads, and
+    # returns above before ever getting here.
+    _resolve_pool_claims(repo, deployment, kind, console)
 
     if getattr(args, "update_slack", False):
         _post_results_to_slack(repo, deployment, console, results_blocks)
@@ -154,6 +160,9 @@ def _results_header_block(deployment) -> dict:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_kind(deploy_args) -> str:
@@ -296,6 +305,77 @@ def _record_file_ops(
     return file_ops_result_blocks(aggregates, op_records=op_records)
 
 
+def _build_network_profile_lookup(deployment):
+    """Return host -> network profile name for a deployment, or a constant None.
+
+    The shaping applied to a client VM is recorded in ``deploy_args`` at deploy
+    time (that is the authoritative record, holding the full knob set); this
+    denormalises just the *name* onto each op row so a run's transfers can be
+    filtered and compared without joining through JSON.
+
+    Two shapes are handled: a single ``network`` entry (the single-VM download
+    kinds) applies to every host, while ``network_by_host`` maps each client VM
+    to its own profile for the multi-VM kinds where a shaped uploader may run
+    alongside an unshaped control. Anything unrecognised yields None, i.e. the
+    row simply records no profile — never a wrong one.
+    """
+    deploy_args = getattr(deployment, "deploy_args", None) or {}
+
+    by_host = deploy_args.get("network_by_host")
+    if isinstance(by_host, dict) and by_host:
+        return lambda host: (by_host.get(host) or {}).get("name") if isinstance(
+            by_host.get(host), dict
+        ) else by_host.get(host)
+
+    single = deploy_args.get("network")
+    if isinstance(single, dict):
+        name = single.get("name")
+        return lambda host: name
+    if isinstance(single, str) and single:
+        return lambda host: single
+
+    # Multi-VM kinds (prod uploaders, testnet clients) keep their per-VM spec in
+    # the deployment's client state rather than deploy_args, so a shaped uploader
+    # and an unshaped control in the same run stay distinguishable. Hostname is
+    # derived exactly as `_build_payment_map` in print_file_ops does, from the
+    # client terraform module's naming.
+    by_host = _network_map_from_client_state(getattr(deployment, "name", "") or "")
+    if by_host:
+        return lambda host: by_host.get(host)
+
+    return lambda host: None
+
+
+def _network_map_from_client_state(name: str) -> dict[str, str]:
+    """Map hostname -> network profile name from the deployment's client state.
+
+    Missing or unreadable state yields an empty map, so recording degrades to "no
+    profile recorded" rather than failing — the results themselves matter far more
+    than this annotation.
+    """
+    if not name:
+        return {}
+    try:
+        state = load_client_state(name)
+    except (RuntimeError, FileNotFoundError):
+        return {}
+    out: dict[str, str] = {}
+    for c in state.get("clients", []):
+        network = c.get("network")
+        if not network:
+            continue
+        label = network.get("name") if isinstance(network, dict) else str(network)
+        if not label or "=" in label:
+            # An inline (ad-hoc) set has no name worth denormalising; the full
+            # definition stays in deploy_args.
+            label = "inline"
+        out[
+            f"{name}-ant-client-{c.get('role', 'upload')}-"
+            f"{c.get('region')}-{c.get('client_index')}"
+        ] = label
+    return out
+
+
 def _record_file_op_records(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
@@ -307,6 +387,7 @@ def _record_file_op_records(
     ``--window`` is ignored so re-runs naturally backfill the full history.
     Idempotent via the ``(deployment_id, host, start_ns)`` upsert key.
     """
+    network_profile_for_host = _build_network_profile_lookup(deployment)
     console.print(
         "[bold]Fetching per-operation records (full range)...[/bold]"
     )
@@ -361,6 +442,7 @@ def _record_file_op_records(
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
+            network_profile=network_profile_for_host(p["host"]),
         )
         if measurement == "upload":
             repo.upsert_upload_record(**kwargs)
@@ -431,6 +513,7 @@ def _record_prod_upload(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
 ) -> list[dict] | None:
+    network_profile_for_host = _build_network_profile_lookup(deployment)
     console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
     try:
         points = fetch_prod_upload_points(
@@ -464,6 +547,7 @@ def _record_prod_upload(
         repo.upsert_prod_upload_result(
             deployment_id=deployment.id,
             client_hostname=p["host"],
+            network_profile=network_profile_for_host(p["host"]),
             region=p.get("region") or "",
             source_url=source_url,
             file_name=p.get("file_name") or "",
@@ -496,3 +580,153 @@ def _record_prod_upload(
     )
 
     return prod_upload_result_blocks(points)
+
+
+def _resolve_pool_claims(repo, deployment, kind: str, console) -> None:
+    """Mark this deployment's pool claims as uploaded, with what the network gave back.
+
+    The two source tables describe the same concepts under different names —
+    ``address``/``top_address``, ``total_chunks``/``num_chunks`` — so each kind
+    needs its own reader rather than one generic path.
+
+    An **upsert**, not an insert-once: ``record-results`` is idempotent and
+    re-runnable, and a later pass can carry revised costs. A claim whose file
+    has no matching result row is left open rather than guessed at — an upload
+    that did not happen must not be recorded as though it did.
+    """
+    from saorsa_deploy.registry import get_file_pool_repository
+
+    pool_repo = get_file_pool_repository()
+    if pool_repo is None:
+        return
+
+    try:
+        _resolve_pool_claims_inner(repo, pool_repo, deployment, kind, console)
+    except Exception:
+        # Closing pool claims is auxiliary to recording results. A registry
+        # that predates the pool migration, or any other read failure here,
+        # must not cost the operator the results themselves — those live in an
+        # InfluxDB that the teardown is about to destroy.
+        logger.debug("Could not resolve file-pool claims", exc_info=True)
+        console.print(
+            "[dim]Could not resolve file-pool claims (the pool tables may not "
+            "exist yet); results were recorded normally.[/dim]"
+        )
+
+
+def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) -> None:
+    # Released claims are excluded, but already-uploaded ones are NOT: a later
+    # pass can carry revised costs, and skipping them would make this
+    # insert-once in practice however the resolve method behaves.
+    from saorsa_db.models.prod_file_pool import ClaimStatus
+    from saorsa_db.models.prod_upload_result import ProdUploadStatus
+
+    claims = [
+        claim
+        for claim in pool_repo.list_pool_claims(deployment_id=deployment.id)
+        if claim.status is not ClaimStatus.RELEASED
+    ]
+    if not claims:
+        return
+
+    by_name: dict[str, dict] = {}
+    if kind == "prod-uploaders":
+        for row in repo.list_prod_upload_results_for_deployment(deployment.id):
+            # Partials matter as much as successes. A part-uploaded file put
+            # real chunks in production; leaving its claim open would report it
+            # as "no matching upload result", which reads as "the run never
+            # touched this file" — the opposite of what happened.
+            if row.status is ProdUploadStatus.SUCCESS:
+                complete = True
+            elif row.status is ProdUploadStatus.PARTIAL_UPLOAD:
+                complete = False
+            else:
+                continue
+            existing = by_name.get(row.file_name)
+            if existing is not None and existing["complete"] and not complete:
+                # A file uploaded successfully on one attempt and partially on
+                # another is on the network: the success wins.
+                continue
+            by_name[row.file_name] = {
+                "complete": complete,
+                "address": row.address,
+                "chunks_stored": row.chunks_stored,
+                "chunks_failed": row.chunks_failed,
+                "total_chunks": row.total_chunks,
+                "storage_cost_atto": row.storage_cost_atto,
+                "gas_cost_wei": row.gas_cost_wei,
+            }
+    elif kind == "prod-canary":
+        for row in repo.list_prod_canary_uploads_for_deployment(deployment.id):
+            by_name[row.file_name] = {
+                "complete": True,
+                "address": row.top_address,
+                "chunks_stored": None,
+                "chunks_failed": None,
+                "total_chunks": row.num_chunks,
+                "storage_cost_atto": row.storage_cost_atto,
+                "gas_cost_wei": row.gas_cost_wei,
+            }
+    else:
+        return
+
+    newly_resolved = 0
+    refreshed = 0
+    partial = 0
+    still_open = 0
+    for claim in claims:
+        pool_file = pool_repo.get_pool_file(claim.file_id)
+        if pool_file is None:
+            continue
+        payload = dict(by_name.get(pool_file.name) or {})
+        if not payload:
+            if claim.is_open:
+                still_open += 1
+            continue
+        complete = payload.pop("complete")
+        was_open = claim.is_open
+        if not complete:
+            payload.pop("storage_cost_atto", None)
+            payload.pop("gas_cost_wei", None)
+            pool_repo.mark_pool_claim_partial(
+                claim.id,
+                note="upload was partial — file returned to the pool",
+                **payload,
+            )
+            partial += 1
+            continue
+        pool_repo.resolve_pool_claim(claim.id, **payload)
+        if was_open:
+            newly_resolved += 1
+        else:
+            refreshed += 1
+
+    if newly_resolved:
+        console.print(
+            f"[dim]Resolved {newly_resolved} file-pool claim(s) for this "
+            "deployment.[/dim]"
+        )
+    if refreshed:
+        console.print(
+            f"[dim]Refreshed {refreshed} already-resolved file-pool "
+            "claim(s).[/dim]"
+        )
+    if partial:
+        # Said plainly: these files are back in the pool, but they are NOT
+        # untouched — some of their chunks are in production.
+        console.print(
+            f"[yellow]{partial} file(s) uploaded only partially. They are "
+            "available to uploaders again (completing them is useful work) but "
+            "are excluded from canary selection, since chunks of them are "
+            "already stored.[/yellow]"
+        )
+    if still_open:
+        # Not silently ignored: an unresolved claim means a file was handed out
+        # and has no recorded upload, which is exactly the state the operator
+        # needs to see rather than have assumed away.
+        console.print(
+            f"[yellow]{still_open} file-pool claim(s) have no matching upload "
+            "result and remain open. See `prod pool claims "
+            f"--consumer {deployment.name}` or `prod pool claims "
+            "--unresolvable`.[/yellow]"
+        )

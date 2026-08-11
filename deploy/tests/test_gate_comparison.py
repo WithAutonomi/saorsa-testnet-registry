@@ -256,6 +256,71 @@ def test_comparing_an_exact_against_an_approximate_percentile_is_refused(config)
     assert "p50 vs p50~" in cpu["statistic"]
 
 
+def test_percentile_against_a_baseline_without_one_degrades_to_the_shared_mean(
+    config,
+):
+    """A baseline predating percentile capture must not silently drop the gate.
+
+    Refusing on any statistic mismatch removed node CPU and node RSS from every
+    comparison against such a baseline -- which is exactly the run the gates were
+    last measured on. Both sides carry a mean, so the comparison degrades to it
+    and says so, rather than reporting NOT ASSESSED.
+    """
+    candidate = _full_run(1, "STG-01", 20.0, 1e9)
+    baseline = _full_run(2, "STG-00", 20.0, 1e9)
+    candidate.host_metrics = [
+        {"host": "n1", "cpu_percent": {"avg": 55.0, "p50": 50.0, "samples": 100}}
+    ]
+    # No p50 at all -- the shape of every run recorded before percentile capture.
+    baseline.host_metrics = [{"host": "n1", "cpu_percent": {"avg": 50.0, "samples": 100}}]
+
+    cpu = next(
+        g
+        for g in compare_runs(candidate, baseline, config)["gates"]
+        if g["gate"] == "Node CPU"
+    )
+    assert cpu["verdict"] != NOT_ASSESSED
+    assert cpu["statistic"] == "mean"
+    # Compared on the means (55 vs 50), NOT the candidate's p50 of 50 against the
+    # baseline's mean of 50, which would have reported a spurious 0% delta.
+    assert cpu["delta_percent"] == pytest.approx(10.0)
+    assert "degraded to mean" in cpu["detail"]
+
+
+def test_degrading_to_the_mean_still_applies_the_threshold(config):
+    """The degraded comparison is a real gate, not a formality."""
+    candidate = _full_run(1, "STG-01", 20.0, 1e9)
+    baseline = _full_run(2, "STG-00", 20.0, 1e9)
+    candidate.host_metrics = [
+        {"host": "n1", "cpu_percent": {"avg": 80.0, "p50": 50.0, "samples": 100}}
+    ]
+    baseline.host_metrics = [{"host": "n1", "cpu_percent": {"avg": 50.0, "samples": 100}}]
+
+    cpu = next(
+        g
+        for g in compare_runs(candidate, baseline, config)["gates"]
+        if g["gate"] == "Node CPU"
+    )
+    assert cpu["verdict"] == FAIL  # +60% against a 15% threshold
+
+
+def test_no_shared_statistic_is_still_refused(config):
+    """Degradation needs a mean on BOTH sides; without one, refuse as before."""
+    candidate = _full_run(1, "STG-01", 20.0, 1e9)
+    baseline = _full_run(2, "STG-00", 20.0, 1e9)
+    candidate.host_metrics = [
+        {"host": "n1", "cpu_percent": {"p50": 50.0, "samples": 100}}
+    ]
+    baseline.host_metrics = [{"host": "n1", "cpu_percent": {"avg": 50.0, "samples": 100}}]
+
+    cpu = next(
+        g
+        for g in compare_runs(candidate, baseline, config)["gates"]
+        if g["gate"] == "Node CPU"
+    )
+    assert cpu["verdict"] == NOT_ASSESSED
+
+
 def test_client_hosts_are_excluded_from_node_cpu():
     host_metrics = [
         {"host": "node-1", "cpu_percent": {"avg": 10.0, "samples": 100}},

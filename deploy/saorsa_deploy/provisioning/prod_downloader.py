@@ -24,7 +24,9 @@ Services are NOT started here. Use the start helper in
 """
 
 import base64
+import ipaddress
 from pathlib import PurePosixPath
+from urllib.parse import urlparse
 
 from pyinfra.api import Config, Inventory, State
 from pyinfra.api.connect import connect_all, disconnect_all
@@ -45,6 +47,10 @@ from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_k
 from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
+)
+from saorsa_deploy.provisioning.network_profile import (
+    build_network_impairment_command,
+    format_network_label,
 )
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
@@ -129,6 +135,7 @@ class ProdDownloaderProvisioner:
         one_shot: bool = False,
         rust_log: str | None = None,
         memory_profiling: bool = False,
+        exempt_endpoints: list = None,
         log_retention_days: int = 7,
         console: Console | None = None,
     ):
@@ -146,6 +153,9 @@ class ProdDownloaderProvisioner:
         self.evm_network = evm_network
         self.rust_log = rust_log
         self.memory_profiling = memory_profiling
+        # Extra IPs whose traffic bypasses the shaper (e.g. a client
+        # Elasticsearch stood up by the deploy command).
+        self.exempt_endpoints = exempt_endpoints or []
         self.log_retention_days = log_retention_days
         self.console = console or Console()
 
@@ -184,6 +194,7 @@ class ProdDownloaderProvisioner:
             )
 
             self._add_clock_skew_ops(state)
+            self._add_network_impairment_ops(state)
 
             heaptrack_dirs = f" {HEAPTRACK_DIR}" if self.memory_profiling else ""
             add_op(
@@ -258,6 +269,74 @@ class ProdDownloaderProvisioner:
                 commands=[build_clock_skew_command(offset)],
                 host=[host],
             )
+
+    def _add_network_impairment_ops(self, state: State) -> None:
+        """Shape any downloader whose spec sets a `network` profile.
+
+        One op per host, because each VM carries its own profile. The InfluxDB and
+        Elasticsearch endpoints are passed through as exempt so the shaped link is
+        given entirely to the transfer — otherwise the VM's own instrumentation
+        would compete with it for the capped bandwidth and the measurement would be
+        of a home connection that is also busy shipping its own logs.
+        """
+        by_ip = {
+            d["ip"]: d["network"]
+            for d in self.downloaders
+            if d.get("ip") and d.get("network")
+        }
+        if not by_ip:
+            return
+        exempt = self._observability_endpoints()
+        for host in state.inventory.get_active_hosts():
+            profile = by_ip.get(host.name)
+            if not profile:
+                continue
+            self.console.print(
+                f"[cyan]Network impairment on {host.name}: "
+                f"{format_network_label(profile)}[/cyan]"
+            )
+            add_op(
+                state,
+                server.shell,
+                name=f"Apply network impairment ({profile.name})",
+                commands=[build_network_impairment_command(profile, exempt)],
+                host=[host],
+            )
+
+    def _observability_endpoints(self) -> list[str]:
+        """IPs whose traffic must bypass the shaper (InfluxDB, Elasticsearch).
+
+        InfluxDB is derived from ``influx_url``, which this provisioner already
+        holds. Elasticsearch is stood up by the deploy command rather than here, so
+        it arrives via ``exempt_endpoints``.
+
+        Best-effort by design: an endpoint that cannot be resolved is simply not
+        exempted. That degrades the measurement (instrumentation then competes with
+        the transfer) but must never fail provisioning — a missing exemption is far
+        less bad than a failed deploy. Non-IP hosts are dropped because the tc
+        filters match on address; a hostname would silently match nothing.
+        """
+        endpoints: list[str] = []
+        if self.influx_url:
+            endpoints.append(urlparse(self.influx_url).hostname or "")
+        endpoints.extend(str(e) for e in (self.exempt_endpoints or []))
+        resolved: list[str] = []
+        for endpoint in endpoints:
+            host = str(endpoint).strip()
+            if not host:
+                continue
+            try:
+                ipaddress.IPv4Address(host)
+            except ipaddress.AddressValueError:
+                self.console.print(
+                    f"[yellow]Network impairment: exempt endpoint '{host}' is not an "
+                    f"IPv4 address; its traffic will be shaped along with the "
+                    f"transfer.[/yellow]"
+                )
+                continue
+            if host not in resolved:
+                resolved.append(host)
+        return resolved
 
     def _add_install_heaptrack_op(self, state: State) -> None:
         """Install the heaptrack apt package when memory profiling is enabled."""

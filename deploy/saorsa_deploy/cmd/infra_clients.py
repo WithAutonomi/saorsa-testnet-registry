@@ -7,6 +7,7 @@ from rich.console import Console
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import CLIENT_PROVIDERS, resolve_client_provider
 from saorsa_deploy.provisioning.clock_skew import format_skew_offset, parse_skew_duration
+from saorsa_deploy.provisioning.network_profile import NetworkProfileError, resolve_network
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
@@ -26,8 +27,16 @@ _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
 # NB: `rust_log` is NOT in these key sets — it is extracted as a trailing
 # remainder token before the `:`-split (its value may contain `:` via RUST_LOG
 # module paths like `a::b=trace`), so the `key=value` loop never sees it.
-_VALID_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew", "bootstrap_cache", "forward_logs")
-_VALID_DOWNLOADER_KEYS = ("clock_skew", "bootstrap_cache", "forward_logs")
+_VALID_UPLOADER_KEYS = (
+    "payment",
+    "ant",
+    "eth",
+    "clock_skew",
+    "bootstrap_cache",
+    "forward_logs",
+    "network",
+)
+_VALID_DOWNLOADER_KEYS = ("clock_skew", "bootstrap_cache", "forward_logs", "network")
 DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
 # ant peer cache default: invoke ant WITHOUT --bootstrap, shipping a
@@ -66,6 +75,23 @@ def _parse_forward_logs(spec: str, value: str) -> bool:
     raise ValueError(
         f"Invalid spec '{spec}': forward_logs must be 'true' or 'false', got '{value}'."
     )
+
+
+def _parse_network(spec: str, value: str) -> str:
+    """Validate a ``network=`` spec option as a built-in profile name.
+
+    Only a bare name is accepted here: this grammar is colon-delimited and a raw
+    parameter set ("rate_up=1mbit,delay=30ms") would collide with it. Inline
+    overrides are manifest-only. Resolution happens again at provisioning time;
+    this is a fail-fast check so a typo doesn't surface after infrastructure has
+    already been created.
+    """
+    try:
+        resolve_network(value)
+    except NetworkProfileError as e:
+        raise ValueError(f"Invalid spec '{spec}': {e}")
+    return value
+
 
 
 def _extract_rust_log(spec: str) -> tuple[str, str | None]:
@@ -113,7 +139,7 @@ def parse_uploader_spec(spec: str) -> dict:
     """Parse an uploader spec.
 
     Format:
-    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=VALUE]``
+    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:network=PROFILE][:rust_log=VALUE]``
 
     ``provider`` is mandatory and must be one of digital_ocean, vultr,
     hetzner, ovh. Region names and VM sizes vary per provider and are passed
@@ -201,6 +227,7 @@ def parse_uploader_spec(spec: str) -> dict:
         if "forward_logs" in options
         else None
     )
+    network = _parse_network(spec, options["network"]) if "network" in options else None
 
     return {
         "role": ROLE_UPLOAD,
@@ -215,12 +242,14 @@ def parse_uploader_spec(spec: str) -> dict:
         "bootstrap_cache": bootstrap_cache,
         "forward_logs": forward_logs,
         "rust_log": rust_log,
+        "network": network,
     }
 
 
 def parse_downloader_spec(spec: str) -> dict:
     """Parse a downloader spec:
-    'provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=VALUE]'.
+    'provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL]
+    [:network=PROFILE][:rust_log=VALUE]'.
 
     ``provider`` is mandatory (digital_ocean, vultr, hetzner, ovh). ``rust_log``,
     if present, MUST be the final token (its value may contain ``:``). Returns a
@@ -276,6 +305,7 @@ def parse_downloader_spec(spec: str) -> dict:
         if "forward_logs" in options
         else None
     )
+    network = _parse_network(spec, options["network"]) if "network" in options else None
     return {
         "role": ROLE_DOWNLOAD,
         "provider": provider,
@@ -285,6 +315,7 @@ def parse_downloader_spec(spec: str) -> dict:
         "bootstrap_cache": bootstrap_cache,
         "forward_logs": forward_logs,
         "rust_log": rust_log,
+        "network": network,
     }
 
 
@@ -304,6 +335,7 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("bootstrap_cache", DEFAULT_BOOTSTRAP_CACHE),
         spec.get("forward_logs"),
         spec.get("rust_log"),
+        spec.get("network"),
     )
 
 

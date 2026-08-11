@@ -63,6 +63,17 @@ from saorsa_db.models.prod_disk_survey import (
     ProdDiskSurvey,
     ProdDiskSurveyService,
 )
+from saorsa_db.models.prod_file_pool import (
+    BLOCKING_STATUSES,
+    SELF_RESOLVING_SOURCES,
+    ClaimSource,
+    ClaimStatus,
+    PoolFileKind,
+    ProdFilePool,
+    ProdFilePoolClaim,
+    ProdFilePoolDigest,
+    ProdFilePoolTag,
+)
 from saorsa_db.models.prod_download_result import (
     DeploymentProdDownloadResult,
     ProdDownloadStatus,
@@ -82,7 +93,16 @@ from saorsa_db.models.release_candidate import (
 )
 
 __all__ = [
+    "BLOCKING_STATUSES",
     "COMPONENT_METRICS",
+    "ClaimSource",
+    "ClaimStatus",
+    "PoolFileKind",
+    "ProdFilePool",
+    "ProdFilePoolClaim",
+    "ProdFilePoolDigest",
+    "ProdFilePoolTag",
+    "SELF_RESOLVING_SOURCES",
     "Deployment",
     "DeploymentDerivedMetric",
     "DeploymentEvent",
