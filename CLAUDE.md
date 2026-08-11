@@ -1126,6 +1126,31 @@ landing at ~8.7 GB/GB. Slice with `derive-metrics --id <id> --window-start/-end
 to the newest run bearing it, so a reused-name baseline is unreachable otherwise,
 and `compare --window-label` needs the label on both sides.
 
+**Connection-error counts (V2-842).** `deployments record-log-counts --name X`
+counts a versioned set of named log strings in the run's Elasticsearch and stores
+the **counts** in `deployment_log_event_counts`; `compare` then adds one soft gate
+per group, failing above `connection_error_increase_percent` (10%, arbitrary —
+there is no run history behind it). Must run **before teardown**: ES is per-run
+scratch and nothing can be backfilled, so every pre-existing run reads NOT
+ASSESSED (never zero — zero would show the candidate's counts against nothing).
+Its own table, NOT `deployment_derived_metrics`, because `compare` refuses when
+the two runs' derived `source` sets differ, which an `elasticsearch` row would
+trigger against every existing baseline. The catalogue
+(`resources/log_patterns/connection-errors.yaml`, version stored on every count)
+groups patterns and says how each combines: `Connection attempt failed` and
+`connect_happy_eyeballs failed` are one group taking the **max**, not the sum —
+they are one failure logged at two layers (1,415/1,415 then 71,309/71,160 across
+the DEV-02 comparison). Phrases are **stable substrings**, never the paraphrase
+in an issue (`dial failed for all`, because the emit interpolates a count).
+Node-tier index only; each count stores host cardinality, level breakdown,
+observed span and total forwarded lines, because a bare count cannot tell a
+fleet-wide regression from one sick node, nor more errors from more logging. An
+**empty index aborts** rather than recording zeros; a zero against a populated
+index records but warns (fixed / renamed / emitted at a dropped level are
+indistinguishable from ES alone). Impl: `log_patterns.py`, `es_log_counts.py`
+(pure), `cmd/record_log_counts.py`, `_soft_log_event_counts` in
+`gate_comparison.py`.
+
 **Refuses** on mismatched `window_label`, mismatched derived-metric `source`
 (`capture` is exact, `buckets` approximate — comparing them measures the method),
 or window lengths differing >1.25x. **Warns** on **activity coverage** (op span ÷

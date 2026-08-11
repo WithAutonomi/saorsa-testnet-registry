@@ -343,13 +343,55 @@ Run this once, at the end of the run, covering the whole run. No extraction, no
 teardown. The testnet is scratch; Postgres is the record.
 
 ```bash
-uv run saorsa-deploy deployments record-results  --name STG-01
-uv run saorsa-deploy deployments record-analysis --name STG-01 \
+uv run saorsa-deploy deployments record-results    --name STG-01
+uv run saorsa-deploy deployments record-analysis   --name STG-01 \
   --summary "ant-node <RC>, ant <RC>. Profile staging-short @ <SHA>. T0=<ts>; steady <ts>..<ts>; mixed <ts>..<ts>. Mixed-phase criteria: <pass/fail + evidence>."
+uv run saorsa-deploy deployments record-log-counts --name STG-01
 ```
 
 STG-01 only. STG-02 has no clients of its own — the transfers all run from STG-01,
 so there is nothing to record for it.
+
+### `record-log-counts`
+
+Counts the connection-error strings (`Connection attempt failed`,
+`connect_happy_eyeballs failed`, `dial failed for all`, `Accept stream error`,
+`QUIC disconnect for peer`, `Failed to send identity announce`) in STG-01's
+Elasticsearch and stores the counts in `deployment_log_event_counts`. The
+verification then gates on them.
+
+Run it here, in the same extraction step, and **before any teardown**. It reads
+the deployment's own Elasticsearch, which is per-run scratch: once that instance
+is destroyed the logs are gone and there is no backfill. This is the same
+constraint as `record-analysis` against InfluxDB, and it is the reason Step 8
+keeps both stacks alive.
+
+It refuses rather than recording zeros if the index turns out to be empty — a
+zero from an empty index is indistinguishable from a real absence and would read
+as a total elimination of every connection error on the next comparison. If that
+happens, check that log forwarding was actually enabled for the run and say so;
+do not work around it.
+
+Read the table it prints before moving on:
+
+- A **zero count** is not self-explaining. "Fixed", "renamed" and "emitted at
+  DEBUG, which the node forwarder drops by default" all look identical from
+  Elasticsearch. Note it in the Step 9 report as an observation, not a
+  conclusion.
+- The **Hosts** column matters as much as the count. A large count spread over
+  two hosts of seventy is usually a service restart, not a fleet-wide change.
+
+The counts land under the `full-run` label by default, which is everything the
+index holds. If you also want them for the steady-state phase, record that slice
+separately with its own label — but note the caveat the command prints: a
+time-filtered count is applied against each host's own deliberately-skewed
+clock.
+
+```bash
+uv run saorsa-deploy deployments record-log-counts --name STG-01 \
+  --window-start <steady-state start> --window-end <steady-state end> \
+  --label steady-state
+```
 
 Do not pass `--window`. The defaults cover the whole run, which is what we want —
 narrowing to a phase is done later in post-processing, using the boundary timestamps
@@ -435,6 +477,9 @@ Update the train's `Staging run — rc.N` sub-issue with:
 
 - The registry run row: the `STG-01` deployment id from `deployments ls`.
 - The RC versions and the profile SHA.
+- The connection-error counts recorded at Step 7, per group, with the host
+  spread. Flag any zero count as needing a source check rather than reporting it
+  as an improvement.
 - T0 and each phase boundary timestamp.
 - Mixed-version phase: PASS or FAIL against both criteria, with the evidence.
 - Any hard-gate observation during steady state, or "none observed".
@@ -452,8 +497,13 @@ State these in the final report rather than working around them:
 - No single extraction command. The process describes one script writing the
   canonical metric set (run id, RC tag, profile version) to Postgres. Today it is
   `record-results` (per-host file-op aggregates) plus `record-analysis` (per-host
-  CPU/mem/net/disk-IO aggregates), and neither stores the RC tag or profile version
-  as a column.
+  CPU/mem/net/disk-IO aggregates) plus `record-log-counts` (connection-error
+  string counts), and none of them stores the RC tag or profile version as a
+  column.
+- **Connection-error counts have no history before this train.** They were not
+  recorded on any earlier run and cannot be backfilled, so the first verification
+  to use them will report every connection-error gate as NOT ASSESSED. That is
+  expected, not a failure of the run.
 - No comparison or verdict tool. This skill stops at "run recorded".
 - No CLI or metric for record-store counts, so the mixed-version chunk-storage
   criterion needs an SSH check. The chunk store is LMDB, so what is actually

@@ -36,6 +36,7 @@ from saorsa_deploy.gate_comparison import (
 )
 from saorsa_deploy.gate_config import GateConfigError, load_gate_config
 from saorsa_deploy.gate_report import render_report
+from saorsa_deploy.log_patterns import LogPatternError, load_pattern_set
 from saorsa_deploy.registry import get_repository
 
 _VERDICT_STYLE = {
@@ -121,6 +122,28 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
                 "available for it, and the memory-leak check cannot run.[/yellow]"
             )
 
+    # Looked up by the window label being compared on, like every other stored
+    # measurement. A run whose counts were recorded only under `full-run` has
+    # none for a `steady-state` comparison, and that reads NOT ASSESSED rather
+    # than quietly borrowing a different window's number.
+    log_event_counts = [
+        {
+            "event_key": row.event_key,
+            "event_group": row.event_group,
+            "pattern": row.pattern,
+            "pattern_set": row.pattern_set,
+            "pattern_version": row.pattern_version,
+            "count": row.count,
+            "hosts": row.hosts,
+            "total_documents": row.total_documents,
+            "observed_start": row.observed_start,
+            "observed_end": row.observed_end,
+        }
+        for row in repo.list_log_event_counts_for_deployment(
+            deployment_id, window_label=window_label
+        )
+    ]
+
     uploads = repo.list_upload_records_for_deployment(deployment_id)
     downloads = repo.list_download_records_for_deployment(deployment_id)
     if window_label != WINDOW_FULL_RUN and window_start and window_end:
@@ -138,6 +161,7 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
         host_metrics=host_metrics,
         rss_buckets=rss_buckets,
         derived=derived,
+        log_event_counts=log_event_counts,
     )
 
 
@@ -230,12 +254,23 @@ def cmd_compare_runs(args) -> None:
             )
             sys.exit(1)
 
+    # The catalogue names the connection-error groups and says how each one's
+    # patterns combine. Loaded here rather than in the engine so the comparison
+    # stays a pure function of its inputs.
+    try:
+        pattern_set = load_pattern_set(args.patterns)
+    except LogPatternError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        sys.exit(1)
+
     candidate = _load_run(repo, args.id, args.window_label, console)
     baseline = _load_run(repo, args.baseline_id, args.window_label, console)
     history = _collect_history(repo, history_ids, args.window_label, config, console)
 
     try:
-        verdict = compare_runs(candidate, baseline, config, history)
+        verdict = compare_runs(
+            candidate, baseline, config, history, pattern_set=pattern_set
+        )
     except ComparisonError as exc:
         console.print(f"[bold red]These runs cannot be compared.[/bold red]\n\n{exc}")
         sys.exit(1)

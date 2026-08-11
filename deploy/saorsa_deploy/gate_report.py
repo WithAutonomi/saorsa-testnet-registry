@@ -39,6 +39,10 @@ def _fmt(value: float | None, unit: str) -> str:
         return f"{value / 1000:.3f} s"
     if unit in ("%", "pp", "%/h"):
         return f"{value:.3f} {unit}"
+    if unit == "count":
+        # Whole occurrences, thousands-separated: a log-string tally runs to
+        # six figures and "71309.000" is harder to read than "71,309".
+        return f"{value:,.0f}"
     return f"{value:.3f}"
 
 

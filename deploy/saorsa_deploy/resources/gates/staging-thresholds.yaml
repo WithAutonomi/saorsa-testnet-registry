@@ -10,7 +10,7 @@
 # it whenever a number below changes, so two reports can never disagree without
 # the difference being visible. Comparing verdicts produced under different
 # threshold versions is meaningless -- the version is what tells you that.
-version: 1
+version: 2
 
 # ---------------------------------------------------------------------------
 # Hard gates the command can evaluate from stored metrics.
@@ -77,6 +77,22 @@ soft_gates:
   # Normalised per-GB ratios from `deployment_derived_metrics`.
   outbound_bytes_per_gb_increase_percent: 10.0
   disk_bytes_per_gb_increase_percent: 10.0
+
+  # Connection-error log-string counts from `deployment_log_event_counts`
+  # (V2-842), one gate per group in the pattern catalogue.
+  #
+  # 10% is an ARBITRARY starting point, chosen to give a flag rather than to
+  # mark a known-bad level. There is no history behind it: no run before this
+  # gate existed recorded these counts, and none can be backfilled, so the
+  # first comparison to use it reads NOT ASSESSED on both sides and the second
+  # is the first real one. Revisit at the quarterly review, when a few runs of
+  # history exist and the 2-sigma criterion can start doing the work.
+  #
+  # The gate compares raw COUNTS. Counts scale with how long a run logged for,
+  # and the window guard permits lengths differing by up to 1.25x, so a delta
+  # near the threshold should be read against the per-hour rate carried in the
+  # gate's detail before it is treated as a regression.
+  connection_error_increase_percent: 10.0
 
 # ---------------------------------------------------------------------------
 # Memory leak check.

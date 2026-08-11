@@ -1,0 +1,124 @@
+# Connection-error log strings counted on every staging run (V2-842).
+#
+# These are CONFIG, not code, for the same reason the gate thresholds are: the
+# strings are emitted by saorsa-core / saorsa-transport / ant-node and change
+# when those crates change. Adding, retiring or re-wording one must not require
+# a release of saorsa-deploy.
+#
+# `version` is stored on every recorded count. Counts captured under different
+# pattern versions are only comparable if the pattern itself did not change --
+# the version is what tells you to check.
+version: 1
+
+# ---------------------------------------------------------------------------
+# Which forwarded logs are counted.
+#
+# `nodes` means the node-tier index `telegraf-ant-nodes-<name>-*`. Client logs
+# go to a SEPARATE index (`telegraf-ant-clients-<name>`) with a different
+# document shape -- raw stderr lines under `message`, not structured fields
+# under `tail` -- so pooling the two would compare unlike things and would also
+# silently vary with whether the run enabled client `forward_logs` at all.
+#
+# Consequence worth stating plainly: these are NODE-side counts. A connection
+# error the client saw and the nodes did not is not in this measurement.
+index_scope: nodes
+
+# ---------------------------------------------------------------------------
+# Groups.
+#
+# The comparison gates on the GROUP, never on an individual pattern. A group
+# exists so that one phenomenon logged at more than one layer produces one
+# gate rather than several that all move together and read as independent
+# corroborating evidence.
+#
+# `aggregate` says how a group's member counts combine:
+#   max -- the members are the SAME event seen at different layers. Their counts
+#          should track each other; the larger is the better estimate of how
+#          often the phenomenon occurred, and summing would double-count it.
+#   sum -- the members are genuinely distinct events that belong to one gate.
+groups:
+  - key: connection_failure
+    label: Connection failures
+    aggregate: max
+    # Measured across the DEV-02 comparison: 1,415 / 1,415 on the baseline and
+    # 71,309 / 71,160 on the branch -- the two counts tracked each other to
+    # within 0.2% at both ends of a 50x swing. They are near-certainly one
+    # event logged at the core and transport layers, so they are one gate.
+    note: >-
+      `Connection attempt failed` and `connect_happy_eyeballs failed` are the
+      same failure logged at two layers.
+
+  - key: dial_failure
+    label: Dial failures (all candidates)
+    aggregate: sum
+
+  - key: accept_stream_failure
+    label: Accept stream errors
+    aggregate: sum
+
+  - key: quic_disconnect
+    label: QUIC disconnects
+    aggregate: sum
+
+  - key: identity_announce_failure
+    label: Identity announce failures
+    aggregate: sum
+
+# ---------------------------------------------------------------------------
+# Patterns.
+#
+# `phrase` is matched with an Elasticsearch `match_phrase` against
+# `tail.message`. Two consequences to keep in mind when editing:
+#
+# 1. It must be a STABLE SUBSTRING, never the paraphrase written in an issue.
+#    The dial-failure emit is `[STEP 1b] {} -> {}: dial failed for all {}
+#    candidate address(es)` -- it interpolates a peer, an address and a count,
+#    so any phrase spanning them matches nothing, forever, and reports zero.
+# 2. `tail.message` is an analysed field, so matching is case-insensitive and
+#    ignores punctuation. `Accept stream error: connection failed` matches a
+#    line that writes those words with different separators. That is deliberate
+#    -- it survives cosmetic re-wording -- but it does mean a phrase must be
+#    distinctive in its WORDS, not in its punctuation.
+#
+# A pattern whose count is zero is NOT self-explaining: "the string is gone
+# because the bug is fixed" and "the string was renamed" are indistinguishable
+# from Elasticsearch alone. Confirm a zero against the pinned source before
+# reporting it as an improvement.
+patterns:
+  - key: connection_attempt_failed
+    group: connection_failure
+    phrase: "Connection attempt failed"
+    module: saorsa_core::transport_handle
+
+  - key: happy_eyeballs_failed
+    group: connection_failure
+    phrase: "connect_happy_eyeballs failed"
+    module: saorsa_transport::happy_eyeballs
+
+  - key: dial_failed_all_candidates
+    group: dial_failure
+    # The stable prefix only: the emit interpolates a candidate count.
+    phrase: "dial failed for all"
+    module: saorsa_core::dht_network_manager
+
+  - key: accept_stream_connection_not_found
+    group: accept_stream_failure
+    phrase: "Accept stream error: connection failed: Connection not found"
+    module: saorsa_core::transport::saorsa_transport_adapter
+    # Seen at 2 hosts of 72 on DEV-02 run 502, both explained by a service
+    # restart -- peers log `Connection not found` for ~20 minutes while
+    # connections re-establish. Always read this one's host spread before
+    # calling a rise a regression.
+    note: >-
+      Concentrated on a couple of hosts usually means a service restart, not a
+      fleet-wide change.
+
+  - key: quic_disconnect
+    group: quic_disconnect
+    phrase: "QUIC disconnect for peer"
+    module: saorsa_transport_adapter.rs:626
+
+  - key: identity_announce_failed
+    group: identity_announce_failure
+    phrase: "Failed to send identity announce"
+    module: saorsa_core::transport_handle
