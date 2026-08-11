@@ -585,6 +585,11 @@ class RunMetrics:
     rss_buckets: list[dict] = field(default_factory=list)
     # metric name -> {"value": float, "source": str, "window_start": dt, ...}
     derived: dict[str, dict] = field(default_factory=dict)
+    # One dict per recorded log-string count: event_key, event_group, count,
+    # hosts, total_documents, observed_start, observed_end, pattern_version.
+    # A list rather than a dict because the gate evaluates GROUPS, and the
+    # grouping is a property of the pattern catalogue, not of the rows.
+    log_event_counts: list[dict] = field(default_factory=list)
 
     def window_seconds(self) -> float | None:
         if self.window_start is None or self.window_end is None:
@@ -854,12 +859,18 @@ def compare_runs(
     baseline: RunMetrics,
     config: GateConfig,
     history: dict[str, list[float]] | None = None,
+    pattern_set=None,
 ) -> dict:
     """Produce the full verdict payload for a candidate against a baseline.
 
     Raises :class:`ComparisonError` when the two runs are not comparable at all.
     Otherwise always returns a payload: an individual gate that cannot be
     measured is NOT ASSESSED, which never becomes a pass.
+
+    ``pattern_set`` is the log-string catalogue (``log_patterns.LogPatternSet``)
+    naming the connection-error groups and how each combines. It is passed in
+    rather than loaded here so this stays a pure function of its inputs; with
+    ``None`` the groups are still evaluated, derived from the stored rows.
     """
     problems = check_comparability(candidate, baseline, config)
     if problems:
@@ -874,8 +885,11 @@ def compare_runs(
     results.extend(_soft_host_metrics(candidate, baseline, config, history))
     results.append(_soft_memory_leak(candidate, config))
     results.extend(_soft_derived_ratios(candidate, baseline, config, history))
+    results.extend(
+        _soft_log_event_counts(candidate, baseline, config, history, pattern_set)
+    )
 
-    warnings: list[str] = []
+    warnings: list[str] = list(log_count_warnings(candidate, baseline))
 
     # Neither comparability guard inspects what the windows CONTAIN.
     #
@@ -1284,6 +1298,303 @@ def _soft_memory_leak(run: RunMetrics, config: GateConfig) -> GateResult:
         detail=detail,
         noise=asymmetry,
     )
+
+
+# ---------------------------------------------------------------------------
+# Connection-error log-string counts (V2-842)
+# ---------------------------------------------------------------------------
+
+
+def _group_definitions(
+    candidate_rows: list[dict],
+    baseline_rows: list[dict],
+    pattern_set=None,
+) -> list[tuple[str, str, str]]:
+    """Ordered ``(key, label, aggregate)`` for every group either run recorded.
+
+    The catalogue is the authority on how a group's members combine and what it
+    is called, and its order is the reporting order. A group present in the
+    stored rows but absent from the catalogue is still evaluated -- the counts
+    were taken deliberately and dropping them would be a silent loss -- using
+    its key as the label and ``max`` as the aggregate, which is the
+    conservative choice because it can only understate a sum.
+    """
+    known = []
+    seen = set()
+    if pattern_set is not None:
+        for group in pattern_set.groups:
+            known.append((group.key, group.label, group.aggregate))
+            seen.add(group.key)
+    extra = sorted(
+        {
+            row["event_group"]
+            for row in list(candidate_rows) + list(baseline_rows)
+            if row.get("event_group") and row["event_group"] not in seen
+        }
+    )
+    return known + [(key, key, "max") for key in extra]
+
+
+def log_event_group_values(
+    rows: list[dict], key: str, aggregate: str
+) -> dict | None:
+    """Combine one group's per-pattern rows into the single value it gates on.
+
+    ``max`` when the members are the same event logged at several layers --
+    summing them would count one occurrence once per layer. Measured on the
+    DEV-02 comparison, ``Connection attempt failed`` and
+    ``connect_happy_eyeballs failed`` sat at 71,309 and 71,160: summing would
+    have reported ~142k connection failures where ~71k occurred.
+
+    ``None`` when the group has no rows at all, which is what a run recorded
+    before these counts existed looks like. That is NOT a zero -- a zero is a
+    measurement saying the string never appeared.
+    """
+    members = [row for row in rows if row.get("event_group") == key]
+    if not members:
+        return None
+    counts = [int(row.get("count") or 0) for row in members]
+    value = max(counts) if aggregate == "max" else sum(counts)
+
+    hosts = [row["hosts"] for row in members if row.get("hosts") is not None]
+    starts = [
+        _as_utc(row["observed_start"])
+        for row in members
+        if row.get("observed_start") is not None
+    ]
+    ends = [
+        _as_utc(row["observed_end"])
+        for row in members
+        if row.get("observed_end") is not None
+    ]
+    totals = [
+        row["total_documents"]
+        for row in members
+        if row.get("total_documents") is not None
+    ]
+
+    span_hours = None
+    if starts and ends:
+        seconds = (max(ends) - min(starts)).total_seconds()
+        if seconds > 0:
+            span_hours = seconds / 3600.0
+
+    return {
+        "value": float(value),
+        # The fleet spread is carried through to the report because a count
+        # concentrated on two hosts of seventy is a sick node or a service
+        # restart, not a fleet-wide regression -- and the raw count cannot tell
+        # the difference.
+        "hosts": max(hosts) if hosts else None,
+        "rate_per_hour": (value / span_hours) if span_hours else None,
+        # Every forwarded node log line in the same scope, so a rise in errors
+        # can be told apart from a rise in logging.
+        "total_documents": max(totals) if totals else None,
+        "members": {row["event_key"]: int(row.get("count") or 0) for row in members},
+    }
+
+
+def _fmt_count(value: float | None) -> str:
+    return "-" if value is None else f"{value:,.0f}"
+
+
+def _log_event_detail(side: str, values: dict | None) -> str:
+    if values is None:
+        return ""
+    parts = [f"{side} {_fmt_count(values['value'])}"]
+    if values.get("rate_per_hour") is not None:
+        parts.append(f"{values['rate_per_hour']:,.0f}/h")
+    if values.get("hosts") is not None:
+        parts.append(f"{values['hosts']} hosts")
+    if values.get("total_documents"):
+        share = 100.0 * values["value"] / values["total_documents"]
+        parts.append(f"{share:.3f}% of lines")
+    return " ".join(parts)
+
+
+def _soft_log_event_counts(
+    candidate: RunMetrics,
+    baseline: RunMetrics,
+    config: GateConfig,
+    history: dict[str, list[float]],
+    pattern_set=None,
+) -> list[GateResult]:
+    """One gate per pattern group, on the raw counts.
+
+    Absence is NOT ASSESSED on both sides of the transition, and deliberately
+    so. These counts cannot be backfilled -- the run's Elasticsearch is
+    destroyed at teardown -- so every run recorded before the measurement
+    existed has none, and the first comparison to use these gates will report
+    NOT ASSESSED for all of them. Recording a missing count as zero would show
+    the candidate's real counts against a baseline of nothing and read as a
+    catastrophic regression on the very first run.
+    """
+    results = []
+    for key, label, aggregate in _group_definitions(
+        candidate.log_event_counts, baseline.log_event_counts, pattern_set
+    ):
+        gate = f"Connection errors: {label}"
+        cand = log_event_group_values(candidate.log_event_counts, key, aggregate)
+        base = log_event_group_values(baseline.log_event_counts, key, aggregate)
+
+        if cand is None or base is None:
+            which = []
+            if cand is None:
+                which.append("candidate")
+            if base is None:
+                which.append("baseline")
+            results.append(
+                GateResult(
+                    gate=gate,
+                    kind="soft",
+                    verdict=NOT_ASSESSED,
+                    candidate=cand["value"] if cand else None,
+                    baseline=base["value"] if base else None,
+                    threshold=config.connection_error_increase_percent,
+                    unit="count",
+                    detail=(
+                        f"no recorded log counts on the {' and '.join(which)} run. "
+                        "Run `deployments record-log-counts` while that run's "
+                        "Elasticsearch is still up; it cannot be backfilled."
+                    ),
+                )
+            )
+            continue
+
+        delta = _relative_change(cand["value"], base["value"])
+        detail = "; ".join(
+            part
+            for part in (
+                _log_event_detail("cand", cand),
+                _log_event_detail("base", base),
+            )
+            if part
+        )
+
+        # A zero baseline makes a relative change undefined, and the two ways
+        # that happens are opposite findings, so neither may fall through to
+        # the generic "undefined" NOT ASSESSED:
+        #
+        # * both zero -- the string never occurred on either run. That is a
+        #   measurement and a good one; reporting it as NOT ASSESSED would mark
+        #   a permanently-eliminated error as unmeasurable forever.
+        # * baseline zero, candidate not -- the phenomenon appeared where it
+        #   previously did not occur at all. No percentage can express it, but
+        #   it exceeds any increase threshold by any reading, and NOT ASSESSED
+        #   would read as "could not be measured" for the clearest regression
+        #   this gate can see.
+        if base["value"] == 0:
+            appeared = cand["value"] > 0
+            results.append(
+                GateResult(
+                    gate=gate,
+                    kind="soft",
+                    verdict=FAIL if appeared else PASS,
+                    candidate=cand["value"],
+                    baseline=base["value"],
+                    threshold=config.connection_error_increase_percent,
+                    unit="count",
+                    detail=(
+                        f"{detail}. The baseline never logged this, so a relative "
+                        "change is undefined — but it appeared on the candidate."
+                        if appeared
+                        else "neither run logged this at all"
+                    ),
+                )
+            )
+            continue
+
+        verdict, noise = apply_noise_rule(
+            delta, config.connection_error_increase_percent, history.get(gate), config
+        )
+        if aggregate == "max" and len(cand["members"]) > 1:
+            # Naming the members keeps the "one phenomenon, two layers"
+            # decision visible in the report rather than buried in a YAML file.
+            detail += (
+                "; one phenomenon from "
+                + ", ".join(sorted(cand["members"]))
+                + " (max, not sum)"
+            )
+        results.append(
+            GateResult(
+                gate=gate,
+                kind="soft",
+                verdict=verdict,
+                candidate=cand["value"],
+                baseline=base["value"],
+                delta_percent=delta,
+                threshold=config.connection_error_increase_percent,
+                unit="count",
+                noise=noise,
+                detail=detail,
+            )
+        )
+    return results
+
+
+def log_count_warnings(candidate: RunMetrics, baseline: RunMetrics) -> list[str]:
+    """Caveats a reader needs before acting on a count delta.
+
+    Two things a count comparison cannot see for itself:
+
+    * **Pattern-version drift.** The catalogue is versioned config and its
+      phrases will change. Two counts of different strings are not a
+      comparison, and nothing else in the payload would reveal it.
+    * **Unequal observed spans.** Counts scale with how long a run logged for,
+      and the window guard permits lengths differing by up to 1.25x -- 25% of
+      spurious delta against a 10% threshold. The per-hour rate is in each
+      gate's detail; this says when to read it.
+    """
+    warnings: list[str] = []
+    if not candidate.log_event_counts or not baseline.log_event_counts:
+        return warnings
+
+    cand_versions = {
+        row.get("pattern_version") for row in candidate.log_event_counts
+    }
+    base_versions = {row.get("pattern_version") for row in baseline.log_event_counts}
+    if cand_versions != base_versions:
+        warnings.append(
+            f"Log-pattern catalogue versions differ: candidate "
+            f"{sorted(v for v in cand_versions if v is not None)} vs baseline "
+            f"{sorted(v for v in base_versions if v is not None)}. The counted "
+            "strings are versioned config and may have changed between them; a "
+            "delta across a phrase change measures the phrase, not the release. "
+            "Check the catalogue's history before reading the connection-error "
+            "gates."
+        )
+
+    cand_span = _observed_span_hours(candidate.log_event_counts)
+    base_span = _observed_span_hours(baseline.log_event_counts)
+    if cand_span and base_span:
+        ratio = max(cand_span, base_span) / min(cand_span, base_span)
+        if ratio > 1.1:
+            warnings.append(
+                f"The two runs' logs span materially different periods "
+                f"({cand_span:.2f}h candidate vs {base_span:.2f}h baseline, "
+                f"{ratio:.2f}x). The connection-error gates compare raw counts, "
+                "which scale with how long a run logged for, so read the "
+                "per-hour rate in each gate's detail before treating a delta "
+                "near the threshold as a regression."
+            )
+    return warnings
+
+
+def _observed_span_hours(rows: list[dict]) -> float | None:
+    starts = [
+        _as_utc(row["observed_start"])
+        for row in rows
+        if row.get("observed_start") is not None
+    ]
+    ends = [
+        _as_utc(row["observed_end"])
+        for row in rows
+        if row.get("observed_end") is not None
+    ]
+    if not starts or not ends:
+        return None
+    seconds = (max(ends) - min(starts)).total_seconds()
+    return seconds / 3600.0 if seconds > 0 else None
 
 
 def _soft_derived_ratios(

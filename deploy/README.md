@@ -980,6 +980,61 @@ Never compare one against the other. `derive-metrics` refuses `--label full-run`
 
 `deployments print-recorded-results` renders both the per-mountpoint occupancy table and every stored window's derived metrics.
 
+### Connection-error counts (`deployments record-log-counts`)
+
+Counts a versioned set of named log strings in a run's Elasticsearch and stores the **counts** — never the lines — in `deployment_log_event_counts`, so `deployments compare` can gate on them.
+
+```bash
+# At extraction time, while the run's Elasticsearch is still alive
+uv run saorsa-deploy deployments record-log-counts --name STG-01
+
+# A labelled slice, matching a `derive-metrics --label steady-state` window
+uv run saorsa-deploy deployments record-log-counts --id 474 \
+  --window-start 2026-08-11T13:00:00 --window-end 2026-08-11T16:00:00 \
+  --label steady-state
+```
+
+**Run it before teardown.** The deployment's Elasticsearch is per-run scratch and is destroyed with the testnet; there is no backfill and there never can be. This is the same constraint `record-analysis` has against InfluxDB.
+
+#### Arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--id` / `--name` | int / string | Yes (one) | - | The run. Prefer `--id` for anything but the latest run of a reused name |
+| `--elastic-name` | string | No | deployment name | Elastic stack to load credentials from |
+| `--patterns` | path | No | bundled | Catalogue YAML (`resources/log_patterns/connection-errors.yaml`) |
+| `--label` | string | No | `full-run` | Window label stored with the counts |
+| `--window-start` / `--window-end` | ISO-8601 | No | - | Narrow the count. Requires a non-`full-run` `--label` |
+| `--index-pattern` | string | No | from state | Override the node-log index glob |
+| `--es-url` / `--es-username` / `--es-password` / `--es-api-key` | string | No | from state | Connect without the elastic S3 state |
+| `--timeout` | int | No | `120` | Per-query timeout in seconds |
+
+#### What is counted, and what a count means
+
+The catalogue (`resources/log_patterns/connection-errors.yaml`) is git-versioned config, like the gate thresholds, and its `version` is stored on every recorded count. It names six strings across five groups; the comparison gates on **groups**, not individual strings.
+
+`Connection attempt failed` (`saorsa_core::transport_handle`) and `connect_happy_eyeballs failed` (`saorsa_transport::happy_eyeballs`) share one group, combined with `max` rather than `sum`. They are the same failure logged at two layers — measured across the DEV-02 comparison at 1,415/1,415 on the baseline and 71,309/71,160 on the branch, tracking each other to within 0.2% across a 50x swing — so summing them would report one occurrence twice, and gating them separately would read as two independent corroborating signals.
+
+Each count is stored with the **host cardinality**, the **top hosts**, the **level breakdown**, the **observed span**, and the **total forwarded node log lines** in the same scope. A bare count answers the wrong question in three ways: a rise concentrated on two hosts of seventy-two is a sick node or a service restart rather than a fleet-wide regression; a run that logged twice as much of everything has not regressed on connections; and a string emitted only at DEBUG may be absent from Elasticsearch entirely, because the node-tier forwarder drops `DEBUG,TRACE` by default.
+
+Scope is **node-tier only**: `telegraf-ant-nodes-<name>-*`. Client logs go to a separate index with a different document shape, and whether they exist at all depends on the run's `forward_logs` setting.
+
+#### What it refuses to record
+
+An **empty index** aborts the command rather than recording zeros. A zero from a misdirected query or a run with log forwarding disabled is indistinguishable from a real absence, and would read as a total elimination of every connection error on the next comparison.
+
+A **zero against a populated index** is recorded — that is a real measurement — but it is not self-explaining: "the bug is fixed", "the string was renamed" and "the string is emitted at a dropped level" look identical from Elasticsearch. The command prints a warning naming the zeroed patterns; confirm the literal against the pinned source before reporting a zero as an improvement.
+
+A **narrowed window may not claim the `full-run` label**, mirroring `derive-metrics`. And a windowed count carries a clock-skew caveat: the filter is applied against each host's own clock, and testnet manifests skew node clocks by ±3h in a per-host random direction. An unfiltered count over the whole index has no such problem, which is why it is the default.
+
+#### The gates
+
+One soft gate per group, failing when the count rises more than `soft_gates.connection_error_increase_percent` (10%). Three behaviours worth knowing:
+
+- **Absence is NOT ASSESSED on both sides, never zero.** No run recorded before this measurement existed has counts, and none can be backfilled — so the first comparison to use these gates reports NOT ASSESSED for all of them, and the second is the first real one. Treating a missing count as zero would show the candidate's real counts against nothing and read as a catastrophic regression.
+- **Zero on both runs is a PASS**, not NOT ASSESSED — a permanently eliminated string is a measurement, not a missing one. A count appearing where the baseline had none is a **FAIL**: no percentage can express a rise from zero, but it exceeds any increase threshold by any reading.
+- **The gate compares raw counts**, which scale with how long a run logged for. The per-hour rate and host spread are in each gate's detail, and the report warns when the two runs' logs span materially different periods (>1.1x) or when their catalogue versions differ.
+
 ### Staging gate comparison (`deployments compare`)
 
 Compares one recorded run against a baseline run on their stored metrics, applies versioned gate thresholds, and emits a per-gate **PASS / FAIL / GRAY / NOT ASSESSED** verdict as machine-readable JSON plus a fixed-format markdown report. Deterministic by construction: same inputs, byte-identical report.
@@ -1003,6 +1058,7 @@ Both runs are named by **deployment id, never by name** — staging names are re
 | `--baseline-id` | int | Yes | - | Deployment id of the baseline run |
 | `--window-label` | string | No | `full-run` | Which stored window to compare on both sides |
 | `--thresholds` | path | No | bundled | Threshold config YAML (`resources/gates/staging-thresholds.yaml`) |
+| `--patterns` | path | No | bundled | Log-pattern catalogue YAML (`resources/log_patterns/connection-errors.yaml`) |
 | `--history` | string | No | - | Comma-separated ids of prior **accepted** runs, for the 2σ noise criterion |
 | `--json-out` | path | No | - | Write the machine-readable verdict here |
 | `--markdown-out` | path | No | - | Write the fixed-format markdown report here |
@@ -1013,7 +1069,7 @@ Exits `2` on a hard-gate failure (which blocks the ship with no override); soft-
 
 #### What it covers
 
-Two hard gates (upload success floor < 99%, download success floor < 99.5%) and eight soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored.
+Two hard gates (upload success floor < 99%, download success floor < 99.5%) and eight soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored. Plus one soft gate per **connection-error group** recorded by `deployments record-log-counts` (see below).
 
 Transfer-duration percentiles are exact — they come from the per-op `deployment_upload_records` / `deployment_download_records`, which carry each operation's own `duration_ms` and timestamps. `deployment_file_results` is not used: it is an aggregate with no per-op timestamps and therefore cannot be windowed.
 

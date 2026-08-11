@@ -1374,6 +1374,139 @@ def main(argv=None):
         ),
     )
 
+    # deployments record-log-counts
+    deployments_record_log_counts_parser = deployments_subparsers.add_parser(
+        "record-log-counts",
+        help=(
+            "Count a versioned set of named log strings (connection errors by "
+            "default) in the deployment's Elasticsearch and record the counts "
+            "in deployment_log_event_counts, so `deployments compare` can gate "
+            "on them. MUST be run while the run's Elasticsearch is still up — "
+            "it dies at teardown and no backfill is possible."
+        ),
+    )
+    # Same --id/--name split as derive-metrics, and for the same reason: staging
+    # names are reused every train, so only --id can address an earlier run.
+    deployments_record_log_counts_target = (
+        deployments_record_log_counts_parser.add_mutually_exclusive_group(
+            required=True
+        )
+    )
+    deployments_record_log_counts_target.add_argument(
+        "--id",
+        type=int,
+        default=None,
+        help=(
+            "Deployment id. Prefer this for any run that is not the latest of "
+            "its name."
+        ),
+    )
+    deployments_record_log_counts_target.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Deployment name. Resolves to the most recent row with that name, "
+            "so use --id to target an earlier run of a reused name."
+        ),
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--elastic-name",
+        dest="elastic_name",
+        type=str,
+        default=None,
+        help=(
+            "Name of the elastic stack to load credentials from (defaults to "
+            "the deployment's name)."
+        ),
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--patterns",
+        type=str,
+        default=None,
+        help=(
+            "Path to a log-pattern catalogue YAML. Defaults to the versioned "
+            "one shipped with the package "
+            "(resources/log_patterns/connection-errors.yaml)."
+        ),
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--label",
+        type=str,
+        default="full-run",
+        help=(
+            "Window label stored with the counts (default: full-run, i.e. "
+            "everything the index holds). `deployments compare` looks counts up "
+            "by the label it is comparing on, so a steady-state comparison "
+            "wants counts recorded under the same label on both runs."
+        ),
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--window-start",
+        dest="window_start",
+        type=str,
+        default=None,
+        help=(
+            "ISO-8601 UTC start of a narrower window. Omit to count everything "
+            "in the index, which is the default because a time filter is "
+            "applied against each host's own (deliberately skewed) clock."
+        ),
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--window-end",
+        dest="window_end",
+        type=str,
+        default=None,
+        help="ISO-8601 UTC end of the window (exclusive).",
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--index-pattern",
+        dest="index_pattern",
+        type=str,
+        default=None,
+        help=(
+            "Override the node-log index glob (default: from elastic state, "
+            "else telegraf-ant-nodes-<name>-*)."
+        ),
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--es-url",
+        dest="es_url",
+        type=str,
+        default=None,
+        help="Elasticsearch URL (overrides the elastic state lookup).",
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--es-username",
+        dest="es_username",
+        type=str,
+        default=None,
+        help="Elasticsearch username (used with --es-password).",
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--es-password",
+        dest="es_password",
+        type=str,
+        default=None,
+        help="Elasticsearch password.",
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--es-api-key",
+        dest="es_api_key",
+        type=str,
+        default=None,
+        help="Elasticsearch API key (preferred over username/password).",
+    )
+    deployments_record_log_counts_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help=(
+            "Per-query timeout in seconds (default 120). A phrase count over a "
+            "staging index of hundreds of millions of documents is not instant."
+        ),
+    )
+
     # deployments compare
     deployments_compare_parser = deployments_subparsers.add_parser(
         "compare",
@@ -1427,6 +1560,18 @@ def main(argv=None):
         help=(
             "Path to a threshold config YAML. Defaults to the versioned one "
             "shipped with the package (resources/gates/staging-thresholds.yaml)."
+        ),
+    )
+    deployments_compare_parser.add_argument(
+        "--patterns",
+        type=str,
+        default=None,
+        help=(
+            "Path to the log-pattern catalogue YAML naming the connection-error "
+            "groups and how each combines. Defaults to the versioned one "
+            "shipped with the package. Must be the catalogue the counts were "
+            "recorded under — the version is stored on every count and the "
+            "report warns when the two runs' versions differ."
         ),
     )
     deployments_compare_parser.add_argument(
@@ -5707,6 +5852,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.derive_metrics import cmd_derive_metrics
 
             cmd_derive_metrics(args)
+        elif args.deployments_subcommand == "record-log-counts":
+            from saorsa_deploy.cmd.record_log_counts import cmd_record_log_counts
+
+            cmd_record_log_counts(args)
         elif args.deployments_subcommand == "compare":
             from saorsa_deploy.cmd.compare_runs import cmd_compare_runs
 

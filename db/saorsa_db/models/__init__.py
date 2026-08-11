@@ -38,6 +38,11 @@ from saorsa_db.models.host_metric_bucket import (
     DeploymentHostMetricBucket,
 )
 from saorsa_db.models.host_result import DeploymentHostResult
+from saorsa_db.models.log_event_count import (
+    DEFAULT_PATTERN_SET,
+    SOURCE_ELASTICSEARCH,
+    DeploymentLogEventCount,
+)
 from saorsa_db.models.op_record import (
     DeploymentDownloadRecord,
     DeploymentUploadRecord,
@@ -95,6 +100,9 @@ from saorsa_db.models.release_candidate import (
 __all__ = [
     "BLOCKING_STATUSES",
     "COMPONENT_METRICS",
+    "DEFAULT_PATTERN_SET",
+    "SOURCE_ELASTICSEARCH",
+    "DeploymentLogEventCount",
     "ClaimSource",
     "ClaimStatus",
     "PoolFileKind",

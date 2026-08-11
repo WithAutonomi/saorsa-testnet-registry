@@ -19,6 +19,10 @@ from saorsa_db.models.host_metric_bucket import (
     DeploymentHostMetricBucket,
 )
 from saorsa_db.models.host_result import DeploymentHostResult
+from saorsa_db.models.log_event_count import (
+    SOURCE_ELASTICSEARCH,
+    DeploymentLogEventCount,
+)
 from saorsa_db.models.op_record import (
     DeploymentDownloadRecord,
     DeploymentUploadRecord,
@@ -316,6 +320,38 @@ class DeploymentRepository(ABC):
 
     @abstractmethod
     def delete_derived_metrics(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> int:
+        ...
+
+    @abstractmethod
+    def upsert_log_event_count(
+        self,
+        deployment_id: int,
+        event_key: str,
+        event_group: str,
+        pattern: str,
+        pattern_set: str,
+        pattern_version: int,
+        window_label: str,
+        count: int,
+        hosts: int | None = None,
+        total_documents: int | None = None,
+        observed_start: datetime | None = None,
+        observed_end: datetime | None = None,
+        source: str = SOURCE_ELASTICSEARCH,
+        details: dict | None = None,
+    ) -> DeploymentLogEventCount:
+        ...
+
+    @abstractmethod
+    def list_log_event_counts_for_deployment(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> list[DeploymentLogEventCount]:
+        ...
+
+    @abstractmethod
+    def delete_log_event_counts(
         self, deployment_id: int, window_label: str | None = None
     ) -> int:
         ...
@@ -1365,6 +1401,92 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         if window_label is not None:
             statement = statement.where(
                 DeploymentDerivedMetric.window_label == window_label
+            )
+        result = self.session.execute(statement)
+        self.session.commit()
+        return result.rowcount or 0
+
+    def upsert_log_event_count(
+        self,
+        deployment_id: int,
+        event_key: str,
+        event_group: str,
+        pattern: str,
+        pattern_set: str,
+        pattern_version: int,
+        window_label: str,
+        count: int,
+        hosts: int | None = None,
+        total_documents: int | None = None,
+        observed_start: datetime | None = None,
+        observed_end: datetime | None = None,
+        source: str = SOURCE_ELASTICSEARCH,
+        details: dict | None = None,
+    ) -> DeploymentLogEventCount:
+        """Insert or update the one count for this (deployment, key, window).
+
+        Re-recording replaces rather than accumulates, for the same reason
+        ``upsert_derived_metric`` does: two rival counts for one window would
+        make the comparison non-deterministic. Re-running is expected — the
+        query is cheap and an operator may well re-record after noticing the
+        first run was taken too early.
+        """
+        existing = self.session.execute(
+            select(DeploymentLogEventCount)
+            .where(DeploymentLogEventCount.deployment_id == deployment_id)
+            .where(DeploymentLogEventCount.event_key == event_key)
+            .where(DeploymentLogEventCount.window_label == window_label)
+        ).scalar_one_or_none()
+
+        if existing is None:
+            existing = DeploymentLogEventCount(
+                deployment_id=deployment_id,
+                event_key=event_key,
+                window_label=window_label,
+            )
+            self.session.add(existing)
+
+        existing.event_group = event_group
+        existing.pattern = pattern
+        existing.pattern_set = pattern_set
+        existing.pattern_version = pattern_version
+        existing.count = count
+        existing.hosts = hosts
+        existing.total_documents = total_documents
+        existing.observed_start = observed_start
+        existing.observed_end = observed_end
+        existing.source = source
+        existing.details = details
+        self.session.commit()
+        self.session.refresh(existing)
+        return existing
+
+    def list_log_event_counts_for_deployment(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> list[DeploymentLogEventCount]:
+        query = select(DeploymentLogEventCount).where(
+            DeploymentLogEventCount.deployment_id == deployment_id
+        )
+        if window_label is not None:
+            query = query.where(
+                DeploymentLogEventCount.window_label == window_label
+            )
+        query = query.order_by(
+            DeploymentLogEventCount.window_label,
+            DeploymentLogEventCount.event_group,
+            DeploymentLogEventCount.event_key,
+        )
+        return list(self.session.execute(query).scalars().all())
+
+    def delete_log_event_counts(
+        self, deployment_id: int, window_label: str | None = None
+    ) -> int:
+        statement = delete(DeploymentLogEventCount).where(
+            DeploymentLogEventCount.deployment_id == deployment_id
+        )
+        if window_label is not None:
+            statement = statement.where(
+                DeploymentLogEventCount.window_label == window_label
             )
         result = self.session.execute(statement)
         self.session.commit()

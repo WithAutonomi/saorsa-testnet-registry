@@ -47,6 +47,7 @@ Rules:
 | soft | Memory leak (median RSS slope, final 2h) | RSS buckets, fitted per service |
 | soft | Outbound bytes per GB of traffic | `deployment_derived_metrics` |
 | soft | Disk bytes per GB stored | `deployment_derived_metrics` |
+| soft | Connection errors, one gate per group | `deployment_log_event_counts` |
 
 It does **not** cover the following. The command's report says nothing about them at all, so it is
 **your** report's Observational hard gates table (Step 7) that must account for each one — silence
@@ -148,6 +149,20 @@ Two rules the command enforces and you should not try to work around:
 - **Window lengths must be within 1.25x.** Replication continues after an upload completes, so a
   shorter window truncates the disk numerator while still counting the full denominator.
 
+The connection-error counts are looked up under the **same label**, so a steady-state comparison
+finds none unless the run session recorded that slice as well. If only `full-run` counts exist,
+those gates read NOT ASSESSED on a steady-state comparison — that is the honest outcome and not
+something to work around by comparing a steady-state window against whole-run counts. If both
+runs' Elasticsearch instances are still up, you can record the slice now on each run:
+
+```bash
+uv run saorsa-deploy deployments record-log-counts --id <id> \
+  --window-start <start> --window-end <end> --label steady-state
+```
+
+Note the caveat the command prints: a time-filtered count is applied against each host's own
+clock, and the staging profile skews those deliberately.
+
 ## Step 4 — Gather the accepted-run history (optional)
 
 The 2σ noise criterion needs roughly five prior **accepted** runs per metric. Which runs count as
@@ -192,6 +207,24 @@ Read the output for:
   rather than an exact whole-run percentile.
 - **NOT ASSESSED rows.** Each names why. These are not passes and must survive into your report
   with their reasons intact.
+- **Connection-error gates.** One per group, on the counts the run session recorded with
+  `deployments record-log-counts`. Three things to read before quoting a delta:
+  - **A NOT ASSESSED here is expected on the first train that uses them.** No run before the
+    gate existed recorded these counts, and none can be backfilled — the run's Elasticsearch is
+    destroyed at teardown. It becomes a real gate once a baseline carries counts too. Say so
+    plainly rather than treating it as a run failure.
+  - **The gates compare raw counts**, which scale with how long a run logged for. Each gate's
+    detail carries the per-hour rate and the host spread; the command warns when the two runs'
+    logs span materially different periods. A count concentrated on a couple of hosts of seventy
+    is usually a service restart, not a fleet-wide regression — the detail says which.
+  - **`Connection attempt failed` and `connect_happy_eyeballs failed` are one gate**, not two.
+    They are the same failure logged at two layers and tracked each other to within 0.2% across
+    a 50x swing, so the group takes the larger rather than their sum. Do not report them as two
+    corroborating signals.
+
+  A **zero** count is not self-explaining: "fixed", "renamed" and "emitted at a level the node
+  forwarder drops" are indistinguishable from Elasticsearch alone. If a group fell to zero,
+  either confirm the literal is still in the pinned source or report it as unconfirmed.
 
 ## Step 6 — Gather the three observational hard gates
 
@@ -346,6 +379,9 @@ State these in the final report rather than working around them:
   `disk_bytes_per_gb_stored` is NOT ASSESSED against an older baseline. No backfill is possible.
 - **Nothing records which staging run a release shipped on**, so the baseline is chosen by the
   operator and confirmed by hand every time.
+- **Connection-error counts cannot be backfilled**, so they are NOT ASSESSED against any
+  baseline recorded before the measurement existed. The 10% threshold is a starting point with
+  no run history behind it, not a calibrated level.
 - **The memory-leak threshold is calibrated against the noise floor, not against a known leak.**
   It was set from four runs, none of which is known to contain one. A PASS there means "no
   fleet-wide RSS trend", not "no leak".

@@ -71,6 +71,7 @@ class GateConfig:
     node_rss_increase_percent: float
     outbound_bytes_per_gb_increase_percent: float
     disk_bytes_per_gb_increase_percent: float
+    connection_error_increase_percent: float
 
     memory_leak: MemoryLeakConfig
     noise_rule: NoiseRuleConfig
@@ -95,6 +96,7 @@ _SOFT_GATE_KEYS = (
     "node_rss_increase_percent",
     "outbound_bytes_per_gb_increase_percent",
     "disk_bytes_per_gb_increase_percent",
+    "connection_error_increase_percent",
 )
 
 # The three ratio metrics `record-analysis` / `derive-metrics` can write. Only

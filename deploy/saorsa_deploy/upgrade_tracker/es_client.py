@@ -72,6 +72,17 @@ class ESClient:
         except urllib.error.URLError as e:
             raise ESError(f"ES connection error: {e.reason}") from e
 
+    def search(self, index_pattern: str, body: dict) -> dict:
+        """Run one `_search` against an index pattern and return the raw response.
+
+        A generic seam, unlike the scans below: the log-count queries
+        (`es_log_counts.py`) ask only for aggregations and a total, so they need
+        no pagination and no point-in-time. Public because the caller builds the
+        body; the encoding of the index glob is the part worth sharing.
+        """
+        encoded = urllib.parse.quote(index_pattern, safe="*-")
+        return self._request("POST", f"/{encoded}/_search", body)
+
     def _target_filter(self) -> dict:
         """The shared `should` clause matching startup + upgrade-module docs."""
         return {
