@@ -1,14 +1,18 @@
 ---
 name: run-canary-deployment
-description: Stand up the release train's production canary — ~10 RC ant-node services on a single VM joined to the production Autonomi network. Reads the current Release Train issue from Linear for the ant-node RC version, updates the STG-03 manifest, deploys it, smoke-tests that metrics reach InfluxDB, logs reach Elasticsearch and the nodes joined the network, then records the canary on the "Canary deployment" sub-issue and closes it. Use when asked to "deploy the canary", "run the canary deployment", "stand up the canary", "deploy the RC to production", "kick off the canary for rc.N", or "do the canary deployment".
+description: Stand up the release train's production canary — a small set of RC ant-node services on a single VM joined to the production Autonomi network. Reads the current Release Train issue from Linear for the ant-node RC version, updates the STG-03 manifest, deploys it, smoke-tests that metrics reach InfluxDB, logs reach Elasticsearch and the nodes joined the network, then records the canary on the "Canary deployment" sub-issue and closes it. Use when asked to "deploy the canary", "run the canary deployment", "stand up the canary", "deploy the RC to production", "kick off the canary for rc.N", or "do the canary deployment".
 ---
 
 # run-canary-deployment
 
-Stands up the current release train's **production canary**: ~10 release-candidate `ant-node`
-services on a single VM, joined to the **real production Autonomi network**, in a debugging
-configuration (`kind: prod-debug-nodes`). The point is to give the RC some genuine production
-exposure before the full release ships.
+Stands up the current release train's **production canary**: a small set of release-candidate
+`ant-node` services on a single VM, joined to the **real production Autonomi network**, in a
+debugging configuration (`kind: prod-debug-nodes`). The point is to give the RC some genuine
+production exposure before the full release ships.
+
+The service count is whatever the manifest's `node_count` says — **the manifest is authoritative,
+not this document**. It is currently **4**, and it is chosen by what the log forwarder can carry,
+not by matching the production fleet; see Step 3.
 
 This skill ends at **"the canary is up and healthy"**. It is the deployment half of the canary
 work; the judgment half is the separate `evaluate-canary` skill, which runs later (normally
@@ -123,13 +127,22 @@ Edit **two things and nothing else**:
 
 **Everything else in that file is load-bearing.** In particular:
 
-- `volume_size: 750` — 10 fresh nodes sync ~220 GB of chunk data from production and debug logs
-  add ~11 GB/hr, so a 24h run lands near 500 GB. The 100 GB default fills in well under an hour,
-  and on OVH the volume size is ForceNew — you cannot grow it later without recreating the VM.
+- `volume_size: 750` — fresh nodes sync chunk data from production and debug logs add to it fast
+  (sized when the canary ran 10 services: ~220 GB of chunk sync plus ~11 GB/hr of logs, landing
+  near 500 GB over 24h). It is deliberately kept at 750 GB at the lower node count: on OVH the
+  volume size is ForceNew, so you cannot grow it later without recreating the VM, and the 100 GB
+  default fills in well under an hour.
 - `elastic_volume_size: 500` — debug-level node logs ingest at ~7–9 GB/hr (~200 GB/24h), which
   fills the default long before the 3-day ILM prunes anything.
-- `node_count: 10`, `log_level: debug`, `rust_backtrace: "full"`, `coredumps: true` — these are
+- `node_count: 4`, `log_level: debug`, `rust_backtrace: "full"`, `coredumps: true` — these are
   what make the canary *debuggable*; `evaluate-canary` depends on all of them.
+- **`node_count` is forwarder-bound, not fleet-matched — do not raise it back to 10.** The canary
+  ran 10 services until 2026-08-03, when the node count was measured against what the log
+  forwarder can actually carry. At `log_level: debug` each service emits ~758 lines/s and a single
+  Telegraf tops out ~2,700 lines/s — CPU-bound in its own parse chain, *not* blocked on
+  Elasticsearch. At 10 services only **~36%** of node log lines reached ES, and the forwarder had
+  silently wedged for three days. More services therefore buy *less* evidence, not more: they
+  degrade the ES record that `evaluate-canary` reads. 4 is the deliberate re-baseline.
 - `log_retention_days: 1` is deliberately short because the logs are durable in Elasticsearch.
 
 Changing any of those is a re-baselining decision and needs the RM. The file's own comments record
@@ -211,7 +224,8 @@ uv run saorsa-deploy elastic info    --name STG-03   # ES URL, user, password, A
 ```
 
 From the inventory: `node_vms[0].ip` is the VM, and its `services` list is `["ant-node-1", …,
-"ant-node-N"]` — N is the manifest's `node_count` (10). `observability_vms[]` holds the
+"ant-node-N"]` — N is the manifest's `node_count` (currently 4; read it off the inventory rather
+than assuming). `observability_vms[]` holds the
 `influxdb` and `elasticsearch` IPs.
 
 > **SSH key gotcha.** `generate-inventory` defaults `--ssh-key-path` to `~/.ssh/id_rsa`, which does
@@ -322,9 +336,8 @@ stayed in the network:
 
 ```bash
 ssh -i ~/.ssh/ant_deploy -o StrictHostKeyChecking=no -o BatchMode=yes root@<ip> '
-for i in $(seq 1 10); do
-  u=ant-node-$i
-  printf "%-12s NRestarts=%s Active=%s Sub=%s Result=%s\n" "$u" \
+for u in $(systemctl list-unit-files --plain --no-legend "ant-node-[0-9]*.service" | awk "{print \$1}" | sort -V); do
+  printf "%-22s NRestarts=%s Active=%s Sub=%s Result=%s\n" "$u" \
     "$(systemctl show $u -p NRestarts --value)" \
     "$(systemctl show $u -p ActiveState --value)" \
     "$(systemctl show $u -p SubState --value)" \
@@ -335,6 +348,11 @@ echo "== store ==" ; du -cb /mnt/ant-node-storage/data/*/chunks.mdb 2>/dev/null 
 '
 ```
 
+- The loop enumerates the installed unit *files* rather than counting to a fixed N, so a service
+  that failed to install is visible as an absence. **Check the row count equals `node_count`** —
+  a short list is itself a finding. The `[0-9]` in the glob matters: a bare `ant-node-*.service`
+  also matches the `ant-node-coredump-logprune` / `ant-node-debug-logprune` timer units, which
+  are `inactive/dead` by design and would both inflate the count and read as dead services.
 - `NRestarts` should be `0` and `ActiveState=active` for every service. `ActiveState=active` alone
   is **not** a pass — a service can be up with `NRestarts=3`.
 - **Confirm the live binary is the RC**: `/usr/local/bin/ant-node --version` must match the version
