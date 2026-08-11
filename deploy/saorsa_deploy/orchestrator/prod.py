@@ -114,6 +114,17 @@ def _memory_profiling_flag(spec) -> list[str]:
     return ["--memory-profiling"] if spec.memory_profiling else ["--no-memory-profiling"]
 
 
+def _download_diagnostics_flag(spec) -> list[str]:
+    """argparse BooleanOptionalAction flag for spec-level download_diagnostics."""
+    if getattr(spec, "download_diagnostics", None) is None:
+        return []
+    return (
+        ["--download-diagnostics"]
+        if spec.download_diagnostics
+        else ["--no-download-diagnostics"]
+    )
+
+
 def _binary_debug_flag(binary) -> list[str]:
     """Informational ``--debug`` on the deploy step when the binary is a debug build.
 
@@ -162,6 +173,16 @@ def _downloaders(manifest: Manifest) -> list[Step]:
     ]
     if spec.addresses_path is not None:
         argv += ["--addresses-path", spec.addresses_path]
+    if spec.provider is not None:
+        argv += ["--provider", spec.provider]
+    if spec.monitoring_provider is not None:
+        argv += ["--monitoring-provider", spec.monitoring_provider]
+    if spec.monitoring_region is not None:
+        argv += ["--monitoring-region", spec.monitoring_region]
+    if spec.monitoring_droplet_size is not None:
+        argv += ["--monitoring-droplet-size", spec.monitoring_droplet_size]
+    if spec.monitoring_volume_type is not None:
+        argv += ["--monitoring-volume-type", spec.monitoring_volume_type]
     if spec.clock_skew:
         argv += ["--clock-skew", spec.clock_skew]
     if spec.network is not None:
@@ -169,6 +190,7 @@ def _downloaders(manifest: Manifest) -> list[Step]:
     argv += _bootstrap_cache_flag(spec)
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)
+    argv += _download_diagnostics_flag(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)
@@ -216,6 +238,7 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
     argv += _bootstrap_cache_flag(spec)
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)
+    argv += _download_diagnostics_flag(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)

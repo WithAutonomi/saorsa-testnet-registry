@@ -554,10 +554,11 @@ class ProdDownloadersSpec(_Base):
     # name ("home-calibrated") or an inline mapping. Inherited by
     # ProdContinuousDownloaderSpec below, so it covers both download kinds.
     network: Optional[Network] = None
-
-
-class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
-    sleep_interval_secs: Optional[int] = None
+    # Write one JSONL record per chunk-fetch attempt next to the per-op
+    # stdout/stderr logs (`ant file download --download-diagnostics`). Default
+    # off: the flag only exists on instrumented `ant` builds, so a stock binary
+    # would reject it. One file per download — the writer truncates on open.
+    download_diagnostics: Optional[bool] = None
     # Cloud provider for the client VM (digitalocean | hetzner | vultr | ovh;
     # default digitalocean). Non-DO is cheaper for a permanent run and cuts
     # pooled DigitalOcean egress. Needs the provider's creds in the env.
@@ -570,6 +571,10 @@ class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
     monitoring_region: Optional[str] = None
     monitoring_droplet_size: Optional[str] = None
     monitoring_volume_type: Optional[str] = None
+
+
+class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
+    sleep_interval_secs: Optional[int] = None
     # InfluxDB bucket retention in days (default 7); 0 = infinite. For a
     # permanent run, periodically archive into Postgres (`deployments archive`).
     influx_retention_days: Optional[int] = None

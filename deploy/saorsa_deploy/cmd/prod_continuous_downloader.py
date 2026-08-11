@@ -312,6 +312,7 @@ def _provision_prod_downloader(
         influx_bucket=influx_bucket,
         rust_log=getattr(args, "rust_log", None),
         memory_profiling=getattr(args, "memory_profiling", False),
+        download_diagnostics=getattr(args, "download_diagnostics", False),
         log_retention_days=getattr(args, "log_retention_days", 7),
         console=console,
     )
@@ -480,6 +481,7 @@ def cmd_prod_continuous_downloader_deploy(args):
         "forward_logs": getattr(args, "forward_logs", False),
         "rust_log": getattr(args, "rust_log", None),
         "memory_profiling": getattr(args, "memory_profiling", False),
+        "download_diagnostics": getattr(args, "download_diagnostics", False),
         "purpose": args.purpose,
         "sleep_interval_secs": args.sleep_interval_secs,
         "provider": getattr(args, "provider", "digitalocean"),

@@ -3227,6 +3227,16 @@ def main(argv=None):
         "Default off.",
     )
     prod_cd_deploy_parser.add_argument(
+        "--download-diagnostics",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Pass --download-diagnostics to each ant download, writing one "
+        "JSONL record per chunk-fetch attempt to "
+        "/var/log/ant-prod-downloader/<op>.diag.jsonl alongside the per-op "
+        "stdout/stderr logs. Default off — the flag only exists on "
+        "instrumented ant builds and a stock binary will reject it.",
+    )
+    prod_cd_deploy_parser.add_argument(
         "--addresses-path",
         type=str,
         default=None,
@@ -3426,6 +3436,53 @@ def main(argv=None):
         type=str,
         required=True,
         help="Downloader VM spec 'region[:vm_size]' (single client VM).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "hetzner", "vultr", "ovh"],
+        help="Cloud provider for the downloader VM (default: digitalocean). "
+        "Needs that provider's credentials in the environment.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--monitoring-provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "ovh"],
+        help="Cloud provider for the paired monitoring VM (default: "
+        "digitalocean). Only these two have monitoring Terraform modules; "
+        "independent of --provider.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--monitoring-region",
+        type=str,
+        default=None,
+        help="Override the monitoring VM region (default: lon1 on "
+        "DigitalOcean, the provider default on OVH).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--monitoring-droplet-size",
+        type=str,
+        default=None,
+        help="Override the monitoring VM size (default: s-2vcpu-4gb on "
+        "DigitalOcean, the provider default on OVH).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--monitoring-volume-type",
+        type=str,
+        default=None,
+        help="Monitoring VM volume type (OVH only).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--download-diagnostics",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Pass --download-diagnostics to each ant download, writing one "
+        "JSONL record per chunk-fetch attempt to "
+        "/var/log/ant-prod-downloader/<op>.diag.jsonl alongside the per-op "
+        "stdout/stderr logs. Default off — the flag only exists on "
+        "instrumented ant builds and a stock binary will reject it.",
     )
     prod_dl_deploy_parser.add_argument(
         "--clock-skew",

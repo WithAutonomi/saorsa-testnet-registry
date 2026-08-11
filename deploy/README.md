@@ -1359,7 +1359,29 @@ uv run saorsa-deploy prod downloaders deploy \
   --addresses-path my-addresses.txt   # optional, defaults to resources/prod_addresses.txt
 ```
 
-Arguments are identical to `prod continuous-downloader deploy` apart from the omitted `--sleep-interval-secs`. The deployment row carries `deploy_args.kind = "prod-downloaders"`.
+Arguments are identical to `prod continuous-downloader deploy` apart from the omitted `--sleep-interval-secs`, `--influx-retention-days` and `--log-retention-days` (a one-shot run needs no retention timers). The deployment row carries `deploy_args.kind = "prod-downloaders"`.
+
+**Provider selection.** Like the continuous variant, the client VM and the monitoring VM pick their providers independently:
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--provider` | `digitalocean\|hetzner\|vultr\|ovh` | `digitalocean` | Cloud provider for the downloader VM. Needs that provider's credentials in the environment (`HCLOUD_TOKEN`, `VULTR_API_KEY`, the four `OVH_*` vars) |
+| `--monitoring-provider` | `digitalocean\|ovh` | `digitalocean` | Provider for the paired monitoring VM — only these two have monitoring Terraform modules |
+| `--monitoring-region` | string | `lon1` (DO) / provider default (OVH) | Override the monitoring VM region |
+| `--monitoring-droplet-size` | string | `s-2vcpu-4gb` (DO) / provider default (OVH) | Override the monitoring VM size |
+| `--monitoring-volume-type` | string | `high-speed` | Monitoring VM volume type (OVH only) |
+
+Destroy reads both providers back from S3 state, so no provider flags are needed on teardown — but OVH's credentials must still be present in the environment at destroy time.
+
+**Per-request download diagnostics.**
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--download-diagnostics` / `--no-download-diagnostics` | flag | off | Pass `--download-diagnostics <PATH>` to each `ant file download`, writing one JSONL record per chunk-fetch attempt |
+
+Default off, because the flag only exists on instrumented `ant` builds — a stock binary rejects it and every download would fail. When on, each download gets its **own** file at `/var/log/ant-prod-downloader/<op>.diag.jsonl`, beside that operation's `.stdout`/`.stderr`. The path is per-operation because `ant` opens it with truncate: a single shared path across a multi-address run would leave only the last address's records. The existing `--log-retention-days` prune timer covers these files already (it deletes everything under the log dir by age, regardless of extension).
+
+Both options are also available on `prod continuous-downloader deploy` and as manifest keys (`provider`, `monitoring_provider`, `monitoring_region`, `monitoring_droplet_size`, `monitoring_volume_type`, `download_diagnostics`) under `prod_downloaders:` / `prod_continuous_downloader:`.
 
 Teardown:
 

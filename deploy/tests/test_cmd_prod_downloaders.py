@@ -155,8 +155,12 @@ class TestDeployHappyPath:
 
         infra_args = deploy_patches.infra_clients.call_args.args[0]
         assert infra_args.uploader == []
+        # The provider prefix is now taken from --provider rather than
+        # hardcoded. "digitalocean" and the older "digital_ocean" spelling both
+        # resolve to the same provider (CLIENT_PROVIDER_ALIASES); this matches
+        # what the continuous-downloader path already emits.
         assert infra_args.downloader == [
-            "digital_ocean:nyc1:s-4vcpu-8gb:bootstrap_cache=true"
+            "digitalocean:nyc1:s-4vcpu-8gb:bootstrap_cache=true"
         ]
 
 

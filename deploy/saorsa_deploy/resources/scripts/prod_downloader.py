@@ -37,6 +37,10 @@ Optional env:
     INFLUX_BUCKET        InfluxDB bucket (default testnet-metrics).
     MEMORY_PROFILING     `true` wraps each ant invocation with heaptrack
                          (default `false`). Profiles → HEAPTRACK_DIR.
+    DOWNLOAD_DIAGNOSTICS `true` passes --download-diagnostics to each ant
+                         download, writing one JSONL record per chunk-fetch
+                         attempt to LOG_DIR/<op>.diag.jsonl (default `false`).
+                         Requires an instrumented ant build.
     HEAPTRACK_DIR        Output dir for heaptrack profiles (default
                          /var/log/ant-heaptrack); only used when MEMORY_PROFILING.
 """
@@ -223,6 +227,7 @@ def _run_ant(
     stdout_log_path: Path,
     memory_profiling: bool = False,
     heaptrack_output_base: str | None = None,
+    diagnostics_path: Path | None = None,
 ) -> tuple[int, str, str]:
     """Run ant and tee its streams to plain-text log files in real time.
 
@@ -242,6 +247,10 @@ def _run_ant(
         "file", "download", address,
         "-o", str(output_path),
     ]
+    # One diagnostics file per download: ant opens the path with truncate, so a
+    # single shared path would leave only the last address's records.
+    if diagnostics_path is not None:
+        cmd += ["--download-diagnostics", str(diagnostics_path)]
     cmd = _maybe_wrap_heaptrack(
         cmd,
         memory_profiling=memory_profiling,
@@ -343,6 +352,9 @@ def main() -> int:
     influx_org = os.environ.get("INFLUX_ORG", "ant")
     influx_bucket = os.environ.get("INFLUX_BUCKET", "testnet-metrics")
     memory_profiling = os.environ.get("MEMORY_PROFILING", "false").lower() == "true"
+    download_diagnostics = (
+        os.environ.get("DOWNLOAD_DIAGNOSTICS", "false").lower() == "true"
+    )
     heaptrack_dir = Path(os.environ.get("HEAPTRACK_DIR", "/var/log/ant-heaptrack"))
 
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -385,6 +397,11 @@ def main() -> int:
                 if memory_profiling
                 else None
             )
+            diagnostics_path = (
+                log_dir / f"{log_basename}.diag.jsonl"
+                if download_diagnostics
+                else None
+            )
 
             print(f"[{idx}/{len(addresses)}] cycle={cycle} {address}", flush=True)
             start_ns = time.time_ns()
@@ -399,6 +416,7 @@ def main() -> int:
                     stdout_log_path=stdout_log_path,
                     memory_profiling=memory_profiling,
                     heaptrack_output_base=heaptrack_output_base,
+                    diagnostics_path=diagnostics_path,
                 )
             except Exception as e:  # noqa: BLE001 — keep the loop alive
                 end_ns = time.time_ns()

@@ -135,6 +135,7 @@ class ProdDownloaderProvisioner:
         one_shot: bool = False,
         rust_log: str | None = None,
         memory_profiling: bool = False,
+        download_diagnostics: bool = False,
         exempt_endpoints: list = None,
         log_retention_days: int = 7,
         console: Console | None = None,
@@ -153,6 +154,7 @@ class ProdDownloaderProvisioner:
         self.evm_network = evm_network
         self.rust_log = rust_log
         self.memory_profiling = memory_profiling
+        self.download_diagnostics = download_diagnostics
         # Extra IPs whose traffic bypasses the shaper (e.g. a client
         # Elasticsearch stood up by the deploy command).
         self.exempt_endpoints = exempt_endpoints or []
@@ -466,6 +468,7 @@ SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
 ONE_SHOT={'true' if self.one_shot else 'false'}
 RUST_LOG={self.rust_log or ''}
 MEMORY_PROFILING={'true' if self.memory_profiling else 'false'}
+DOWNLOAD_DIAGNOSTICS={'true' if self.download_diagnostics else 'false'}
 HEAPTRACK_DIR={HEAPTRACK_DIR}
 {influx_lines}ENV_EOF"""
 

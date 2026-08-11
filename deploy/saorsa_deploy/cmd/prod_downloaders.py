@@ -109,14 +109,31 @@ def _ensure_monitoring(args, console: Console) -> None:
         ))
         return
 
-    console.print("[bold cyan]Step 1/5: creating monitoring VM[/bold cyan]")
+    provider = getattr(args, "monitoring_provider", None) or "digitalocean"
+    # Defaults differ per provider: DigitalOcean keeps the small lon1 box the
+    # prod flows have always used; OVH falls through to the obs-provider
+    # defaults (region/flavor) since lon1 / s-2vcpu-4gb are DO-specific.
+    if provider == "digitalocean":
+        region = getattr(args, "monitoring_region", None) or MONITORING_REGION
+        droplet_size = (
+            getattr(args, "monitoring_droplet_size", None) or "s-2vcpu-4gb"
+        )
+    else:
+        region = getattr(args, "monitoring_region", None)
+        droplet_size = getattr(args, "monitoring_droplet_size", None)
+
+    console.print(
+        f"[bold cyan]Step 1/5: creating monitoring VM ({provider})[/bold cyan]"
+    )
     mon_infra_args = SimpleNamespace(
         name=args.name,
-        region=MONITORING_REGION,
+        provider=provider,
+        region=region,
         volume_size=args.monitoring_volume_size,
         # A single client VM forwards little; keep the InfluxDB box small
-        # rather than the larger testnet default.
-        droplet_size="s-2vcpu-4gb",
+        # rather than the larger testnet default (None → provider default).
+        droplet_size=droplet_size,
+        volume_type=getattr(args, "monitoring_volume_type", None),
         force=False,
         grafana=getattr(args, "grafana", False),
     )
@@ -140,11 +157,15 @@ def _ensure_client_infra(args, console: Console) -> None:
         )
         return
 
-    console.print(f"[bold cyan]Step 3/5: creating downloader VM ({args.spec})[/bold cyan]")
-    # prod downloaders are Digital Ocean only (--spec carries no provider
-    # field); prefix the provider parse_downloader_spec now requires.
-    # bootstrap_cache is carried through so client_state records the real
-    # per-VM cache mode (the print/slack surfaces read it from there).
+    provider = getattr(args, "provider", None) or "digitalocean"
+    console.print(
+        f"[bold cyan]Step 3/5: creating downloader VM "
+        f"({provider}:{args.spec})[/bold cyan]"
+    )
+    # The client VM provider is selectable; --spec carries no provider field, so
+    # prefix the provider token parse_downloader_spec requires. bootstrap_cache
+    # is carried through so client_state records the real per-VM cache mode (the
+    # print/slack surfaces read it from there).
     cache_token = (
         f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
     )
@@ -158,7 +179,7 @@ def _ensure_client_infra(args, console: Console) -> None:
     infra_args = SimpleNamespace(
         name=args.name,
         uploader=[],
-        downloader=[f"digital_ocean:{args.spec}:{cache_token}{network_token}"],
+        downloader=[f"{provider}:{args.spec}:{cache_token}{network_token}"],
         force=False,
     )
     cmd_infra_clients(infra_args)
@@ -278,6 +299,7 @@ def _provision_prod_downloader(
         one_shot=True,
         rust_log=getattr(args, "rust_log", None),
         memory_profiling=getattr(args, "memory_profiling", False),
+        download_diagnostics=getattr(args, "download_diagnostics", False),
         console=console,
     )
     provisioner.execute()
@@ -408,8 +430,13 @@ def cmd_prod_downloaders_deploy(args):
     console.print(f"[bold]prod downloaders deploy: {args.name}[/bold]")
     console.print(f"  Addresses file: {addresses_file}")
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
-    console.print(f"  Downloader spec: {args.spec}")
+    console.print(
+        f"  Downloader spec: "
+        f"{getattr(args, 'provider', None) or 'digitalocean'}:{args.spec}"
+    )
     console.print("  Mode: one-shot (single pass, then exit)")
+    if getattr(args, "download_diagnostics", False):
+        console.print("  Download diagnostics: on (per-op .diag.jsonl)")
     console.print()
 
     deploy_args_payload = {
@@ -419,12 +446,17 @@ def cmd_prod_downloaders_deploy(args):
         "addresses": addresses_list,
         "monitoring_name": args.name,
         "spec": args.spec,
+        "provider": getattr(args, "provider", None) or "digitalocean",
+        "monitoring_provider": (
+            getattr(args, "monitoring_provider", None) or "digitalocean"
+        ),
         "clock_skew": clock_skew_seconds,
         "network": network_profile.to_dict() if network_profile else None,
         "bootstrap_cache": getattr(args, "bootstrap_cache", True),
         "forward_logs": getattr(args, "forward_logs", False),
         "rust_log": getattr(args, "rust_log", None),
         "memory_profiling": getattr(args, "memory_profiling", False),
+        "download_diagnostics": getattr(args, "download_diagnostics", False),
         "purpose": args.purpose,
         "ant_binary": build_binary_descriptor(
             args.branch_name, args.repo_owner, args.ant_version,
