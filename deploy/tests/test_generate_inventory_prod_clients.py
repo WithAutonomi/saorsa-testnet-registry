@@ -260,3 +260,79 @@ class TestTheCommandFallsBackToTheClientPath:
 def test_node_inventory_loader_accepts_the_new_schema_version():
     """Bumping the emitted version must not orphan the prod fleet tooling."""
     assert INVENTORY_SCHEMA_VERSION in SUPPORTED_SCHEMA_VERSIONS
+
+
+class TestUpGeneratesTheInventory:
+    """`deployments up` must snapshot the run, not leave it to be remembered.
+
+    The per-op logs and the diagnostics JSONL live only on the client VM and
+    die with it; the address list lives only in the registry. Without this step
+    there is no local record of what the run actually did.
+    """
+
+    def _steps(self, kind, spec_key, spec):
+        from saorsa_deploy.config.models import Manifest
+        from saorsa_deploy.orchestrator import build_deploy_steps
+
+        m = Manifest.model_validate({
+            "name": "PROD-DL-02", "kind": kind, "purpose": "test",
+            spec_key: spec,
+        })
+        return build_deploy_steps(m)
+
+    def _labels(self, steps):
+        return [s.label for s in steps]
+
+    def test_one_shot_downloaders_get_an_inventory_step(self):
+        steps = self._steps(
+            "prod-downloaders", "prod_downloaders",
+            {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
+        )
+        assert "Generate inventory snapshot" in self._labels(steps)
+
+    def test_continuous_downloader_gets_an_inventory_step(self):
+        steps = self._steps(
+            "prod-continuous-downloader", "prod_continuous_downloader",
+            {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
+        )
+        assert "Generate inventory snapshot" in self._labels(steps)
+
+    def test_it_runs_after_the_deploy(self):
+        """The inventory reads client state, which the deploy step creates."""
+        steps = self._steps(
+            "prod-downloaders", "prod_downloaders",
+            {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
+        )
+        labels = self._labels(steps)
+        deploy_at = labels.index("Deploy prod one-shot downloaders + monitoring")
+        inventory_at = labels.index("Generate inventory snapshot")
+        assert deploy_at < inventory_at
+
+    def test_the_argv_carries_name_and_ssh_key(self):
+        steps = self._steps(
+            "prod-downloaders", "prod_downloaders",
+            {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
+        )
+        argv = next(
+            s.argv for s in steps if s.label == "Generate inventory snapshot"
+        )
+        assert argv[:2] == ["deployments", "generate-inventory"]
+        assert argv[argv.index("--name") + 1] == "PROD-DL-02"
+        assert "--ssh-key-path" in argv
+
+    def test_kinds_without_an_inventory_path_get_no_step(self):
+        """Only the download kinds can be described today.
+
+        Emitting the step for a kind generate-inventory cannot handle would
+        fail the run at its final step, after all the infrastructure is up.
+        """
+        steps = self._steps(
+            "prod-canary", "prod_canary",
+            {
+                "binary": {"version": "0.2.7"},
+                "upload_spec": "lon1",
+                "probes": [{"region": "lon1", "count": 1}],
+                "urls_file": "/tmp/urls.txt",
+            },
+        )
+        assert "Generate inventory snapshot" not in self._labels(steps)

@@ -1383,7 +1383,7 @@ Default off, because the flag only exists on instrumented `ant` builds — a sto
 
 Both options are also available on `prod continuous-downloader deploy` and as manifest keys (`provider`, `monitoring_provider`, `monitoring_region`, `monitoring_droplet_size`, `monitoring_volume_type`, `download_diagnostics`) under `prod_downloaders:` / `prod_continuous_downloader:`.
 
-**Inventory.** `deployments generate-inventory --name <name>` works for both download kinds, writing `~/.autonomi/testnets/<name>/inventory.json` (override with `--output`):
+**Inventory.** `deployments up` generates one automatically for both download kinds, as the step after the deploy and before `slack-post`. It is best-effort: a snapshot failure warns rather than halting a run whose VMs are already up. Run it by hand against an existing deployment with `deployments generate-inventory --name <name>`, which writes `~/.autonomi/testnets/<name>/inventory.json` (override with `--output`):
 
 ```bash
 uv run saorsa-deploy deployments generate-inventory --name PROD-DL-OS-01 --ssh-key-path ~/.ssh/ant_deploy

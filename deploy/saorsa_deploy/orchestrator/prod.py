@@ -490,6 +490,39 @@ _DESTROY = {
 }
 
 
+# Kinds whose deployment `generate-inventory` can describe. The download kinds
+# keep no deployment state of their own, so the command builds their inventory
+# from client state + the registry row; the other prod kinds have no such path
+# yet and would fail the run.
+_INVENTORY_KINDS = frozenset({"prod-downloaders", "prod-continuous-downloader"})
+
+
+def _inventory_steps(manifest: Manifest) -> list[Step]:
+    """Snapshot the deployment's VMs and download configuration after deploy.
+
+    Mirrors the final step of the testnet sequence. It matters more here: the
+    per-op logs and the diagnostics JSONL live only on the client VM and die
+    with it, and the address list lives only in the registry — so without this
+    there is no local record of what the run actually did.
+    """
+    if manifest.kind not in _INVENTORY_KINDS:
+        return []
+    return [
+        Step(
+            [
+                "deployments", "generate-inventory",
+                "--name", manifest.name,
+                "--ssh-key-path", manifest.ssh_key_path,
+            ],
+            "Generate inventory snapshot",
+            # Best-effort: the deployment is already up and costing money by
+            # this point, and the snapshot is a convenience. Failing the run on
+            # it would strand billable infrastructure behind a halted `up`.
+            best_effort=True,
+        )
+    ]
+
+
 def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list[Step]:
     try:
         builder = _DEPLOY_BUILDERS[manifest.kind]
@@ -511,7 +544,7 @@ def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list
             steps = ant_build_steps(
                 manifest.name, manifest.ssh_key_path, manifest.spec.binary
             )
-    return steps + builder(manifest)
+    return steps + builder(manifest) + _inventory_steps(manifest)
 
 
 def build_destroy_steps(manifest: Manifest) -> list[Step]:

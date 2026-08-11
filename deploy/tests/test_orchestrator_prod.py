@@ -297,7 +297,17 @@ def test_prod_downloaders_matches_runbook():
             "0.2.4",
             "--ssh-key-path",
             SSH,
-        ]
+        ],
+        # The download kinds keep no deployment state, so the run's VM details
+        # and address list exist nowhere locally unless this snapshots them.
+        [
+            "deployments",
+            "generate-inventory",
+            "--name",
+            "PROD-DL-01",
+            "--ssh-key-path",
+            SSH,
+        ],
     ]
 
 
