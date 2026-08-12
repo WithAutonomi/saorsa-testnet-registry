@@ -1208,8 +1208,23 @@ def main(argv=None):
     deployments_record_analysis_parser.add_argument(
         "--name",
         type=str,
-        required=True,
-        help="Deployment name (must match a row in the registry deployments table)",
+        default=None,
+        help=(
+            "Deployment name (must match a row in the registry deployments "
+            "table). Resolves to the NEWEST run bearing that name. Staging "
+            "names are reused every train, so prefer --id when the target run "
+            "is already known."
+        ),
+    )
+    deployments_record_analysis_parser.add_argument(
+        "--id",
+        type=int,
+        default=None,
+        dest="deployment_id",
+        help=(
+            "Deployment id to record against. Unambiguous under name reuse; "
+            "takes precedence over --name."
+        ),
     )
     deployments_record_analysis_parser.add_argument(
         "--monitoring-name",

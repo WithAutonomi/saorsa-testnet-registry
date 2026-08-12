@@ -25,12 +25,18 @@ from saorsa_deploy.influx import (
 UTC = timezone.utc
 
 
-def _capture(monkeypatch, module=influx, attr="_run_flux"):
+def _capture(monkeypatch, module=influx, attr="_stream_flux"):
+    """Capture the Flux text each host-metric query sends.
+
+    Patches `_stream_flux`, not `_run_flux`: the host-metric path streams its
+    response line by line so a multi-GB CSV is never materialised, so the fake
+    returns an empty iterable of lines rather than an empty body string.
+    """
     seen = []
 
     def _fake(url, token, org, flux, timeout=30):
         seen.append(flux)
-        return ""
+        return iter(())
 
     monkeypatch.setattr(module, attr, _fake)
     return seen
@@ -61,6 +67,9 @@ def test_file_op_query_bounds_the_future(monkeypatch):
         def raise_for_status(self):
             pass
 
+        def iter_content(self, chunk_size=None, decode_unicode=False):
+            return iter(())
+
     monkeypatch.setattr(
         influx.requests, "post",
         lambda *a, **k: (seen.append(k.get("data")), _Resp())[1],
@@ -77,6 +86,9 @@ def test_prod_upload_query_bounds_the_future(monkeypatch):
 
         def raise_for_status(self):
             pass
+
+        def iter_content(self, chunk_size=None, decode_unicode=False):
+            return iter(())
 
     monkeypatch.setattr(
         influx.requests, "post",

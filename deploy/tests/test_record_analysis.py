@@ -78,7 +78,7 @@ def _diskio_point(
     return point
 
 
-def test_parse_flux_csv_keeps_every_column_and_parses_time():
+def test_parse_flux_csv_keeps_the_consumed_columns_and_parses_time():
     body = (
         ",result,table,_start,_stop,_time,host,_measurement,_field,_value\n"
         ",_result,0,2026-04-19T00:00:00Z,2026-04-20T00:00:00Z,2026-04-19T10:00:00Z,"
@@ -91,6 +91,63 @@ def test_parse_flux_csv_keeps_every_column_and_parses_time():
     assert rows[0]["_field"] == "usage_idle"
     assert rows[0]["_value"] == "95.0"
     assert rows[0]["_time"].tzinfo is not None
+
+
+def test_parse_flux_csv_drops_columns_no_consumer_reads():
+    """The row is projected to what is actually read, not the whole response.
+
+    This previously kept every column, which cost ~1.4 KB per row for ~40 bytes
+    of payload and made `record-analysis` need >23 GB on a 990-node run.
+    `_start`/`_stop` are the clearest waste: long ISO strings, identical for
+    every row of a table, re-allocated per row.
+    """
+    body = (
+        ",result,table,_start,_stop,_time,host,host_role,region,_field,_value\n"
+        ",_result,0,2026-04-19T00:00:00Z,2026-04-20T00:00:00Z,2026-04-19T10:00:00Z,"
+        "hostA,NODE,lon1,usage_idle,95.0\n"
+    )
+    rows = _parse_flux_csv(body)
+    assert len(rows) == 1
+    for dropped in ("_start", "_stop", "result", "table", "host_role", "region"):
+        assert dropped not in rows[0]
+    # keep=None restores the old keep-everything behaviour for any caller that
+    # genuinely needs an unknown column.
+    everything = _parse_flux_csv(body, keep=None)
+    assert everything[0]["_start"] == "2026-04-19T00:00:00Z"
+    assert everything[0]["region"] == "lon1"
+
+
+def test_parse_flux_csv_interns_repeated_tag_values():
+    """Tag columns repeat on every row; they must share one str object.
+
+    Interning is what turns millions of duplicate short strings into a few
+    thousand shared ones. Asserted by identity, since equality would hold
+    either way.
+    """
+    header = ",result,table,_time,host,_measurement,_field,_value\n"
+    rows_csv = "".join(
+        f",_result,0,2026-04-19T10:0{i}:00Z,hostA,cpu,usage_idle,9{i}.0\n"
+        for i in range(5)
+    )
+    rows = _parse_flux_csv(header + rows_csv)
+    assert len(rows) == 5
+    first = rows[0]
+    for other in rows[1:]:
+        assert other["host"] is first["host"]
+        assert other["_field"] is first["_field"]
+        assert other["_measurement"] is first["_measurement"]
+
+
+def test_parse_flux_csv_accepts_a_line_iterable():
+    """The fetch path streams, so the parser must take lines as well as a body."""
+    lines = [
+        ",result,table,_time,host,_measurement,_field,_value",
+        ",_result,0,2026-04-19T10:00:00Z,hostA,cpu,usage_idle,95.0",
+    ]
+    rows = _parse_flux_csv(iter(lines))
+    assert len(rows) == 1
+    assert rows[0]["host"] == "hostA"
+    assert rows[0]["_value"] == "95.0"
 
 
 def test_parse_flux_csv_skips_rows_without_host_or_time():
@@ -553,11 +610,11 @@ def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
     """The default start '0' is formatted into every host-metric Flux range."""
     seen = []
 
-    def _fake_run_flux(url, token, org, flux, timeout=30):
+    def _fake_stream_flux(url, token, org, flux, timeout=30):
         seen.append(flux)
-        return ""
+        return iter(())
 
-    monkeypatch.setattr(influx, "_run_flux", _fake_run_flux)
+    monkeypatch.setattr(influx, "_stream_flux", _fake_stream_flux)
     fetch_host_metric_points(
         url="http://x", token="t", org="ant", bucket="testnet-metrics"
     )
@@ -575,11 +632,11 @@ def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
 def test_fetch_host_metric_points_honours_explicit_start(monkeypatch):
     seen = []
 
-    def _fake_run_flux(url, token, org, flux, timeout=30):
+    def _fake_stream_flux(url, token, org, flux, timeout=30):
         seen.append(flux)
-        return ""
+        return iter(())
 
-    monkeypatch.setattr(influx, "_run_flux", _fake_run_flux)
+    monkeypatch.setattr(influx, "_stream_flux", _fake_stream_flux)
     fetch_host_metric_points(
         url="http://x", token="t", org="ant", bucket="testnet-metrics", start="-6h"
     )
@@ -599,7 +656,7 @@ def _run_cmd_record_analysis(monkeypatch, repo_obj, diskio_points: list[dict]):
     monkeypatch.setattr(record_analysis_mod, "get_repository", lambda: repo_obj)
     monkeypatch.setattr(
         record_analysis_mod,
-        "fetch_host_metric_points",
+        "iter_host_metric_points",
         lambda **kwargs: {"cpu": [], "mem": [], "net": [], "diskio": diskio_points},
     )
 
@@ -808,3 +865,209 @@ def test_merge_deploy_args_raises_when_deployment_missing(repo):
     r, _ = repo
     with pytest.raises(ValueError):
         r.merge_deploy_args(99999, {"node_count": 1})
+
+
+def test_parse_flux_csv_memory_is_bounded_per_row():
+    """Peak memory per parsed row must stay small, not scale with column count.
+
+    This is the regression guard for the OOM that made `record-analysis`
+    unrunnable on a 990-node run: it needed ~33 GB (23 GB RSS + 10 GB swap) and
+    was killed three times. Cause was a dict of every CSV column plus a fresh
+    `str` per column per row.
+
+    Measured with `tracemalloc` on the retained rows rather than by timing, so
+    it fails for the right reason. The bound is deliberately loose — this
+    catches a return to keep-everything (~1.4 KB/row), not a 10% drift.
+    """
+    import tracemalloc
+
+    n_rows = 20_000
+    header = (
+        ",result,table,_start,_stop,_time,host,host_role,region,"
+        "_measurement,_field,_value\n"
+    )
+    body = header + "".join(
+        f",_result,0,2026-04-19T00:00:00Z,2026-04-20T00:00:00Z,"
+        f"2026-04-19T10:00:{i % 60:02d}Z,host{i % 40},NODE,lon1,cpu,"
+        f"usage_idle,{i % 100}.0\n"
+        for i in range(n_rows)
+    )
+
+    tracemalloc.start()
+    before = tracemalloc.get_traced_memory()[0]
+    rows = _parse_flux_csv(body)
+    after = tracemalloc.get_traced_memory()[0]
+    tracemalloc.stop()
+
+    assert len(rows) == n_rows
+    per_row = (after - before) / n_rows
+    assert per_row < 500, f"{per_row:.0f} B/row retained; expected well under 500"
+
+
+def test_parse_flux_csv_handles_multiple_tables_with_blank_separators():
+    """A blank line ends a table; the next row is the NEXT table's header.
+
+    Flux returns one table per series, and consecutive tables do not share a
+    column layout. Losing the blank separators makes every table after the
+    first parse against the previous header, so columns mismap and rows are
+    silently discarded.
+    """
+    body = (
+        ",result,table,_time,host,_measurement,_field,_value\n"
+        ",_result,0,2026-04-19T10:00:00Z,hostA,cpu,usage_idle,95.0\n"
+        "\n"
+        ",result,table,_time,host,_measurement,_field,node_service,_value\n"
+        ",_result,1,2026-04-19T10:00:00Z,hostB,procstat,memory_rss,ant-node-1,1024\n"
+    )
+    rows = _parse_flux_csv(body)
+    assert len(rows) == 2
+    assert rows[0]["host"] == "hostA"
+    assert rows[1]["host"] == "hostB"
+    # The second table has an extra column before _value; if the header had not
+    # reset, _value would read as the service name.
+    assert rows[1]["_value"] == "1024"
+    assert rows[1]["node_service"] == "ant-node-1"
+
+
+def test_stream_preserves_blank_table_separators():
+    """The streaming reader must yield blank lines, unlike `iter_lines()`.
+
+    `requests.Response.iter_lines()` discards empty lines. Using it here cut a
+    real run's stored buckets from 273,714 to 2,558 and reported
+    `node_outbound_bytes_total` as 0 instead of 142.9 TB, while exiting 0.
+    """
+    from saorsa_deploy.influx import iter_response_lines
+
+    body = (
+        ",result,table,_time,host,_measurement,_field,_value\n"
+        ",_result,0,2026-04-19T10:00:00Z,hostA,cpu,usage_idle,95.0\n"
+        "\n"
+        ",result,table,_time,host,_measurement,_field,_value\n"
+        ",_result,1,2026-04-19T10:00:00Z,hostB,mem,used_percent,42.0\n"
+    )
+
+    class _Resp:
+        def iter_content(self, chunk_size=None, decode_unicode=False):
+            # Deliberately split mid-line to prove reassembly across chunks.
+            for i in range(0, len(body), 7):
+                yield body[i : i + 7]
+
+    lines = list(iter_response_lines(_Resp()))
+    assert "" in lines, "blank table separator was dropped"
+    assert lines == body.split("\n")[:-1]
+
+    # And end to end: parsing the streamed lines matches parsing the body.
+    assert _parse_flux_csv(iter(lines)) == _parse_flux_csv(body)
+
+
+# ---------------------------------------------------------------------------
+# Which deployment the analysis is recorded against
+# ---------------------------------------------------------------------------
+
+
+class _ReusedNameRepo:
+    """Registry where a name is reused and the newest run is already destroyed.
+
+    Mirrors the real `STG-01` on 2026-08-12: run 513 had just been torn down, so
+    `get_active_by_name` (which excludes DESTROYED/FAILED) skipped it and every
+    other finished run, returning 442 — an aborted deploy from a month earlier.
+    """
+
+    def __init__(self):
+        self.recorded_against = None
+        self._rows = {
+            442: type("D", (), {"id": 442, "name": "STG-01"})(),   # old, pending
+            513: type("D", (), {"id": 513, "name": "STG-01"})(),   # newest, destroyed
+        }
+
+    def get_active_by_name(self, name):
+        return self._rows[442]  # the only non-terminal row
+
+    def get_by_name(self, name):
+        return self._rows[513]  # newest by created_at
+
+    def get(self, deployment_id):
+        return self._rows.get(deployment_id)
+
+    def upsert_host_result(self, **kwargs):
+        self.recorded_against = kwargs["deployment_id"]
+
+    def replace_host_metric_buckets(self, deployment_id, buckets):
+        return 0
+
+    def list_upload_records_for_deployment(self, deployment_id):
+        return []
+
+    def list_download_records_for_deployment(self, deployment_id):
+        return []
+
+    def upsert_derived_metric(self, **kwargs):
+        return None
+
+
+def _resolve_args(**overrides):
+    base = dict(
+        name=None,
+        deployment_id=None,
+        monitoring_name="STG-01",
+        influx_url="http://x",
+        influx_token="t",
+        influx_org="ant",
+        influx_bucket="testnet-metrics",
+        window="0",
+        bucket_secs=0,
+        summary=None,
+        derived=False,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _drive_resolution(monkeypatch, args):
+    repo = _ReusedNameRepo()
+    monkeypatch.setenv("COLUMNS", "300")
+    monkeypatch.setattr(record_analysis_mod, "get_repository", lambda: repo)
+    monkeypatch.setattr(
+        record_analysis_mod,
+        "iter_host_metric_points",
+        lambda **kwargs: {
+            "cpu": [
+                {
+                    "_time": datetime(2026, 8, 11, 22, tzinfo=timezone.utc),
+                    "host": "h1",
+                    "_field": "usage_idle",
+                    "_value": "90.0",
+                }
+            ]
+        },
+    )
+    record_analysis_mod.cmd_record_analysis(args)
+    return repo
+
+
+def test_record_analysis_by_name_takes_the_newest_run_not_the_newest_active(
+    monkeypatch,
+):
+    """A destroyed newest run must still win over an older non-terminal one.
+
+    The old `get_active_by_name() or get_by_name()` idiom wrote run 513's
+    metrics onto 442, an aborted deploy, and derived its per-GB denominators as
+    0.0 from 442's empty per-op records — while printing success and exiting 0.
+    Newly reachable because compute is now destroyed before extraction, which
+    makes the analysed run terminal at analysis time.
+    """
+    repo = _drive_resolution(monkeypatch, _resolve_args(name="STG-01"))
+    assert repo.recorded_against == 513
+
+
+def test_record_analysis_id_takes_precedence_over_name(monkeypatch):
+    repo = _drive_resolution(
+        monkeypatch, _resolve_args(name="STG-01", deployment_id=442)
+    )
+    assert repo.recorded_against == 442
+
+
+def test_record_analysis_requires_a_name_or_an_id(monkeypatch):
+    with pytest.raises(SystemExit) as excinfo:
+        _drive_resolution(monkeypatch, _resolve_args())
+    assert excinfo.value.code == 1

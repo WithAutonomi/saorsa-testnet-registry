@@ -718,7 +718,7 @@ def _drive(monkeypatch, args, points):
     monkeypatch.setattr(record_analysis_mod, "get_repository", lambda: fake)
     monkeypatch.setattr(
         record_analysis_mod,
-        "fetch_host_metric_points",
+        "iter_host_metric_points",
         lambda **kwargs: points,
     )
     record_analysis_mod.cmd_record_analysis(args)
@@ -863,3 +863,49 @@ def test_percentiles_of_an_empty_series_are_none_not_zero():
     stats = _stats([])
     assert stats["p50"] is None
     assert stats["p95"] is None
+
+
+def test_normalised_samples_are_stored_columnar_not_as_dicts():
+    """Samples must cost ~16 bytes each, not ~305 as retained dicts.
+
+    Regression guard for the second half of the `record-analysis` OOM: the flat
+    `list[dict]` of samples was ~5.1 GB on a 990-node run. They are now two
+    `array('d')` columns per series, rebuilt into dicts only while a consumer
+    iterates.
+    """
+    import tracemalloc
+    from datetime import datetime, timezone
+
+    from saorsa_deploy.influx import normalise_host_metric_points
+
+    n = 60_000
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    points = {
+        "procstat": [
+            {
+                "_time": base.replace(second=i % 60, minute=(i // 60) % 60),
+                "host": f"host{i % 20}",
+                "node_service": f"ant-node-{i % 15}",
+                "_field": "memory_rss",
+                "_value": str(1000 + i),
+            }
+            for i in range(n)
+        ]
+    }
+
+    tracemalloc.start()
+    before = tracemalloc.get_traced_memory()[0]
+    normalised = normalise_host_metric_points(points)
+    after = tracemalloc.get_traced_memory()[0]
+    tracemalloc.stop()
+
+    assert len(normalised.samples) == n
+    per_sample = (after - before) / n
+    assert per_sample < 80, f"{per_sample:.0f} B/sample retained; expected ~16"
+
+    # The view must still yield ordinary sample dicts to its consumers.
+    first = next(iter(normalised.samples))
+    assert set(first) == {
+        "host", "metric", "device", "volume_role", "service", "ts", "value"
+    }
+    assert first["ts"].tzinfo is not None

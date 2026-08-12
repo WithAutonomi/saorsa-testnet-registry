@@ -22,6 +22,9 @@ Influx instance.
 """
 import csv
 import io
+import sys
+from array import array
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from typing import NamedTuple
 
@@ -124,14 +127,88 @@ def fetch_operation_points(
         },
         data=flux,
         timeout=timeout,
+        stream=True,
     )
     resp.raise_for_status()
-    return _parse_pivoted_csv(resp.text)
+    return _parse_pivoted_csv(iter_response_lines(resp))
 
 
-def _parse_pivoted_csv(body: str) -> list[dict]:
+def _csv_lines(body: "str | Iterable[str]") -> Iterable[str]:
+    """Adapt either a whole CSV body or a stream of lines to `csv.reader`.
+
+    Every parser here takes `str | Iterable[str]`. A `str` is what the unit
+    tests pass and is fine at fixture size; the fetch functions pass
+    :func:`iter_response_lines` so a multi-GB response is never materialised —
+    on a 990-node run the body alone ran to gigabytes, held twice over (once as
+    `resp.text`, again inside `io.StringIO`).
+    """
+    if isinstance(body, str):
+        return io.StringIO(body)
+    return body
+
+
+def _intern(value: str) -> str:
+    """Share one `str` object per distinct tag value.
+
+    Flux CSV repeats its tag columns on every row, and `csv.reader` allocates a
+    fresh `str` for each occurrence. The values are drawn from a tiny
+    vocabulary — a few dozen hosts, a handful of fields, ~1000 service names —
+    against millions of rows, so interning turns millions of short strings into
+    a few thousand shared ones. `sys.intern` only accepts `str`.
+    """
+    return sys.intern(value) if type(value) is str else value
+
+
+def _iter_flux_rows(
+    body: "str | Iterable[str]",
+    keep: "frozenset[str] | None" = None,
+    intern_cols: "frozenset[str] | None" = None,
+) -> Iterator[dict]:
+    """Stream an annotated Flux CSV, yielding one dict per data row.
+
+    Handles the annotated-CSV framing shared by every query in this module: a
+    blank line or a `#`-prefixed metadata row ends the current table and the
+    next row is that table's header.
+
+    `keep` restricts the emitted keys, which is the difference between ~1.4 KB
+    and ~0.4 KB per row. Columns are dropped rather than carried because
+    `_start`/`_stop` in particular are long ISO timestamps identical on every
+    row of a table. `intern_cols` names the low-cardinality tag columns.
+
+    Yields lazily: with a streaming `body` the whole response never exists in
+    memory at once.
+    """
+    reader = csv.reader(_csv_lines(body))
+    header: list[str] | None = None
+    for row in reader:
+        if not row or not any(row):
+            header = None
+            continue
+        if row[0].startswith("#"):
+            header = None
+            continue
+        if header is None:
+            header = row
+            continue
+        if keep is None:
+            record = dict(zip(header, row))
+        else:
+            record = {
+                name: value
+                for name, value in zip(header, row)
+                if name in keep
+            }
+        if intern_cols:
+            for name in intern_cols:
+                value = record.get(name)
+                if value is not None:
+                    record[name] = _intern(value)
+        yield record
+
+
+def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
     points: list[dict] = []
-    reader = csv.reader(io.StringIO(body))
+    reader = csv.reader(_csv_lines(body))
     header: list[str] | None = None
     for row in reader:
         if not row or not any(row):
@@ -275,9 +352,10 @@ def fetch_prod_upload_points(
         },
         data=flux,
         timeout=timeout,
+        stream=True,
     )
     resp.raise_for_status()
-    return _parse_prod_upload_csv(resp.text)
+    return _parse_prod_upload_csv(iter_response_lines(resp))
 
 
 def _parse_float(value: str) -> float | None:
@@ -289,9 +367,9 @@ def _parse_float(value: str) -> float | None:
         return None
 
 
-def _parse_prod_upload_csv(body: str) -> list[dict]:
+def _parse_prod_upload_csv(body: "str | Iterable[str]") -> list[dict]:
     points: list[dict] = []
-    reader = csv.reader(io.StringIO(body))
+    reader = csv.reader(_csv_lines(body))
     header: list[str] | None = None
     for row in reader:
         if not row or not any(row):
@@ -427,7 +505,15 @@ DISKIO_FIELD_TARGETS = {
 DEFAULT_BUCKET_SECS = 300
 
 
-def _run_flux(url: str, token: str, org: str, flux: str, timeout: int = 30) -> str:
+def _post_flux(
+    url: str, token: str, org: str, flux: str, timeout: int = 30, stream: bool = False
+):
+    """POST a Flux query and return the raw response.
+
+    With ``stream=True`` the body is not downloaded up front, so the caller can
+    iterate lines and never hold the whole response. That matters at host-metric
+    scale, where the CSV runs to gigabytes.
+    """
     resp = requests.post(
         f"{url.rstrip('/')}/api/v2/query",
         params={"org": org},
@@ -438,33 +524,109 @@ def _run_flux(url: str, token: str, org: str, flux: str, timeout: int = 30) -> s
         },
         data=flux,
         timeout=timeout,
+        stream=stream,
     )
     resp.raise_for_status()
-    return resp.text
+    return resp
 
 
-def _parse_flux_csv(body: str) -> list[dict]:
+def _run_flux(url: str, token: str, org: str, flux: str, timeout: int = 30) -> str:
+    """Materialise a Flux response as one string.
+
+    Retained for small, bounded queries. Anything whose size scales with run
+    length or fleet size should stream instead — see :func:`_stream_flux`.
+    """
+    return _post_flux(url, token, org, flux, timeout=timeout).text
+
+
+def iter_response_lines(resp, chunk_size: int = 1 << 16) -> Iterator[str]:
+    """Yield a streaming response's lines, **including blank ones**.
+
+    Deliberately NOT `requests.Response.iter_lines()`: that helper *discards
+    empty lines*, and in annotated Flux CSV a blank line is what terminates one
+    table so the next row is read as a new header. Dropping them makes every
+    table after the first parse against the previous table's header, so columns
+    mismap and almost every row is discarded.
+
+    That is not a subtle degradation — swapping this in cut a run's stored
+    buckets from 273,714 to 2,558 and took `node_outbound_bytes_total` from
+    142.9 TB to 0, while still exiting 0. Any future change here must preserve
+    blank lines; `test_stream_preserves_blank_table_separators` pins it.
+    """
+    pending = ""
+    for chunk in resp.iter_content(chunk_size=chunk_size, decode_unicode=True):
+        if not chunk:
+            continue
+        if isinstance(chunk, bytes):
+            chunk = chunk.decode("utf-8", errors="replace")
+        pending += chunk
+        lines = pending.split("\n")
+        pending = lines.pop()
+        for line in lines:
+            yield line.rstrip("\r")
+    if pending:
+        yield pending.rstrip("\r")
+
+
+def _stream_flux(
+    url: str, token: str, org: str, flux: str, timeout: int = 30
+) -> Iterator[str]:
+    """Yield a Flux response line by line without materialising the body."""
+    resp = _post_flux(url, token, org, flux, timeout=timeout, stream=True)
+    return iter_response_lines(resp)
+
+
+# The only columns any consumer of a host-metric row actually reads. Everything
+# else in the response — `result`, `table`, `_start`, `_stop`, `region`,
+# `host_role`, `cpu`, `fstype`, `mode` — was previously retained on every row
+# and never looked at. `_start`/`_stop` are the worst of them: long ISO strings,
+# identical across a whole table, re-allocated per row.
+#
+# This is an explicit allow-list rather than a denylist so that a query gaining
+# a tag fails loudly in the consumer that wants it, instead of silently
+# inflating every row again.
+HOST_METRIC_COLUMNS = frozenset(
+    {
+        "_time",
+        "_value",
+        "_field",
+        "_measurement",
+        "host",
+        "name",  # diskio device
+        "path",  # disk mountpoint
+        "interface",  # net interface
+        "node_service",  # procstat per-service RSS
+        "volume_role",  # node-storage tag
+    }
+)
+
+# Low-cardinality columns worth interning: a few dozen hosts, a handful of
+# fields, ~1000 service names, against millions of rows. `_value` is excluded —
+# it is high-cardinality, so interning it would grow the intern table without
+# sharing anything.
+_HOST_METRIC_INTERN = HOST_METRIC_COLUMNS - {"_time", "_value"}
+
+
+def _parse_flux_csv(
+    body: "str | Iterable[str]", keep: "frozenset[str] | None" = HOST_METRIC_COLUMNS
+) -> list[dict]:
     """Parse an annotated Flux CSV response into row dicts with a parsed ``_time``.
 
-    Keeps every column from the response as-is except ``_time``, which is
-    converted to a tz-aware ``datetime``. Rows without ``_time``, ``_value``
-    or ``host`` are skipped. Blank lines and ``#``-prefixed metadata rows
-    reset the table header.
+    Projects each row to ``keep`` (default :data:`HOST_METRIC_COLUMNS`) and
+    interns the tag columns; ``_time`` is converted to a tz-aware ``datetime``.
+    Rows without ``_time`` or ``host`` are skipped. Blank lines and
+    ``#``-prefixed metadata rows reset the table header.
+
+    Pass ``keep=None`` to retain every column, which is what this did
+    unconditionally before — at roughly 1.4 KB per row for ~40 bytes of
+    payload, which is what made `record-analysis` need >23 GB on a 990-node
+    run.
+
+    Accepts an iterable of lines as well as a whole body, so callers can stream.
     """
     rows: list[dict] = []
-    reader = csv.reader(io.StringIO(body))
-    header: list[str] | None = None
-    for row in reader:
-        if not row or not any(row):
-            header = None
-            continue
-        if row[0].startswith("#"):
-            header = None
-            continue
-        if header is None:
-            header = row
-            continue
-        record = dict(zip(header, row))
+    intern_cols = _HOST_METRIC_INTERN if keep is HOST_METRIC_COLUMNS else None
+    for record in _iter_flux_rows(body, keep=keep, intern_cols=intern_cols):
         time_str = record.get("_time")
         if not time_str:
             continue
@@ -512,9 +674,82 @@ def fetch_host_metric_points(
         ("procstat", HOST_FLUX_PROCSTAT),
     ):
         flux = template.format(bucket=bucket, start=start, stop=stop)
-        body = _run_flux(url, token, org, flux, timeout=timeout)
-        result[key] = _parse_flux_csv(body)
+        lines = _stream_flux(url, token, org, flux, timeout=timeout)
+        result[key] = _parse_flux_csv(lines)
     return result
+
+
+class _LazyMeasurements(dict):
+    """`{measurement: iterable of rows}` where each value streams on first use.
+
+    `normalise_host_metric_points` reads each measurement in its own single
+    loop, so nothing needs the rows twice and none of them need to coexist.
+    Streaming each query at the moment its loop runs is what keeps the parsed
+    rows — 6.2 GB on a 990-node run — from ever being held at all.
+
+    A `dict` subclass so `points_by_measurement.get(key, [])` keeps working
+    unchanged, including for the measurements a caller never reads.
+    """
+
+    def __init__(self, factories: dict):
+        super().__init__()
+        self._factories = factories
+
+    def get(self, key, default=None):
+        factory = self._factories.get(key)
+        if factory is None:
+            return default if default is not None else []
+        return factory()
+
+    def __getitem__(self, key):
+        return self.get(key)
+
+    def __contains__(self, key) -> bool:
+        return key in self._factories
+
+    def keys(self):
+        return self._factories.keys()
+
+
+def iter_host_metric_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    start: str = "0",
+    stop: str = FLUX_FAR_FUTURE,
+    timeout: int = 30,
+) -> _LazyMeasurements:
+    """Like :func:`fetch_host_metric_points`, but each measurement streams.
+
+    Same six queries and the same rows; the difference is that a measurement is
+    fetched and parsed while it is being consumed, then released, instead of all
+    six being materialised up front.
+
+    Each measurement may be iterated **once**. Use `fetch_host_metric_points`
+    when the rows are needed more than once.
+    """
+
+    def _factory(template):
+        def _iter():
+            flux = template.format(bucket=bucket, start=start, stop=stop)
+            lines = _stream_flux(url, token, org, flux, timeout=timeout)
+            return _iter_flux_rows(
+                lines, keep=HOST_METRIC_COLUMNS, intern_cols=_HOST_METRIC_INTERN
+            )
+
+        return _iter
+
+    return _LazyMeasurements(
+        {
+            "cpu": _factory(HOST_FLUX_CPU),
+            "mem": _factory(HOST_FLUX_MEM),
+            "net": _factory(HOST_FLUX_NET),
+            "disk": _factory(HOST_FLUX_DISK),
+            "diskio": _factory(HOST_FLUX_DISKIO),
+            "procstat": _factory(HOST_FLUX_PROCSTAT),
+        }
+    )
 
 
 def _to_float(value) -> float | None:
@@ -603,19 +838,145 @@ def _usage_stats(pairs: list[tuple]) -> dict:
     return stats
 
 
+class _SeriesStore:
+    """Columnar store for normalised samples: the flat sample list, compressed.
+
+    One entry per ``(host, metric, device, volume_role, service)`` series,
+    holding two `array('d')` columns — epoch seconds and value. That is **16
+    bytes per sample** against roughly 305 for the dict it replaces, which on a
+    990-node run is ~270 MB instead of ~5.1 GB.
+
+    Sample dicts are reconstructed on demand by :meth:`iter_samples` rather than
+    retained, so the two consumers (the whole-run rollup and the time buckets)
+    each pay a little CPU to rebuild them and neither costs any memory. That
+    trade is deliberate: it leaves `aggregate_normalised_host_metrics` and
+    `bucket_host_metric_samples` reading exactly the dicts they always did, so
+    the arithmetic behind the release gates is untouched by this change.
+    """
+
+    __slots__ = ("_series", "_count")
+
+    def __init__(self) -> None:
+        # key -> [array('d') timestamps (epoch secs), array('d') values]
+        self._series: dict[tuple, list] = {}
+        self._count = 0
+
+    def append(
+        self,
+        host: str,
+        metric: str,
+        ts: datetime,
+        value: float,
+        device: str | None,
+        volume_role: str | None,
+        service: str | None,
+    ) -> None:
+        key = (host, metric, device, volume_role, service)
+        cols = self._series.get(key)
+        if cols is None:
+            cols = [array("d"), array("d")]
+            self._series[key] = cols
+        cols[0].append(ts.timestamp())
+        cols[1].append(value)
+        self._count += 1
+
+    def __len__(self) -> int:
+        return self._count
+
+    def iter_samples(self) -> Iterator[dict]:
+        """Rebuild the sample dicts, one series at a time.
+
+        Insertion order of series is preserved, and within a series the original
+        order is preserved, so a consumer sees the same values it always did.
+        Consumers group before computing anything, so ordering across series
+        does not affect any result.
+        """
+        for (host, metric, device, volume_role, service), (
+            stamps,
+            values,
+        ) in self._series.items():
+            for epoch, value in zip(stamps, values):
+                yield {
+                    "host": host,
+                    "metric": metric,
+                    "device": device,
+                    "volume_role": volume_role,
+                    "service": service,
+                    "ts": datetime.fromtimestamp(epoch, tz=timezone.utc),
+                    "value": value,
+                }
+
+
+class _SamplesView:
+    """Sequence-ish view that regenerates sample dicts on each iteration.
+
+    Exists so `NormalisedHostMetrics.samples` can stay the same attribute the
+    consumers already read while holding nothing. `len()` and iteration are what
+    those consumers use.
+    """
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: _SeriesStore) -> None:
+        self._store = store
+
+    def __iter__(self) -> Iterator[dict]:
+        return self._store.iter_samples()
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+    def __bool__(self) -> bool:
+        return len(self._store) > 0
+
+    def __getitem__(self, index):
+        """Index like the list this replaced — **O(n)**, for tests and inspection.
+
+        Kept so the attribute stays list-compatible for any caller that indexes
+        rather than iterates. Never index this in a loop: each access walks the
+        store from the start, and materialising the whole thing is precisely
+        what the columnar store exists to avoid. The production consumers all
+        iterate.
+        """
+        if isinstance(index, int) and index >= 0:
+            for position, sample in enumerate(self):
+                if position == index:
+                    return sample
+            raise IndexError(index)
+        return list(self)[index]
+
+    def __eq__(self, other) -> bool:
+        """Compare equal to the list of samples it stands for.
+
+        Same reason as `__getitem__`: the attribute used to be a list and is
+        compared against one (most often `== []`). O(n), so for tests and
+        inspection only.
+        """
+        if isinstance(other, (list, tuple)):
+            return list(self) == list(other)
+        return NotImplemented
+
+    def __repr__(self) -> str:
+        return f"<_SamplesView {len(self)} samples>"
+
+
 class NormalisedHostMetrics(NamedTuple):
     """Output of :func:`normalise_host_metric_points`.
 
     ``samples`` is the flat, timestamped series — every counter already turned
-    into a rate, every gauge passed through. ``time_bounds``, ``devices`` and
-    ``mounts`` carry what the sample list alone cannot express: the observation
-    window of a host (which includes points that contributed no sample), the
-    existence of a device that produced no rate at all because only one point
-    was collected for it, and which mountpoint on each host holds the node
-    storage.
+    into a rate, every gauge passed through. It is iterable and sized like the
+    list it used to be, but is normally a :class:`_SamplesView` over a columnar
+    store rather than millions of retained dicts; a plain list still works and
+    is what the unit tests pass. Iterate it, do not index it.
+
+    ``time_bounds``, ``devices`` and ``mounts`` carry what the sample list alone
+    cannot express: the observation window of a host (which includes points that
+    contributed no sample), the existence of a device that produced no rate at
+    all because only one point was collected for it, and which mountpoint on
+    each host holds the node storage.
     """
 
-    samples: list[dict]
+    samples: "list[dict] | _SamplesView"
     time_bounds: dict[str, list]
     devices: dict[str, dict]
     # host -> {mountpoint: volume_role|None}, from the `disk` measurement.
@@ -643,7 +1004,7 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
     Negative deltas are dropped as counter resets (the counters restart when a
     VM reboots), as are non-advancing timestamps.
     """
-    samples: list[dict] = []
+    store = _SeriesStore()
     time_bounds: dict[str, list] = {}
     devices: dict[str, dict] = {}
     mounts: dict[str, dict] = {}
@@ -664,17 +1025,7 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
         volume_role: str | None = None,
         service: str | None = None,
     ) -> None:
-        samples.append(
-            {
-                "host": host,
-                "metric": metric,
-                "device": device,
-                "volume_role": volume_role,
-                "service": service,
-                "ts": ts,
-                "value": value,
-            }
-        )
+        store.append(host, metric, ts, value, device, volume_role, service)
 
     for p in points_by_measurement.get("cpu", []):
         host = p.get("host")
@@ -820,7 +1171,10 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
             track_time(host, curr["_time"])
 
     return NormalisedHostMetrics(
-        samples=samples, time_bounds=time_bounds, devices=devices, mounts=mounts
+        samples=_SamplesView(store),
+        time_bounds=time_bounds,
+        devices=devices,
+        mounts=mounts,
     )
 
 

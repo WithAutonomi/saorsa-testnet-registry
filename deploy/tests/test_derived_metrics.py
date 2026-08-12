@@ -489,7 +489,7 @@ def _run_record_analysis(monkeypatch, repo, args=None):
     }
     monkeypatch.setenv("COLUMNS", "300")
     monkeypatch.setattr(mod, "get_repository", lambda: repo)
-    monkeypatch.setattr(mod, "fetch_host_metric_points", lambda **kwargs: points)
+    monkeypatch.setattr(mod, "iter_host_metric_points", lambda **kwargs: points)
     mod.cmd_record_analysis(args or _cmd_args())
 
 

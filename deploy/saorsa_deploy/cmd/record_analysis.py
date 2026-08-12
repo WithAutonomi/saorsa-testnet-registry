@@ -18,7 +18,7 @@ from saorsa_deploy.influx import (
     aggregate_normalised_host_metrics,
     bucket_host_metric_samples,
     detect_clock_offsets,
-    fetch_host_metric_points,
+    iter_host_metric_points,
     node_storage_device,
     normalise_host_metric_points,
     peak_rss_service,
@@ -196,10 +196,34 @@ def cmd_record_analysis(args):
         )
         sys.exit(1)
 
-    deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
-    if deployment is None:
+    deployment_id = getattr(args, "deployment_id", None)
+    if deployment_id is not None:
+        deployment = repo.get(deployment_id)
+        if deployment is None:
+            console.print(
+                f"[bold red]Error:[/bold red] No deployment with id {deployment_id} "
+                "in the registry."
+            )
+            sys.exit(1)
+    elif args.name:
+        # Resolve to the NEWEST run bearing the name, never merely the newest
+        # non-terminal one. The old `get_active_by_name() or get_by_name()`
+        # idiom silently mis-targeted a stale row the moment the run being
+        # analysed reached a terminal status — which is now routine, because
+        # the compute tiers are torn down before extraction (extraction reads
+        # InfluxDB, not the nodes). On the 2026-08-11 staging run that wrote
+        # STG-01 #513's metrics onto #442, an aborted July deploy, and derived
+        # gb_uploaded/gb_downloaded as 0.0 from #442's empty per-op records.
+        deployment = repo.get_by_name(args.name)
+        if deployment is None:
+            console.print(
+                f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
+                "in the registry."
+            )
+            sys.exit(1)
+    else:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment named '{args.name}' in the registry."
+            "[bold red]Error:[/bold red] one of --name or --id is required."
         )
         sys.exit(1)
 
@@ -209,7 +233,7 @@ def cmd_record_analysis(args):
     influx_bucket = args.influx_bucket
 
     if not (influx_url and influx_token):
-        stack_name = args.monitoring_name or args.name
+        stack_name = args.monitoring_name or deployment.name
         console.print(
             f"[bold]Loading Influx credentials from monitoring state '{stack_name}'...[/bold]"
         )
@@ -237,7 +261,14 @@ def cmd_record_analysis(args):
         f"window={window_label})...[/bold]"
     )
     try:
-        points = fetch_host_metric_points(
+        # Lazy: each measurement is fetched and parsed while it is consumed,
+        # then released. Holding all six as lists cost 6.2 GB on a 990-node run
+        # and was half of why this command needed >23 GB.
+        #
+        # A measurement re-queries if read again, which `_record_derived_metrics`
+        # below does — but it reads only `net` and `disk` (~2.7M rows), not
+        # `diskio`/`procstat` (~13.3M), so the second pass is cheap.
+        points = iter_host_metric_points(
             url=influx_url,
             token=influx_token,
             org=influx_org or "ant",
@@ -254,7 +285,7 @@ def cmd_record_analysis(args):
     aggregates = aggregate_normalised_host_metrics(normalised)
     if not aggregates:
         console.print(
-            f"[yellow]No host metric points found for deployment '{args.name}' "
+            f"[yellow]No host metric points found for deployment '{deployment.name}' "
             f"in window {window_label}. Nothing to record.[/yellow]"
         )
         if args.summary:
@@ -291,7 +322,7 @@ def cmd_record_analysis(args):
         )
 
     table = Table(
-        title=f"Host metrics for deployment '{args.name}' (id={deployment.id})"
+        title=f"Host metrics for deployment '{deployment.name}' (id={deployment.id})"
     )
     table.add_column("Host")
     table.add_column("CPU avg/min/max %", justify="right")
@@ -348,7 +379,7 @@ def cmd_record_analysis(args):
     console.print(table)
     console.print(
         f"[bold green]Recorded host metrics for {len(aggregates)} host(s) "
-        f"on deployment '{args.name}'.[/bold green]"
+        f"on deployment '{deployment.name}' (id={deployment.id}).[/bold green]"
     )
 
     if getattr(args, "derived", True):
@@ -368,7 +399,7 @@ def cmd_record_analysis(args):
         console.print(
             Panel(
                 args.summary,
-                title=f"Summary for '{args.name}'",
+                title=f"Summary for '{deployment.name}'",
                 border_style="cyan",
             )
         )

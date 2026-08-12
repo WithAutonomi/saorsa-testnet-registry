@@ -20,13 +20,19 @@ helpers in :mod:`saorsa_db.repositories`.
 from __future__ import annotations
 
 import csv
-import io
 import uuid
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 
 import requests
 
-from saorsa_deploy.influx import FLUX_FAR_FUTURE, _parse_int, _parse_ts
+from saorsa_deploy.influx import (
+    FLUX_FAR_FUTURE,
+    _csv_lines,
+    _parse_int,
+    _parse_ts,
+    iter_response_lines,
+)
 
 _UPLOAD_FLUX = """from(bucket: "{bucket}")
   |> range(start: {start}, stop: {stop})
@@ -52,7 +58,13 @@ _PROBE_FLUX = """from(bucket: "{bucket}")
 
 def _query(
     url: str, token: str, org: str, flux: str, timeout: int = 60
-) -> str:
+) -> Iterator[str]:
+    """Stream a Flux response line by line.
+
+    Returns an iterator rather than the whole body so a long-lived canary's
+    response — these deployments run for weeks — is never materialised at once.
+    `_rows` accepts either form.
+    """
     resp = requests.post(
         f"{url.rstrip('/')}/api/v2/query",
         params={"org": org},
@@ -63,14 +75,23 @@ def _query(
         },
         data=flux,
         timeout=timeout,
+        stream=True,
     )
     resp.raise_for_status()
-    return resp.text
+    return iter_response_lines(resp)
 
 
-def _rows(body: str) -> list[dict]:
+def _rows(body: "str | Iterable[str]") -> list[dict]:
+    """Parse an annotated Flux CSV into row dicts, keeping every column.
+
+    Deliberately NOT routed through `influx._iter_flux_rows`: that helper
+    resets the header on a `#` metadata row, whereas this one skips such rows
+    and keeps the current header. Canary responses are also not projected —
+    their consumers read most columns, and `canary_id` is a high-cardinality
+    UUID that interning would only bloat the intern table with.
+    """
     out: list[dict] = []
-    reader = csv.reader(io.StringIO(body))
+    reader = csv.reader(_csv_lines(body))
     header: list[str] | None = None
     for row in reader:
         if not row or not any(row):
