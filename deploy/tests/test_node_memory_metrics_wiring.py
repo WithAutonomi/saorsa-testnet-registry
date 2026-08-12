@@ -109,6 +109,48 @@ class TestProvisionerRoleGate:
         assert with_flag == without
 
 
+class TestUnitCapabilities:
+    """`smaps_rollup` needs ptrace access; `status` does not.
+
+    Telegraf runs as an unprivileged user, and the kernel gates smaps_rollup on
+    ptrace_may_access rather than on file permissions — so CAP_DAC_READ_SEARCH,
+    which the unit already had, is not enough. Without CAP_SYS_PTRACE the rollup
+    source returns nothing on every scrape while status keeps working, which is
+    exactly how it went unnoticed on the first canary deploy.
+    """
+
+    def _unit(self, host_role, collect_node_memory):
+        return TelegrafMetricsProvisioner(
+            host_ips=["10.0.0.1"],
+            ssh_key_path="/dev/null",
+            influxdb_url="http://influx:8086",
+            influxdb_token="tok",
+            influxdb_org="ant",
+            influxdb_bucket="testnet-metrics",
+            host_role=host_role,
+            collect_node_memory=collect_node_memory,
+        )._build_unit_file()
+
+    def test_enabled_unit_grants_ptrace(self):
+        unit = self._unit("WAN_NODE", True)
+        assert (
+            "AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE" in unit
+        )
+
+    def test_disabled_unit_keeps_the_original_capability_line(self):
+        """Every host that does not opt in keeps the narrower capability set."""
+        unit = self._unit("WAN_NODE", False)
+        assert "AmbientCapabilities=CAP_DAC_READ_SEARCH\n" in unit
+        assert "CAP_SYS_PTRACE" not in unit
+
+    def test_client_role_never_gains_ptrace(self):
+        assert "CAP_SYS_PTRACE" not in self._unit("CLIENT", True)
+
+    def test_no_placeholder_survives(self):
+        for role, flag in (("WAN_NODE", True), ("WAN_NODE", False)):
+            assert "{{" not in self._unit(role, flag)
+
+
 def _memory_points(fields, *, host="node-1", service="ant-node-3", count=3):
     return [
         {

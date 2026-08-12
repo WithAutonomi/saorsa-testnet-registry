@@ -262,7 +262,7 @@ class TestCollect:
             collector, "read_proc",
             lambda pid, filename, wanted: {"vm_rss": pid * 1024},
         )
-        lines = collector.collect("status", 10.0, now_ns=7)
+        lines = collector.collect("status", 10.0, now_ns=7).lines
         assert len(lines) == 2
         assert "node_service=ant-node-1 pid=11i,vm_rss=11264i 7" in lines[0]
 
@@ -282,7 +282,7 @@ class TestCollect:
                 None if pid == 22 else {"vm_rss": 1}
             ),
         )
-        lines = collector.collect("status", 10.0, now_ns=1)
+        lines = collector.collect("status", 10.0, now_ns=1).lines
         assert len(lines) == 2
         assert not any("ant-node-2" in line for line in lines)
 
@@ -293,11 +293,11 @@ class TestCollect:
         monkeypatch.setattr(
             collector, "read_proc", lambda pid, filename, wanted: {}
         )
-        assert collector.collect("status", 10.0, now_ns=1) == []
+        assert collector.collect("status", 10.0, now_ns=1).lines == []
 
     def test_no_services_is_not_an_error(self, monkeypatch):
         monkeypatch.setattr(collector, "list_units", lambda timeout: [])
-        assert collector.collect("rollup", 10.0, now_ns=1) == []
+        assert collector.collect("rollup", 10.0, now_ns=1).lines == []
 
     def test_all_points_in_a_scrape_share_one_timestamp(self, monkeypatch):
         monkeypatch.setattr(
@@ -308,7 +308,7 @@ class TestCollect:
             collector, "read_proc",
             lambda pid, filename, wanted: {"vm_rss": 1},
         )
-        lines = collector.collect("status", 10.0, now_ns=42)
+        lines = collector.collect("status", 10.0, now_ns=42).lines
         assert all(line.endswith(" 42") for line in lines)
 
     def test_deadline_stops_the_scrape_early(self, monkeypatch):
@@ -328,7 +328,7 @@ class TestCollect:
             collector, "read_proc",
             lambda pid, filename, wanted: {"vm_rss": 1},
         )
-        lines = collector.collect("status", 10.0, now_ns=1)
+        lines = collector.collect("status", 10.0, now_ns=1).lines
         assert 0 < len(lines) < 5
 
     def test_rollup_source_reads_smaps_rollup(self, monkeypatch):
@@ -346,6 +346,74 @@ class TestCollect:
         collector.collect("rollup", 10.0, now_ns=1)
         assert seen["filename"] == "smaps_rollup"
         assert seen["wanted"] is collector.ROLLUP_FIELDS
+
+
+class TestTotalFailureIsLoud:
+    """Every service unreadable must not look like "no services".
+
+    This is the bug the first canary deploy exposed: `smaps_rollup` is gated on
+    ptrace access to the target, which the unprivileged `telegraf` user does not
+    have against root-owned ant-node processes. Every rollup scrape returned
+    zero lines and exit 0, so a whole source went missing while the
+    world-readable `status` source kept reporting normally.
+    """
+
+    def _result(self, monkeypatch, *, units, readable):
+        monkeypatch.setattr(
+            collector, "list_units",
+            lambda timeout: [(f"ant-node-{i}.service", i) for i in range(units)],
+        )
+        monkeypatch.setattr(
+            collector, "read_proc",
+            lambda pid, filename, wanted: ({"vm_rss": 1} if readable else None),
+        )
+        return collector.collect("rollup", 10.0, now_ns=1)
+
+    def test_all_reads_denied_is_a_total_failure(self, monkeypatch):
+        result = self._result(monkeypatch, units=13, readable=False)
+        assert result.lines == []
+        assert result.total_failure
+
+    def test_no_services_at_all_is_not_a_failure(self, monkeypatch):
+        """A host running no node services is a legitimate empty result."""
+        result = self._result(monkeypatch, units=0, readable=False)
+        assert not result.total_failure
+
+    def test_successful_scrape_is_not_a_failure(self, monkeypatch):
+        result = self._result(monkeypatch, units=13, readable=True)
+        assert result.units_read == 13
+        assert not result.total_failure
+
+    def test_partial_failure_is_not_a_total_failure(self, monkeypatch):
+        """One service exiting mid-scrape must stay quiet."""
+        monkeypatch.setattr(
+            collector, "list_units",
+            lambda timeout: [("ant-node-1.service", 1), ("ant-node-2.service", 2)],
+        )
+        monkeypatch.setattr(
+            collector, "read_proc",
+            lambda pid, filename, wanted: (None if pid == 2 else {"vm_rss": 1}),
+        )
+        result = collector.collect("rollup", 10.0, now_ns=1)
+        assert not result.total_failure
+
+    def test_main_exits_non_zero_and_explains(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            collector, "list_units", lambda timeout: [("ant-node-1.service", 1)]
+        )
+        monkeypatch.setattr(
+            collector, "read_proc", lambda pid, filename, wanted: None
+        )
+        code = collector.main(["--source", "rollup"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "CAP_SYS_PTRACE" in captured.err
+        assert captured.out == ""
+
+    def test_main_exits_zero_on_a_host_with_no_services(self, monkeypatch, capsys):
+        monkeypatch.setattr(collector, "list_units", lambda timeout: [])
+        assert collector.main(["--source", "rollup"]) == 0
+        assert capsys.readouterr().err == ""
 
 
 class TestUnitPatterns:

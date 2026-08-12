@@ -28,6 +28,7 @@ import argparse
 import subprocess
 import sys
 import time
+from typing import NamedTuple
 
 MEASUREMENT = "ant_node_memory"
 
@@ -227,7 +228,27 @@ def build_line(service: str, pid: int, fields: dict[str, int], timestamp_ns: int
     )
 
 
-def collect(source: str, deadline_secs: float, now_ns: int | None = None) -> list[str]:
+class CollectionResult(NamedTuple):
+    """Lines to emit, plus enough context to tell empty apart from broken.
+
+    A host with no node services and a host where every read was refused both
+    produce zero lines, and conflating them is how a total failure hides: the
+    `smaps_rollup` source silently returned nothing on every scrape because
+    reading it needs ptrace access the unprivileged telegraf user lacks, while
+    the world-readable `status` source kept reporting normally.
+    """
+
+    lines: list[str]
+    units_seen: int
+    units_read: int
+
+    @property
+    def total_failure(self) -> bool:
+        """Units existed and not one of them could be read."""
+        return self.units_seen > 0 and self.units_read == 0
+
+
+def collect(source: str, deadline_secs: float, now_ns: int | None = None) -> "CollectionResult":
     """Produce the line-protocol lines for one scrape.
 
     Every process is read independently and a failure on one is skipped rather
@@ -244,17 +265,21 @@ def collect(source: str, deadline_secs: float, now_ns: int | None = None) -> lis
     timestamp_ns = now_ns if now_ns is not None else time.time_ns()
 
     lines: list[str] = []
+    units_seen = 0
+    units_read = 0
     for unit, pid in list_units(timeout=max(1.0, deadline_secs / 4)):
         if time.monotonic() - started >= deadline_secs:
             break
+        units_seen += 1
         fields = read_proc(pid, filename, wanted)
         if not fields:
             # None (gone/inaccessible) or empty (nothing exposed): in both
             # cases there is no honest point to emit.
             continue
+        units_read += 1
         service = unit[: -len(".service")] if unit.endswith(".service") else unit
         lines.append(build_line(service, pid, fields, timestamp_ns))
-    return lines
+    return CollectionResult(lines, units_seen, units_read)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -273,11 +298,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    lines = collect(args.source, args.deadline_secs)
-    if lines:
-        sys.stdout.write("\n".join(lines) + "\n")
+    result = collect(args.source, args.deadline_secs)
+    if result.lines:
+        sys.stdout.write("\n".join(result.lines) + "\n")
+
     # No lines is a legitimate outcome — a host with no node services, or every
     # service stopped — so it is not an error and must not fail the scrape.
+    #
+    # But every service being unreadable is NOT legitimate, and reporting it as
+    # silence is how a whole source can go missing unnoticed. Telegraf logs a
+    # non-zero exec exit, which turns an invisible gap into something the
+    # journal shows on the first scrape. Emitted only on total failure so that
+    # a service exiting mid-scrape stays quiet.
+    if result.total_failure:
+        filename, _ = SOURCES[args.source]
+        sys.stderr.write(
+            f"ant-node-memory-collector: {result.units_seen} node service(s) "
+            f"found but /proc/<pid>/{filename} was unreadable for every one. "
+            f"Reading smaps_rollup needs ptrace access to the target "
+            f"(CAP_SYS_PTRACE); /proc/<pid>/status does not, so a partial "
+            f"failure here looks like the cheap source working normally.\n"
+        )
+        return 1
     return 0
 
 

@@ -950,11 +950,32 @@ other kind's TOML stays byte-identical. Flag lives on the shared
 **~1 ms/process**, `smaps_rollup` **~105 ms/process** — ~90x, almost entirely `sys`
 time, because the kernel walks page tables across the whole **39–80 GB virtual**
 address space (the sparse LMDB map), not the ~65 VMAs. At 60s that is ~2.3% of one
-core, ~11x Telegraf's own 0.2% baseline, and it holds each target's `mmap_lock`
-read-side for ~105 ms per scrape (page faults are fine; `mmap`/`munmap` stalls).
-Hence off by default, hence 60s not 30s, and hence `smaps_rollup` rather than
-procstat's full `smaps` collector. Volume: +12.3% points/day on prod ≈ **1.1 GB**
-at 14-day retention against 177 GB free.
+core, and it holds each target's `mmap_lock` read-side for ~105 ms per scrape (page
+faults are fine; `mmap`/`munmap` stalls). Hence off by default, hence 60s not 30s,
+and hence `smaps_rollup` rather than procstat's full `smaps` collector. Volume:
++12.3% points/day on prod ≈ **1.1 GB** at 14-day retention against 177 GB free.
+
+**`smaps_rollup` needs `CAP_SYS_PTRACE`; `status` does not.** Telegraf runs as
+`User=telegraf`, and the kernel gates smaps_rollup on `ptrace_may_access`, NOT on
+file permissions — so the unit's pre-existing `CAP_DAC_READ_SEARCH` does not
+satisfy it. The unit therefore adds `CAP_SYS_PTRACE` (ambient, so it is inherited
+by the exec'd collector) **only** when the collector is enabled. Found the hard
+way: the first canary deploy silently collected the status source and nothing else,
+because all benchmarking had been done as root over SSH. The collector now exits
+non-zero with a stderr diagnostic when units exist but none could be read, so a
+total failure is logged rather than looking like an idle host.
+
+**`inputs.exec` costs a FIXED ~12.5% of one core in telegraf 1.33.0, and it
+dominates.** Measured on the canary vs an unmodified host: telegraf's own CPU went
+0.18% → 12.65%, while the collector children accounted for exactly the predicted
+2.31% (tracked separately as `cutime`/`cstime`). It is not per-scrape — with only
+the cheap status input it was 12.46%, and with both inputs stretched to a **600s**
+interval (so neither effectively ran) still **12.57%**. So ~84% of the ~14.9%
+total buys nothing. If that is unacceptable at fleet scale the alternative is a
+systemd timer POSTing the collector's line protocol straight to Influx (it already
+emits exactly that; endpoint+token are already in
+`/etc/default/telegraf-ant-metrics`), trading telegraf's buffering/retry for no
+fixed overhead.
 
 **Archival is rollup-only, and the bucket exclusion is hard-coded.**
 `record-analysis` writes `memory_composition_by_service` into

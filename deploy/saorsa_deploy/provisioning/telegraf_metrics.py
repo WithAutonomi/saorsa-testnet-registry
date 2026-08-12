@@ -29,6 +29,23 @@ NODE_MEMORY_COLLECTOR_PATH = "/usr/local/bin/ant-node-memory-collector"
 # client services, which the collector's unit globs deliberately do not match.
 NODE_MEMORY_ROLES = ("GENESIS", "BOOTSTRAP", "WAN_NODE")
 
+# Telegraf runs as an unprivileged `telegraf` user, so the unit grants it the
+# capabilities its inputs need. Ambient capabilities are inherited across
+# execve, which is what makes them reach the `inputs.exec` collector too.
+BASE_AMBIENT_CAPABILITIES = ("CAP_DAC_READ_SEARCH",)
+
+# `/proc/<pid>/smaps_rollup` is NOT merely permission-protected: the kernel
+# gates it on ptrace_may_access(PTRACE_MODE_READ_FSCREDS) against the target.
+# CAP_DAC_READ_SEARCH bypasses DAC checks and does NOT satisfy that, so an
+# unprivileged telegraf reading a root-owned ant-node gets EACCES on every
+# process — while `/proc/<pid>/status` (world-readable, no ptrace gate) keeps
+# working. The failure is therefore *partial and silent*: the cheap source
+# reports normally while the costly one returns nothing at all.
+#
+# Granted only on hosts that opt into the collector, so every other host's unit
+# stays byte-identical and telegraf keeps the narrower capability set.
+NODE_MEMORY_CAPABILITIES = ("CAP_SYS_PTRACE",)
+
 NODE_STORAGE_MOUNT = "/mnt/ant-node-storage"
 # Matches no real kernel device name -- and no real mountpoint either, since
 # every path starts with "/" -- so the config's two volume_role regexes tag
@@ -287,11 +304,16 @@ class TelegrafMetricsProvisioner:
         )
 
     def _build_unit_file(self) -> str:
+        capabilities = list(BASE_AMBIENT_CAPABILITIES)
+        if self._wants_node_memory():
+            capabilities += list(NODE_MEMORY_CAPABILITIES)
         template = _read_resource("telegraf-ant-metrics.service")
         return template.replace(
             "{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH
         ).replace(
             "{{TELEGRAF_CONFIG_DIR}}", TELEGRAF_CONFIG_DIR
+        ).replace(
+            "{{AMBIENT_CAPABILITIES}}", " ".join(capabilities)
         )
 
 
