@@ -618,12 +618,13 @@ def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
     fetch_host_metric_points(
         url="http://x", token="t", org="ant", bucket="testnet-metrics"
     )
-    # cpu / mem / net / disk / diskio / procstat
-    assert len(seen) == 6
+    # cpu / mem / net / disk / diskio / procstat / ant_node_memory
+    assert len(seen) == 7
     assert all("range(start: 0," in flux for flux in seen)
     assert any('r._measurement == "disk"' in flux for flux in seen)
     assert any('r._measurement == "diskio"' in flux for flux in seen)
     assert any('r._measurement == "procstat"' in flux for flux in seen)
+    assert any('r._measurement == "ant_node_memory"' in flux for flux in seen)
     # Every range MUST carry an explicit far-future stop. Flux defaults stop to
     # now(), which silently discarded forward clock-skewed hosts entirely.
     assert all(f"stop: {influx.FLUX_FAR_FUTURE}" in flux for flux in seen)

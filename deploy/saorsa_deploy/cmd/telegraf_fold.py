@@ -43,6 +43,7 @@ def build_node_telegraf_providers(
     drop_log_levels: str | None = None,
     buffer_limit: int | None = None,
     from_beginning: bool = True,
+    collect_node_memory: bool = False,
     console: Console | None = None,
 ) -> list:
     """Resolve ES + InfluxDB telegraf provisioners for a node-tier host group.
@@ -58,6 +59,12 @@ def build_node_telegraf_providers(
     forwarder as part of normal operation — currently ``prod-debug-nodes``,
     whose daily log prune must restart it to release the descriptors it holds on
     the deleted files.
+
+    ``collect_node_memory`` adds the per-process RSS composition /
+    ``smaps_rollup`` collector to the InfluxDB forwarder. Off by default: the
+    ``smaps_rollup`` scrape costs ~105 ms per process and holds each target's
+    ``mmap_lock`` for that long, so it is enabled deliberately per deployment
+    rather than inherited.
     """
     console = console or Console()
     providers: list = []
@@ -110,6 +117,7 @@ def build_node_telegraf_providers(
                     influxdb_org=monitoring.get("influxdb_org", "ant"),
                     influxdb_bucket=monitoring.get("influxdb_bucket", "testnet-metrics"),
                     testnet_name=name,
+                    collect_node_memory=collect_node_memory,
                     console=console,
                 )
             )

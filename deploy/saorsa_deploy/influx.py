@@ -480,10 +480,73 @@ HOST_FLUX_PROCSTAT = """from(bucket: "{bucket}")
        and r._field == "memory_rss")
 """
 
+# Per-service resident memory COMPOSITION, written by the opt-in
+# `ant_node_memory` collector (see resources/scripts/node_memory_collector.py).
+# procstat's `memory_rss` above is a single total; these fields say what that
+# total is made of, which is what distinguishes a leak from a growing LMDB
+# chunk-store mmap.
+#
+# `pid` is excluded deliberately. It is emitted so a restart is visible in
+# Influx, but it is an identifier rather than a measurement -- averaging or
+# taking the min/max of a PID is meaningless, and the rollup stores stats.
+#
+# Absent on every deployment that did not enable the collector, and on every run
+# predating it. An empty result is normal, not an error.
+HOST_FLUX_NODE_MEMORY = """from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) =>
+       r._measurement == "ant_node_memory"
+       and r._field != "pid")
+"""
+
 
 # Tag value marking the device that backs the node storage volume. Written by
 # the Telegraf config's volume_role regex processor.
 NODE_STORAGE_ROLE = "node-storage"
+
+# The `ant_node_memory` fields kept as per-service metrics, mirroring the
+# collector's field names exactly (resources/scripts/node_memory_collector.py).
+#
+# An explicit allow-list rather than "whatever the measurement holds": a field
+# arriving from a newer collector than this code knows about would otherwise be
+# stored silently under a name nothing reads, and `pid` — which the query
+# already excludes — must never reach a stats aggregation.
+NODE_MEMORY_METRICS = frozenset(
+    {
+        "vm_rss",
+        "rss_anon",
+        "rss_file",
+        "rss_shmem",
+        "vm_swap",
+        "rollup_rss",
+        "rollup_pss",
+        "rollup_pss_anon",
+        "rollup_pss_file",
+        "rollup_pss_shmem",
+        "rollup_pss_dirty",
+        "rollup_anonymous",
+        "rollup_private_clean",
+        "rollup_private_dirty",
+        "rollup_shared_clean",
+        "rollup_shared_dirty",
+        "rollup_referenced",
+        "rollup_swap",
+        "rollup_swap_pss",
+        "rollup_lazy_free",
+        "rollup_anon_huge_pages",
+    }
+)
+
+# Metrics captured into the whole-run rollup but deliberately NOT stored as
+# bucket rows.
+#
+# Measured on the live registry: one per-service bucket metric costs ~164 k rows
+# (~35 MB) for a single 990-node staging run, and `deployment_host_metric_buckets`
+# is already 76 % of a 366 MB database on the smallest managed Postgres tier.
+# Twenty-one composition metrics would be ~5x the entire per-run cost, weekly.
+# The rollup carries the same per-service detail for ~nothing (48 rows for every
+# run ever recorded), so composition goes there alone. See V2-973.
+ROLLUP_ONLY_METRICS = NODE_MEMORY_METRICS
 
 # diskio counter field -> the stat name it becomes (suffixed `_per_sec`).
 DISKIO_FIELD_TARGETS = {
@@ -672,6 +735,7 @@ def fetch_host_metric_points(
         ("disk", HOST_FLUX_DISK),
         ("diskio", HOST_FLUX_DISKIO),
         ("procstat", HOST_FLUX_PROCSTAT),
+        ("ant_node_memory", HOST_FLUX_NODE_MEMORY),
     ):
         flux = template.format(bucket=bucket, start=start, stop=stop)
         lines = _stream_flux(url, token, org, flux, timeout=timeout)
@@ -748,6 +812,7 @@ def iter_host_metric_points(
             "disk": _factory(HOST_FLUX_DISK),
             "diskio": _factory(HOST_FLUX_DISKIO),
             "procstat": _factory(HOST_FLUX_PROCSTAT),
+            "ant_node_memory": _factory(HOST_FLUX_NODE_MEMORY),
         }
     )
 
@@ -1056,6 +1121,25 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
         emit(host, METRIC_RSS_BYTES, p["_time"], val, service=service)
         track_time(host, p["_time"])
 
+    # Resident memory composition. Gauges like RSS, so no delta stage, and keyed
+    # on the same `node_service` tag so a service's composition lines up with
+    # its `rss_bytes` series. The metric name is the field name, which is why
+    # the collector's field names and NODE_MEMORY_METRICS must agree.
+    #
+    # Absent unless the deployment opted into the collector; an empty list here
+    # is the normal case, not a failure.
+    for p in points_by_measurement.get("ant_node_memory", []):
+        host = p.get("host")
+        service = p.get("node_service")
+        field = p.get("_field")
+        val = _to_float(p.get("_value"))
+        if not host or not service or val is None:
+            continue
+        if field not in NODE_MEMORY_METRICS:
+            continue
+        emit(host, field, p["_time"], val, service=service)
+        track_time(host, p["_time"])
+
     # Filesystem occupancy is a gauge, like RSS -- no delta stage. Keyed by the
     # `path` tag (the mountpoint), which is the only key that identifies the
     # node storage volume on both raw-ext4 and LVM hosts; see the `disk`
@@ -1241,6 +1325,8 @@ def aggregate_normalised_host_metrics(
     """
     grouped: dict[tuple, list[float]] = {}
     services: dict[str, set] = {}
+    composition_services: dict[str, set] = {}
+    composition_fields: dict[tuple[str, str], set] = {}
     # Occupancy needs its samples in time order, which the flat value lists
     # above deliberately discard: growth over the run is last - first, and that
     # is the whole point of collecting it.
@@ -1250,6 +1336,16 @@ def aggregate_normalised_host_metrics(
         grouped.setdefault(key, []).append(s["value"])
         if s["metric"] == METRIC_RSS_BYTES:
             services.setdefault(s["host"], set()).add(s["service"])
+        elif s["metric"] in NODE_MEMORY_METRICS:
+            # Tracked separately from `services`: composition is opt-in, so a
+            # host can have RSS with no composition (the usual case) and — if
+            # the collector outlived a procstat gap — composition with no RSS.
+            # Folding them into one set would invent empty entries in whichever
+            # dict was missing that service.
+            composition_services.setdefault(s["host"], set()).add(s["service"])
+            composition_fields.setdefault(
+                (s["host"], s["service"]), set()
+            ).add(s["metric"])
         elif s["metric"] == METRIC_DISK_USED_BYTES:
             usage_series.setdefault((s["host"], s["device"]), []).append(
                 (s["ts"], s["value"])
@@ -1308,6 +1404,19 @@ def aggregate_normalised_host_metrics(
                     )
                     for service in sorted(services.get(host, ()))
                 },
+                # Only the fields actually observed for that service, so a
+                # kernel that does not expose (say) Pss_Shmem produces no key
+                # rather than an all-None stat indistinguishable from a field
+                # that was collected and happened to be empty.
+                "memory_composition_by_service": {
+                    service: {
+                        field: stats_for(host, field, service=service)
+                        for field in sorted(
+                            composition_fields.get((host, service), ())
+                        )
+                    }
+                    for service in sorted(composition_services.get(host, ()))
+                },
             }
         )
     return results
@@ -1349,6 +1458,13 @@ def bucket_host_metric_samples(
 
     grouped: dict[tuple, list[float]] = {}
     for s in normalised.samples:
+        # Rollup-only metrics never become bucket rows. This is a hard
+        # exclusion rather than a flag: the whole reason the composition
+        # metrics are captured at all is that they are cheap in the rollup, and
+        # a per-service bucket series costs ~35 MB per staging run against a
+        # 10 GB disk that is already 76 % bucket rows.
+        if s["metric"] in ROLLUP_ONLY_METRICS:
+            continue
         if (
             node_storage_only
             and s["device"] is not None

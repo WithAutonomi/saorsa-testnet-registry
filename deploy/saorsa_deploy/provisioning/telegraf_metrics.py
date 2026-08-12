@@ -20,6 +20,15 @@ TELEGRAF_ENV_PATH = "/etc/default/telegraf-ant-metrics"
 TELEGRAF_SERVICE_NAME = "telegraf-ant-metrics"
 TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 
+# The per-process memory-composition collector, installed on the host and run
+# by the two `inputs.exec` blocks in telegraf_metrics_node_memory.conf.
+NODE_MEMORY_COLLECTOR_PATH = "/usr/local/bin/ant-node-memory-collector"
+
+# Roles that run ant node-tier services, and so are the only ones where the
+# memory-composition collector has anything to read. CLIENT hosts run `ant`
+# client services, which the collector's unit globs deliberately do not match.
+NODE_MEMORY_ROLES = ("GENESIS", "BOOTSTRAP", "WAN_NODE")
+
 NODE_STORAGE_MOUNT = "/mnt/ant-node-storage"
 # Matches no real kernel device name -- and no real mountpoint either, since
 # every path starts with "/" -- so the config's two volume_role regexes tag
@@ -100,6 +109,7 @@ class TelegrafMetricsProvisioner:
         testnet_name: str = "",
         host_role: str = "WAN_NODE",
         ssh_user: str = "root",
+        collect_node_memory: bool = False,
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -111,6 +121,7 @@ class TelegrafMetricsProvisioner:
         self.testnet_name = testnet_name
         self.host_role = host_role
         self.ssh_user = ssh_user
+        self.collect_node_memory = collect_node_memory
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -179,6 +190,23 @@ class TelegrafMetricsProvisioner:
             ],
         )
 
+        if self._wants_node_memory():
+            # Written before the config that references it, so Telegraf never
+            # restarts against an `inputs.exec` pointing at a missing file.
+            collector = _read_script("node_memory_collector.py")
+            add_op(
+                state,
+                server.shell,
+                name="Write ant-node memory composition collector",
+                commands=[
+                    as_single_shell_command([
+                        f"cat > {NODE_MEMORY_COLLECTOR_PATH}"
+                        f" << 'COLLECTOR_EOF'\n{collector}COLLECTOR_EOF",
+                        f"chmod 0755 {NODE_MEMORY_COLLECTOR_PATH}",
+                    ])
+                ],
+            )
+
         config_content = self._build_telegraf_config()
         add_op(
             state,
@@ -243,9 +271,19 @@ class TelegrafMetricsProvisioner:
             f"ANT_HOST_ROLE={self.host_role}\n"
         )
 
+    def _wants_node_memory(self) -> bool:
+        """Whether this host gets the memory-composition collector.
+
+        Gated on role as well as the flag: the collector's unit globs match
+        only node-tier services, so enabling it for a CLIENT host would install
+        a script that can never emit a line.
+        """
+        return self.collect_node_memory and self.host_role in NODE_MEMORY_ROLES
+
     def _build_telegraf_config(self) -> str:
         return build_telegraf_metrics_config(
-            include_client_services=self.host_role == "CLIENT"
+            include_client_services=self.host_role == "CLIENT",
+            include_node_memory=self._wants_node_memory(),
         )
 
     def _build_unit_file(self) -> str:
@@ -263,7 +301,16 @@ def _read_resource(filename: str) -> str:
     return path.read_text()
 
 
-def build_telegraf_metrics_config(include_client_services: bool = False) -> str:
+def _read_script(filename: str) -> str:
+    """Read a file from the scripts resources directory."""
+    path = get_resources_dir() / "scripts" / filename
+    return path.read_text()
+
+
+def build_telegraf_metrics_config(
+    include_client_services: bool = False,
+    include_node_memory: bool = False,
+) -> str:
     """Read the Telegraf metrics config from the resources directory.
 
     Uses environment variables for connection details, making the config
@@ -274,8 +321,18 @@ def build_telegraf_metrics_config(include_client_services: bool = False) -> str:
     (uploader/downloader/canary) are appended. They are gated to CLIENT hosts so
     node-tier configs stay byte-identical and the cgroup input's "path missing"
     error never fires on the node fleet.
+
+    When ``include_node_memory`` is True (node-tier hosts, opt-in), the two
+    ``inputs.exec`` blocks that collect per-process RSS composition and
+    ``smaps_rollup`` are appended. Both gates default to False so that a
+    deployment which asks for neither produces exactly the config it always
+    did — the same discipline the client append follows.
     """
     config = _read_resource("telegraf_metrics.conf")
     if include_client_services:
         config += "\n" + _read_resource("telegraf_metrics_client.conf")
+    if include_node_memory:
+        config += "\n" + _read_resource(
+            "telegraf_metrics_node_memory.conf"
+        ).replace("{{COLLECTOR_PATH}}", NODE_MEMORY_COLLECTOR_PATH)
     return config

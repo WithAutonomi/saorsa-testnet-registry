@@ -924,6 +924,56 @@ Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
 dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
 `INFLUXDB_CLIENT_BUCKET`).
 
+### Per-process memory composition (`ant_node_memory`, opt-in)
+
+`procstat.memory_rss` is a single **total** and cannot say what the memory is made
+of — which is the difference between a leak and a growing LMDB chunk-store mmap.
+Measured on prod: `ant-node-9` held 880 MB RSS of which 469 MB was **file-backed**,
+and an hour later 3.48 GB of which 3.07 GB was file-backed. That ambiguity is what
+made `memory_rss` misread as a 20x leak on STG-03 run 475.
+
+**`--node-memory-metrics`** (off by default) adds an `ant_node_memory` measurement
+tagged `node_service`, from a bounded `inputs.exec` collector
+(`resources/scripts/node_memory_collector.py`): `/proc/<pid>/status` @30s
+(`vm_rss`, `rss_anon`, `rss_file`, `rss_shmem`, `vm_swap`) and
+`/proc/<pid>/smaps_rollup` @60s (`rollup_pss*`, `rollup_private_*`,
+`rollup_shared_*`, `rollup_lazy_free`, `rollup_anon_huge_pages`, …). All values are
+integer **bytes** (converted once, at the source, so an Influx field-type conflict
+is impossible); `pid` is a **field**, never a tag, so a restart is visible without
+minting a series. `procstat.memory_rss` is untouched — it's a separate measurement.
+Gated on node-tier roles and appended to the config only when enabled, so every
+other kind's TOML stays byte-identical. Flag lives on the shared
+`_add_telegraf_fold_args` (so all three node-tier provision commands), on
+`prod nodes`/`prod debug-nodes deploy`, and on `deployments provision-telegraf`.
+
+**Why the two intervals differ.** Measured on a prod node, 13 services: `status`
+**~1 ms/process**, `smaps_rollup` **~105 ms/process** — ~90x, almost entirely `sys`
+time, because the kernel walks page tables across the whole **39–80 GB virtual**
+address space (the sparse LMDB map), not the ~65 VMAs. At 60s that is ~2.3% of one
+core, ~11x Telegraf's own 0.2% baseline, and it holds each target's `mmap_lock`
+read-side for ~105 ms per scrape (page faults are fine; `mmap`/`munmap` stalls).
+Hence off by default, hence 60s not 30s, and hence `smaps_rollup` rather than
+procstat's full `smaps` collector. Volume: +12.3% points/day on prod ≈ **1.1 GB**
+at 14-day retention against 177 GB free.
+
+**Archival is rollup-only, and the bucket exclusion is hard-coded.**
+`record-analysis` writes `memory_composition_by_service` into
+`deployment_host_results.host_metrics` (JSON column — no migration; only observed
+fields appear, so an unexposed kernel key yields no key rather than an all-`None`
+stat). It is excluded from `deployment_host_metric_buckets` via
+`ROLLUP_ONLY_METRICS`: measured, one per-service bucket metric costs ~164k rows
+(~35 MB) per 990-node staging run, and that table is already **76% of a 366 MB
+database on a 10 GB disk**. 21 composition metrics would be ~5x the per-run cost,
+weekly. See **V2-973** for moving the bucket table out of the registry database.
+
+**Retrofit** (the production case) needs all three of `--inventory-path` (NOT
+`--name` alone — that path SSHes real Autonomi bootstrap peers), a retained
+`--name` (it supplies the `testnet_name` global tag every series is keyed on), and
+the new **`--skip-logs`** (mirror of `--skip-metrics`) to leave the ES forwarder
+alone. Without `--skip-logs` the only way to avoid resolving ES was to drop
+`--name`, which `name = args.name or ""` turns into an empty `testnet_name` —
+severing every series from its history. Rollback: re-run without the flag.
+
 ### Per-device disk I/O
 
 **Both tiers** collect per-device disk I/O via a `[[inputs.diskio]]` stanza in the

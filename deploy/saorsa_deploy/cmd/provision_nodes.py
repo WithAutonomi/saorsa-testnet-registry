@@ -120,6 +120,7 @@ def cmd_provision_nodes(args):
             ssh_user=getattr(args, "ssh_user", "root"),
             drop_log_levels=getattr(args, "drop_log_levels", None),
             buffer_limit=getattr(args, "buffer_limit", None),
+            collect_node_memory=getattr(args, "node_memory_metrics", False),
             console=console,
         )
 

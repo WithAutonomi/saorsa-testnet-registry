@@ -723,10 +723,21 @@ uv run saorsa-deploy deployments provision-telegraf \
 | `--buffer-limit` / `--max-undelivered-lines` | int | No | / | ES forwarder buffer sizes |
 | `--from-start` / `--only-new-logs` | flag | No | from-start | ES tail reads from beginning vs end |
 | `--ant-log-dir` | string | No | `/mnt/ant-node-storage/log` | Override the tailed log directory |
+| `--skip-metrics` | flag | No | off | Provision **only** the ES log forwarder, leaving `telegraf-ant-metrics` untouched |
+| `--skip-logs` | flag | No | off | Provision **only** the InfluxDB metrics forwarder, leaving `telegraf-ant-elasticsearch` untouched |
+| `--node-memory-metrics` | flag | No | off | Also collect per-process RSS composition + `smaps_rollup` ([details](#per-process-memory-composition-ant_node_memory--opt-in)). Node-tier roles only |
 | `--ssh-key-path` / `--ssh-user` | string | No | `~/.ssh/id_rsa` / `root` | SSH connection details |
 
 ¹ Exactly one of `--name` / `--host-ips-file` / `--inventory-path` is required.
 ² At least one backend's credentials must resolve (via flags or `--name` state).
+
+`--skip-metrics` and `--skip-logs` are mirrors of each other, and both exist for
+the same reason: `--name` is what resolves *both* backends, but it is also the
+only source of the ES index name and of the `testnet_name` global tag that every
+existing metrics series is keyed on. So neither forwarder can be excluded by
+simply withholding `--name` — dropping it would blank the metrics tag and sever
+each series from its history. Retrofitting one forwarder without disturbing the
+other therefore needs an explicit flag.
 
 On the `--name` path the command also enumerates client VMs from client state (if
 any) and provisions host-stat Telegraf on them with `host_role="CLIENT"`, routed
@@ -851,6 +862,87 @@ The tag lands in InfluxDB, so Grafana and `record-analysis` both filter on it di
 Devices are deliberately **not** averaged together the way the network counters are pooled across interfaces: a host's root disk and its node storage volume are not interchangeable, and an idle root disk averaged against a busy data volume describes neither. `record-analysis`'s summary table therefore shows the **node storage volume's** figures (and names the device); `deployments print-recorded-results` renders every device, one row per (host, device), with the storage volume flagged in its Role column. `host_metrics` is a JSON column, so rows recorded before disk I/O existed simply lack the key and the section is skipped for them.
 
 **Retrofitting an existing deployment.** Nothing is needed for new deployments. To add disk I/O to a deployment that is already running, re-run `deployments provision-telegraf --name <name>`: it regenerates the config from the same builder and restarts `telegraf-ant-metrics`.
+
+#### Per-process memory composition (`ant_node_memory`) — opt-in
+
+The base config's `[[inputs.procstat]]` blocks record each node service's **total** resident set size as `procstat.memory_rss`. That total cannot say what the memory is *made of* — which is the difference between a leak and a growing LMDB chunk-store mmap. Measured on a production node, `ant-node-9` held 880 MB RSS of which **469 MB was file-backed** (the LMDB map); an hour later the same service was at 3.48 GB RSS with **3.07 GB file-backed**. Read as a leak, that is alarming; read correctly, it is the chunk store doing its job.
+
+Enabling **`--node-memory-metrics`** adds a separate `ant_node_memory` measurement carrying that breakdown, tagged `node_service` exactly like the existing RSS series. `procstat.memory_rss` and its tags are untouched.
+
+| Source | Interval | Fields |
+|---|---|---|
+| `/proc/<pid>/status` | 30 s | `vm_rss`, `rss_anon`, `rss_file`, `rss_shmem`, `vm_swap` |
+| `/proc/<pid>/smaps_rollup` | 60 s | `rollup_rss`, `rollup_pss`, `rollup_pss_anon`, `rollup_pss_file`, `rollup_pss_shmem`, `rollup_pss_dirty`, `rollup_anonymous`, `rollup_private_clean`, `rollup_private_dirty`, `rollup_shared_clean`, `rollup_shared_dirty`, `rollup_referenced`, `rollup_swap`, `rollup_swap_pss`, `rollup_lazy_free`, `rollup_anon_huge_pages` |
+
+Every value is an integer count of **bytes** (`/proc` reports kB; the conversion happens once, in the collector). `pid` is emitted as a **field**, never a tag, so a node restart is visible without minting a new series. All values come from read-only `/proc` access — nothing signals, restarts or otherwise alters a node process.
+
+**`LazyFree` and `AnonHugePages` are collected although the original specification did not list them.** LazyFree is the textbook explanation for resident memory collapsing with no PID change: `MADV_FREE`'d pages stay in RSS until the kernel reclaims them under pressure. 276 MB of AnonHugePages was observed on the very process that prompted this work.
+
+##### Cost — why the two sources run at different intervals
+
+Measured on a production node running 13 services:
+
+| Source | 13 processes | Per process |
+|---|---|---|
+| `/proc/<pid>/status` | 0.06 s | **~1 ms** |
+| `/proc/<pid>/smaps_rollup` | 1.29 s (almost all `sys`) | **~105 ms** |
+
+`smaps_rollup` is ~90x the cost and is almost entirely kernel time, because the kernel walks page tables across the whole **39–80 GB virtual** address space (the sparse LMDB map) rather than the ~65 VMAs. It is still much cheaper than Telegraf procstat's full `smaps` collector, which would walk and aggregate every VMA.
+
+At 60 s that is **~2.3 % of one core** (~0.57 % of a 4-core host) — small in absolute terms, but roughly **11x Telegraf's own baseline** of ~0.2 %. It also holds each target's `mmap_lock` read-side for ~105 ms per scrape: page faults are unaffected (they take it read-side too), but `mmap`/`munmap`/`mprotect` in the node — allocator arena churn, LMDB map growth — will stall behind it. **That is why the flag is off by default and why the rollup runs at 60 s rather than 30.**
+
+Both `inputs.exec` blocks carry a Telegraf `timeout`, and the collector bounds itself with `--deadline-secs`, so a slow host returns partial data rather than letting scrapes stack up. A stopped or inaccessible process produces no point at all — never a fabricated zero — and one failed read never costs the scrape its other services.
+
+##### Storage impact
+
+For the 806 node services on `ant-prod-01`: **+27.9 M points/day (+12.3 % over the current 227 M)**, which at the measured ~2.8 bytes/point works out to **~1.1 GB** at 14-day retention, against 177 GB free on the monitoring volume. InfluxDB is schemaless per measurement, so no template or migration is needed — the measurement simply appears.
+
+##### Archival — rollup only, never buckets
+
+`deployments record-analysis` captures composition into `deployment_host_results.host_metrics` under **`memory_composition_by_service`** — a dict keyed by `node_service`, each holding one `{avg, min, max, samples}` stat per observed field. Only fields actually observed appear, so a kernel that does not expose (say) `Pss_Shmem` produces no key rather than an all-`None` stat.
+
+These metrics are **deliberately excluded from `deployment_host_metric_buckets`**, and that exclusion is hard-coded rather than flagged. Measured on the live registry: one per-service bucket metric costs ~164 k rows (~35 MB) for a single 990-node staging run, and the bucket table is already 76 % of a 366 MB database on the smallest managed Postgres tier. Twenty-one composition metrics would be roughly 5x the entire per-run cost, weekly. The rollup carries the same per-service detail for essentially nothing (48 rows for every run ever recorded). See **V2-973** for the separate question of moving the bucket table out of the registry database.
+
+`host_metrics` is a JSON column, so this needed **no Alembic migration** and rows recorded before the collector existed simply lack the key.
+
+##### Deployment
+
+New deployments: pass `--node-memory-metrics` alongside `--with-telegraf` on `nodes provision` / `nodes provision-genesis` / `bootstraps provision`, or on `prod nodes deploy` / `prod debug-nodes deploy`.
+
+Retrofitting hosts that are **already running** — the production case:
+
+```bash
+saorsa-deploy deployments provision-telegraf \
+  --name ant-prod-01 \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
+  --ssh-key-path ~/.ssh/ant_deploy \
+  --skip-logs \
+  --node-memory-metrics
+```
+
+Three details in that command are load-bearing:
+
+- **`--inventory-path`, not `--name` alone, for host selection.** On a deployment whose state seeds the real production bootstrap peers, the `--name` path tries to SSH machines we do not own. The inventory names our own node VMs, each with its own `ssh_user`/`ssh_key`. (Bootstraps live in a separate `bootstrap-inventory.json` and need a second pass.)
+- **`--name` is still required.** It supplies the `ANT_TESTNET_NAME` global tag that every existing series is keyed on. Dropping it to avoid resolving the Elasticsearch backend would write an empty `testnet_name` on every host and sever each series from its history.
+- **`--skip-logs`** is therefore how the Elasticsearch forwarder is left alone. It is the exact mirror of `--skip-metrics`.
+
+The pass restarts `telegraf-ant-metrics`, which costs a seconds-long gap in host metrics. It does not touch `ant-node`.
+
+**Validate on one host first.** Point `--inventory-path` at a one-entry inventory, confirm the measurement is arriving, then run the fleet:
+
+```bash
+influx query --org ant '
+from(bucket: "testnet-metrics")
+  |> range(start: -10m, stop: 2200-01-01T00:00:00Z)
+  |> filter(fn: (r) => r._measurement == "ant_node_memory")
+  |> group(columns: ["_field"]) |> count()'
+```
+
+Two reconciliation checks worth making on that first host: `rss_anon + rss_file + rss_shmem` should equal `vm_rss` (it does so exactly on kernel 6.8), and `rollup_pss` must not exceed `rollup_rss`.
+
+##### Rollback
+
+Re-run the same command **without** `--node-memory-metrics`. The config is regenerated from the same builder without the two `inputs.exec` blocks and Telegraf restarts, so collection stops immediately. The collector script is left on disk at `/usr/local/bin/ant-node-memory-collector`, inert — nothing invokes it once the config no longer references it; delete it if you want the host byte-clean. Points already written expire with the bucket's normal retention. No other measurement is affected, so a rollback cannot disturb the existing `procstat.memory_rss` series.
 
 ### Bucketed host metrics — slicing a window after the run
 
