@@ -1,30 +1,37 @@
 #!/usr/bin/env python3
 """Emit Influx line protocol for per-process ant-node memory composition.
 
-Run by Telegraf's ``[[inputs.exec]]`` with ``data_format = "influx"``. Two
-invocations at different intervals share this one script:
+Run by the `ant-node-memory-collector` systemd timer, which pipes stdout to
+InfluxDB via `ant-node-memory-publish`. Deliberately NOT a Telegraf
+``inputs.exec``: that route measured ~14.9% of one core on a production node,
+of which ~12.5% was telegraf overhead that could not be accounted for.
 
-* ``--source status`` reads ``/proc/<pid>/status`` — VmRSS and its
-  anonymous / file-backed / shmem split, plus swap. Measured at ~1 ms per
-  process, so it runs often.
-* ``--source rollup`` reads ``/proc/<pid>/smaps_rollup`` — PSS, the
-  private/shared clean/dirty breakdown, LazyFree and AnonHugePages. Measured at
-  **~105 ms per process** on a production node, because the kernel walks page
-  tables across the whole 39-80 GB virtual address space (the sparse LMDB map),
-  not merely the ~65 VMAs. It also holds the target's ``mmap_lock`` read-side
-  for that whole walk, so ``mmap``/``munmap`` in the node stalls behind it.
-  Hence the slower interval, and hence ``smaps_rollup`` rather than Telegraf
-  procstat's full ``smaps`` collector, which would walk and aggregate every VMA.
+This supplies only the fields Telegraf's native `procstat` mmap collection
+cannot produce — the RSS backing split, the PSS backing split, LazyFree and the
+huge-page set. The routine economical signal comes from procstat itself.
 
-Why a new measurement rather than extra fields on ``procstat``: the existing
-``procstat.memory_rss`` series and tags must be preserved exactly, and a
-separate measurement also makes a field-type collision impossible.
+* ``/proc/<pid>/status`` — VmRSS and its anonymous / file-backed / shmem split,
+  plus swap. ~1 ms per process.
+* ``/proc/<pid>/smaps_rollup`` — PSS, the private/shared clean/dirty breakdown,
+  LazyFree and the huge-page fields. **~105 ms per process** on a production
+  node, because the kernel walks page tables across the whole 39-80 GB virtual
+  address space (the sparse LMDB map), not merely the ~65 VMAs. It also holds
+  the target's ``mmap_lock`` read-side for that walk, so ``mmap``/``munmap`` in
+  the node stalls behind it — hence a coarse timer cadence rather than a fast
+  scrape, and hence ``smaps_rollup`` rather than the full ``smaps``.
+
+Because this posts to InfluxDB directly rather than through Telegraf, it must
+attach the global tags itself — see :func:`resolve_tags`. Missing ``host`` in
+particular merges every machine's ``ant-node-1`` into one series and makes
+``record-analysis`` discard the points entirely.
 
 Everything is read-only. Nothing here signals, restarts or otherwise alters a
 node process.
 """
 
 import argparse
+import os
+import socket
 import subprocess
 import sys
 import time
@@ -59,11 +66,6 @@ STATUS_FIELDS = {
 # different moments and do not agree exactly; giving them one name would invite
 # reading a sampling artefact as an accounting discrepancy.
 #
-# LazyFree and AnonHugePages are not in the original specification but are kept
-# deliberately: LazyFree is the textbook explanation for resident memory
-# collapsing with no PID change (MADV_FREE'd pages stay in RSS until reclaimed
-# under pressure), and 276 MB of AnonHugePages was observed on the very process
-# that prompted this work. Kernels that do not expose a key simply omit it.
 # `LazyFree` is the reason this source exists at all: `MADV_FREE`'d pages stay
 # resident until the kernel reclaims them under pressure, which produces exactly
 # V2-970's shape — RSS grows, then collapses with the PID unchanged. Note it is
@@ -239,18 +241,58 @@ def escape_tag(value: str) -> str:
     )
 
 
-def build_line(service: str, pid: int, fields: dict[str, int], timestamp_ns: int) -> str:
+def resolve_tags(host: str | None = None) -> dict[str, str]:
+    """Tags applied to every point, matching what Telegraf attaches natively.
+
+    This collector posts to InfluxDB directly rather than through Telegraf, so
+    nothing else supplies the global tags. **`host` is not optional**: without
+    it every host's `ant-node-1` collapses into one series, so a fleet-wide
+    rollout would silently merge 66 machines' services together — and
+    `record-analysis` drops any point lacking a host, so the archival path
+    produces nothing at all.
+
+    `host` must match what Telegraf writes for the same machine, or the two
+    measurements cannot be joined. Telegraf uses the system hostname, so this
+    does too; ``ANT_HOSTNAME`` overrides for the case where they ever diverge.
+
+    ``testnet_name`` and ``host_role`` mirror Telegraf's ``[global_tags]`` and
+    come from the same env file the unit already loads, so the tag set is
+    identical across both measurements.
+    """
+    tags = {"host": host or os.environ.get("ANT_HOSTNAME") or socket.gethostname()}
+    for env_name, tag_name in (
+        ("ANT_TESTNET_NAME", "testnet_name"),
+        ("ANT_HOST_ROLE", "host_role"),
+    ):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            tags[tag_name] = value
+    return tags
+
+
+def build_line(
+    service: str,
+    pid: int,
+    fields: dict[str, int],
+    timestamp_ns: int,
+    tags: dict[str, str] | None = None,
+) -> str:
     """Render one Influx line.
 
     ``pid`` is a **field**, never a tag: a tag would mint a fresh series on
     every node restart, and the whole point of keying on ``node_service`` is
     that ``ant-node-3`` stays one series across its restarts.
+
+    Tags are emitted in sorted order so a line is deterministic — which makes
+    the output diffable and the tests exact.
     """
-    rendered = ",".join(f"{name}={value}i" for name, value in sorted(fields.items()))
-    return (
-        f"{MEASUREMENT},node_service={escape_tag(service)} "
-        f"pid={pid}i,{rendered} {timestamp_ns}"
+    all_tags = dict(tags or {})
+    all_tags["node_service"] = service
+    tag_text = ",".join(
+        f"{escape_tag(k)}={escape_tag(v)}" for k, v in sorted(all_tags.items())
     )
+    rendered = ",".join(f"{name}={value}i" for name, value in sorted(fields.items()))
+    return f"{MEASUREMENT},{tag_text} pid={pid}i,{rendered} {timestamp_ns}"
 
 
 class CollectionResult(NamedTuple):
@@ -273,7 +315,12 @@ class CollectionResult(NamedTuple):
         return self.units_seen > 0 and self.units_read == 0
 
 
-def collect(source: str, deadline_secs: float, now_ns: int | None = None) -> "CollectionResult":
+def collect(
+    source: str,
+    deadline_secs: float,
+    now_ns: int | None = None,
+    tags: dict[str, str] | None = None,
+) -> "CollectionResult":
     """Produce the line-protocol lines for one scrape.
 
     Every process is read independently and a failure on one is skipped rather
@@ -311,7 +358,7 @@ def collect(source: str, deadline_secs: float, now_ns: int | None = None) -> "Co
             continue
         units_read += 1
         service = unit[: -len(".service")] if unit.endswith(".service") else unit
-        lines.append(build_line(service, pid, fields, timestamp_ns))
+        lines.append(build_line(service, pid, fields, timestamp_ns, tags))
     return CollectionResult(lines, units_seen, units_read)
 
 
@@ -325,6 +372,13 @@ def main(argv: list[str] | None = None) -> int:
         "or 'both' (default — one merged point per service).",
     )
     parser.add_argument(
+        "--host",
+        default=None,
+        help="Value for the `host` tag (default: ANT_HOSTNAME, else the system "
+        "hostname). Must match what Telegraf writes for this machine, or the "
+        "two measurements cannot be joined.",
+    )
+    parser.add_argument(
         "--deadline-secs",
         type=float,
         default=20.0,
@@ -332,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    result = collect(args.source, args.deadline_secs)
+    result = collect(args.source, args.deadline_secs, tags=resolve_tags(args.host))
     if result.lines:
         sys.stdout.write("\n".join(result.lines) + "\n")
 

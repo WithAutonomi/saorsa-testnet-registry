@@ -1,9 +1,10 @@
 """Tests for the per-process RSS composition collector (V2-972).
 
-The collector runs on node VMs under Telegraf's `inputs.exec`. Everything it
-does that could be wrong in a way Influx would silently accept — the unit
-conversion, the field type, what happens to a process that has gone away — is
-exercised here against fixtures rather than against a live `/proc`.
+The collector runs on node VMs under a systemd timer, posting to InfluxDB
+directly. Everything it does that could be wrong in a way Influx would silently
+accept — the unit conversion, the field type, the global tags, what happens to a
+process that has gone away — is exercised here against fixtures rather than
+against a live `/proc`.
 """
 
 import importlib.util
@@ -209,10 +210,11 @@ class TestReadProc:
 class TestBuildLine:
     def test_shape_is_valid_line_protocol(self):
         line = collector.build_line(
-            "ant-node-3", 1234, {"vm_rss": 4096, "rss_anon": 2048}, 1700000000000000000
+            "ant-node-3", 1234, {"vm_rss": 4096, "rss_anon": 2048},
+            1700000000000000000, {"host": "node-a"},
         )
         assert line == (
-            "ant_node_memory,node_service=ant-node-3 "
+            "ant_node_memory,host=node-a,node_service=ant-node-3 "
             "pid=1234i,rss_anon=2048i,vm_rss=4096i 1700000000000000000"
         )
 
@@ -430,3 +432,69 @@ class TestUnitPatterns:
             "ant-bootstrap.service",
             "ant-genesis-node.service",
         }
+
+
+class TestGlobalTags:
+    """This collector posts to InfluxDB directly, so it must tag points itself.
+
+    Nothing else supplies the global tags Telegraf would normally attach. The
+    canary rollout caught `host` missing: without it every machine's
+    `ant-node-1` collapses into one series, so a 66-host fleet would silently
+    merge — and `record-analysis` drops any point lacking a host, so the whole
+    archival path produced nothing.
+    """
+
+    def test_host_tag_is_always_present(self, monkeypatch):
+        monkeypatch.delenv("ANT_HOSTNAME", raising=False)
+        monkeypatch.setattr(collector.socket, "gethostname", lambda: "node-a")
+        assert collector.resolve_tags()["host"] == "node-a"
+
+    def test_explicit_host_wins(self):
+        assert collector.resolve_tags("explicit")["host"] == "explicit"
+
+    def test_env_override_beats_the_system_hostname(self, monkeypatch):
+        monkeypatch.setenv("ANT_HOSTNAME", "from-env")
+        monkeypatch.setattr(collector.socket, "gethostname", lambda: "node-a")
+        assert collector.resolve_tags()["host"] == "from-env"
+
+    def test_telegraf_global_tags_are_mirrored(self, monkeypatch):
+        """Same tag set as procstat, so the two measurements can be joined."""
+        monkeypatch.setenv("ANT_TESTNET_NAME", "ant-prod-01")
+        monkeypatch.setenv("ANT_HOST_ROLE", "WAN_NODE")
+        tags = collector.resolve_tags("node-a")
+        assert tags == {
+            "host": "node-a",
+            "testnet_name": "ant-prod-01",
+            "host_role": "WAN_NODE",
+        }
+
+    def test_blank_env_tags_are_omitted_not_emitted_empty(self, monkeypatch):
+        """An empty tag value is not the same as no tag, and Influx keeps it."""
+        monkeypatch.setenv("ANT_TESTNET_NAME", "")
+        monkeypatch.setenv("ANT_HOST_ROLE", "   ")
+        assert collector.resolve_tags("node-a") == {"host": "node-a"}
+
+    def test_tags_reach_every_emitted_line(self, monkeypatch):
+        monkeypatch.setattr(
+            collector, "list_units",
+            lambda timeout: [("ant-node-1.service", 11), ("ant-node-2.service", 22)],
+        )
+        monkeypatch.setattr(
+            collector, "read_proc", lambda pid, filename, wanted: {"vm_rss": 1}
+        )
+        lines = collector.collect(
+            "status", 10.0, now_ns=1, tags={"host": "node-a"}
+        ).lines
+        assert len(lines) == 2
+        assert all("host=node-a," in line for line in lines)
+
+    def test_tag_order_is_deterministic(self):
+        line = collector.build_line(
+            "svc", 1, {"vm_rss": 1}, 1,
+            {"host": "h", "testnet_name": "t", "host_role": "WAN_NODE"},
+        )
+        tag_text = line.split(" ")[0]
+        assert tag_text == (
+            "ant_node_memory,host=h,host_role=WAN_NODE,"
+            "node_service=svc,testnet_name=t"
+        )

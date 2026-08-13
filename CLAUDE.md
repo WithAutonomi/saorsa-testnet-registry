@@ -954,6 +954,12 @@ IS V2-970's shape — but it is a **lower bound** (the kernel can under-report, 
 zero does not exclude it). The three huge-page fields go together: `AnonHugePages`
 is anon-only and says nothing about a file-backed mapping.
 
+**Tags are attached by the collector**, since it posts to Influx directly and
+Telegraf's `[global_tags]` never apply: `host`, `testnet_name`, `host_role`,
+matching procstat so the two measurements join. `host` is load-bearing — without
+it the fleet's `ant-node-1` series all merge, AND `record-analysis` drops
+host-less points so archival yields nothing. Caught on the canary before rollout.
+
 **NOT a Telegraf `inputs.exec`** — that route measured **~14.9%** of a core,
 of which ~12.5% was telegraf overhead that could not be explained (it persisted
 with only a trivial input, and with the interval at 600s). The timer costs only

@@ -885,6 +885,8 @@ The base config now names `properties` explicitly to **exclude** telegraf's defa
 
 The three huge-page fields are collected together on purpose: `AnonHugePages` covers anonymous THP only, so on its own it says nothing about a file-backed mapping such as the LMDB chunk store.
 
+**Tags.** Because this tier posts to InfluxDB directly rather than through Telegraf, it attaches the global tags itself: `host`, `testnet_name` and `host_role`, matching what Telegraf writes for `procstat` so the two measurements can be joined. `host` is not optional — without it every machine's `ant-node-1` collapses into one series across the fleet, and `record-analysis` discards points lacking a host, so the archival path silently produces nothing. `host` defaults to the system hostname (what Telegraf uses); `ANT_HOSTNAME` or `--host` override.
+
 Cadence is `--node-memory-interval` (default **300 s**; use **60** on a host under active investigation). The timer is jittered by a tenth of its interval so the fleet's page-table walks do not land together. One pass over 13 services costs ~732 ms, so ~0.24% of a core at 300 s.
 
 **Deliberately not a Telegraf `inputs.exec`.** That route measured ~14.9% of one core on a production node, of which ~12.5% was telegraf overhead that could not be accounted for — it persisted with only a trivial input configured and with the interval stretched to 600 s. The timer costs only the collector's own work.
