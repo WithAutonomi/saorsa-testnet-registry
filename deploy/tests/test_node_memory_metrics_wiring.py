@@ -19,7 +19,6 @@ from saorsa_deploy.influx import (
     normalise_host_metric_points,
 )
 from saorsa_deploy.provisioning.telegraf_metrics import (
-    NODE_MEMORY_COLLECTOR_PATH,
     TelegrafMetricsProvisioner,
     build_telegraf_metrics_config,
 )
@@ -28,49 +27,64 @@ T0 = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
 
 
 class TestConfigAppend:
-    def test_default_config_has_no_collector(self):
+    def test_default_config_has_no_mmap_collection(self):
         """Every deployment that does not ask for it keeps its exact config.
 
-        The same discipline the CLIENT-role append follows: a byte-identical
-        config for every other kind is what makes this safe to land.
+        The base config now names `properties` explicitly to EXCLUDE telegraf's
+        default "mmap". That is not cosmetic: mmap reads the whole of
+        /proc/<pid>/smaps, which is free while telegraf is unprivileged (the
+        read fails) but costs 6.78% of a core at the 10s agent interval on any
+        host granted CAP_SYS_PTRACE.
         """
         config = build_telegraf_metrics_config()
-        assert "inputs.exec" not in config
-        assert "ant_node_memory" not in config
+        code = [
+            line for line in config.splitlines()
+            if not line.strip().startswith("#")
+        ]
+        assert not any("mmap" in line for line in code)
+        assert config.count('properties = ["cpu", "memory", "limits"]') == 4
 
-    def test_enabled_config_appends_both_exec_inputs(self):
+    def test_enabled_config_adds_an_mmap_tier(self):
         config = build_telegraf_metrics_config(include_node_memory=True)
-        assert config.count("[[inputs.exec]]") == 2
-        assert "--source status" in config
-        assert "--source rollup" in config
+        assert config.count('properties = ["mmap"]') == 4
+        assert config.count('interval = "60s"') == 4
 
     def test_enabled_config_is_a_pure_append(self):
         base = build_telegraf_metrics_config()
         enabled = build_telegraf_metrics_config(include_node_memory=True)
         assert enabled.startswith(base)
 
-    def test_collector_path_placeholder_is_substituted(self):
-        config = build_telegraf_metrics_config(include_node_memory=True)
-        assert "{{COLLECTOR_PATH}}" not in config
-        assert config.count(NODE_MEMORY_COLLECTOR_PATH) == 2
+    def test_no_exec_input_is_ever_generated(self):
+        """The exec route measured ~14.9% of a core with ~12.5% unexplained.
 
-    def test_costly_source_runs_less_often_than_the_cheap_one(self):
-        """smaps_rollup is ~90x the cost of status; the intervals must reflect it."""
-        config = build_telegraf_metrics_config(include_node_memory=True)
-        status_block = config.split("--source status")[1]
-        rollup_block = config.split("--source rollup")[1]
-        assert 'interval = "30s"' in status_block.split("[[inputs.exec]]")[0]
-        assert 'interval = "60s"' in rollup_block
+        Native procstat gets the same fields for 1.15%, so no configuration
+        this builder produces should contain an exec input.
+        """
+        for kwargs in ({}, {"include_node_memory": True},
+                       {"include_client_services": True}):
+            assert "inputs.exec" not in build_telegraf_metrics_config(**kwargs)
 
-    def test_each_exec_input_is_bounded_by_a_timeout(self):
+    def test_cheap_tier_keeps_its_ten_second_resolution(self):
+        """The two-tier split exists so existing telemetry is NOT downgraded.
+
+        cpu_usage / num_fds / num_threads / memory_rss stay at the 10s agent
+        interval; only the mmap tier is throttled to 60s.
+        """
         config = build_telegraf_metrics_config(include_node_memory=True)
-        assert config.count("timeout =") == 2
+        cheap = config.split('properties = ["mmap"]')[0]
+        assert 'interval = "60s"' not in cheap
+
+    def test_mmap_tier_covers_the_same_units_as_the_base(self):
+        config = build_telegraf_metrics_config(include_node_memory=True)
+        for glob in ("ant-node-*", "ant-bootstrap-*", "ant-bootstrap",
+                     "ant-genesis-node"):
+            assert config.count(f'cgroup = "system.slice/{glob}.service"') == 2
 
     def test_client_and_node_memory_appends_are_independent(self):
         both = build_telegraf_metrics_config(
             include_client_services=True, include_node_memory=True
         )
-        assert "[[inputs.exec]]" in both
+        assert 'properties = ["mmap"]' in both
         assert 'metric_source = "ant-client"' in both
 
 
@@ -364,3 +378,153 @@ class TestSkipLogsBackendResolution:
 class _Console:
     def print(self, *args, **kwargs):
         pass
+
+
+class TestCollectorTimerUnits:
+    """The collector is delivered by a systemd timer, never `inputs.exec`.
+
+    The exec route measured ~14.9% of a core on a production node, of which
+    ~12.5% was telegraf overhead that could not be accounted for. A timer costs
+    only the collector's own work.
+    """
+
+    def _provisioner(self, **kw):
+        return TelegrafMetricsProvisioner(
+            host_ips=["10.0.0.1"],
+            ssh_key_path="/dev/null",
+            influxdb_url="http://influx:8086",
+            influxdb_token="tok",
+            influxdb_org="ant",
+            influxdb_bucket="testnet-metrics",
+            host_role="WAN_NODE",
+            collect_node_memory=True,
+            **kw,
+        )
+
+    def _ops(self, **kw):
+        recorded = []
+
+        class _State:
+            pass
+
+        import saorsa_deploy.provisioning.telegraf_metrics as mod
+
+        real_add_op = mod.add_op
+
+        def fake_add_op(state, op, name=None, commands=None, **_):
+            recorded.append((name, commands))
+
+        mod.add_op = fake_add_op
+        try:
+            self._provisioner(**kw).add_ops(_State(), install=False)
+        finally:
+            mod.add_op = real_add_op
+        return recorded
+
+    def test_timer_and_service_units_are_written(self):
+        names = [n for n, _ in self._ops()]
+        assert "Write ant-node memory collector systemd units" in names
+        assert "Enable and start ant-node memory collector timer" in names
+
+    def test_default_interval_is_the_coarse_fleet_cadence(self):
+        body = "\n".join(
+            str(c) for n, c in self._ops()
+            if n == "Write ant-node memory collector systemd units"
+        )
+        assert "OnUnitActiveSec=300s" in body
+
+    def test_investigation_interval_is_configurable(self):
+        body = "\n".join(
+            str(c) for n, c in self._ops(node_memory_interval_secs=60)
+            if n == "Write ant-node memory collector systemd units"
+        )
+        assert "OnUnitActiveSec=60s" in body
+
+    def test_timer_is_jittered(self):
+        """Without jitter every node's page-table walk would land together."""
+        body = "\n".join(
+            str(c) for n, c in self._ops()
+            if n == "Write ant-node memory collector systemd units"
+        )
+        assert "RandomizedDelaySec=30s" in body
+
+    def test_service_is_hardened_and_bounded(self):
+        body = "\n".join(
+            str(c) for n, c in self._ops()
+            if n == "Write ant-node memory collector systemd units"
+        )
+        assert "NoNewPrivileges=yes" in body
+        assert "ProtectSystem=strict" in body
+
+    def test_nothing_is_installed_when_disabled(self):
+        recorded = []
+        import saorsa_deploy.provisioning.telegraf_metrics as mod
+
+        real = mod.add_op
+        mod.add_op = lambda state, op, name=None, commands=None, **_: recorded.append(name)
+        try:
+            TelegrafMetricsProvisioner(
+                host_ips=["10.0.0.1"], ssh_key_path="/dev/null",
+                influxdb_url="u", influxdb_token="t", influxdb_org="ant",
+                influxdb_bucket="b", host_role="WAN_NODE",
+                collect_node_memory=False,
+            ).add_ops(type("S", (), {})(), install=False)
+        finally:
+            mod.add_op = real
+        assert not any("memory" in (n or "") for n in recorded)
+
+
+class TestProcstatMmapCapture:
+    """procstat's native mmap fields are the routine economical signal."""
+
+    def _points(self, field, value, unit_field="memory_rss"):
+        return {
+            "procstat": [
+                {
+                    "host": "node-1",
+                    "node_service": "ant-node-3",
+                    "_field": field,
+                    "_value": str(value),
+                    "_time": T0,
+                }
+            ]
+        }
+
+    def test_smaps_fields_are_converted_from_kb_to_bytes(self):
+        """Telegraf reports memory_rss in bytes but smaps fields in kB.
+
+        The inconsistency is telegraf's; correcting it once at capture is what
+        keeps everything stored in bytes.
+        """
+        entry = aggregate_host_metrics(self._points("memory_pss", 1024))[0]
+        stats = entry["memory_composition_by_service"]["ant-node-3"]
+        assert stats["procstat_pss"]["avg"] == 1024 * 1024
+
+    def test_memory_rss_keeps_its_units_and_metric_name(self):
+        """Every historical run and gate comparison depends on this series."""
+        entry = aggregate_host_metrics(self._points("memory_rss", 4096))[0]
+        assert entry["rss_by_service"]["ant-node-3"]["avg"] == 4096
+        assert entry["memory_composition_by_service"] == {}
+
+    def test_unknown_procstat_field_is_ignored(self):
+        """An allow-list: a field we do not map contributes nothing at all.
+
+        No sample means the host has no observed time bounds, so it produces no
+        entry — rather than an entry full of empty stats that would read as "we
+        looked and there was nothing there".
+        """
+        assert aggregate_host_metrics(self._points("memory_vms", 99)) == []
+
+    def test_procstat_composition_never_becomes_bucket_rows(self):
+        rows = bucket_host_metric_samples(
+            normalise_host_metric_points(self._points("memory_anonymous", 512)),
+            bucket_secs=300,
+        )
+        assert rows == []
+
+    def test_rss_still_buckets_normally(self):
+        rows = bucket_host_metric_samples(
+            normalise_host_metric_points(self._points("memory_rss", 4096)),
+            bucket_secs=300,
+        )
+        assert [r["metric"] for r in rows] == ["rss_bytes"]

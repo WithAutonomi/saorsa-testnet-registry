@@ -64,6 +64,22 @@ STATUS_FIELDS = {
 # collapsing with no PID change (MADV_FREE'd pages stay in RSS until reclaimed
 # under pressure), and 276 MB of AnonHugePages was observed on the very process
 # that prompted this work. Kernels that do not expose a key simply omit it.
+# `LazyFree` is the reason this source exists at all: `MADV_FREE`'d pages stay
+# resident until the kernel reclaims them under pressure, which produces exactly
+# V2-970's shape — RSS grows, then collapses with the PID unchanged. Note it is
+# a LOWER BOUND: the kernel documents that implementation optimisations can make
+# it under-report, so a non-zero or collapsing value is evidence of MADV_FREE
+# while zero does not exclude it.
+#
+# The three `*PmdMapped` / `AnonHugePages` fields must be collected together.
+# `AnonHugePages` covers anonymous THP only, so on its own it can say nothing
+# about a file-backed mapping such as the LMDB chunk store; `FilePmdMapped` and
+# `ShmemPmdMapped` are the file-backed and shared-memory counterparts.
+#
+# `Pss_Anon` / `Pss_File` / `Pss_Shmem` give a cleaner backing-type split than
+# `Rss - Anonymous`, which silently folds shmem into the non-anonymous side.
+# PSS is proportional accounting, so it still does not attribute residency to a
+# particular file — that needs a pathname-level `smaps` snapshot.
 ROLLUP_FIELDS = {
     "Rss": "rollup_rss",
     "Pss": "rollup_pss",
@@ -81,12 +97,21 @@ ROLLUP_FIELDS = {
     "SwapPss": "rollup_swap_pss",
     "LazyFree": "rollup_lazy_free",
     "AnonHugePages": "rollup_anon_huge_pages",
+    "FilePmdMapped": "rollup_file_pmd_mapped",
+    "ShmemPmdMapped": "rollup_shmem_pmd_mapped",
 }
 
 SOURCES = {
     "status": ("status", STATUS_FIELDS),
     "rollup": ("smaps_rollup", ROLLUP_FIELDS),
 }
+
+# Read both files in one pass, emitting a single point per service. This is the
+# mode the systemd timer uses: the routine economical signal now comes from
+# telegraf's native procstat mmap collection, so this collector exists only to
+# supply the fields procstat cannot produce, and there is no reason to walk the
+# process list twice to get them.
+ALL_SOURCES = ("status", "rollup")
 
 
 def parse_systemctl_show(output: str) -> list[tuple[str, int]]:
@@ -260,7 +285,7 @@ def collect(source: str, deadline_secs: float, now_ns: int | None = None) -> "Co
     spaces could otherwise overrun its collection interval and let scrapes
     stack up. Overrunning returns what was gathered rather than nothing.
     """
-    filename, wanted = SOURCES[source]
+    sources = ALL_SOURCES if source == "both" else (source,)
     started = time.monotonic()
     timestamp_ns = now_ns if now_ns is not None else time.time_ns()
 
@@ -271,10 +296,18 @@ def collect(source: str, deadline_secs: float, now_ns: int | None = None) -> "Co
         if time.monotonic() - started >= deadline_secs:
             break
         units_seen += 1
-        fields = read_proc(pid, filename, wanted)
+        # Merged across sources so a service produces ONE point per scrape
+        # rather than one per file, keeping the series count down and making
+        # the reconciliation checks (composition sums to VmRSS, PSS <= RSS)
+        # readable from a single row.
+        fields: dict[str, int] = {}
+        for name in sources:
+            filename, wanted = SOURCES[name]
+            got = read_proc(pid, filename, wanted)
+            if got:
+                fields.update(got)
         if not fields:
-            # None (gone/inaccessible) or empty (nothing exposed): in both
-            # cases there is no honest point to emit.
+            # Every source gone/inaccessible/empty: no honest point to emit.
             continue
         units_read += 1
         service = unit[: -len(".service")] if unit.endswith(".service") else unit
@@ -286,9 +319,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--source",
-        choices=sorted(SOURCES),
-        required=True,
-        help="Which /proc file to read: 'status' (cheap) or 'rollup' (costly).",
+        choices=[*sorted(SOURCES), "both"],
+        default="both",
+        help="Which /proc file(s) to read: 'status' (cheap), 'rollup' (costly), "
+        "or 'both' (default — one merged point per service).",
     )
     parser.add_argument(
         "--deadline-secs",
@@ -311,7 +345,10 @@ def main(argv: list[str] | None = None) -> int:
     # journal shows on the first scrape. Emitted only on total failure so that
     # a service exiting mid-scrape stays quiet.
     if result.total_failure:
-        filename, _ = SOURCES[args.source]
+        filename = (
+            "status+smaps_rollup" if args.source == "both"
+            else SOURCES[args.source][0]
+        )
         sys.stderr.write(
             f"ant-node-memory-collector: {result.units_seen} node service(s) "
             f"found but /proc/<pid>/{filename} was unreadable for every one. "

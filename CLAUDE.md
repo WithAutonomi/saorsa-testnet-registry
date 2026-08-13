@@ -924,76 +924,62 @@ Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
 dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
 `INFLUXDB_CLIENT_BUCKET`).
 
-### Per-process memory composition (`ant_node_memory`, opt-in)
+### Per-process memory composition (opt-in, `--node-memory-metrics`)
 
 `procstat.memory_rss` is a single **total** and cannot say what the memory is made
-of — which is the difference between a leak and a growing LMDB chunk-store mmap.
-Measured on prod: `ant-node-9` held 880 MB RSS of which 469 MB was **file-backed**,
-and an hour later 3.48 GB of which 3.07 GB was file-backed. That ambiguity is what
-made `memory_rss` misread as a 20x leak on STG-03 run 475.
+of — the difference between a leak and a growing LMDB chunk-store mmap. Measured
+on prod: `ant-node-9` at 880 MB RSS of which 469 MB file-backed, then 3.48 GB of
+which 3.07 GB file-backed an hour later. That ambiguity made `memory_rss` misread
+as a 20x leak on STG-03 run 475. Collection is **two tiers** (V2-972):
 
-**`--node-memory-metrics`** (off by default) adds an `ant_node_memory` measurement
-tagged `node_service`, from a bounded `inputs.exec` collector
-(`resources/scripts/node_memory_collector.py`): `/proc/<pid>/status` @30s
-(`vm_rss`, `rss_anon`, `rss_file`, `rss_shmem`, `vm_swap`) and
-`/proc/<pid>/smaps_rollup` @60s (`rollup_pss*`, `rollup_private_*`,
-`rollup_shared_*`, `rollup_lazy_free`, `rollup_anon_huge_pages`, …). All values are
-integer **bytes** (converted once, at the source, so an Influx field-type conflict
-is impossible); `pid` is a **field**, never a tag, so a restart is visible without
-minting a series. `procstat.memory_rss` is untouched — it's a separate measurement.
-Gated on node-tier roles and appended to the config only when enabled, so every
-other kind's TOML stays byte-identical. Flag lives on the shared
-`_add_telegraf_fold_args` (so all three node-tier provision commands), on
-`prod nodes`/`prod debug-nodes deploy`, and on `deployments provision-telegraf`.
+**Tier 1 — native `procstat` mmap, the routine signal.** Telegraf already collects
+`memory_pss`, `memory_anonymous`, `memory_private_clean/_dirty`,
+`memory_shared_clean/_dirty`, `memory_referenced`, `memory_swap` — they were only
+**permission-gated**. Granting `CAP_SYS_PTRACE` unlocks them with **no new plugin
+and no script**. The base config now sets `properties` explicitly to EXCLUDE
+telegraf's default `mmap`, and the opt-in fragment re-declares the same process
+sets with `properties = ["mmap"]` at **60s**. That split is load-bearing: mmap
+reads the whole of `/proc/<pid>/smaps` — **6.78%** of a core at the 10s agent
+interval vs **1.15%** at 60s vs **0.15%** without — so two tiers keep
+`cpu_usage`/`num_fds`/`num_threads`/`memory_rss` at 10s while paying mmap once a
+minute. Measured on the canary: telegraf **1.50%** total.
 
-**Why the two intervals differ.** Measured on a prod node, 13 services: `status`
-**~1 ms/process**, `smaps_rollup` **~105 ms/process** — ~90x, almost entirely `sys`
-time, because the kernel walks page tables across the whole **39–80 GB virtual**
-address space (the sparse LMDB map), not the ~65 VMAs. At 60s that is ~2.3% of one
-core, and it holds each target's `mmap_lock` read-side for ~105 ms per scrape (page
-faults are fine; `mmap`/`munmap` stalls). Hence off by default, hence 60s not 30s,
-and hence `smaps_rollup` rather than procstat's full `smaps` collector. Volume:
-+12.3% points/day on prod ≈ **1.1 GB** at 14-day retention against 177 GB free.
+**Tier 2 — a systemd timer** (`ant-node-memory-collector.timer`, cadence
+`--node-memory-interval`, default 300s, 60s for an investigation host, jittered by
+a tenth). Supplies only what procstat cannot: `rss_anon/file/shmem`, `vm_swap`,
+`rollup_pss_anon/file/shmem/dirty`, `rollup_swap_pss`, **`rollup_lazy_free`**,
+`rollup_anon_huge_pages`, `rollup_file_pmd_mapped`, `rollup_shmem_pmd_mapped`.
+`LazyFree` is the point — MADV_FREE'd pages stay resident until reclaimed, which
+IS V2-970's shape — but it is a **lower bound** (the kernel can under-report, so
+zero does not exclude it). The three huge-page fields go together: `AnonHugePages`
+is anon-only and says nothing about a file-backed mapping.
 
-**`smaps_rollup` needs `CAP_SYS_PTRACE`; `status` does not.** Telegraf runs as
-`User=telegraf`, and the kernel gates smaps_rollup on `ptrace_may_access`, NOT on
-file permissions — so the unit's pre-existing `CAP_DAC_READ_SEARCH` does not
-satisfy it. The unit therefore adds `CAP_SYS_PTRACE` (ambient, so it is inherited
-by the exec'd collector) **only** when the collector is enabled. Found the hard
-way: the first canary deploy silently collected the status source and nothing else,
-because all benchmarking had been done as root over SSH. The collector now exits
-non-zero with a stderr diagnostic when units exist but none could be read, so a
-total failure is logged rather than looking like an idle host.
+**NOT a Telegraf `inputs.exec`** — that route measured **~14.9%** of a core,
+of which ~12.5% was telegraf overhead that could not be explained (it persisted
+with only a trivial input, and with the interval at 600s). The timer costs only
+the collector's own work (~732ms per pass over 13 services).
 
-**`inputs.exec` costs a FIXED ~12.5% of one core in telegraf 1.33.0, and it
-dominates.** Measured on the canary vs an unmodified host: telegraf's own CPU went
-0.18% → 12.65%, while the collector children accounted for exactly the predicted
-2.31% (tracked separately as `cutime`/`cstime`). It is not per-scrape — with only
-the cheap status input it was 12.46%, and with both inputs stretched to a **600s**
-interval (so neither effectively ran) still **12.57%**. So ~84% of the ~14.9%
-total buys nothing. If that is unacceptable at fleet scale the alternative is a
-systemd timer POSTing the collector's line protocol straight to Influx (it already
-emits exactly that; endpoint+token are already in
-`/etc/default/telegraf-ant-metrics`), trading telegraf's buffering/retry for no
-fixed overhead.
+**`CAP_SYS_PTRACE`, not `CAP_PERFMON`.** `/proc/<pid>/smaps*` is gated on
+`ptrace_may_access`, NOT file permissions, so the unit's pre-existing
+`CAP_DAC_READ_SEARCH` does not satisfy it. `CAP_PERFMON` (the narrower grant) was
+tested on kernel 6.8.0-86: **0 of 13 processes readable**, same as nothing, with
+and without NNP. Granted only on opt-in hosts, with a matching
+`CapabilityBoundingSet` and `NoNewPrivileges=yes`; verify via `CapEff`
+(`0x80004` = both, `0x4` = base only). The failure mode is **silent and partial** —
+the cheap sources report normally while composition returns nothing — which cost
+one canary cycle because all benchmarking had been done as root over SSH.
 
-**Archival is rollup-only, and the bucket exclusion is hard-coded.**
-`record-analysis` writes `memory_composition_by_service` into
-`deployment_host_results.host_metrics` (JSON column — no migration; only observed
-fields appear, so an unexposed kernel key yields no key rather than an all-`None`
-stat). It is excluded from `deployment_host_metric_buckets` via
-`ROLLUP_ONLY_METRICS`: measured, one per-service bucket metric costs ~164k rows
-(~35 MB) per 990-node staging run, and that table is already **76% of a 366 MB
-database on a 10 GB disk**. 21 composition metrics would be ~5x the per-run cost,
-weekly. See **V2-973** for moving the bucket table out of the registry database.
+**Units:** telegraf reports `memory_rss` in **bytes** but smaps fields in **kB**;
+corrected once at capture so everything stored is bytes.
 
-**Retrofit** (the production case) needs all three of `--inventory-path` (NOT
-`--name` alone — that path SSHes real Autonomi bootstrap peers), a retained
-`--name` (it supplies the `testnet_name` global tag every series is keyed on), and
-the new **`--skip-logs`** (mirror of `--skip-metrics`) to leave the ES forwarder
-alone. Without `--skip-logs` the only way to avoid resolving ES was to drop
-`--name`, which `name = args.name or ""` turns into an empty `testnet_name` —
-severing every series from its history. Rollback: re-run without the flag.
+**Archival is rollup-only** — `memory_composition_by_service` in
+`deployment_host_results.host_metrics` (JSON column, no migration), excluded from
+`deployment_host_metric_buckets` via `ROLLUP_ONLY_METRICS` (~164k rows / ~35 MB
+per 990-node run against a table already 76% of the DB; see V2-973).
+
+**`memory_rss − memory_anonymous` is non-anonymous/file-or-shared resident** — NOT
+"file-backed", NOT "LMDB". Proving LMDB attribution needs a pathname-level `smaps`
+snapshot, **not yet implemented**.
 
 ### Per-device disk I/O
 

@@ -863,59 +863,49 @@ Devices are deliberately **not** averaged together the way the network counters 
 
 **Retrofitting an existing deployment.** Nothing is needed for new deployments. To add disk I/O to a deployment that is already running, re-run `deployments provision-telegraf --name <name>`: it regenerates the config from the same builder and restarts `telegraf-ant-metrics`.
 
-#### Per-process memory composition (`ant_node_memory`) — opt-in
+#### Per-process memory composition — opt-in (`--node-memory-metrics`)
 
-The base config's `[[inputs.procstat]]` blocks record each node service's **total** resident set size as `procstat.memory_rss`. That total cannot say what the memory is *made of* — which is the difference between a leak and a growing LMDB chunk-store mmap. Measured on a production node, `ant-node-9` held 880 MB RSS of which **469 MB was file-backed** (the LMDB map); an hour later the same service was at 3.48 GB RSS with **3.07 GB file-backed**. Read as a leak, that is alarming; read correctly, it is the chunk store doing its job.
+`procstat.memory_rss` is a single total and cannot say what the memory is *made of* — the difference between a leak and a growing LMDB chunk-store mmap. Measured on a production node, `ant-node-9` held 880 MB RSS of which 469 MB was file-backed; an hour later, 3.48 GB of which 3.07 GB was file-backed. Read as a total that looks alarming; read by composition it is the chunk store doing its job.
 
-Enabling **`--node-memory-metrics`** adds a separate `ant_node_memory` measurement carrying that breakdown, tagged `node_service` exactly like the existing RSS series. `procstat.memory_rss` and its tags are untouched.
+`--node-memory-metrics` turns on composition collection in **two tiers**.
 
-| Source | Interval | Fields |
-|---|---|---|
-| `/proc/<pid>/status` | 30 s | `vm_rss`, `rss_anon`, `rss_file`, `rss_shmem`, `vm_swap` |
-| `/proc/<pid>/smaps_rollup` | 60 s | `rollup_rss`, `rollup_pss`, `rollup_pss_anon`, `rollup_pss_file`, `rollup_pss_shmem`, `rollup_pss_dirty`, `rollup_anonymous`, `rollup_private_clean`, `rollup_private_dirty`, `rollup_shared_clean`, `rollup_shared_dirty`, `rollup_referenced`, `rollup_swap`, `rollup_swap_pss`, `rollup_lazy_free`, `rollup_anon_huge_pages` |
+##### Tier 1 — native `procstat` mmap fields (the routine signal)
 
-Every value is an integer count of **bytes** (`/proc` reports kB; the conversion happens once, in the collector). `pid` is emitted as a **field**, never a tag, so a node restart is visible without minting a new series. All values come from read-only `/proc` access — nothing signals, restarts or otherwise alters a node process.
+Telegraf's own `procstat` plugin collects smaps-derived fields natively; they were simply permission-gated. Granting the unit `CAP_SYS_PTRACE` unlocks `memory_pss`, `memory_anonymous`, `memory_private_clean`/`_dirty`, `memory_shared_clean`/`_dirty`, `memory_referenced` and `memory_swap` — **no new plugin and no collector script**.
 
-**`smaps_rollup` needs `CAP_SYS_PTRACE`, which the unit grants only when the collector is enabled.** Telegraf runs as an unprivileged `telegraf` user, and the kernel gates `/proc/<pid>/smaps_rollup` on `ptrace_may_access(PTRACE_MODE_READ_FSCREDS)` against the target rather than on file permissions — so the `CAP_DAC_READ_SEARCH` the unit already held does **not** satisfy it. `/proc/<pid>/status` is world-readable and has no such gate. Without the capability the failure is therefore *partial and silent*: the cheap source reports normally on every scrape while the costly one returns nothing at all, which is exactly what the first canary deploy did before this was found. The collector now also **exits non-zero with a diagnostic on stderr** when node services exist but not one of them could be read, so Telegraf logs it on the first scrape instead of the gap going unnoticed.
+The base config now names `properties` explicitly to **exclude** telegraf's default `mmap`, and the opt-in fragment re-declares the same process sets with `properties = ["mmap"]` at a **60 s** interval. That split is load-bearing: mmap reads the whole of `/proc/<pid>/smaps`, and at the 10 s agent interval it costs 6.78% of one core versus 1.15% at 60 s. Two tiers keep `cpu_usage`, `num_fds`, `num_threads` and `memory_rss` at their existing 10 s resolution while paying the mmap cost once a minute.
 
-**`LazyFree` and `AnonHugePages` are collected although the original specification did not list them.** LazyFree is the textbook explanation for resident memory collapsing with no PID change: `MADV_FREE`'d pages stay in RSS until the kernel reclaims them under pressure. 276 MB of AnonHugePages was observed on the very process that prompted this work.
+##### Tier 2 — a systemd timer for what `procstat` cannot give
 
-##### Cost — why the two sources run at different intervals
+`ant-node-memory-collector.timer` runs a small collector reading `/proc/<pid>/status` and `/proc/<pid>/smaps_rollup`, emitting the `ant_node_memory` measurement. It supplies the fields `procstat` has no equivalent for:
 
-Measured on a production node running 13 services:
+`rss_anon` · `rss_file` · `rss_shmem` · `vm_swap` · `rollup_pss_anon` · `rollup_pss_file` · `rollup_pss_shmem` · `rollup_pss_dirty` · `rollup_swap_pss` · **`rollup_lazy_free`** · `rollup_anon_huge_pages` · `rollup_file_pmd_mapped` · `rollup_shmem_pmd_mapped` (plus the rollup's own totals for cross-checking).
 
-| Source | 13 processes | Per process |
-|---|---|---|
-| `/proc/<pid>/status` | 0.06 s | **~1 ms** |
-| `/proc/<pid>/smaps_rollup` | 1.29 s (almost all `sys`) | **~105 ms** |
+**`LazyFree` is the point of this tier.** `MADV_FREE`'d pages stay resident until the kernel reclaims them under pressure, producing exactly the V2-970 shape: RSS grows, then collapses with the PID unchanged. Note it is a **lower bound** — the kernel documents that implementation optimisations can make it under-report, so a non-zero or collapsing value is evidence of `MADV_FREE` while zero does not exclude it.
 
-`smaps_rollup` is ~90x the cost and is almost entirely kernel time, because the kernel walks page tables across the whole **39–80 GB virtual** address space (the sparse LMDB map) rather than the ~65 VMAs. It is still much cheaper than Telegraf procstat's full `smaps` collector, which would walk and aggregate every VMA.
+The three huge-page fields are collected together on purpose: `AnonHugePages` covers anonymous THP only, so on its own it says nothing about a file-backed mapping such as the LMDB chunk store.
 
-At 60 s that is **~2.3 % of one core** of collector work (measured on the canary as exactly 2.31 %). It also holds each target's `mmap_lock` read-side for ~105 ms per scrape: page faults are unaffected (they take it read-side too), but `mmap`/`munmap`/`mprotect` in the node — allocator arena churn, LMDB map growth — will stall behind it. **That is why the flag is off by default and why the rollup runs at 60 s rather than 30.**
+Cadence is `--node-memory-interval` (default **300 s**; use **60** on a host under active investigation). The timer is jittered by a tenth of its interval so the fleet's page-table walks do not land together. One pass over 13 services costs ~732 ms, so ~0.24% of a core at 300 s.
 
-**Telegraf's `inputs.exec` adds a fixed ~12.5 % of one core on top, and that is the dominant cost.** Measured on the canary against an unmodified host in the same region: telegraf's own CPU (excluding the collector children) went from **0.18 %** to **12.65 %** of one core. It is **not** the collector's work — the children account for exactly the predicted 2.31 %, tracked separately as `cutime`/`cstime`. Nor is it per-scrape: with only the cheap `status` input configured it was 12.46 %, and with **both inputs stretched to a 600 s interval** — so neither effectively ran during the sample — it was still **12.57 %**. The cost is therefore a fixed overhead of having `inputs.exec` configured at all in Telegraf 1.33.0, independent of interval or command.
+**Deliberately not a Telegraf `inputs.exec`.** That route measured ~14.9% of one core on a production node, of which ~12.5% was telegraf overhead that could not be accounted for — it persisted with only a trivial input configured and with the interval stretched to 600 s. The timer costs only the collector's own work.
 
-Total per node host: **~14.9 % of one core**, or ~3.7 % of a 4-core VM. Small in absolute terms, but it applies to every host the collector is enabled on, and ~84 % of it buys nothing. If that is not acceptable at fleet scale, the alternative is to drive the collector from a systemd timer that POSTs its line protocol to InfluxDB directly — it already emits exactly that, and the endpoint and token are already on the host in `/etc/default/telegraf-ant-metrics` — which avoids Telegraf entirely at the cost of a second delivery path with no buffering or retry.
+##### Capability, and why it is `CAP_SYS_PTRACE`
 
-Both `inputs.exec` blocks carry a Telegraf `timeout`, and the collector bounds itself with `--deadline-secs`, so a slow host returns partial data rather than letting scrapes stack up. A stopped or inaccessible process produces no point at all — never a fabricated zero — and one failed read never costs the scrape its other services.
+`/proc/<pid>/smaps` and `smaps_rollup` are gated on `ptrace_may_access(PTRACE_MODE_READ_FSCREDS)` against the target, **not** on file permissions — so the `CAP_DAC_READ_SEARCH` the unit already held does not satisfy them, while world-readable `/proc/<pid>/status` needs nothing. The failure mode is *silent and partial*: the cheap sources report normally while composition returns nothing at all, which cost this feature one canary cycle before it was found.
 
-##### Storage impact
+`CAP_PERFMON` is the narrower grant (it confers neither `/proc/<pid>/mem` nor ptrace attachment) and was tested first on the production kernel 6.8.0-86: **0 of 13 processes readable**, identical to no capability, with and without `NoNewPrivileges`. `CAP_SYS_PTRACE` is therefore the fallback, and it works with `NoNewPrivileges=yes`.
 
-For the 806 node services on `ant-prod-01`: **+27.9 M points/day (+12.3 % over the current 227 M)**, which at the measured ~2.8 bytes/point works out to **~1.1 GB** at 14-day retention, against 177 GB free on the monitoring volume. InfluxDB is schemaless per measurement, so no template or migration is needed — the measurement simply appears.
+The grant is applied **only** on hosts that opt in, alongside a matching `CapabilityBoundingSet` and `NoNewPrivileges=yes`. Verify after deployment with `grep CapEff /proc/<telegraf-pid>/status` — `0x80004` is both capabilities, `0x4` is `CAP_DAC_READ_SEARCH` alone.
 
-##### Archival — rollup only, never buckets
+##### Units, archival and limits
 
-`deployments record-analysis` captures composition into `deployment_host_results.host_metrics` under **`memory_composition_by_service`** — a dict keyed by `node_service`, each holding one `{avg, min, max, samples}` stat per observed field. Only fields actually observed appear, so a kernel that does not expose (say) `Pss_Shmem` produces no key rather than an all-`None` stat.
+Telegraf reports `memory_rss` in **bytes** but every smaps-derived field in **kB**. That inconsistency is corrected once at capture, so everything stored in Postgres is bytes.
 
-These metrics are **deliberately excluded from `deployment_host_metric_buckets`**, and that exclusion is hard-coded rather than flagged. Measured on the live registry: one per-service bucket metric costs ~164 k rows (~35 MB) for a single 990-node staging run, and the bucket table is already 76 % of a 366 MB database on the smallest managed Postgres tier. Twenty-one composition metrics would be roughly 5x the entire per-run cost, weekly. The rollup carries the same per-service detail for essentially nothing (48 rows for every run ever recorded). See **V2-973** for the separate question of moving the bucket table out of the registry database.
+`record-analysis` writes composition into `deployment_host_results.host_metrics` under `memory_composition_by_service` (a JSON column, so no migration). It is **excluded from `deployment_host_metric_buckets`** by construction: one per-service bucket metric costs ~164 k rows (~35 MB) per 990-node staging run against a table already at 76% of the registry database. See V2-973.
 
-`host_metrics` is a JSON column, so this needed **no Alembic migration** and rows recorded before the collector existed simply lack the key.
+`memory_rss − memory_anonymous` is **non-anonymous/file-or-shared resident**, not "file-backed" and not "LMDB" — it can include any file mapping plus shmem. `Pss_Anon`/`Pss_File`/`Pss_Shmem` give a cleaner backing-type split, but PSS is proportional accounting and still does not attribute residency to a particular file. Proving LMDB attribution needs a pathname-level `smaps` snapshot, which is **not yet implemented**.
 
-##### Deployment
-
-New deployments: pass `--node-memory-metrics` alongside `--with-telegraf` on `nodes provision` / `nodes provision-genesis` / `bootstraps provision`, or on `prod nodes deploy` / `prod debug-nodes deploy`.
-
-Retrofitting hosts that are **already running** — the production case:
+##### Deployment and rollback
 
 ```bash
 saorsa-deploy deployments provision-telegraf \
@@ -923,32 +913,13 @@ saorsa-deploy deployments provision-telegraf \
   --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
   --ssh-key-path ~/.ssh/ant_deploy \
   --skip-logs \
-  --node-memory-metrics
+  --node-memory-metrics \
+  --node-memory-interval 60
 ```
 
-Three details in that command are load-bearing:
+`--inventory-path` rather than `--name` alone for host selection: on a deployment whose state seeds the real production bootstrap peers, the `--name` path tries to SSH machines we do not own. `--name` is still required — it supplies the `testnet_name` global tag every existing series is keyed on — and `--skip-logs` is therefore how the Elasticsearch forwarder is left untouched.
 
-- **`--inventory-path`, not `--name` alone, for host selection.** On a deployment whose state seeds the real production bootstrap peers, the `--name` path tries to SSH machines we do not own. The inventory names our own node VMs, each with its own `ssh_user`/`ssh_key`. (Bootstraps live in a separate `bootstrap-inventory.json` and need a second pass.)
-- **`--name` is still required.** It supplies the `ANT_TESTNET_NAME` global tag that every existing series is keyed on. Dropping it to avoid resolving the Elasticsearch backend would write an empty `testnet_name` on every host and sever each series from its history.
-- **`--skip-logs`** is therefore how the Elasticsearch forwarder is left alone. It is the exact mirror of `--skip-metrics`.
-
-The pass restarts `telegraf-ant-metrics`, which costs a seconds-long gap in host metrics. It does not touch `ant-node`.
-
-**Validate on one host first.** Point `--inventory-path` at a one-entry inventory, confirm the measurement is arriving, then run the fleet:
-
-```bash
-influx query --org ant '
-from(bucket: "testnet-metrics")
-  |> range(start: -10m, stop: 2200-01-01T00:00:00Z)
-  |> filter(fn: (r) => r._measurement == "ant_node_memory")
-  |> group(columns: ["_field"]) |> count()'
-```
-
-Two reconciliation checks worth making on that first host: `rss_anon + rss_file + rss_shmem` should equal `vm_rss` (it does so exactly on kernel 6.8), and `rollup_pss` must not exceed `rollup_rss`.
-
-##### Rollback
-
-Re-run the same command **without** `--node-memory-metrics`. The config is regenerated from the same builder without the two `inputs.exec` blocks and Telegraf restarts, so collection stops immediately. The collector script is left on disk at `/usr/local/bin/ant-node-memory-collector`, inert — nothing invokes it once the config no longer references it; delete it if you want the host byte-clean. Points already written expire with the bucket's normal retention. No other measurement is affected, so a rollback cannot disturb the existing `procstat.memory_rss` series.
+Rollback: re-run without `--node-memory-metrics`. The mmap tier and the capability are removed and telegraf restarts. The timer is left enabled, so also `systemctl disable --now ant-node-memory-collector.timer` on any host that had it.
 
 ### Bucketed host metrics — slicing a window after the run
 

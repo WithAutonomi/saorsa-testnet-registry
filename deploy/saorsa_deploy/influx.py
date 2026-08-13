@@ -477,7 +477,15 @@ HOST_FLUX_PROCSTAT = """from(bucket: "{bucket}")
   |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) =>
        r._measurement == "procstat"
-       and r._field == "memory_rss")
+       and (r._field == "memory_rss"
+            or r._field == "memory_pss"
+            or r._field == "memory_anonymous"
+            or r._field == "memory_private_clean"
+            or r._field == "memory_private_dirty"
+            or r._field == "memory_shared_clean"
+            or r._field == "memory_shared_dirty"
+            or r._field == "memory_referenced"
+            or r._field == "memory_swap"))
 """
 
 # Per-service resident memory COMPOSITION, written by the opt-in
@@ -546,7 +554,36 @@ NODE_MEMORY_METRICS = frozenset(
 # Twenty-one composition metrics would be ~5x the entire per-run cost, weekly.
 # The rollup carries the same per-service detail for ~nothing (48 rows for every
 # run ever recorded), so composition goes there alone. See V2-973.
-ROLLUP_ONLY_METRICS = NODE_MEMORY_METRICS
+# Telegraf `procstat` mmap fields -> the metric name they are stored under.
+#
+# These are the routine economical signal: telegraf collects them natively once
+# the unit holds CAP_SYS_PTRACE, so they need no collector of their own. The
+# separate `ant_node_memory` measurement supplies only what procstat cannot
+# (LazyFree, the THP set, the PSS backing-type split).
+#
+# Named `procstat_*` rather than reusing the `rollup_*` names deliberately: the
+# two sources sample at different moments and by different mechanisms, and
+# silently merging them would hide a disagreement rather than surface it.
+PROCSTAT_MMAP_FIELDS = {
+    "memory_pss": "procstat_pss",
+    "memory_anonymous": "procstat_anonymous",
+    "memory_private_clean": "procstat_private_clean",
+    "memory_private_dirty": "procstat_private_dirty",
+    "memory_shared_clean": "procstat_shared_clean",
+    "memory_shared_dirty": "procstat_shared_dirty",
+    "memory_referenced": "procstat_referenced",
+    "memory_swap": "procstat_swap",
+}
+
+# Telegraf reports `memory_rss` in BYTES but every smaps-derived field in kB.
+# The inconsistency is telegraf's, not the kernel's, and it is corrected here —
+# once, at the only point that knows which source a value came from — so that
+# everything stored is bytes and a consumer never has to ask.
+PROCSTAT_MMAP_SCALE = 1024
+
+ROLLUP_ONLY_METRICS = NODE_MEMORY_METRICS | frozenset(
+    PROCSTAT_MMAP_FIELDS.values()
+)
 
 # diskio counter field -> the stat name it becomes (suffixed `_per_sec`).
 DISKIO_FIELD_TARGETS = {
@@ -1115,10 +1152,22 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
     for p in points_by_measurement.get("procstat", []):
         host = p.get("host")
         service = p.get("node_service")
+        field = p.get("_field")
         val = _to_float(p.get("_value"))
         if not host or not service or val is None:
             continue
-        emit(host, METRIC_RSS_BYTES, p["_time"], val, service=service)
+        # `memory_rss` keeps its existing metric name and units untouched —
+        # every historical run and every gate comparison depends on it.
+        if field == "memory_rss" or field is None:
+            emit(host, METRIC_RSS_BYTES, p["_time"], val, service=service)
+            track_time(host, p["_time"])
+            continue
+        metric = PROCSTAT_MMAP_FIELDS.get(field)
+        if metric is None:
+            continue
+        emit(
+            host, metric, p["_time"], val * PROCSTAT_MMAP_SCALE, service=service
+        )
         track_time(host, p["_time"])
 
     # Resident memory composition. Gauges like RSS, so no delta stage, and keyed
@@ -1336,7 +1385,7 @@ def aggregate_normalised_host_metrics(
         grouped.setdefault(key, []).append(s["value"])
         if s["metric"] == METRIC_RSS_BYTES:
             services.setdefault(s["host"], set()).add(s["service"])
-        elif s["metric"] in NODE_MEMORY_METRICS:
+        elif s["metric"] in ROLLUP_ONLY_METRICS:
             # Tracked separately from `services`: composition is opt-in, so a
             # host can have RSS with no composition (the usual case) and — if
             # the collector outlived a procstat gap — composition with no RSS.

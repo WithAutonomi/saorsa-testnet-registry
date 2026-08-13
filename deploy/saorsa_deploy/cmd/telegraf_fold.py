@@ -44,6 +44,7 @@ def build_node_telegraf_providers(
     buffer_limit: int | None = None,
     from_beginning: bool = True,
     collect_node_memory: bool = False,
+    node_memory_interval_secs: int = 300,
     console: Console | None = None,
 ) -> list:
     """Resolve ES + InfluxDB telegraf provisioners for a node-tier host group.
@@ -118,6 +119,7 @@ def build_node_telegraf_providers(
                     influxdb_bucket=monitoring.get("influxdb_bucket", "testnet-metrics"),
                     testnet_name=name,
                     collect_node_memory=collect_node_memory,
+                    node_memory_interval_secs=node_memory_interval_secs,
                     console=console,
                 )
             )

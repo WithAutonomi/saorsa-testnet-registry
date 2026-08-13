@@ -318,6 +318,7 @@ def _provision_debug_nodes(args, console: Console) -> None:
             drop_log_levels=_resolve_node_drop_log_levels(args),
             buffer_limit=None,
             collect_node_memory=getattr(args, "node_memory_metrics", False),
+            node_memory_interval_secs=getattr(args, "node_memory_interval", 300),
             # This kind's daily log prune restarts the forwarder to release the
             # descriptors it holds on the deleted logs, and telegraf keeps no
             # tail offset across restarts. Reading from the beginning would

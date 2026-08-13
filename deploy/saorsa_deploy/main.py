@@ -60,11 +60,19 @@ def _add_telegraf_fold_args(p):
     p.add_argument(
         "--node-memory-metrics",
         action="store_true",
-        help="Also collect per-process RSS composition (/proc/<pid>/status) and "
-        "smaps_rollup for each node service, as the ant_node_memory measurement "
-        "(only with --with-telegraf). Off by default: the smaps_rollup scrape "
-        "costs ~105ms per process and holds each target's mmap_lock for that "
-        "long, so it is enabled per deployment rather than inherited.",
+        help="Also collect per-process memory composition for each node "
+        "service (only with --with-telegraf). Adds a 60s procstat mmap tier for "
+        "the routine signal, plus a systemd timer supplying LazyFree, the THP "
+        "set and the PSS backing-type split. Off by default; requires "
+        "CAP_SYS_PTRACE, which the unit then grants.",
+    )
+    p.add_argument(
+        "--node-memory-interval",
+        type=int,
+        default=300,
+        help="Seconds between memory-composition timer runs (default: 300). "
+        "Use 60 on a host under active investigation; LazyFree and the THP "
+        "fields track slow pools, so the fleet default is deliberately coarse.",
     )
 
 
@@ -1049,11 +1057,17 @@ def main(argv=None):
     deployments_provision_telegraf_parser.add_argument(
         "--node-memory-metrics",
         action="store_true",
-        help="Also collect per-process RSS composition (/proc/<pid>/status) and "
-        "smaps_rollup for each ant-node service, as the ant_node_memory "
-        "measurement. Off by default: the smaps_rollup scrape costs ~105ms per "
-        "process and holds each target's mmap_lock for that long. Node-tier "
-        "roles only.",
+        help="Also collect per-process memory composition for each ant-node "
+        "service: a 60s procstat mmap tier plus a systemd timer for LazyFree, "
+        "the THP set and the PSS backing-type split. Off by default; requires "
+        "CAP_SYS_PTRACE, which the unit then grants. Node-tier roles only.",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--node-memory-interval",
+        type=int,
+        default=300,
+        help="Seconds between memory-composition timer runs (default: 300). "
+        "Use 60 on a host under active investigation.",
     )
     deployments_provision_telegraf_parser.add_argument(
         "--drop-log-levels",

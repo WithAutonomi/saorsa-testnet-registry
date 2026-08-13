@@ -1,0 +1,19 @@
+[Unit]
+Description=Periodic ant node per-process memory composition capture
+Documentation=https://linear.app/autonominetwork/issue/V2-972
+
+[Timer]
+# Fleet default is 5 minutes: LazyFree and the THP fields track slow-moving
+# pools rather than spikes, so a coarse cadence loses nothing while keeping the
+# cost near 0.24% of one core (one full pass over 13 services costs ~732ms).
+# Investigation hosts run at 60s -- set via --node-memory-interval.
+OnBootSec=2min
+OnUnitActiveSec={{INTERVAL}}
+# The scrape is a page-table walk whose cost scales with resident memory, so
+# without jitter every node in the fleet would walk simultaneously.
+RandomizedDelaySec={{JITTER}}
+AccuracySec=1s
+Unit=ant-node-memory-collector.service
+
+[Install]
+WantedBy=timers.target
