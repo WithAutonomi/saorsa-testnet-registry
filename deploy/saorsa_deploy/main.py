@@ -57,6 +57,23 @@ def _add_telegraf_fold_args(p):
         help="Telegraf ES output buffer (metric_buffer_limit) in lines "
         "(only with --with-telegraf).",
     )
+    p.add_argument(
+        "--node-memory-metrics",
+        action="store_true",
+        help="Also collect per-process memory composition for each node "
+        "service (only with --with-telegraf). Adds a 60s procstat mmap tier for "
+        "the routine signal, plus a systemd timer supplying LazyFree, the THP "
+        "set and the PSS backing-type split. Off by default; requires "
+        "CAP_SYS_PTRACE, which the unit then grants.",
+    )
+    p.add_argument(
+        "--node-memory-interval",
+        type=int,
+        default=300,
+        help="Seconds between memory-composition timer runs (default: 300). "
+        "Use 60 on a host under active investigation; LazyFree and the THP "
+        "fields track slow pools, so the fleet default is deliberately coarse.",
+    )
 
 
 def main(argv=None):
@@ -1027,6 +1044,30 @@ def main(argv=None):
         "log-forwarding change: --name is required for the ES index name but "
         "otherwise also pulls monitoring state, which would regenerate and "
         "restart telegraf-ant-metrics on every targeted host.",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--skip-logs",
+        action="store_true",
+        help="Provision only the InfluxDB host-metrics forwarder, leaving the "
+        "Elasticsearch log forwarder untouched. The mirror of --skip-metrics, "
+        "for retrofitting a metrics change. Needed because --name must be kept "
+        "(it supplies the testnet_name global tag every existing series is "
+        "keyed on) but otherwise also pulls elastic state.",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--node-memory-metrics",
+        action="store_true",
+        help="Also collect per-process memory composition for each ant-node "
+        "service: a 60s procstat mmap tier plus a systemd timer for LazyFree, "
+        "the THP set and the PSS backing-type split. Off by default; requires "
+        "CAP_SYS_PTRACE, which the unit then grants. Node-tier roles only.",
+    )
+    deployments_provision_telegraf_parser.add_argument(
+        "--node-memory-interval",
+        type=int,
+        default=300,
+        help="Seconds between memory-composition timer runs (default: 300). "
+        "Use 60 on a host under active investigation.",
     )
     deployments_provision_telegraf_parser.add_argument(
         "--drop-log-levels",
@@ -3856,6 +3897,14 @@ def main(argv=None):
         "plain prod nodes.",
     )
     prod_nodes_deploy_parser.add_argument(
+        "--node-memory-metrics",
+        action="store_true",
+        help="Also collect per-process RSS composition (/proc/<pid>/status) and "
+        "smaps_rollup for each node service, as the ant_node_memory measurement. "
+        "Requires --monitoring. Off by default: the smaps_rollup scrape costs "
+        "~105ms per process and holds each target's mmap_lock for that long.",
+    )
+    prod_nodes_deploy_parser.add_argument(
         "--monitoring",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -4070,6 +4119,11 @@ def main(argv=None):
         "for a terser trace, or '' to disable). Services also always get "
         "COLORBT_SHOW_HIDDEN=1 so ant-node's color-backtrace prints real frames "
         "instead of <empty backtrace>.")
+    prod_dbg_deploy.add_argument("--node-memory-metrics", action="store_true",
+        help="Also collect per-process RSS composition (/proc/<pid>/status) and "
+        "smaps_rollup for each node service, as the ant_node_memory measurement. "
+        "Requires --monitoring. Off by default: the smaps_rollup scrape costs "
+        "~105ms per process and holds each target's mmap_lock for that long.")
     prod_dbg_deploy.add_argument("--coredumps", action=argparse.BooleanOptionalAction,
         default=True, help="Enable core dumps (LimitCORE=infinity + a global "
         "kernel.core_pattern under the data path) so a panic leaves an "

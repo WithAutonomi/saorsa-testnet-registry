@@ -723,10 +723,21 @@ uv run saorsa-deploy deployments provision-telegraf \
 | `--buffer-limit` / `--max-undelivered-lines` | int | No | / | ES forwarder buffer sizes |
 | `--from-start` / `--only-new-logs` | flag | No | from-start | ES tail reads from beginning vs end |
 | `--ant-log-dir` | string | No | `/mnt/ant-node-storage/log` | Override the tailed log directory |
+| `--skip-metrics` | flag | No | off | Provision **only** the ES log forwarder, leaving `telegraf-ant-metrics` untouched |
+| `--skip-logs` | flag | No | off | Provision **only** the InfluxDB metrics forwarder, leaving `telegraf-ant-elasticsearch` untouched |
+| `--node-memory-metrics` | flag | No | off | Also collect per-process RSS composition + `smaps_rollup` ([details](#per-process-memory-composition-ant_node_memory--opt-in)). Node-tier roles only |
 | `--ssh-key-path` / `--ssh-user` | string | No | `~/.ssh/id_rsa` / `root` | SSH connection details |
 
 ¹ Exactly one of `--name` / `--host-ips-file` / `--inventory-path` is required.
 ² At least one backend's credentials must resolve (via flags or `--name` state).
+
+`--skip-metrics` and `--skip-logs` are mirrors of each other, and both exist for
+the same reason: `--name` is what resolves *both* backends, but it is also the
+only source of the ES index name and of the `testnet_name` global tag that every
+existing metrics series is keyed on. So neither forwarder can be excluded by
+simply withholding `--name` — dropping it would blank the metrics tag and sever
+each series from its history. Retrofitting one forwarder without disturbing the
+other therefore needs an explicit flag.
 
 On the `--name` path the command also enumerates client VMs from client state (if
 any) and provisions host-stat Telegraf on them with `host_role="CLIENT"`, routed
@@ -851,6 +862,66 @@ The tag lands in InfluxDB, so Grafana and `record-analysis` both filter on it di
 Devices are deliberately **not** averaged together the way the network counters are pooled across interfaces: a host's root disk and its node storage volume are not interchangeable, and an idle root disk averaged against a busy data volume describes neither. `record-analysis`'s summary table therefore shows the **node storage volume's** figures (and names the device); `deployments print-recorded-results` renders every device, one row per (host, device), with the storage volume flagged in its Role column. `host_metrics` is a JSON column, so rows recorded before disk I/O existed simply lack the key and the section is skipped for them.
 
 **Retrofitting an existing deployment.** Nothing is needed for new deployments. To add disk I/O to a deployment that is already running, re-run `deployments provision-telegraf --name <name>`: it regenerates the config from the same builder and restarts `telegraf-ant-metrics`.
+
+#### Per-process memory composition — opt-in (`--node-memory-metrics`)
+
+`procstat.memory_rss` is a single total and cannot say what the memory is *made of* — the difference between a leak and a growing LMDB chunk-store mmap. Measured on a production node, `ant-node-9` held 880 MB RSS of which 469 MB was file-backed; an hour later, 3.48 GB of which 3.07 GB was file-backed. Read as a total that looks alarming; read by composition it is the chunk store doing its job.
+
+`--node-memory-metrics` turns on composition collection in **two tiers**.
+
+##### Tier 1 — native `procstat` mmap fields (the routine signal)
+
+Telegraf's own `procstat` plugin collects smaps-derived fields natively; they were simply permission-gated. Granting the unit `CAP_SYS_PTRACE` unlocks `memory_pss`, `memory_anonymous`, `memory_private_clean`/`_dirty`, `memory_shared_clean`/`_dirty`, `memory_referenced` and `memory_swap` — **no new plugin and no collector script**.
+
+The base config now names `properties` explicitly to **exclude** telegraf's default `mmap`, and the opt-in fragment re-declares the same process sets with `properties = ["mmap"]` at a **60 s** interval. That split is load-bearing: mmap reads the whole of `/proc/<pid>/smaps`, and at the 10 s agent interval it costs 6.78% of one core versus 1.15% at 60 s. Two tiers keep `cpu_usage`, `num_fds`, `num_threads` and `memory_rss` at their existing 10 s resolution while paying the mmap cost once a minute.
+
+##### Tier 2 — a systemd timer for what `procstat` cannot give
+
+`ant-node-memory-collector.timer` runs a small collector reading `/proc/<pid>/status` and `/proc/<pid>/smaps_rollup`, emitting the `ant_node_memory` measurement. It supplies the fields `procstat` has no equivalent for:
+
+`rss_anon` · `rss_file` · `rss_shmem` · `vm_swap` · `rollup_pss_anon` · `rollup_pss_file` · `rollup_pss_shmem` · `rollup_pss_dirty` · `rollup_swap_pss` · **`rollup_lazy_free`** · `rollup_anon_huge_pages` · `rollup_file_pmd_mapped` · `rollup_shmem_pmd_mapped` (plus the rollup's own totals for cross-checking).
+
+**`LazyFree` is the point of this tier.** `MADV_FREE`'d pages stay resident until the kernel reclaims them under pressure, producing exactly the V2-970 shape: RSS grows, then collapses with the PID unchanged. Note it is a **lower bound** — the kernel documents that implementation optimisations can make it under-report, so a non-zero or collapsing value is evidence of `MADV_FREE` while zero does not exclude it.
+
+The three huge-page fields are collected together on purpose: `AnonHugePages` covers anonymous THP only, so on its own it says nothing about a file-backed mapping such as the LMDB chunk store.
+
+**Tags.** Because this tier posts to InfluxDB directly rather than through Telegraf, it attaches the global tags itself: `host`, `testnet_name` and `host_role`, matching what Telegraf writes for `procstat` so the two measurements can be joined. `host` is not optional — without it every machine's `ant-node-1` collapses into one series across the fleet, and `record-analysis` discards points lacking a host, so the archival path silently produces nothing. `host` defaults to the system hostname (what Telegraf uses); `ANT_HOSTNAME` or `--host` override.
+
+Cadence is `--node-memory-interval` (default **300 s**; use **60** on a host under active investigation). The timer is jittered by a tenth of its interval so the fleet's page-table walks do not land together. One pass over 13 services costs ~732 ms, so ~0.24% of a core at 300 s.
+
+**Deliberately not a Telegraf `inputs.exec`.** That route measured ~14.9% of one core on a production node, of which ~12.5% was telegraf overhead that could not be accounted for — it persisted with only a trivial input configured and with the interval stretched to 600 s. The timer costs only the collector's own work.
+
+##### Capability, and why it is `CAP_SYS_PTRACE`
+
+`/proc/<pid>/smaps` and `smaps_rollup` are gated on `ptrace_may_access(PTRACE_MODE_READ_FSCREDS)` against the target, **not** on file permissions — so the `CAP_DAC_READ_SEARCH` the unit already held does not satisfy them, while world-readable `/proc/<pid>/status` needs nothing. The failure mode is *silent and partial*: the cheap sources report normally while composition returns nothing at all, which cost this feature one canary cycle before it was found.
+
+`CAP_PERFMON` is the narrower grant (it confers neither `/proc/<pid>/mem` nor ptrace attachment) and was tested first on the production kernel 6.8.0-86: **0 of 13 processes readable**, identical to no capability, with and without `NoNewPrivileges`. `CAP_SYS_PTRACE` is therefore the fallback, and it works with `NoNewPrivileges=yes`.
+
+The grant is applied **only** on hosts that opt in, alongside a matching `CapabilityBoundingSet` and `NoNewPrivileges=yes`. Verify after deployment with `grep CapEff /proc/<telegraf-pid>/status` — `0x80004` is both capabilities, `0x4` is `CAP_DAC_READ_SEARCH` alone.
+
+##### Units, archival and limits
+
+Telegraf reports `memory_rss` in **bytes** but every smaps-derived field in **kB**. That inconsistency is corrected once at capture, so everything stored in Postgres is bytes.
+
+`record-analysis` writes composition into `deployment_host_results.host_metrics` under `memory_composition_by_service` (a JSON column, so no migration). It is **excluded from `deployment_host_metric_buckets`** by construction: one per-service bucket metric costs ~164 k rows (~35 MB) per 990-node staging run against a table already at 76% of the registry database. See V2-973.
+
+`memory_rss − memory_anonymous` is **non-anonymous/file-or-shared resident**, not "file-backed" and not "LMDB" — it can include any file mapping plus shmem. `Pss_Anon`/`Pss_File`/`Pss_Shmem` give a cleaner backing-type split, but PSS is proportional accounting and still does not attribute residency to a particular file. Proving LMDB attribution needs a pathname-level `smaps` snapshot, which is **not yet implemented**.
+
+##### Deployment and rollback
+
+```bash
+saorsa-deploy deployments provision-telegraf \
+  --name ant-prod-01 \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json \
+  --ssh-key-path ~/.ssh/ant_deploy \
+  --skip-logs \
+  --node-memory-metrics \
+  --node-memory-interval 60
+```
+
+`--inventory-path` rather than `--name` alone for host selection: on a deployment whose state seeds the real production bootstrap peers, the `--name` path tries to SSH machines we do not own. `--name` is still required — it supplies the `testnet_name` global tag every existing series is keyed on — and `--skip-logs` is therefore how the Elasticsearch forwarder is left untouched.
+
+Rollback: re-run without `--node-memory-metrics`. The mmap tier and the capability are removed and telegraf restarts. The timer is left enabled, so also `systemctl disable --now ant-node-memory-collector.timer` on any host that had it.
 
 ### Bucketed host metrics — slicing a window after the run
 

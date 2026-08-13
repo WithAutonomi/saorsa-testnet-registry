@@ -42,10 +42,19 @@ def _resolve_backends(args, console):
     Returns ``(es, influx)`` where each is a dict of connection details or
     ``None`` when that backend is unavailable. Exits if neither resolves.
     """
+    # --skip-logs is the mirror of --skip-metrics, and exists for the same
+    # reason in the opposite direction: retrofitting a *metrics* config change
+    # needs --name, because that is what supplies the `testnet_name` global tag
+    # every existing series is keyed on. Dropping --name to avoid resolving the
+    # ES backend would set that tag to the empty string (`name = args.name or
+    # ""` below) and sever every series from its history. So the ES forwarder is
+    # excluded by flag instead.
     es_url = args.elasticsearch_url
     es_username = args.elasticsearch_username
     es_password = args.elasticsearch_password
-    if not es_url and args.name:
+    if getattr(args, "skip_logs", False):
+        es_url = es_username = es_password = None
+    elif not es_url and args.name:
         try:
             state = load_elastic_state(args.name)
             es_url = state.get("elasticsearch_url", "")
@@ -132,7 +141,8 @@ def _make_es_provisioner(args, es, *, host_ips, host_role, ssh_key, ssh_user, na
 
 def _make_metrics_provisioner(
     influx, *, host_ips, host_role, ssh_key, ssh_user, name,
-    bucket=None, console,
+    bucket=None, console, collect_node_memory=False,
+    node_memory_interval_secs=300,
 ):
     if influx is None:
         return None
@@ -146,6 +156,8 @@ def _make_metrics_provisioner(
         influxdb_org=influx["influxdb_org"],
         influxdb_bucket=bucket or influx["influxdb_bucket"],
         testnet_name=name,
+        collect_node_memory=collect_node_memory,
+        node_memory_interval_secs=node_memory_interval_secs,
         console=console,
     )
 
@@ -173,6 +185,8 @@ def _provision_group(
         influx, host_ips=ips, host_role=role, ssh_key=ssh_key,
         ssh_user=ssh_user, name=name,
         bucket=bucket, console=console,
+        collect_node_memory=getattr(args, "node_memory_metrics", False),
+        node_memory_interval_secs=getattr(args, "node_memory_interval", 300),
     )
     try:
         provision_combined(

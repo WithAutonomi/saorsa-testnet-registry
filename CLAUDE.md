@@ -924,6 +924,69 @@ Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
 dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
 `INFLUXDB_CLIENT_BUCKET`).
 
+### Per-process memory composition (opt-in, `--node-memory-metrics`)
+
+`procstat.memory_rss` is a single **total** and cannot say what the memory is made
+of — the difference between a leak and a growing LMDB chunk-store mmap. Measured
+on prod: `ant-node-9` at 880 MB RSS of which 469 MB file-backed, then 3.48 GB of
+which 3.07 GB file-backed an hour later. That ambiguity made `memory_rss` misread
+as a 20x leak on STG-03 run 475. Collection is **two tiers** (V2-972):
+
+**Tier 1 — native `procstat` mmap, the routine signal.** Telegraf already collects
+`memory_pss`, `memory_anonymous`, `memory_private_clean/_dirty`,
+`memory_shared_clean/_dirty`, `memory_referenced`, `memory_swap` — they were only
+**permission-gated**. Granting `CAP_SYS_PTRACE` unlocks them with **no new plugin
+and no script**. The base config now sets `properties` explicitly to EXCLUDE
+telegraf's default `mmap`, and the opt-in fragment re-declares the same process
+sets with `properties = ["mmap"]` at **60s**. That split is load-bearing: mmap
+reads the whole of `/proc/<pid>/smaps` — **6.78%** of a core at the 10s agent
+interval vs **1.15%** at 60s vs **0.15%** without — so two tiers keep
+`cpu_usage`/`num_fds`/`num_threads`/`memory_rss` at 10s while paying mmap once a
+minute. Measured on the canary: telegraf **1.50%** total.
+
+**Tier 2 — a systemd timer** (`ant-node-memory-collector.timer`, cadence
+`--node-memory-interval`, default 300s, 60s for an investigation host, jittered by
+a tenth). Supplies only what procstat cannot: `rss_anon/file/shmem`, `vm_swap`,
+`rollup_pss_anon/file/shmem/dirty`, `rollup_swap_pss`, **`rollup_lazy_free`**,
+`rollup_anon_huge_pages`, `rollup_file_pmd_mapped`, `rollup_shmem_pmd_mapped`.
+`LazyFree` is the point — MADV_FREE'd pages stay resident until reclaimed, which
+IS V2-970's shape — but it is a **lower bound** (the kernel can under-report, so
+zero does not exclude it). The three huge-page fields go together: `AnonHugePages`
+is anon-only and says nothing about a file-backed mapping.
+
+**Tags are attached by the collector**, since it posts to Influx directly and
+Telegraf's `[global_tags]` never apply: `host`, `testnet_name`, `host_role`,
+matching procstat so the two measurements join. `host` is load-bearing — without
+it the fleet's `ant-node-1` series all merge, AND `record-analysis` drops
+host-less points so archival yields nothing. Caught on the canary before rollout.
+
+**NOT a Telegraf `inputs.exec`** — that route measured **~14.9%** of a core,
+of which ~12.5% was telegraf overhead that could not be explained (it persisted
+with only a trivial input, and with the interval at 600s). The timer costs only
+the collector's own work (~732ms per pass over 13 services).
+
+**`CAP_SYS_PTRACE`, not `CAP_PERFMON`.** `/proc/<pid>/smaps*` is gated on
+`ptrace_may_access`, NOT file permissions, so the unit's pre-existing
+`CAP_DAC_READ_SEARCH` does not satisfy it. `CAP_PERFMON` (the narrower grant) was
+tested on kernel 6.8.0-86: **0 of 13 processes readable**, same as nothing, with
+and without NNP. Granted only on opt-in hosts, with a matching
+`CapabilityBoundingSet` and `NoNewPrivileges=yes`; verify via `CapEff`
+(`0x80004` = both, `0x4` = base only). The failure mode is **silent and partial** —
+the cheap sources report normally while composition returns nothing — which cost
+one canary cycle because all benchmarking had been done as root over SSH.
+
+**Units:** telegraf reports `memory_rss` in **bytes** but smaps fields in **kB**;
+corrected once at capture so everything stored is bytes.
+
+**Archival is rollup-only** — `memory_composition_by_service` in
+`deployment_host_results.host_metrics` (JSON column, no migration), excluded from
+`deployment_host_metric_buckets` via `ROLLUP_ONLY_METRICS` (~164k rows / ~35 MB
+per 990-node run against a table already 76% of the DB; see V2-973).
+
+**`memory_rss − memory_anonymous` is non-anonymous/file-or-shared resident** — NOT
+"file-backed", NOT "LMDB". Proving LMDB attribution needs a pathname-level `smaps`
+snapshot, **not yet implemented**.
+
 ### Per-device disk I/O
 
 **Both tiers** collect per-device disk I/O via a `[[inputs.diskio]]` stanza in the

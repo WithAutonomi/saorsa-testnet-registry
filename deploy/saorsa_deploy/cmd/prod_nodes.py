@@ -389,6 +389,8 @@ def _provision_prod_nodes(args, console: Console) -> None:
             ssh_user="root",
             drop_log_levels=_resolve_node_drop_log_levels(args),
             buffer_limit=None,
+            collect_node_memory=getattr(args, "node_memory_metrics", False),
+            node_memory_interval_secs=getattr(args, "node_memory_interval", 300),
             console=console,
         )
 

@@ -74,6 +74,8 @@ def cmd_provision_bootstraps(args):
             ssh_user=getattr(args, "ssh_user", "root"),
             drop_log_levels=getattr(args, "drop_log_levels", None),
             buffer_limit=getattr(args, "buffer_limit", None),
+            collect_node_memory=getattr(args, "node_memory_metrics", False),
+            node_memory_interval_secs=getattr(args, "node_memory_interval", 300),
             console=console,
         )
 

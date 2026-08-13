@@ -20,6 +20,50 @@ TELEGRAF_ENV_PATH = "/etc/default/telegraf-ant-metrics"
 TELEGRAF_SERVICE_NAME = "telegraf-ant-metrics"
 TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 
+# The per-process memory-composition collector, installed on the host and run
+# by a systemd timer (NOT a Telegraf inputs.exec — see
+# _add_node_memory_collector_ops for why).
+NODE_MEMORY_COLLECTOR_PATH = "/usr/local/bin/ant-node-memory-collector"
+NODE_MEMORY_PUBLISH_PATH = "/usr/local/bin/ant-node-memory-publish"
+NODE_MEMORY_TIMER_NAME = "ant-node-memory-collector.timer"
+NODE_MEMORY_SERVICE_PATH = (
+    "/etc/systemd/system/ant-node-memory-collector.service"
+)
+NODE_MEMORY_TIMER_PATH = f"/etc/systemd/system/{NODE_MEMORY_TIMER_NAME}"
+
+# Fleet default cadence for the timer. LazyFree and the THP fields track
+# slow-moving pools, so 5 minutes loses nothing; investigation hosts use 60s.
+NODE_MEMORY_DEFAULT_INTERVAL_SECS = 300
+
+# Roles that run ant node-tier services, and so are the only ones where the
+# memory-composition collector has anything to read. CLIENT hosts run `ant`
+# client services, which the collector's unit globs deliberately do not match.
+NODE_MEMORY_ROLES = ("GENESIS", "BOOTSTRAP", "WAN_NODE")
+
+# Telegraf runs as an unprivileged `telegraf` user, so the unit grants it the
+# capabilities its inputs need. Ambient capabilities are inherited across
+# execve, which is what makes them reach the `inputs.exec` collector too.
+BASE_AMBIENT_CAPABILITIES = ("CAP_DAC_READ_SEARCH",)
+
+# `/proc/<pid>/smaps` and `/proc/<pid>/smaps_rollup` are NOT merely
+# permission-protected: the kernel gates them on
+# ptrace_may_access(PTRACE_MODE_READ_FSCREDS) against the target.
+# CAP_DAC_READ_SEARCH bypasses DAC checks and does NOT satisfy that, so an
+# unprivileged telegraf reading a root-owned ant-node gets EACCES on every
+# process — while `/proc/<pid>/status` (world-readable, no ptrace gate) keeps
+# working. The failure is therefore *partial and silent*: the cheap sources
+# report normally while the composition returns nothing at all.
+#
+# CAP_PERFMON would be the narrower grant (it confers neither /proc/<pid>/mem
+# nor ptrace attachment) and was tested first on the production kernel
+# 6.8.0-86-generic. It is NOT sufficient: 0 of 13 processes were readable, the
+# same as no capability at all, with and without NoNewPrivileges. CAP_SYS_PTRACE
+# is therefore the fallback, and it works with NoNewPrivileges=yes.
+#
+# Granted only on hosts that opt in, so every other host's unit stays
+# byte-identical and telegraf keeps the narrower capability set.
+NODE_MEMORY_CAPABILITIES = ("CAP_SYS_PTRACE",)
+
 NODE_STORAGE_MOUNT = "/mnt/ant-node-storage"
 # Matches no real kernel device name -- and no real mountpoint either, since
 # every path starts with "/" -- so the config's two volume_role regexes tag
@@ -100,6 +144,8 @@ class TelegrafMetricsProvisioner:
         testnet_name: str = "",
         host_role: str = "WAN_NODE",
         ssh_user: str = "root",
+        collect_node_memory: bool = False,
+        node_memory_interval_secs: int = NODE_MEMORY_DEFAULT_INTERVAL_SECS,
         console: Console | None = None,
     ):
         self.host_ips = host_ips
@@ -111,6 +157,8 @@ class TelegrafMetricsProvisioner:
         self.testnet_name = testnet_name
         self.host_role = host_role
         self.ssh_user = ssh_user
+        self.collect_node_memory = collect_node_memory
+        self.node_memory_interval_secs = node_memory_interval_secs
         self.console = console or Console()
 
     def execute(self) -> None:
@@ -216,6 +264,9 @@ class TelegrafMetricsProvisioner:
             ],
         )
 
+        if self._wants_node_memory():
+            self._add_node_memory_collector_ops(state)
+
         add_op(
             state,
             server.shell,
@@ -243,17 +294,100 @@ class TelegrafMetricsProvisioner:
             f"ANT_HOST_ROLE={self.host_role}\n"
         )
 
+    def _add_node_memory_collector_ops(self, state: State) -> None:
+        """Install the smaps_rollup collector as a systemd timer.
+
+        Deliberately NOT a Telegraf ``inputs.exec``. That route was measured on
+        a production node at ~14.9% of one core, of which ~12.5% was telegraf
+        overhead that could not be accounted for. A timer costs only the
+        collector's own work — ~732ms per pass over 13 services, so ~0.24% of a
+        core at the 5-minute fleet default.
+
+        This supplies only the fields telegraf's native procstat cannot
+        (LazyFree, the THP set, and the PSS backing-type split); the routine
+        economical signal comes from procstat itself.
+        """
+        collector = _read_script("node_memory_collector.py")
+        publisher = _read_script("node_memory_publish.sh")
+        add_op(
+            state,
+            server.shell,
+            name="Write ant-node memory composition collector",
+            commands=[
+                as_single_shell_command([
+                    f"cat > {NODE_MEMORY_COLLECTOR_PATH}"
+                    f" << 'COLLECTOR_EOF'\n{collector}COLLECTOR_EOF",
+                    f"chmod 0755 {NODE_MEMORY_COLLECTOR_PATH}",
+                    f"cat > {NODE_MEMORY_PUBLISH_PATH}"
+                    f" << 'PUBLISH_EOF'\n{publisher}PUBLISH_EOF",
+                    f"chmod 0755 {NODE_MEMORY_PUBLISH_PATH}",
+                ])
+            ],
+        )
+
+        service = _read_resource("ant-node-memory-collector.service").replace(
+            "{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH
+        ).replace(
+            # The scrape must be allowed to overrun a slow pass without systemd
+            # killing it mid-walk, but never to outlive its own interval.
+            "{{DEADLINE_SECS}}", str(max(20, self.node_memory_interval_secs // 2))
+        ).replace(
+            "{{TIMEOUT_SECS}}", str(max(30, self.node_memory_interval_secs))
+        )
+        timer = _read_resource("ant-node-memory-collector.timer").replace(
+            "{{INTERVAL}}", f"{self.node_memory_interval_secs}s"
+        ).replace(
+            # A tenth of the interval: enough to decorrelate the fleet's page
+            # table walks without smearing a 60s investigation cadence.
+            "{{JITTER}}", f"{max(1, self.node_memory_interval_secs // 10)}s"
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Write ant-node memory collector systemd units",
+            commands=[
+                f"cat > {NODE_MEMORY_SERVICE_PATH} << 'SVC_EOF'\n{service}SVC_EOF",
+                f"cat > {NODE_MEMORY_TIMER_PATH} << 'TMR_EOF'\n{timer}TMR_EOF",
+            ],
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Enable and start ant-node memory collector timer",
+            commands=[
+                as_single_shell_command([
+                    "systemctl daemon-reload",
+                    f"systemctl enable --now {NODE_MEMORY_TIMER_NAME}",
+                ])
+            ],
+        )
+
+    def _wants_node_memory(self) -> bool:
+        """Whether this host gets the memory-composition collector.
+
+        Gated on role as well as the flag: the collector's unit globs match
+        only node-tier services, so enabling it for a CLIENT host would install
+        a script that can never emit a line.
+        """
+        return self.collect_node_memory and self.host_role in NODE_MEMORY_ROLES
+
     def _build_telegraf_config(self) -> str:
         return build_telegraf_metrics_config(
-            include_client_services=self.host_role == "CLIENT"
+            include_client_services=self.host_role == "CLIENT",
+            include_node_memory=self._wants_node_memory(),
         )
 
     def _build_unit_file(self) -> str:
+        capabilities = list(BASE_AMBIENT_CAPABILITIES)
+        if self._wants_node_memory():
+            capabilities += list(NODE_MEMORY_CAPABILITIES)
         template = _read_resource("telegraf-ant-metrics.service")
         return template.replace(
             "{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH
         ).replace(
             "{{TELEGRAF_CONFIG_DIR}}", TELEGRAF_CONFIG_DIR
+        ).replace(
+            "{{AMBIENT_CAPABILITIES}}", " ".join(capabilities)
         )
 
 
@@ -263,7 +397,16 @@ def _read_resource(filename: str) -> str:
     return path.read_text()
 
 
-def build_telegraf_metrics_config(include_client_services: bool = False) -> str:
+def _read_script(filename: str) -> str:
+    """Read a file from the scripts resources directory."""
+    path = get_resources_dir() / "scripts" / filename
+    return path.read_text()
+
+
+def build_telegraf_metrics_config(
+    include_client_services: bool = False,
+    include_node_memory: bool = False,
+) -> str:
     """Read the Telegraf metrics config from the resources directory.
 
     Uses environment variables for connection details, making the config
@@ -274,8 +417,16 @@ def build_telegraf_metrics_config(include_client_services: bool = False) -> str:
     (uploader/downloader/canary) are appended. They are gated to CLIENT hosts so
     node-tier configs stay byte-identical and the cgroup input's "path missing"
     error never fires on the node fleet.
+
+    When ``include_node_memory`` is True (node-tier hosts, opt-in), the two
+    ``inputs.exec`` blocks that collect per-process RSS composition and
+    ``smaps_rollup`` are appended. Both gates default to False so that a
+    deployment which asks for neither produces exactly the config it always
+    did — the same discipline the client append follows.
     """
     config = _read_resource("telegraf_metrics.conf")
     if include_client_services:
         config += "\n" + _read_resource("telegraf_metrics_client.conf")
+    if include_node_memory:
+        config += "\n" + _read_resource("telegraf_metrics_node_memory.conf")
     return config

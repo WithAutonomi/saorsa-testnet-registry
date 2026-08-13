@@ -1,0 +1,31 @@
+[Unit]
+Description=Ant node per-process memory composition (smaps_rollup) to InfluxDB
+Documentation=https://linear.app/autonominetwork/issue/V2-972
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Reuses the metrics forwarder's InfluxDB endpoint and token rather than
+# introducing a second credential: this collector supplies the few fields
+# telegraf's native procstat cannot, into the same bucket.
+EnvironmentFile={{TELEGRAF_ENV_PATH}}
+# Runs as root deliberately. /proc/<pid>/smaps_rollup is gated on
+# ptrace_may_access against the target, so an unprivileged user reads nothing
+# (CAP_PERFMON was tested on kernel 6.8.0-86 and is not sufficient). This is a
+# short-lived oneshot rather than a long-running daemon, which is why it takes
+# root here while the telegraf unit gets only the bounded CAP_SYS_PTRACE.
+User=root
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+TimeoutStartSec={{TIMEOUT_SECS}}
+Environment=DEADLINE_SECS={{DEADLINE_SECS}}
+# A wrapper script, NOT an inline shell pipeline. systemd applies its own quote
+# and variable expansion to ExecStart before any shell sees it, which silently
+# broke the inline version — the unit reported success on every run while
+# delivering no data. The script fails loudly instead.
+ExecStart=/usr/local/bin/ant-node-memory-publish
+
+[Install]
+WantedBy=multi-user.target
