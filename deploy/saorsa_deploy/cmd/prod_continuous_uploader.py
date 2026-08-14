@@ -59,11 +59,24 @@ MONITORING_REGION = "lon1"
 
 
 def _client_stack_exists(name: str) -> bool:
+    """True only when every recorded client VM actually has an address.
+
+    Not merely "is there state": one VM failing while its siblings succeed
+    leaves an entry with no IP, and treating that as "the stack exists" skips
+    infrastructure creation on the retry and then tries to SSH to None — so a
+    single transient provider error would wedge the deployment permanently
+    instead of being fixed by running the same command again.
+
+    Re-running `clients infra` is safe because each VM has its own tfstate key:
+    the ones already built are a no-op and only the missing one is created.
+    """
     try:
-        state = load_client_state(name)
-        return bool(state.get("clients"))
+        clients = load_client_state(name).get("clients") or []
     except RuntimeError:
         return False
+    if not clients:
+        return False
+    return all(client.get("ip") for client in clients)
 
 
 def _resolve_pool_database_url(args, console: Console) -> str:
