@@ -9,6 +9,7 @@ with it.
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -477,3 +478,99 @@ class TestTheVerifierScript:
         assert "import sqlite3" not in source
         assert "sqlite3." not in source
         assert "list_unverified_uploads_for_host" in source
+
+
+class TestTheClientRoleCommand:
+    """`.env` is loaded as an import side effect of `saorsa_db.db`.
+
+    Every other command reaches the database through `saorsa_deploy.registry`,
+    which imports it. This one takes a raw administrative connection and
+    imports nothing from `saorsa_db`, so it has to load `.env` itself — without
+    that it reports "No DATABASE_URL configured" while sitting next to a `.env`
+    that defines one.
+    """
+
+    def test_dotenv_is_loaded_before_the_variable_is_read(self, monkeypatch):
+        """The regression: reading os.environ without loading .env first.
+
+        `load_dotenv` is stubbed rather than pointed at a real file because it
+        searches upward from the *calling module's* location, so it finds this
+        repo's own .env no matter what the working directory is — which would
+        make the test pass for the wrong reason (and print real credentials on
+        failure). What matters is that `_admin_url` calls it before looking.
+        """
+        from rich.console import Console
+
+        from saorsa_deploy.cmd import pool_client_role as module
+
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+
+        def fake_load_dotenv(*args, **kwargs):
+            os.environ["DATABASE_URL"] = "postgresql://admin:pw@example.org/reg"
+            return True
+
+        monkeypatch.setattr(module, "load_dotenv", fake_load_dotenv)
+        assert module._admin_url(Console()) == "postgresql://admin:pw@example.org/reg"
+
+    def test_a_genuinely_absent_url_still_exits(self, monkeypatch):
+        from rich.console import Console
+
+        from saorsa_deploy.cmd import pool_client_role as module
+
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setattr(module, "load_dotenv", lambda *a, **k: False)
+        with pytest.raises(SystemExit):
+            module._admin_url(Console())
+
+    def test_the_role_name_is_validated_because_ddl_cannot_parameterise_it(self):
+        from saorsa_deploy.pool_client_role import (
+            PoolClientRoleError,
+            build_grant_statements,
+            validate_role_name,
+        )
+
+        assert validate_role_name("ant_pool_client") == "ant_pool_client"
+        for bad in ("drop table x", "Robert'); DROP TABLE claims;--", "1abc", ""):
+            with pytest.raises(PoolClientRoleError):
+                validate_role_name(bad)
+        with pytest.raises(PoolClientRoleError):
+            build_grant_statements("ok_name", "")
+
+    def test_the_grants_never_include_delete_or_ddl(self):
+        """A compromised VM must not be able to destroy history."""
+        from saorsa_deploy.pool_client_role import build_grant_statements
+
+        joined = " ".join(build_grant_statements("r", "pw")).upper()
+        assert "DELETE" not in joined
+        assert "DROP TABLE" not in joined
+        assert "CREATE TABLE" not in joined
+
+    def test_the_catalogue_is_read_only_but_claims_are_writable(self):
+        from saorsa_deploy.pool_client_role import build_grant_statements
+
+        statements = build_grant_statements("r", "pw")
+        catalogue = next(s for s in statements if "ON prod_file_pool TO" in s)
+        claims = next(s for s in statements if "ON prod_file_pool_claims TO" in s)
+        assert catalogue.startswith("GRANT SELECT ON")
+        assert "INSERT" in claims and "UPDATE" in claims
+
+    def test_the_client_url_keeps_the_admin_urls_sslmode(self):
+        """A scoped client must not end up connecting less securely."""
+        from saorsa_deploy.pool_client_role import build_client_url
+
+        url = build_client_url(
+            "postgresql://admin:pw@db.example.org:25060/reg?sslmode=require",
+            "ant_pool_client",
+            "s3cret",
+        )
+        assert url.startswith("postgresql://ant_pool_client:s3cret@db.example.org:25060/reg")
+        assert url.endswith("?sslmode=require")
+
+    def test_a_password_with_url_characters_is_escaped(self):
+        from saorsa_deploy.pool_client_role import build_client_url
+
+        url = build_client_url(
+            "postgresql://admin:pw@h/db", "role", "a/b@c:d?e"
+        )
+        assert "a%2Fb%40c%3Ad%3Fe" in url
+        assert url.count("@") == 1
