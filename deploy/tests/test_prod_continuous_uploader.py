@@ -574,3 +574,112 @@ class TestTheClientRoleCommand:
         )
         assert "a%2Fb%40c%3Ad%3Fe" in url
         assert url.count("@") == 1
+
+
+class TestTheInfraSpecsAreWhatClientsInfraExpects:
+    """The two client roles do NOT share a spec grammar.
+
+    A downloader is `provider:region[:vm_size]`; an uploader is
+    `provider:region:file_size_mb[:vm_size]`, where the third positional is a
+    legacy field from the testnet uploader that generated random files. Getting
+    that wrong is invisible until `clients infra` parses it — which happens
+    AFTER the monitoring VM has been created and started billing, so these
+    round-trip through the real parsers.
+    """
+
+    TOKEN = "bootstrap_cache=true"
+
+    def test_the_uploader_spec_carries_the_legacy_file_size_field(self):
+        from saorsa_deploy.cmd.infra_clients import parse_uploader_spec
+        from saorsa_deploy.cmd.prod_continuous_uploader import (
+            build_uploader_infra_spec,
+        )
+
+        spec = build_uploader_infra_spec("hetzner", "fsn1:cx22", self.TOKEN)
+        assert spec == "hetzner:fsn1:0:cx22:bootstrap_cache=true"
+        parsed = parse_uploader_spec(spec)
+        assert parsed["provider"] == "hetzner"
+        assert parsed["region"] == "fsn1"
+        assert parsed["vm_size"] == "cx22"
+        # Zero because this kind uploads real pool files rather than generated
+        # ones, exactly as `prod uploaders` does.
+        assert parsed["file_size_mb"] == 0
+
+    def test_an_uploader_without_a_vm_size_still_parses(self):
+        from saorsa_deploy.cmd.infra_clients import parse_uploader_spec
+        from saorsa_deploy.cmd.prod_continuous_uploader import (
+            build_uploader_infra_spec,
+        )
+
+        parsed = parse_uploader_spec(
+            build_uploader_infra_spec("hetzner", "fsn1", self.TOKEN)
+        )
+        assert parsed["region"] == "fsn1"
+
+    def test_a_verifier_naming_its_provider_is_honoured(self):
+        from saorsa_deploy.cmd.infra_clients import parse_downloader_spec
+        from saorsa_deploy.cmd.prod_continuous_uploader import (
+            build_verifier_infra_spec,
+        )
+
+        parsed = parse_downloader_spec(
+            build_verifier_infra_spec("hetzner", "ovh:GRA9:b3-8", self.TOKEN)
+        )
+        assert parsed["provider"] == "ovh"
+        assert parsed["region"] == "GRA9"
+        assert parsed["vm_size"] == "b3-8"
+
+    def test_a_verifier_without_a_provider_inherits_the_uploaders(self):
+        from saorsa_deploy.cmd.infra_clients import parse_downloader_spec
+        from saorsa_deploy.cmd.prod_continuous_uploader import (
+            build_verifier_infra_spec,
+        )
+
+        parsed = parse_downloader_spec(
+            build_verifier_infra_spec("hetzner", "lon1:s-1vcpu-2gb", self.TOKEN)
+        )
+        assert parsed["provider"] == "hetzner"
+        assert parsed["region"] == "lon1"
+        assert parsed["vm_size"] == "s-1vcpu-2gb"
+
+    def test_a_two_field_provider_spec_is_not_mistaken_for_region_and_size(self):
+        """`ovh:GRA9` and `lon1:s-1vcpu-2gb` both have two fields.
+
+        Counting fields to decide whether a provider is present reads the first
+        as region `ovh`, size `GRA9` — and builds the VM in the wrong cloud.
+        """
+        from saorsa_deploy.cmd.infra_clients import parse_downloader_spec
+        from saorsa_deploy.cmd.prod_continuous_uploader import (
+            build_verifier_infra_spec,
+        )
+
+        parsed = parse_downloader_spec(
+            build_verifier_infra_spec("hetzner", "ovh:GRA9", self.TOKEN)
+        )
+        assert parsed["provider"] == "ovh"
+        assert parsed["region"] == "GRA9"
+
+    def test_every_spec_the_run_manifest_produces_parses(self):
+        """End to end from the manifest, through the command, to the parsers."""
+        from saorsa_deploy.cmd.infra_clients import (
+            parse_downloader_spec,
+            parse_uploader_spec,
+        )
+        from saorsa_deploy.cmd.prod_continuous_uploader import (
+            build_uploader_infra_spec,
+            build_verifier_infra_spec,
+        )
+
+        manifest = _manifest()
+        argv = _deploy_argv(manifest)
+        spec = argv[argv.index("--spec") + 1]
+        provider = argv[argv.index("--provider") + 1]
+        verifiers = [
+            argv[i + 1] for i, a in enumerate(argv) if a == "--verifier"
+        ]
+
+        parse_uploader_spec(build_uploader_infra_spec(provider, spec, self.TOKEN))
+        for verifier in verifiers:
+            parse_downloader_spec(
+                build_verifier_infra_spec(provider, verifier, self.TOKEN)
+            )

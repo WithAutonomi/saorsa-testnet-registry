@@ -248,14 +248,11 @@ def _ensure_client_infra(args, console: Console) -> None:
 
     provider = getattr(args, "provider", None) or "digitalocean"
     cache_token = f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
-    uploader_specs = [f"{provider}:{args.spec}:{cache_token}"]
-
-    downloader_specs = []
-    for verifier in args.verifier or []:
-        parts = verifier.split(":")
-        v_provider = parts[0] if len(parts) > 2 else provider
-        remainder = ":".join(parts[1:]) if len(parts) > 2 else verifier
-        downloader_specs.append(f"{v_provider}:{remainder}:{cache_token}")
+    uploader_specs = [build_uploader_infra_spec(provider, args.spec, cache_token)]
+    downloader_specs = [
+        build_verifier_infra_spec(provider, verifier, cache_token)
+        for verifier in (args.verifier or [])
+    ]
 
     console.print(
         f"[bold cyan]Step 3/5: creating 1 uploader + "
@@ -269,6 +266,53 @@ def _ensure_client_infra(args, console: Console) -> None:
             force=False,
         )
     )
+
+
+def build_uploader_infra_spec(provider: str, spec: str, cache_token: str) -> str:
+    """Turn `region[:vm_size]` into what `clients infra` expects of an uploader.
+
+    The two client roles do NOT share a spec grammar. A downloader is
+    `provider:region[:vm_size]`, but an uploader is
+    `provider:region:file_size_mb[:vm_size]` — that third positional is a
+    legacy field for the testnet uploader, which generated random files of that
+    size. This kind uploads real pool files, so it passes 0, exactly as
+    `prod uploaders` does.
+
+    Pure, and tested, because the failure mode is a spec that only breaks after
+    the monitoring VM has been created and is billing.
+    """
+    region, _, vm_size = spec.partition(":")
+    parts = [provider, region, "0"]
+    if vm_size:
+        parts.append(vm_size)
+    parts.append(cache_token)
+    return ":".join(parts)
+
+
+def build_verifier_infra_spec(
+    default_provider: str, verifier: str, cache_token: str
+) -> str:
+    """Turn a `[provider:]region[:vm_size]` verifier into a downloader spec.
+
+    The provider is optional per verifier and falls back to the uploader's, so
+    `lon1:s-1vcpu-2gb` and `ovh:GRA9:b3-8` both work. Told apart by whether the
+    first field names a known provider, rather than by counting fields — a
+    two-field `ovh:GRA9` and a two-field `lon1:s-1vcpu-2gb` are otherwise
+    indistinguishable, and guessing wrong builds the VM in the wrong cloud.
+    """
+    from saorsa_deploy.cmd.infra_clients import resolve_client_provider
+
+    head, _, remainder = verifier.partition(":")
+    try:
+        resolve_client_provider(head)
+        provider, rest = head, remainder
+    except ValueError:
+        provider, rest = default_provider, verifier
+    if not rest:
+        raise ValueError(
+            f"verifier spec {verifier!r} names a provider but no region"
+        )
+    return f"{provider}:{rest}:{cache_token}"
 
 
 def _load_influx(name: str, console: Console) -> dict:
