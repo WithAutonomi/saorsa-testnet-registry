@@ -219,3 +219,114 @@ class TestRecordingAVerification:
         _verify(repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK)
         rows = repo.list_prod_upload_verifications_for_deployment(deployment.id)
         assert rows[0].status is ProdUploadVerifyStatus.OK
+
+
+class TestFailuresAreRetried:
+    """Only OK and DIGEST_MISMATCH are final answers.
+
+    A verifier that hit a transient blip must look again, or a healthy file is
+    reported unavailable forever — an error in the one direction that matters
+    for a test whose whole job is saying whether production works.
+    """
+
+    def test_a_failed_check_is_requeued(self, repo, deployment):
+        _upload(repo, deployment, "addr1")
+        _verify(
+            repo, deployment, "addr1", "ver-1",
+            status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
+        )
+        queued = repo.list_unverified_uploads_for_host(deployment.id, "ver-1")
+        assert [u.address for u in queued] == ["addr1"]
+
+    def test_an_inconclusive_check_is_requeued(self, repo, deployment):
+        _upload(repo, deployment, "addr1")
+        _verify(
+            repo, deployment, "addr1", "ver-1",
+            status=ProdUploadVerifyStatus.INCONCLUSIVE,
+        )
+        assert len(repo.list_unverified_uploads_for_host(deployment.id, "ver-1")) == 1
+
+    def test_a_success_is_final(self, repo, deployment):
+        _upload(repo, deployment, "addr1")
+        _verify(repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK)
+        assert repo.list_unverified_uploads_for_host(deployment.id, "ver-1") == []
+
+    def test_a_mismatch_is_final_too(self, repo, deployment):
+        """Re-fetching proves nothing once the bytes are known to be wrong."""
+        _upload(repo, deployment, "addr1")
+        _verify(
+            repo, deployment, "addr1", "ver-1",
+            status=ProdUploadVerifyStatus.DIGEST_MISMATCH,
+        )
+        assert repo.list_unverified_uploads_for_host(deployment.id, "ver-1") == []
+
+    def test_a_recovery_leaves_the_queue(self, repo, deployment):
+        _upload(repo, deployment, "addr1")
+        _verify(
+            repo, deployment, "addr1", "ver-1",
+            status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
+        )
+        _verify(repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK)
+        assert repo.list_unverified_uploads_for_host(deployment.id, "ver-1") == []
+
+
+class TestAttemptTracking:
+    """Distinguishes a blip from an outage, which the retry alone cannot."""
+
+    def test_a_first_check_records_one_attempt(self, repo, deployment):
+        row = _verify(repo, deployment, "addr1", "ver-1")
+        assert row.attempts == 1
+
+    def test_each_retry_increments(self, repo, deployment):
+        for _ in range(4):
+            row = _verify(
+                repo, deployment, "addr1", "ver-1",
+                status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
+            )
+        assert row.attempts == 4
+
+    def test_a_success_records_no_first_failure(self, repo, deployment):
+        row = _verify(repo, deployment, "addr1", "ver-1")
+        assert row.first_failed_at is None
+
+    def test_the_first_failure_time_is_kept_across_retries(self, repo, deployment):
+        """It must not creep forward to the latest attempt.
+
+        "Failing since Tuesday" is the useful fact; "failing as of a minute
+        ago" is what every row would say otherwise.
+        """
+        first = _verify(
+            repo, deployment, "addr1", "ver-1",
+            status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
+        )
+        original = first.first_failed_at
+        assert original is not None
+        later = repo.upsert_prod_upload_verification(
+            deployment_id=deployment.id,
+            client_hostname="ver-1",
+            region="lon1",
+            address="addr1",
+            file_name="addr1.bin",
+            status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
+            started_at=NOW + timedelta(hours=6),
+            finished_at=NOW + timedelta(hours=6),
+        )
+        assert later.first_failed_at == original
+        # Naive comparison: SQLite has no timestamptz and drops the offset on
+        # the way back out. Postgres, where this actually runs, keeps it.
+        assert later.started_at.replace(tzinfo=None) == (
+            NOW + timedelta(hours=6)
+        ).replace(tzinfo=None)
+
+    def test_a_recovery_keeps_the_first_failure_as_history(self, repo, deployment):
+        """"Was fine, broke, recovered" is worth more than "fine now"."""
+        _verify(
+            repo, deployment, "addr1", "ver-1",
+            status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
+        )
+        recovered = _verify(
+            repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK
+        )
+        assert recovered.status is ProdUploadVerifyStatus.OK
+        assert recovered.first_failed_at is not None
+        assert recovered.attempts == 2

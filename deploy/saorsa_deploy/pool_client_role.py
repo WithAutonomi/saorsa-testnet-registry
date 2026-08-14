@@ -83,22 +83,31 @@ def generate_password(length: int = 40) -> str:
     return secrets.token_urlsafe(length)[:length]
 
 
-def build_grant_statements(role: str, password: str) -> list[str]:
-    """Statements that create (or update) the role and grant exactly its set.
+def build_grant_statements(
+    role: str, password: str = "", create_role: bool = True
+) -> list[str]:
+    """Statements that grant exactly the role's set, optionally creating it.
+
+    ``create_role=False`` for a managed cluster (DigitalOcean, RDS…), where the
+    provider owns user creation and the application user has no ``CREATEROLE``.
+    The grants themselves still work there, because they are made by the owner
+    of the tables rather than by a superuser.
 
     Idempotent: safe to re-run to rotate the password or to pick up a table
     added by a later migration.
     """
     validate_role_name(role)
-    if not password:
-        raise PoolClientRoleError("a password is required")
-    # Passwords are escaped rather than parameterised for the same reason as
-    # the role name: this is DDL.
-    escaped = password.replace("'", "''")
 
-    statements = [
+    statements = []
+    if create_role:
+        if not password:
+            raise PoolClientRoleError("a password is required to create a role")
+        # Passwords are escaped rather than parameterised for the same reason
+        # as the role name: this is DDL.
+        escaped = password.replace("'", "''")
         # CREATE ROLE has no IF NOT EXISTS, so the existence check is inline.
-        f"""
+        statements.append(
+            f"""
         DO $$
         BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
@@ -108,20 +117,26 @@ def build_grant_statements(role: str, password: str) -> list[str]:
             END IF;
         END
         $$;
-        """.strip(),
-        # GRANT ... ON DATABASE needs a literal name — CURRENT_CATALOG is not
-        # accepted there — so the name is interpolated at run time rather than
-        # hard-coded or asked for.
-        f"""
+        """.strip()
+        )
+        # These two need ownership of the database and the schema. On a managed
+        # cluster the database is owned by the provider's admin user, so they
+        # are skipped there — and they are unnecessary anyway, since PostgreSQL
+        # grants CONNECT and schema USAGE to PUBLIC by default. Only the table
+        # grants below actually confer anything, and those work because the
+        # tables are owned by the user that ran the migrations.
+        statements.append(
+            f"""
         DO $$
         BEGIN
             EXECUTE format('GRANT CONNECT ON DATABASE %I TO {role}',
                            current_database());
         END
         $$;
-        """.strip(),
-        f"GRANT USAGE ON SCHEMA public TO {role};",
-    ]
+        """.strip()
+        )
+        statements.append(f"GRANT USAGE ON SCHEMA public TO {role};")
+
     for table in READ_ONLY_TABLES:
         statements.append(f"GRANT SELECT ON {table} TO {role};")
     for table in READ_WRITE_TABLES:

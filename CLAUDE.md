@@ -590,6 +590,10 @@ Example: `deploy/manifests/profiles/prod-continuous-uploader.yaml`.
   **`digest_mismatch` is not a flavour of failure** — a download that fails is
   an availability problem, one that returns *different bytes* is a correctness
   problem — and a recorded mismatch is **never overwritten** by a later success.
+  **Only `ok` and `digest_mismatch` are terminal**: a failed or inconclusive
+  check is re-queued next cycle, because one transient blip would otherwise
+  brand a healthy file unavailable forever. Since a retry overwrites the row,
+  `attempts` + `first_failed_at` distinguish a blip from a week-long outage.
 - **The verifiers do not shard.** Every verifier checks every address: a second
   region confirming *the same file* is the point, unlike the canary, which
   shards probes for throughput. They also keep **no local state** — the work

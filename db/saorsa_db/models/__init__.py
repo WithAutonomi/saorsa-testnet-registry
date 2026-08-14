@@ -92,6 +92,7 @@ from saorsa_db.models.prod_upload_result import (
     ProdUploadStatus,
 )
 from saorsa_db.models.prod_upload_verification import (
+    TERMINAL_VERIFY_STATUSES,
     DeploymentProdUploadVerification,
     ProdUploadVerifyStatus,
 )
@@ -161,6 +162,7 @@ __all__ = [
     "DeploymentProdUploadResult",
     "DeploymentProdUploadVerification",
     "ProdUploadVerifyStatus",
+    "TERMINAL_VERIFY_STATUSES",
     "FileOpType",
     "Migration",
     "MigrationStatus",

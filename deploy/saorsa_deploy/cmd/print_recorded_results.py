@@ -926,6 +926,7 @@ def _print_verification_section(rows, name: str, details: bool, console) -> None
     table.add_column("Failed", justify="right")
     table.add_column("Inconclusive", justify="right")
     table.add_column("Median age", justify="right")
+    table.add_column("Longest failing", justify="right")
 
     total_mismatch = 0
     for (host, region), host_rows in sorted(by_host.items()):
@@ -936,6 +937,22 @@ def _print_verification_section(rows, name: str, details: bool, console) -> None
         total_mismatch += mismatches
         ages = sorted(r.age_at_check_secs or 0 for r in host_rows)
         median_age = ages[len(ages) // 2] if ages else 0
+        # A failure that has been retried for days is a different animal from
+        # one seen once, and the retry overwrites the row — so the longest
+        # standing failure is surfaced rather than just a count.
+        failing = [
+            r for r in host_rows
+            if r.status is ProdUploadVerifyStatus.DOWNLOAD_FAILED
+            and r.first_failed_at is not None
+        ]
+        if failing:
+            oldest = min(failing, key=lambda r: r.first_failed_at)
+            failing_for = int(
+                (oldest.finished_at - oldest.first_failed_at).total_seconds()
+            )
+            worst = f"{_format_age(failing_for)} / {oldest.attempts}x"
+        else:
+            worst = "-"
         table.add_row(
             host,
             region,
@@ -945,6 +962,7 @@ def _print_verification_section(rows, name: str, details: bool, console) -> None
             str(counts[ProdUploadVerifyStatus.DOWNLOAD_FAILED]),
             str(counts[ProdUploadVerifyStatus.INCONCLUSIVE]),
             _format_age(median_age),
+            worst,
         )
     console.print(table)
 
@@ -963,6 +981,7 @@ def _print_verification_section(rows, name: str, details: bool, console) -> None
         detail.add_column("Address")
         detail.add_column("Status")
         detail.add_column("Age", justify="right")
+        detail.add_column("Tries", justify="right")
         detail.add_column("Reason")
         for row in rows:
             detail.add_row(
@@ -971,6 +990,7 @@ def _print_verification_section(rows, name: str, details: bool, console) -> None
                 (row.address or "")[:16] + "…",
                 _verify_status_label(row.status),
                 _format_age(row.age_at_check_secs or 0),
+                str(row.attempts),
                 (row.reason or "")[:60],
             )
         console.print(detail)

@@ -1556,6 +1556,15 @@ flavour of failure:
 A recorded mismatch is never overwritten by a later success. Bytes that came
 back wrong once are a permanent fact; a later `ok` means the network healed.
 
+**Only `ok` and `digest_mismatch` are final.** A `download_failed` or
+`inconclusive` address is re-checked on the next cycle — otherwise a single
+transient blip on a verifier would brand a perfectly healthy file unavailable
+forever, an error in the one direction that matters here. A file that genuinely
+cannot be fetched is therefore retried every cycle, which is the signal worth
+having. Because a retry overwrites the row, `attempts` and `first_failed_at`
+record whether something failed once or has been failing all week;
+`print-recorded-results` surfaces the longest-standing failure per region.
+
 #### Why the verifiers do not divide the work
 
 Every verifier checks **every** address. The canary shards its probes across

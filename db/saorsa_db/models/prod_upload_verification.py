@@ -19,6 +19,13 @@ receives the same measurements for dashboards:
 failure. A download that fails is a availability problem; a download that
 succeeds and returns different bytes is a correctness problem, and the two
 should never be summed.
+
+**Only `OK` and `DIGEST_MISMATCH` are terminal.** A `DOWNLOAD_FAILED` or
+`INCONCLUSIVE` row is re-queued on the next cycle, because otherwise a single
+transient blip would mark an address failed forever and never re-check it —
+reporting a healthy file as unavailable, in the one direction that matters.
+Since a retry overwrites the row, `attempts` and `first_failed_at` carry what
+would otherwise be lost: whether this is a blip or a week-long outage.
 """
 
 import enum
@@ -31,6 +38,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -53,6 +61,13 @@ class ProdUploadVerifyStatus(enum.Enum):
     # upload row. Kept distinct so it can never be counted as a loss, mirroring
     # the canary's `inconclusive`.
     INCONCLUSIVE = "inconclusive"
+
+
+#: Verdicts that answer the question for good. Everything else is retried on
+#: the next cycle — see the module docstring.
+TERMINAL_VERIFY_STATUSES = frozenset(
+    {ProdUploadVerifyStatus.OK, ProdUploadVerifyStatus.DIGEST_MISMATCH}
+)
 
 
 class DeploymentProdUploadVerification(Base):
@@ -101,6 +116,17 @@ class DeploymentProdUploadVerification(Base):
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # How many times this host has checked this address. A retry overwrites the
+    # row, so without this a file that has failed every hour for a week is
+    # indistinguishable from one that failed once — and that difference is the
+    # whole signal.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # When it first went wrong, kept even after a later recovery: "was fine,
+    # broke on Tuesday, recovered Thursday" is worth more than "fine now".
+    first_failed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # How long after the upload finished this check ran. Denormalised at write
     # time because the upload row can be pruned or the deployment reused, and
     # "confirmed again later" is the whole point of the second region.
@@ -141,6 +167,10 @@ class DeploymentProdUploadVerification(Base):
             "bytes_downloaded": self.bytes_downloaded,
             "duration_ms": self.duration_ms,
             "reason": self.reason,
+            "attempts": self.attempts,
+            "first_failed_at": (
+                self.first_failed_at.isoformat() if self.first_failed_at else None
+            ),
             "age_at_check_secs": self.age_at_check_secs,
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat(),

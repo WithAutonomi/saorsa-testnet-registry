@@ -141,11 +141,13 @@ def _run_ant(cmd: list, log_base: Path, timeout: int):
 
     threads = [
         threading.Thread(
-            target=pump, args=(process.stdout, log_base.with_suffix(".stdout"), captured["out"]),
+            target=pump,
+            args=(process.stdout, Path(f"{log_base}.stdout"), captured["out"]),
             daemon=True,
         ),
         threading.Thread(
-            target=pump, args=(process.stderr, log_base.with_suffix(".stderr"), captured["err"]),
+            target=pump,
+            args=(process.stderr, Path(f"{log_base}.stderr"), captured["err"]),
             daemon=True,
         ),
     ]
@@ -268,9 +270,13 @@ def _check_one(
 ):
     address = upload.address
     output_path = work_dir / f"verify-{address[:16]}"
-    log_base = Path(LOG_DIR) / f"{address[:16]}"
     started_at = datetime.now(timezone.utc)
     start_ns = time.time_ns()
+    # Timestamped so a re-check keeps the failed attempt's log rather than
+    # overwriting the very evidence worth reading.
+    log_base = Path(LOG_DIR) / (
+        f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-{address[:16]}"
+    )
 
     cmd = [
         ant_path, "--evm-network", evm_network,

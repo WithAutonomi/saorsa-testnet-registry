@@ -160,6 +160,16 @@ def _safe_filename(url: str, index: int) -> str:
     return "".join(c if c.isalnum() or c in "._-" else "_" for c in tail)[:120]
 
 
+def _log_safe(name: str) -> str:
+    """Basename for a per-op log: no dots, bounded length.
+
+    Dots are stripped rather than kept because the suffix is appended to this,
+    and a name carrying its own extension makes the resulting file harder to
+    glob and easier to confuse with the artefact it describes.
+    """
+    return "".join(c if c.isalnum() or c in "_-" else "_" for c in name)[:24]
+
+
 def _download(url: str, destination: Path, timeout: int) -> tuple[int, str]:
     """Fetch the source file, returning (bytes, sha256).
 
@@ -218,8 +228,10 @@ def _run_ant(cmd: list, secret_key: str, log_base: Path, timeout: int):
     if not env.get("RUST_LOG", "").strip():
         env.pop("RUST_LOG", None)
 
-    stdout_path = log_base.with_suffix(".stdout")
-    stderr_path = log_base.with_suffix(".stderr")
+    # Appended, never `with_suffix`: that replaces an existing extension, so
+    # a name like `archive.tar.gz` would land in `archive.tar.stdout`.
+    stdout_path = Path(f"{log_base}.stdout")
+    stderr_path = Path(f"{log_base}.stderr")
     captured = {"out": [], "err": []}
 
     process = subprocess.Popen(
@@ -398,10 +410,17 @@ def main() -> int:
                 file_name = pool_file.name if pool_file else _safe_filename(locator, op_counter)
                 safe = _safe_filename(locator, op_counter)
                 local_path = work_dir / f"{op_counter:04d}-{safe}"
-                log_base = Path(LOG_DIR) / f"{op_counter:04d}-{safe[:16]}"
-
+                # Timestamp-prefixed, not counter-prefixed: the counter lives
+                # in this process, so a service restart would begin again at
+                # 0001 and per-op logs would stop sorting chronologically —
+                # which matters for something meant to run for years. The
+                # counter is kept as a tiebreaker for two ops in one second.
                 started_at = datetime.now(timezone.utc)
                 start_ns = time.time_ns()
+                log_base = Path(LOG_DIR) / (
+                    f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-"
+                    f"{op_counter:04d}-{_log_safe(safe)}"
+                )
 
                 # ---- fetch the source ----
                 try:

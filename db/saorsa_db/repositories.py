@@ -72,6 +72,7 @@ from saorsa_db.models.prod_upload_result import (
     ProdUploadStatus,
 )
 from saorsa_db.models.prod_upload_verification import (
+    TERMINAL_VERIFY_STATUSES,
     DeploymentProdUploadVerification,
     ProdUploadVerifyStatus,
 )
@@ -1765,6 +1766,10 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 age_at_check_secs=age_at_check_secs,
                 started_at=started_at,
                 finished_at=finished_at,
+                attempts=1,
+                first_failed_at=(
+                    started_at if status is not ProdUploadVerifyStatus.OK else None
+                ),
             )
             self.session.add(existing)
         else:
@@ -1796,6 +1801,13 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.age_at_check_secs = age_at_check_secs
             existing.started_at = started_at
             existing.finished_at = finished_at
+            # A retry replaces the verdict, so the count and the time it first
+            # went wrong are the only record that this has been failing for a
+            # week rather than once.
+            existing.attempts = (existing.attempts or 1) + 1
+            if status is not ProdUploadVerifyStatus.OK:
+                if existing.first_failed_at is None:
+                    existing.first_failed_at = started_at
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -1821,7 +1833,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         client_hostname: str,
         limit: int | None = None,
     ) -> list[DeploymentProdUploadResult]:
-        """Successful uploads this host has not yet checked — its work queue.
+        """Successful uploads this host has no terminal verdict for — its queue.
 
         This is what lets a verifier VM keep no local state at all: the
         question "what have I already looked at?" is answered by the rows this
@@ -1829,18 +1841,30 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         predecessor stopped, and an outage of any length is caught up rather
         than silently skipped.
 
+        **Only `OK` and `DIGEST_MISMATCH` count as answered.** A
+        `DOWNLOAD_FAILED` or `INCONCLUSIVE` row comes back round: otherwise one
+        transient blip on a verifier would brand an address failed forever and
+        never look again, reporting a perfectly healthy file as unavailable. A
+        file that genuinely cannot be fetched is then retried every cycle,
+        which is the signal worth having — `attempts` and `first_failed_at` on
+        the row say whether it is a blip or an outage.
+
         Only SUCCESS uploads with an address are candidates — there is nothing
         to fetch for a partial or a failed one. Oldest first, so a backlog is
         worked through in the order the files were written.
         """
-        already_checked = (
+        answered = (
             self.session.query(DeploymentProdUploadVerification.address)
             .filter(
                 DeploymentProdUploadVerification.deployment_id == deployment_id,
                 DeploymentProdUploadVerification.client_hostname == client_hostname,
+                DeploymentProdUploadVerification.status.in_(
+                    TERMINAL_VERIFY_STATUSES
+                ),
             )
             .scalar_subquery()
         )
+        already_checked = answered
         query = (
             self.session.query(DeploymentProdUploadResult)
             .filter(
