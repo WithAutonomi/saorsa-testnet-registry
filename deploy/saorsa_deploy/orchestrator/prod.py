@@ -200,6 +200,86 @@ def _downloaders(manifest: Manifest) -> list[Step]:
     return [Step(argv, "Deploy prod one-shot downloaders + monitoring")]
 
 
+def _format_pool_request_token(pool: dict) -> str:
+    """`{tiny: 2, small: 1}` -> `tiny:2,small:1`, in size-class order.
+
+    Ordered rather than dict-ordered because the step journal compares argv
+    byte-for-byte: a manifest whose keys are written in a different order must
+    not read as a changed plan.
+    """
+    from saorsa_db.size_class import ordered as size_class_ordered
+
+    order = [size_class.value for size_class in size_class_ordered()]
+    parts = [
+        f"{name}:{pool[name]}"
+        for name in sorted(pool, key=lambda n: order.index(n) if n in order else 99)
+    ]
+    return ",".join(parts)
+
+
+def _continuous_uploader(manifest: Manifest) -> list[Step]:
+    spec = manifest.prod_continuous_uploader
+    argv = [
+        "prod",
+        "continuous-uploader",
+        "deploy",
+        "--name",
+        manifest.name,
+        "--purpose",
+        manifest.purpose,
+        "--spec",
+        spec.spec,
+        "--pool",
+        _format_pool_request_token(spec.pool),
+    ]
+    for verifier in spec.verifiers:
+        token = verifier.region
+        if verifier.vm_size:
+            token = f"{token}:{verifier.vm_size}"
+        if verifier.provider:
+            token = f"{verifier.provider}:{token}"
+        argv += ["--verifier", token]
+    if spec.pool_min_size is not None:
+        argv += ["--pool-min-size", str(spec.pool_min_size)]
+    if spec.pool_max_size is not None:
+        argv += ["--pool-max-size", str(spec.pool_max_size)]
+    if spec.sleep_interval_secs is not None:
+        argv += ["--sleep-interval-secs", str(spec.sleep_interval_secs)]
+    if spec.verify_interval_secs is not None:
+        argv += ["--verify-interval-secs", str(spec.verify_interval_secs)]
+    if spec.pool_database_url_env:
+        argv += ["--pool-database-url-env", spec.pool_database_url_env]
+    if spec.provider is not None:
+        argv += ["--provider", spec.provider]
+    if spec.monitoring_provider is not None:
+        argv += ["--monitoring-provider", spec.monitoring_provider]
+    if spec.monitoring_region is not None:
+        argv += ["--monitoring-region", spec.monitoring_region]
+    if spec.monitoring_droplet_size is not None:
+        argv += ["--monitoring-droplet-size", spec.monitoring_droplet_size]
+    if spec.monitoring_volume_type is not None:
+        argv += ["--monitoring-volume-type", spec.monitoring_volume_type]
+    if spec.monitoring_volume_size is not None:
+        argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
+    if spec.grafana:
+        argv += ["--grafana"]
+    if spec.influx_retention_days is not None:
+        argv += ["--influx-retention-days", str(spec.influx_retention_days)]
+    if spec.log_retention_days is not None:
+        argv += ["--log-retention-days", str(spec.log_retention_days)]
+    if spec.payment is not None:
+        argv += ["--payment", spec.payment]
+    if spec.log_level is not None:
+        argv += ["--log-level", spec.log_level]
+    argv += _bootstrap_cache_flag(spec)
+    # rust_log last: its value may contain "::".
+    argv += _rust_log_flag(spec)
+    argv += ant_binary_flags(spec.binary)
+    argv += _binary_debug_flag(spec.binary)
+    argv += ["--ssh-key-path", manifest.ssh_key_path]
+    return [Step(argv, "Deploy prod continuous uploader + verifiers + monitoring")]
+
+
 def _continuous_downloader(manifest: Manifest) -> list[Step]:
     spec = manifest.prod_continuous_downloader
     argv = [
@@ -472,6 +552,7 @@ _DEPLOY_BUILDERS = {
     "prod-uploaders": _uploaders,
     "prod-downloaders": _downloaders,
     "prod-continuous-downloader": _continuous_downloader,
+    "prod-continuous-uploader": _continuous_uploader,
     "prod-canary": _canary,
     "prod-local-uploads": _local_uploads,
     "prod-local-downloads": _local_downloads,
@@ -484,6 +565,7 @@ _DESTROY = {
     "prod-uploaders": ["prod", "uploaders", "destroy"],
     "prod-downloaders": ["prod", "downloaders", "destroy"],
     "prod-continuous-downloader": ["prod", "continuous-downloader", "destroy"],
+    "prod-continuous-uploader": ["prod", "continuous-uploader", "destroy"],
     "prod-canary": ["prod", "canary", "destroy"],
     "prod-nodes": ["prod", "nodes", "destroy"],
     "prod-debug-nodes": ["prod", "debug-nodes", "destroy"],
@@ -494,7 +576,13 @@ _DESTROY = {
 # keep no deployment state of their own, so the command builds their inventory
 # from client state + the registry row; the other prod kinds have no such path
 # yet and would fail the run.
-_INVENTORY_KINDS = frozenset({"prod-downloaders", "prod-continuous-downloader"})
+_INVENTORY_KINDS = frozenset(
+    {
+        "prod-downloaders",
+        "prod-continuous-downloader",
+        "prod-continuous-uploader",
+    }
+)
 
 
 def _inventory_steps(manifest: Manifest) -> list[Step]:

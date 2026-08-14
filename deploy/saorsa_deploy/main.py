@@ -3612,6 +3612,144 @@ def main(argv=None):
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
+    # --- prod continuous-uploader (the daily production write test, V2-837) ---
+    prod_cu_parser = prod_subparsers.add_parser(
+        "continuous-uploader",
+        help="Daily production write test: upload a few pool files every day "
+        "and have other regions read them back and verify the contents.",
+    )
+    prod_cu_subparsers = prod_cu_parser.add_subparsers(
+        dest="prod_cu_action", required=True
+    )
+    prod_cu_deploy_parser = prod_cu_subparsers.add_parser(
+        "deploy",
+        help="Deploy the uploader VM, the verifier VMs and their monitoring.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--name", type=str, required=True,
+        help="Deployment name (also names the paired monitoring stack).",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--spec", type=str, required=True,
+        help="Uploader VM as 'region[:vm_size]'.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--verifier", type=str, action="append", default=[], metavar="SPEC",
+        help="A read-back verifier VM as '[provider:]region[:vm_size]'. "
+        "Repeatable. Every verifier checks EVERY address — they do not divide "
+        "the work, because a second region confirming the same file is the "
+        "point.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--pool", type=str, required=True, metavar="REQUEST",
+        help="Files to claim and upload each cycle, as 'class:count' pairs, "
+        "e.g. 'tiny:2,small:1'. Claimed from the production pool by the VM as "
+        "each upload happens, so a file is never uploaded twice.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--pool-min-size", type=str, default=None,
+        help="Narrow every requested class to files at least this big "
+        "(inclusive), e.g. '5MB'.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--pool-max-size", type=str, default=None,
+        help="Narrow every requested class to files below this size "
+        "(exclusive), e.g. '50MB'.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--sleep-interval-secs", type=int, default=86400,
+        help="Seconds to sleep at the end of each upload cycle "
+        "(default: 86400 = once a day).",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--verify-interval-secs", type=int, default=3600,
+        help="How often each verifier looks for addresses it has not checked "
+        "(default: 3600). Cycles are epoch-aligned so vantages line up.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--readback-verify", action=argparse.BooleanOptionalAction, default=True,
+        help="Have the uploader download each file straight back after "
+        "uploading it (default: on).",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--pool-database-url-env", type=str, default="POOL_DATABASE_URL",
+        help="Environment variable holding the scoped registry connection "
+        "string the VMs use (default: POOL_DATABASE_URL). Create one with "
+        "`prod pool client-role`.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--secret-key", type=str, default=None,
+        help="Arbitrum One wallet key (or set ARBITRUM_ONE_SECRET_KEY). "
+        "Uploads spend real ETH.",
+    )
+    prod_cu_deploy_parser.add_argument("--branch-name", type=str, default=None)
+    prod_cu_deploy_parser.add_argument("--repo-owner", type=str, default=None)
+    prod_cu_deploy_parser.add_argument("--ant-version", type=str, default=None)
+    prod_cu_deploy_parser.add_argument(
+        "--debug", action="store_true",
+        help="Record that the branch binary is a debug build.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--provider", type=str, default="digitalocean",
+        choices=["digitalocean", "hetzner", "vultr", "ovh"],
+        help="Cloud provider for the uploader VM (default: digitalocean).",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--monitoring-provider", type=str, default="digitalocean",
+        choices=["digitalocean", "ovh"],
+        help="Cloud provider for the monitoring VM (default: digitalocean).",
+    )
+    prod_cu_deploy_parser.add_argument("--monitoring-region", type=str, default=None)
+    prod_cu_deploy_parser.add_argument(
+        "--monitoring-droplet-size", type=str, default=None
+    )
+    prod_cu_deploy_parser.add_argument("--monitoring-volume-type", type=str, default=None)
+    prod_cu_deploy_parser.add_argument(
+        "--monitoring-volume-size", type=int, default=50
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--grafana", action=argparse.BooleanOptionalAction, default=False
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--influx-retention-days", type=int, default=7,
+        help="InfluxDB bucket retention (default: 7; 0 = infinite). Results "
+        "live in Postgres, so this only bounds the dashboard data.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--log-retention-days", type=int, default=7,
+        help="Days to keep per-op logs before the daily prune timer "
+        "(default: 7; 0 = keep forever).",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--bootstrap-cache", action=argparse.BooleanOptionalAction, default=True
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--payment", type=str, default=None, choices=["merkle", "no-merkle"]
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--log-level", type=str, default="info", choices=["info", "debug", "trace"]
+    )
+    prod_cu_deploy_parser.add_argument("--rust-log", type=str, default=None)
+    prod_cu_deploy_parser.add_argument(
+        "--ssh-key-path", type=str, default="~/.ssh/id_rsa"
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--purpose", type=str, required=True,
+        help="Free text describing why this deployment exists.",
+    )
+
+    prod_cu_destroy_parser = prod_cu_subparsers.add_parser(
+        "destroy", help="Tear down the write test."
+    )
+    prod_cu_destroy_parser.add_argument("--name", type=str, required=True)
+    prod_cu_destroy_parser.add_argument(
+        "--keep-monitoring", action="store_true",
+        help="Keep the InfluxDB stack after teardown.",
+    )
+    prod_cu_destroy_parser.add_argument(
+        "--ssh-key-path", type=str, default="~/.ssh/id_rsa"
+    )
+
     # --- prod downloaders (one-shot) ---
     prod_dl_parser = prod_subparsers.add_parser(
         "downloaders",
@@ -5518,6 +5656,27 @@ def main(argv=None):
         help="Tag to apply to entries created by --catalogue-missing. Repeatable.",
     )
 
+    prod_pool_client_role_parser = prod_pool_subparsers.add_parser(
+        "client-role",
+        help="Create the least-privilege registry role that client VMs use to "
+        "claim pool files and record results (prod-continuous-uploader).",
+    )
+    prod_pool_client_role_parser.add_argument(
+        "--role", type=str, default=None,
+        help="Role name (default: ant_pool_client).",
+    )
+    prod_pool_client_role_parser.add_argument(
+        "--password", type=str, default=None,
+        help="Set a known password instead of generating one. Re-running "
+        "without it rotates the password.",
+    )
+    prod_pool_client_role_parser.add_argument(
+        "--revoke", action="store_true", help="Drop the role instead."
+    )
+    prod_pool_client_role_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the statements without running them.",
+    )
     prod_pool_history_parser = prod_pool_subparsers.add_parser(
         "history", help="Every claim ever made against one file."
     )
@@ -6112,6 +6271,24 @@ def main(argv=None):
 
             cmd_prod_continuous_downloader_destroy(args)
         elif (
+            args.prod_subcommand == "continuous-uploader"
+            and args.prod_cu_action == "deploy"
+        ):
+            from saorsa_deploy.cmd.prod_continuous_uploader import (
+                cmd_prod_continuous_uploader_deploy,
+            )
+
+            cmd_prod_continuous_uploader_deploy(args)
+        elif (
+            args.prod_subcommand == "continuous-uploader"
+            and args.prod_cu_action == "destroy"
+        ):
+            from saorsa_deploy.cmd.prod_continuous_uploader import (
+                cmd_prod_continuous_uploader_destroy,
+            )
+
+            cmd_prod_continuous_uploader_destroy(args)
+        elif (
             args.prod_subcommand == "downloaders"
             and args.prod_dl_action == "deploy"
         ):
@@ -6271,6 +6448,13 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_survey_report
 
             cmd_prod_services_survey_report(args)
+        elif (
+            args.prod_subcommand == "pool"
+            and args.prod_pool_action == "client-role"
+        ):
+            from saorsa_deploy.cmd.pool_client_role import cmd_pool_client_role
+
+            cmd_pool_client_role(args)
         elif args.prod_subcommand == "pool" and args.prod_pool_action == "add":
             from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_add
 

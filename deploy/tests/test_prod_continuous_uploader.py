@@ -1,0 +1,479 @@
+"""Tests for the daily production write test (V2-837).
+
+Layered the same way as `test_prod_downloaders_provider_and_diagnostics.py`,
+which is the template for proving a setting survives every hop: the manifest
+schema, the argv the orchestrator emits, that the real CLI parses that argv,
+what the provisioner writes into the env file, and what the runtime scripts do
+with it.
+"""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from saorsa_deploy.config.models import Manifest
+from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
+
+RESOURCES = (
+    Path(__file__).resolve().parents[1]
+    / "saorsa_deploy"
+    / "resources"
+    / "scripts"
+)
+
+
+def _load_script(name: str):
+    """Runtime scripts are deployed as standalone files, not importable modules."""
+    spec = importlib.util.spec_from_file_location(name, RESOURCES / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def uploader_script():
+    return _load_script("prod_continuous_uploader")
+
+
+@pytest.fixture(scope="module")
+def verifier_script():
+    return _load_script("prod_upload_verifier")
+
+
+def _manifest(**overrides):
+    spec = {
+        "spec": "fsn1:cx22",
+        "provider": "hetzner",
+        "volume_size": 40,
+        "pool": {"tiny": 2, "small": 1},
+        "sleep_interval_secs": 86400,
+        "verify_interval_secs": 3600,
+        "binary": {"version": "0.3.3"},
+        "verifiers": [
+            {
+                "region": "lon1",
+                "vm_size": "s-1vcpu-2gb",
+                "provider": "digitalocean",
+                "volume_size": 40,
+            },
+            {"region": "GRA9", "vm_size": "b3-8", "provider": "ovh", "volume_size": 40},
+        ],
+    }
+    spec.update(overrides)
+    return Manifest.model_validate(
+        {
+            "name": "PROD-UL-DAILY-01",
+            "kind": "prod-continuous-uploader",
+            "purpose": "daily production write test",
+            "ssh_key_path": "~/.ssh/ant_deploy",
+            "prod_continuous_uploader": spec,
+        }
+    )
+
+
+def _deploy_argv(manifest):
+    return build_deploy_steps(manifest)[0].argv
+
+
+def _val(argv, flag):
+    return argv[argv.index(flag) + 1]
+
+
+class TestTheSchema:
+    def test_a_full_manifest_validates(self):
+        manifest = _manifest()
+        assert manifest.spec.pool == {"tiny": 2, "small": 1}
+        assert len(manifest.spec.verifiers) == 2
+        assert manifest.spec.verifiers[1].provider == "ovh"
+
+    def test_the_pool_request_is_not_fixed_to_two_tiny_one_small(self):
+        """The whole point of taking a request: larger files later."""
+        manifest = _manifest(pool={"medium": 1}, volume_size=40)
+        assert manifest.spec.pool == {"medium": 1}
+
+    def test_a_verifier_is_required(self):
+        """Without one, the test only proves the upload command exited zero."""
+        with pytest.raises(ValidationError, match="verifiers"):
+            _manifest(verifiers=[])
+
+    def test_an_empty_pool_request_is_rejected(self):
+        with pytest.raises(ValidationError, match="at least one size class"):
+            _manifest(pool={})
+
+    def test_a_typo_is_a_loud_error(self):
+        with pytest.raises(ValidationError):
+            _manifest(sleep_interval_sec=10)
+
+
+class TestTheDiskGuard:
+    """A draw that cannot fit the disk must fail at validate time.
+
+    Both roles write the file to local disk — the uploader before uploading,
+    each verifier before hashing — so an oversized draw fills the filesystem
+    and fails in a way that reads as a network fault.
+    """
+
+    def test_a_large_draw_onto_a_small_disk_is_rejected(self):
+        with pytest.raises(ValidationError, match="too small"):
+            _manifest(pool={"large": 1}, volume_size=12)
+
+    def test_a_large_draw_onto_an_adequate_disk_is_accepted(self):
+        assert _manifest(pool={"large": 1}, volume_size=40).spec.volume_size == 40
+
+    def test_a_verifier_disk_is_checked_too(self):
+        with pytest.raises(ValidationError, match=r"verifiers\[0\]"):
+            _manifest(
+                pool={"medium": 1},
+                volume_size=40,
+                verifiers=[{"region": "lon1", "volume_size": 5}],
+            )
+
+    def test_an_unbounded_class_without_a_volume_size_is_refused(self):
+        """`xlarge` has no upper bound, so the disk needed is unknowable."""
+        with pytest.raises(ValidationError, match="no upper size bound"):
+            _manifest(pool={"xlarge": 1}, volume_size=None)
+
+    def test_pool_max_size_makes_an_unbounded_class_knowable(self):
+        manifest = _manifest(
+            pool={"xlarge": 1}, pool_max_size="8GB", volume_size=60
+        )
+        assert manifest.spec.pool_max_size == "8GB"
+
+
+class TestTheOrchestratorArgv:
+    def test_the_pool_request_is_emitted_in_size_class_order(self):
+        """Argv is compared byte-for-byte by the step journal.
+
+        A manifest that happens to write `small` before `tiny` must not read as
+        a changed plan on the next run.
+        """
+        argv = _deploy_argv(_manifest(pool={"small": 1, "tiny": 2}))
+        assert _val(argv, "--pool") == "tiny:2,small:1"
+
+    def test_each_verifier_becomes_its_own_flag(self):
+        argv = _deploy_argv(_manifest())
+        verifiers = [argv[i + 1] for i, a in enumerate(argv) if a == "--verifier"]
+        assert verifiers == ["digitalocean:lon1:s-1vcpu-2gb", "ovh:GRA9:b3-8"]
+
+    def test_unset_options_emit_no_flag(self):
+        argv = _deploy_argv(_manifest())
+        assert "--pool-min-size" not in argv
+        assert "--pool-max-size" not in argv
+        assert "--grafana" not in argv
+        assert "--payment" not in argv
+
+    def test_rust_log_is_last_because_its_value_can_contain_colons(self):
+        argv = _deploy_argv(_manifest(rust_log="ant_networking::x=debug"))
+        assert _val(argv, "--rust-log") == "ant_networking::x=debug"
+
+    def test_an_inventory_step_is_appended_and_is_best_effort(self):
+        """A snapshot failure must not fail a deploy that is already billing."""
+        steps = build_deploy_steps(_manifest())
+        assert steps[-1].argv[:2] == ["deployments", "generate-inventory"]
+        assert steps[-1].best_effort is True
+
+    def test_a_branch_binary_prepends_a_build_step(self):
+        steps = build_deploy_steps(
+            _manifest(binary={"branch": "feat-x", "repo_owner": "maidsafe"})
+        )
+        assert steps[0].argv[:2] == ["build", "ant"]
+
+    def test_destroy_argv(self):
+        argv = build_destroy_steps(_manifest())[0].argv
+        assert argv[:3] == ["prod", "continuous-uploader", "destroy"]
+        assert _val(argv, "--name") == "PROD-UL-DAILY-01"
+
+
+class TestTheCliAcceptsWhatTheOrchestratorEmits:
+    """Neither the orchestrator nor the command tests go through argparse.
+
+    A flag defined on the wrong parser would pass both and still fail every
+    real run, so the emitted argv is parsed by the real CLI here.
+    """
+
+    def _run(self, monkeypatch, argv):
+        from saorsa_deploy.cmd import prod_continuous_uploader as module
+        from saorsa_deploy.main import main
+
+        captured = {}
+        monkeypatch.setattr(
+            module,
+            "cmd_prod_continuous_uploader_deploy",
+            lambda args: captured.update(vars(args)),
+        )
+        main(argv)
+        return captured
+
+    def test_a_full_manifests_argv_parses(self, monkeypatch):
+        args = self._run(
+            monkeypatch,
+            _deploy_argv(
+                _manifest(
+                    pool_min_size="5MB",
+                    payment="merkle",
+                    log_level="debug",
+                    grafana=True,
+                )
+            ),
+        )
+        assert args["pool"] == "tiny:2,small:1"
+        assert args["verifier"] == [
+            "digitalocean:lon1:s-1vcpu-2gb",
+            "ovh:GRA9:b3-8",
+        ]
+        assert args["pool_min_size"] == "5MB"
+        assert args["payment"] == "merkle"
+        assert args["log_level"] == "debug"
+        assert args["grafana"] is True
+        assert args["provider"] == "hetzner"
+
+    def test_defaults_are_sensible(self, monkeypatch):
+        args = self._run(monkeypatch, _deploy_argv(_manifest()))
+        assert args["sleep_interval_secs"] == 86400
+        assert args["verify_interval_secs"] == 3600
+        assert args["readback_verify"] is True
+        assert args["pool_database_url_env"] == "POOL_DATABASE_URL"
+
+
+class TestTheProvisionerEnvironment:
+    def _provisioners(self):
+        from saorsa_deploy.provisioning.prod_continuous_uploader import (
+            ProdContinuousUploaderProvisioner,
+            ProdUploadVerifierProvisioner,
+        )
+
+        common = dict(
+            deployment_id=7,
+            deployment_name="PROD-UL-DAILY-01",
+            pool_database_url="postgresql://scoped:pw@host/db",
+            bootstrap_peers=["/ip4/1.1.1.1/udp/1/quic-v1"],
+            influx_url="http://5.6.7.8:8086",
+            influx_token="tok",
+        )
+        uploader = ProdContinuousUploaderProvisioner(
+            hosts=[{"ip": "1.2.3.4", "region": "fsn1"}],
+            pool_request={"tiny": 2, "small": 1},
+            wallet_secret_key="abc123",
+            **common,
+        )
+        verifier = ProdUploadVerifierProvisioner(
+            hosts=[{"ip": "9.9.9.9", "region": "lon1", "provider": "digitalocean"}],
+            **common,
+        )
+        return uploader, verifier
+
+    def test_the_uploader_gets_the_pool_request_as_json(self):
+        uploader, _ = self._provisioners()
+        env = uploader._per_host_env(uploader.hosts[0])
+        assert json.loads(env["POOL_REQUEST"]) == {"tiny": 2, "small": 1}
+
+    def test_the_wallet_key_is_0x_prefixed(self):
+        uploader, _ = self._provisioners()
+        assert uploader._per_host_env(uploader.hosts[0])["SECRET_KEY"] == "0xabc123"
+
+    def test_the_verifier_never_receives_the_wallet_key(self):
+        """Verification only downloads, which costs nothing.
+
+        Withholding the key keeps a funded mainnet wallet off two more
+        internet-facing VMs.
+        """
+        _, verifier = self._provisioners()
+        assert "SECRET_KEY" not in verifier._per_host_env(verifier.hosts[0])
+
+    def test_both_roles_receive_the_scoped_database_url(self):
+        uploader, verifier = self._provisioners()
+        for provisioner in (uploader, verifier):
+            env = provisioner._per_host_env(provisioner.hosts[0])
+            assert env["POOL_DATABASE_URL"] == "postgresql://scoped:pw@host/db"
+            assert env["DEPLOYMENT_ID"] == 7
+
+    def test_the_services_run_under_the_venv_not_system_python(self):
+        """They import saorsa_db, which is not installed system-wide."""
+        from saorsa_deploy.provisioning.prod_continuous_uploader import (
+            build_systemd_unit,
+        )
+
+        unit = build_systemd_unit(
+            description="d", env_path="/e", script_path="/s", restart="Restart=always"
+        )
+        assert "/opt/ant-registry-client/bin/python" in unit
+        assert "ExecStart=/usr/bin/python3" not in unit
+
+    def test_restart_policies_differ_by_role(self):
+        uploader, verifier = self._provisioners()
+        assert "Restart=on-failure" in uploader.restart_directive
+        assert "Restart=always" in verifier.restart_directive
+
+    def test_env_rendering_omits_empty_values(self):
+        """An empty line would override the script's own default with ''."""
+        from saorsa_deploy.provisioning.prod_continuous_uploader import (
+            build_env_file_lines,
+        )
+
+        rendered = build_env_file_lines({"A": "1", "B": "", "C": 3})
+        assert rendered == "A=1\nC=3"
+
+
+class TestLogPruning:
+    def test_a_retention_window_installs_a_daily_timer(self):
+        from saorsa_deploy.provisioning.prod_continuous_uploader import (
+            build_log_prune_command,
+        )
+
+        command = build_log_prune_command("svc", "/var/log/x", 7)
+        assert "/usr/bin/find /var/log/x -type f -mtime +7 -delete" in command
+        assert "OnCalendar=daily" in command
+        assert "systemctl enable --now svc-logprune.timer" in command
+
+    def test_zero_removes_the_timer_so_toggling_off_takes_effect(self):
+        from saorsa_deploy.provisioning.prod_continuous_uploader import (
+            build_log_prune_command,
+        )
+
+        command = build_log_prune_command("svc", "/var/log/x", 0)
+        assert "disable --now svc-logprune.timer" in command
+        assert "find" not in command
+
+
+class TestTheSaorsaDbInstall:
+    def test_the_venv_is_created_only_when_absent_but_the_wheel_always_lands(self):
+        """Re-provisioning must pick up a rebuilt wheel.
+
+        The venv is expensive and presence-gated; the package itself is
+        force-reinstalled so a VM never runs stale claim logic.
+        """
+        from saorsa_deploy.provisioning.saorsa_db_install import (
+            build_install_commands,
+        )
+
+        commands = build_install_commands("saorsa_db-0.2.4-py3-none-any.whl")
+        joined = "\n".join(commands)
+        assert "test -x /opt/ant-registry-client/bin/python ||" in joined
+        assert "--force-reinstall --no-deps" in joined
+        assert "import saorsa_db.repositories" in joined
+
+    def test_the_wheel_builds_from_the_working_tree(self, tmp_path):
+        """Pinned to the tree, not a published version.
+
+        A VM holding a stale copy of the pool semantics is exactly the failure
+        installing the package is meant to avoid.
+        """
+        from saorsa_deploy.provisioning.saorsa_db_install import (
+            build_saorsa_db_wheel,
+        )
+
+        wheel = build_saorsa_db_wheel()
+        assert wheel.name.startswith("saorsa_db-")
+        assert wheel.suffix == ".whl"
+        assert wheel.stat().st_size > 0
+
+
+class TestTheUploaderScript:
+    def test_it_imports_without_the_database_packages(self, uploader_script):
+        """saorsa_db is imported inside main(), so the module stays testable."""
+        assert hasattr(uploader_script, "main")
+
+    def test_the_peer_cache_suppresses_bootstrap_arguments(
+        self, uploader_script, monkeypatch
+    ):
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "true")
+        assert uploader_script._resolve_bootstrap_args() == []
+        monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
+        monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap p1 --bootstrap p2")
+        assert uploader_script._resolve_bootstrap_args() == [
+            "--bootstrap",
+            "p1",
+            "--bootstrap",
+            "p2",
+        ]
+
+    def test_the_last_json_line_wins(self, uploader_script):
+        """ant prints progress before the result."""
+        parsed = uploader_script._parse_ant_json(
+            'noise\n{"a": 1}\n{"address": "xyz", "chunks_stored": 4}'
+        )
+        assert parsed["address"] == "xyz"
+
+    def test_a_download_hashes_while_streaming(self, uploader_script, tmp_path):
+        """A multi-gigabyte file must not be read twice."""
+        import hashlib
+
+        payload = b"content" * 5000
+        source = tmp_path / "src.bin"
+        source.write_bytes(payload)
+        destination = tmp_path / "dst.bin"
+        size, digest = uploader_script._download(
+            source.as_uri(), destination, timeout=30
+        )
+        assert size == len(payload)
+        assert digest == hashlib.sha256(payload).hexdigest()
+        assert destination.read_bytes() == payload
+
+    def test_influx_lines_omit_empty_strings(self, uploader_script):
+        line = uploader_script._build_line(
+            "prod_upload",
+            {"host": "h", "region": "fsn1"},
+            {"status": 0, "address": "abc", "reason": ""},
+        )
+        assert line.startswith("prod_upload,host=h,region=fsn1 ")
+        assert "status=0i" in line
+        assert 'address="abc"' in line
+        assert "reason" not in line
+
+    def test_no_client_timestamp_is_written(self, uploader_script):
+        """InfluxDB stamps receive-time so a skewed VM cannot write the future.
+
+        A point landing hours ahead is silently dropped by every range query,
+        which is how a clock-skewed host once vanished from a whole capture.
+        """
+        line = uploader_script._build_line("m", {"host": "h"}, {"status": 0})
+        assert not line.rstrip().split()[-1].isdigit() or "status=0i" in line
+        assert line.count(" ") == 1
+
+    def test_the_shortfall_measurement_is_separate_from_uploads(
+        self, uploader_script
+    ):
+        """"The pool ran dry" must never look like "the network refused"."""
+        assert (
+            uploader_script.EXHAUSTION_MEASUREMENT
+            != uploader_script.UPLOAD_MEASUREMENT
+        )
+
+
+class TestTheVerifierScript:
+    def test_cycles_are_epoch_aligned(self, verifier_script):
+        """Two regions reporting at unrelated times make an availability
+        difference indistinguishable from a timing difference."""
+        import time
+
+        for interval in (3600, 900):
+            wait = verifier_script._seconds_until_next_cycle(interval)
+            assert 0 < wait <= interval
+            assert (time.time() + wait) % interval < 2
+
+    def test_hashing_matches_hashlib(self, verifier_script, tmp_path):
+        import hashlib
+
+        path = tmp_path / "f.bin"
+        path.write_bytes(b"payload" * 1000)
+        assert (
+            verifier_script._sha256_file(path)
+            == hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+
+    def test_it_keeps_no_local_state(self, verifier_script):
+        """The work queue is a database query, not a SQLite ledger.
+
+        The canary probe needs SQLite because it cannot reach Postgres; this
+        service can, which is what lets a replaced VM resume and an outage of
+        any length be caught up.
+        """
+        source = (RESOURCES / "prod_upload_verifier.py").read_text()
+        # The word appears in the docstring explaining why there is none, so
+        # this looks for actual use rather than a mention.
+        assert "import sqlite3" not in source
+        assert "sqlite3." not in source
+        assert "list_unverified_uploads_for_host" in source

@@ -1,0 +1,715 @@
+#!/usr/bin/env python3
+"""Daily production write test — the uploader half (V2-837).
+
+Wakes on a cycle, claims a few files from the production file pool, uploads
+them to the production Autonomi network, reads each one straight back, and
+sleeps. Runs forever.
+
+This is the only VM-side service in this package that talks to the registry
+database. It has to: the whole point is that a file is claimed *as it is
+uploaded*, so the run never has to reserve a batch in advance and a teardown
+leaves nothing stranded. It runs under the venv at /opt/ant-registry-client,
+where `saorsa-db` is installed, and connects with a scoped role that can touch
+the pool and the two result tables and nothing else.
+
+Three things it is careful about:
+
+* **A claim is resolved by what actually happened.** A successful upload spends
+  the file; a partial upload marks it partial (chunks reached the network, so
+  it must never be handed to a canary); a failure to fetch the *source* file
+  releases it, because nothing reached the network and burning it would be a
+  lie.
+* **The hash is taken over the bytes handed to ant**, not over the pool's
+  catalogued digest — many entries carry only md5/sha1 and some carry none.
+  That hash is what every later verification compares against, so it is
+  computed from ground truth or not at all.
+* **Running out of files is a signal, not a crash.** The service records the
+  shortfall and sleeps; topping the pool up heals it with no redeploy.
+"""
+
+import hashlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+# Emitted for dashboards. The upload measurement deliberately matches the one
+# `prod uploaders` writes so existing panels and `record-results` work
+# unchanged; authority for both lives in Postgres.
+UPLOAD_MEASUREMENT = "prod_upload"
+VERIFY_MEASUREMENT = "prod_upload_verify"
+#: Written when a cycle cannot get the files it asked for. Its own measurement
+#: so "the pool ran dry" can never be mistaken for "the network rejected an
+#: upload" on a dashboard.
+EXHAUSTION_MEASUREMENT = "prod_upload_pool_shortfall"
+
+STATUS_SUCCESS = 0
+STATUS_PARTIAL_UPLOAD = 1
+STATUS_DOWNLOAD_FAILED = 2
+
+STDERR_TAIL_LINES = 200
+LOG_DIR = "/var/log/ant-prod-continuous-uploader"
+HASH_CHUNK_BYTES = 1 << 20
+
+_LOG_LEVEL_VERBOSITY = {"info": 1, "debug": 2, "trace": 3}
+
+
+def _log(message: str) -> None:
+    print(f"[{datetime.now(timezone.utc).isoformat()}] {message}", flush=True)
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        _log(f"FATAL: {name} is not set")
+        sys.exit(2)
+    return value
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        _log(f"WARNING: {name}={raw!r} is not an integer; using {default}")
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw == "true"
+
+
+# --------------------------------------------------------------------------
+# InfluxDB (dashboards only — never the authority)
+# --------------------------------------------------------------------------
+
+
+def _escape_tag(value: str) -> str:
+    return (
+        str(value).replace("\\", "\\\\").replace(" ", "\\ ").replace(",", "\\,")
+        .replace("=", "\\=")
+    )
+
+
+def _escape_field(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _post_influx(url: str, token: str, org: str, bucket: str, line: str) -> None:
+    if not url or not token:
+        return
+    endpoint = f"{url.rstrip('/')}/api/v2/write?org={org}&bucket={bucket}&precision=ns"
+    request = urllib.request.Request(
+        endpoint,
+        data=line.encode("utf-8"),
+        headers={
+            "Authorization": f"Token {token}",
+            "Content-Type": "text/plain; charset=utf-8",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
+    except Exception as exc:  # noqa: BLE001 - metrics must never stop the run
+        _log(f"WARNING: InfluxDB write failed: {exc}")
+
+
+def _build_line(measurement: str, tags: dict, fields: dict) -> str:
+    tag_part = ",".join(
+        f"{_escape_tag(k)}={_escape_tag(v)}" for k, v in tags.items() if v != ""
+    )
+    field_parts = []
+    for key, value in fields.items():
+        if isinstance(value, bool):
+            field_parts.append(f"{key}={'true' if value else 'false'}")
+        elif isinstance(value, int):
+            field_parts.append(f"{key}={value}i")
+        elif isinstance(value, float):
+            field_parts.append(f"{key}={value}")
+        else:
+            if value is None or value == "":
+                continue
+            field_parts.append(f'{key}="{_escape_field(value)}"')
+    prefix = f"{measurement},{tag_part}" if tag_part else measurement
+    # No client timestamp: InfluxDB stamps server-receive time, so a VM with a
+    # skewed clock cannot write points into the future where range queries
+    # would miss them.
+    return f"{prefix} {','.join(field_parts)}"
+
+
+# --------------------------------------------------------------------------
+# Files
+# --------------------------------------------------------------------------
+
+
+def _safe_filename(url: str, index: int) -> str:
+    tail = url.rstrip("/").split("/")[-1] or f"file-{index}"
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in tail)[:120]
+
+
+def _download(url: str, destination: Path, timeout: int) -> tuple[int, str]:
+    """Fetch the source file, returning (bytes, sha256).
+
+    Hashed while streaming so a multi-gigabyte file is not read twice.
+    """
+    digest = hashlib.sha256()
+    total = 0
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        with open(destination, "wb") as handle:
+            while True:
+                chunk = response.read(HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+    return total, digest.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _tail_lines(text: str, count: int) -> str:
+    lines = text.splitlines()
+    return "\n".join(lines[-count:])
+
+
+# --------------------------------------------------------------------------
+# ant
+# --------------------------------------------------------------------------
+
+
+def _resolve_bootstrap_args() -> list:
+    """Empty when the peer cache is on — ant then reads bootstrap_peers.toml."""
+    if _env_bool("BOOTSTRAP_CACHE", True):
+        return []
+    return os.environ.get("BOOTSTRAP_ARGS", "").split()
+
+
+def _verbosity_flag(log_level: str) -> str:
+    return "-" + ("v" * _LOG_LEVEL_VERBOSITY.get(log_level, 1))
+
+
+def _run_ant(cmd: list, secret_key: str, log_base: Path, timeout: int):
+    """Run ant, streaming both pipes to disk, returning (rc, stdout, stderr)."""
+    env = dict(os.environ)
+    if secret_key:
+        env["SECRET_KEY"] = secret_key
+    # An empty RUST_LOG is an EnvFilter that silences everything and would
+    # override the -v flag, so it is removed rather than passed through.
+    if not env.get("RUST_LOG", "").strip():
+        env.pop("RUST_LOG", None)
+
+    stdout_path = log_base.with_suffix(".stdout")
+    stderr_path = log_base.with_suffix(".stderr")
+    captured = {"out": [], "err": []}
+
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True
+    )
+
+    def pump(pipe, path, sink):
+        with open(path, "w") as handle:
+            for line in pipe:
+                handle.write(line)
+                handle.flush()
+                sink.append(line)
+
+    threads = [
+        threading.Thread(
+            target=pump, args=(process.stdout, stdout_path, captured["out"]), daemon=True
+        ),
+        threading.Thread(
+            target=pump, args=(process.stderr, stderr_path, captured["err"]), daemon=True
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        _log(f"WARNING: ant exceeded {timeout}s and was killed")
+    for thread in threads:
+        thread.join(timeout=10)
+    return process.returncode, "".join(captured["out"]), "".join(captured["err"])
+
+
+def _parse_ant_json(stdout: str):
+    """Last JSON object on stdout wins — ant prints progress before the result."""
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+# --------------------------------------------------------------------------
+# Registry
+# --------------------------------------------------------------------------
+
+
+def _open_repositories(database_url: str):
+    from saorsa_db.repositories import (
+        SqlAlchemyDeploymentRepository,
+        SqlAlchemyProdFilePoolRepository,
+    )
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine(database_url, pool_pre_ping=True, pool_recycle=300)
+    session = sessionmaker(bind=engine)()
+    return (
+        SqlAlchemyProdFilePoolRepository(session),
+        SqlAlchemyDeploymentRepository(session),
+        session,
+    )
+
+
+def _parse_pool_request(raw: str) -> dict:
+    from saorsa_db.size_class import parse as parse_size_class
+
+    request = {}
+    for name, count in json.loads(raw).items():
+        request[parse_size_class(name)] = int(count)
+    return request
+
+
+def main() -> int:
+    deployment_id = int(_require_env("DEPLOYMENT_ID"))
+    deployment_name = _require_env("DEPLOYMENT_NAME")
+    database_url = _require_env("POOL_DATABASE_URL")
+    pool_request_raw = _require_env("POOL_REQUEST")
+    region = _require_env("REGION")
+    secret_key = _require_env("SECRET_KEY")
+
+    ant_path = os.environ.get("ANT", "/root/.local/bin/ant")
+    work_dir = Path(os.environ.get("WORK_DIR", "/var/lib/ant-prod-continuous-uploader/files"))
+    evm_network = os.environ.get("EVM_NETWORK", "arbitrum-one")
+    payment_type = os.environ.get("PAYMENT_TYPE", "").strip()
+    log_level = os.environ.get("LOG_LEVEL", "info").strip() or "info"
+    sleep_interval = _env_int("SLEEP_INTERVAL_SECS", 86400)
+    download_timeout = _env_int("DOWNLOAD_TIMEOUT", 1800)
+    upload_timeout = _env_int("UPLOAD_TIMEOUT", 21600)
+    verify_timeout = _env_int("VERIFY_TIMEOUT", 3600)
+    readback = _env_bool("READBACK_VERIFY", True)
+
+    influx_url = os.environ.get("INFLUX_URL", "")
+    influx_token = os.environ.get("INFLUX_TOKEN", "")
+    influx_org = os.environ.get("INFLUX_ORG", "ant")
+    influx_bucket = os.environ.get("INFLUX_BUCKET", "testnet-metrics")
+
+    pool_min_size = os.environ.get("POOL_MIN_SIZE", "").strip()
+    pool_max_size = os.environ.get("POOL_MAX_SIZE", "").strip()
+
+    host = socket.gethostname()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
+
+    from saorsa_db.models import (
+        ClaimSource,
+        PoolFileKind,
+        ProdUploadStatus,
+        ProdUploadVerifyStatus,
+    )
+    from saorsa_db.size_class import parse_size
+
+    pool_request = _parse_pool_request(pool_request_raw)
+    min_bytes = parse_size(pool_min_size) if pool_min_size else None
+    max_bytes = parse_size(pool_max_size) if pool_max_size else None
+
+    _log(
+        f"prod continuous uploader starting: deployment={deployment_name} "
+        f"({deployment_id}) region={region} host={host} "
+        f"request={ {k.value: v for k, v in pool_request.items()} } "
+        f"cycle={sleep_interval}s"
+    )
+
+    op_counter = 0
+    cycle = 0
+
+    while True:
+        cycle += 1
+        pool_repo, deployment_repo, session = _open_repositories(database_url)
+        try:
+            try:
+                claims = pool_repo.claim_pool_files(
+                    kind=PoolFileKind.URL,
+                    request=pool_request,
+                    source=ClaimSource.PROD_CONTINUOUS_UPLOADER,
+                    deployment_id=deployment_id,
+                    deployment_name=deployment_name,
+                    min_size_bytes=min_bytes,
+                    max_size_bytes=max_bytes,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Overwhelmingly InsufficientPoolInventory, but any failure to
+                # get files is the same operational fact: this cycle uploaded
+                # nothing and the service must stay up to try again.
+                _log(f"ERROR: could not claim files this cycle: {exc}")
+                _post_influx(
+                    influx_url,
+                    influx_token,
+                    influx_org,
+                    influx_bucket,
+                    _build_line(
+                        EXHAUSTION_MEASUREMENT,
+                        {"host": host, "region": region,
+                         "deployment_name": deployment_name},
+                        {"cycle": cycle, "reason": str(exc)[:500],
+                         "requested": json.dumps(
+                             {k.value: v for k, v in pool_request.items()})},
+                    ),
+                )
+                session.close()
+                _log(f"sleeping {sleep_interval}s before retrying")
+                time.sleep(sleep_interval)
+                continue
+
+            _log(f"cycle {cycle}: claimed {len(claims)} file(s)")
+
+            for claim in claims:
+                op_counter += 1
+                pool_file = pool_repo.get_pool_file(claim.file_id)
+                locator = claim.locator_used or (pool_file.locator if pool_file else "")
+                file_name = pool_file.name if pool_file else _safe_filename(locator, op_counter)
+                safe = _safe_filename(locator, op_counter)
+                local_path = work_dir / f"{op_counter:04d}-{safe}"
+                log_base = Path(LOG_DIR) / f"{op_counter:04d}-{safe[:16]}"
+
+                started_at = datetime.now(timezone.utc)
+                start_ns = time.time_ns()
+
+                # ---- fetch the source ----
+                try:
+                    size_bytes, source_sha256 = _download(
+                        locator, local_path, download_timeout
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"source download FAILED for {file_name}: {exc}")
+                    # Nothing reached the network, so the file goes back in the
+                    # pool rather than being spent on a run that never used it.
+                    try:
+                        pool_repo.release_pool_claim(
+                            claim.id, note=f"source download failed: {exc}"[:500]
+                        )
+                    except Exception as release_exc:  # noqa: BLE001
+                        _log(f"WARNING: could not release claim {claim.id}: {release_exc}")
+                    finished_at = datetime.now(timezone.utc)
+                    deployment_repo.upsert_prod_upload_result(
+                        deployment_id=deployment_id,
+                        client_hostname=host,
+                        region=region,
+                        source_url=locator,
+                        file_name=file_name,
+                        file_size_bytes=0,
+                        status=ProdUploadStatus.DOWNLOAD_FAILED,
+                        address=None,
+                        chunks_stored=0,
+                        chunks_failed=0,
+                        total_chunks=0,
+                        duration_ms=(time.time_ns() - start_ns) // 1_000_000,
+                        upload_secs=None,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        reason=str(exc)[:500],
+                    )
+                    _post_influx(
+                        influx_url, influx_token, influx_org, influx_bucket,
+                        _build_line(
+                            UPLOAD_MEASUREMENT,
+                            {"host": host, "region": region},
+                            {"status": STATUS_DOWNLOAD_FAILED, "total_ms": 0,
+                             "file_size": 0, "start_ns": start_ns,
+                             "chunks_stored": 0, "chunks_failed": 0,
+                             "total_chunks": 0, "file_name": file_name,
+                             "source_url": locator, "reason": str(exc)[:200]},
+                        ),
+                    )
+                    local_path.unlink(missing_ok=True)
+                    continue
+
+                # ---- upload ----
+                cmd = [ant_path, *_resolve_bootstrap_args(), "--evm-network",
+                       evm_network, "--json", _verbosity_flag(log_level),
+                       "file", "upload", "--public"]
+                if payment_type == "no-merkle":
+                    cmd.append("--no-merkle")
+                elif payment_type == "merkle":
+                    cmd.append("--merkle")
+                cmd.append(str(local_path))
+
+                upload_start_ns = time.time_ns()
+                rc, stdout, stderr = _run_ant(cmd, secret_key, log_base, upload_timeout)
+                finished_at = datetime.now(timezone.utc)
+                duration_ms = (time.time_ns() - upload_start_ns) // 1_000_000
+
+                parsed = _parse_ant_json(stdout)
+                if parsed is None or "error" in parsed or rc != 0:
+                    status = ProdUploadStatus.PARTIAL_UPLOAD
+                    influx_status = STATUS_PARTIAL_UPLOAD
+                else:
+                    status = ProdUploadStatus.SUCCESS
+                    influx_status = STATUS_SUCCESS
+
+                parsed = parsed or {}
+                address = parsed.get("address")
+                chunks_stored = int(parsed.get("chunks_stored") or 0)
+                chunks_failed = int(parsed.get("chunks_failed") or 0)
+                total_chunks = int(parsed.get("total_chunks") or 0)
+                upload_secs = parsed.get("elapsed_secs")
+                reason = parsed.get("reason") or (
+                    None if status is ProdUploadStatus.SUCCESS
+                    else f"ant exit {rc}"
+                )
+                storage_cost = parsed.get("storage_cost_atto")
+                gas_cost = parsed.get("gas_cost_wei")
+
+                if status is ProdUploadStatus.SUCCESS:
+                    _log(
+                        f"uploaded {file_name} -> {address} "
+                        f"({chunks_stored}/{total_chunks} chunks, {duration_ms}ms)"
+                    )
+                else:
+                    _log(f"upload PARTIAL for {file_name}: {reason}")
+                    _log(_tail_lines(stderr, STDERR_TAIL_LINES))
+
+                deployment_repo.upsert_prod_upload_result(
+                    deployment_id=deployment_id,
+                    client_hostname=host,
+                    region=region,
+                    source_url=locator,
+                    file_name=file_name,
+                    file_size_bytes=size_bytes,
+                    status=status,
+                    address=address,
+                    chunks_stored=chunks_stored,
+                    chunks_failed=chunks_failed,
+                    total_chunks=total_chunks,
+                    duration_ms=duration_ms,
+                    upload_secs=float(upload_secs) if upload_secs else None,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    reason=reason,
+                    storage_cost_atto=_decimal_or_none(storage_cost),
+                    gas_cost_wei=_decimal_or_none(gas_cost),
+                    # Ground truth: the hash of what was handed to ant.
+                    sha256=source_sha256,
+                )
+
+                # ---- resolve the claim by what actually happened ----
+                try:
+                    if status is ProdUploadStatus.SUCCESS:
+                        pool_repo.resolve_pool_claim(
+                            claim.id,
+                            address=address,
+                            chunks_stored=chunks_stored,
+                            chunks_failed=chunks_failed,
+                            total_chunks=total_chunks,
+                            storage_cost_atto=_decimal_or_none(storage_cost),
+                            gas_cost_wei=_decimal_or_none(gas_cost),
+                            note="uploaded by prod continuous-uploader",
+                        )
+                    else:
+                        # Chunks are on the network even though the upload did
+                        # not complete, so the file is not available again for
+                        # a canary — partial, never released.
+                        pool_repo.mark_pool_claim_partial(
+                            claim.id,
+                            address=address,
+                            chunks_stored=chunks_stored,
+                            chunks_failed=chunks_failed,
+                            total_chunks=total_chunks,
+                            note=f"partial upload: {reason}"[:500],
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"WARNING: could not resolve claim {claim.id}: {exc}")
+
+                _post_influx(
+                    influx_url, influx_token, influx_org, influx_bucket,
+                    _build_line(
+                        UPLOAD_MEASUREMENT,
+                        {"host": host, "region": region},
+                        {"status": influx_status, "total_ms": duration_ms,
+                         "file_size": size_bytes, "start_ns": start_ns,
+                         "chunks_stored": chunks_stored,
+                         "chunks_failed": chunks_failed,
+                         "total_chunks": total_chunks,
+                         "upload_secs": float(upload_secs) if upload_secs else 0.0,
+                         "address": address or "", "file_name": file_name,
+                         "source_url": locator, "sha256": source_sha256,
+                         "reason": reason or ""},
+                    ),
+                )
+
+                # ---- immediate read-back ----
+                if readback and status is ProdUploadStatus.SUCCESS and address:
+                    _verify_once(
+                        ant_path=ant_path,
+                        address=address,
+                        file_name=file_name,
+                        expected_sha256=source_sha256,
+                        secret_key=secret_key,
+                        work_dir=work_dir,
+                        log_base=log_base,
+                        timeout=verify_timeout,
+                        deployment_repo=deployment_repo,
+                        deployment_id=deployment_id,
+                        host=host,
+                        region=region,
+                        log_level=log_level,
+                        influx=(influx_url, influx_token, influx_org, influx_bucket),
+                        deployment_name=deployment_name,
+                        uploaded_at=finished_at,
+                        ProdUploadVerifyStatus=ProdUploadVerifyStatus,
+                    )
+
+                local_path.unlink(missing_ok=True)
+        finally:
+            session.close()
+
+        if sleep_interval > 0:
+            _log(f"cycle {cycle} complete; sleeping {sleep_interval}s")
+            time.sleep(sleep_interval)
+
+
+def _decimal_or_none(value):
+    if value in (None, ""):
+        return None
+    try:
+        from decimal import Decimal
+
+        return Decimal(str(value))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _verify_once(
+    *,
+    ant_path,
+    address,
+    file_name,
+    expected_sha256,
+    secret_key,
+    work_dir,
+    log_base,
+    timeout,
+    deployment_repo,
+    deployment_id,
+    host,
+    region,
+    log_level,
+    influx,
+    deployment_name,
+    uploaded_at,
+    ProdUploadVerifyStatus,
+):
+    """Download an address back and compare it with what was uploaded.
+
+    Shared in spirit with the verifier service, but kept here rather than
+    imported: VM runtime scripts are deployed as standalone files, so a shared
+    module would have to be a third thing to install and keep in step.
+    """
+    output_path = work_dir / f"verify-{address[:16]}"
+    started_at = datetime.now(timezone.utc)
+    start_ns = time.time_ns()
+    cmd = [
+        ant_path, "--evm-network", os.environ.get("EVM_NETWORK", "arbitrum-one"),
+        "-" + ("v" * _LOG_LEVEL_VERBOSITY.get(log_level, 1)),
+        "file", "download", address, "-o", str(output_path),
+    ]
+    rc, _stdout, stderr = _run_ant(
+        cmd, secret_key, log_base.with_name(log_base.name + "-verify"), timeout
+    )
+    finished_at = datetime.now(timezone.utc)
+    duration_ms = (time.time_ns() - start_ns) // 1_000_000
+
+    actual_sha256 = None
+    bytes_downloaded = None
+    if rc == 0 and output_path.exists():
+        try:
+            bytes_downloaded = output_path.stat().st_size
+            actual_sha256 = _sha256_file(output_path)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"WARNING: could not hash the read-back file: {exc}")
+
+    if not expected_sha256:
+        status = ProdUploadVerifyStatus.INCONCLUSIVE
+        reason = "no expected hash recorded for this upload"
+    elif rc != 0 or actual_sha256 is None:
+        status = ProdUploadVerifyStatus.DOWNLOAD_FAILED
+        reason = _tail_lines(stderr, 20)[:500] or f"ant exit {rc}"
+    elif actual_sha256 != expected_sha256:
+        status = ProdUploadVerifyStatus.DIGEST_MISMATCH
+        reason = "downloaded bytes differ from what was uploaded"
+    else:
+        status = ProdUploadVerifyStatus.OK
+        reason = None
+
+    if status is ProdUploadVerifyStatus.OK:
+        _log(f"read-back OK for {file_name} ({address[:16]}…)")
+    else:
+        _log(f"read-back {status.value.upper()} for {file_name}: {reason}")
+
+    age = int((started_at - uploaded_at).total_seconds()) if uploaded_at else None
+    try:
+        deployment_repo.upsert_prod_upload_verification(
+            deployment_id=deployment_id,
+            client_hostname=host,
+            region=region,
+            address=address,
+            file_name=file_name,
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            expected_sha256=expected_sha256,
+            actual_sha256=actual_sha256,
+            bytes_downloaded=bytes_downloaded,
+            duration_ms=duration_ms,
+            reason=reason,
+            age_at_check_secs=age,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"WARNING: could not record the read-back result: {exc}")
+
+    influx_url, influx_token, influx_org, influx_bucket = influx
+    _post_influx(
+        influx_url, influx_token, influx_org, influx_bucket,
+        _build_line(
+            VERIFY_MEASUREMENT,
+            {"host": host, "region": region, "deployment_name": deployment_name},
+            {"status": status.value, "ok": status is ProdUploadVerifyStatus.OK,
+             "duration_ms": duration_ms,
+             "bytes_downloaded": bytes_downloaded or 0,
+             "age_secs": age or 0, "address": address,
+             "file_name": file_name, "reason": reason or ""},
+        ),
+    )
+    output_path.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

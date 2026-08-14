@@ -293,8 +293,118 @@ def build_inventory(
 # from client state + the registry row instead.
 PROD_DOWNLOAD_KINDS = frozenset({"prod-downloaders", "prod-continuous-downloader"})
 
+#: The daily write test. Client-only like the download kinds, but its
+#: configuration and on-VM paths are entirely different, so it gets its own
+#: client_config builder rather than being folded into the set above.
+PROD_UPLOAD_TEST_KIND = "prod-continuous-uploader"
+PROD_CLIENT_KINDS = PROD_DOWNLOAD_KINDS | {PROD_UPLOAD_TEST_KIND}
+
 
 def build_client_config(deploy_args: dict | None) -> dict | None:
+    """Describe how a prod client deployment is configured.
+
+    Dispatches on kind: the daily write test has a different shape from the
+    download kinds (a pool request rather than a fixed address list, two VM
+    roles rather than one).
+    """
+    if not deploy_args:
+        return None
+    if deploy_args.get("kind") == PROD_UPLOAD_TEST_KIND:
+        return _build_write_test_config(deploy_args)
+    return _build_download_config(deploy_args)
+
+
+def _build_write_test_config(deploy_args: dict) -> dict:
+    """Configuration for a prod-continuous-uploader.
+
+    The uploaded address list grows for as long as the deployment runs, so it
+    is deliberately NOT inlined here the way a download kind's fixed list is —
+    an inventory is a snapshot and would go stale immediately, and a year of
+    daily uploads is a thousand addresses. The registry tables are named
+    instead, and they are authoritative.
+    """
+    from saorsa_deploy.provisioning.prod_continuous_uploader import (
+        UPLOADER_DATA_DIR,
+        UPLOADER_ENV_PATH,
+        UPLOADER_LOG_DIR,
+        UPLOADER_SERVICE,
+        VERIFIER_DATA_DIR,
+        VERIFIER_ENV_PATH,
+        VERIFIER_LOG_DIR,
+        VERIFIER_SERVICE,
+    )
+    from saorsa_deploy.provisioning.saorsa_db_install import VENV_PYTHON
+
+    return {
+        "kind": PROD_UPLOAD_TEST_KIND,
+        "one_shot": False,
+        "evm_network": "arbitrum-one",
+        "bootstrap_peers_url": deploy_args.get("prod_bootstraps_url"),
+        "binary": deploy_args.get("ant_binary"),
+        "spec": deploy_args.get("spec"),
+        "verifiers": deploy_args.get("verifiers") or [],
+        "provider": deploy_args.get("provider"),
+        "monitoring_provider": deploy_args.get("monitoring_provider"),
+        "monitoring_name": deploy_args.get("monitoring_name"),
+        # What it draws each cycle, not what it has drawn: files are claimed by
+        # the VM as it uploads, so there is no fixed list to record.
+        "pool_request": deploy_args.get("pool_request"),
+        "pool_min_size": deploy_args.get("pool_min_size"),
+        "pool_max_size": deploy_args.get("pool_max_size"),
+        "settings": {
+            "bootstrap_cache": deploy_args.get("bootstrap_cache"),
+            "payment_type": deploy_args.get("payment_type"),
+            "log_level": deploy_args.get("log_level"),
+            "rust_log": deploy_args.get("rust_log"),
+            "readback_verify": deploy_args.get("readback_verify", True),
+            "sleep_interval_secs": deploy_args.get("sleep_interval_secs"),
+            "verify_interval_secs": deploy_args.get("verify_interval_secs"),
+            "influx_retention_days": deploy_args.get("influx_retention_days"),
+            "log_retention_days": deploy_args.get("log_retention_days"),
+        },
+        # Where results actually live. Unlike the download kinds, whose per-op
+        # logs die with the VM, this deployment's results are already durable —
+        # the VMs write them to Postgres as they go. The on-VM logs are only
+        # useful for diagnosing the service itself.
+        "results": {
+            "authoritative_store": "postgres",
+            "upload_table": "deployment_prod_upload_results",
+            "verification_table": "deployment_prod_upload_verifications",
+            "claim_table": "prod_file_pool_claims",
+            "influx_measurements": [
+                "prod_upload",
+                "prod_upload_verify",
+                "prod_upload_pool_shortfall",
+            ],
+            "note": (
+                "Uploads and read-back verifications are written to Postgres "
+                "by the VMs as they happen; the Influx copies expire with the "
+                "bucket retention. `deployments record-results` is a no-op for "
+                "this kind."
+            ),
+        },
+        "paths": {
+            "uploader": {
+                "service_name": UPLOADER_SERVICE,
+                "env_file": UPLOADER_ENV_PATH,
+                "data_dir": UPLOADER_DATA_DIR,
+                "log_dir": UPLOADER_LOG_DIR,
+                "stdout_glob": f"{UPLOADER_LOG_DIR}/*.stdout",
+                "stderr_glob": f"{UPLOADER_LOG_DIR}/*.stderr",
+            },
+            "verifier": {
+                "service_name": VERIFIER_SERVICE,
+                "env_file": VERIFIER_ENV_PATH,
+                "data_dir": VERIFIER_DATA_DIR,
+                "log_dir": VERIFIER_LOG_DIR,
+            },
+            "ant_binary": "/root/.local/bin/ant",
+            "registry_client_python": VENV_PYTHON,
+        },
+    }
+
+
+def _build_download_config(deploy_args: dict | None) -> dict | None:
     """Describe how a prod download deployment is configured.
 
     The VM IP alone doesn't say what the run is doing. This carries the address
@@ -543,14 +653,14 @@ def _write_client_inventory(
             "[yellow]No registry row reachable (is DATABASE_URL set?) — "
             "writing VM details without the download configuration.[/yellow]"
         )
-    elif kind not in PROD_DOWNLOAD_KINDS:
+    elif kind not in PROD_CLIENT_KINDS:
         # Emit anyway rather than refuse: the VM/observability sections are
         # still accurate. Only client_config is kind-specific, and its on-VM
         # paths would be wrong for another kind's service.
         console.print(
             f"[yellow]'{args.name}' is a {kind} deployment, not one of "
-            f"{sorted(PROD_DOWNLOAD_KINDS)} — writing VM details without the "
-            "download configuration.[/yellow]"
+            f"{sorted(PROD_CLIENT_KINDS)} — writing VM details without the "
+            "client configuration.[/yellow]"
         )
         deploy_args = None
 

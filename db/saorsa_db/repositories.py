@@ -71,6 +71,10 @@ from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
 )
+from saorsa_db.models.prod_upload_verification import (
+    DeploymentProdUploadVerification,
+    ProdUploadVerifyStatus,
+)
 from saorsa_db.models.release_candidate import (
     ReleaseCandidate,
     ReleaseCandidateCrate,
@@ -403,6 +407,7 @@ class DeploymentRepository(ABC):
         storage_cost_atto: Optional[Decimal] = None,
         gas_cost_wei: Optional[Decimal] = None,
         network_profile: str | None = None,
+        sha256: str | None = None,
     ) -> DeploymentProdUploadResult:
         ...
 
@@ -415,6 +420,42 @@ class DeploymentRepository(ABC):
     @abstractmethod
     def list_all_prod_upload_results(
         self, failed_only: bool = False
+    ) -> list[DeploymentProdUploadResult]:
+        ...
+
+    @abstractmethod
+    def upsert_prod_upload_verification(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str,
+        address: str,
+        file_name: str,
+        status: ProdUploadVerifyStatus,
+        started_at: datetime,
+        finished_at: datetime,
+        provider: str | None = None,
+        expected_sha256: str | None = None,
+        actual_sha256: str | None = None,
+        bytes_downloaded: int | None = None,
+        duration_ms: int | None = None,
+        reason: str | None = None,
+        age_at_check_secs: int | None = None,
+    ) -> DeploymentProdUploadVerification:
+        ...
+
+    @abstractmethod
+    def list_prod_upload_verifications_for_deployment(
+        self, deployment_id: int, client_hostname: str | None = None
+    ) -> list[DeploymentProdUploadVerification]:
+        ...
+
+    @abstractmethod
+    def list_unverified_uploads_for_host(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        limit: int | None = None,
     ) -> list[DeploymentProdUploadResult]:
         ...
 
@@ -1583,6 +1624,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         storage_cost_atto: Optional[Decimal] = None,
         gas_cost_wei: Optional[Decimal] = None,
         network_profile: str | None = None,
+        sha256: str | None = None,
     ) -> DeploymentProdUploadResult:
         existing = (
             self.session.query(DeploymentProdUploadResult)
@@ -1614,6 +1656,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 storage_cost_atto=storage_cost_atto,
                 gas_cost_wei=gas_cost_wei,
                 network_profile=network_profile,
+                sha256=sha256,
             )
             self.session.add(existing)
         else:
@@ -1638,6 +1681,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 existing.storage_cost_atto = storage_cost_atto
             if gas_cost_wei is not None:
                 existing.gas_cost_wei = gas_cost_wei
+            # Same reasoning as cost: a re-record from a source that has no
+            # hash (Influx-sourced `record-results`, older rows) must not erase
+            # one the uploader wrote inline. Losing it would strand every
+            # address it covers as permanently unverifiable.
+            if sha256 is not None:
+                existing.sha256 = sha256
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -1671,6 +1720,140 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             DeploymentProdUploadResult.file_name,
             DeploymentProdUploadResult.started_at,
         ).all()
+
+    def upsert_prod_upload_verification(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str,
+        address: str,
+        file_name: str,
+        status: ProdUploadVerifyStatus,
+        started_at: datetime,
+        finished_at: datetime,
+        provider: str | None = None,
+        expected_sha256: str | None = None,
+        actual_sha256: str | None = None,
+        bytes_downloaded: int | None = None,
+        duration_ms: int | None = None,
+        reason: str | None = None,
+        age_at_check_secs: int | None = None,
+    ) -> DeploymentProdUploadVerification:
+        existing = (
+            self.session.query(DeploymentProdUploadVerification)
+            .filter(
+                DeploymentProdUploadVerification.deployment_id == deployment_id,
+                DeploymentProdUploadVerification.client_hostname == client_hostname,
+                DeploymentProdUploadVerification.address == address,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = DeploymentProdUploadVerification(
+                deployment_id=deployment_id,
+                client_hostname=client_hostname,
+                region=region,
+                provider=provider,
+                address=address,
+                file_name=file_name,
+                status=status,
+                expected_sha256=expected_sha256,
+                actual_sha256=actual_sha256,
+                bytes_downloaded=bytes_downloaded,
+                duration_ms=duration_ms,
+                reason=reason,
+                age_at_check_secs=age_at_check_secs,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            self.session.add(existing)
+        else:
+            # A re-check of the same address from the same host replaces the
+            # previous verdict — except that a DIGEST_MISMATCH is never
+            # downgraded. Bytes that came back wrong once are a permanent fact
+            # about that upload; a later OK means the network healed, not that
+            # the mismatch did not happen, and silently overwriting it would
+            # erase the only evidence of the most serious failure this test can
+            # detect.
+            if existing.status is ProdUploadVerifyStatus.DIGEST_MISMATCH:
+                if status is not ProdUploadVerifyStatus.DIGEST_MISMATCH:
+                    existing.reason = (
+                        f"{existing.reason or 'digest mismatch'} "
+                        f"(later re-check returned {status.value})"
+                    )
+                    existing.recorded_at = datetime.now(timezone.utc)
+                    self.session.commit()
+                    return existing
+            existing.region = region
+            existing.provider = provider
+            existing.file_name = file_name
+            existing.status = status
+            existing.expected_sha256 = expected_sha256
+            existing.actual_sha256 = actual_sha256
+            existing.bytes_downloaded = bytes_downloaded
+            existing.duration_ms = duration_ms
+            existing.reason = reason
+            existing.age_at_check_secs = age_at_check_secs
+            existing.started_at = started_at
+            existing.finished_at = finished_at
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def list_prod_upload_verifications_for_deployment(
+        self, deployment_id: int, client_hostname: str | None = None
+    ) -> list[DeploymentProdUploadVerification]:
+        query = self.session.query(DeploymentProdUploadVerification).filter(
+            DeploymentProdUploadVerification.deployment_id == deployment_id
+        )
+        if client_hostname is not None:
+            query = query.filter(
+                DeploymentProdUploadVerification.client_hostname == client_hostname
+            )
+        return query.order_by(
+            DeploymentProdUploadVerification.client_hostname,
+            DeploymentProdUploadVerification.started_at,
+        ).all()
+
+    def list_unverified_uploads_for_host(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        limit: int | None = None,
+    ) -> list[DeploymentProdUploadResult]:
+        """Successful uploads this host has not yet checked — its work queue.
+
+        This is what lets a verifier VM keep no local state at all: the
+        question "what have I already looked at?" is answered by the rows this
+        host has written, so a replaced VM resumes exactly where its
+        predecessor stopped, and an outage of any length is caught up rather
+        than silently skipped.
+
+        Only SUCCESS uploads with an address are candidates — there is nothing
+        to fetch for a partial or a failed one. Oldest first, so a backlog is
+        worked through in the order the files were written.
+        """
+        already_checked = (
+            self.session.query(DeploymentProdUploadVerification.address)
+            .filter(
+                DeploymentProdUploadVerification.deployment_id == deployment_id,
+                DeploymentProdUploadVerification.client_hostname == client_hostname,
+            )
+            .scalar_subquery()
+        )
+        query = (
+            self.session.query(DeploymentProdUploadResult)
+            .filter(
+                DeploymentProdUploadResult.deployment_id == deployment_id,
+                DeploymentProdUploadResult.status == ProdUploadStatus.SUCCESS,
+                DeploymentProdUploadResult.address.isnot(None),
+                DeploymentProdUploadResult.address.notin_(already_checked),
+            )
+            .order_by(DeploymentProdUploadResult.finished_at)
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
 
     def upsert_prod_download_result(
         self,

@@ -91,6 +91,10 @@ from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
 )
+from saorsa_db.models.prod_upload_verification import (
+    DeploymentProdUploadVerification,
+    ProdUploadVerifyStatus,
+)
 from saorsa_db.models.release_candidate import (
     ReleaseCandidate,
     ReleaseCandidateCrate,
@@ -155,6 +159,8 @@ __all__ = [
     "DeploymentProdCanaryUpload",
     "DeploymentProdDownloadResult",
     "DeploymentProdUploadResult",
+    "DeploymentProdUploadVerification",
+    "ProdUploadVerifyStatus",
     "FileOpType",
     "Migration",
     "MigrationStatus",

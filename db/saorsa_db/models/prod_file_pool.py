@@ -90,13 +90,26 @@ class ClaimSource(enum.Enum):
     PROD_UPLOADERS = "prod-uploaders"
     PROD_LOCAL_UPLOADS = "prod-local-uploads"
     PROD_CANARY = "prod-canary"
+    PROD_CONTINUOUS_UPLOADER = "prod-continuous-uploader"
     MANUAL = "manual"
 
 
-#: Sources whose claims are resolved automatically by ``record-results``.
+#: Sources whose claims are resolved without operator involvement.
+#:
+#: ``PROD_UPLOADERS`` and ``PROD_CANARY`` resolve when ``deployments
+#: record-results`` runs. ``PROD_CONTINUOUS_UPLOADER`` resolves *inline on the
+#: uploader VM* the moment each upload finishes — it holds a database
+#: connection of its own, so there is nothing for a later pass to reconcile.
+#: Either way the operator never has to close these by hand, which is what
+#: this set means.
+#:
 #: A ``MANUAL`` claim never resolves on its own and needs the operator.
 SELF_RESOLVING_SOURCES = frozenset(
-    {ClaimSource.PROD_UPLOADERS, ClaimSource.PROD_CANARY}
+    {
+        ClaimSource.PROD_UPLOADERS,
+        ClaimSource.PROD_CANARY,
+        ClaimSource.PROD_CONTINUOUS_UPLOADER,
+    }
 )
 
 

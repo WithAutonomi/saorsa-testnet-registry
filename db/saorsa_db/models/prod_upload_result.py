@@ -59,6 +59,12 @@ class DeploymentProdUploadResult(Base):
         nullable=False,
     )
     address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # SHA-256 of the exact bytes handed to `ant`, computed by the uploader
+    # itself (V2-837). This is what an independent verifier compares its
+    # download against, so read-back verification does not depend on the pool
+    # entry carrying a catalogued digest — many carry only md5/sha1, some
+    # none. NULL on every row predating the daily write test.
+    sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     chunks_stored: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunks_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -103,6 +109,7 @@ class DeploymentProdUploadResult(Base):
             "file_size_bytes": self.file_size_bytes,
             "status": self.status.value,
             "address": self.address,
+            "sha256": self.sha256,
             "chunks_stored": self.chunks_stored,
             "chunks_failed": self.chunks_failed,
             "total_chunks": self.total_chunks,

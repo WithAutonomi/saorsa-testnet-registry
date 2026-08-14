@@ -99,6 +99,14 @@ class Deployment(Base):
         cascade="all, delete-orphan",
     )
 
+    prod_upload_verifications: Mapped[
+        list["DeploymentProdUploadVerification"]  # noqa: F821
+    ] = relationship(
+        back_populates="deployment",
+        order_by="DeploymentProdUploadVerification.started_at",
+        cascade="all, delete-orphan",
+    )
+
     prod_download_results: Mapped[list["DeploymentProdDownloadResult"]] = relationship(
         back_populates="deployment",
         order_by="DeploymentProdDownloadResult.client_hostname",
