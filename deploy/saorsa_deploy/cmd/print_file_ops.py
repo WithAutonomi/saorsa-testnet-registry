@@ -68,7 +68,7 @@ def _dispatch(args, op_type: str) -> None:
             console.print(
                 "Read-back verifications are written straight to Postgres; "
                 "view them with [bold]deployments print-recorded-results "
-                f"--id <id>[/bold]."
+                "--id <id>[/bold]."
             )
             return
         _run_prod_uploads(args, console)
