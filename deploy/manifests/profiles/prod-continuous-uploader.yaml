@@ -1,0 +1,94 @@
+# Permanent production WRITE test (V2-837). One uploader VM draws files from
+# the production file pool once a day, uploads them to the production Autonomi
+# network, and reads each one straight back. Two verifier VMs in other regions
+# independently download every uploaded address and compare a SHA-256 of the
+# bytes against what the uploader actually uploaded.
+#
+# Before the first deploy, create the scoped registry role the VMs use and
+# export the URL it prints:
+#
+#   saorsa-deploy prod pool client-role
+#   export POOL_DATABASE_URL='postgresql://ant_pool_client:...@host/db?sslmode=require'
+#   export ARBITRUM_ONE_SECRET_KEY='0x...'   # funded Arbitrum One wallet
+#
+#   saorsa-deploy deployments plan --config <this file>     # preview the steps
+#   saorsa-deploy deployments up   --config <this file>     # deploy
+#   saorsa-deploy deployments down --name PROD-UL-DAILY-01  # tear down
+
+name: PROD-UL-DAILY-01
+kind: prod-continuous-uploader
+purpose: "Daily production write test — proves uploads still work"
+ssh_key_path: ~/.ssh/ant_deploy
+
+prod_continuous_uploader:
+  # ---- the uploader VM ------------------------------------------------
+  spec: fsn1:cx22            # region[:vm_size]
+  provider: hetzner          # digitalocean | hetzner | vultr | ovh
+  volume_size: 40            # GB. MUST exceed the largest file the pool
+                             # request can draw — the source file is written
+                             # to local disk before upload.
+
+  # ---- what to upload each day ----------------------------------------
+  # A pool request: any size classes, any counts. Files are claimed from the
+  # registry at the START OF EACH CYCLE, so a file is never uploaded twice.
+  pool:
+    tiny: 2
+    small: 1
+  # Optional: narrow the classes without changing the counts.
+  # min inclusive, max exclusive; binary units, bare number = bytes.
+  # pool_min_size: 5MB       # e.g. "tiny, but at least 5 MB"
+  # pool_max_size: 50MB
+
+  # Once-a-day cadence: sleep at the end of each full cycle.
+  sleep_interval_secs: 86400
+
+  # ---- the verifier VMs ------------------------------------------------
+  # Each independently downloads EVERY uploaded address and checks the hash.
+  # No sharding: both confirm everything, which is the point (V2-837 asks for
+  # a second region to confirm again).
+  verifiers:
+    - region: lon1
+      vm_size: s-1vcpu-2gb
+      provider: digitalocean
+      volume_size: 40
+    - region: GRA9
+      vm_size: b3-8
+      provider: ovh
+      volume_size: 40
+
+  # How often a verifier looks for addresses it has not yet checked.
+  verify_interval_secs: 3600      # hourly, epoch-aligned
+
+  # ---- binary ----------------------------------------------------------
+  binary:
+    version: "0.3.3"         # or: branch / repo_owner for a custom build
+
+  # ---- credentials (named, never inlined) ------------------------------
+  secret_key_env: ARBITRUM_ONE_SECRET_KEY   # funded Arbitrum One mainnet wallet
+  pool_database_url_env: POOL_DATABASE_URL  # scoped registry role for claims
+
+  # ---- monitoring (mandatory; independent of the client provider) ------
+  monitoring_provider: ovh
+  monitoring_region: GRA9
+  monitoring_droplet_size: b3-8
+  monitoring_volume_size: 50
+  grafana: false
+
+  # ---- bounded retention for permanent operation -----------------------
+  influx_retention_days: 7   # 0 = infinite
+  log_retention_days: 7      # per-op stdout/stderr prune; 0 = keep forever
+
+  # ---- optional client behaviour (same tokens as prod uploaders) -------
+  # bootstrap_cache: true
+  # payment: merkle
+  # network: home-fttp       # residential-link simulation
+  # rust_log: "ant_networking=debug"
+  # forward_logs: false
+
+# Post a summary to Slack once it's up.
+slack_post: true
+
+# NOTE: Influx retention is bounded, but upload and verification results are
+# written straight to Postgres by the VMs, so the long-term history does not
+# depend on `deployments archive`. Archive is only needed for the Influx-side
+# host metrics.

@@ -2,7 +2,13 @@
 name = "saorsa-db"
 version = "0.2.4"
 description = "Shared database models and repositories for the Saorsa Testnet Registry"
-requires-python = ">=3.13"
+# 3.12, not 3.13, because this package is installed on client VMs (V2-837):
+# the daily production write test claims pool files from the registry over the
+# network, and the VM images are Ubuntu 24.04, whose system Python is 3.12.
+# Nothing here uses 3.13-only syntax or stdlib; the floor is verified by
+# `uv run --python 3.12 --isolated ...` in CI-equivalent checks, not assumed.
+# The other workspace packages keep their own, higher floors.
+requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",

@@ -1474,6 +1474,167 @@ uv run saorsa-deploy prod continuous-downloader destroy --name PROD-DL-01
 
 By default the monitoring VM is destroyed alongside the client. Pass `--keep-monitoring` when you want to keep the InfluxDB + Grafana stack running for after-the-fact analysis.
 
+### The daily production write test (`prod continuous-uploader`)
+
+Nothing else in this repo tests **writes** to production on a schedule. The
+daily download test (`prod continuous-downloader`) re-fetches the same fixed
+list, which proves old data survives; if writing broke tomorrow, no run here
+would notice. This kind closes that gap: one VM uploads a few pool files a day
+and reads them straight back, and VMs in other regions independently download
+every address and compare a SHA-256 against what was actually uploaded.
+
+```bash
+# Once, before the first deploy: create the scoped registry role the VMs use.
+saorsa-deploy prod pool client-role
+export POOL_DATABASE_URL='postgresql://ant_pool_client:...@host/db?sslmode=require'
+export ARBITRUM_ONE_SECRET_KEY='0x...'      # funded Arbitrum One wallet
+
+saorsa-deploy deployments up --config deploy/manifests/runs/PROD-UL-DAILY-01.yaml
+saorsa-deploy deployments print-recorded-results --name PROD-UL-DAILY-01 --details
+saorsa-deploy deployments down --name PROD-UL-DAILY-01
+```
+
+#### How it differs from every other pool consumer
+
+`prod uploaders`, `prod canary` and `prod local-uploads` all draw their files
+**before any infrastructure exists**, because they need the whole set up front
+and a shortfall discovered after Terraform has spent mainnet money is
+unacceptable. This kind runs forever, so there is no "whole set". The uploader
+VM holds its own database connection and calls `claim_pool_files` **at the
+start of each cycle**, which means:
+
+* nothing is reserved in advance, so the canary's inventory is not locked up by
+  a deployment that will not use it for months;
+* a teardown strands nothing, because only the current cycle's files are ever
+  claimed;
+* the run is genuinely open-ended rather than a batch with an expiry date.
+
+Deploy time therefore only performs an **availability preflight** — it checks
+the pool can serve at least one cycle, prints the remaining runway, and refuses
+before building anything if it cannot. It deliberately does not claim.
+
+#### What the VMs can reach
+
+The uploader and verifiers are the only VM-side services in this repo that talk
+to the registry. They run under a venv at `/opt/ant-registry-client` where
+`saorsa-db` is installed, so they call the same tested `claim_pool_files` the
+operator-side commands do — the canonical-id resolution, the race arbitration
+on the partial unique index and the all-or-nothing pre-check are not
+reimplemented, because a second copy that drifts double-spends files.
+
+`prod pool client-role` mints a least-privilege role for them:
+
+| | tables |
+|---|---|
+| SELECT | `prod_file_pool`, `prod_file_pool_digests`, `prod_file_pool_tags`, `deployments` |
+| SELECT/INSERT/UPDATE | `prod_file_pool_claims`, `deployment_prod_upload_results`, `deployment_prod_upload_verifications` |
+| never granted | DELETE anywhere, any DDL, everything else in the registry |
+
+The connection string is printed, never stored — the manifest names an
+environment variable (`pool_database_url_env`), exactly as it does for the
+wallet key.
+
+#### Content verification
+
+The uploader takes a SHA-256 over **the exact bytes it hands to `ant`** and
+stores it on the upload row. Every verifier hashes what it downloads and
+compares. This does not depend on the pool entry carrying a catalogued digest —
+many carry only md5/sha1 and some carry none — and it is the first real content
+verification anywhere in this system; the data-integrity gate in `deployments
+compare` reads NOT ASSESSED precisely because none existed.
+
+Four verdicts are recorded, and `digest_mismatch` is deliberately **not** a
+flavour of failure:
+
+| status | meaning |
+|---|---|
+| `ok` | downloaded and the hash matched |
+| `digest_mismatch` | the network returned bytes, and they were **wrong** |
+| `download_failed` | the address could not be retrieved |
+| `inconclusive` | no verdict possible (no stored hash, timeout) — never counted as a loss |
+
+A recorded mismatch is never overwritten by a later success. Bytes that came
+back wrong once are a permanent fact; a later `ok` means the network healed.
+
+**Only `ok` and `digest_mismatch` are final.** A `download_failed` or
+`inconclusive` address is re-checked on the next cycle — otherwise a single
+transient blip on a verifier would brand a perfectly healthy file unavailable
+forever, an error in the one direction that matters here. A file that genuinely
+cannot be fetched is therefore retried every cycle, which is the signal worth
+having. Because a retry overwrites the row, `attempts` and `first_failed_at`
+record whether something failed once or has been failing all week;
+`print-recorded-results` surfaces the longest-standing failure per region.
+
+#### Why the verifiers do not divide the work
+
+Every verifier checks **every** address. The canary shards its probes across
+VMs for throughput; here a second region confirming *the same file* is the
+entire point, so sharding would defeat it.
+
+They also keep **no local state**. "Which addresses has this host not checked?"
+is a query against the verification table, so a replaced VM resumes exactly
+where its predecessor stopped and an outage of any length is caught up rather
+than silently skipped. (The canary probe needs a SQLite ledger only because it
+cannot reach Postgres.)
+
+#### Results live in Postgres, not InfluxDB
+
+Both VM roles write results to Postgres as they happen. InfluxDB receives the
+same measurements (`prod_upload`, `prod_upload_verify`,
+`prod_upload_pool_shortfall`) for dashboards, but is **not** load-bearing —
+its retention is bounded, so a verifier offline longer than the window would
+otherwise miss those addresses permanently.
+
+Consequently **`deployments record-results` is a no-op for this kind** and says
+so; use `deployments print-recorded-results`, which renders per-region
+verification counts alongside the uploads.
+
+#### Running out of files
+
+A cycle that cannot claim what it asked for records a shortfall to the
+`prod_upload_pool_shortfall` measurement — its own measurement, so "the pool
+ran dry" can never be misread as "the network refused an upload" — and sleeps.
+Topping the pool up heals it with no redeploy.
+
+#### Disk sizing
+
+The uploader writes each source file to local disk before uploading and each
+verifier downloads it back before hashing, so **every VM's disk must exceed the
+largest file the pool request can draw**. The manifest validates this and
+refuses at `config validate` time rather than filling a root filesystem at 3am.
+An `xlarge` request with no `pool_max_size` is refused outright, because the
+disk needed is then unknowable.
+
+Client egress is roughly 4× payload from chunk fan-out, so a large daily file
+is a real bandwidth cost on metered or pooled providers.
+
+#### Arguments (`prod continuous-uploader deploy`)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--name` | required | Deployment name; also names the monitoring stack |
+| `--spec` | required | Uploader VM as `region[:vm_size]` |
+| `--verifier` | `[]`, repeatable | A verifier as `[provider:]region[:vm_size]` |
+| `--pool` | required | Files per cycle, e.g. `tiny:2,small:1` |
+| `--pool-min-size` / `--pool-max-size` | none | Narrow every class (min inclusive, max exclusive) |
+| `--sleep-interval-secs` | `86400` | Sleep at the end of each cycle |
+| `--verify-interval-secs` | `3600` | Verifier cycle; epoch-aligned so vantages line up |
+| `--readback-verify` / `--no-readback-verify` | on | Uploader downloads each file straight back |
+| `--pool-database-url-env` | `POOL_DATABASE_URL` | Env var holding the scoped registry URL |
+| `--secret-key` | `ARBITRUM_ONE_SECRET_KEY` | Funded Arbitrum One wallet — real ETH |
+| `--provider` | `digitalocean` | Uploader VM provider (all four) |
+| `--monitoring-provider` | `digitalocean` | Monitoring VM provider (DO/OVH) |
+| `--influx-retention-days` | `7` | Dashboard data only; results are in Postgres |
+| `--log-retention-days` | `7` | Per-op log prune window; `0` keeps forever |
+| `--payment` | none | `merkle` / `no-merkle` |
+| `--purpose` | required | Free text, persisted to the registry |
+
+`prod continuous-uploader destroy --name X [--keep-monitoring]` stops both
+services first so nothing claims a file mid-teardown, then warns about any
+claim the uploader never resolved. Those are **not** released automatically: a
+claim that might correspond to a real upload must never be freed by a sweep,
+which is how a file gets uploaded twice.
+
 ### Running one-shot downloaders against production (`prod downloaders`)
 
 `prod downloaders deploy` is the one-shot sibling of `prod continuous-downloader`. The service walks the address list a **single time** and then exits cleanly; the systemd unit is written with `Restart=no` so the VM can be left alone until destroy. Same provisioner, same `prod_downloader.py` script (toggled by the `ONE_SHOT=true` env var), same monitoring stack, same `record-results` / `slack-post` integrations — the only operator-visible difference is the missing `--sleep-interval-secs` flag.

@@ -35,7 +35,12 @@ from saorsa_deploy.state import (
 
 # prod kinds whose wallet key spends real ETH on Arbitrum One — must be present
 # before we start, and bridged to the var the underlying commands read.
-_SECRET_KEY_KINDS = ("prod-uploaders", "prod-canary", "prod-local-uploads")
+_SECRET_KEY_KINDS = (
+    "prod-uploaders",
+    "prod-canary",
+    "prod-local-uploads",
+    "prod-continuous-uploader",
+)
 _CLI_SECRET_ENV = "ARBITRUM_ONE_SECRET_KEY"
 
 

@@ -545,11 +545,96 @@ two thirds of what production holds.
 See `deploy/README.md` §"Managing the production file pool" for the full command
 and argument reference.
 
+### The daily production write test (`prod continuous-uploader`)
+
+Nothing else here tests **writes** to production on a schedule (V2-837): the
+daily download test re-fetches a fixed pre-June list, so a break in *uploading*
+would reach us from a user first. `prod continuous-uploader deploy` stands up
+one uploader VM that claims a few pool files a day, uploads them to production
+and reads each straight back, plus **N verifier VMs in other regions** that
+independently download every address and compare a **SHA-256 against the exact
+bytes the uploader uploaded**. Registers `deploy_args.kind =
+"prod-continuous-uploader"`; fully declarative (`ProdContinuousUploaderSpec`,
+`orchestrator/prod.py` `_continuous_uploader`). Impl:
+`cmd/prod_continuous_uploader.py`, `provisioning/prod_continuous_uploader.py`,
+`resources/scripts/prod_continuous_uploader.py` + `prod_upload_verifier.py`.
+Example: `deploy/manifests/profiles/prod-continuous-uploader.yaml`.
+
+- **It claims from the pool as each upload happens — the only kind that does.**
+  Every other consumer draws before any infrastructure exists because it needs
+  the whole set up front. A forever-running deployment has no "whole set", so
+  the uploader VM holds its own registry connection and calls `claim_pool_files`
+  per cycle. Nothing is reserved in advance (the canary's inventory is not
+  locked up for months), and a teardown strands nothing. Deploy time only
+  **preflights availability** and prints the runway; it deliberately does not
+  claim.
+- **VM-side database access**, also unique to this kind. Both roles run under a
+  venv at `/opt/ant-registry-client` where **`saorsa-db` is installed** (built
+  from the working tree, shipped over SSH via `files.put`), so they call the
+  *same* tested `claim_pool_files` — canonical-id resolution, the
+  partial-unique-index race arbitration and the all-or-nothing pre-check are
+  never reimplemented, because a drifting second copy double-spends files.
+  `db/` therefore requires **Python ≥3.12**, not 3.13: the VM images are Ubuntu
+  24.04. The registry needed no firewall change — the cluster is deliberately
+  open from any IP, gated by password over TLS
+  (`resources/digitalocean-registry-db/main.tf`).
+- **`prod pool client-role`** mints a least-privilege Postgres role for the VMs:
+  SELECT on the catalogue + `deployments`; SELECT/INSERT/UPDATE on
+  `prod_file_pool_claims` and the two result tables; **no DELETE, no DDL,
+  nothing else**. The URL is printed, never stored — the manifest names an env
+  var (`pool_database_url_env`), as it does for the wallet key.
+- **Content verification, a first for this system.** The hash is taken over the
+  bytes handed to `ant`, so it does not depend on the pool entry carrying a
+  catalogued digest (many carry only md5/sha1). Verdicts:
+  `ok` / `digest_mismatch` / `download_failed` / `inconclusive`.
+  **`digest_mismatch` is not a flavour of failure** — a download that fails is
+  an availability problem, one that returns *different bytes* is a correctness
+  problem — and a recorded mismatch is **never overwritten** by a later success.
+  **Only `ok` and `digest_mismatch` are terminal**: a failed or inconclusive
+  check is re-queued next cycle, because one transient blip would otherwise
+  brand a healthy file unavailable forever. Since a retry overwrites the row,
+  `attempts` + `first_failed_at` distinguish a blip from a week-long outage.
+- **The verifiers do not shard.** Every verifier checks every address: a second
+  region confirming *the same file* is the point, unlike the canary, which
+  shards probes for throughput. They also keep **no local state** — the work
+  queue is `list_unverified_uploads_for_host`, so a replaced VM resumes and an
+  outage of any length is caught up. (The canary probe needs SQLite only because
+  it cannot reach Postgres.)
+- **Postgres is authoritative, InfluxDB is dashboards.** Both roles write
+  results as they happen into `deployment_prod_upload_results` (+ new `sha256`
+  column) and **`deployment_prod_upload_verifications`**. Influx gets
+  `prod_upload`, `prod_upload_verify` and `prod_upload_pool_shortfall`, but its
+  retention is bounded — reading the address list from Influx would make a
+  verifier offline >7 days miss those addresses permanently. So
+  **`record-results` is a no-op for this kind** (it says so); use
+  `print-recorded-results`, which renders per-region verification counts.
+- **Pool exhaustion is a signal, not a crash**: the shortfall goes to its own
+  measurement (so "the pool ran dry" is never misread as "the network refused")
+  and the service sleeps and retries. Topping the pool up heals it with no
+  redeploy.
+- **Disk must exceed the largest drawable file on every VM** — the uploader
+  writes the source to disk before uploading, each verifier downloads it back
+  before hashing. The manifest validates this; `xlarge` with no `pool_max_size`
+  is refused because the requirement is then unknowable.
+- Claims resolve **inline**: success spends, partial marks partial (chunks are
+  on the network, so a canary must never get it), and a failure to fetch the
+  *source* **releases** — nothing reached the network, so burning it would be a
+  lie. `destroy` stops the services first and **warns** about unresolved claims
+  without releasing them: a claim that might correspond to a real upload must
+  never be freed by a sweep.
+- `generate-inventory` covers the kind (all three VMs + a `client_config`); `up`
+  emits it automatically as a `best_effort` final step. The address list grows
+  forever, so the inventory names the authoritative tables instead of inlining
+  it.
+
+See `deploy/README.md` §"The daily production write test" for the full argument
+table.
+
 ### Running prod uploaders
 
 `prod uploaders deploy` is the upload-side equivalent of `prod continuous-downloader`: it stands up one or more client VMs that each upload a list of public files to the production Autonomi network with `ant --json file upload --public`, then exit when the list is exhausted. Per-file results (chunks_stored / chunks_failed / address / file size / duration) are emitted to a `prod_upload` Influx measurement on a paired monitoring VM.
 
-- Multi-VM. Repeatable `--uploader REGION:VM_SIZE:concurrency=N:urls=PATH` (all four parts required); each uploader VM downloads its assigned URL list at runtime, uploads each file with `--public`, deletes the local copy, exits.
+- Multi-VM. Repeatable `--uploader REGION:VM_SIZE:urls=PATH` (region and vm_size required, then one file source — `urls=` XOR `pool=`); each uploader VM downloads its assigned URL list at runtime, uploads each file with `--public`, deletes the local copy, exits. **There is no `concurrency=` token** — the service is strictly serial, one file at a time (the only `--*concurrency` in the package is `prod canary --probe-concurrency`). Other accepted tokens: `pool_min_size=`, `pool_max_size=`, `exclude_partial=`, `payment=`, `log_level=`, `clock_skew=`, `network=`, `bootstrap_cache=`, `forward_logs=`, `memory_profiling=`, `rust_log=` (last).
 - **Duplicate-file preflight** (runs before any infrastructure is created, on both `prod uploaders deploy` and `deployments up`): the file name of every upload target (URL basename, as stored in `deployment_prod_upload_results` / shown by `prod files`) is checked against the recorded prod uploads list, and a name collision aborts the deploy. Override with `--allow-duplicate-files` (manifest: `prod_uploaders.allow_duplicate_files: true`) to re-upload missing chunks or test the already-stored path. Skipped with a warning when no `DATABASE_URL` is set.
 - Single shared `--secret-key` across all uploaders (or `ARBITRUM_ONE_SECRET_KEY` env var — deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` because prod uploads need a funded Arbitrum One mainnet wallet and cost real ETH).
 - Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).

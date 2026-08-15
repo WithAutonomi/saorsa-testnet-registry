@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional, Union
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
 from saorsa_deploy.provisioning.network_profile import resolve_network
@@ -124,6 +124,7 @@ KIND_TO_BLOCK: dict[str, str] = {
     "prod-uploaders": "prod_uploaders",
     "prod-canary": "prod_canary",
     "prod-continuous-downloader": "prod_continuous_downloader",
+    "prod-continuous-uploader": "prod_continuous_uploader",
     "prod-downloaders": "prod_downloaders",
     "prod-local-uploads": "prod_local_uploads",
     "prod-local-downloads": "prod_local_downloads",
@@ -583,6 +584,164 @@ class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
     log_retention_days: Optional[int] = None
 
 
+class ProdUploadVerifier(_Base):
+    """One region that independently reads back what the uploader wrote.
+
+    Each verifier checks *every* address, deliberately — the point is a second
+    region confirming the same file, not dividing the work up. Provider is
+    per-entry so the vantage points can differ by cloud as well as by region.
+    """
+
+    region: str
+    vm_size: Optional[str] = None
+    provider: Optional[str] = None
+    # Must exceed the largest file the pool request can draw: verification
+    # downloads the file before hashing it.
+    volume_size: Optional[int] = None
+
+
+class ProdContinuousUploaderSpec(_Base):
+    """Daily production write test (V2-837).
+
+    One uploader VM draws files from the pool once a day, uploads them to the
+    production network and reads each back; the verifiers confirm them again
+    from other regions. Unlike every other pool consumer, files are claimed
+    *by the VM as each upload happens* rather than up front, so the run is
+    open-ended and nothing is reserved in advance.
+    """
+
+    spec: str  # 'region[:vm_size]' — the single uploader VM
+    binary: Binary
+    verifiers: list[ProdUploadVerifier] = Field(default_factory=list)
+
+    # What to upload each cycle: a {size_class: count} request against the
+    # managed pool. Not fixed at 2 tiny + 1 small — a later run can point this
+    # at larger files without a code change.
+    pool: dict[str, int]
+    pool_min_size: Optional[PoolSize] = None  # inclusive
+    pool_max_size: Optional[PoolSize] = None  # exclusive
+
+    secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
+    # Env var naming the SCOPED registry credential the VMs use to claim pool
+    # files (see `prod pool client-role`). Named, never inlined — same rule as
+    # the wallet key.
+    pool_database_url_env: str = "POOL_DATABASE_URL"
+
+    # Seconds to sleep at the end of each upload cycle. 86400 = once a day.
+    sleep_interval_secs: Optional[int] = None
+    # How often a verifier looks for addresses it has not yet checked.
+    verify_interval_secs: Optional[int] = None
+
+    # Disk on the uploader VM. Must exceed the largest file the pool request
+    # can draw — the source file is written to disk before upload.
+    volume_size: Optional[int] = None
+
+    provider: Optional[str] = None
+    monitoring_provider: Optional[str] = None
+    monitoring_region: Optional[str] = None
+    monitoring_droplet_size: Optional[str] = None
+    monitoring_volume_type: Optional[str] = None
+    monitoring_volume_size: Optional[int] = None
+    grafana: Optional[bool] = None
+    keep_monitoring: Optional[bool] = None
+
+    influx_retention_days: Optional[int] = None
+    log_retention_days: Optional[int] = None
+
+    payment: Optional[Payment] = None
+    log_level: Optional[LogLevel] = None
+    bootstrap_cache: Optional[bool] = None
+    rust_log: Optional[str] = None
+    network: Optional[Network] = None
+
+    @model_validator(mode="after")
+    def _check(self):
+        if not self.pool:
+            raise ValueError(
+                "prod_continuous_uploader.pool must request at least one size "
+                "class, e.g. {tiny: 2, small: 1}"
+            )
+        _check_pool_bounds(self, "prod_continuous_uploader")
+        if not self.verifiers:
+            raise ValueError(
+                "prod_continuous_uploader.verifiers must list at least one "
+                "region. The whole point of the test is reading the upload "
+                "back; without a verifier it only proves the upload command "
+                "exited zero."
+            )
+        _check_upload_disk(self)
+        return self
+
+
+def _check_upload_disk(spec: "ProdContinuousUploaderSpec") -> None:
+    """Refuse a pool request that cannot fit on the configured disks.
+
+    Both the uploader and every verifier write the file to local disk — one
+    before uploading, the others before hashing. A request that can draw a 5
+    GiB file onto a 25 GB root disk fills the filesystem and fails in a way
+    that reads as a network fault at 3am, so it is refused at manifest-validate
+    time instead.
+
+    Only the *upper* bound of the largest requested class is checked, since
+    that is the worst case a draw can produce.
+    """
+    from saorsa_db.size_class import byte_range, parse, parse_size
+
+    largest_upper = 0
+    unbounded_class = None
+    for class_name, count in spec.pool.items():
+        if not count:
+            continue
+        size_class = parse(class_name)
+        _, upper = byte_range(size_class)
+        if upper is None:
+            unbounded_class = size_class
+            continue
+        largest_upper = max(largest_upper, upper)
+
+    # An explicit pool_max_size caps the draw regardless of class.
+    if spec.pool_max_size is not None:
+        capped = parse_size(spec.pool_max_size)
+        if unbounded_class is not None:
+            unbounded_class = None
+            largest_upper = max(largest_upper, capped)
+        else:
+            largest_upper = min(largest_upper, capped) if largest_upper else capped
+
+    if unbounded_class is not None and spec.volume_size is None:
+        raise ValueError(
+            f"prod_continuous_uploader.pool requests {unbounded_class.value}, "
+            "which has no upper size bound. Set an explicit volume_size (and "
+            "ideally a pool_max_size) so the disk needed is knowable."
+        )
+    if not largest_upper:
+        return
+
+    # Headroom for the OS, the ant binary, per-op logs and the fact that a
+    # verifier holds its download while hashing it.
+    needed_gb = max(10, int(largest_upper / (1024**3) * 2) + 8)
+
+    def _too_small(configured: Optional[int]) -> bool:
+        return configured is not None and configured < needed_gb
+
+    if _too_small(spec.volume_size):
+        raise ValueError(
+            f"prod_continuous_uploader.volume_size={spec.volume_size} GB is "
+            f"too small for this pool request, which can draw a file of up to "
+            f"{largest_upper / (1024**3):.2f} GiB. Use at least {needed_gb} GB, "
+            "or narrow the request with pool_max_size."
+        )
+    for index, verifier in enumerate(spec.verifiers):
+        if _too_small(verifier.volume_size):
+            raise ValueError(
+                f"prod_continuous_uploader.verifiers[{index}].volume_size="
+                f"{verifier.volume_size} GB is too small for this pool "
+                f"request (up to {largest_upper / (1024**3):.2f} GiB per file). "
+                f"Use at least {needed_gb} GB — a verifier downloads the whole "
+                "file before hashing it."
+            )
+
+
 class ProdProbe(_Base):
     region: str
     vm_size: Optional[str] = None
@@ -786,6 +945,7 @@ class Manifest(_Base):
     prod_uploaders: Optional[ProdUploadersSpec] = None
     prod_canary: Optional[ProdCanarySpec] = None
     prod_continuous_downloader: Optional[ProdContinuousDownloaderSpec] = None
+    prod_continuous_uploader: Optional[ProdContinuousUploaderSpec] = None
     prod_downloaders: Optional[ProdDownloadersSpec] = None
     prod_local_uploads: Optional[ProdLocalUploadsSpec] = None
     prod_local_downloads: Optional[ProdLocalDownloadsSpec] = None

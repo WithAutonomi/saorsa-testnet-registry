@@ -93,6 +93,63 @@ def test_parse_flux_csv_keeps_the_consumed_columns_and_parses_time():
     assert rows[0]["_time"].tzinfo is not None
 
 
+def test_streaming_reader_parses_time_exactly_like_the_eager_one():
+    """The two CSV readers must agree on what a parsed row is.
+
+    They did not: `iter_host_metric_points` was wired straight to
+    `_iter_flux_rows`, which yields raw CSV strings, so `_time` reached
+    consumers as a `str` and `record-analysis` died in `SampleStore.append`
+    on `ts.timestamp()` — for every run, not just large ones. Every existing
+    test fed `normalise_host_metric_points` pre-parsed dicts, so nothing
+    exercised the streaming path end to end from CSV.
+    """
+    body = (
+        ",result,table,_start,_stop,_time,host,_measurement,_field,_value\n"
+        ",_result,0,2026-04-19T00:00:00Z,2026-04-20T00:00:00Z,2026-04-19T10:00:00Z,"
+        "hostA,cpu,usage_idle,95.0\n"
+        ",_result,0,2026-04-19T00:00:00Z,2026-04-20T00:00:00Z,2026-04-19T10:00:10Z,"
+        "hostB,cpu,usage_idle,90.0\n"
+    )
+    streamed = list(
+        influx._normalise_flux_rows(
+            influx._iter_flux_rows(
+                body,
+                keep=influx.HOST_METRIC_COLUMNS,
+                intern_cols=influx._HOST_METRIC_INTERN,
+            )
+        )
+    )
+    eager = _parse_flux_csv(body)
+
+    assert streamed == eager
+    assert [r["host"] for r in streamed] == ["hostA", "hostB"]
+    for row in streamed:
+        assert isinstance(row["_time"], datetime), "_time must be a datetime"
+        assert row["_time"].tzinfo is not None
+
+
+def test_streaming_reader_skips_rows_no_consumer_can_place():
+    """Rows without `_time` or `host` cannot be placed and must be dropped.
+
+    The eager reader always did this; the streaming one did not, so these
+    reached consumers too.
+    """
+    body = (
+        ",result,table,_time,host,_measurement,_field,_value\n"
+        ",_result,0,2026-04-19T10:00:00Z,hostA,cpu,usage_idle,95.0\n"
+        ",_result,0,,hostB,cpu,usage_idle,90.0\n"
+        ",_result,0,2026-04-19T10:00:20Z,,cpu,usage_idle,85.0\n"
+        ",_result,0,not-a-timestamp,hostC,cpu,usage_idle,80.0\n"
+    )
+    rows = list(
+        influx._normalise_flux_rows(
+            influx._iter_flux_rows(body, keep=influx.HOST_METRIC_COLUMNS)
+        )
+    )
+    assert [r["host"] for r in rows] == ["hostA"]
+    assert rows == _parse_flux_csv(body)
+
+
 def test_parse_flux_csv_drops_columns_no_consumer_reads():
     """The row is projected to what is actually read, not the whole response.
 

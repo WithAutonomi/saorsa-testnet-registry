@@ -32,6 +32,7 @@ _KIND_LABELS = {
     "prod-downloaders": "Prod Downloaders",
     "prod-local-uploads": "Prod Uploads [Home]",
     "prod-local-downloads": "Prod Downloads [Home]",
+    "prod-continuous-uploader": "Prod Daily Write Test",
 }
 
 
@@ -303,6 +304,53 @@ def _format_size(num_bytes: int | None) -> str:
     return f"{val:.1f} TB"
 
 
+
+
+def _prod_continuous_uploader_blocks(deploy_args: dict) -> list:
+    """Summarise the daily write test.
+
+    Leads with the cadence and the pool request, since "what does it upload and
+    how often" is the question, and names the verifier regions because a single
+    region confirming its own upload would not be a meaningful check.
+    """
+    blocks = []
+    pool = deploy_args.get("pool_request") or {}
+    if pool:
+        summary = ", ".join(f"{count} {name}" for name, count in pool.items())
+        blocks.append(_section(f"*Uploads each cycle:* {summary}"))
+    interval = deploy_args.get("sleep_interval_secs")
+    if interval:
+        cadence = (
+            "once a day" if interval == 86400 else f"every {interval}s"
+        )
+        blocks.append(_section(f"*Cadence:* {cadence}"))
+    verifiers = deploy_args.get("verifiers") or []
+    if verifiers:
+        blocks.append(
+            _section(
+                f"*Read-back verification:* {len(verifiers)} region(s) — "
+                + ", ".join(f"`{v}`" for v in verifiers)
+                + "\n_Each checks every address; they do not divide the work._"
+            )
+        )
+    bounds = []
+    if deploy_args.get("pool_min_size"):
+        bounds.append(f"≥ {deploy_args['pool_min_size']}")
+    if deploy_args.get("pool_max_size"):
+        bounds.append(f"< {deploy_args['pool_max_size']}")
+    if bounds:
+        blocks.append(_section(f"*Size bounds:* {' and '.join(bounds)}"))
+    if "bootstrap_cache" in deploy_args:
+        blocks.append(
+            _section(
+                "*Bootstrap cache:* "
+                + ("on" if deploy_args["bootstrap_cache"] else "off")
+            )
+        )
+    if deploy_args.get("rust_log"):
+        blocks.append(_section(f"*RUST_LOG:* `{deploy_args['rust_log']}`"))
+    return blocks
+
 def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
     input_path = deploy_args.get("input_path", "_unknown_")
     file_count = deploy_args.get("file_count")
@@ -555,6 +603,8 @@ def build_slack_blocks(
         blocks.extend(_prod_uploaders_blocks(deploy_args))
     elif kind_raw in ("prod-continuous-downloader", "prod-downloaders"):
         blocks.extend(_prod_downloader_blocks(deploy_args))
+    elif kind_raw == "prod-continuous-uploader":
+        blocks.extend(_prod_continuous_uploader_blocks(deploy_args))
     elif kind_raw == "prod-local-uploads":
         blocks.extend(_prod_local_uploads_blocks(deploy_args))
     elif kind_raw == "prod-local-downloads":

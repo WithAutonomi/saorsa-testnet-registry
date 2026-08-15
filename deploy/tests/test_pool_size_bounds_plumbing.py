@@ -260,6 +260,50 @@ class TestManifest:
         # otherwise fail only against real infrastructure.
         assert parse_prod_uploader_spec(spec)["pool_min_size_bytes"] == 200 * MIB
 
+    def test_continuous_uploader_bounds_become_cli_flags(self):
+        """The daily write test is a pool consumer too, so it belongs here.
+
+        Its argv is also parsed by the real CLI, since a flag the orchestrator
+        emits but no parser accepts would otherwise only fail against real
+        infrastructure.
+        """
+        m = Manifest.model_validate(
+            {
+                "name": "PROD-UL-DAILY-01",
+                "kind": "prod-continuous-uploader",
+                "purpose": "daily write test",
+                "ssh_key_path": "/ssh/key",
+                "prod_continuous_uploader": {
+                    "spec": "fsn1:cx22",
+                    "volume_size": 40,
+                    "binary": {"version": "0.3.3"},
+                    "pool": {"tiny": 2, "small": 1},
+                    "pool_min_size": "5MB",
+                    "pool_max_size": "100MB",
+                    "verifiers": [{"region": "lon1", "volume_size": 40}],
+                },
+            }
+        )
+        argv = build_deploy_steps(m)[0].argv
+        assert argv[argv.index("--pool-min-size") + 1] == "5MB"
+        assert argv[argv.index("--pool-max-size") + 1] == "100MB"
+        assert argv[argv.index("--pool") + 1] == "tiny:2,small:1"
+
+        captured = {}
+        from saorsa_deploy.cmd import prod_continuous_uploader as module
+        from saorsa_deploy.main import main
+
+        original = module.cmd_prod_continuous_uploader_deploy
+        module.cmd_prod_continuous_uploader_deploy = (
+            lambda args: captured.update(vars(args))
+        )
+        try:
+            main(argv)
+        finally:
+            module.cmd_prod_continuous_uploader_deploy = original
+        assert captured["pool_min_size"] == "5MB"
+        assert captured["pool_max_size"] == "100MB"
+
     def test_local_uploads_bounds_become_cli_flags(self):
         m = Manifest.model_validate(
             {

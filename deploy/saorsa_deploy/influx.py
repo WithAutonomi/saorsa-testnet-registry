@@ -707,6 +707,33 @@ HOST_METRIC_COLUMNS = frozenset(
 _HOST_METRIC_INTERN = HOST_METRIC_COLUMNS - {"_time", "_value"}
 
 
+def _normalise_flux_rows(records: "Iterable[dict]") -> Iterator[dict]:
+    """Parse ``_time`` to a tz-aware datetime and drop rows nothing can use.
+
+    Shared by the eager (:func:`_parse_flux_csv`) and streaming
+    (:func:`iter_host_metric_points`) readers so the two cannot disagree about
+    what a parsed row is. They did disagree once: the streaming reader was wired
+    straight to :func:`_iter_flux_rows`, which yields raw strings, so every
+    consumer downstream of it received ``_time`` as a ``str`` and
+    ``record-analysis`` died in ``SampleStore.append`` on ``ts.timestamp()``.
+    Rows without ``_time`` or ``host`` are skipped — no consumer can place them.
+    """
+    for record in records:
+        time_str = record.get("_time")
+        if not time_str:
+            continue
+        if record.get("host") in (None, ""):
+            continue
+        if not isinstance(time_str, str):
+            yield record
+            continue
+        try:
+            record["_time"] = _parse_ts(time_str)
+        except (KeyError, ValueError):
+            continue
+        yield record
+
+
 def _parse_flux_csv(
     body: "str | Iterable[str]", keep: "frozenset[str] | None" = HOST_METRIC_COLUMNS
 ) -> list[dict]:
@@ -724,20 +751,13 @@ def _parse_flux_csv(
 
     Accepts an iterable of lines as well as a whole body, so callers can stream.
     """
-    rows: list[dict] = []
     intern_cols = _HOST_METRIC_INTERN if keep is HOST_METRIC_COLUMNS else None
-    for record in _iter_flux_rows(body, keep=keep, intern_cols=intern_cols):
-        time_str = record.get("_time")
-        if not time_str:
-            continue
-        if record.get("host") in (None, ""):
-            continue
-        try:
-            record["_time"] = _parse_ts(time_str)
-        except (KeyError, ValueError):
-            continue
-        rows.append(record)
-    return rows
+    return [
+        row
+        for row in _normalise_flux_rows(
+            _iter_flux_rows(body, keep=keep, intern_cols=intern_cols)
+        )
+    ]
 
 
 def fetch_host_metric_points(
@@ -835,8 +855,12 @@ def iter_host_metric_points(
         def _iter():
             flux = template.format(bucket=bucket, start=start, stop=stop)
             lines = _stream_flux(url, token, org, flux, timeout=timeout)
-            return _iter_flux_rows(
-                lines, keep=HOST_METRIC_COLUMNS, intern_cols=_HOST_METRIC_INTERN
+            # Must apply the same per-row normalisation as the eager reader:
+            # consumers require `_time` to be a datetime, not the raw CSV string.
+            return _normalise_flux_rows(
+                _iter_flux_rows(
+                    lines, keep=HOST_METRIC_COLUMNS, intern_cols=_HOST_METRIC_INTERN
+                )
             )
 
         return _iter

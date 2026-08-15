@@ -68,6 +68,23 @@ def cmd_record_results(args):
         )
         return
 
+    if kind == "prod-continuous-uploader":
+        # The uploader and verifier VMs hold their own database connections and
+        # write every upload and verification as it happens, which is also how
+        # a claim gets resolved. Pulling from Influx here could only produce a
+        # less complete copy of what is already stored — and the Influx points
+        # expire, while these rows do not.
+        console.print(
+            f"[yellow]'{args.name}' is a prod-continuous-uploader — its "
+            "uploads and read-back verifications are written straight to "
+            "Postgres by the VMs, so there is nothing to record.[/yellow]"
+        )
+        console.print(
+            f"View them with [bold]saorsa-deploy deployments "
+            f"print-recorded-results --name {args.name}[/bold]."
+        )
+        return
+
     creds = _resolve_influx(args, console)
     if creds is None:
         sys.exit(1)

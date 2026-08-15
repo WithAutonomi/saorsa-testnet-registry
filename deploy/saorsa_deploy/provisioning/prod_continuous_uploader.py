@@ -1,0 +1,460 @@
+"""Provision the daily production write test's two VM roles (V2-837).
+
+Both roles are here because they share almost everything — the ant binary, the
+`saorsa-db` venv, the shape of the env file, the log-prune timer — and differ
+only in which script they run, which variables they need and how systemd should
+treat them dying.
+
+The one structural departure from every other client provisioner in this
+package: these services run under `/opt/ant-registry-client/bin/python` rather
+than `/usr/bin/python3`, because they need `saorsa_db` to reach the registry.
+"""
+
+import json
+from pathlib import Path
+
+from pyinfra.api import Config, Inventory, State
+from pyinfra.api.connect import connect_all
+from pyinfra.api.operation import add_op
+from pyinfra.api.operations import run_ops
+from pyinfra.operations import server
+from rich.console import Console
+
+from saorsa_deploy.prod_bootstraps import render_bootstrap_peers_toml
+from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
+from saorsa_deploy.provisioning.saorsa_db_install import (
+    VENV_PYTHON,
+    SaorsaDbInstaller,
+)
+from saorsa_deploy.resources import get_resources_dir
+
+ANT_INSTALL_PATH = "/root/.local/bin/ant"
+
+UPLOADER_SERVICE = "ant-prod-continuous-uploader"
+UPLOADER_DATA_DIR = "/var/lib/ant-prod-continuous-uploader"
+UPLOADER_SCRIPTS_DIR = "/root/ant-prod-continuous-uploader"
+UPLOADER_LOG_DIR = "/var/log/ant-prod-continuous-uploader"
+UPLOADER_ENV_PATH = "/etc/ant-prod-continuous-uploader.env"
+
+VERIFIER_SERVICE = "ant-prod-upload-verifier"
+VERIFIER_DATA_DIR = "/var/lib/ant-prod-upload-verifier"
+VERIFIER_SCRIPTS_DIR = "/root/ant-prod-upload-verifier"
+VERIFIER_LOG_DIR = "/var/log/ant-prod-upload-verifier"
+VERIFIER_ENV_PATH = "/etc/ant-prod-upload-verifier.env"
+
+REMOTE_BOOTSTRAP_PEERS_PATH = "/root/.config/ant/bootstrap_peers.toml"
+
+
+def build_systemd_unit(
+    *, description: str, env_path: str, script_path: str, restart: str
+) -> str:
+    """Both roles restart on failure and are meant to run indefinitely.
+
+    Unlike `prod uploaders`, whose unit is `Restart=no` because it walks a
+    fixed list once and exits, neither of these services has a natural end:
+    the uploader sleeps until the next cycle and the verifier waits for work.
+    A crash is therefore always something to recover from.
+    """
+    return f"""\
+[Unit]
+Description={description}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile={env_path}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={VENV_PYTHON} -u {script_path}
+StandardOutput=journal
+StandardError=journal
+{restart}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def build_log_prune_command(
+    service_name: str, log_dir: str, retention_days: int
+) -> str:
+    """Install (or remove) a daily prune timer for the per-op logs.
+
+    `retention_days <= 0` removes the timer so toggling it off on a re-provision
+    actually takes effect, matching how the downloader's prune behaves.
+
+    Unlike the crash-debug node prune, this one does NOT restart a log
+    forwarder afterwards: nothing tails these files, so deleting them frees the
+    space immediately.
+    """
+    prune_service_path = f"/etc/systemd/system/{service_name}-logprune.service"
+    prune_timer_path = f"/etc/systemd/system/{service_name}-logprune.timer"
+    if retention_days <= 0:
+        return (
+            f"systemctl disable --now {service_name}-logprune.timer "
+            f"2>/dev/null || true; "
+            f"rm -f {prune_timer_path} {prune_service_path}; "
+            "systemctl daemon-reload"
+        )
+    days = int(retention_days)
+    prune_service = f"""\
+[Unit]
+Description=Prune {service_name} per-op logs older than {days} days
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/find {log_dir} -type f -mtime +{days} -delete
+"""
+    prune_timer = f"""\
+[Unit]
+Description=Daily prune of {service_name} per-op logs
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+    return (
+        f"cat > {prune_service_path} << 'PRUNE_SVC_EOF'\n"
+        f"{prune_service}PRUNE_SVC_EOF\n"
+        f"cat > {prune_timer_path} << 'PRUNE_TIMER_EOF'\n"
+        f"{prune_timer}PRUNE_TIMER_EOF\n"
+        f"systemctl daemon-reload && "
+        f"systemctl enable --now {service_name}-logprune.timer"
+    )
+
+
+def build_env_file_lines(values: dict) -> str:
+    """Render an env file, omitting empties so defaults in the script apply.
+
+    Values are not quoted: systemd's EnvironmentFile takes the rest of the line
+    verbatim, and quoting would end up inside the value.
+    """
+    return "\n".join(f"{key}={value}" for key, value in values.items() if value != "")
+
+
+def _install_ant_command(download_url: str, is_archive: bool) -> str:
+    if is_archive:
+        return (
+            f"test -f {ANT_INSTALL_PATH} && echo 'ANT_BINARY:SKIP' || ("
+            f"wget -q {download_url} -O /tmp/ant-archive.tar.gz && "
+            f"tar -xzf /tmp/ant-archive.tar.gz -C /tmp/ && "
+            f"find /tmp -name ant -type f -path '*/ant-*/*' "
+            f"-exec mv {{}} {ANT_INSTALL_PATH} \\; && "
+            f"chmod +x {ANT_INSTALL_PATH} && "
+            f"rm -rf /tmp/ant-*/ /tmp/ant-archive.tar.gz && "
+            f"echo 'ANT_BINARY:INSTALLED')"
+        )
+    return (
+        f"test -f {ANT_INSTALL_PATH} && echo 'ANT_BINARY:SKIP' || ("
+        f"wget -q {download_url} -O {ANT_INSTALL_PATH} && "
+        f"chmod +x {ANT_INSTALL_PATH} && echo 'ANT_BINARY:INSTALLED')"
+    )
+
+
+class _BaseProvisioner:
+    def __init__(
+        self,
+        *,
+        hosts: list,
+        deployment_id: int,
+        deployment_name: str,
+        pool_database_url: str,
+        bootstrap_peers: list,
+        ssh_key_path: str = "~/.ssh/id_rsa",
+        binary_url: str | None = None,
+        binary_is_archive: bool = True,
+        influx_url: str = "",
+        influx_token: str = "",
+        influx_org: str = "ant",
+        influx_bucket: str = "testnet-metrics",
+        evm_network: str = "arbitrum-one",
+        log_level: str = "info",
+        rust_log: str | None = None,
+        bootstrap_cache: bool = True,
+        log_retention_days: int = 7,
+        wheel_path: Path | None = None,
+        console: Console | None = None,
+    ):
+        self.hosts = hosts
+        self.deployment_id = deployment_id
+        self.deployment_name = deployment_name
+        self.pool_database_url = pool_database_url
+        self.bootstrap_peers = bootstrap_peers
+        self.ssh_key_path = ssh_key_path
+        self.binary_url = binary_url
+        self.binary_is_archive = binary_is_archive
+        self.influx_url = influx_url
+        self.influx_token = influx_token
+        self.influx_org = influx_org
+        self.influx_bucket = influx_bucket
+        self.evm_network = evm_network
+        self.log_level = log_level
+        self.rust_log = rust_log
+        self.bootstrap_cache = bootstrap_cache
+        self.log_retention_days = log_retention_days
+        self.wheel_path = wheel_path
+        self.console = console or Console()
+
+    # -- subclass contract ------------------------------------------------
+    service_name = ""
+    data_dir = ""
+    scripts_dir = ""
+    log_dir = ""
+    env_path = ""
+    script_name = ""
+    description = ""
+    restart_directive = "Restart=on-failure\nRestartSec=30"
+
+    def _per_host_env(self, host: dict) -> dict:
+        raise NotImplementedError
+
+    # ---------------------------------------------------------------------
+    def execute(self) -> None:
+        inventory = Inventory(
+            (
+                [
+                    (h["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path})
+                    for h in self.hosts
+                ],
+                {},
+            )
+        )
+        state = State(inventory, Config(SUDO=False))
+        connect_all(state)
+
+        add_operator_authorized_keys_op(state)
+        add_op(
+            state,
+            server.shell,
+            name="Disable unattended upgrades",
+            commands=[
+                "systemctl stop unattended-upgrades 2>/dev/null || true; "
+                "systemctl disable unattended-upgrades 2>/dev/null || true"
+            ],
+        )
+        add_op(
+            state,
+            server.shell,
+            name=f"Create {self.service_name} directories",
+            commands=[
+                f"mkdir -p {self.data_dir} {self.data_dir}/files "
+                f"{self.scripts_dir} {self.log_dir} /root/.local/bin "
+                f"/root/.config/ant"
+            ],
+        )
+
+        self._add_install_ant_op(state)
+        SaorsaDbInstaller(wheel_path=self.wheel_path, console=self.console).add_ops(
+            state
+        )
+        self._add_script_op(state)
+        self._add_env_op(state)
+        self._add_unit_op(state)
+        add_op(
+            state,
+            server.shell,
+            name=f"Configure {self.service_name} log pruning",
+            commands=[
+                build_log_prune_command(
+                    self.service_name, self.log_dir, self.log_retention_days
+                )
+            ],
+        )
+
+        run_ops(state)
+        # Services are enabled but not started here, matching every other
+        # client provisioner: starting is a separate, explicit step.
+
+    def _add_install_ant_op(self, state: State) -> None:
+        download_url = self.binary_url
+        if not download_url:
+            from saorsa_deploy.binary_source import get_ant_release_url
+
+            self.console.print("Fetching latest ant release from GitHub...")
+            download_url = get_ant_release_url()
+        add_op(
+            state,
+            server.shell,
+            name="Download and install ant binary",
+            commands=[
+                _install_ant_command(download_url, self.binary_is_archive)
+            ],
+        )
+
+    def _add_script_op(self, state: State) -> None:
+        script = (get_resources_dir() / "scripts" / self.script_name).read_text()
+        add_op(
+            state,
+            server.shell,
+            name=f"Deploy {self.script_name}",
+            commands=[
+                f"cat > {self.scripts_dir}/{self.script_name} << 'SCRIPT_EOF'\n"
+                f"{script}SCRIPT_EOF",
+                f"chmod +x {self.scripts_dir}/{self.script_name}",
+            ],
+        )
+
+    def _add_env_op(self, state: State) -> None:
+        # One op serves every host: the per-host values are dispatched by a
+        # `case` on the VM's own primary address, the same idiom the other
+        # multi-host client provisioners use.
+        # The shared renderer, not a hand-rolled one: the file is a single
+        # `peers = [...]` array, and emitting a repeated `addr = "…"` key makes
+        # a TOML document that ant refuses to parse ("duplicate key"), failing
+        # every upload before it touches the network.
+        peers_toml = render_bootstrap_peers_toml(self.bootstrap_peers)
+        case_blocks = []
+        for host in self.hosts:
+            env = self._per_host_env(host)
+            rendered = build_env_file_lines(env)
+            case_blocks.append(
+                f'  "{host["ip"]}")\n'
+                f"    cat > {self.env_path} << 'ENV_EOF'\n"
+                f"{rendered}\n"
+                f"ENV_EOF\n"
+                f"    ;;"
+            )
+        script = (
+            'MY_IP=$(hostname -I | awk \'{print $1}\')\n'
+            'case "$MY_IP" in\n' + "\n".join(case_blocks) + "\nesac\n"
+            f"cat > {REMOTE_BOOTSTRAP_PEERS_PATH} << 'PEERS_EOF'\n"
+            f"{peers_toml}PEERS_EOF\n"
+            f"chmod 600 {self.env_path}"
+        )
+        add_op(
+            state,
+            server.shell,
+            name=f"Write {self.service_name} env file",
+            commands=[script],
+        )
+
+    def _add_unit_op(self, state: State) -> None:
+        unit = build_systemd_unit(
+            description=self.description,
+            env_path=self.env_path,
+            script_path=f"{self.scripts_dir}/{self.script_name}",
+            restart=self.restart_directive,
+        )
+        add_op(
+            state,
+            server.shell,
+            name=f"Install {self.service_name} systemd unit",
+            commands=[
+                f"cat > /etc/systemd/system/{self.service_name}.service "
+                f"<< 'UNIT_EOF'\n{unit}UNIT_EOF",
+                "systemctl daemon-reload",
+                f"systemctl enable {self.service_name}",
+            ],
+        )
+
+    def _shared_env(self, host: dict) -> dict:
+        return {
+            "HOME": "/root",
+            "DEPLOYMENT_ID": self.deployment_id,
+            "DEPLOYMENT_NAME": self.deployment_name,
+            "POOL_DATABASE_URL": self.pool_database_url,
+            "REGION": host["region"],
+            "ANT": ANT_INSTALL_PATH,
+            "EVM_NETWORK": self.evm_network,
+            "LOG_LEVEL": self.log_level,
+            "RUST_LOG": self.rust_log or "",
+            "BOOTSTRAP_CACHE": str(self.bootstrap_cache).lower(),
+            "BOOTSTRAP_ARGS": " ".join(
+                f"--bootstrap {peer}" for peer in self.bootstrap_peers
+            ),
+            "INFLUX_URL": self.influx_url,
+            "INFLUX_TOKEN": self.influx_token,
+            "INFLUX_ORG": self.influx_org,
+            "INFLUX_BUCKET": self.influx_bucket,
+        }
+
+
+class ProdContinuousUploaderProvisioner(_BaseProvisioner):
+    service_name = UPLOADER_SERVICE
+    data_dir = UPLOADER_DATA_DIR
+    scripts_dir = UPLOADER_SCRIPTS_DIR
+    log_dir = UPLOADER_LOG_DIR
+    env_path = UPLOADER_ENV_PATH
+    script_name = "prod_continuous_uploader.py"
+    description = "Ant Production Daily Write Test (uploader)"
+
+    def __init__(
+        self,
+        *,
+        pool_request: dict,
+        wallet_secret_key: str,
+        sleep_interval_secs: int = 86400,
+        pool_min_size: str | None = None,
+        pool_max_size: str | None = None,
+        payment_type: str | None = None,
+        readback_verify: bool = True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.pool_request = pool_request
+        self.wallet_secret_key = wallet_secret_key
+        self.sleep_interval_secs = sleep_interval_secs
+        self.pool_min_size = pool_min_size
+        self.pool_max_size = pool_max_size
+        self.payment_type = payment_type
+        self.readback_verify = readback_verify
+
+    def _per_host_env(self, host: dict) -> dict:
+        secret = self.wallet_secret_key
+        if secret and not secret.startswith("0x"):
+            secret = f"0x{secret}"
+        env = self._shared_env(host)
+        env.update(
+            {
+                "SECRET_KEY": secret,
+                "WORK_DIR": f"{self.data_dir}/files",
+                "POOL_REQUEST": json.dumps(self.pool_request, separators=(",", ":")),
+                "POOL_MIN_SIZE": self.pool_min_size or "",
+                "POOL_MAX_SIZE": self.pool_max_size or "",
+                "SLEEP_INTERVAL_SECS": self.sleep_interval_secs,
+                "PAYMENT_TYPE": self.payment_type or "",
+                "READBACK_VERIFY": str(self.readback_verify).lower(),
+            }
+        )
+        return env
+
+
+class ProdUploadVerifierProvisioner(_BaseProvisioner):
+    service_name = VERIFIER_SERVICE
+    data_dir = VERIFIER_DATA_DIR
+    scripts_dir = VERIFIER_SCRIPTS_DIR
+    log_dir = VERIFIER_LOG_DIR
+    env_path = VERIFIER_ENV_PATH
+    script_name = "prod_upload_verifier.py"
+    description = "Ant Production Daily Write Test (read-back verifier)"
+    # Always-on rather than on-failure: this service is idle most of the time
+    # and must be running the moment a new upload appears.
+    restart_directive = "Restart=always\nRestartSec=30"
+
+    def __init__(
+        self,
+        *,
+        verify_interval_secs: int = 3600,
+        verify_batch_limit: int = 50,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.verify_interval_secs = verify_interval_secs
+        self.verify_batch_limit = verify_batch_limit
+
+    def _per_host_env(self, host: dict) -> dict:
+        env = self._shared_env(host)
+        env.update(
+            {
+                "WORK_DIR": f"{self.data_dir}/downloads",
+                "VERIFY_INTERVAL_SECS": self.verify_interval_secs,
+                "VERIFY_BATCH_LIMIT": self.verify_batch_limit,
+                "PROVIDER": host.get("provider", "") or "",
+            }
+        )
+        # No wallet key: verification only downloads, which costs nothing. Not
+        # shipping it keeps a funded mainnet key off two more VMs.
+        return env

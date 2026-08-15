@@ -115,6 +115,15 @@ def cmd_print_recorded_results(args) -> None:
             print_prod_canary_status,
         )
         print_prod_canary_status(repo, deployment, args, console)
+    elif kind == "prod-continuous-uploader":
+        rows = repo.list_prod_upload_results_for_deployment(deployment.id)
+        _print_prod_upload_section(rows, deployment.name, args.details, console)
+        _print_verification_section(
+            repo.list_prod_upload_verifications_for_deployment(deployment.id),
+            deployment.name,
+            args.details,
+            console,
+        )
     elif kind in _PROD_UPLOAD_KINDS:
         rows = repo.list_prod_upload_results_for_deployment(deployment.id)
         _print_prod_upload_section(rows, deployment.name, args.details, console)
@@ -875,3 +884,132 @@ def _fmt_iso(value) -> str:
 
 
 __all__ = ["cmd_print_recorded_results"]
+
+
+# ---------------------------------------------------------------------------
+# Read-back verification section: prod-continuous-uploader
+# ---------------------------------------------------------------------------
+
+
+def _print_verification_section(rows, name: str, details: bool, console) -> None:
+    """Per-region read-back results for the daily write test.
+
+    Broken out by region rather than pooled: the whole design has each region
+    check every address independently, so a file that verifies in one region
+    and not another is the single most interesting thing this test can find,
+    and a pooled total would hide it.
+    """
+    from collections import defaultdict
+
+    from saorsa_db.models import ProdUploadVerifyStatus
+
+    console.print()
+    console.print("[bold]Read-back verification (per region)[/bold]")
+    if not rows:
+        console.print(
+            "[yellow]No verifications recorded yet. The verifiers check on "
+            "their own cycle, so a freshly-deployed run has nothing here "
+            "until the first one completes.[/yellow]"
+        )
+        return
+
+    by_host = defaultdict(list)
+    for row in rows:
+        by_host[(row.client_hostname, row.region)].append(row)
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Host")
+    table.add_column("Region")
+    table.add_column("Checked", justify="right")
+    table.add_column("OK", justify="right")
+    table.add_column("Mismatch", justify="right")
+    table.add_column("Failed", justify="right")
+    table.add_column("Inconclusive", justify="right")
+    table.add_column("Median age", justify="right")
+    table.add_column("Longest failing", justify="right")
+
+    total_mismatch = 0
+    for (host, region), host_rows in sorted(by_host.items()):
+        counts = defaultdict(int)
+        for row in host_rows:
+            counts[row.status] += 1
+        mismatches = counts[ProdUploadVerifyStatus.DIGEST_MISMATCH]
+        total_mismatch += mismatches
+        ages = sorted(r.age_at_check_secs or 0 for r in host_rows)
+        median_age = ages[len(ages) // 2] if ages else 0
+        # A failure that has been retried for days is a different animal from
+        # one seen once, and the retry overwrites the row — so the longest
+        # standing failure is surfaced rather than just a count.
+        failing = [
+            r for r in host_rows
+            if r.status is ProdUploadVerifyStatus.DOWNLOAD_FAILED
+            and r.first_failed_at is not None
+        ]
+        if failing:
+            oldest = min(failing, key=lambda r: r.first_failed_at)
+            failing_for = int(
+                (oldest.finished_at - oldest.first_failed_at).total_seconds()
+            )
+            worst = f"{_format_age(failing_for)} / {oldest.attempts}x"
+        else:
+            worst = "-"
+        table.add_row(
+            host,
+            region,
+            str(len(host_rows)),
+            f"[green]{counts[ProdUploadVerifyStatus.OK]}[/green]",
+            f"[bold red]{mismatches}[/bold red]" if mismatches else "0",
+            str(counts[ProdUploadVerifyStatus.DOWNLOAD_FAILED]),
+            str(counts[ProdUploadVerifyStatus.INCONCLUSIVE]),
+            _format_age(median_age),
+            worst,
+        )
+    console.print(table)
+
+    if total_mismatch:
+        # Louder than a table cell: this is the only signal here that means the
+        # network returned data and the data was wrong.
+        console.print(
+            f"[bold red]{total_mismatch} content mismatch(es) — the network "
+            "returned bytes that differ from what was uploaded.[/bold red]"
+        )
+
+    if details:
+        detail = Table(show_header=True, header_style="bold")
+        detail.add_column("Region")
+        detail.add_column("File")
+        detail.add_column("Address")
+        detail.add_column("Status")
+        detail.add_column("Age", justify="right")
+        detail.add_column("Tries", justify="right")
+        detail.add_column("Reason")
+        for row in rows:
+            detail.add_row(
+                row.region,
+                row.file_name[:40],
+                (row.address or "")[:16] + "…",
+                _verify_status_label(row.status),
+                _format_age(row.age_at_check_secs or 0),
+                str(row.attempts),
+                (row.reason or "")[:60],
+            )
+        console.print(detail)
+
+
+def _verify_status_label(status) -> str:
+    from saorsa_db.models import ProdUploadVerifyStatus
+
+    return {
+        ProdUploadVerifyStatus.OK: "[green]ok[/green]",
+        ProdUploadVerifyStatus.DIGEST_MISMATCH: "[bold red]MISMATCH[/bold red]",
+        ProdUploadVerifyStatus.DOWNLOAD_FAILED: "[red]failed[/red]",
+        ProdUploadVerifyStatus.INCONCLUSIVE: "[yellow]inconclusive[/yellow]",
+    }.get(status, str(status))
+
+
+def _format_age(seconds: int) -> str:
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
