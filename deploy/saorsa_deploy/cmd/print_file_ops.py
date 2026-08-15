@@ -54,6 +54,26 @@ def _dispatch(args, op_type: str) -> None:
         )
         return
 
+    if kind == "prod-continuous-uploader":
+        # Same `prod_upload` measurement as prod-uploaders, so the upload view
+        # is shared. Its downloads are read-back *verifications*, which live in
+        # Postgres rather than the `download` measurement this command reads —
+        # falling through would query the wrong measurement and report "nothing
+        # recorded" for a deployment that is working.
+        if op_type == "download":
+            console.print(
+                f"[yellow]'{args.name}' is a prod-continuous-uploader — it "
+                f"does not download, it re-reads what it uploaded.[/yellow]"
+            )
+            console.print(
+                "Read-back verifications are written straight to Postgres; "
+                "view them with [bold]deployments print-recorded-results "
+                f"--id <id>[/bold]."
+            )
+            return
+        _run_prod_uploads(args, console)
+        return
+
     if kind == "prod-uploaders":
         if op_type == "download":
             console.print(
@@ -507,6 +527,16 @@ def _prod_print_table(
             show_lines=True,
         )
         table.add_column("#", justify="right")
+        # When an upload happened, not just that it did. A permanent daily run
+        # is a time series, and a table of it with no timestamp cannot answer
+        # "did today's cycle run?" — the question the whole deployment exists
+        # to answer. The download table has carried this from the start.
+        #
+        # Completion rather than start: `_time` is stamped by InfluxDB's own
+        # clock when the point lands, which is immediately after the upload
+        # finishes, so it is trustworthy even on a clock-skewed VM. The
+        # client's own start is in `start_ns` and is shown by `--details`.
+        table.add_column("Completed (UTC)")
         table.add_column("File")
         table.add_column("Size", justify="right")
         table.add_column("Status")
@@ -516,6 +546,7 @@ def _prod_print_table(
         for i, op in enumerate(ops, start=1):
             table.add_row(
                 str(i),
+                _fmt_time(op.get("_time")),
                 op.get("file_name") or "-",
                 _fmt_size(op.get("file_size")),
                 _PROD_STATUS_LABELS.get(op.get("status"), "-"),

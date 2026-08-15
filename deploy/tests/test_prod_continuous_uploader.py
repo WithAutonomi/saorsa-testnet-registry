@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -710,3 +711,126 @@ class TestTheInfraSpecsAreWhatClientsInfraExpects:
             parse_downloader_spec(
                 build_verifier_infra_spec(provider, verifier, self.TOKEN)
             )
+
+
+class TestPrintUploadsDispatch:
+    """`print-uploads` must not fall through to the file-ops path.
+
+    The write test writes the same `prod_upload` measurement as prod-uploaders,
+    but the fall-through queries the `upload`/`download` measurements instead
+    and reports "no upload operations recorded" for a deployment that is
+    working perfectly.
+    """
+
+    def _dispatch(self, monkeypatch, kind, op_type):
+        from saorsa_deploy.cmd import print_file_ops as module
+
+        monkeypatch.setattr(module, "_resolve_kind", lambda name, console: kind)
+        called = {}
+        monkeypatch.setattr(
+            module, "_run_prod_uploads",
+            lambda args, console: called.setdefault("path", "prod_upload"),
+        )
+        monkeypatch.setattr(
+            module, "_run_file_ops",
+            lambda args, op, console: called.setdefault("path", "file_ops"),
+        )
+        module._dispatch(SimpleNamespace(name="PROD-UL-01"), op_type)
+        return called.get("path", "none")
+
+    def test_uploads_use_the_prod_upload_measurement(self, monkeypatch):
+        assert (
+            self._dispatch(monkeypatch, "prod-continuous-uploader", "upload")
+            == "prod_upload"
+        )
+
+    def test_downloads_explain_where_verifications_live(self, monkeypatch):
+        """It does not download; it re-reads, and those rows are in Postgres."""
+        assert (
+            self._dispatch(monkeypatch, "prod-continuous-uploader", "download")
+            == "none"
+        )
+
+    def test_prod_uploaders_is_unaffected(self, monkeypatch):
+        assert (
+            self._dispatch(monkeypatch, "prod-uploaders", "upload")
+            == "prod_upload"
+        )
+
+
+class TestLogsAreBounded:
+    """A 40 GB root disk with per-op logs needs a prune timer, on both roles."""
+
+    def test_both_roles_get_a_prune_timer(self):
+        from saorsa_deploy.provisioning.prod_continuous_uploader import (
+            UPLOADER_LOG_DIR,
+            UPLOADER_SERVICE,
+            VERIFIER_LOG_DIR,
+            VERIFIER_SERVICE,
+            build_log_prune_command,
+        )
+
+        for service, log_dir in (
+            (UPLOADER_SERVICE, UPLOADER_LOG_DIR),
+            (VERIFIER_SERVICE, VERIFIER_LOG_DIR),
+        ):
+            command = build_log_prune_command(service, log_dir, 7)
+            assert f"find {log_dir} -type f -mtime +7 -delete" in command
+            assert f"systemctl enable --now {service}-logprune.timer" in command
+
+
+class TestTheUploadTableShowsWhenItHappened:
+    """A permanent daily run is a time series.
+
+    Without a timestamp the table cannot answer "did today's cycle run?",
+    which is the question the whole deployment exists to answer.
+    """
+
+    def _render(self, ops):
+        from rich.console import Console
+
+        from saorsa_deploy.cmd import print_file_ops as module
+
+        console = Console(record=True, width=200)
+        module._prod_print_table(
+            {"host-1": ops}, {"host-1": "default"}, {"host-1": True}, console
+        )
+        return console.export_text()
+
+    def test_the_completion_time_is_rendered(self):
+        from datetime import datetime, timezone
+
+        output = self._render(
+            [
+                {
+                    "file_name": "a.jpg",
+                    "file_size": 1024,
+                    "status": 0,
+                    "chunks_stored": 4,
+                    "total_chunks": 4,
+                    "chunks_failed": 0,
+                    "total_ms": 1500,
+                    "start_ns": 1,
+                    "_time": datetime(2026, 8, 15, 0, 37, 31, tzinfo=timezone.utc),
+                }
+            ]
+        )
+        assert "2026-08-15" in output
+        assert "00:37:31" in output
+
+    def test_a_missing_timestamp_does_not_break_the_table(self):
+        output = self._render(
+            [
+                {
+                    "file_name": "a.jpg",
+                    "file_size": 1024,
+                    "status": 0,
+                    "chunks_stored": 4,
+                    "total_chunks": 4,
+                    "chunks_failed": 0,
+                    "total_ms": 1500,
+                    "start_ns": 1,
+                }
+            ]
+        )
+        assert "a.jpg" in output
