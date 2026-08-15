@@ -356,6 +356,33 @@ class TestTheSaorsaDbInstall:
         assert "--force-reinstall --no-deps" in joined
         assert "import saorsa_db.repositories" in joined
 
+    def test_apt_lists_are_refreshed_before_installing(self):
+        """A stock Hetzner Ubuntu 24.04 image ships with no package lists.
+
+        Without `apt-get update` first, installing python3-venv fails with
+        "has no installation candidate" even though universe is enabled and the
+        package exists — which is exactly how the first live provision died.
+        """
+        from saorsa_deploy.provisioning.saorsa_db_install import (
+            build_install_commands,
+        )
+
+        venv_step = build_install_commands("x.whl")[0]
+        assert "apt-get update" in venv_step
+        assert venv_step.index("apt-get update") < venv_step.index(
+            "apt-get install"
+        )
+
+    def test_the_versioned_venv_package_is_a_fallback(self):
+        """Which of python3-venv / python3.N-venv resolves varies by image."""
+        from saorsa_deploy.provisioning.saorsa_db_install import (
+            build_install_commands,
+        )
+
+        venv_step = build_install_commands("x.whl")[0]
+        assert "python3-venv ||" in venv_step
+        assert "-venv\")" in venv_step or "-venv\"" in venv_step
+
     def test_the_wheel_builds_from_the_working_tree(self, tmp_path):
         """Pinned to the tree, not a published version.
 

@@ -110,6 +110,16 @@ class DeploymentRepository(ABC):
         ...
 
     @abstractmethod
+    def update_deploy_args(self, deployment_id: int, deploy_args: dict) -> None:
+        """Replace a deployment's recorded arguments.
+
+        For a deployment that is re-provisioned in place rather than recreated,
+        so the registry does not drift from the manifest it was last deployed
+        from — `generate-inventory` and the Slack summary both read this.
+        """
+        ...
+
+    @abstractmethod
     def list_all(self) -> list[Deployment]:
         ...
 
@@ -638,6 +648,14 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .order_by(Deployment.created_at.desc())
             .first()
         )
+
+    def update_deploy_args(self, deployment_id: int, deploy_args: dict) -> None:
+        deployment = self.session.get(Deployment, deployment_id)
+        if deployment is None:
+            return
+        deployment.deploy_args = deploy_args
+        deployment.updated_at = datetime.now(timezone.utc)
+        self.session.commit()
 
     def get_active_by_name(self, name: str) -> Deployment | None:
         terminal_statuses = [DeploymentStatus.DESTROYED, DeploymentStatus.FAILED]

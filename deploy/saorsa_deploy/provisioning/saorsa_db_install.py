@@ -41,6 +41,13 @@ VENV_PYTHON = f"{VENV_DIR}/bin/python"
 VENV_PIP = f"{VENV_DIR}/bin/pip"
 REMOTE_WHEEL_DIR = "/root/saorsa-db-wheel"
 
+#: Prints the running interpreter's "major.minor", for the versioned
+#: `pythonX.Y-venv` package name. Kept as a constant so the quoting inside the
+#: install command stays readable.
+_PY_VERSION_SHELL = (
+    "python3 -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])'"
+)
+
 #: Runtime dependencies actually needed on a VM. `alembic` is a declared
 #: dependency of the package but only for generating and applying migrations,
 #: which never happens from a client VM — so it is installed with `--no-deps`
@@ -100,9 +107,19 @@ def build_install_commands(wheel_name: str) -> list[str]:
     remote_wheel = f"{REMOTE_WHEEL_DIR}/{wheel_name}"
     deps = " ".join(f'"{dep}"' for dep in RUNTIME_DEPS)
     return [
-        # python3-venv is not in every base image; apt is a no-op when present.
+        # `apt-get update` first, and it is not optional: a stock Hetzner
+        # Ubuntu 24.04 image ships with no package lists, so installing
+        # python3-venv fails with "has no installation candidate" even though
+        # universe is enabled and the package plainly exists. Measured on the
+        # real VM — the lists were the whole problem.
+        #
+        # The versioned name is a fallback because some images only carry
+        # python3.N-venv, and which one resolves varies by provider image.
         f"test -x {VENV_PYTHON} || ("
-        f"DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-venv && "
+        f"DEBIAN_FRONTEND=noninteractive apt-get update -q && "
+        f"(DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-venv || "
+        f"DEBIAN_FRONTEND=noninteractive apt-get install -y -q "
+        f"\"python$({_PY_VERSION_SHELL})-venv\") && "
         f"python3 -m venv {VENV_DIR})",
         # Dependencies are requested every time but pip no-ops once they are
         # satisfied, so this stays cheap on re-provision.

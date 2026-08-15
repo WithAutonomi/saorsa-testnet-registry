@@ -20,6 +20,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.prod_bootstraps import render_bootstrap_peers_toml
 from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.provisioning.saorsa_db_install import (
     VENV_PYTHON,
@@ -300,7 +301,11 @@ class _BaseProvisioner:
         # One op serves every host: the per-host values are dispatched by a
         # `case` on the VM's own primary address, the same idiom the other
         # multi-host client provisioners use.
-        peers_toml = "\n".join(f'addr = "{peer}"' for peer in self.bootstrap_peers)
+        # The shared renderer, not a hand-rolled one: the file is a single
+        # `peers = [...]` array, and emitting a repeated `addr = "…"` key makes
+        # a TOML document that ant refuses to parse ("duplicate key"), failing
+        # every upload before it touches the network.
+        peers_toml = render_bootstrap_peers_toml(self.bootstrap_peers)
         case_blocks = []
         for host in self.hosts:
             env = self._per_host_env(host)
@@ -316,7 +321,7 @@ class _BaseProvisioner:
             'MY_IP=$(hostname -I | awk \'{print $1}\')\n'
             'case "$MY_IP" in\n' + "\n".join(case_blocks) + "\nesac\n"
             f"cat > {REMOTE_BOOTSTRAP_PEERS_PATH} << 'PEERS_EOF'\n"
-            f"{peers_toml}\nPEERS_EOF\n"
+            f"{peers_toml}PEERS_EOF\n"
             f"chmod 600 {self.env_path}"
         )
         add_op(

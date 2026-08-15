@@ -450,18 +450,82 @@ def _systemctl(name: str, hosts: list, ssh_key_path: str, label: str, commands: 
 
 
 def _start(args, console: Console) -> None:
+    """Enable and (re)start both services.
+
+    `enable --now` alone is not enough on a re-provision: it is a no-op against
+    an already-running unit, so a service keeps executing the code and
+    environment it started with. On the first live run that left the verifiers
+    polling a stale deployment id while the uploader wrote under the new one,
+    so the two halves silently stopped seeing each other's work.
+
+    `restart` is safe for both roles here: the uploader's cycle is idempotent
+    (it claims fresh files each time) and the verifier keeps no local state, so
+    neither loses anything by being restarted.
+    """
     console.print("[bold cyan]Step 5/5: starting services[/bold cyan]")
     uploaders, verifiers = _split_clients(args.name, console)
     _systemctl(
         args.name, uploaders, args.ssh_key_path,
         "Start the uploader service",
-        [f"systemctl enable --now {UPLOADER_SERVICE}"],
+        [
+            f"systemctl enable {UPLOADER_SERVICE}",
+            f"systemctl restart {UPLOADER_SERVICE}",
+        ],
     )
     _systemctl(
         args.name, verifiers, args.ssh_key_path,
         "Start the verifier services",
-        [f"systemctl enable --now {VERIFIER_SERVICE}"],
+        [
+            f"systemctl enable {VERIFIER_SERVICE}",
+            f"systemctl restart {VERIFIER_SERVICE}",
+        ],
     )
+
+
+def _resolve_deployment_row(name: str, deploy_args: dict, console: Console):
+    """Reuse this deployment's existing row rather than forking a new one.
+
+    Every other prod kind registers a fresh row per deploy, which is right for
+    them: each is a discrete run with its own results. This one is permanent
+    and re-provisioned in place — to change the pool request, pick up a new ant
+    version, or apply a fix — and a new row each time would scatter one
+    deployment's history across several, so a month of uploads could not be
+    read back as a whole.
+
+    Worse, it desynchronises the fleet: the uploader would start writing under
+    the new id while a verifier that was not restarted keeps polling the old
+    one, and the two halves stop seeing each other's work — which is exactly
+    what happened on the first live run.
+
+    The `deploy_args` are refreshed on the existing row so the manifest and the
+    registry do not drift.
+    """
+    from saorsa_deploy.registry import get_repository
+
+    repo = get_repository()
+    if repo is None:
+        return record_deployment_created(name, deploy_args)
+
+    try:
+        existing = repo.get_active_by_name(name)
+    except Exception:  # noqa: BLE001
+        existing = None
+
+    if existing is not None:
+        console.print(
+            f"[dim]Reusing deployment row {existing.id} for '{name}' — this "
+            "kind is re-provisioned in place, so its history stays in one "
+            "place.[/dim]"
+        )
+        try:
+            repo.update_deploy_args(existing.id, deploy_args)
+        except AttributeError:
+            # Older repository without the setter: the row is still the right
+            # one to write against, which is what actually matters here.
+            pass
+        return existing.id
+
+    return record_deployment_created(name, deploy_args)
 
 
 def cmd_prod_continuous_uploader_deploy(args) -> None:
@@ -513,7 +577,7 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
         # Deliberately absent: the database URL and the wallet key.
     }
 
-    deployment_id = record_deployment_created(args.name, deploy_args)
+    deployment_id = _resolve_deployment_row(args.name, deploy_args, console)
     if deployment_id is None:
         console.print(
             "[bold red]Error:[/bold red] could not register this deployment. "

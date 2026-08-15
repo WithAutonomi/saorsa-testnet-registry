@@ -487,6 +487,18 @@ def main() -> int:
                 duration_ms = (time.time_ns() - upload_start_ns) // 1_000_000
 
                 parsed = _parse_ant_json(stdout)
+                # ant emits a JSON result document even when an upload goes
+                # wrong part-way. NO document at all, with a non-zero exit,
+                # means it died before it could upload anything — a bad config,
+                # bad arguments, a broken binary. Nothing reached the network,
+                # so the file must go back in the pool rather than be spent.
+                #
+                # This distinction is load-bearing: `partial` permanently
+                # excludes a file from canary selection, on the assumption that
+                # some of its chunks are on the network. A malformed
+                # bootstrap_peers.toml burned three files that way on the first
+                # live run, none of which had been anywhere near production.
+                startup_failure = parsed is None and rc != 0
                 if parsed is None or "error" in parsed or rc != 0:
                     status = ProdUploadStatus.PARTIAL_UPLOAD
                     influx_status = STATUS_PARTIAL_UPLOAD
@@ -551,6 +563,14 @@ def main() -> int:
                             storage_cost_atto=_decimal_or_none(storage_cost),
                             gas_cost_wei=_decimal_or_none(gas_cost),
                             note="uploaded by prod continuous-uploader",
+                        )
+                    elif startup_failure:
+                        # ant never started, so nothing was written. Releasing
+                        # keeps a configuration error from quietly consuming
+                        # the pool — the files are as unused as before.
+                        pool_repo.release_pool_claim(
+                            claim.id,
+                            note=f"ant produced no result document (exit {rc})"[:500],
                         )
                     else:
                         # Chunks are on the network even though the upload did

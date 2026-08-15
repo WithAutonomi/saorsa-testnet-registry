@@ -694,11 +694,24 @@ def _write_client_inventory(
 
     config = inventory["client_config"]
     if config:
-        console.print(
-            f"  {config['address_count']} address(es), "
-            f"{'one-shot' if config['one_shot'] else 'continuous'}, "
-            f"diagnostics={'on' if config['settings']['download_diagnostics'] else 'off'}"
-        )
+        # Keyed off the kind rather than probing for fields: the write test has
+        # no address list at all (it claims files per cycle), so summarising it
+        # with the download kinds' vocabulary means a KeyError at the end of an
+        # otherwise-successful deploy.
+        if config.get("kind") == PROD_UPLOAD_TEST_KIND:
+            request = config.get("pool_request") or {}
+            drawn = ", ".join(f"{count} {name}" for name, count in request.items())
+            console.print(
+                f"  uploads {drawn or 'nothing'} per cycle, "
+                f"{len(config.get('verifiers') or [])} verifier region(s)"
+            )
+        else:
+            console.print(
+                f"  {config['address_count']} address(es), "
+                f"{'one-shot' if config['one_shot'] else 'continuous'}, "
+                f"diagnostics="
+                f"{'on' if config['settings']['download_diagnostics'] else 'off'}"
+            )
     console.print(
         "[dim]Production deployment (joins the production network) — no node "
         "VMs, no bootstrap VMs, no devnet manifest.[/dim]"
