@@ -164,6 +164,19 @@ def _build_node_unit_file(
     non-NAT unit by design — the reference SKILL.md only dictates the NAT
     mechanism, not the rest of the unit file.
 
+    ``RequiresMountsFor`` stops the service starting before the data volume is
+    mounted. The fstab entry uses ``nofail`` (so a slow volume never holds up
+    boot) and nothing else sequences the two, so without it a boot-time race —
+    e.g. an unclean shutdown forcing a journal-recovery fsck — lets ant-node
+    open its record store on the *bare mountpoint* of the root filesystem. It
+    runs as root, so it would not fail: it would silently write chunk data to
+    the OS disk and serve records the volume does not hold. It is emitted
+    unconditionally because on root-disk hosts (contabo, ovh_3az) the path is a
+    plain directory on ``/``, where systemd resolves the requirement to the
+    always-active ``-.mount`` — a no-op, so no per-host unit variant is needed.
+    Cost of the guard: if the volume genuinely never mounts, the service now
+    fails loudly instead of running against the wrong disk.
+
     ``restart_policy``, ``restart_sec`` and ``limit_nofile`` are knobs the
     prod-migration command needs to match the existing prod fleet's units
     (``always`` / ``10`` / ``65536``); defaults preserve testnet behaviour.
@@ -194,6 +207,7 @@ def _build_node_unit_file(
 Description=Ant Node ({service_name}){description_suffix}
 After=network-online.target
 Wants=network-online.target
+RequiresMountsFor={MOUNT_POINT}
 
 [Service]
 Type=simple{env_lines}

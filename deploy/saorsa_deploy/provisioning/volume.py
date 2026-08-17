@@ -33,6 +33,52 @@ def build_root_disk_dir_command(mount_point: str = MOUNT_POINT) -> str:
     return f"mkdir -p {mount_point} && echo 'ANT_VOLUME:ROOT_DISK'"
 
 
+def build_mount_ordering_dropin_command(
+    service: str, mount_point: str = MOUNT_POINT
+) -> str:
+    """Build a shell command installing a systemd drop-in that stops ``service``
+    starting before ``mount_point`` is mounted.
+
+    Without this, a service whose data lives on an attached volume races its own
+    mount at boot. The packaged units order only on ``network-online.target``,
+    and the fstab entry uses ``nofail`` (so a slow volume never holds up boot),
+    which leaves nothing sequencing the two. Lose that race and the service opens
+    its data directory on the *bare mountpoint* of the root filesystem — owned
+    ``root:root 755``, so a service running as its own user gets "permission
+    denied" and dies, while one running as root silently writes a second copy of
+    its data to the root disk.
+
+    Observed on the ant-prod-01 monitoring VM (2026-08-17): an unclean shutdown
+    left the data volume dirty, boot fsck took ~6s, and influxd started 3s before
+    the mount completed. It exited "unable to create directory
+    /mnt/monitoring-storage/influxdb: permission denied" and InfluxDB was down for
+    16h — see :func:`build_mount_volume_command` for the nofail fstab entry.
+
+    ``RequiresMountsFor`` gives both ``Requires=`` and ``After=`` on the mount
+    unit, so the service now also *fails loudly* if the volume never mounts,
+    rather than quietly running against the root disk.
+
+    Idempotent: the drop-in is overwritten and ``daemon-reload`` re-run.
+    Reports ``ANT_MOUNT_ORDER:APPLIED``.
+
+    Callers must skip this for root-disk hosts (contabo, ovh_3az), where there is
+    no volume and the data directory is on ``/`` by design.
+    """
+    dropin_dir = f"/etc/systemd/system/{service}.service.d"
+    return (
+        f"mkdir -p {dropin_dir} && "
+        f"cat > {dropin_dir}/10-mount-ordering.conf << 'DROPIN_EOF'\n"
+        f"# Managed by saorsa-deploy. Prevents {service} starting before its\n"
+        f"# data volume is mounted (fstab uses nofail, so nothing else orders\n"
+        f"# them). Also fails the unit if the volume is missing, instead of\n"
+        f"# silently running against the root disk.\n"
+        f"[Unit]\n"
+        f"RequiresMountsFor={mount_point}\n"
+        f"DROPIN_EOF\n"
+        f"systemctl daemon-reload && echo 'ANT_MOUNT_ORDER:APPLIED'"
+    )
+
+
 def build_mount_volume_command(mount_point: str = MOUNT_POINT) -> str:
     """Build a shell command that finds an attached volume, mounts it, and adds an fstab entry.
 

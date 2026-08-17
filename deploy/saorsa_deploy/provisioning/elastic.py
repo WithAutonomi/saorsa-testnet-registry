@@ -15,6 +15,7 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
 )
 from saorsa_deploy.provisioning.volume import (
+    build_mount_ordering_dropin_command,
     build_mount_volume_command,
     build_root_disk_dir_command,
 )
@@ -111,6 +112,9 @@ class ElasticProvisioner:
             self._add_mount_volume_op(state)
             self._add_install_elasticsearch_ops(state)
             self._add_configure_elasticsearch_ops(state)
+            # Must precede the start below: the drop-in has to be in place
+            # before elasticsearch ever runs.
+            self._add_mount_ordering_op(state)
             self._add_start_elasticsearch_ops(state)
             self._add_setup_security_ops(state)
 
@@ -148,6 +152,21 @@ class ElasticProvisioner:
             server.shell,
             name="Mount Elasticsearch storage volume",
             commands=[build_mount_volume_command(ELASTIC_MOUNT_POINT)],
+        )
+
+    def _add_mount_ordering_op(self, state: State):
+        # Root-disk providers (contabo) have no volume to wait for.
+        if self.root_disk:
+            return
+        add_op(
+            state,
+            server.shell,
+            name="Order Elasticsearch after its data volume",
+            commands=[
+                build_mount_ordering_dropin_command(
+                    "elasticsearch", ELASTIC_MOUNT_POINT
+                )
+            ],
         )
 
     def _add_install_elasticsearch_ops(self, state: State):

@@ -15,6 +15,7 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
 )
 from saorsa_deploy.provisioning.volume import (
+    build_mount_ordering_dropin_command,
     build_mount_volume_command,
     build_root_disk_dir_command,
 )
@@ -93,6 +94,9 @@ class MonitoringProvisioner:
                 self._add_preamble_ops,
                 self._add_mount_volume_op,
                 self._add_install_influxdb_ops,
+                # Must precede the first start below: the drop-in has to be in
+                # place before influxd ever runs, not just before the restart.
+                self._add_mount_ordering_op,
                 self._add_setup_influxdb_ops,
                 self._add_influxdb_start_ops,
             ],
@@ -186,6 +190,19 @@ class MonitoringProvisioner:
             server.shell,
             name="Mount monitoring storage volume",
             commands=[build_mount_volume_command(MONITORING_MOUNT_POINT)],
+        )
+
+    def _add_mount_ordering_op(self, state: State):
+        # Root-disk providers (contabo) have no volume to wait for.
+        if self.root_disk:
+            return
+        add_op(
+            state,
+            server.shell,
+            name="Order InfluxDB after its data volume",
+            commands=[
+                build_mount_ordering_dropin_command("influxdb", MONITORING_MOUNT_POINT)
+            ],
         )
 
     def _add_install_influxdb_ops(self, state: State):

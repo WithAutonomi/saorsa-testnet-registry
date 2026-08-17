@@ -230,6 +230,25 @@ class TestMountVolumeOp:
         assert "mkfs.ext4" in mount_cmd
 
 
+class TestMountOrderingOp:
+    @patch("saorsa_deploy.provisioning.elastic.add_op")
+    def test_installs_dropin_requiring_the_data_volume(self, mock_add_op):
+        p = _make_provisioner()
+        p._add_mount_ordering_op(MagicMock())
+
+        mock_add_op.assert_called_once()
+        commands = mock_add_op.call_args.kwargs["commands"]
+        assert f"RequiresMountsFor={ELASTIC_MOUNT_POINT}" in commands[0]
+        assert "/etc/systemd/system/elasticsearch.service.d" in commands[0]
+
+    @patch("saorsa_deploy.provisioning.elastic.add_op")
+    def test_skipped_on_root_disk_providers(self, mock_add_op):
+        # Contabo has no attachable volume: the data dir is on / by design.
+        p = _make_provisioner(root_disk=True)
+        p._add_mount_ordering_op(MagicMock())
+        mock_add_op.assert_not_called()
+
+
 class TestInstallElasticsearchOps:
     @patch("saorsa_deploy.provisioning.elastic.add_op")
     def test_install_downloads_correct_version(self, mock_add_op):

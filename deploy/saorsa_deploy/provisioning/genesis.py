@@ -55,12 +55,18 @@ def _build_exec_start(
 
 
 def _build_unit_file(exec_start: str) -> str:
-    """Build the systemd unit file content."""
+    """Build the systemd unit file content.
+
+    ``RequiresMountsFor`` stops the node starting before its data volume is
+    mounted; see :func:`saorsa_deploy.provisioning.node._build_node_unit_file`
+    for why it is unconditional and what it costs.
+    """
     return f"""\
 [Unit]
 Description=Ant Genesis Node
 After=network-online.target
 Wants=network-online.target
+RequiresMountsFor={MOUNT_POINT}
 
 [Service]
 Type=simple

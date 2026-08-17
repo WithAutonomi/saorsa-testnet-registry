@@ -2,6 +2,7 @@ from saorsa_deploy.provisioning.volume import (
     DATA_VOLUME_RESERVED_PERCENT,
     MOUNT_POINT,
     VOLUME_DEVICE_GLOBS,
+    build_mount_ordering_dropin_command,
     build_mount_volume_command,
     build_root_disk_dir_command,
     build_striped_volume_command,
@@ -24,6 +25,44 @@ class TestBuildRootDiskDirCommand:
         cmd = build_root_disk_dir_command()
         for token in ("blkid", "mkfs", "mount ", "NO_DEVICE", "/dev/"):
             assert token not in cmd
+
+
+class TestBuildMountOrderingDropinCommand:
+    def test_writes_dropin_for_the_named_service(self):
+        cmd = build_mount_ordering_dropin_command("influxdb", "/mnt/monitoring-storage")
+        assert "/etc/systemd/system/influxdb.service.d" in cmd
+        assert "10-mount-ordering.conf" in cmd
+
+    def test_requires_mounts_for_the_data_volume(self):
+        # The whole point: systemd must both order the unit after the mount and
+        # fail it if the mount never happens.
+        cmd = build_mount_ordering_dropin_command("influxdb", "/mnt/monitoring-storage")
+        assert "[Unit]" in cmd
+        assert "RequiresMountsFor=/mnt/monitoring-storage" in cmd
+
+    def test_reloads_systemd_so_the_dropin_takes_effect(self):
+        cmd = build_mount_ordering_dropin_command("influxdb", "/mnt/monitoring-storage")
+        assert "systemctl daemon-reload" in cmd
+        assert "ANT_MOUNT_ORDER:APPLIED" in cmd
+
+    def test_service_and_mount_point_are_independent(self):
+        cmd = build_mount_ordering_dropin_command("elasticsearch", "/mnt/elastic-storage")
+        assert "/etc/systemd/system/elasticsearch.service.d" in cmd
+        assert "RequiresMountsFor=/mnt/elastic-storage" in cmd
+        assert "influxdb" not in cmd
+        assert "monitoring-storage" not in cmd
+
+    def test_does_not_start_or_restart_the_service(self):
+        # Installing the ordering must never bounce a running service — the op
+        # runs mid-provision, before the deliberate start step.
+        cmd = build_mount_ordering_dropin_command("influxdb", "/mnt/monitoring-storage")
+        for token in ("systemctl start", "systemctl restart", "systemctl stop"):
+            assert token not in cmd
+
+    def test_heredoc_is_quoted_so_the_body_is_not_expanded(self):
+        # An unquoted heredoc would let the shell interpolate the unit body.
+        cmd = build_mount_ordering_dropin_command("influxdb", "/mnt/monitoring-storage")
+        assert "<< 'DROPIN_EOF'" in cmd
 
 
 class TestBuildMountVolumeCommand:
