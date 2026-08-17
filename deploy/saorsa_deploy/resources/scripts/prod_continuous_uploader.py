@@ -30,6 +30,7 @@ Three things it is careful about:
 import hashlib
 import json
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -49,6 +50,13 @@ VERIFY_MEASUREMENT = "prod_upload_verify"
 #: so "the pool ran dry" can never be mistaken for "the network rejected an
 #: upload" on a dashboard.
 EXHAUSTION_MEASUREMENT = "prod_upload_pool_shortfall"
+#: One point per cycle, always — the difference between "production is
+#: broken" and "we could not test production today". Without it a day when
+#: every source fetch 503s looks identical to a day when every upload was
+#: rejected, and the second is an incident while the first is weather.
+#: Being unconditional, it doubles as a heartbeat: no point in 25h means
+#: the service itself is down.
+CYCLE_MEASUREMENT = "prod_upload_cycle"
 
 STATUS_SUCCESS = 0
 STATUS_PARTIAL_UPLOAD = 1
@@ -170,11 +178,46 @@ def _log_safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "_-" else "_" for c in name)[:24]
 
 
-def _download(url: str, destination: Path, timeout: int) -> tuple[int, str]:
-    """Fetch the source file, returning (bytes, sha256).
+#: HTTP statuses worth trying again. The Internet Archive — which most of the
+#: pool is sourced from — routinely answers 500/503 for a few minutes at a
+#: time, and 429 is an explicit "come back later". A 404/403 is a fact about
+#: the file, not the weather, so retrying only wastes the cycle's time.
+RETRYABLE_HTTP_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
-    Hashed while streaming so a multi-gigabyte file is not read twice.
+
+def _is_retryable_fetch_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_HTTP_STATUS
+    # URLError covers DNS failures, refused connections and TLS resets;
+    # TimeoutError/OSError covers a stalled read mid-transfer. All transient.
+    return isinstance(exc, (urllib.error.URLError, TimeoutError, OSError))
+
+
+def _backoff_delays(attempts: int, base_secs: float, cap_secs: float) -> list:
+    """The exponential schedule: one delay per retry after the first attempt.
+
+    Returned without jitter so the schedule itself is a plain, testable
+    sequence; the randomisation is applied when sleeping (`_jittered`).
     """
+    return [
+        min(base_secs * (2**attempt), cap_secs) for attempt in range(attempts - 1)
+    ]
+
+
+def _jittered(delay: float) -> float:
+    """Spread a scheduled wait by ±50%.
+
+    Every file in a cycle tends to fail in the same second when the origin is
+    having a bad minute, so an unjittered schedule sends them all back at
+    exactly the same moments — reproducing the herd against a host that is
+    already struggling. This must be genuinely random per call: a jitter
+    derived from the attempt number alone is identical for every file and
+    every host, which is no jitter at all.
+    """
+    return round(delay * random.uniform(0.5, 1.5), 1)
+
+
+def _download_once(url: str, destination: Path, timeout: int) -> tuple[int, str]:
     digest = hashlib.sha256()
     total = 0
     with urllib.request.urlopen(url, timeout=timeout) as response:
@@ -187,6 +230,47 @@ def _download(url: str, destination: Path, timeout: int) -> tuple[int, str]:
                 digest.update(chunk)
                 total += len(chunk)
     return total, digest.hexdigest()
+
+
+def _download(
+    url: str,
+    destination: Path,
+    timeout: int,
+    attempts: int = 1,
+    base_secs: float = 10.0,
+    cap_secs: float = 300.0,
+) -> tuple[int, str]:
+    """Fetch the source file with retries, returning (bytes, sha256).
+
+    Hashed while streaming so a multi-gigabyte file is not read twice.
+
+    Retried because the source origin being briefly unavailable says nothing
+    about the production network, yet a give-up-on-first-error costs the whole
+    day's measurement: on 2026-08-17 all three files 503'd within the same
+    second and the cycle produced no signal at all.
+
+    A partial file from a failed attempt is discarded rather than resumed —
+    range requests are not universally honoured, and a silently truncated
+    source would be uploaded as if it were the real thing, then verified
+    against its own truncated hash and look perfectly healthy.
+    """
+    delays = _backoff_delays(max(attempts, 1), base_secs, cap_secs)
+    last_error: Exception | None = None
+    for attempt in range(max(attempts, 1)):
+        try:
+            return _download_once(url, destination, timeout)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            destination.unlink(missing_ok=True)
+            if not _is_retryable_fetch_error(exc) or attempt >= len(delays):
+                raise
+            delay = _jittered(delays[attempt])
+            _log(
+                f"  source fetch attempt {attempt + 1}/{attempts} failed "
+                f"({exc}); retrying in {delay}s"
+            )
+            time.sleep(delay)
+    raise last_error if last_error else RuntimeError("source fetch failed")
 
 
 def _sha256_file(path: Path) -> str:
@@ -325,6 +409,14 @@ def main() -> int:
     log_level = os.environ.get("LOG_LEVEL", "info").strip() or "info"
     sleep_interval = _env_int("SLEEP_INTERVAL_SECS", 86400)
     download_timeout = _env_int("DOWNLOAD_TIMEOUT", 1800)
+    fetch_attempts = _env_int("SOURCE_FETCH_ATTEMPTS", 5)
+    fetch_backoff = _env_int("SOURCE_FETCH_BACKOFF_SECS", 10)
+    # Cap on substitutions per cycle. A file whose origin is down is
+    # swapped for another from the same size class so the day still yields
+    # a real measurement — but capped, because during a full origin outage
+    # every replacement fails too and an uncapped loop would just churn
+    # claims against the pool.
+    max_replacements = _env_int("SOURCE_MAX_REPLACEMENTS", 3)
     upload_timeout = _env_int("UPLOAD_TIMEOUT", 21600)
     verify_timeout = _env_int("VERIFY_TIMEOUT", 3600)
     readback = _env_bool("READBACK_VERIFY", True)
@@ -402,8 +494,14 @@ def main() -> int:
                 continue
 
             _log(f"cycle {cycle}: claimed {len(claims)} file(s)")
+            cycle_stats = {
+                "attempted": 0, "succeeded": 0, "partial": 0,
+                "source_failed": 0, "replacements": 0,
+            }
 
-            for claim in claims:
+            queue = list(claims)
+            while queue:
+                claim = queue.pop(0)
                 op_counter += 1
                 pool_file = pool_repo.get_pool_file(claim.file_id)
                 locator = claim.locator_used or (pool_file.locator if pool_file else "")
@@ -424,8 +522,11 @@ def main() -> int:
 
                 # ---- fetch the source ----
                 try:
+                    cycle_stats["attempted"] += 1
                     size_bytes, source_sha256 = _download(
-                        locator, local_path, download_timeout
+                        locator, local_path, download_timeout,
+                        attempts=fetch_attempts,
+                        base_secs=fetch_backoff,
                     )
                 except Exception as exc:  # noqa: BLE001
                     _log(f"source download FAILED for {file_name}: {exc}")
@@ -469,6 +570,25 @@ def main() -> int:
                         ),
                     )
                     local_path.unlink(missing_ok=True)
+                    cycle_stats["source_failed"] += 1
+
+                    # Substitute a different file of the same size class so the
+                    # cycle still measures production. The origin being down is
+                    # not a fact about the network, but giving up here means the
+                    # day yields nothing — which is how 2026-08-17 passed with
+                    # no signal at all.
+                    if cycle_stats["replacements"] < max_replacements and pool_file:
+                        replacement = _claim_replacement(
+                            pool_repo, pool_file, deployment_id, deployment_name,
+                            min_bytes, max_bytes,
+                        )
+                        if replacement is not None:
+                            cycle_stats["replacements"] += 1
+                            _log(
+                                f"  substituting another file for {file_name} "
+                                f"({cycle_stats['replacements']}/{max_replacements})"
+                            )
+                            queue.append(replacement)
                     continue
 
                 # ---- upload ----
@@ -520,11 +640,13 @@ def main() -> int:
                 gas_cost = parsed.get("gas_cost_wei")
 
                 if status is ProdUploadStatus.SUCCESS:
+                    cycle_stats["succeeded"] += 1
                     _log(
                         f"uploaded {file_name} -> {address} "
                         f"({chunks_stored}/{total_chunks} chunks, {duration_ms}ms)"
                     )
                 else:
+                    cycle_stats["partial"] += 1
                     _log(f"upload PARTIAL for {file_name}: {reason}")
                     _log(_tail_lines(stderr, STDERR_TAIL_LINES))
 
@@ -630,9 +752,76 @@ def main() -> int:
         finally:
             session.close()
 
+        # Always emitted, success or not: this is what lets a reader tell
+        # "production refused our uploads" from "we never got to try".
+        produced_signal = cycle_stats["succeeded"] > 0 or cycle_stats["partial"] > 0
+        _post_influx(
+            influx_url, influx_token, influx_org, influx_bucket,
+            _build_line(
+                CYCLE_MEASUREMENT,
+                {"host": host, "region": region,
+                 "deployment_name": deployment_name},
+                {
+                    "cycle": cycle,
+                    "attempted": cycle_stats["attempted"],
+                    "succeeded": cycle_stats["succeeded"],
+                    "partial": cycle_stats["partial"],
+                    "source_failed": cycle_stats["source_failed"],
+                    "replacements": cycle_stats["replacements"],
+                    "produced_signal": produced_signal,
+                },
+            ),
+        )
+        if not produced_signal:
+            _log(
+                f"WARNING: cycle {cycle} produced NO production signal — "
+                f"{cycle_stats['source_failed']} source fetch(es) failed and "
+                f"nothing was uploaded. This says nothing about the network."
+            )
+        else:
+            _log(
+                f"cycle {cycle}: {cycle_stats['succeeded']} uploaded, "
+                f"{cycle_stats['partial']} partial, "
+                f"{cycle_stats['source_failed']} source failure(s), "
+                f"{cycle_stats['replacements']} substitution(s)"
+            )
+
         if sleep_interval > 0:
             _log(f"cycle {cycle} complete; sleeping {sleep_interval}s")
             time.sleep(sleep_interval)
+
+
+def _claim_replacement(
+    pool_repo, failed_file, deployment_id, deployment_name, min_bytes, max_bytes
+):
+    """Claim another file of the same size class as one whose origin is down.
+
+    Same class, so the cycle's shape is preserved: substituting a tiny file for
+    an unreachable small one would quietly change what the day measured.
+
+    Returns None rather than raising when nothing is available — a cycle that
+    cannot substitute is still worth completing with whatever did work.
+    """
+    from saorsa_db.models import ClaimSource, PoolFileKind
+    from saorsa_db.size_class import classify
+
+    if failed_file is None or not failed_file.size_bytes:
+        return None
+    try:
+        size_class = classify(failed_file.size_bytes)
+        claims = pool_repo.claim_pool_files(
+            kind=PoolFileKind.URL,
+            request={size_class: 1},
+            source=ClaimSource.PROD_CONTINUOUS_UPLOADER,
+            deployment_id=deployment_id,
+            deployment_name=deployment_name,
+            min_size_bytes=min_bytes,
+            max_size_bytes=max_bytes,
+        )
+        return claims[0] if claims else None
+    except Exception as exc:  # noqa: BLE001
+        _log(f"  could not claim a replacement file: {exc}")
+        return None
 
 
 def _decimal_or_none(value):

@@ -1589,6 +1589,39 @@ Consequently **`deployments record-results` is a no-op for this kind** and says
 so; use `deployments print-recorded-results`, which renders per-region
 verification counts alongside the uploads.
 
+#### When the source origin is flaky
+
+Most of the pool is sourced from the Internet Archive, which routinely answers
+500/503 for minutes at a time. A source fetch that fails is **not** a statement
+about the production network — nothing was uploaded — so it is retried with
+exponential backoff (`10, 20, 40, 80s`, jittered ±50%, five attempts by
+default) before being given up on. A 404 or 403 is a fact about the file rather
+than the weather and is not retried at all.
+
+If a file remains unfetchable, another of the **same size class** is claimed in
+its place, so the cycle still measures production rather than losing the day.
+Substitutions are capped per cycle: during a full origin outage every
+replacement fails too, and an uncapped loop would only churn pool claims.
+
+| env var | default | meaning |
+|---|---|---|
+| `SOURCE_FETCH_ATTEMPTS` | `5` | total tries per source file |
+| `SOURCE_FETCH_BACKOFF_SECS` | `10` | first retry wait; doubles, capped at 300s |
+| `SOURCE_MAX_REPLACEMENTS` | `3` | substitutions allowed per cycle |
+
+Results show these as **`src-fail`** — deliberately not `dl-fail`, which in a
+deployment that downloads its own uploads back reads as "the read-back failed",
+i.e. as a production fault, when it means the opposite.
+
+#### Telling "broken" from "untested"
+
+Every cycle writes one `prod_upload_cycle` point carrying `attempted`,
+`succeeded`, `partial`, `source_failed`, `replacements` and a
+`produced_signal` boolean. A day when every source fetch failed and a day when
+every upload was rejected are otherwise indistinguishable, and only the second
+is an incident. Because the point is unconditional it doubles as a heartbeat:
+no `prod_upload_cycle` in 25 hours means the service itself is down.
+
 #### Running out of files
 
 A cycle that cannot claim what it asked for records a shortfall to the

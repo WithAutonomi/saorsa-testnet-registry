@@ -56,16 +56,23 @@ _FILE_OPS_KINDS = {
 _PROD_UPLOAD_KINDS = {"prod-uploaders", "prod-local-uploads"}
 _PROD_DOWNLOAD_KINDS = {"prod-local-downloads"}
 
+# `src-fail`, not `dl-fail`: status 2 means the uploader could not fetch
+# the SOURCE file from its origin (an Internet Archive URL, typically),
+# so no upload was ever attempted. In a deployment that also downloads
+# its uploads back to verify them, "dl-fail" reads as "the read-back
+# failed" — i.e. as a production fault — when it is the opposite: a
+# problem fetching our own test material, saying nothing about the
+# network.
 _PROD_STATUS_LABELS = {
     ProdUploadStatus.SUCCESS: "[green]ok[/green]",
     ProdUploadStatus.PARTIAL_UPLOAD: "[red]partial[/red]",
-    ProdUploadStatus.DOWNLOAD_FAILED: "[red]dl-fail[/red]",
+    ProdUploadStatus.DOWNLOAD_FAILED: "[yellow]src-fail[/yellow]",
 }
 
 _PROD_STATUS_TEXT = {
     ProdUploadStatus.SUCCESS: "ok",
     ProdUploadStatus.PARTIAL_UPLOAD: "partial",
-    ProdUploadStatus.DOWNLOAD_FAILED: "dl-fail",
+    ProdUploadStatus.DOWNLOAD_FAILED: "src-fail",
 }
 
 _PROD_DOWNLOAD_STATUS_LABELS = {

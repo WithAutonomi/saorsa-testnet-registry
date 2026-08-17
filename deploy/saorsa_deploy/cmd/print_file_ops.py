@@ -452,16 +452,23 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
 # ---------------------------------------------------------------------------
 
 
+# `src-fail`, not `dl-fail`: status 2 means the uploader could not fetch
+# the SOURCE file from its origin (an Internet Archive URL, typically),
+# so no upload was ever attempted. In a deployment that also downloads
+# its uploads back to verify them, "dl-fail" reads as "the read-back
+# failed" — i.e. as a production fault — when it is the opposite: a
+# problem fetching our own test material, saying nothing about the
+# network.
 _PROD_STATUS_LABELS = {
     0: "[green]ok[/green]",
     1: "[red]partial[/red]",
-    2: "[red]dl-fail[/red]",
+    2: "[yellow]src-fail[/yellow]",
 }
 
 _PROD_STATUS_TEXT = {
     0: "ok",
     1: "partial",
-    2: "dl-fail",
+    2: "src-fail",
 }
 
 

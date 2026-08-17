@@ -834,3 +834,196 @@ class TestTheUploadTableShowsWhenItHappened:
             ]
         )
         assert "a.jpg" in output
+
+
+class TestSourceFetchRetries:
+    """The Internet Archive supplies most of the pool and is frequently flaky.
+
+    Giving up on the first error costs the whole day's measurement: on
+    2026-08-17 all three files 503'd within the same second and the cycle
+    produced no production signal at all.
+    """
+
+    def test_backoff_doubles_and_is_capped(self, uploader_script):
+        assert uploader_script._backoff_delays(5, 10, 300) == [10, 20, 40, 80]
+        assert uploader_script._backoff_delays(6, 10, 60) == [10, 20, 40, 60, 60]
+
+    def test_one_delay_per_retry_not_per_attempt(self, uploader_script):
+        """The first try is immediate; only the retries wait."""
+        assert len(uploader_script._backoff_delays(5, 10, 300)) == 4
+        assert uploader_script._backoff_delays(1, 10, 300) == []
+
+    def test_the_jitter_actually_varies(self, uploader_script):
+        """A whole cycle fails at once when the origin is down, so an
+        unjittered schedule sends every file back at the same moments.
+
+        Derived from the attempt number alone it would be identical for every
+        file and every host — no jitter at all.
+        """
+        draws = {uploader_script._jittered(40) for _ in range(25)}
+        assert len(draws) > 1, "every call returned the same wait"
+        assert all(20 <= d <= 60 for d in draws), "jitter must stay within +/-50%"
+
+    def test_transient_http_is_retried(self, uploader_script):
+        import urllib.error
+
+        for code in (429, 500, 502, 503, 504):
+            error = urllib.error.HTTPError("u", code, "m", {}, None)
+            assert uploader_script._is_retryable_fetch_error(error), code
+
+    def test_a_missing_file_is_not_retried(self, uploader_script):
+        """404/403 is a fact about the file, not the weather."""
+        import urllib.error
+
+        for code in (403, 404, 410):
+            error = urllib.error.HTTPError("u", code, "m", {}, None)
+            assert not uploader_script._is_retryable_fetch_error(error), code
+
+    def test_network_errors_are_retried(self, uploader_script):
+        import urllib.error
+
+        assert uploader_script._is_retryable_fetch_error(TimeoutError())
+        assert uploader_script._is_retryable_fetch_error(
+            urllib.error.URLError("dns")
+        )
+
+    def test_a_flaky_source_eventually_succeeds(self, uploader_script, monkeypatch):
+        import urllib.error
+
+        calls = {"n": 0}
+
+        def flaky(url, destination, timeout):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+            return 1234, "a" * 64
+
+        monkeypatch.setattr(uploader_script, "_download_once", flaky)
+        monkeypatch.setattr(uploader_script.time, "sleep", lambda s: None)
+
+        size, digest = uploader_script._download(
+            "https://archive.org/x", Path("/tmp/x"), 30, attempts=5, base_secs=1
+        )
+        assert (size, digest) == (1234, "a" * 64)
+        assert calls["n"] == 3
+
+    def test_it_gives_up_after_the_configured_attempts(
+        self, uploader_script, monkeypatch
+    ):
+        import urllib.error
+
+        calls = {"n": 0}
+
+        def always_503(url, destination, timeout):
+            calls["n"] += 1
+            raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+
+        monkeypatch.setattr(uploader_script, "_download_once", always_503)
+        monkeypatch.setattr(uploader_script.time, "sleep", lambda s: None)
+
+        with pytest.raises(urllib.error.HTTPError):
+            uploader_script._download(
+                "https://archive.org/x", Path("/tmp/x"), 30, attempts=4, base_secs=1
+            )
+        assert calls["n"] == 4
+
+    def test_a_permanent_error_costs_only_one_attempt(
+        self, uploader_script, monkeypatch
+    ):
+        import urllib.error
+
+        calls = {"n": 0}
+
+        def gone(url, destination, timeout):
+            calls["n"] += 1
+            raise urllib.error.HTTPError(url, 404, "gone", {}, None)
+
+        monkeypatch.setattr(uploader_script, "_download_once", gone)
+        monkeypatch.setattr(uploader_script.time, "sleep", lambda s: None)
+
+        with pytest.raises(urllib.error.HTTPError):
+            uploader_script._download(
+                "https://archive.org/x", Path("/tmp/x"), 30, attempts=5, base_secs=1
+            )
+        assert calls["n"] == 1, "a 404 must not burn the retry budget"
+
+    def test_a_partial_file_is_discarded_between_attempts(
+        self, uploader_script, monkeypatch, tmp_path
+    ):
+        """A truncated source would upload as if whole, then verify against its
+        own truncated hash and look perfectly healthy."""
+        import urllib.error
+
+        destination = tmp_path / "f.bin"
+        calls = {"n": 0}
+
+        def truncating(url, dest, timeout):
+            calls["n"] += 1
+            dest.write_bytes(b"half")
+            if calls["n"] < 2:
+                raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+            return 4, "b" * 64
+
+        monkeypatch.setattr(uploader_script, "_download_once", truncating)
+        monkeypatch.setattr(uploader_script.time, "sleep", lambda s: None)
+        seen = []
+        real_unlink = Path.unlink
+
+        def spy(self, missing_ok=False):
+            seen.append(self.name)
+            return real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", spy)
+        uploader_script._download(
+            "https://archive.org/x", destination, 30, attempts=3, base_secs=1
+        )
+        assert "f.bin" in seen, "the failed attempt's partial file must be removed"
+
+
+class TestTheCycleHeartbeat:
+    """"Production is broken" and "we could not test production" must not look
+    the same — for a monitor, that is the most important distinction there is."""
+
+    def test_the_cycle_measurement_is_separate(self, uploader_script):
+        assert uploader_script.CYCLE_MEASUREMENT == "prod_upload_cycle"
+        assert (
+            uploader_script.CYCLE_MEASUREMENT
+            != uploader_script.UPLOAD_MEASUREMENT
+        )
+        assert (
+            uploader_script.CYCLE_MEASUREMENT
+            != uploader_script.EXHAUSTION_MEASUREMENT
+        )
+
+    def test_the_line_carries_the_signal_flag(self, uploader_script):
+        line = uploader_script._build_line(
+            uploader_script.CYCLE_MEASUREMENT,
+            {"host": "h", "region": "fsn1"},
+            {"attempted": 3, "succeeded": 0, "source_failed": 3,
+             "produced_signal": False},
+        )
+        assert "produced_signal=false" in line
+        assert "source_failed=3i" in line
+
+
+class TestTheSourceFailureLabel:
+    """`dl-fail` in an upload table reads as "the read-back failed", i.e. as a
+    production fault — the opposite of what it means."""
+
+    def test_status_two_reads_as_a_source_failure(self):
+        from saorsa_deploy.cmd.print_file_ops import (
+            _PROD_STATUS_LABELS,
+            _PROD_STATUS_TEXT,
+        )
+
+        assert "src-fail" in _PROD_STATUS_LABELS[2]
+        assert "dl-fail" not in _PROD_STATUS_LABELS[2]
+        assert _PROD_STATUS_TEXT[2] == "src-fail"
+
+    def test_the_recorded_results_view_agrees(self):
+        from saorsa_db.models import ProdUploadStatus
+
+        from saorsa_deploy.cmd.print_recorded_results import _PROD_STATUS_LABELS
+
+        label = _PROD_STATUS_LABELS[ProdUploadStatus.DOWNLOAD_FAILED]
+        assert "src-fail" in label and "dl-fail" not in label
