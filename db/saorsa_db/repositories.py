@@ -1,6 +1,6 @@
 import hashlib
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
@@ -75,6 +75,12 @@ from saorsa_db.models.prod_upload_verification import (
     TERMINAL_VERIFY_STATUSES,
     DeploymentProdUploadVerification,
     ProdUploadVerifyStatus,
+)
+from saorsa_db.models.release import (
+    TERMINAL_RELEASE_OUTCOMES,
+    Release,
+    ReleaseCrate,
+    ReleaseOutcome,
 )
 from saorsa_db.models.release_candidate import (
     ReleaseCandidate,
@@ -2642,6 +2648,428 @@ class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
                 f"ReleaseCandidate {release_candidate_id} not found"
             )
         self.session.delete(rc)
+        self.session.commit()
+
+
+@dataclass
+class ChannelState:
+    """What a binary target's channels hold right now.
+
+    ``rolled_past`` counts the betas that were shipped and never promoted since
+    the current stable was promoted — i.e. how far beta has run ahead of stable.
+    A non-zero count is exactly the widened stable version-jump window the next
+    promotion has to carry.
+    """
+
+    binary_target: str
+    stable: Optional[Release] = None
+    beta: Optional[Release] = None
+    rolled_past: list[Release] = field(default_factory=list)
+
+    @property
+    def soak_seconds(self) -> Optional[float]:
+        """How long the current beta has soaked, or None if nothing is on beta."""
+        if self.beta is None or self.beta.shipped_to_beta_at is None:
+            return None
+        shipped = self.beta.shipped_to_beta_at
+        if shipped.tzinfo is None:
+            shipped = shipped.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - shipped).total_seconds()
+
+    @property
+    def soak_elapsed(self) -> Optional[bool]:
+        """True once the planned promotion date has passed.
+
+        None when nothing is on beta or the ship recorded no planned date —
+        deliberately not False, because "no deadline recorded" is not the same
+        answer as "the deadline has not arrived".
+        """
+        if self.beta is None or self.beta.planned_promotion_at is None:
+            return None
+        planned = self.beta.planned_promotion_at
+        if planned.tzinfo is None:
+            planned = planned.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= planned
+
+
+class ReleaseRepository(ABC):
+    """Channel state per release.
+
+    The lifecycle is the point of this repository, so it is enforced here
+    rather than in the CLI: ``shipped_to_beta`` is the only entry state, and
+    ``promoted`` / ``rolled_past`` are terminal. A release that reached a
+    terminal outcome is never silently reopened — a stable version that
+    quietly stopped being stable, or a dead train that came back to life
+    without anyone recording why, would make every later answer untrustworthy.
+    """
+
+    @abstractmethod
+    def ship(
+        self,
+        *,
+        binary_target: str,
+        version: str,
+        rc_branch: str,
+        beta_tag: Optional[str] = None,
+        beta_tag_sha: Optional[str] = None,
+        shipped_to_beta_at: Optional[datetime] = None,
+        planned_promotion_at: Optional[datetime] = None,
+        release_candidate_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> Release:
+        """Record (or refresh) a beta ship.
+
+        Idempotent on ``(binary_target, version)``: re-running after a partial
+        failure updates the existing row rather than raising, mirroring
+        ``release-candidates new``. Refuses to touch a terminal row.
+        """
+        ...
+
+    @abstractmethod
+    def promote(
+        self,
+        release_id: int,
+        *,
+        final_tag: Optional[str] = None,
+        final_tag_sha: Optional[str] = None,
+        promoted_at: Optional[datetime] = None,
+        release_candidate_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> Release:
+        """Promote a shipped-to-beta release to stable. Refuses a rolled-past row."""
+        ...
+
+    @abstractmethod
+    def create_promoted(
+        self,
+        *,
+        binary_target: str,
+        version: str,
+        rc_branch: str,
+        final_tag: Optional[str] = None,
+        final_tag_sha: Optional[str] = None,
+        promoted_at: Optional[datetime] = None,
+        release_candidate_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> Release:
+        """Record a release that reached stable **without** a beta soak.
+
+        Not the normal path — the normal path is ``ship`` then ``promote``.
+        This exists for releases promoted under the pre-beta train structure
+        (and for backfill), where there is no ship record to promote from and
+        inventing one would record a soak that never happened.
+        ``shipped_to_beta_at`` stays NULL, which reads correctly as "never on
+        beta" rather than as a soak of unknown length.
+        """
+        ...
+
+    @abstractmethod
+    def mark_rolled_past(
+        self, release_id: int, *, reason: str
+    ) -> Release:
+        """Record that the beta channel moved on without promoting this release.
+
+        ``reason`` is required — a rolled-past row whose reason is unknown
+        answers nothing that the release simply being absent would not.
+        """
+        ...
+
+    @abstractmethod
+    def set_crates(self, release_id: int, crates: list[dict]) -> list[ReleaseCrate]:
+        """Replace the release manifest. Each dict needs ``crate_name``,
+        ``version`` and ``repo_slug``; ``tag`` and ``tag_sha`` are optional.
+
+        Replace rather than append, so a re-run after a corrected manifest
+        leaves no stale crate behind."""
+        ...
+
+    @abstractmethod
+    def get(self, release_id: int) -> Optional[Release]:
+        ...
+
+    @abstractmethod
+    def get_by_version(self, binary_target: str, version: str) -> Optional[Release]:
+        ...
+
+    @abstractmethod
+    def list(
+        self,
+        *,
+        binary_target: Optional[str] = None,
+        outcome: Optional[ReleaseOutcome] = None,
+        limit: Optional[int] = None,
+    ) -> list[Release]:
+        ...
+
+    @abstractmethod
+    def current(
+        self, *, binary_target: Optional[str] = None
+    ) -> "list[ChannelState]":
+        """Current stable + beta (+ rolled-past since that stable) per target."""
+        ...
+
+    @abstractmethod
+    def delete(self, release_id: int) -> None:
+        ...
+
+
+class SqlAlchemyReleaseRepository(ReleaseRepository):
+    def __init__(self, session):
+        self.session = session
+
+    def _require(self, release_id: int) -> Release:
+        release = self.session.get(Release, release_id)
+        if release is None:
+            raise ValueError(f"Release {release_id} not found")
+        return release
+
+    def ship(
+        self,
+        *,
+        binary_target: str,
+        version: str,
+        rc_branch: str,
+        beta_tag: Optional[str] = None,
+        beta_tag_sha: Optional[str] = None,
+        shipped_to_beta_at: Optional[datetime] = None,
+        planned_promotion_at: Optional[datetime] = None,
+        release_candidate_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> Release:
+        release = self.get_by_version(binary_target, version)
+        if release is not None and release.outcome in TERMINAL_RELEASE_OUTCOMES:
+            raise ValueError(
+                f"{binary_target} {version} is already "
+                f"{release.outcome.value}; a terminal release cannot be "
+                f"re-shipped to beta."
+            )
+
+        shipped_at = shipped_to_beta_at or datetime.now(timezone.utc)
+        if release is None:
+            release = Release(
+                binary_target=binary_target,
+                version=version,
+                rc_branch=rc_branch,
+                outcome=ReleaseOutcome.SHIPPED_TO_BETA,
+            )
+            self.session.add(release)
+
+        release.rc_branch = rc_branch
+        release.outcome = ReleaseOutcome.SHIPPED_TO_BETA
+        release.shipped_to_beta_at = shipped_at
+        if beta_tag is not None:
+            release.beta_tag = beta_tag
+        if beta_tag_sha is not None:
+            release.beta_tag_sha = beta_tag_sha
+        if planned_promotion_at is not None:
+            release.planned_promotion_at = planned_promotion_at
+        if release_candidate_id is not None:
+            release.release_candidate_id = release_candidate_id
+        if notes is not None:
+            release.notes = notes
+
+        self.session.commit()
+        return release
+
+    def promote(
+        self,
+        release_id: int,
+        *,
+        final_tag: Optional[str] = None,
+        final_tag_sha: Optional[str] = None,
+        promoted_at: Optional[datetime] = None,
+        release_candidate_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> Release:
+        release = self._require(release_id)
+        if release.outcome is ReleaseOutcome.ROLLED_PAST:
+            raise ValueError(
+                f"Release {release_id} ({release.binary_target} "
+                f"{release.version}) was rolled past and cannot be promoted."
+            )
+
+        release.outcome = ReleaseOutcome.PROMOTED
+        release.promoted_at = promoted_at or datetime.now(timezone.utc)
+        if final_tag is not None:
+            release.final_tag = final_tag
+        if final_tag_sha is not None:
+            release.final_tag_sha = final_tag_sha
+        if release_candidate_id is not None:
+            release.release_candidate_id = release_candidate_id
+        if notes is not None:
+            release.notes = notes
+
+        self.session.commit()
+        return release
+
+    def create_promoted(
+        self,
+        *,
+        binary_target: str,
+        version: str,
+        rc_branch: str,
+        final_tag: Optional[str] = None,
+        final_tag_sha: Optional[str] = None,
+        promoted_at: Optional[datetime] = None,
+        release_candidate_id: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> Release:
+        existing = self.get_by_version(binary_target, version)
+        if existing is not None:
+            raise ValueError(
+                f"{binary_target} {version} is already recorded "
+                f"({existing.outcome.value}); use promote instead."
+            )
+        release = Release(
+            binary_target=binary_target,
+            version=version,
+            rc_branch=rc_branch,
+            outcome=ReleaseOutcome.PROMOTED,
+            final_tag=final_tag,
+            final_tag_sha=final_tag_sha,
+            promoted_at=promoted_at or datetime.now(timezone.utc),
+            release_candidate_id=release_candidate_id,
+            notes=notes,
+        )
+        self.session.add(release)
+        self.session.commit()
+        return release
+
+    def mark_rolled_past(self, release_id: int, *, reason: str) -> Release:
+        if not reason or not reason.strip():
+            raise ValueError("A rolled-past release must record why.")
+        release = self._require(release_id)
+        if release.outcome is ReleaseOutcome.PROMOTED:
+            raise ValueError(
+                f"Release {release_id} ({release.binary_target} "
+                f"{release.version}) is on stable and cannot be rolled past."
+            )
+
+        release.outcome = ReleaseOutcome.ROLLED_PAST
+        release.notes = (
+            f"{release.notes}\n{reason}" if release.notes else reason
+        )
+        self.session.commit()
+        return release
+
+    def set_crates(self, release_id: int, crates: list[dict]) -> list[ReleaseCrate]:
+        release = self._require(release_id)
+        for existing in list(release.crates):
+            self.session.delete(existing)
+        self.session.flush()
+
+        created: list[ReleaseCrate] = []
+        for record in crates:
+            missing = [
+                key
+                for key in ("crate_name", "version", "repo_slug")
+                if not record.get(key)
+            ]
+            if missing:
+                raise ValueError(
+                    f"Crate record missing {', '.join(missing)}: {record!r}"
+                )
+            row = ReleaseCrate(
+                release_id=release_id,
+                crate_name=record["crate_name"],
+                version=record["version"],
+                repo_slug=record["repo_slug"],
+                tag=record.get("tag"),
+                tag_sha=record.get("tag_sha"),
+            )
+            self.session.add(row)
+            created.append(row)
+
+        self.session.commit()
+        return created
+
+    def get(self, release_id: int) -> Optional[Release]:
+        return self.session.get(Release, release_id)
+
+    def get_by_version(
+        self, binary_target: str, version: str
+    ) -> Optional[Release]:
+        return (
+            self.session.query(Release)
+            .filter(
+                Release.binary_target == binary_target,
+                Release.version == version,
+            )
+            .one_or_none()
+        )
+
+    def list(
+        self,
+        *,
+        binary_target: Optional[str] = None,
+        outcome: Optional[ReleaseOutcome] = None,
+        limit: Optional[int] = None,
+    ) -> list[Release]:
+        query = self.session.query(Release)
+        if binary_target is not None:
+            query = query.filter(Release.binary_target == binary_target)
+        if outcome is not None:
+            query = query.filter(Release.outcome == outcome)
+        query = query.order_by(Release.recorded_at.desc(), Release.id.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
+
+    def current(
+        self, *, binary_target: Optional[str] = None
+    ) -> "list[ChannelState]":
+        targets_query = self.session.query(Release.binary_target).distinct()
+        if binary_target is not None:
+            targets_query = targets_query.filter(
+                Release.binary_target == binary_target
+            )
+        targets = sorted(row[0] for row in targets_query.all())
+
+        states: list[ChannelState] = []
+        for target in targets:
+            stable = (
+                self.session.query(Release)
+                .filter(
+                    Release.binary_target == target,
+                    Release.outcome == ReleaseOutcome.PROMOTED,
+                )
+                .order_by(Release.promoted_at.desc(), Release.id.desc())
+                .first()
+            )
+            beta = (
+                self.session.query(Release)
+                .filter(
+                    Release.binary_target == target,
+                    Release.outcome == ReleaseOutcome.SHIPPED_TO_BETA,
+                )
+                .order_by(Release.shipped_to_beta_at.desc(), Release.id.desc())
+                .first()
+            )
+            rolled = self.session.query(Release).filter(
+                Release.binary_target == target,
+                Release.outcome == ReleaseOutcome.ROLLED_PAST,
+            )
+            if stable is not None and stable.promoted_at is not None:
+                rolled = rolled.filter(
+                    Release.shipped_to_beta_at > stable.promoted_at
+                )
+            rolled_past = rolled.order_by(
+                Release.shipped_to_beta_at.asc(), Release.id.asc()
+            ).all()
+
+            states.append(
+                ChannelState(
+                    binary_target=target,
+                    stable=stable,
+                    beta=beta,
+                    rolled_past=rolled_past,
+                )
+            )
+        return states
+
+    def delete(self, release_id: int) -> None:
+        release = self._require(release_id)
+        self.session.delete(release)
         self.session.commit()
 
 

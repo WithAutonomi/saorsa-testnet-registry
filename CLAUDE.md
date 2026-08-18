@@ -927,6 +927,66 @@ When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) 
 | GET | `/api/deployments/<id>` | Get deployment with events |
 | GET | `/api/deployments/<id>/events` | List deployment events |
 
+## The release ledger (`release-candidates` + `releases`)
+
+Two related command groups record the release train in the registry. Both are
+CLI-only — not exposed over the REST API or the MCP server — and both **require
+`DATABASE_URL`**, exiting non-zero rather than silently no-opping the way the
+deployment registry does. Both are driven by skills in the separate
+`releases` repo (`/home/chris/dev/releases/.claude/skills/`), not from this one.
+
+**`release-candidates`** (pre-existing) records each RC *cut*: one row per
+binary target (`ant-node 0.17.1-rc.1`, `ant 0.3.3-rc.1`), its constituent crates,
+and the PRs that landed in each. An `rc.N+1` respin cuts a **new** row — RCs are
+not re-edited.
+
+**`releases`** (V2-1015) records the *channel state* of what actually shipped:
+`ship` → `promote` | `rolled-past`, plus `current` / `ls` / `show`. It exists
+because "what is on stable, what is on beta, how long has it soaked" was
+answerable only from GitHub tags and hand-transcribed prose in a Linear issue,
+and a beta the channel **rolled past** left no trace anywhere but a closed issue.
+
+Design points that are load-bearing:
+
+- **A separate table, not lifecycle columns on `release_candidates`.** Respins
+  produce several RC rows per release; the release is the lineage that shipped.
+- **One row per binary target**, matching the RC granularity — a train records
+  two releases sharing one `rc_branch`, and some trains ship only one.
+- **`releases.version` is the final, suffix-free version** (`0.17.1`). The beta
+  suffix lives in `beta_tag`. That is what lets `promote` complete the same row
+  the `ship` created.
+- **`release_crates` is NOT a reuse of `release_candidate_crates`.** RC crate
+  rows carry rc-suffixed versions and RC tags (`evmlib 0.9.1-rc.1`,
+  `ant-cli-v0.3.3-rc.1`); a released crate carries the suffix-free version and
+  the final tag. Reusing them would record the wrong versions against the release.
+- **The FK to `release_candidates` is resolved by the
+  `(binary_target, binary_version)` natural key**, not by id — `release-from-rc`
+  never holds the RC row id. It is nullable, and a miss warns rather than failing:
+  a ship record is worth having without the link.
+- **`shipped_to_beta` is the only entry state; `promoted` and `rolled_past` are
+  terminal.** The repository refuses to leave a terminal state. A stable version
+  that quietly stopped being stable would make every later answer untrustworthy.
+- **`--reason` is required on `rolled-past`** — a rolled-past row with no reason
+  says nothing the release's absence would not.
+- **`releases current` reports the rolled-past betas since the current stable**,
+  which is exactly the widened stable version-jump window (N±2) the next
+  promotion has to carry.
+- **Soak state has three values**: elapsed, not elapsed, and *unknown* (no
+  planned promotion date recorded). Unknown is never collapsed into "not yet".
+
+Consumers, all in the `releases` repo: `ship-to-beta` Step 7 (`releases ship`),
+`release-from-rc` Step 10.3 (`releases promote --from-file`, replacing its old
+"if a recording command exists" hedge), and `beta-health-verdict`, which sources
+the beta version, ship date, soak window and the stable **control** version from
+`releases current` instead of scraping the Linear issue, and records
+`releases rolled-past` on a NO-PROMOTE verdict. Those skills call the **bare**
+`saorsa-deploy` binary (their cwd is the `releases` repo, where `uv run` would
+resolve the wrong project).
+
+See `deploy/README.md` §"Recording releases and channel state" for the full
+argument tables and the promote payload schema.
+
+
 ## Monitoring
 
 Optional per-testnet monitoring stack: InfluxDB 2.x (always) plus an **optional**

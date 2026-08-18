@@ -1264,6 +1264,163 @@ Currently only Digital Ocean is supported. The architecture is designed for mult
 
 **Digital Ocean regions**: lon1, nyc1, ams3, sfo3, sgp1, blr1, fra1, tor1
 
+## Recording releases and channel state
+
+`saorsa-deploy releases ...` answers "what is on stable, what is on beta, and
+how long has the beta soaked" from the registry. Before this existed the answer
+lived only in GitHub tags and hand-transcribed prose in a Linear issue, and
+nothing at all recorded a beta that the channel rolled past without promoting.
+
+Two tables, alongside the existing `release_candidates` set:
+
+- **`releases`** — one row per `(binary_target, version)`, where `version` is the
+  **final, suffix-free** version (`0.17.1`). It is a table of its own rather than
+  lifecycle columns on `release_candidates` because an `rc.N` respin cuts a *new*
+  RC row: a train that needed three respins has three RC rows but ships one
+  release. The release is the lineage that shipped.
+- **`release_crates`** — the release manifest, one row per released crate.
+  Deliberately not a reuse of `release_candidate_crates`: those carry the
+  rc-suffixed versions and the RC tags (`evmlib 0.9.1-rc.1`,
+  `ant-cli-v0.3.3-rc.1`), whereas a released crate carries the suffix-free
+  version and the final tag.
+
+Granularity matches the RC tables — **one row per binary target**. A train
+records two releases (`ant-node` and `ant`) sharing one `rc_branch`; some trains
+ship only one.
+
+### The lifecycle
+
+```
+        ship                promote
+  (nothing) ──▶ shipped_to_beta ──▶ promoted     (terminal)
+                       │
+                       └── rolled-past ──▶ rolled_past  (terminal)
+```
+
+`shipped_to_beta` is the only entry state. `promoted` and `rolled_past` are
+**terminal** and the repository refuses to leave them: a stable version that
+quietly stopped being stable, or a dead train that came back to life with no
+recorded reason, would make every later answer untrustworthy.
+
+`DATABASE_URL` must be set. If it is not, these commands exit non-zero and say
+so — they do not silently no-op the way the deployment registry does.
+
+### `releases ship`
+
+Recorded by the **ship-to-beta** skill at Wednesday's beta ship, once the
+prerelease has been verified. Idempotent on `(binary-target, version)`, so a
+re-run after a partial failure refreshes the row rather than failing.
+
+| Argument | Required | Description |
+|---|---|---|
+| `--binary-target` | yes | `ant` or `ant-node` |
+| `--version` | yes | The **final, suffix-free** version (`0.17.1`) — *not* the beta version. The suffix belongs in `--beta-tag`. This is what makes the row the same lineage `promote` later completes. |
+| `--rc-branch` | yes | e.g. `rc-2026.8.2` |
+| `--beta-tag` | no | `v0.17.1-beta.1`, or `ant-cli-v0.3.3-beta.1` for ant |
+| `--beta-tag-sha` | no | The commit the beta tag points at (the rc-branch head) |
+| `--shipped-at` | no | ISO-8601 or `YYYY-MM-DD`. Defaults to now |
+| `--planned-promotion` | no | The following Monday — the soak deadline `releases current` reports |
+| `--rc-version` | no | e.g. `0.17.1-rc.1`, used to link the `release_candidates` row by natural key. A miss warns and records the ship anyway |
+| `--notes` | no | Free text |
+
+A bare `YYYY-MM-DD` is read as midnight **UTC**, and a naive timestamp likewise,
+so the same command run from two machines records the same instant.
+
+```bash
+saorsa-deploy releases ship \
+  --binary-target ant-node --version 0.17.1 --rc-branch rc-2026.8.2 \
+  --beta-tag v0.17.1-beta.1 --beta-tag-sha "$SHA" \
+  --planned-promotion 2026-08-24 --rc-version 0.17.1-rc.1
+```
+
+### `releases promote`
+
+Recorded by the **release-from-rc** skill at Monday's promotion. Takes a JSON
+payload rather than flags because it carries the release manifest. The release
+must already be recorded as shipped to beta — a promotion with no ship is a
+release that skipped the soak.
+
+```bash
+saorsa-deploy releases promote --from-file /tmp/release-manifest.json
+```
+
+```json
+{
+  "binary_target": "ant-node",
+  "version": "0.17.1",
+  "final_tag": "v0.17.1",
+  "final_tag_sha": "cf7de43532833773f352a343a4201f3036623601",
+  "promoted_at": "2026-08-24T09:00:00Z",
+  "rc_version": "0.17.1-rc.1",
+  "notes": "optional",
+  "crates": [
+    {
+      "crate_name": "ant-cli",
+      "version": "0.3.3",
+      "repo_slug": "WithAutonomi/ant-client",
+      "tag": "ant-cli-v0.3.3",
+      "tag_sha": "cf7de435..."
+    }
+  ]
+}
+```
+
+`binary_target` and `version` are required; every other top-level key is
+optional.
+
+**`--allow-missing-ship`** is the deliberate exception to "the release must
+already be shipped to beta": it records the promotion with `shipped_to_beta_at`
+left NULL, which reads as *never on beta* rather than as a soak of unknown
+length. Use it for releases promoted under the **pre-beta train structure** and
+for backfill; it needs `rc_branch` in the payload, since no ship record supplied
+it. If a ship record does exist, the flag changes nothing — the real soak is
+preserved.
+ Within `crates[]`, `crate_name`, `version` and `repo_slug` are
+required and `tag`/`tag_sha` are optional — `ant-core` is bumped with every
+ant-client release and tagged with none of them. Supplying `crates` **replaces**
+the manifest, so a re-run after a correction leaves no stale crate behind.
+
+### `releases rolled-past`
+
+Recorded when a beta health verdict comes back **NO-PROMOTE**: the train dies
+unpromoted, stable stays put, and the beta channel moves on with the next
+Wednesday's ship.
+
+| Argument | Required | Description |
+|---|---|---|
+| `--id` | one of | Release id (preferred) |
+| `--binary-target` + `--version` | one of | Natural-key lookup |
+| `--reason` | **yes** | Why the train died. Required — a rolled-past row whose reason is unknown tells the next release manager nothing that the release simply being absent would not |
+
+### `releases current`
+
+The one-shot answer. Per binary target: current stable, current beta, soak age
+against the planned promotion date, and the betas **rolled past since the
+current stable was promoted**. That last count is the widened stable
+version-jump window the next promotion has to carry — a fleet that skipped two
+betas jumps N+3, not N+1.
+
+```bash
+saorsa-deploy releases current
+saorsa-deploy releases current --binary-target ant-node
+```
+
+Soak state has three values, not two: elapsed, not yet elapsed, and **unknown**
+(the ship recorded no planned promotion date). "No deadline recorded" is
+deliberately not reported as "the deadline has not arrived".
+
+### `releases ls` / `releases show`
+
+`ls` lists releases newest-first with their manifest crates indented underneath;
+`--binary-target`, `--outcome` (`shipped_to_beta` / `promoted` / `rolled_past`)
+and `--limit` filter it. `show` renders one release and its full manifest, taking
+either `--id` or `--binary-target` + `--version`.
+
+### Exit codes
+
+`2` for bad input or usage (unparseable timestamp, malformed payload, a refused
+lifecycle transition); `1` for no database or a release that could not be found.
+
 ## Releasing
 
 Releases use semantic versioning with git tags. A release script handles the version bump, commit, tag, and push:

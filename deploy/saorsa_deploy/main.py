@@ -5907,6 +5907,166 @@ def main(argv=None):
     )
 
     # =========================================================================
+    # === releases group (ship, promote, rolled-past, current, ls, show) ===
+    # =========================================================================
+    rel_parser = subparsers.add_parser(
+        "releases",
+        help=(
+            "Record and inspect channel state per release: what shipped to "
+            "beta, what was promoted to stable, what beta rolled past."
+        ),
+    )
+    rel_sub = rel_parser.add_subparsers(dest="releases_verb", required=True)
+
+    rel_ship = rel_sub.add_parser(
+        "ship",
+        help=(
+            "Record a beta ship. Idempotent on (binary-target, version); "
+            "refuses a release that already reached a terminal outcome."
+        ),
+    )
+    rel_ship.add_argument(
+        "--binary-target", dest="binary_target", type=str, required=True,
+        help="Binary target (e.g. ant, ant-node).",
+    )
+    rel_ship.add_argument(
+        "--version", type=str, required=True,
+        help=(
+            "The FINAL, suffix-free version (e.g. 0.17.1) — not the beta "
+            "version. The beta suffix belongs in --beta-tag."
+        ),
+    )
+    rel_ship.add_argument(
+        "--rc-branch", dest="rc_branch", type=str, required=True,
+        help="The rc branch this shipped from (e.g. rc-2026.8.2).",
+    )
+    rel_ship.add_argument(
+        "--beta-tag", dest="beta_tag", type=str, default=None,
+        help="Beta tag (e.g. v0.17.1-beta.1, ant-cli-v0.3.3-beta.1).",
+    )
+    rel_ship.add_argument(
+        "--beta-tag-sha", dest="beta_tag_sha", type=str, default=None,
+        help="The commit SHA the beta tag points at (the rc-branch head).",
+    )
+    rel_ship.add_argument(
+        "--shipped-at", dest="shipped_at", type=str, default=None,
+        help="Ship time, ISO-8601 or YYYY-MM-DD. Defaults to now.",
+    )
+    rel_ship.add_argument(
+        "--planned-promotion", dest="planned_promotion", type=str, default=None,
+        help=(
+            "Planned promotion date (the following Monday), ISO-8601 or "
+            "YYYY-MM-DD. This is the soak deadline `releases current` reports."
+        ),
+    )
+    rel_ship.add_argument(
+        "--rc-version", dest="rc_version", type=str, default=None,
+        help=(
+            "The rc version (e.g. 0.17.1-rc.1) used to link the "
+            "release-candidates row. A miss warns rather than failing."
+        ),
+    )
+    rel_ship.add_argument(
+        "--notes", type=str, default=None, help="Free-text notes.",
+    )
+
+    rel_promote = rel_sub.add_parser(
+        "promote",
+        help=(
+            "Record the promotion to stable + the release manifest. Reads a "
+            "JSON payload from --from-file or stdin."
+        ),
+    )
+    rel_promote.add_argument(
+        "--from-file", dest="from_file", type=str, default=None,
+        help="Path to a JSON payload file. Use '-' or omit to read stdin.",
+    )
+    rel_promote.add_argument(
+        "--allow-missing-ship", dest="allow_missing_ship",
+        action="store_true",
+        help=(
+            "Record a promotion with no ship record — for releases promoted "
+            "under the pre-beta train structure, and for backfill. Leaves "
+            "shipped_to_beta_at NULL rather than inventing a soak. Needs "
+            "'rc_branch' in the payload."
+        ),
+    )
+
+    rel_rolled = rel_sub.add_parser(
+        "rolled-past",
+        help=(
+            "Record that the beta channel moved on without promoting this "
+            "release (a NO-PROMOTE beta health verdict)."
+        ),
+    )
+    rel_rolled.add_argument(
+        "--id", type=int, default=None,
+        help="Look up by release id (preferred).",
+    )
+    rel_rolled.add_argument(
+        "--binary-target", dest="binary_target", type=str, default=None,
+        help="Look up by binary target (combine with --version).",
+    )
+    rel_rolled.add_argument(
+        "--version", type=str, default=None,
+        help="Look up by version (combine with --binary-target).",
+    )
+    rel_rolled.add_argument(
+        "--reason", type=str, required=True,
+        help="Why the train died unpromoted. Required.",
+    )
+
+    rel_current = rel_sub.add_parser(
+        "current",
+        help=(
+            "Current stable version, current beta version, soak age, and the "
+            "betas rolled past since the current stable."
+        ),
+    )
+    rel_current.add_argument(
+        "--binary-target", dest="binary_target", type=str, default=None,
+        help="Limit to one binary target.",
+    )
+
+    rel_ls = rel_sub.add_parser(
+        "ls",
+        help=(
+            "List recorded releases (parent rows with their manifest crates "
+            "indented underneath)."
+        ),
+    )
+    rel_ls.add_argument(
+        "--binary-target", dest="binary_target", type=str, default=None,
+        help="Filter by binary target (e.g. ant, ant-node).",
+    )
+    rel_ls.add_argument(
+        "--outcome", type=str, default=None,
+        choices=["shipped_to_beta", "promoted", "rolled_past"],
+        help="Filter by outcome.",
+    )
+    rel_ls.add_argument(
+        "--limit", type=int, default=None,
+        help="Cap the number of releases returned.",
+    )
+
+    rel_show = rel_sub.add_parser(
+        "show",
+        help="Show a single release with its full manifest.",
+    )
+    rel_show.add_argument(
+        "--id", type=int, default=None,
+        help="Look up by release id (preferred).",
+    )
+    rel_show.add_argument(
+        "--binary-target", dest="binary_target", type=str, default=None,
+        help="Look up by binary target (combine with --version).",
+    )
+    rel_show.add_argument(
+        "--version", type=str, default=None,
+        help="Look up by version (combine with --binary-target).",
+    )
+
+    # =========================================================================
     # === utils group (hetzner-availability, list-regions, vultr-availability) ===
     # =========================================================================
     utils_parser = subparsers.add_parser(
@@ -6536,6 +6696,32 @@ def main(argv=None):
                 cmd_track_upgrades_reconcile,
             )
             cmd_track_upgrades_reconcile(args)
+    elif args.command == "releases":
+        verb = args.releases_verb
+        if verb == "ship":
+            from saorsa_deploy.cmd.releases.ship_cmd import cmd_releases_ship
+            cmd_releases_ship(args)
+        elif verb == "promote":
+            from saorsa_deploy.cmd.releases.promote_cmd import (
+                cmd_releases_promote,
+            )
+            cmd_releases_promote(args)
+        elif verb == "rolled-past":
+            from saorsa_deploy.cmd.releases.rolled_past_cmd import (
+                cmd_releases_rolled_past,
+            )
+            cmd_releases_rolled_past(args)
+        elif verb == "current":
+            from saorsa_deploy.cmd.releases.current_cmd import (
+                cmd_releases_current,
+            )
+            cmd_releases_current(args)
+        elif verb == "ls":
+            from saorsa_deploy.cmd.releases.ls_cmd import cmd_releases_ls
+            cmd_releases_ls(args)
+        elif verb == "show":
+            from saorsa_deploy.cmd.releases.show_cmd import cmd_releases_show
+            cmd_releases_show(args)
     elif args.command == "release-candidates":
         verb = args.release_candidates_verb
         if verb == "new":
