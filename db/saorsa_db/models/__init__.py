@@ -96,6 +96,12 @@ from saorsa_db.models.prod_upload_verification import (
     DeploymentProdUploadVerification,
     ProdUploadVerifyStatus,
 )
+from saorsa_db.models.release import (
+    Release,
+    ReleaseCrate,
+    ReleaseOutcome,
+    TERMINAL_RELEASE_OUTCOMES,
+)
 from saorsa_db.models.release_candidate import (
     ReleaseCandidate,
     ReleaseCandidateCrate,
@@ -178,6 +184,10 @@ __all__ = [
     "ProdServiceAudit",
     "ProdServiceAuditAction",
     "ProdUploadStatus",
+    "Release",
+    "ReleaseCrate",
+    "ReleaseOutcome",
+    "TERMINAL_RELEASE_OUTCOMES",
     "ReleaseCandidate",
     "ReleaseCandidateCrate",
     "ReleaseCandidatePR",
