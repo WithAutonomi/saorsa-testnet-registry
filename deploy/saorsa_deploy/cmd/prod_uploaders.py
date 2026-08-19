@@ -901,6 +901,26 @@ def cmd_prod_uploaders_deploy(args):
     )
 
 
+def _discard_pool_selection(name: str) -> None:
+    """Drop the persisted draw once the deployment it belonged to is gone.
+
+    The selection is keyed on the deployment name, which is reused every
+    release train, so leaving it behind means the next run of the same name
+    inherits it. ``select_for_deployment`` refuses a spent draw regardless —
+    that is the load-bearing guard — but a destroyed deployment has no draw to
+    resume, so keeping it only preserves something misleading.
+
+    Best-effort: the deployment is already torn down by this point, and failing
+    the destroy over leftover state would strand a run that actually succeeded.
+    """
+    from saorsa_deploy.state import delete_pool_selection
+
+    try:
+        delete_pool_selection(name)
+    except Exception:
+        pass
+
+
 def cmd_prod_uploaders_destroy(args):
     """Destroy a prod uploaders testbed."""
     from saorsa_deploy.cmd.destroy_clients import cmd_destroy_clients
@@ -969,6 +989,8 @@ def cmd_prod_uploaders_destroy(args):
         record_event(args.name, "prod_uploaders_destroy_failed", {"error": str(e)})
         record_status(args.name, DeploymentStatus.FAILED)
         sys.exit(1)
+
+    _discard_pool_selection(args.name)
 
     record_event(args.name, "prod_uploaders_destroy_completed")
     record_status(args.name, DeploymentStatus.DESTROYED)

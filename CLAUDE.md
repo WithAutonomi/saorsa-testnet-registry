@@ -464,6 +464,18 @@ selection is **persisted to S3** so `up --resume` reuses it rather than drawing 
 fresh ~350 files; and claims attach to the **canonical** file so a duplicate
 group is spent once.
 
+That persisted draw is keyed on the deployment **name**, which every prod name
+reuses each release train — so a new run finds the previous run's draw under its
+own key. It is therefore only reused while it is still **live**: every file must
+still carry the exact claim the draw recorded, still `CLAIMED`. A claim that
+resolved to `UPLOADED`, was released, or was replaced by a different one means an
+earlier run finished with that file, and the draw is discarded and taken again
+(`selection_is_live` in `pool_selection.py`). Without this, STG-UL-01 on
+2026-08-18 was handed the four files the 2026-08-11 run had already uploaded, and
+only the duplicate-file gate stopped it re-uploading them for real money.
+`prod uploaders destroy` also deletes the persisted draw, since a destroyed
+deployment has nothing to resume.
+
 **Claim resolution.** `record-results` closes claims for `prod-uploaders` (from
 `deployment_prod_upload_results`) and `prod-canary` (from `prod_canary_uploads` —
 different column names for the same concepts), recording address, chunks and

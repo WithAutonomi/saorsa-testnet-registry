@@ -23,7 +23,7 @@ remote uploader.
 
 from dataclasses import dataclass
 
-from saorsa_db.models.prod_file_pool import ClaimSource, PoolFileKind
+from saorsa_db.models.prod_file_pool import ClaimSource, ClaimStatus, PoolFileKind
 from saorsa_db.repositories import InsufficientPoolInventory
 from saorsa_db.size_class import (
     bounded_byte_range,
@@ -191,6 +191,44 @@ def describe_request(
     return f"{rendered} ({bounds})" if bounds else rendered
 
 
+def selection_is_live(repo, selection: list["SelectedFile"]) -> bool:
+    """True only while a persisted draw is still this run's to use.
+
+    The persisted selection is keyed on the deployment **name**, and every
+    prod deployment name is reused each release train — so a brand-new run
+    finds the previous run's draw sitting under its own key. Returning it
+    unchecked hands the run files that are already on the production network,
+    which is exactly what happened to STG-UL-01 on 2026-08-18: it was handed
+    the four files the 2026-08-11 run had uploaded, and only the duplicate-file
+    gate stopped it re-uploading them with real money.
+
+    A draw is live only while every file still carries the very claim that draw
+    recorded, still open. Anything else means it is not ours to reuse:
+
+    * the claim resolved to ``UPLOADED`` — an earlier run finished with it;
+    * the claim is gone or was released — the file is back in the pool and may
+      since have been drawn by someone else;
+    * a *different* claim now blocks the file — another run holds it.
+
+    Deliberately strict: a false "live" silently re-uploads spent files, while a
+    false "stale" costs one extra draw from a pool that reports its inventory.
+    """
+    if not selection:
+        return False
+    if any(entry.claim_id is None for entry in selection):
+        # Predates claim ids, or was hand-written. Ownership is unprovable, and
+        # assuming it is ours is the failure this check exists to prevent.
+        return False
+    blocking = repo.blocking_claims_for_files([e.file_id for e in selection])
+    for entry in selection:
+        claim = blocking.get(entry.file_id)
+        if claim is None or claim.id != entry.claim_id:
+            return False
+        if claim.status is not ClaimStatus.CLAIMED:
+            return False
+    return True
+
+
 def select_for_deployment(
     repo,
     *,
@@ -210,11 +248,15 @@ def select_for_deployment(
     key so a resume returns each VM the same files it had.
     """
     persisted = load_pool_selection(name) or {}
-    if slot in persisted.get("slots", {}):
-        return [
-            SelectedFile.from_dict(entry)
-            for entry in persisted["slots"][slot]["files"]
-        ]
+    stored = persisted.get("slots", {}).get(slot)
+    if stored is not None:
+        previous = [SelectedFile.from_dict(entry) for entry in stored["files"]]
+        if selection_is_live(repo, previous):
+            return previous
+        # The draw belongs to an earlier run that has already finished with
+        # these files. Drop it and draw fresh rather than handing this run
+        # files that are on the network.
+        persisted.get("slots", {}).pop(slot, None)
 
     validate_bounds(request, min_size_bytes, max_size_bytes)
 
