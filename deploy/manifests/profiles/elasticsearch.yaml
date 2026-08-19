@@ -60,6 +60,17 @@ elasticsearch:
   # The beta soak is 5 days, so 14 covers the verdict window with room spare.
   retention_days: 14
 
+  # Minimum level accepted from community forwarders. Enforced SERVER-SIDE:
+  # their forwarder config is theirs to change, so the policy is applied at
+  # ingest by the index's final_pipeline, which a client cannot override (a
+  # request naming ?pipeline=_none does NOT bypass it — verified against ES
+  # 8.17.4). `info` drops DEBUG and TRACE; `debug` drops TRACE only.
+  #
+  # Change it later WITHOUT redeploying — it rewrites the pipeline body only,
+  # and applies to the next document written:
+  #   saorsa-deploy elastic set-log-level --name BETA-LOGS-01 --min-level debug
+  min_log_level: info
+
   # Public-facing ingest. Requires ingest_hostname; see the DNS note above.
   public_ingest: true
   ingest_hostname: logs.autonomi.com

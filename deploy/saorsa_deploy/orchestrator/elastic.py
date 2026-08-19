@@ -77,6 +77,8 @@ def _provision_step(manifest: Manifest) -> Step:
         argv += ["--shards", str(spec.shards)]
     if spec.public_ingest:
         argv += ["--public-ingest", "--ingest-hostname", spec.ingest_hostname]
+        if spec.min_log_level:
+            argv += ["--min-log-level", spec.min_log_level]
         if spec.letsencrypt_staging:
             argv.append("--letsencrypt-staging")
     return Step(argv, "Provision Elasticsearch")

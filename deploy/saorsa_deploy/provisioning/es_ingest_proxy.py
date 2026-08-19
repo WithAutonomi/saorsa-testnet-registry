@@ -90,6 +90,11 @@ def build_caddyfile(
         f"\t\t\tmax_size {max_body}",
         "\t\t}",
     ]
+    # Strip any client-supplied `pipeline`. Belt and braces with the index's
+    # final_pipeline (which already cannot be overridden): naming a pipeline is
+    # the documented way to bypass a `default_pipeline`, and removing the
+    # parameter at the edge means no client can select ingest processing at all.
+    lines.append("\t\turi query -pipeline")
     if filter_bulk_response:
         # `uri query +key value` appends without disturbing an existing query
         # string — string-concatenating "&..." would produce a malformed URI on

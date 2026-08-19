@@ -27,6 +27,11 @@ from rich.panel import Panel
 from rich.table import Table
 
 from saorsa_deploy.provisioning.elastic import BETA_INDEX_PATTERN
+from saorsa_deploy.provisioning.es_log_filter import (
+    LOG_FILTER_PIPELINE,
+    build_pipeline_body,
+    levels_to_drop,
+)
 from saorsa_deploy.state import load_elastic_state
 
 #: Prefix on every key name, so keys minted here are distinguishable from any
@@ -246,3 +251,46 @@ def cmd_elastic_revoke_key(args):
         "[dim]Revocation is immediate; the user's forwarder will start getting "
         "401s on its next batch.[/dim]"
     )
+
+
+def cmd_elastic_set_log_level(args):
+    """Change the minimum log level this instance accepts, at runtime.
+
+    Rewrites the ingest pipeline body only. The index template already names the
+    pipeline as its ``final_pipeline``, so there is nothing to redeploy, nothing
+    to restart and no index to recreate — the new policy applies to the next
+    document written.
+
+    Existing documents are untouched: this filters what is accepted from here
+    on, and does not retroactively delete logs already indexed.
+    """
+    console = Console()
+    state = _load(console, args.name)
+
+    try:
+        drop = levels_to_drop(args.min_level)
+        body = build_pipeline_body(args.min_level)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+
+    try:
+        _es_request(state, "PUT", f"/_ingest/pipeline/{LOG_FILTER_PIPELINE}", body)
+    except Exception as e:  # noqa: BLE001
+        _fail(console, e)
+
+    kept = f"{args.min_level.upper()} and above"
+    dropped = ", ".join(drop) if drop else "nothing"
+    console.print(
+        f"[bold green]Ingest level for '{args.name}' is now {kept}.[/bold green]"
+    )
+    console.print(f"[dim]Dropping: {dropped}. Applies to the next document "
+                  f"written; already-indexed logs are unaffected.[/dim]")
+    if drop:
+        # Community forwarders see a dropped document as accepted, so nobody
+        # upstream will notice a tightening. Say so rather than let it be a
+        # surprise when someone asks why their DEBUG lines never appear.
+        console.print(
+            "[dim]Participants are not notified: dropped documents return "
+            "success to their forwarder, which is what stops it retrying.[/dim]"
+        )

@@ -19,6 +19,11 @@ from saorsa_deploy.provisioning.es_ingest_proxy import (
     build_caddyfile,
     build_write_caddyfile_command,
 )
+from saorsa_deploy.provisioning.es_log_filter import (
+    DEFAULT_MIN_LEVEL,
+    LOG_FILTER_PIPELINE,
+    build_pipeline_body,
+)
 from saorsa_deploy.provisioning.volume import (
     build_mount_ordering_dropin_command,
     build_mount_volume_command,
@@ -77,6 +82,7 @@ class ElasticProvisioner:
         public_ingest: bool = False,
         ingest_hostname: str | None = None,
         letsencrypt_staging: bool = False,
+        min_log_level: str = DEFAULT_MIN_LEVEL,
     ):
         if retention_days < 1:
             raise ValueError(
@@ -106,6 +112,12 @@ class ElasticProvisioner:
         self.public_ingest = public_ingest
         self.ingest_hostname = ingest_hostname
         self.letsencrypt_staging = letsencrypt_staging
+        # Enforced server-side, because a community participant's forwarder
+        # config is theirs to change. Validated here so a bad value fails before
+        # any VM is touched.
+        self.min_log_level = min_log_level
+        if public_ingest:
+            build_pipeline_body(min_log_level)
         self._es_password = secrets.token_urlsafe(24)
 
     def execute(self) -> dict:
@@ -605,7 +617,23 @@ class ElasticProvisioner:
         """
         if not self.public_ingest:
             return ""
+        pipeline_body = build_pipeline_body(self.min_log_level)
         return (
+            "\n"
+            f"LOG_FILTER_PIPELINE = '{LOG_FILTER_PIPELINE}'\n"
+            "\n"
+            "# 5a. Server-side log-level filter. Attached below as the index's\n"
+            "# final_pipeline, which a client cannot override -- community\n"
+            "# forwarders are not ours to configure, so the level policy has to\n"
+            "# be enforced here. Change it later without redeploying:\n"
+            "#   saorsa-deploy elastic set-log-level --name <n> --min-level debug\n"
+            f"print('Creating log-level filter pipeline ({self.min_log_level} and above)...')\n"
+            "es_auth_request(\n"
+            "    'PUT', f'/_ingest/pipeline/{LOG_FILTER_PIPELINE}',\n"
+            f"    {pipeline_body!r},\n"
+            ")\n"
+            "print('Log-level filter pipeline created.')\n"
+            "\n"
             "\n"
             "# 5b. Index template for community beta-channel node logs.\n"
             "print('Creating beta ingest index template...')\n"
@@ -626,6 +654,10 @@ class ElasticProvisioner:
             # is not ours to guarantee. Compress rather than index every stray
             # field a forwarder invents.
             "            'index.codec': 'best_compression',\n"
+            # final_pipeline, NOT default_pipeline: the latter is overridden by
+            # a client passing ?pipeline=, so it enforces nothing against a
+            # forwarder we do not control.
+            "            'index.final_pipeline': LOG_FILTER_PIPELINE,\n"
             "        },\n"
             "        'mappings': {\n"
             "            'properties': {\n"

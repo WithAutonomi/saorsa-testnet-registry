@@ -2235,6 +2235,16 @@ def main(argv=None):
         "preflights the record before touching the VM.",
     )
     elastic_provision_parser.add_argument(
+        "--min-log-level",
+        type=str,
+        default=None,
+        choices=["info", "debug", "trace"],
+        help="Minimum log level accepted from community forwarders (default: "
+        "info). Anything more verbose is dropped at ingest by the index's "
+        "final_pipeline, which the client cannot override. Change later without "
+        "redeploying via `elastic set-log-level`.",
+    )
+    elastic_provision_parser.add_argument(
         "--letsencrypt-staging",
         action="store_true",
         help="Use Let's Encrypt's staging CA. Production issuance allows only 5 "
@@ -2286,6 +2296,26 @@ def main(argv=None):
         type=str,
         required=True,
         help="The participant whose key should be invalidated (immediate).",
+    )
+
+    elastic_set_level_parser = elastic_subparsers.add_parser(
+        "set-log-level",
+        help="Change the minimum log level this instance accepts (no redeploy)",
+    )
+    elastic_set_level_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+    elastic_set_level_parser.add_argument(
+        "--min-level",
+        type=str,
+        required=True,
+        choices=["info", "debug", "trace"],
+        help="Keep this level and above; anything more verbose is dropped at "
+        "ingest. `info` drops DEBUG and TRACE; `debug` drops TRACE only; "
+        "`trace` keeps everything. Enforced server-side via the index's "
+        "final_pipeline, which a community forwarder cannot override. Takes "
+        "effect on the next document written; already-indexed logs are "
+        "unaffected.",
     )
 
     # =========================================================================
@@ -6409,6 +6439,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.elastic_keys import cmd_elastic_revoke_key
 
             cmd_elastic_revoke_key(args)
+        elif args.elastic_subcommand == "set-log-level":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_set_log_level
+
+            cmd_elastic_set_log_level(args)
     elif args.command == "monitoring":
         if args.monitoring_subcommand == "clean":
             from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring

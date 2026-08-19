@@ -979,6 +979,12 @@ class ElasticsearchSpec(_Base):
     # session that caused it. Staging certs are untrusted by design.
     letsencrypt_staging: bool = False
 
+    # Minimum level accepted from community forwarders. Enforced server-side
+    # because a participant's forwarder config is theirs to change; anything
+    # more verbose is dropped at ingest. Changeable at runtime afterwards with
+    # `elastic set-log-level`, so this is only the starting policy.
+    min_log_level: Optional[LogLevel] = None  # default 'info'
+
     keep_on_destroy: bool = False
     # Contabo needs an image UUID and the operator public key.
     contabo_image_id: Optional[str] = None

@@ -2919,6 +2919,59 @@ outlasts the debugging session that causes it, so use
 `letsencrypt_staging: true` while iterating on a deploy of the same hostname.
 Staging certificates are not publicly trusted.
 
+#### Controlling the log level, server-side
+
+A community participant can edit their own forwarder, so a level set there is a
+request, not a control. The policy is therefore enforced at ingest, by an
+Elasticsearch pipeline attached to the index as **`index.final_pipeline`**:
+
+```bash
+saorsa-deploy elastic set-log-level --name BETA-LOGS-01 --min-level debug
+```
+
+`min_log_level` (manifest) / `--min-log-level` (provision) sets the starting
+policy, default **`info`**. The drop set is derived the same way as the node
+Telegraf forwarder's `--drop-log-levels` — drop only what is strictly *more*
+verbose than the minimum:
+
+| `min_log_level` | dropped at ingest |
+|---|---|
+| `info` (default) | `DEBUG`, `TRACE` |
+| `debug` | `TRACE` |
+| `trace` | nothing |
+
+`WARN` and `ERROR` are never dropped at any setting, and a document with **no**
+`level` field is kept — losing logs of an unanticipated shape is worse than
+keeping a few we did not mean to.
+
+Four properties, all verified against a real Elasticsearch 8.17.4:
+
+- **`final_pipeline` cannot be bypassed.** A client passing `?pipeline=_none`
+  still had its DEBUG documents dropped. **`default_pipeline` can** — the same
+  request bypassed it entirely and the document landed unfiltered, so never use
+  it for anything an untrusted client must not be able to opt out of. The proxy
+  additionally strips a client-supplied `pipeline` parameter (`uri query
+  -pipeline`), so the two mechanisms back each other up.
+- **Dropped documents look like success**: `status: 200, result: "noop"`, with
+  the bulk response reporting `errors: false`. That is deliberate — a `fail`
+  processor would return a per-document error and most forwarders would retry
+  the same batch forever. The trade is that drops are **invisible**: nothing
+  counts them, and participants are not told.
+- **Changing the level needs no redeploy.** `set-log-level` rewrites the
+  *pipeline body*; the index template already names the pipeline, so the new
+  policy applies to the next document written — no restart, no reindex.
+  Already-indexed logs are untouched; this filters what is accepted from here on.
+- **The `reroute` processor is rejected in a final_pipeline** ("final pipeline
+  can't change the target index"), so the tempting "quarantine verbose logs into
+  a cheap 1-day index to see who is over-sending" design does not work in the
+  enforceable slot. It works only in `default_pipeline` — which is viable *only*
+  because the proxy strips the `pipeline` parameter.
+
+This protects the **disk and the index, not the network**: a dropped document
+has already crossed the wire and been parsed. Ingress is free on DigitalOcean so
+that is acceptable, but level filtering is not a bandwidth control — the
+disk-size cap is.
+
 #### Per-user ingest credentials
 
 Community logs land in `beta-nodes-*` under the ILM policy, and each participant
@@ -2950,6 +3003,7 @@ matched, rather than claiming a revocation that did not happen.
 | `volume_size` | `100` (GB) | The binding constraint; grow online as the cohort grows |
 | `shards` | `4` | One indexing thread per shard; match the vCPU count |
 | `retention_days` | `14` | ILM delete phase; the beta soak is 5 days |
+| `min_log_level` | `info` | Server-side ingest filter; change later with `elastic set-log-level` |
 | `public_ingest` | `false` | Requires `ingest_hostname` |
 | `ingest_hostname` | — | The name the certificate is issued for; must resolve first |
 | `reserved_ip` | — | Adopt an existing reserved IP on a rebuild. DigitalOcean only |

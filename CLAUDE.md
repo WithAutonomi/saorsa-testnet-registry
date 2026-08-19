@@ -1538,6 +1538,28 @@ the public-ingest shape. Impl: `orchestrator/elastic.py`,
   `ant_log_writer` role is deliberately **not** reused (it grants `read` and
   `manage`). Keys expire (default 90d) so access does not outlive involvement,
   and the encoded credential is shown **once**.
+- **Log level is enforced server-side, because a participant's forwarder config
+  is theirs to change.** `min_log_level` (default `info`) drops anything more
+  verbose at ingest, via an ingest pipeline attached as the index's
+  **`index.final_pipeline`**. That slot is load-bearing and verified against ES
+  8.17.4: a client passing **`?pipeline=_none` does NOT bypass `final_pipeline`**,
+  but the same request **DOES bypass `default_pipeline`** entirely — so never use
+  `default_pipeline` for anything an untrusted client must not opt out of. The
+  proxy also strips a client-supplied `pipeline` param (`uri query -pipeline`).
+  Drop set derives from the minimum exactly like the node telegraf
+  `--drop-log-levels` (`info` → DEBUG,TRACE; `debug` → TRACE; `trace` → none);
+  WARN/ERROR never dropped; a document with **no** `level` is **kept**.
+  A dropped doc returns `status: 200, result: "noop"` with `errors: false`, so
+  forwarders treat it as accepted and do **not** retry — deliberate, since a
+  `fail` processor would make them retry the batch forever. The cost: drops are
+  **invisible** (nothing counts them) and participants are not notified.
+  **`elastic set-log-level --name X --min-level debug` changes it at runtime** —
+  it rewrites only the pipeline body, so no redeploy, no restart, no reindex;
+  applies to the next write, and already-indexed logs are untouched.
+  NB the **`reroute` processor is rejected in a final_pipeline** ("can't change
+  the target index"), so quarantining verbose logs to a cheap index only works
+  in `default_pipeline` — viable solely because the proxy strips `pipeline`.
+  This bounds **disk**, not bandwidth: the document already crossed the wire.
 - **One shared daily index, attribution by `beta_user` field** — not an index
   per user: ~100 users x daily x 14 days would exceed 1000 shards on a single
   small node.

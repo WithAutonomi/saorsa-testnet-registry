@@ -8,6 +8,7 @@ from rich.panel import Panel
 
 from saorsa_deploy.provisioning.elastic import ElasticProvisioner
 from saorsa_deploy.provisioning.es_ingest_proxy import dns_preflight_message
+from saorsa_deploy.provisioning.es_log_filter import DEFAULT_MIN_LEVEL
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_elastic_state, update_elastic_state
 
@@ -193,6 +194,8 @@ def cmd_provision_elastic(args):
             letsencrypt_staging=bool(
                 getattr(args, "letsencrypt_staging", False)
             ),
+            min_log_level=getattr(args, "min_log_level", None)
+            or DEFAULT_MIN_LEVEL,
         )
         connection_details = provisioner.execute()
     except Exception as e:

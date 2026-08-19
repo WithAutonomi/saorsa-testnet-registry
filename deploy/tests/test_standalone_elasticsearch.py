@@ -329,3 +329,118 @@ def test_dns_preflight_reports_a_missing_record():
 
 def test_dns_preflight_accepts_a_multi_record_name():
     assert dns_preflight_message(HOST, ["9.9.9.9", "1.2.3.4"], "1.2.3.4") is None
+
+
+# --------------------------------------------------------------------------- #
+# server-side log-level filtering
+#
+# Community forwarders are not ours to configure, so the level policy is
+# enforced at ingest. The behaviour asserted here was verified against a real
+# Elasticsearch 8.17.4 container: `final_pipeline` survives a client passing
+# `?pipeline=_none`, whereas `default_pipeline` does not.
+# --------------------------------------------------------------------------- #
+from saorsa_deploy.provisioning.es_log_filter import (  # noqa: E402
+    LOG_FILTER_PIPELINE,
+    build_drop_condition,
+    build_pipeline_body,
+    levels_to_drop,
+)
+
+
+@pytest.mark.parametrize(
+    "min_level,expected",
+    [
+        ("info", ["TRACE", "DEBUG"]),
+        ("debug", ["TRACE"]),
+        ("trace", []),
+    ],
+)
+def test_levels_to_drop(min_level, expected):
+    # Same derivation as the node telegraf forwarder's --drop-log-levels: drop
+    # only what is strictly more verbose than the configured minimum.
+    assert levels_to_drop(min_level) == expected
+
+
+def test_warn_and_error_are_never_dropped():
+    for level in ("info", "debug", "trace"):
+        dropped = levels_to_drop(level)
+        assert "WARN" not in dropped and "ERROR" not in dropped
+
+
+def test_invalid_min_level_is_refused():
+    with pytest.raises(ValueError, match="must be one of"):
+        levels_to_drop("warn")
+
+
+def test_drop_condition_is_case_insensitive():
+    # A forwarder emitting "debug" rather than "DEBUG" would otherwise sail
+    # straight past the filter this exists to enforce.
+    assert "toUpperCase()" in build_drop_condition(["DEBUG"])
+
+
+def test_drop_condition_keeps_documents_with_no_level():
+    # Losing logs of an unanticipated shape is worse than keeping a few we did
+    # not mean to, so the condition is null-guarded.
+    assert "ctx.level != null" in build_drop_condition(["DEBUG"])
+
+
+def test_trace_keeps_the_pipeline_but_empties_it():
+    # The index template names the pipeline, and an index whose final_pipeline
+    # refers to a missing pipeline rejects every write — so "keep everything"
+    # must still leave a pipeline in place.
+    body = build_pipeline_body("trace")
+    assert body["processors"] == []
+
+
+def test_pipeline_is_attached_as_final_not_default():
+    # default_pipeline is overridden by a client passing ?pipeline=, so it
+    # enforces nothing against a forwarder we do not control. Verified against
+    # ES 8.17.4: the bypass works on default_pipeline and fails on final.
+    script = _pub()._build_setup_script()
+    assert "'index.final_pipeline': LOG_FILTER_PIPELINE" in script
+    assert "default_pipeline" not in script
+
+
+def test_setup_script_creates_the_pipeline_before_the_template():
+    script = _pub()._build_setup_script()
+    assert script.index(f"'{LOG_FILTER_PIPELINE}'") < script.index("beta-node-logs")
+
+
+@pytest.mark.parametrize("level", ["info", "debug", "trace"])
+def test_setup_script_renders_for_every_level(level):
+    p = ElasticProvisioner(
+        "10.0.0.1", SSH, "B", public_ingest=True, ingest_hostname=HOST,
+        min_log_level=level,
+    )
+    compile(p._build_setup_script(), "setup", "exec")
+
+
+def test_bad_min_level_fails_before_any_vm_is_touched():
+    with pytest.raises(ValueError, match="must be one of"):
+        ElasticProvisioner(
+            "10.0.0.1", SSH, "B", public_ingest=True, ingest_hostname=HOST,
+            min_log_level="verbose",
+        )
+
+
+def test_private_instance_gets_no_ingest_pipeline():
+    script = ElasticProvisioner("10.0.0.1", SSH, "STG-01")._build_setup_script()
+    assert LOG_FILTER_PIPELINE not in script
+    assert "final_pipeline" not in script
+
+
+def test_min_log_level_is_threaded_into_the_provision_step():
+    m = _manifest(min_log_level="debug")
+    assert "--min-log-level" in build_deploy_steps(m)[1].argv
+
+
+def test_min_log_level_omitted_when_unset():
+    # Keeps the argv (and so the up journal) stable for a manifest that does not
+    # set it.
+    assert "--min-log-level" not in build_deploy_steps(_manifest())[1].argv
+
+
+def test_proxy_strips_a_client_supplied_pipeline():
+    # Belt and braces with final_pipeline: naming a pipeline is the documented
+    # way to bypass a default_pipeline, so the parameter never reaches ES.
+    assert "uri query -pipeline" in build_caddyfile(HOST)
