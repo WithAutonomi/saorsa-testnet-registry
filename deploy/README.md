@@ -2919,6 +2919,49 @@ outlasts the debugging session that causes it, so use
 `letsencrypt_staging: true` while iterating on a deploy of the same hostname.
 Staging certificates are not publicly trusted.
 
+#### The ingest contract (what a forwarder writes)
+
+Verified end to end against Elasticsearch 8.17.4 with security enabled, using a
+key minted by `elastic mint-key`.
+
+| | |
+|---|---|
+| Endpoint | `POST https://<ingest_hostname>/_bulk` (the proxy is transparent — it is the Elasticsearch API, not a translation layer) |
+| Auth | `Authorization: ApiKey <encoded>` — a real Elasticsearch API key, **not** a bearer token |
+| Content-Type | `application/x-ndjson`, trailing newline required |
+| Action | **`create` only** — `index` returns a per-item 403 |
+| Index | `beta-nodes-YYYY.MM.DD` (UTC), inside the `beta-nodes-*` pattern the key is scoped to |
+| Time field | **`@timestamp`**, RFC3339 |
+| Max body | **50 MB** at the proxy (413 above it); Elasticsearch's own limit is 100 MB |
+
+**`create`, not `index`.** The key grants `create_doc`, which permits creating a
+document but not overwriting one — so a bulk `index` action is rejected per item
+with a `security_exception`, and `create` is the only action that works.
+`POST /{index}/_doc` (auto-ID) and `POST /{index}/_create/{id}` also work for
+single documents. Granting `index` instead would let one participant overwrite
+another's document by `_id`.
+
+**Errors are per item, not per request.** A `_bulk` call returns HTTP 200 even
+when individual documents are rejected, so a client must read
+`items[].status` — checking only the HTTP status will silently discard failures.
+Three statuses matter: `201` indexed, `200` **dropped by the level filter**
+(expected, not an error), and `403`/`429`/`400` genuine failures.
+
+**The proxy forces `filter_path=errors,items.*.status,items.*.error`.** Measured
+on a 500-document batch: 100 KB unfiltered, 13 KB with this filter.
+`items.*.error` alone is 16 bytes but Elasticsearch then **collapses the items
+array to only the failures**, so positions no longer correspond to the submitted
+documents — a client cannot tell which document a 429 belongs to and must retry
+the whole batch, duplicating everything that already succeeded. `status` is
+therefore not optional.
+
+Reads are refused: `_search` against the index returns 403, as does `GET /`.
+The mapped fields are `@timestamp`, `message`, `level`, `target`, `peer_id`,
+`version`, `commit`, `host`, `beta_user`, plus the forwarding daemon's
+identity set — `node_id`, `service`, `binary_version`, `channel`, `os`, `arch`
+— all keywords so they aggregate. Unmapped fields are accepted via dynamic
+mapping, and `ignore_malformed` stops one bad value failing a whole batch.
+
 #### Controlling the log level, server-side
 
 A community participant can edit their own forwarder, so a level set there is a

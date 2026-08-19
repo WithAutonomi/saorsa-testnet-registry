@@ -25,13 +25,23 @@ CADDY_CONFIG_PATH = "/etc/caddy/Caddyfile"
 #: caller can drive the heap into a circuit breaker.
 DEFAULT_MAX_BODY = "50MB"
 
-#: Trim the ``_bulk`` response to the error information a forwarder actually
-#: acts on. Elasticsearch otherwise answers with a per-document result object
-#: (~200+ bytes each), so an unfiltered response is roughly the size of the
-#: request that produced it — pure egress, on every batch, forever. Forcing it
-#: here rather than documenting it means it holds regardless of how a community
-#: forwarder is configured.
-BULK_FILTER_PATH = "errors,items.*.error"
+#: Trim the ``_bulk`` response to what a forwarder actually acts on.
+#: Elasticsearch otherwise answers with a per-document result object (~200 bytes
+#: each), so an unfiltered response is roughly the size of the request that
+#: produced it — pure egress, on every batch, forever. Forcing it here rather
+#: than documenting it means it holds regardless of how a community forwarder is
+#: configured.
+#:
+#: ``items.*.status`` is included and must stay. Filtering to ``items.*.error``
+#: alone is smaller still (measured: 16 bytes vs 13 KB for a 500-document batch,
+#: against 100 KB unfiltered) but Elasticsearch **collapses the items array to
+#: only the failing entries**, so their positions no longer line up with the
+#: submitted documents. A client cannot then tell which document a per-item 429
+#: belongs to and has to retry the whole batch — duplicating everything that
+#: already succeeded, since these are auto-ID ``create`` writes. Keeping
+#: ``status`` gives every document an entry, preserving the correlation, and
+#: still saves ~87% of the response.
+BULK_FILTER_PATH = "errors,items.*.status,items.*.error"
 
 LETSENCRYPT_STAGING_CA = "https://acme-staging-v02.api.letsencrypt.org/directory"
 

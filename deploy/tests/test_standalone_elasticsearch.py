@@ -19,6 +19,7 @@ from saorsa_deploy.provisioning.elastic import (
     ElasticProvisioner,
 )
 from saorsa_deploy.provisioning.es_ingest_proxy import (
+    BULK_FILTER_PATH,
     build_caddyfile,
     dns_preflight_message,
 )
@@ -289,7 +290,18 @@ def test_caddyfile_trims_the_bulk_response():
     # An unfiltered _bulk response is roughly the size of the request that
     # produced it — pure egress, on every batch. Forcing the filter here means
     # it holds regardless of how a community forwarder is configured.
-    assert "uri query +filter_path errors,items.*.error" in build_caddyfile(HOST)
+    assert "uri query +filter_path errors,items." in build_caddyfile(HOST)
+
+
+def test_bulk_filter_keeps_per_item_status():
+    # Load-bearing, and measured against ES 8.17.4: filtering to items.*.error
+    # alone makes Elasticsearch COLLAPSE the items array to just the failures,
+    # so their positions no longer match the submitted documents. A client then
+    # cannot tell which document a per-item 429 refers to and must retry the
+    # whole batch — duplicating everything that already succeeded, because these
+    # are auto-ID `create` writes. `status` gives every document an entry.
+    assert "items.*.status" in BULK_FILTER_PATH
+    assert "items.*.status" in build_caddyfile(HOST)
 
 
 def test_caddyfile_disables_the_http_redirect():
@@ -444,3 +456,39 @@ def test_proxy_strips_a_client_supplied_pipeline():
     # Belt and braces with final_pipeline: naming a pipeline is the documented
     # way to bypass a default_pipeline, so the parameter never reaches ES.
     assert "uri query -pipeline" in build_caddyfile(HOST)
+
+
+# --------------------------------------------------------------------------- #
+# the ingest contract the beta log-forwarding daemon (V2-1021) writes against
+#
+# Every assertion here was verified against a real Elasticsearch 8.17.4 with
+# security enabled, using a key minted from the same role_descriptors the
+# `elastic mint-key` command sends.
+# --------------------------------------------------------------------------- #
+def test_documents_are_timestamped_with_at_timestamp():
+    # `@timestamp`, not `timestamp`: the Elasticsearch convention, Kibana's
+    # default time field, and mandatory if this index ever becomes a data
+    # stream. Renaming it after community forwarders exist would break them all
+    # at once, so it is pinned before anything ships.
+    script = _pub()._build_setup_script()
+    assert "'@timestamp': {'type': 'date'}" in script
+
+
+def test_daemon_identity_fields_are_keywords():
+    # Mapped explicitly rather than left to dynamic mapping, which would make
+    # them text+keyword subfields; `beta-health-verdict` aggregates on these.
+    script = _pub()._build_setup_script()
+    for field in ("node_id", "service", "binary_version", "channel", "os", "arch"):
+        assert f"'{field}': {{'type': 'keyword'}}" in script
+
+
+def test_ingest_role_permits_create_but_not_index():
+    # Verified: with `create_doc`, a bulk `index` action returns a per-item 403
+    # security_exception while `create` returns 201. The daemon must use
+    # `create`. Granting `index` would also permit silently overwriting another
+    # participant's document by _id.
+    script = _pub()._build_setup_script()
+    role_block = script.split(BETA_INGEST_ROLE)[-1]
+    assert "'create_doc'" in role_block
+    assert "'index'" not in role_block
+    assert "'write'" not in role_block

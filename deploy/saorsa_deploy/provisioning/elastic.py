@@ -510,7 +510,12 @@ class ElasticProvisioner:
             "        },\n"
             "        'mappings': {\n"
             "            'properties': {\n"
-            "                'timestamp': {'type': 'date'},\n"
+            # `@timestamp`, not `timestamp`: it is the Elasticsearch convention,
+            # it is Kibana's default time field, and it is REQUIRED if this index
+            # is ever migrated to a data stream. Nothing forwards here yet, so
+            # pinning it now costs nothing and renaming it later would break
+            # every community forwarder at once.
+            "                '@timestamp': {'type': 'date'},\n"
             "                'message': {'type': 'text'},\n"
             "                'level': {'type': 'keyword'},\n"
             "                'target': {'type': 'keyword'},\n"
@@ -518,6 +523,16 @@ class ElasticProvisioner:
             "                'version': {'type': 'keyword'},\n"
             "                'commit': {'type': 'keyword'},\n"
             "                'host': {'type': 'keyword'},\n"
+            # The identifying fields the beta log-forwarding daemon (V2-1021)
+            # attaches to every event. Mapped explicitly as keywords so they are
+            # aggregatable — dynamic mapping would make them text+keyword
+            # subfields, and `beta-health-verdict` groups by these.
+            "                'node_id': {'type': 'keyword'},\n"
+            "                'service': {'type': 'keyword'},\n"
+            "                'binary_version': {'type': 'keyword'},\n"
+            "                'channel': {'type': 'keyword'},\n"
+            "                'os': {'type': 'keyword'},\n"
+            "                'arch': {'type': 'keyword'},\n"
             "                'service_number': {'type': 'keyword'},\n"
             "                'testnet_name': {'type': 'keyword'},\n"
             "                'host_role': {'type': 'keyword'},\n"
@@ -661,7 +676,12 @@ class ElasticProvisioner:
             "        },\n"
             "        'mappings': {\n"
             "            'properties': {\n"
-            "                'timestamp': {'type': 'date'},\n"
+            # `@timestamp`, not `timestamp`: it is the Elasticsearch convention,
+            # it is Kibana's default time field, and it is REQUIRED if this index
+            # is ever migrated to a data stream. Nothing forwards here yet, so
+            # pinning it now costs nothing and renaming it later would break
+            # every community forwarder at once.
+            "                '@timestamp': {'type': 'date'},\n"
             "                'message': {'type': 'text'},\n"
             "                'level': {'type': 'keyword'},\n"
             "                'target': {'type': 'keyword'},\n"
@@ -669,6 +689,16 @@ class ElasticProvisioner:
             "                'version': {'type': 'keyword'},\n"
             "                'commit': {'type': 'keyword'},\n"
             "                'host': {'type': 'keyword'},\n"
+            # The identifying fields the beta log-forwarding daemon (V2-1021)
+            # attaches to every event. Mapped explicitly as keywords so they are
+            # aggregatable — dynamic mapping would make them text+keyword
+            # subfields, and `beta-health-verdict` groups by these.
+            "                'node_id': {'type': 'keyword'},\n"
+            "                'service': {'type': 'keyword'},\n"
+            "                'binary_version': {'type': 'keyword'},\n"
+            "                'channel': {'type': 'keyword'},\n"
+            "                'os': {'type': 'keyword'},\n"
+            "                'arch': {'type': 'keyword'},\n"
             # Who sent it. Stamped from the credential the request carried, so
             # `beta-health-verdict` can tell one participant's crash loop from a
             # fleet-wide regression.

@@ -1560,6 +1560,27 @@ the public-ingest shape. Impl: `orchestrator/elastic.py`,
   the target index"), so quarantining verbose logs to a cheap index only works
   in `default_pipeline` — viable solely because the proxy strips `pipeline`.
   This bounds **disk**, not bandwidth: the document already crossed the wire.
+- **The ingest contract (what V2-1021's forwarding daemon writes).** Verified
+  against ES 8.17.4 with security on, using a key minted by `elastic mint-key`:
+  `POST https://<host>/_bulk`, `Authorization: ApiKey <encoded>` (a real ES API
+  key, **not** a bearer token), `application/x-ndjson`, index
+  `beta-nodes-YYYY.MM.DD`, time field **`@timestamp`**, body ≤ **50 MB** (proxy
+  cap; ES's own is 100 MB). The proxy is **transparent** — it is the
+  Elasticsearch API, not a translation layer.
+  **The action must be `create`; `index` returns a per-item 403** — the key
+  grants `create_doc`, which cannot overwrite, so granting `index` would let one
+  participant overwrite another's document by `_id`.
+  **`_bulk` returns HTTP 200 even when items fail**, so a client MUST read
+  `items[].status`: `201` indexed, `200` dropped by the level filter (expected,
+  not an error), `403`/`429`/`400` real failures.
+  The forced filter is **`errors,items.*.status,items.*.error`** and the
+  `status` part is load-bearing: `items.*.error` alone is smaller (16 B vs 13 KB
+  per 500-doc batch, against 100 KB unfiltered) but ES **collapses the items
+  array to only the failures**, destroying the position correlation — a client
+  then cannot tell which document a per-item 429 refers to and must retry the
+  whole batch, duplicating everything that already succeeded (auto-ID `create`
+  writes).
+  Reads are refused (`_search` and `GET /` both 403).
 - **One shared daily index, attribution by `beta_user` field** — not an index
   per user: ~100 users x daily x 14 days would exceed 1000 shards on a single
   small node.
