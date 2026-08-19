@@ -396,12 +396,14 @@ def test_drop_condition_keeps_documents_with_no_level():
     assert "ctx.level != null" in build_drop_condition(["DEBUG"])
 
 
-def test_trace_keeps_the_pipeline_but_empties_it():
+def test_trace_keeps_the_pipeline_but_drops_nothing():
     # The index template names the pipeline, and an index whose final_pipeline
     # refers to a missing pipeline rejects every write — so "keep everything"
-    # must still leave a pipeline in place.
+    # must still leave a pipeline in place. It also still strips the host and
+    # stamps attribution; only the level filter is conditional.
     body = build_pipeline_body("trace")
-    assert body["processors"] == []
+    assert not any("drop" in p for p in body["processors"])
+    assert body["processors"], "the pipeline must still exist and do its other work"
 
 
 def test_pipeline_is_attached_as_final_not_default():
@@ -492,3 +494,93 @@ def test_ingest_role_permits_create_but_not_index():
     assert "'create_doc'" in role_block
     assert "'index'" not in role_block
     assert "'write'" not in role_block
+
+
+# --------------------------------------------------------------------------- #
+# attribution and PII, enforced in the ingest pipeline
+#
+# Verified against ES 8.17.4: a key whose metadata says "mallory", sending
+# `beta_user: alice` and a hostname, produced a document reading "mallory" with
+# no host field.
+# --------------------------------------------------------------------------- #
+def _processors(min_level="info"):
+    return [list(p)[0] for p in build_pipeline_body(min_level)["processors"]]
+
+
+def test_hostname_is_stripped_at_ingest():
+    # Community machines' hostnames routinely contain the owner's real name, and
+    # a forwarder we do not control cannot be relied on to withhold it — so this
+    # is enforced, not requested.
+    body = build_pipeline_body("info")
+    removes = [p["remove"]["field"] for p in body["processors"] if "remove" in p]
+    assert "host" in removes
+
+
+def test_client_supplied_attribution_is_removed_before_being_stamped():
+    # Overwriting alone suffices only while every key carries metadata; a key
+    # minted without it would leave the client's claimed value standing, i.e.
+    # silently forgeable. Removing first fails closed.
+    order = _processors()
+    assert order.index("remove") < order.index("set_security_user")
+
+
+def test_attribution_comes_from_the_api_key():
+    body = build_pipeline_body("info")
+    sets = {p["set"]["field"]: p["set"]["copy_from"] for p in body["processors"] if "set" in p}
+    assert sets["beta_user"] == "_sec.api_key.metadata.beta_user"
+    assert sets["beta_key_id"] == "_sec.api_key.id"
+
+
+def test_the_security_scratch_field_is_removed_again():
+    # Otherwise every document carries a nested _sec blob forever.
+    body = build_pipeline_body("info")
+    removes = [p["remove"]["field"] for p in body["processors"] if "remove" in p]
+    assert "_sec" in removes
+    assert _processors().index("set_security_user") < len(_processors()) - 1
+
+
+@pytest.mark.parametrize("min_level", ["info", "debug", "trace"])
+def test_pii_and_attribution_apply_at_every_level(min_level):
+    # Only the drop processor is conditional on the level; stripping the host and
+    # stamping attribution must happen regardless.
+    order = _processors(min_level)
+    assert "set_security_user" in order
+    assert order.count("remove") >= 3
+
+
+def _beta_template_block(script: str) -> str:
+    """Just the beta index template.
+
+    Scoped deliberately: the same script also writes the testnet node/client
+    templates, which legitimately map `host` — asserting over the whole script
+    would match those and prove nothing about the beta index.
+    """
+    return script.split("# 5b.")[1].split("# 5c.")[0]
+
+
+def test_host_is_not_mapped_since_it_is_stripped():
+    beta = _beta_template_block(_pub()._build_setup_script())
+    assert "'host'" not in beta
+    assert "'beta_key_id': {'type': 'keyword'}" in beta
+
+
+def test_the_testnet_templates_still_map_host():
+    # The pre-existing node/client templates are unaffected by the beta index's
+    # privacy handling — their hosts are our own VMs.
+    script = _pub()._build_setup_script()
+    assert "'host': {'type': 'keyword'}" in script
+
+
+def test_read_key_covers_the_beta_index_on_a_public_instance():
+    # The beta index is the only data a public-ingest instance holds, and
+    # `beta-health-verdict` queries it with this key — a key that cannot see it
+    # is useless. Found live: the key was scoped to the testnet patterns only.
+    assert "beta-nodes-*" in _pub()._read_index_patterns()
+
+
+def test_read_key_is_unchanged_on_a_private_instance():
+    priv = ElasticProvisioner("10.0.0.1", SSH, "STG-01")
+    assert priv._read_index_patterns() == [
+        "telegraf-ant-nodes-*",
+        "telegraf-ant-clients-*",
+    ]

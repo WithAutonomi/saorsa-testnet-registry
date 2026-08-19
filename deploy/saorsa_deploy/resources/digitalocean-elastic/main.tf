@@ -31,6 +31,14 @@ resource "digitalocean_reserved_ip_assignment" "elastic" {
   count      = var.public_ingest ? 1 : 0
   ip_address = var.reserved_ip != "" ? var.reserved_ip : digitalocean_reserved_ip.elastic[0].ip_address
   droplet_id = digitalocean_droplet.elastic.id
+
+  # DigitalOcean serialises actions on a droplet and rejects a second one with
+  # 422 "Droplet already has a pending event". Attaching the volume and
+  # assigning the reserved IP are both droplet actions, and Terraform has no
+  # reason to order them — it starts both at once and one loses the race.
+  # Observed on the first real deploy. Ordering them is the fix; there is no
+  # retry to rely on.
+  depends_on = [digitalocean_volume_attachment.elastic_storage_attach]
 }
 
 resource "digitalocean_firewall" "elastic" {

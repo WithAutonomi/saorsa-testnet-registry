@@ -2278,11 +2278,29 @@ def main(argv=None):
         "free of heavyweight imports.)",
     )
 
+    elastic_mint_key_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
+    )
+
     elastic_list_keys_parser = elastic_subparsers.add_parser(
         "list-keys", help="List active ingest keys for an Elasticsearch instance"
     )
     elastic_list_keys_parser.add_argument(
         "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+
+    elastic_list_keys_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
     )
 
     elastic_revoke_key_parser = elastic_subparsers.add_parser(
@@ -2296,6 +2314,15 @@ def main(argv=None):
         type=str,
         required=True,
         help="The participant whose key should be invalidated (immediate).",
+    )
+
+    elastic_revoke_key_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
     )
 
     elastic_set_level_parser = elastic_subparsers.add_parser(
@@ -2316,6 +2343,15 @@ def main(argv=None):
         "final_pipeline, which a community forwarder cannot override. Takes "
         "effect on the next document written; already-indexed logs are "
         "unaffected.",
+    )
+
+    elastic_set_level_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
     )
 
     # =========================================================================

@@ -1,3 +1,4 @@
+import re
 import socket
 import subprocess
 import sys
@@ -41,12 +42,57 @@ def _wait_for_ssh(ip: str, ssh_key_path: str, console: Console, timeout: int = 1
 
 
 def _resolve_all(hostname: str) -> list[str]:
-    """Every A record for ``hostname`` (empty when it does not resolve)."""
+    """Every A record for ``hostname`` via the system resolver.
+
+    Note this consults the local stub cache (systemd-resolved, nscd), so it can
+    lag a record that has already changed — see ``_resolve_for_acme``.
+    """
     try:
         infos = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
     except socket.gaierror:
         return []
     return sorted({info[4][0] for info in infos})
+
+
+def _dig(hostname: str, server: str) -> list[str] | None:
+    """A records from ``server``, or ``None`` if ``dig`` could not be used.
+
+    The empty list and ``None`` mean different things and must not be conflated:
+    an authoritative "no such record" is a preflight failure, whereas "dig is not
+    installed" only means fall back to the system resolver.
+    """
+    try:
+        result = subprocess.run(
+            ["dig", "+short", "+time=3", "+tries=2", f"@{server}", "A", hostname],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # `dig +short` prints intermediate CNAME targets too; keep only addresses.
+    return sorted(
+        line.strip()
+        for line in result.stdout.splitlines()
+        if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", line.strip())
+    )
+
+
+def _resolve_for_acme(hostname: str) -> tuple[list[str], str]:
+    """Resolve the way Let's Encrypt will, not the way this machine happens to.
+
+    The system resolver answers from a local cache, so it can report a record
+    that has already been changed — which would block a perfectly good deploy,
+    and could equally pass a stale-correct answer when the record is in fact
+    wrong. ACME resolves from the public DNS hierarchy, so the preflight should
+    too. Observed on the first real deploy: every public resolver returned the
+    new address while systemd-resolved still held the old one.
+    """
+    for server in ("1.1.1.1", "8.8.8.8"):
+        addresses = _dig(hostname, server)
+        if addresses is not None:
+            return addresses, f"public DNS ({server})"
+    return _resolve_all(hostname), "system resolver (may be a stale local cache)"
 
 
 def _preflight_dns(hostname: str, expected_ip: str, console: Console) -> None:
@@ -58,14 +104,23 @@ def _preflight_dns(hostname: str, expected_ip: str, console: Console) -> None:
     costs nothing, because the fix is external and the run has to stop either
     way.
     """
-    problem = dns_preflight_message(hostname, _resolve_all(hostname), expected_ip)
+    resolved, source = _resolve_for_acme(hostname)
+    problem = dns_preflight_message(hostname, resolved, expected_ip)
     if problem is None:
-        console.print(f"[dim]DNS OK: {hostname} -> {expected_ip}[/dim]")
+        console.print(f"[dim]DNS OK ({source}): {hostname} -> {expected_ip}[/dim]")
         return
     console.print("[bold red]Error:[/bold red] DNS is not ready for TLS issuance.")
     console.print()
+    console.print(f"[dim](resolved via {source})[/dim]")
     console.print(problem)
     console.print()
+    if source.startswith("system resolver"):
+        console.print(
+            "[dim]`dig` was unavailable, so this answer came from the local "
+            "resolver cache and may be out of date. Check with "
+            f"`dig @1.1.1.1 +short A {hostname}`; if that is correct, flush "
+            "with `sudo resolvectl flush-caches` and re-run.[/dim]"
+        )
     console.print(
         "[dim]The infrastructure is already created, so nothing is lost: fix the "
         "record and re-run this command (or `deployments up --resume`), which "

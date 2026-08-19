@@ -522,7 +522,11 @@ class ElasticProvisioner:
             "                'peer_id': {'type': 'keyword'},\n"
             "                'version': {'type': 'keyword'},\n"
             "                'commit': {'type': 'keyword'},\n"
-            "                'host': {'type': 'keyword'},\n"
+            # No `host`: the ingest pipeline strips it, because a community
+            # machine's hostname commonly contains the owner's real name.
+            # `beta_user`/`beta_key_id` are stamped server-side from the
+            # authenticated API key, so they cannot be forged by a sender.
+            "                'beta_key_id': {'type': 'keyword'},\n"
             # The identifying fields the beta log-forwarding daemon (V2-1021)
             # attaches to every event. Mapped explicitly as keywords so they are
             # aggregatable — dynamic mapping would make them text+keyword
@@ -598,12 +602,13 @@ class ElasticProvisioner:
             "\n"
             "# 5. Create an API key for read-only querying\n"
             "print('Creating read-only API key...')\n"
+            f"READ_PATTERNS = {self._read_index_patterns()!r}\n"
             "api_key_resp = es_auth_request('POST', '/_security/api_key', {\n"
             "    'name': f'ant-log-reader-{USERNAME}',\n"
             "    'role_descriptors': {\n"
             "        'ant_log_reader': {\n"
             "            'indices': [{\n"
-            "                'names': [INDEX_PATTERN, CLIENT_INDEX_PATTERN],\n"
+            "                'names': READ_PATTERNS,\n"
             "                'privileges': ['read', 'view_index_metadata'],\n"
             "            }]\n"
             "        }\n"
@@ -624,6 +629,20 @@ class ElasticProvisioner:
             "print('Credentials written to /etc/elasticsearch/ant-credentials/')\n"
             "print('SETUP_COMPLETE')\n"
         )
+
+    def _read_index_patterns(self) -> list[str]:
+        """Index patterns the read-only API key can query.
+
+        A public-ingest instance's whole reason to exist is the beta index, and
+        its consumer (`beta-health-verdict`) reads via this key — so omitting
+        the pattern would hand out a credential that cannot see the only data
+        the instance holds. Other instances keep exactly the two patterns they
+        had before.
+        """
+        patterns = [INDEX_PATTERN, CLIENT_INDEX_PATTERN]
+        if self.public_ingest:
+            patterns.append(BETA_INDEX_PATTERN)
+        return patterns
 
     def _build_beta_ingest_setup(self) -> str:
         """Extra setup for a community-facing instance: beta index + write role.
@@ -688,7 +707,11 @@ class ElasticProvisioner:
             "                'peer_id': {'type': 'keyword'},\n"
             "                'version': {'type': 'keyword'},\n"
             "                'commit': {'type': 'keyword'},\n"
-            "                'host': {'type': 'keyword'},\n"
+            # No `host`: the ingest pipeline strips it, because a community
+            # machine's hostname commonly contains the owner's real name.
+            # `beta_user`/`beta_key_id` are stamped server-side from the
+            # authenticated API key, so they cannot be forged by a sender.
+            "                'beta_key_id': {'type': 'keyword'},\n"
             # The identifying fields the beta log-forwarding daemon (V2-1021)
             # attaches to every event. Mapped explicitly as keywords so they are
             # aggregatable — dynamic mapping would make them text+keyword

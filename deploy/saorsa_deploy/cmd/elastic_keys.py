@@ -15,12 +15,11 @@ Keys are created against the instance over its own HTTPS endpoint using the
 admin credentials from S3 state; nothing here needs SSH.
 """
 
-import base64
 import json
+import subprocess
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -44,23 +43,66 @@ KEY_NAME_PREFIX = "beta-ingest"
 DEFAULT_EXPIRATION = "90d"
 
 
-def _es_request(state: dict, method: str, path: str, data: dict | None = None) -> dict:
-    url = state["elasticsearch_url"].rstrip("/") + path
-    auth = base64.b64encode(
-        f"{state['elasticsearch_username']}:{state['elasticsearch_password']}".encode()
-    ).decode()
-    body = json.dumps(data).encode() if data is not None else None
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method=method,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Basic {auth}",
-        },
+class EsAdminError(RuntimeError):
+    """An administrative request to Elasticsearch failed."""
+
+
+def _es_request(
+    state: dict, method: str, path: str, data: dict | None = None,
+    ssh_key_path: str = "~/.ssh/id_rsa",
+) -> dict:
+    """Run an administrative request against Elasticsearch, over SSH.
+
+    Deliberately NOT through ``elasticsearch_url``. On a public-ingest instance
+    that URL is the TLS proxy, and its allowlist exposes only the bulk/document
+    write endpoints — ``/_security/*`` and ``/_ingest/*`` are 404, which is the
+    entire point: the administrative surface is not reachable from the internet.
+
+    Nor as the stored ``elasticsearch_username``: that is the log-writer, which
+    holds index privileges only. Managing API keys and ingest pipelines are
+    *cluster* privileges, so these run as the ``elastic`` superuser. Its password
+    is read on the box from the credentials the provisioner wrote, so the secret
+    never appears in an argument list here, in shell history, or in a log.
+    """
+    vm_ip = state.get("vm_ip")
+    if not vm_ip:
+        raise EsAdminError("No VM IP in Elasticsearch state.")
+
+    remote = (
+        "PW=$(cat /etc/elasticsearch/ant-credentials/password) && "
+        f"curl -sS --fail-with-body -u \"elastic:$PW\" -X {method} "
+        f"'http://localhost:9200{path}' -H 'Content-Type: application/json'"
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+    payload = None
+    if data is not None:
+        remote += " --data-binary @-"
+        payload = json.dumps(data)
+
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=15",
+            "-i", str(Path(ssh_key_path).expanduser()),
+            f"root@{vm_ip}",
+            remote,
+        ],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise EsAdminError(
+            (result.stdout or result.stderr or "").strip()
+            or f"ssh/curl exited {result.returncode}"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise EsAdminError(f"Unexpected response: {result.stdout[:300]}") from None
 
 
 def _load(console: Console, name: str) -> dict:
@@ -89,13 +131,7 @@ def _load(console: Console, name: str) -> dict:
 
 
 def _fail(console: Console, e: Exception) -> None:
-    if isinstance(e, urllib.error.HTTPError):
-        console.print(
-            f"[bold red]Elasticsearch API error {e.code}:[/bold red] "
-            f"{e.read().decode()[:500]}"
-        )
-    else:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+    console.print(f"[bold red]Error:[/bold red] {e}")
     sys.exit(1)
 
 
@@ -136,7 +172,8 @@ def cmd_elastic_mint_key(args):
         payload["expiration"] = expiration
 
     try:
-        resp = _es_request(state, "POST", "/_security/api_key", payload)
+        resp = _es_request(state, "POST", "/_security/api_key", payload,
+                           ssh_key_path=args.ssh_key_path)
     except Exception as e:  # noqa: BLE001 - surfaced verbatim to the operator
         _fail(console, e)
 
@@ -183,7 +220,8 @@ def cmd_elastic_list_keys(args):
     console = Console()
     state = _load(console, args.name)
     try:
-        resp = _es_request(state, "GET", "/_security/api_key?active_only=true")
+        resp = _es_request(state, "GET", "/_security/api_key?active_only=true",
+                           ssh_key_path=args.ssh_key_path)
     except Exception as e:  # noqa: BLE001
         _fail(console, e)
 
@@ -230,6 +268,7 @@ def cmd_elastic_revoke_key(args):
             "DELETE",
             "/_security/api_key",
             {"name": f"{KEY_NAME_PREFIX}-{args.user}"},
+            ssh_key_path=args.ssh_key_path,
         )
     except Exception as e:  # noqa: BLE001
         _fail(console, e)
@@ -275,7 +314,8 @@ def cmd_elastic_set_log_level(args):
         sys.exit(1)
 
     try:
-        _es_request(state, "PUT", f"/_ingest/pipeline/{LOG_FILTER_PIPELINE}", body)
+        _es_request(state, "PUT", f"/_ingest/pipeline/{LOG_FILTER_PIPELINE}", body,
+                    ssh_key_path=args.ssh_key_path)
     except Exception as e:  # noqa: BLE001
         _fail(console, e)
 
