@@ -8,6 +8,8 @@ read privilege on a community credential — and, just as importantly, that none
 of that leaks into the existing testnet/prod stacks.
 """
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -138,32 +140,34 @@ def test_deploy_steps():
             "--retention-days", "14",
             "--public-ingest", "--ingest-hostname", HOST,
         ],
+        [
+            "deployments", "generate-inventory", "--name", "BETA-LOGS-01",
+            "--ssh-key-path", SSH,
+        ],
     ]
 
 
-def test_deploy_is_two_steps_so_a_dns_failure_resumes():
+def test_infra_and_provision_are_separate_so_a_dns_failure_resumes():
     # The DNS record can only be set once infra has produced an address, and the
     # certificate is issued during provision. Keeping them as separate journal
     # entries is what lets `up --resume` retry provisioning alone instead of
     # recreating the VM.
     steps = build_deploy_steps(_manifest())
-    assert len(steps) == 2
     assert steps[0].argv[:2] == ["elastic", "infra"]
     assert steps[1].argv[:2] == ["elastic", "provision"]
+    assert steps[0].best_effort is False and steps[1].best_effort is False
 
 
-def test_no_binary_build_or_inventory_step():
-    # The prod dispatch path prepends `build ant` and appends
-    # `generate-inventory`; neither means anything for an ES-only deployment,
-    # and `build ant` would fail outright since the spec has no `binary`.
+def test_no_binary_build_step():
+    # The prod dispatch path prepends `build ant`, which is meaningless for an
+    # ES-only deployment and would fail outright since the spec has no `binary`.
     argvs = _argvs(build_deploy_steps(_manifest()))
     assert not any(a[0] == "build" for a in argvs)
-    assert not any("generate-inventory" in a for a in argvs)
 
 
 def test_private_instance_omits_the_public_flags():
     m = _manifest(public_ingest=False, ingest_hostname=None)
-    infra, provision = build_deploy_steps(m)
+    infra, provision = build_deploy_steps(m)[:2]
     assert "--public-ingest" not in infra.argv
     assert "--public-ingest" not in provision.argv
     assert "--ingest-hostname" not in provision.argv
@@ -584,3 +588,102 @@ def test_read_key_is_unchanged_on_a_private_instance():
         "telegraf-ant-nodes-*",
         "telegraf-ant-clients-*",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# inventory generation
+# --------------------------------------------------------------------------- #
+from saorsa_deploy.cmd.generate_inventory import (  # noqa: E402
+    INVENTORY_SCHEMA_VERSION,
+    build_elasticsearch_config,
+    build_elasticsearch_inventory,
+)
+from saorsa_deploy.inventory import SUPPORTED_SCHEMA_VERSIONS  # noqa: E402
+
+_STATE = {
+    "name": "ant-prod-beta-01",
+    "region": "lon1",
+    "provider": "digitalocean",
+    "vm_ip": "203.0.113.10",
+    "public_ingest": True,
+    "elasticsearch_url": "https://logs.autonomi.com",
+    "elasticsearch_ingest_hostname": "logs.autonomi.com",
+    "elasticsearch_index_pattern": "beta-nodes-*",
+    "elasticsearch_api_key": "cmVhZC1rZXk=",
+    "elasticsearch_password": "SUPER-SECRET-ADMIN",
+    "elasticsearch_username": "ant-log-writer",
+    "elasticsearch_retention_days": 14,
+    "elasticsearch_min_log_level": "info",
+}
+
+
+def _inv():
+    return build_elasticsearch_inventory(
+        "ant-prod-beta-01", elastic_state=_STATE, ssh_key=SSH
+    )
+
+
+def test_inventory_describes_the_es_vm():
+    inv = _inv()
+    assert inv["schema_version"] == INVENTORY_SCHEMA_VERSION
+    assert inv["node_vms"] == [] and inv["client_vms"] == []
+    vms = inv["observability_vms"]
+    assert len(vms) == 1 and vms[0]["role"] == "elasticsearch"
+    assert vms[0]["ip"] == "203.0.113.10"
+
+
+def test_inventory_never_carries_the_admin_password():
+    # This file is shared with other agents. The admin password is effectively
+    # the superuser's (the provisioner sets both from one secret), so it must
+    # not travel in it — anyone entitled to it has SSH and `elastic info`.
+    assert "SUPER-SECRET-ADMIN" not in json.dumps(_inv())
+
+
+def test_inventory_carries_the_read_key():
+    assert _inv()["elasticsearch_config"]["read"]["api_key"] == "cmVhZC1rZXk="
+
+
+def test_read_section_does_not_point_at_the_public_url():
+    # Verified live: the read key against the public URL returns 404 at the
+    # proxy, which reads as a missing index rather than a blocked path. Pointing
+    # a consumer there would send them debugging the wrong thing.
+    read = _inv()["elasticsearch_config"]["read"]
+    assert read["url"] == "http://localhost:9200"
+    assert "logs.autonomi.com" not in read["url"]
+    assert "ssh" in read["tunnel_command"]
+    assert "CANNOT" in read["note"]
+
+
+def test_ingest_section_states_the_create_only_rule():
+    ingest = _inv()["elasticsearch_config"]["ingest"]
+    assert ingest["bulk_action"] == "create"
+    assert ingest["time_field"] == "@timestamp"
+    assert ingest["url"] == "https://logs.autonomi.com"
+
+
+def test_inventory_reports_the_instances_own_policy():
+    cfg = _inv()["elasticsearch_config"]
+    assert cfg["retention_days"] == 14
+    assert cfg["ingest"]["min_log_level"] == "info"
+
+
+def test_policy_fields_absent_rather_than_guessed_on_older_state():
+    # An instance provisioned before those fields were recorded must not have
+    # the CLI defaults reported back as though they were its actual settings.
+    old = {k: v for k, v in _STATE.items() if not k.startswith("elasticsearch_retention")}
+    old.pop("elasticsearch_min_log_level")
+    cfg = build_elasticsearch_config(old, SSH)
+    assert cfg["retention_days"] is None
+    assert cfg["ingest"]["min_log_level"] == ""
+
+
+def test_loader_accepts_the_new_schema_version():
+    assert INVENTORY_SCHEMA_VERSION in SUPPORTED_SCHEMA_VERSIONS
+
+
+def test_up_generates_an_inventory_as_a_best_effort_final_step():
+    steps = build_deploy_steps(_manifest())
+    assert steps[-1].argv[:2] == ["deployments", "generate-inventory"]
+    # The instance is already up and billing by then; failing to describe it
+    # must not fail the run.
+    assert steps[-1].best_effort is True

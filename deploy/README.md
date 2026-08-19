@@ -3053,6 +3053,40 @@ matched, rather than claiming a revocation that did not happen.
 | `letsencrypt_staging` | `false` | Avoid the 5-per-week duplicate-certificate limit while iterating |
 | `keep_on_destroy` | `false` | Set `true` for a permanent instance |
 
+#### Inventory
+
+`deployments generate-inventory --name <name>` covers this kind, so the
+instance's access details can be handed to a person or another agent without
+anyone reading S3 state. `up` emits it automatically as a **`best_effort`**
+final step — the instance is already up and billing by then, so failing to
+describe it must not fail the run.
+
+The file is **schema 6** (`elasticsearch_config`, alongside v5's
+`client_config`). `node_vms`/`bootstrap_vms`/`client_vms` are empty — this kind
+stands up one observability VM and nothing else — so `load_node_inventory`
+correctly rejects it, exactly as it does a client inventory.
+
+It carries two clearly separated routes, because conflating them is the trap:
+
+- **`ingest`** — the public write path. URL, index pattern and naming,
+  `@timestamp`, the `create`-only rule, the body cap and the current
+  `min_log_level`.
+- **`read`** — the query path, which is **not** the public URL. Elasticsearch
+  binds to loopback and 9200 is firewalled, so the read key returns 404 at the
+  proxy — indistinguishable from a missing index. The section therefore gives
+  `http://localhost:9200`, a ready-made `ssh -L` tunnel command, and says why.
+
+The read-only API key **is** in the file; the admin password is deliberately
+**not**. The provisioner sets the `elastic` superuser and the log-writer from
+one secret, so the stored password is effectively superuser — anyone entitled to
+it has SSH and `elastic info`. `generate-inventory` prints a warning naming what
+the file contains, so it is never a surprise to whoever forwards it.
+
+Fields recording the instance's own policy (`retention_days`,
+`min_log_level`) come from what was provisioned, not the CLI defaults. An
+instance provisioned before those were recorded reports them as absent rather
+than guessing.
+
 #### Growing the disk
 
 `volume_size` is the knob to watch, and it grows **online** on DigitalOcean:

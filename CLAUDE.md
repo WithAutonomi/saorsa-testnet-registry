@@ -1560,6 +1560,20 @@ the public-ingest shape. Impl: `orchestrator/elastic.py`,
   the target index"), so quarantining verbose logs to a cheap index only works
   in `default_pipeline` — viable solely because the proxy strips `pipeline`.
   This bounds **disk**, not bandwidth: the document already crossed the wire.
+- **`generate-inventory` covers this kind** (schema **6**, adding
+  `elasticsearch_config` beside v5's `client_config`); `up` emits it
+  automatically as a `best_effort` final step. `node_vms`/`client_vms` are
+  empty, so `load_node_inventory` rejects it like a client inventory. Two
+  deliberately separated sections: **`ingest`** (the public write URL, index
+  naming, `create`-only rule, body cap, current `min_log_level`) and **`read`**
+  — which is **NOT** the public URL. ES binds to loopback and 9200 is
+  firewalled, so the read key against `https://logs.autonomi.com` returns
+  **404 at the proxy**, indistinguishable from a missing index; the section
+  gives `http://localhost:9200` plus a ready-made `ssh -L` tunnel command and
+  says why. The **read-only key is included** (the file is meant to be shared);
+  the **admin password is not** — the provisioner sets the `elastic` superuser
+  and the log-writer from one secret, so the stored password is effectively
+  superuser. The command warns about what the file contains.
 - **The ingest contract (what V2-1021's forwarding daemon writes).** Verified
   against ES 8.17.4 with security on, using a key minted by `elastic mint-key`:
   `POST https://<host>/_bulk`, `Authorization: ApiKey <encoded>` (a real ES API

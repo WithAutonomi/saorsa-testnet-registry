@@ -84,8 +84,29 @@ def _provision_step(manifest: Manifest) -> Step:
     return Step(argv, "Provision Elasticsearch")
 
 
+def _inventory_step(manifest: Manifest) -> Step:
+    """Snapshot the instance's access details once it is up.
+
+    `best_effort`: by this point the infrastructure exists and is billing, so a
+    failure to write a description of it must not fail the run. Mirrors the
+    final step of the prod client kinds.
+    """
+    return Step(
+        [
+            "deployments",
+            "generate-inventory",
+            "--name",
+            manifest.name,
+            "--ssh-key-path",
+            manifest.ssh_key_path,
+        ],
+        "Generate inventory",
+        best_effort=True,
+    )
+
+
 def build_deploy_steps(manifest: Manifest) -> list[Step]:
-    return [_infra_step(manifest), _provision_step(manifest)]
+    return [_infra_step(manifest), _provision_step(manifest), _inventory_step(manifest)]
 
 
 def build_destroy_steps(manifest: Manifest) -> list[Step]:

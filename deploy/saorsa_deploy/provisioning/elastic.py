@@ -788,6 +788,11 @@ class ElasticProvisioner:
                 "elasticsearch_index_pattern": BETA_INDEX_PATTERN,
                 "elasticsearch_ingest_role": BETA_INGEST_ROLE,
                 "public_ingest": True,
+                # Recorded so `generate-inventory` can report the instance's
+                # actual policy rather than restating the CLI defaults, which
+                # may not be what this instance was provisioned with.
+                "elasticsearch_retention_days": self.retention_days,
+                "elasticsearch_min_log_level": self.min_log_level,
             }
         return {
             "elasticsearch_url": f"http://{self.host_ip}:9200",

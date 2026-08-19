@@ -17,10 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SUPPORTED_PROVIDERS = {"aws", "digitalocean", "hetzner", "ovh", "vultr", "contabo"}
-# generate-inventory currently emits v4; v3 files predate the client/observability
-# split. The node_vms shape this loader reads is identical across both, so accept
-# either rather than rejecting freshly-generated inventories.
-SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4, 5})
+# generate-inventory currently emits v6; v3 files predate the client/observability
+# split, v5 added client_config, v6 added elasticsearch_config. The node_vms shape
+# this loader reads is identical across all of them, so accept any rather than
+# rejecting freshly-generated inventories. A client-only or Elasticsearch-only
+# inventory has no node_vms and is still correctly rejected below.
+SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4, 5, 6})
 
 
 @dataclass(frozen=True)
