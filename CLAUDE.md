@@ -1482,6 +1482,72 @@ InfluxDB in one pass over a host group; `provisioning/telegraf_combined.py`,
 `cmd/provision_telegraf_combined.py`) is **retained for retrofit / manual re-runs**
 against an existing deployment — it's just no longer part of the `up` sequence.
 
+### Standalone Elasticsearch (`kind: elasticsearch`) — the beta-channel instance
+
+A manifest kind whose *whole* deployment is one Elasticsearch instance — no
+nodes, no clients, no binary (V2-1016). It exists so **community beta-channel
+node operators**, on machines we do not run, have somewhere to forward logs;
+consumed by the `beta-health-verdict` skill and the beta rollout watch. It
+reuses the existing `elastic infra`/`provision`/`destroy` commands and the same
+`saorsa-deploy/elastic/{name}.json` state; the kind adds `--standalone` (which
+registers the `Deployment` row, since no `bootstraps infra` runs to do it) and
+the public-ingest shape. Impl: `orchestrator/elastic.py`,
+`provisioning/es_ingest_proxy.py`, `cmd/elastic_keys.py`. Example:
+`deploy/manifests/profiles/elasticsearch.yaml`.
+
+- **`public_ingest: true` is a different posture, not a flag.** A testnet's ES
+  is reachable only by our own VMs for hours, so it runs **plaintext on 9200
+  with anonymous access enabled** — fine there, unacceptable for an endpoint on
+  the open internet. Public ingest binds ES to **loopback**, disables anonymous
+  access, closes 9200, and fronts it with **Caddy on 443**. Off by default, so
+  every existing testnet/prod stack renders **byte-identical** config (asserted
+  by a test that diffs against the pre-change provisioner).
+- **The proxy allowlists writes** (`_bulk`/`_doc`/`_create`, POST/PUT) and 404s
+  everything else — so an endpoint added by a future ES version is unreachable
+  by default rather than newly exposed. It also forces
+  **`filter_path=errors,items.*.error`**: ES otherwise answers a bulk request
+  with a result object *per document* (~200+ B each), making the response
+  roughly the size of the request — pure egress on every batch, forever.
+  Forcing it at the proxy means it holds regardless of the community
+  forwarder's config.
+- **DigitalOcean is not a preference, it is the only option that satisfies
+  "extendable disk".** DO's `digitalocean_volume.size` grows **online**
+  (`0 add / 1 change / 0 destroy` + `resize2fs`); **OVH's is ForceNew** and
+  would wipe the data; Contabo has no attachable volume; Vultr/Hetzner have no
+  `*-elastic` TF module. Egress is a non-issue here — ingest is **inbound**
+  (free on DO), and the disk caps egress structurally at `volume_size /
+  retention_days`, ~$2–5/month at 100 GB / 14 d.
+- **The DNS record is the one manual step, and the deploy is two steps because
+  of it.** The certificate is issued *during provisioning*, but the address does
+  not exist until `elastic infra` has run. So: infra prints the **reserved IP** →
+  operator sets the A record (**Cloudflare grey cloud / DNS only** — a proxied
+  record terminates TLS at Cloudflare and issuance fails) → `up --resume` runs
+  provision, which **preflights the record** and names the exact fix if it is
+  wrong. Two journal entries mean the resume retries provisioning alone instead
+  of recreating the VM. It is one-off: the **reserved IP survives a rebuild**
+  (record it in `reserved_ip`), which is the whole reason for using one.
+- **Port 80 is never opened** — TLS-ALPN-01 on 443 issues the certificate, so
+  there is no HTTP-01 challenge to serve and no cleartext listener to redirect
+  from.
+- **Per-user credentials, not a shared key** (`elastic mint-key` / `list-keys` /
+  `revoke-key`). Each participant gets their own ES API key with
+  `create_doc` + `auto_configure` on `beta-nodes-*` and **no `read`** — a leaked
+  key can add logs and nothing else: it cannot read another participant's logs,
+  overwrite a document, or touch another index. A shared key would mean a leak
+  re-keys *everyone* and nothing is attributable. The pre-existing
+  `ant_log_writer` role is deliberately **not** reused (it grants `read` and
+  `manage`). Keys expire (default 90d) so access does not outlive involvement,
+  and the encoded credential is shown **once**.
+- **One shared daily index, attribution by `beta_user` field** — not an index
+  per user: ~100 users x daily x 14 days would exceed 1000 shards on a single
+  small node.
+- `letsencrypt_staging: true` while iterating: production issuance allows only
+  **5 duplicate certificates per week** and the lockout outlasts the debugging
+  session that caused it.
+- The log-forwarder tooling that points community machines at this instance is a
+  **separate issue** — this kind stands up the endpoint and mints the
+  credentials only.
+
 ## Elasticsearch (Log Forwarding)
 
 Optional per-testnet Elasticsearch instance on a dedicated VM. Enabled via `enable_log_forwarding` in deployment config. Telegraf forwards node JSON logs to the instance.

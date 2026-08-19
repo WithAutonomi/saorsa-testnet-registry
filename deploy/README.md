@@ -2849,6 +2849,121 @@ predating the feature.
 transfer p50/p95, and a shaped client's percentiles are not comparable to an
 unshaped baseline.
 
+### A standalone Elasticsearch instance (`kind: elasticsearch`)
+
+`deployments up --config <manifest>` with `kind: elasticsearch` stands up an
+Elasticsearch instance that is **not part of any deployment** — no nodes, no
+clients, no binary. It exists so log producers outside our own fleet (the
+community beta-channel cohort) have somewhere to forward to, and it is read by
+the `beta-health-verdict` skill and the beta rollout watch.
+
+It reuses the existing `elastic infra` / `elastic provision` / `elastic destroy`
+commands and the same `saorsa-deploy/elastic/{name}.json` state; what the kind
+adds is `--standalone` (register a `Deployment` row with
+`deploy_args.kind = "elasticsearch"`) and the public-ingest shape below.
+
+Example manifest: `deploy/manifests/profiles/elasticsearch.yaml`.
+
+#### Public ingest is a different security posture, not a flag
+
+A testnet's Elasticsearch is reachable only by our own VMs for a few hours, so
+it deliberately runs **plaintext on 9200 with anonymous access enabled**
+(`remote_monitoring_collector`, so Telegraf can read the version endpoint). An
+instance community machines write to is on the open internet, where a credential
+in cleartext on every request is not acceptable. `public_ingest: true` therefore
+changes the instance:
+
+| | testnet stack (default) | `public_ingest: true` |
+|---|---|---|
+| ES bind address | `0.0.0.0` | `127.0.0.1` |
+| Anonymous access | enabled | **disabled** |
+| Firewall | 22, 9200 | 22, **443** (9200 closed, 80 never opened) |
+| Transport | plaintext HTTP | TLS at a Caddy reverse proxy |
+| Exposed API | the whole ES REST surface | `_bulk` / `_doc` / `_create` writes only |
+| Address | droplet IP | **reserved IP** (survives a rebuild) |
+
+The proxy allowlists write endpoints rather than denying known-bad ones, so an
+endpoint added by a future Elasticsearch version is unreachable by default
+rather than newly exposed. Everything else gets a bare 404.
+
+It also appends `filter_path=errors,items.*.error` to every request. Elasticsearch
+otherwise answers a bulk request with a result object **per document** (~200+
+bytes each), making the response roughly the size of the request that produced
+it — pure egress, on every batch, forever. Forcing it at the proxy means it holds
+regardless of how a community forwarder is configured.
+
+#### DNS: the one manual step
+
+The certificate is obtained **during provisioning**, so `ingest_hostname` must
+already resolve to the instance by then — and the address does not exist until
+`elastic infra` has run. The first deploy is therefore two-phase:
+
+1. `up` runs `elastic infra`, which prints the **reserved IP**.
+2. Point the A record at it. In Cloudflare it must be **DNS only (grey cloud)**:
+   a proxied record terminates TLS at Cloudflare, so issuance fails here.
+3. `up --resume` continues into `elastic provision`, which **preflights the
+   record** — naming the record and the address it should carry if it is wrong —
+   and then obtains the certificate.
+
+This is why the kind emits two steps rather than one wrapper command: a resume
+retries provisioning alone instead of recreating the VM. And it really is
+one-off — the reserved IP survives a droplet rebuild, so record it in
+`reserved_ip` and the DNS never needs touching again.
+
+Port **80 is never opened**: the certificate is issued over TLS-ALPN-01 on 443,
+so there is no HTTP-01 challenge to serve and no cleartext listener to redirect
+from.
+
+Let's Encrypt allows only **5 duplicate certificates per week** and the lockout
+outlasts the debugging session that causes it, so use
+`letsencrypt_staging: true` while iterating on a deploy of the same hostname.
+Staging certificates are not publicly trusted.
+
+#### Per-user ingest credentials
+
+Community logs land in `beta-nodes-*` under the ILM policy, and each participant
+gets their **own** Elasticsearch API key rather than a shared one — so a leak
+re-keys one participant instead of all of them, and documents can be attributed.
+
+```bash
+saorsa-deploy elastic mint-key   --name BETA-LOGS-01 --user <handle> [--expiration 90d]
+saorsa-deploy elastic list-keys  --name BETA-LOGS-01
+saorsa-deploy elastic revoke-key --name BETA-LOGS-01 --user <handle>
+```
+
+The privileges are `create_doc` + `auto_configure` on `beta-nodes-*` and nothing
+else. There is deliberately **no `read`**: a leaked key can add logs and do
+nothing more — it cannot pull another participant's logs, cannot overwrite an
+existing document, and cannot touch any other index. (The pre-existing
+`ant_log_writer` role is *not* reused: it grants `read` and `manage`.)
+
+Keys carry an expiration (default 90d) so a credential does not outlive the
+participant's involvement, and the encoded credential is shown **once** — if it
+is lost, revoke and re-mint. `revoke-key` reports honestly when no active key
+matched, rather than claiming a revocation that did not happen.
+
+| Manifest key | Default | Notes |
+|---|---|---|
+| `provider` | `digitalocean` | The only provider whose ES volume grows online; OVH's size is ForceNew, Contabo has no volume |
+| `region` | per provider (`lon1`) | |
+| `droplet_size` | per provider (`s-4vcpu-8gb`) | 8 GB RAM → 4 GB auto-sized heap |
+| `volume_size` | `100` (GB) | The binding constraint; grow online as the cohort grows |
+| `shards` | `4` | One indexing thread per shard; match the vCPU count |
+| `retention_days` | `14` | ILM delete phase; the beta soak is 5 days |
+| `public_ingest` | `false` | Requires `ingest_hostname` |
+| `ingest_hostname` | — | The name the certificate is issued for; must resolve first |
+| `reserved_ip` | — | Adopt an existing reserved IP on a rebuild. DigitalOcean only |
+| `letsencrypt_staging` | `false` | Avoid the 5-per-week duplicate-certificate limit while iterating |
+| `keep_on_destroy` | `false` | Set `true` for a permanent instance |
+
+#### Growing the disk
+
+`volume_size` is the knob to watch, and it grows **online** on DigitalOcean:
+bump it in the manifest and `terraform apply -var=volume_size=N` in
+`.saorsa/workspaces/digitalocean-elastic-<NAME>-<region>` plans
+`0 add / 1 change / 0 destroy`, then `resize2fs /dev/sda` on the VM. No
+Elasticsearch restart, state stays consistent.
+
 ### Running tests
 
 ```bash

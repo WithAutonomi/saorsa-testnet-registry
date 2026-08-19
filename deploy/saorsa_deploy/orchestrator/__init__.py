@@ -31,6 +31,13 @@ def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list
         steps = build_testnet_deploy_steps(manifest, skip_builds=skip_builds)
     elif kind == "testnet-extension":
         steps = build_extension_deploy_steps(manifest, skip_builds=skip_builds)
+    elif kind == "elasticsearch":
+        # Deliberately NOT routed through prod.py: that path prepends a binary
+        # build and appends `generate-inventory`, and a standalone Elasticsearch
+        # deployment has neither a binary nor any VMs to inventory.
+        from saorsa_deploy.orchestrator import elastic as elastic_orch
+
+        steps = elastic_orch.build_deploy_steps(manifest)
     else:
         from saorsa_deploy.orchestrator import prod
 
@@ -63,6 +70,10 @@ def build_destroy_steps(
         return build_extension_destroy_steps(
             manifest, skip_drain_failures=skip_drain_failures
         )
+    if kind == "elasticsearch":
+        from saorsa_deploy.orchestrator import elastic as elastic_orch
+
+        return elastic_orch.build_destroy_steps(manifest)
     from saorsa_deploy.orchestrator import prod
 
     # prod-* kinds tear down via their own `prod <kind> destroy` command, which

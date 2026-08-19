@@ -2152,6 +2152,31 @@ def main(argv=None):
         "--force`, which is never gated by this flag.",
     )
 
+    elastic_infra_parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help="This Elasticsearch instance IS the deployment (manifest kind "
+        "`elasticsearch`), not a testnet's subordinate stack. Registers a "
+        "deployment row in the registry. Omit for a testnet's own ES, whose row "
+        "is created by `bootstraps infra`.",
+    )
+    elastic_infra_parser.add_argument(
+        "--public-ingest",
+        action="store_true",
+        help="Harden for internet-facing ingest: open 443 instead of 9200 and "
+        "pin a reserved IP so the DNS record survives a rebuild. Pair with "
+        "`elastic provision --public-ingest --ingest-hostname <fqdn>`, which "
+        "binds Elasticsearch to loopback behind a TLS proxy.",
+    )
+    elastic_infra_parser.add_argument(
+        "--reserved-ip",
+        type=str,
+        default=None,
+        help="Adopt this already-allocated DigitalOcean reserved IP instead of "
+        "creating a new one (use when rebuilding, so the existing DNS record "
+        "keeps working). Requires --public-ingest.",
+    )
+
     # elastic provision
     elastic_provision_parser = elastic_subparsers.add_parser(
         "provision", help="Provision Elasticsearch on Elasticsearch VM"
@@ -2190,6 +2215,77 @@ def main(argv=None):
             "`elastic provision` runs — existing indices retain their "
             "original shard count."
         ),
+    )
+
+    elastic_provision_parser.add_argument(
+        "--public-ingest",
+        action="store_true",
+        help="Configure this instance for internet-facing ingest: bind "
+        "Elasticsearch to loopback, disable anonymous access, and front it with "
+        "a TLS-terminating proxy that exposes only the bulk/document write "
+        "endpoints. Requires --ingest-hostname.",
+    )
+    elastic_provision_parser.add_argument(
+        "--ingest-hostname",
+        type=str,
+        default=None,
+        help="Public DNS name the TLS certificate is issued for (e.g. "
+        "logs.autonomi.com). It must already resolve to this instance: the "
+        "certificate is obtained during provisioning, and provisioning "
+        "preflights the record before touching the VM.",
+    )
+    elastic_provision_parser.add_argument(
+        "--letsencrypt-staging",
+        action="store_true",
+        help="Use Let's Encrypt's staging CA. Production issuance allows only 5 "
+        "duplicate certificates per week, which repeated test deploys of the "
+        "same hostname will exhaust; the resulting lockout outlasts the "
+        "debugging session. Staging certificates are not publicly trusted.",
+    )
+
+    # elastic mint-key / list-keys / revoke-key
+    elastic_mint_key_parser = elastic_subparsers.add_parser(
+        "mint-key",
+        help="Mint a write-only ingest API key for one community user",
+    )
+    elastic_mint_key_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+    elastic_mint_key_parser.add_argument(
+        "--user",
+        type=str,
+        required=True,
+        help="Identifier for the community participant this key is issued to "
+        "(e.g. their GitHub handle). Recorded on the key and used to revoke it.",
+    )
+    elastic_mint_key_parser.add_argument(
+        "--expiration",
+        type=str,
+        default=None,
+        help="Key lifetime, e.g. 90d (default: 90d). Pass an empty string for a "
+        "key that never expires — not advised for a cohort that turns over. "
+        "(Left unset here so the default lives with the command; main.py stays "
+        "free of heavyweight imports.)",
+    )
+
+    elastic_list_keys_parser = elastic_subparsers.add_parser(
+        "list-keys", help="List active ingest keys for an Elasticsearch instance"
+    )
+    elastic_list_keys_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+
+    elastic_revoke_key_parser = elastic_subparsers.add_parser(
+        "revoke-key", help="Revoke a community user's ingest key"
+    )
+    elastic_revoke_key_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+    elastic_revoke_key_parser.add_argument(
+        "--user",
+        type=str,
+        required=True,
+        help="The participant whose key should be invalidated (immediate).",
     )
 
     # =========================================================================
@@ -6301,6 +6397,18 @@ def main(argv=None):
             from saorsa_deploy.cmd.provision_elastic import cmd_provision_elastic
 
             cmd_provision_elastic(args)
+        elif args.elastic_subcommand == "mint-key":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_mint_key
+
+            cmd_elastic_mint_key(args)
+        elif args.elastic_subcommand == "list-keys":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_list_keys
+
+            cmd_elastic_list_keys(args)
+        elif args.elastic_subcommand == "revoke-key":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_revoke_key
+
+            cmd_elastic_revoke_key(args)
     elif args.command == "monitoring":
         if args.monitoring_subcommand == "clean":
             from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring

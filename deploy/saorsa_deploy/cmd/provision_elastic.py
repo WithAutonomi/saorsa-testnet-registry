@@ -1,3 +1,4 @@
+import socket
 import subprocess
 import sys
 import time
@@ -6,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from saorsa_deploy.provisioning.elastic import ElasticProvisioner
+from saorsa_deploy.provisioning.es_ingest_proxy import dns_preflight_message
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.state import load_elastic_state, update_elastic_state
 
@@ -37,6 +39,40 @@ def _wait_for_ssh(ip: str, ssh_key_path: str, console: Console, timeout: int = 1
     )
 
 
+def _resolve_all(hostname: str) -> list[str]:
+    """Every A record for ``hostname`` (empty when it does not resolve)."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
+    except socket.gaierror:
+        return []
+    return sorted({info[4][0] for info in infos})
+
+
+def _preflight_dns(hostname: str, expected_ip: str, console: Console) -> None:
+    """Refuse to provision until the hostname points at this instance.
+
+    The certificate is obtained during provisioning, so a wrong record fails
+    inside Caddy's ACME client where the cause is buried. Checking first turns
+    that into one line naming the record and the address it should carry — and
+    costs nothing, because the fix is external and the run has to stop either
+    way.
+    """
+    problem = dns_preflight_message(hostname, _resolve_all(hostname), expected_ip)
+    if problem is None:
+        console.print(f"[dim]DNS OK: {hostname} -> {expected_ip}[/dim]")
+        return
+    console.print("[bold red]Error:[/bold red] DNS is not ready for TLS issuance.")
+    console.print()
+    console.print(problem)
+    console.print()
+    console.print(
+        "[dim]The infrastructure is already created, so nothing is lost: fix the "
+        "record and re-run this command (or `deployments up --resume`), which "
+        "will skip straight back to this step.[/dim]"
+    )
+    sys.exit(1)
+
+
 def print_connection_summary(name: str, details: dict, console: Console):
     """Print a formatted connection summary for the Elasticsearch stack."""
     es_url = details["elasticsearch_url"]
@@ -44,6 +80,32 @@ def print_connection_summary(name: str, details: dict, console: Console):
     es_pass = details["elasticsearch_password"]
     es_api_key = details["elasticsearch_api_key"]
     es_index = details["elasticsearch_index_pattern"]
+
+    if details.get("public_ingest"):
+        console.print()
+        console.print(
+            Panel(
+                "\n".join(
+                    [
+                        f"  [bold]Ingest URL:[/bold]    {es_url}",
+                        f"  [bold]Index pattern:[/bold] {es_index}",
+                        f"  [bold]Ingest role:[/bold]   "
+                        f"{details.get('elasticsearch_ingest_role', '')}",
+                        f"  [bold]Admin user:[/bold]    {es_user}",
+                        f"  [bold]Admin password:[/bold] {es_pass}",
+                        "",
+                        "  [dim]Elasticsearch listens on loopback only and 9200 is",
+                        "  firewalled: this URL is the sole route in.[/dim]",
+                        "",
+                        "  [dim]Mint a write-only credential for a community user:[/dim]",
+                        f"  saorsa-deploy elastic mint-key --name {name} --user <handle>",
+                    ]
+                ),
+                title=f"Elasticsearch (public ingest): {name}",
+                border_style="green",
+            )
+        )
+        return
 
     lines = [
         f"  [bold]URL:[/bold]           {es_url}",
@@ -96,6 +158,27 @@ def cmd_provision_elastic(args):
     # Contabo has no attachable block storage → Elasticsearch data on root disk.
     root_disk = state.get("provider") == "contabo"
 
+    # The flag may come from this invocation or from what `elastic infra`
+    # recorded. Reading state as well means the second half of a two-step deploy
+    # cannot silently provision a plaintext, anonymous-access instance onto
+    # infrastructure that was firewalled for public ingest — which would leave
+    # the endpoint unreachable and 9200 shut.
+    public_ingest = bool(
+        getattr(args, "public_ingest", False) or state.get("public_ingest", False)
+    )
+    ingest_hostname = getattr(args, "ingest_hostname", None) or state.get(
+        "elasticsearch_ingest_hostname"
+    )
+    if public_ingest:
+        if not ingest_hostname:
+            console.print(
+                "[bold red]Error:[/bold red] --ingest-hostname is required for a "
+                "public-ingest instance (it is the name the TLS certificate is "
+                "issued for)."
+            )
+            sys.exit(1)
+        _preflight_dns(ingest_hostname, vm_ip, console)
+
     try:
         provisioner = ElasticProvisioner(
             host_ip=vm_ip,
@@ -105,6 +188,11 @@ def cmd_provision_elastic(args):
             shards=args.shards,
             console=console,
             root_disk=root_disk,
+            public_ingest=public_ingest,
+            ingest_hostname=ingest_hostname,
+            letsencrypt_staging=bool(
+                getattr(args, "letsencrypt_staging", False)
+            ),
         )
         connection_details = provisioner.execute()
     except Exception as e:

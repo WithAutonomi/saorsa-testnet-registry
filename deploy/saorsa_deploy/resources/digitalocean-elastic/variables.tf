@@ -35,3 +35,15 @@ variable "ssh_key_ids" {
     54385801  # saorsa-deploy
   ]
 }
+
+variable "public_ingest" {
+  description = "Harden for internet-facing ingest: open 443 instead of 9200 and pin a reserved IP."
+  type        = bool
+  default     = false
+}
+
+variable "reserved_ip" {
+  description = "Adopt this already-allocated reserved IP instead of creating one. Empty means create."
+  type        = string
+  default     = ""
+}
