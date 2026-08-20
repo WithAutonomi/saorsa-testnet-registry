@@ -1482,6 +1482,133 @@ InfluxDB in one pass over a host group; `provisioning/telegraf_combined.py`,
 `cmd/provision_telegraf_combined.py`) is **retained for retrofit / manual re-runs**
 against an existing deployment — it's just no longer part of the `up` sequence.
 
+### Standalone Elasticsearch (`kind: elasticsearch`) — the beta-channel instance
+
+A manifest kind whose *whole* deployment is one Elasticsearch instance — no
+nodes, no clients, no binary (V2-1016). It exists so **community beta-channel
+node operators**, on machines we do not run, have somewhere to forward logs;
+consumed by the `beta-health-verdict` skill and the beta rollout watch. It
+reuses the existing `elastic infra`/`provision`/`destroy` commands and the same
+`saorsa-deploy/elastic/{name}.json` state; the kind adds `--standalone` (which
+registers the `Deployment` row, since no `bootstraps infra` runs to do it) and
+the public-ingest shape. Impl: `orchestrator/elastic.py`,
+`provisioning/es_ingest_proxy.py`, `cmd/elastic_keys.py`. Example:
+`deploy/manifests/profiles/elasticsearch.yaml`.
+
+- **`public_ingest: true` is a different posture, not a flag.** A testnet's ES
+  is reachable only by our own VMs for hours, so it runs **plaintext on 9200
+  with anonymous access enabled** — fine there, unacceptable for an endpoint on
+  the open internet. Public ingest binds ES to **loopback**, disables anonymous
+  access, closes 9200, and fronts it with **Caddy on 443**. Off by default, so
+  every existing testnet/prod stack renders **byte-identical** config (asserted
+  by a test that diffs against the pre-change provisioner).
+- **The proxy allowlists writes** (`_bulk`/`_doc`/`_create`, POST/PUT) and 404s
+  everything else — so an endpoint added by a future ES version is unreachable
+  by default rather than newly exposed. It also forces
+  **`filter_path=errors,items.*.error`**: ES otherwise answers a bulk request
+  with a result object *per document* (~200+ B each), making the response
+  roughly the size of the request — pure egress on every batch, forever.
+  Forcing it at the proxy means it holds regardless of the community
+  forwarder's config.
+- **DigitalOcean is not a preference, it is the only option that satisfies
+  "extendable disk".** DO's `digitalocean_volume.size` grows **online**
+  (`0 add / 1 change / 0 destroy` + `resize2fs`); **OVH's is ForceNew** and
+  would wipe the data; Contabo has no attachable volume; Vultr/Hetzner have no
+  `*-elastic` TF module. Egress is a non-issue here — ingest is **inbound**
+  (free on DO), and the disk caps egress structurally at `volume_size /
+  retention_days`, ~$2–5/month at 100 GB / 14 d.
+- **The DNS record is the one manual step, and the deploy is two steps because
+  of it.** The certificate is issued *during provisioning*, but the address does
+  not exist until `elastic infra` has run. So: infra prints the **reserved IP** →
+  operator sets the A record (**Cloudflare grey cloud / DNS only** — a proxied
+  record terminates TLS at Cloudflare and issuance fails) → `up --resume` runs
+  provision, which **preflights the record** and names the exact fix if it is
+  wrong. Two journal entries mean the resume retries provisioning alone instead
+  of recreating the VM. It is one-off: the **reserved IP survives a rebuild**
+  (record it in `reserved_ip`), which is the whole reason for using one.
+- **Port 80 is never opened** — TLS-ALPN-01 on 443 issues the certificate, so
+  there is no HTTP-01 challenge to serve and no cleartext listener to redirect
+  from.
+- **Per-user credentials, not a shared key** (`elastic mint-key` / `list-keys` /
+  `revoke-key`). Each participant gets their own ES API key with
+  `create_doc` + `auto_configure` on `beta-nodes-*` and **no `read`** — a leaked
+  key can add logs and nothing else: it cannot read another participant's logs,
+  overwrite a document, or touch another index. A shared key would mean a leak
+  re-keys *everyone* and nothing is attributable. The pre-existing
+  `ant_log_writer` role is deliberately **not** reused (it grants `read` and
+  `manage`). Keys **do not expire** by default — a participant runs their node
+  indefinitely, so a lifetime means re-keying everyone on a schedule and a
+  lapsed forwarder fails silently; revocation is the real control. An expiry
+  **cannot be cleared** once set (the update API rejects a null, but accepts a
+  longer value), so it is set at mint time or not at all. The encoded credential
+  is shown **once**.
+- **Log level is enforced server-side, because a participant's forwarder config
+  is theirs to change.** `min_log_level` (default `info`) drops anything more
+  verbose at ingest, via an ingest pipeline attached as the index's
+  **`index.final_pipeline`**. That slot is load-bearing and verified against ES
+  8.17.4: a client passing **`?pipeline=_none` does NOT bypass `final_pipeline`**,
+  but the same request **DOES bypass `default_pipeline`** entirely — so never use
+  `default_pipeline` for anything an untrusted client must not opt out of. The
+  proxy also strips a client-supplied `pipeline` param (`uri query -pipeline`).
+  Drop set derives from the minimum exactly like the node telegraf
+  `--drop-log-levels` (`info` → DEBUG,TRACE; `debug` → TRACE; `trace` → none);
+  WARN/ERROR never dropped; a document with **no** `level` is **kept**.
+  A dropped doc returns `status: 200, result: "noop"` with `errors: false`, so
+  forwarders treat it as accepted and do **not** retry — deliberate, since a
+  `fail` processor would make them retry the batch forever. The cost: drops are
+  **invisible** (nothing counts them) and participants are not notified.
+  **`elastic set-log-level --name X --min-level debug` changes it at runtime** —
+  it rewrites only the pipeline body, so no redeploy, no restart, no reindex;
+  applies to the next write, and already-indexed logs are untouched.
+  NB the **`reroute` processor is rejected in a final_pipeline** ("can't change
+  the target index"), so quarantining verbose logs to a cheap index only works
+  in `default_pipeline` — viable solely because the proxy strips `pipeline`.
+  This bounds **disk**, not bandwidth: the document already crossed the wire.
+- **`generate-inventory` covers this kind** (schema **6**, adding
+  `elasticsearch_config` beside v5's `client_config`); `up` emits it
+  automatically as a `best_effort` final step. `node_vms`/`client_vms` are
+  empty, so `load_node_inventory` rejects it like a client inventory. Two
+  deliberately separated sections: **`ingest`** (the public write URL, index
+  naming, `create`-only rule, body cap, current `min_log_level`) and **`read`**
+  — which is **NOT** the public URL. ES binds to loopback and 9200 is
+  firewalled, so the read key against `https://logs.autonomi.com` returns
+  **404 at the proxy**, indistinguishable from a missing index; the section
+  gives `http://localhost:9200` plus a ready-made `ssh -L` tunnel command and
+  says why. The **read-only key is included** (the file is meant to be shared);
+  the **admin password is not** — the provisioner sets the `elastic` superuser
+  and the log-writer from one secret, so the stored password is effectively
+  superuser. The command warns about what the file contains.
+- **The ingest contract (what V2-1021's forwarding daemon writes).** Verified
+  against ES 8.17.4 with security on, using a key minted by `elastic mint-key`:
+  `POST https://<host>/_bulk`, `Authorization: ApiKey <encoded>` (a real ES API
+  key, **not** a bearer token), `application/x-ndjson`, index
+  `beta-nodes-YYYY.MM.DD`, time field **`@timestamp`**, body ≤ **50 MB** (proxy
+  cap; ES's own is 100 MB). The proxy is **transparent** — it is the
+  Elasticsearch API, not a translation layer.
+  **The action must be `create`; `index` returns a per-item 403** — the key
+  grants `create_doc`, which cannot overwrite, so granting `index` would let one
+  participant overwrite another's document by `_id`.
+  **`_bulk` returns HTTP 200 even when items fail**, so a client MUST read
+  `items[].status`: `201` indexed, `200` dropped by the level filter (expected,
+  not an error), `403`/`429`/`400` real failures.
+  The forced filter is **`errors,items.*.status,items.*.error`** and the
+  `status` part is load-bearing: `items.*.error` alone is smaller (16 B vs 13 KB
+  per 500-doc batch, against 100 KB unfiltered) but ES **collapses the items
+  array to only the failures**, destroying the position correlation — a client
+  then cannot tell which document a per-item 429 refers to and must retry the
+  whole batch, duplicating everything that already succeeded (auto-ID `create`
+  writes).
+  Reads are refused (`_search` and `GET /` both 403).
+- **One shared daily index, attribution by `beta_user` field** — not an index
+  per user: ~100 users x daily x 14 days would exceed 1000 shards on a single
+  small node.
+- `letsencrypt_staging: true` while iterating: production issuance allows only
+  **5 duplicate certificates per week** and the lockout outlasts the debugging
+  session that caused it.
+- The log-forwarder tooling that points community machines at this instance is a
+  **separate issue** — this kind stands up the endpoint and mints the
+  credentials only.
+
 ## Elasticsearch (Log Forwarding)
 
 Optional per-testnet Elasticsearch instance on a dedicated VM. Enabled via `enable_log_forwarding` in deployment config. Telegraf forwards node JSON logs to the instance.

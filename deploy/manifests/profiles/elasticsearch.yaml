@@ -1,0 +1,89 @@
+# A STANDALONE, PERMANENT Elasticsearch instance — not part of any testnet.
+#
+# Built for V2-1016: somewhere for community beta-channel node operators to
+# forward their logs, so `beta-health-verdict` can read crash/error signatures
+# and log-volume over a soak window. Consumed by that skill and the beta rollout
+# watch.
+#
+#   saorsa-deploy deployments plan --config <this file>     # preview the steps
+#   saorsa-deploy deployments up   --config <this file>     # create + provision
+#   saorsa-deploy deployments down --config <this file>     # tear down
+#
+# WHY THIS IS NOT JUST `elastic:` ON A TESTNET
+# A testnet's Elasticsearch is reachable only by our own VMs for a few hours, so
+# it runs plaintext on 9200 with anonymous access enabled. This instance is
+# written to by machines we do not operate, over the open internet. Setting
+# `public_ingest: true` therefore changes its shape: Elasticsearch binds to
+# loopback with anonymous access off, 9200 is firewalled shut, and a
+# TLS-terminating proxy on 443 exposes only the bulk/document WRITE endpoints.
+#
+# THE ONE MANUAL STEP — DNS
+# The TLS certificate is issued during provisioning, so `ingest_hostname` must
+# already resolve to this instance by then. The address does not exist until
+# `elastic infra` has run, so the first deploy is two-phase:
+#
+#   1. `up` runs `elastic infra`, which prints a RESERVED IP
+#   2. you point the A record at it (in Cloudflare: DNS only / grey cloud — a
+#      proxied record terminates TLS at Cloudflare and issuance fails here)
+#   3. `up --resume` continues into `elastic provision`, which preflights the
+#      record and then obtains the certificate
+#
+# It is genuinely one-off: the reserved IP survives a droplet rebuild, so the
+# record never needs touching again. Record the address in `reserved_ip` below
+# once it exists, so a rebuild reattaches the same one.
+
+name: BETA-LOGS-01
+kind: elasticsearch
+purpose: "beta-channel community node log ingest"
+ssh_key_path: ~/.ssh/ant_deploy
+
+elasticsearch:
+  # DigitalOcean is the only provider whose Elasticsearch data volume grows
+  # ONLINE (`terraform apply -var=volume_size=N` plans 0 add / 1 change / 0
+  # destroy, then resize2fs). OVH's volume size is ForceNew and would wipe the
+  # data; Contabo has no attachable volume at all. Since the cohort is expected
+  # to grow, that settles it.
+  provider: digitalocean
+  region: lon1
+
+  # 8 GB RAM → a 4 GB auto-sized heap, matching the 4 shards below (each shard
+  # pins to one indexing thread on a single-node cluster).
+  droplet_size: s-4vcpu-8gb
+  shards: 4
+
+  # The binding constraint, and the one to watch. Grow it online as the cohort
+  # grows rather than over-provisioning now. It also caps bandwidth exposure:
+  # sustained ingest cannot exceed volume_size / retention_days without filling
+  # the disk.
+  volume_size: 100
+
+  # The beta soak is 5 days, so 14 covers the verdict window with room spare.
+  retention_days: 14
+
+  # Minimum level accepted from community forwarders. Enforced SERVER-SIDE:
+  # their forwarder config is theirs to change, so the policy is applied at
+  # ingest by the index's final_pipeline, which a client cannot override (a
+  # request naming ?pipeline=_none does NOT bypass it — verified against ES
+  # 8.17.4). `info` drops DEBUG and TRACE; `debug` drops TRACE only.
+  #
+  # Change it later WITHOUT redeploying — it rewrites the pipeline body only,
+  # and applies to the next document written:
+  #   saorsa-deploy elastic set-log-level --name BETA-LOGS-01 --min-level debug
+  min_log_level: info
+
+  # Public-facing ingest. Requires ingest_hostname; see the DNS note above.
+  public_ingest: true
+  ingest_hostname: logs.autonomi.com
+
+  # Fill in after the first `elastic infra` so a rebuild keeps the same address
+  # and the DNS record stays valid:
+  # reserved_ip: 203.0.113.10
+
+  # Let's Encrypt allows only 5 duplicate certificates per week, and the lockout
+  # outlasts the debugging session that caused it. Turn this on while iterating
+  # on a deploy of the same hostname; staging certificates are not publicly
+  # trusted, so turn it off for the real thing.
+  # letsencrypt_staging: true
+
+  # This is a permanent instance: never tear it down as collateral.
+  keep_on_destroy: true

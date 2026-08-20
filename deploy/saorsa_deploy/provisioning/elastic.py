@@ -14,6 +14,16 @@ from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
 )
+from saorsa_deploy.provisioning.es_ingest_proxy import (
+    build_caddy_install_command,
+    build_caddyfile,
+    build_write_caddyfile_command,
+)
+from saorsa_deploy.provisioning.es_log_filter import (
+    DEFAULT_MIN_LEVEL,
+    LOG_FILTER_PIPELINE,
+    build_pipeline_body,
+)
 from saorsa_deploy.provisioning.volume import (
     build_mount_ordering_dropin_command,
     build_mount_volume_command,
@@ -36,6 +46,16 @@ INDEX_PATTERN = "telegraf-ant-nodes-*"
 # stdout/stderr lines land in a `message` field (no JSON structure to parse).
 CLIENT_INDEX_PATTERN = "telegraf-ant-clients-*"
 ES_USERNAME = "ant-log-writer"
+
+#: Index the community beta-channel cohort writes to. Separate from the
+#: testnet/prod patterns because it is fed by machines we do not operate: the
+#: write-only credentials handed to community users are scoped to this pattern
+#: and nothing else, so a leaked key cannot touch anything we forwarded.
+BETA_INDEX_PATTERN = "beta-nodes-*"
+#: Role granting append-only access to that pattern. `create_doc` adds documents
+#: but cannot overwrite one, and there is deliberately no `read`: V2-1016 calls
+#: for writes only, and a reader could pull every other participant's logs.
+BETA_INGEST_ROLE = "beta_log_ingest"
 ILM_POLICY_NAME = "ant-logs-policy"
 DEFAULT_RETENTION_DAYS = 7
 
@@ -59,6 +79,10 @@ class ElasticProvisioner:
         shards: int = DEFAULT_INDEX_SHARDS,
         console: Console | None = None,
         root_disk: bool = False,
+        public_ingest: bool = False,
+        ingest_hostname: str | None = None,
+        letsencrypt_staging: bool = False,
+        min_log_level: str = DEFAULT_MIN_LEVEL,
     ):
         if retention_days < 1:
             raise ValueError(
@@ -66,6 +90,11 @@ class ElasticProvisioner:
             )
         if shards < 1:
             raise ValueError(f"shards must be >= 1 (got {shards})")
+        if public_ingest and not ingest_hostname:
+            raise ValueError(
+                "public_ingest requires ingest_hostname (the DNS name the TLS "
+                "certificate is issued for)"
+            )
         self.host_ip = host_ip
         self.ssh_key_path = ssh_key_path
         self.testnet_name = testnet_name
@@ -76,6 +105,19 @@ class ElasticProvisioner:
         # (contabo): Elasticsearch data lives on the instance root disk, so we
         # make the storage directory instead of mounting a device.
         self.root_disk = root_disk
+        # Public-ingest mode: Elasticsearch binds to loopback and is reached only
+        # through a TLS-terminating proxy, with anonymous access off. Off by
+        # default so every existing testnet/prod stack renders byte-identical
+        # configuration.
+        self.public_ingest = public_ingest
+        self.ingest_hostname = ingest_hostname
+        self.letsencrypt_staging = letsencrypt_staging
+        # Enforced server-side, because a community participant's forwarder
+        # config is theirs to change. Validated here so a bad value fails before
+        # any VM is touched.
+        self.min_log_level = min_log_level
+        if public_ingest:
+            build_pipeline_body(min_log_level)
         self._es_password = secrets.token_urlsafe(24)
 
     def execute(self) -> dict:
@@ -117,6 +159,10 @@ class ElasticProvisioner:
             self._add_mount_ordering_op(state)
             self._add_start_elasticsearch_ops(state)
             self._add_setup_security_ops(state)
+            # After security setup: the proxy is the only route in once ES is on
+            # loopback, so bringing it up before the roles exist would briefly
+            # expose an instance that accepts writes from anyone.
+            self._add_ingest_proxy_ops(state)
 
             self.console.print("Running Elasticsearch provisioning operations...")
             run_ops(state)
@@ -215,6 +261,27 @@ class ElasticProvisioner:
         )
 
     def _add_start_elasticsearch_ops(self, state: State):
+        # Readiness differs by mode. Without anonymous access the root endpoint
+        # answers 401, which `curl -sf` treats as failure — so the probe would
+        # burn its full timeout on every public-ingest provision and then carry
+        # on regardless, making a genuinely dead node indistinguishable from a
+        # healthy one. Any HTTP status proves the listener is up.
+        if self.public_ingest:
+            ready_probe = (
+                "for i in $(seq 1 60); do "
+                "code=$(curl -s -o /dev/null -w '%{http_code}' "
+                "http://localhost:9200 2>/dev/null); "
+                'case "$code" in 200|401) break ;; esac; '
+                "sleep 2; done"
+            )
+        else:
+            # Wait for ES to become ready (use root endpoint which
+            # allows anonymous access via the monitoring role)
+            ready_probe = (
+                "for i in $(seq 1 60); do "
+                "curl -sf http://localhost:9200 >/dev/null 2>&1 && break; "
+                "sleep 2; done"
+            )
         add_op(
             state,
             server.shell,
@@ -223,12 +290,29 @@ class ElasticProvisioner:
                 "systemctl daemon-reload",
                 "systemctl enable elasticsearch",
                 "systemctl start elasticsearch",
-                # Wait for ES to become ready (use root endpoint which
-                # allows anonymous access via the monitoring role)
-                "for i in $(seq 1 60); do "
-                "curl -sf http://localhost:9200 >/dev/null 2>&1 && break; "
-                "sleep 2; done",
+                ready_probe,
             ],
+        )
+
+    def _add_ingest_proxy_ops(self, state: State):
+        """Install and configure the TLS ingest proxy (public-ingest only)."""
+        if not self.public_ingest:
+            return
+        add_op(
+            state,
+            server.shell,
+            name="Install ingest proxy (Caddy)",
+            commands=[build_caddy_install_command()],
+        )
+        caddyfile = build_caddyfile(
+            self.ingest_hostname,
+            letsencrypt_staging=self.letsencrypt_staging,
+        )
+        add_op(
+            state,
+            server.shell,
+            name=f"Configure ingest proxy for {self.ingest_hostname}",
+            commands=[build_write_caddyfile_command(caddyfile)],
         )
 
     def _add_setup_security_ops(self, state: State):
@@ -252,25 +336,44 @@ class ElasticProvisioner:
         )
 
     def _build_elasticsearch_yml(self) -> str:
-        return (
+        base = (
             f"cluster.name: ant-logs-{self.testnet_name.lower()}\n"
             f"node.name: ant-elastic-1\n"
             f"path.data: {ELASTIC_DATA_DIR}\n"
             f"path.logs: {ELASTIC_LOG_DIR}\n"
-            f"network.host: 0.0.0.0\n"
-            f"discovery.type: single-node\n"
-            f"\n"
-            f"# Disable TLS for single-node ephemeral deployment\n"
-            f"xpack.security.enabled: true\n"
-            f"xpack.security.http.ssl.enabled: false\n"
-            f"xpack.security.transport.ssl.enabled: false\n"
-            f"\n"
-            f"# Allow anonymous access with monitor role so Telegraf can\n"
-            f"# detect the ES version via the unauthenticated root endpoint.\n"
-            f"xpack.security.authc:\n"
-            f"  anonymous:\n"
-            f"    roles: remote_monitoring_collector\n"
-            f"    authz_exception: false\n"
+        )
+        if self.public_ingest:
+            # Loopback only. The firewall closes 9200 as well, but binding to
+            # 127.0.0.1 means a firewall mistake still cannot expose an
+            # unauthenticated plaintext Elasticsearch to the internet.
+            return base + (
+                "network.host: 127.0.0.1\n"
+                "discovery.type: single-node\n"
+                "\n"
+                "# TLS is terminated by the ingest proxy in front of this node;\n"
+                "# the hop from proxy to Elasticsearch never leaves loopback.\n"
+                "xpack.security.enabled: true\n"
+                "xpack.security.http.ssl.enabled: false\n"
+                "xpack.security.transport.ssl.enabled: false\n"
+                "\n"
+                "# No anonymous access: this instance is reachable from the\n"
+                "# public internet, so every request must carry a credential.\n"
+            )
+        return base + (
+            "network.host: 0.0.0.0\n"
+            "discovery.type: single-node\n"
+            "\n"
+            "# Disable TLS for single-node ephemeral deployment\n"
+            "xpack.security.enabled: true\n"
+            "xpack.security.http.ssl.enabled: false\n"
+            "xpack.security.transport.ssl.enabled: false\n"
+            "\n"
+            "# Allow anonymous access with monitor role so Telegraf can\n"
+            "# detect the ES version via the unauthenticated root endpoint.\n"
+            "xpack.security.authc:\n"
+            "  anonymous:\n"
+            "    roles: remote_monitoring_collector\n"
+            "    authz_exception: false\n"
         )
 
     def _build_heap_options_command(self) -> str:
@@ -407,14 +510,33 @@ class ElasticProvisioner:
             "        },\n"
             "        'mappings': {\n"
             "            'properties': {\n"
-            "                'timestamp': {'type': 'date'},\n"
+            # `@timestamp`, not `timestamp`: it is the Elasticsearch convention,
+            # it is Kibana's default time field, and it is REQUIRED if this index
+            # is ever migrated to a data stream. Nothing forwards here yet, so
+            # pinning it now costs nothing and renaming it later would break
+            # every community forwarder at once.
+            "                '@timestamp': {'type': 'date'},\n"
             "                'message': {'type': 'text'},\n"
             "                'level': {'type': 'keyword'},\n"
             "                'target': {'type': 'keyword'},\n"
             "                'peer_id': {'type': 'keyword'},\n"
             "                'version': {'type': 'keyword'},\n"
             "                'commit': {'type': 'keyword'},\n"
-            "                'host': {'type': 'keyword'},\n"
+            # No `host`: the ingest pipeline strips it, because a community
+            # machine's hostname commonly contains the owner's real name.
+            # `beta_user`/`beta_key_id` are stamped server-side from the
+            # authenticated API key, so they cannot be forged by a sender.
+            "                'beta_key_id': {'type': 'keyword'},\n"
+            # The identifying fields the beta log-forwarding daemon (V2-1021)
+            # attaches to every event. Mapped explicitly as keywords so they are
+            # aggregatable — dynamic mapping would make them text+keyword
+            # subfields, and `beta-health-verdict` groups by these.
+            "                'node_id': {'type': 'keyword'},\n"
+            "                'service': {'type': 'keyword'},\n"
+            "                'binary_version': {'type': 'keyword'},\n"
+            "                'channel': {'type': 'keyword'},\n"
+            "                'os': {'type': 'keyword'},\n"
+            "                'arch': {'type': 'keyword'},\n"
             "                'service_number': {'type': 'keyword'},\n"
             "                'testnet_name': {'type': 'keyword'},\n"
             "                'host_role': {'type': 'keyword'},\n"
@@ -480,12 +602,13 @@ class ElasticProvisioner:
             "\n"
             "# 5. Create an API key for read-only querying\n"
             "print('Creating read-only API key...')\n"
+            f"READ_PATTERNS = {self._read_index_patterns()!r}\n"
             "api_key_resp = es_auth_request('POST', '/_security/api_key', {\n"
             "    'name': f'ant-log-reader-{USERNAME}',\n"
             "    'role_descriptors': {\n"
             "        'ant_log_reader': {\n"
             "            'indices': [{\n"
-            "                'names': [INDEX_PATTERN, CLIENT_INDEX_PATTERN],\n"
+            "                'names': READ_PATTERNS,\n"
             "                'privileges': ['read', 'view_index_metadata'],\n"
             "            }]\n"
             "        }\n"
@@ -495,6 +618,7 @@ class ElasticProvisioner:
             "print(f'API key created.')\n"
             "\n"
             "\n"
+        ) + self._build_beta_ingest_setup() + (
             "# 6. Write credentials to files for retrieval\n"
             "import pathlib\n"
             "creds_dir = pathlib.Path('/etc/elasticsearch/ant-credentials')\n"
@@ -504,6 +628,125 @@ class ElasticProvisioner:
             "(creds_dir / 'api-key').write_text(api_key_encoded)\n"
             "print('Credentials written to /etc/elasticsearch/ant-credentials/')\n"
             "print('SETUP_COMPLETE')\n"
+        )
+
+    def _read_index_patterns(self) -> list[str]:
+        """Index patterns the read-only API key can query.
+
+        A public-ingest instance's whole reason to exist is the beta index, and
+        its consumer (`beta-health-verdict`) reads via this key — so omitting
+        the pattern would hand out a credential that cannot see the only data
+        the instance holds. Other instances keep exactly the two patterns they
+        had before.
+        """
+        patterns = [INDEX_PATTERN, CLIENT_INDEX_PATTERN]
+        if self.public_ingest:
+            patterns.append(BETA_INDEX_PATTERN)
+        return patterns
+
+    def _build_beta_ingest_setup(self) -> str:
+        """Extra setup for a community-facing instance: beta index + write role.
+
+        Empty for every other instance, so a testnet's setup script is unchanged.
+        """
+        if not self.public_ingest:
+            return ""
+        pipeline_body = build_pipeline_body(self.min_log_level)
+        return (
+            "\n"
+            f"LOG_FILTER_PIPELINE = '{LOG_FILTER_PIPELINE}'\n"
+            "\n"
+            "# 5a. Server-side log-level filter. Attached below as the index's\n"
+            "# final_pipeline, which a client cannot override -- community\n"
+            "# forwarders are not ours to configure, so the level policy has to\n"
+            "# be enforced here. Change it later without redeploying:\n"
+            "#   saorsa-deploy elastic set-log-level --name <n> --min-level debug\n"
+            f"print('Creating log-level filter pipeline ({self.min_log_level} and above)...')\n"
+            "es_auth_request(\n"
+            "    'PUT', f'/_ingest/pipeline/{LOG_FILTER_PIPELINE}',\n"
+            f"    {pipeline_body!r},\n"
+            ")\n"
+            "print('Log-level filter pipeline created.')\n"
+            "\n"
+            "\n"
+            "# 5b. Index template for community beta-channel node logs.\n"
+            "print('Creating beta ingest index template...')\n"
+            f"BETA_INDEX_PATTERN = '{BETA_INDEX_PATTERN}'\n"
+            f"BETA_INGEST_ROLE = '{BETA_INGEST_ROLE}'\n"
+            "es_auth_request('PUT', '/_index_template/beta-node-logs', {\n"
+            "    'index_patterns': [BETA_INDEX_PATTERN],\n"
+            "    'template': {\n"
+            "        'settings': {\n"
+            "            'number_of_shards': NUMBER_OF_SHARDS,\n"
+            "            'number_of_replicas': 0,\n"
+            "            'index.lifecycle.name': ILM_POLICY_NAME,\n"
+            # Same guard as the node/client templates: one out-of-range value
+            # from one community machine would otherwise 400 the whole bulk
+            # batch and stop ingest for everyone in it.
+            "            'index.mapping.ignore_malformed': True,\n"
+            # These logs come from machines we do not operate, so the field set
+            # is not ours to guarantee. Compress rather than index every stray
+            # field a forwarder invents.
+            "            'index.codec': 'best_compression',\n"
+            # final_pipeline, NOT default_pipeline: the latter is overridden by
+            # a client passing ?pipeline=, so it enforces nothing against a
+            # forwarder we do not control.
+            "            'index.final_pipeline': LOG_FILTER_PIPELINE,\n"
+            "        },\n"
+            "        'mappings': {\n"
+            "            'properties': {\n"
+            # `@timestamp`, not `timestamp`: it is the Elasticsearch convention,
+            # it is Kibana's default time field, and it is REQUIRED if this index
+            # is ever migrated to a data stream. Nothing forwards here yet, so
+            # pinning it now costs nothing and renaming it later would break
+            # every community forwarder at once.
+            "                '@timestamp': {'type': 'date'},\n"
+            "                'message': {'type': 'text'},\n"
+            "                'level': {'type': 'keyword'},\n"
+            "                'target': {'type': 'keyword'},\n"
+            "                'peer_id': {'type': 'keyword'},\n"
+            "                'version': {'type': 'keyword'},\n"
+            "                'commit': {'type': 'keyword'},\n"
+            # No `host`: the ingest pipeline strips it, because a community
+            # machine's hostname commonly contains the owner's real name.
+            # `beta_user`/`beta_key_id` are stamped server-side from the
+            # authenticated API key, so they cannot be forged by a sender.
+            "                'beta_key_id': {'type': 'keyword'},\n"
+            # The identifying fields the beta log-forwarding daemon (V2-1021)
+            # attaches to every event. Mapped explicitly as keywords so they are
+            # aggregatable — dynamic mapping would make them text+keyword
+            # subfields, and `beta-health-verdict` groups by these.
+            "                'node_id': {'type': 'keyword'},\n"
+            "                'service': {'type': 'keyword'},\n"
+            "                'binary_version': {'type': 'keyword'},\n"
+            "                'channel': {'type': 'keyword'},\n"
+            "                'os': {'type': 'keyword'},\n"
+            "                'arch': {'type': 'keyword'},\n"
+            # Who sent it. Stamped from the credential the request carried, so
+            # `beta-health-verdict` can tell one participant's crash loop from a
+            # fleet-wide regression.
+            "                'beta_user': {'type': 'keyword'},\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "})\n"
+            "print('Beta ingest index template created.')\n"
+            "\n"
+            "\n"
+            "# 5c. Append-only ingest role for community credentials.\n"
+            "# `create_doc` cannot overwrite an existing document and there is\n"
+            "# no `read`: a leaked key can add logs and nothing else -- it can\n"
+            "# neither read other participants' logs nor rewrite its own.\n"
+            "print('Creating beta ingest role...')\n"
+            "es_auth_request('PUT', f'/_security/role/{BETA_INGEST_ROLE}', {\n"
+            "    'indices': [{\n"
+            "        'names': [BETA_INDEX_PATTERN],\n"
+            "        'privileges': ['create_doc', 'auto_configure'],\n"
+            "    }]\n"
+            "})\n"
+            "print('Beta ingest role created.')\n"
+            "\n"
+            "\n"
         )
 
     def _retrieve_connection_details(self) -> dict:
@@ -532,6 +775,25 @@ class ElasticProvisioner:
         api_key = _ssh_read("/etc/elasticsearch/ant-credentials/api-key")
 
         testnet_lower = self.testnet_name.lower()
+        if self.public_ingest:
+            # The https URL is the only way in: 9200 is firewalled off and ES
+            # listens on loopback. Recording the http one would hand every
+            # consumer an address that cannot connect.
+            return {
+                "elasticsearch_url": f"https://{self.ingest_hostname}",
+                "elasticsearch_username": username,
+                "elasticsearch_password": password,
+                "elasticsearch_api_key": api_key,
+                "elasticsearch_ingest_hostname": self.ingest_hostname,
+                "elasticsearch_index_pattern": BETA_INDEX_PATTERN,
+                "elasticsearch_ingest_role": BETA_INGEST_ROLE,
+                "public_ingest": True,
+                # Recorded so `generate-inventory` can report the instance's
+                # actual policy rather than restating the CLI defaults, which
+                # may not be what this instance was provisioned with.
+                "elasticsearch_retention_days": self.retention_days,
+                "elasticsearch_min_log_level": self.min_log_level,
+            }
         return {
             "elasticsearch_url": f"http://{self.host_ip}:9200",
             "elasticsearch_username": username,

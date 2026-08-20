@@ -130,6 +130,7 @@ KIND_TO_BLOCK: dict[str, str] = {
     "prod-local-downloads": "prod_local_downloads",
     "prod-nodes": "prod_nodes",
     "prod-debug-nodes": "prod_debug_nodes",
+    "elasticsearch": "elasticsearch",
 }
 
 Payment = Literal["merkle", "no-merkle"]
@@ -931,6 +932,105 @@ class ProdDebugNodesSpec(_Base):
 
 
 # --------------------------------------------------------------------------- #
+# standalone Elasticsearch
+# --------------------------------------------------------------------------- #
+class ElasticsearchSpec(_Base):
+    """A standalone, permanent Elasticsearch instance (kind ``elasticsearch``).
+
+    Unlike the ``elastic:`` block on a testnet/extension — which describes an
+    ephemeral stack subordinate to that deployment — this kind IS the whole
+    deployment: no nodes, no clients, no binary to build. It exists so log
+    producers outside our own fleet (the community beta-channel cohort) have
+    somewhere to forward to.
+
+    That difference in audience is what drives ``public_ingest``. A testnet ES
+    is reachable only by our VMs and deliberately runs plaintext with anonymous
+    access; an instance community machines write to must terminate TLS and
+    refuse anonymous callers. ``public_ingest`` is therefore opt-in rather than
+    the default: turning it on for an existing testnet stack would change how
+    every forwarder has to address it.
+    """
+
+    provider: str = "digitalocean"  # digitalocean|ovh|contabo
+    region: Optional[str] = None  # default per provider (DO: lon1)
+    droplet_size: Optional[str] = None  # default per provider (DO: s-4vcpu-8gb)
+    volume_size: Optional[int] = None  # GB; ignored on Contabo (root disk)
+    volume_type: Optional[str] = None  # OVH only
+    shards: Optional[int] = None  # default 4
+    # Short by design: the beta soak is 5 days, so ~14 days of history is ample
+    # and the disk is the binding constraint long before the retention is.
+    retention_days: int = 14
+
+    # --- public ingest -------------------------------------------------------
+    # Off by default so an operator cannot accidentally reconfigure a testnet
+    # stack's addressing. When on: ES binds to localhost, anonymous access is
+    # disabled, and a TLS-terminating reverse proxy fronts it on 443.
+    public_ingest: bool = False
+    # The DNS name the certificate is issued for. Must already resolve to this
+    # instance before `elastic provision` runs — provisioning preflights it.
+    ingest_hostname: Optional[str] = None
+    # Adopt an already-allocated reserved IP instead of creating one. The point
+    # of a reserved IP is that the DNS record survives a droplet rebuild, which
+    # only holds if a rebuild reattaches the SAME address.
+    reserved_ip: Optional[str] = None
+    # Point ACME at Let's Encrypt's staging CA. Production issuance is rate
+    # limited to 5 duplicate certificates per week, which repeated test deploys
+    # of the same hostname will exhaust — and the lockout outlasts the debugging
+    # session that caused it. Staging certs are untrusted by design.
+    letsencrypt_staging: bool = False
+
+    # Minimum level accepted from community forwarders. Enforced server-side
+    # because a participant's forwarder config is theirs to change; anything
+    # more verbose is dropped at ingest. Changeable at runtime afterwards with
+    # `elastic set-log-level`, so this is only the starting policy.
+    min_log_level: Optional[LogLevel] = None  # default 'info'
+
+    keep_on_destroy: bool = False
+    # Contabo needs an image UUID and the operator public key.
+    contabo_image_id: Optional[str] = None
+    contabo_ssh_public_key_path: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _public_ingest_needs_hostname(self) -> "ElasticsearchSpec":
+        # ACME cannot issue a certificate for an IP address, so public ingest
+        # without a hostname is not a degraded mode — it cannot come up at all.
+        # Failing here costs nothing; failing at provision time costs a VM that
+        # is already created and billing.
+        if self.public_ingest and not self.ingest_hostname:
+            raise ValueError(
+                "elasticsearch.public_ingest requires ingest_hostname "
+                "(the DNS name the TLS certificate is issued for)"
+            )
+        if self.ingest_hostname and not self.public_ingest:
+            raise ValueError(
+                "elasticsearch.ingest_hostname requires public_ingest: true "
+                "(nothing terminates TLS for that name otherwise)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _staging_needs_public_ingest(self) -> "ElasticsearchSpec":
+        if self.letsencrypt_staging and not self.public_ingest:
+            raise ValueError(
+                "elasticsearch.letsencrypt_staging requires public_ingest: true "
+                "(no certificate is requested otherwise)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reserved_ip_is_digitalocean_only(self) -> "ElasticsearchSpec":
+        # Reserved IPs are modelled in the DigitalOcean module only. Silently
+        # ignoring the field elsewhere would promise a stable address the
+        # deployment does not actually have — and the DNS record depends on it.
+        if self.reserved_ip and self.provider != "digitalocean":
+            raise ValueError(
+                "elasticsearch.reserved_ip is only supported on provider "
+                f"'digitalocean' (got '{self.provider}')"
+            )
+        return self
+
+
+# --------------------------------------------------------------------------- #
 # top-level manifest
 # --------------------------------------------------------------------------- #
 class Manifest(_Base):
@@ -951,6 +1051,7 @@ class Manifest(_Base):
     prod_local_downloads: Optional[ProdLocalDownloadsSpec] = None
     prod_nodes: Optional[ProdNodesSpec] = None
     prod_debug_nodes: Optional[ProdDebugNodesSpec] = None
+    elasticsearch: Optional[ElasticsearchSpec] = None
 
     @model_validator(mode="after")
     def _kind_block_consistent(self) -> "Manifest":

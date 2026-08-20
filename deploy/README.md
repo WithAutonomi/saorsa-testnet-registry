@@ -2849,6 +2849,264 @@ predating the feature.
 transfer p50/p95, and a shaped client's percentiles are not comparable to an
 unshaped baseline.
 
+### A standalone Elasticsearch instance (`kind: elasticsearch`)
+
+`deployments up --config <manifest>` with `kind: elasticsearch` stands up an
+Elasticsearch instance that is **not part of any deployment** — no nodes, no
+clients, no binary. It exists so log producers outside our own fleet (the
+community beta-channel cohort) have somewhere to forward to, and it is read by
+the `beta-health-verdict` skill and the beta rollout watch.
+
+It reuses the existing `elastic infra` / `elastic provision` / `elastic destroy`
+commands and the same `saorsa-deploy/elastic/{name}.json` state; what the kind
+adds is `--standalone` (register a `Deployment` row with
+`deploy_args.kind = "elasticsearch"`) and the public-ingest shape below.
+
+Example manifest: `deploy/manifests/profiles/elasticsearch.yaml`.
+
+#### Public ingest is a different security posture, not a flag
+
+A testnet's Elasticsearch is reachable only by our own VMs for a few hours, so
+it deliberately runs **plaintext on 9200 with anonymous access enabled**
+(`remote_monitoring_collector`, so Telegraf can read the version endpoint). An
+instance community machines write to is on the open internet, where a credential
+in cleartext on every request is not acceptable. `public_ingest: true` therefore
+changes the instance:
+
+| | testnet stack (default) | `public_ingest: true` |
+|---|---|---|
+| ES bind address | `0.0.0.0` | `127.0.0.1` |
+| Anonymous access | enabled | **disabled** |
+| Firewall | 22, 9200 | 22, **443** (9200 closed, 80 never opened) |
+| Transport | plaintext HTTP | TLS at a Caddy reverse proxy |
+| Exposed API | the whole ES REST surface | `_bulk` / `_doc` / `_create` writes only |
+| Address | droplet IP | **reserved IP** (survives a rebuild) |
+
+The proxy allowlists write endpoints rather than denying known-bad ones, so an
+endpoint added by a future Elasticsearch version is unreachable by default
+rather than newly exposed. Everything else gets a bare 404.
+
+It also appends `filter_path=errors,items.*.error` to every request. Elasticsearch
+otherwise answers a bulk request with a result object **per document** (~200+
+bytes each), making the response roughly the size of the request that produced
+it — pure egress, on every batch, forever. Forcing it at the proxy means it holds
+regardless of how a community forwarder is configured.
+
+#### DNS: the one manual step
+
+The certificate is obtained **during provisioning**, so `ingest_hostname` must
+already resolve to the instance by then — and the address does not exist until
+`elastic infra` has run. The first deploy is therefore two-phase:
+
+1. `up` runs `elastic infra`, which prints the **reserved IP**.
+2. Point the A record at it. In Cloudflare it must be **DNS only (grey cloud)**:
+   a proxied record terminates TLS at Cloudflare, so issuance fails here.
+3. `up --resume` continues into `elastic provision`, which **preflights the
+   record** — naming the record and the address it should carry if it is wrong —
+   and then obtains the certificate.
+
+This is why the kind emits two steps rather than one wrapper command: a resume
+retries provisioning alone instead of recreating the VM. And it really is
+one-off — the reserved IP survives a droplet rebuild, so record it in
+`reserved_ip` and the DNS never needs touching again.
+
+Port **80 is never opened**: the certificate is issued over TLS-ALPN-01 on 443,
+so there is no HTTP-01 challenge to serve and no cleartext listener to redirect
+from.
+
+Let's Encrypt allows only **5 duplicate certificates per week** and the lockout
+outlasts the debugging session that causes it, so use
+`letsencrypt_staging: true` while iterating on a deploy of the same hostname.
+Staging certificates are not publicly trusted.
+
+#### The ingest contract (what a forwarder writes)
+
+Verified end to end against Elasticsearch 8.17.4 with security enabled, using a
+key minted by `elastic mint-key`.
+
+| | |
+|---|---|
+| Endpoint | `POST https://<ingest_hostname>/_bulk` (the proxy is transparent — it is the Elasticsearch API, not a translation layer) |
+| Auth | `Authorization: ApiKey <encoded>` — a real Elasticsearch API key, **not** a bearer token |
+| Content-Type | `application/x-ndjson`, trailing newline required |
+| Action | **`create` only** — `index` returns a per-item 403 |
+| Index | `beta-nodes-YYYY.MM.DD` (UTC), inside the `beta-nodes-*` pattern the key is scoped to |
+| Time field | **`@timestamp`**, RFC3339 |
+| Max body | **50 MB** at the proxy (413 above it); Elasticsearch's own limit is 100 MB |
+
+**`create`, not `index`.** The key grants `create_doc`, which permits creating a
+document but not overwriting one — so a bulk `index` action is rejected per item
+with a `security_exception`, and `create` is the only action that works.
+`POST /{index}/_doc` (auto-ID) and `POST /{index}/_create/{id}` also work for
+single documents. Granting `index` instead would let one participant overwrite
+another's document by `_id`.
+
+**Errors are per item, not per request.** A `_bulk` call returns HTTP 200 even
+when individual documents are rejected, so a client must read
+`items[].status` — checking only the HTTP status will silently discard failures.
+Three statuses matter: `201` indexed, `200` **dropped by the level filter**
+(expected, not an error), and `403`/`429`/`400` genuine failures.
+
+**The proxy forces `filter_path=errors,items.*.status,items.*.error`.** Measured
+on a 500-document batch: 100 KB unfiltered, 13 KB with this filter.
+`items.*.error` alone is 16 bytes but Elasticsearch then **collapses the items
+array to only the failures**, so positions no longer correspond to the submitted
+documents — a client cannot tell which document a 429 belongs to and must retry
+the whole batch, duplicating everything that already succeeded. `status` is
+therefore not optional.
+
+Reads are refused: `_search` against the index returns 403, as does `GET /`.
+The mapped fields are `@timestamp`, `message`, `level`, `target`, `peer_id`,
+`version`, `commit`, `host`, `beta_user`, plus the forwarding daemon's
+identity set — `node_id`, `service`, `binary_version`, `channel`, `os`, `arch`
+— all keywords so they aggregate. Unmapped fields are accepted via dynamic
+mapping, and `ignore_malformed` stops one bad value failing a whole batch.
+
+#### Controlling the log level, server-side
+
+A community participant can edit their own forwarder, so a level set there is a
+request, not a control. The policy is therefore enforced at ingest, by an
+Elasticsearch pipeline attached to the index as **`index.final_pipeline`**:
+
+```bash
+saorsa-deploy elastic set-log-level --name BETA-LOGS-01 --min-level debug
+```
+
+`min_log_level` (manifest) / `--min-log-level` (provision) sets the starting
+policy, default **`info`**. The drop set is derived the same way as the node
+Telegraf forwarder's `--drop-log-levels` — drop only what is strictly *more*
+verbose than the minimum:
+
+| `min_log_level` | dropped at ingest |
+|---|---|
+| `info` (default) | `DEBUG`, `TRACE` |
+| `debug` | `TRACE` |
+| `trace` | nothing |
+
+`WARN` and `ERROR` are never dropped at any setting, and a document with **no**
+`level` field is kept — losing logs of an unanticipated shape is worse than
+keeping a few we did not mean to.
+
+Four properties, all verified against a real Elasticsearch 8.17.4:
+
+- **`final_pipeline` cannot be bypassed.** A client passing `?pipeline=_none`
+  still had its DEBUG documents dropped. **`default_pipeline` can** — the same
+  request bypassed it entirely and the document landed unfiltered, so never use
+  it for anything an untrusted client must not be able to opt out of. The proxy
+  additionally strips a client-supplied `pipeline` parameter (`uri query
+  -pipeline`), so the two mechanisms back each other up.
+- **Dropped documents look like success**: `status: 200, result: "noop"`, with
+  the bulk response reporting `errors: false`. That is deliberate — a `fail`
+  processor would return a per-document error and most forwarders would retry
+  the same batch forever. The trade is that drops are **invisible**: nothing
+  counts them, and participants are not told.
+- **Changing the level needs no redeploy.** `set-log-level` rewrites the
+  *pipeline body*; the index template already names the pipeline, so the new
+  policy applies to the next document written — no restart, no reindex.
+  Already-indexed logs are untouched; this filters what is accepted from here on.
+- **The `reroute` processor is rejected in a final_pipeline** ("final pipeline
+  can't change the target index"), so the tempting "quarantine verbose logs into
+  a cheap 1-day index to see who is over-sending" design does not work in the
+  enforceable slot. It works only in `default_pipeline` — which is viable *only*
+  because the proxy strips the `pipeline` parameter.
+
+This protects the **disk and the index, not the network**: a dropped document
+has already crossed the wire and been parsed. Ingress is free on DigitalOcean so
+that is acceptable, but level filtering is not a bandwidth control — the
+disk-size cap is.
+
+#### Per-user ingest credentials
+
+Community logs land in `beta-nodes-*` under the ILM policy, and each participant
+gets their **own** Elasticsearch API key rather than a shared one — so a leak
+re-keys one participant instead of all of them, and documents can be attributed.
+
+```bash
+saorsa-deploy elastic mint-key   --name BETA-LOGS-01 --user <handle> [--expiration 90d]
+saorsa-deploy elastic list-keys  --name BETA-LOGS-01
+saorsa-deploy elastic revoke-key --name BETA-LOGS-01 --user <handle>
+```
+
+The privileges are `create_doc` + `auto_configure` on `beta-nodes-*` and nothing
+else. There is deliberately **no `read`**: a leaked key can add logs and do
+nothing more — it cannot pull another participant's logs, cannot overwrite an
+existing document, and cannot touch any other index. (The pre-existing
+`ant_log_writer` role is *not* reused: it grants `read` and `manage`.)
+
+Keys **do not expire** by default. An expiring credential sounds prudent, but a
+beta participant runs their node indefinitely, so a fixed lifetime means chasing
+everyone to re-key on a rolling schedule — and a forwarder whose key lapses fails
+silently from our side, because nobody is watching their logs stop arriving.
+Revocation is the control that matters, and it is immediate and per-participant.
+Pass `--expiration 90d` to time-box a key deliberately.
+
+Note an expiry **cannot be cleared** once set: Elasticsearch's update-API-key
+endpoint rejects a null expiration, though it will accept a longer one. So a key
+minted with a lifetime can be extended (`PUT /_security/api_key/<id>` with
+`{"expiration": "36500d"}`) but never made truly perpetual — set it at mint time
+or not at all.
+
+The encoded credential is shown **once** — if it is lost, revoke and re-mint.
+`revoke-key` reports honestly when no active key matched, rather than claiming a
+revocation that did not happen.
+
+| Manifest key | Default | Notes |
+|---|---|---|
+| `provider` | `digitalocean` | The only provider whose ES volume grows online; OVH's size is ForceNew, Contabo has no volume |
+| `region` | per provider (`lon1`) | |
+| `droplet_size` | per provider (`s-4vcpu-8gb`) | 8 GB RAM → 4 GB auto-sized heap |
+| `volume_size` | `100` (GB) | The binding constraint; grow online as the cohort grows |
+| `shards` | `4` | One indexing thread per shard; match the vCPU count |
+| `retention_days` | `14` | ILM delete phase; the beta soak is 5 days |
+| `min_log_level` | `info` | Server-side ingest filter; change later with `elastic set-log-level` |
+| `public_ingest` | `false` | Requires `ingest_hostname` |
+| `ingest_hostname` | — | The name the certificate is issued for; must resolve first |
+| `reserved_ip` | — | Adopt an existing reserved IP on a rebuild. DigitalOcean only |
+| `letsencrypt_staging` | `false` | Avoid the 5-per-week duplicate-certificate limit while iterating |
+| `keep_on_destroy` | `false` | Set `true` for a permanent instance |
+
+#### Inventory
+
+`deployments generate-inventory --name <name>` covers this kind, so the
+instance's access details can be handed to a person or another agent without
+anyone reading S3 state. `up` emits it automatically as a **`best_effort`**
+final step — the instance is already up and billing by then, so failing to
+describe it must not fail the run.
+
+The file is **schema 6** (`elasticsearch_config`, alongside v5's
+`client_config`). `node_vms`/`bootstrap_vms`/`client_vms` are empty — this kind
+stands up one observability VM and nothing else — so `load_node_inventory`
+correctly rejects it, exactly as it does a client inventory.
+
+It carries two clearly separated routes, because conflating them is the trap:
+
+- **`ingest`** — the public write path. URL, index pattern and naming,
+  `@timestamp`, the `create`-only rule, the body cap and the current
+  `min_log_level`.
+- **`read`** — the query path, which is **not** the public URL. Elasticsearch
+  binds to loopback and 9200 is firewalled, so the read key returns 404 at the
+  proxy — indistinguishable from a missing index. The section therefore gives
+  `http://localhost:9200`, a ready-made `ssh -L` tunnel command, and says why.
+
+The read-only API key **is** in the file; the admin password is deliberately
+**not**. The provisioner sets the `elastic` superuser and the log-writer from
+one secret, so the stored password is effectively superuser — anyone entitled to
+it has SSH and `elastic info`. `generate-inventory` prints a warning naming what
+the file contains, so it is never a surprise to whoever forwards it.
+
+Fields recording the instance's own policy (`retention_days`,
+`min_log_level`) come from what was provisioned, not the CLI defaults. An
+instance provisioned before those were recorded reports them as absent rather
+than guessing.
+
+#### Growing the disk
+
+`volume_size` is the knob to watch, and it grows **online** on DigitalOcean:
+bump it in the manifest and `terraform apply -var=volume_size=N` in
+`.saorsa/workspaces/digitalocean-elastic-<NAME>-<region>` plans
+`0 add / 1 change / 0 destroy`, then `resize2fs /dev/sda` on the VM. No
+Elasticsearch restart, state stays consistent.
+
 ### Running tests
 
 ```bash

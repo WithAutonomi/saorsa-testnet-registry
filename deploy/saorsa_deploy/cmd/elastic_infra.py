@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.panel import Panel
 
 from saorsa_deploy.cmd.obs_provider import (
     default_elastic_size,
@@ -12,6 +13,7 @@ from saorsa_deploy.cmd.obs_provider import (
 )
 from saorsa_deploy.contabo import require_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.registry import record_deployment_created
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.state import (
     check_terraform_state_exists,
@@ -35,6 +37,26 @@ def cmd_elastic_infra(args):
     )
     volume_type = getattr(args, "volume_type", None) or "high-speed"
     keep_on_destroy = bool(getattr(args, "keep_on_destroy", False))
+    public_ingest = bool(getattr(args, "public_ingest", False))
+    reserved_ip = getattr(args, "reserved_ip", None)
+    standalone = bool(getattr(args, "standalone", False))
+
+    if reserved_ip and not public_ingest:
+        console.print(
+            "[bold red]Error:[/bold red] --reserved-ip requires --public-ingest "
+            "(a reserved IP is only attached for an internet-facing instance)."
+        )
+        sys.exit(1)
+    if public_ingest and provider != "digitalocean":
+        # The reserved-IP and firewall work is modelled in the DigitalOcean
+        # module only. Proceeding elsewhere would create an instance with 9200
+        # open to the world and no stable address — the opposite of what the
+        # flag asks for.
+        console.print(
+            "[bold red]Error:[/bold red] --public-ingest is only supported on "
+            f"provider 'digitalocean' (got '{provider}')."
+        )
+        sys.exit(1)
 
     resources_dir = get_resources_dir()
     tf_source = resources_dir / f"{provider}-elastic"
@@ -141,6 +163,10 @@ def cmd_elastic_infra(args):
             "volume_size": str(volume_size),
             "droplet_size": droplet_size,
         }
+        if public_ingest:
+            variables["public_ingest"] = "true"
+            if reserved_ip:
+                variables["reserved_ip"] = reserved_ip
 
     config = TerraformRunConfig(
         provider=provider,
@@ -180,6 +206,21 @@ def cmd_elastic_infra(args):
             provider=provider,
             keep_on_destroy=keep_on_destroy,
         )
+        # Recorded separately because save_elastic_state has a fixed signature.
+        # `elastic provision` reads public_ingest back from here, so the two
+        # halves of a two-step deploy cannot disagree about the shape of the
+        # instance.
+        if public_ingest:
+            update_elastic_state(
+                args.name,
+                {
+                    "public_ingest": True,
+                    "reserved_ip": results[0].outputs.get("elastic_reserved_ip")
+                    or reserved_ip
+                    or "",
+                    "droplet_ip": results[0].outputs.get("elastic_droplet_ip", ""),
+                },
+            )
         console.print("[dim]Elasticsearch state saved to S3.[/dim]")
         if keep_on_destroy:
             console.print(
@@ -192,8 +233,40 @@ def cmd_elastic_infra(args):
             f"[yellow]Warning: Failed to save Elasticsearch state: {e}[/yellow]"
         )
 
+    if standalone:
+        record_deployment_created(
+            args.name,
+            {
+                "kind": "elasticsearch",
+                "provider": provider,
+                "region": region,
+                "droplet_size": droplet_size,
+                "volume_size": volume_size,
+                "public_ingest": public_ingest,
+            },
+        )
+
     console.print()
+    if public_ingest:
+        # The DNS record is the one manual step, and it has to happen between
+        # infra and provision: the certificate is issued during provisioning and
+        # cannot be until the name points here.
+        console.print(
+            Panel(
+                f"  Point the DNS A record at this instance before provisioning:\n\n"
+                f"    [bold]<your-hostname>  ->  {elastic_ip}[/bold]\n\n"
+                "  In Cloudflare the record must be [bold]DNS only[/bold] (grey\n"
+                "  cloud). A proxied record terminates TLS at Cloudflare, so the\n"
+                "  certificate cannot be issued here.\n\n"
+                "  This address is reserved: it survives a droplet rebuild, so\n"
+                "  the record only ever needs setting once.",
+                title="Next: DNS",
+                border_style="yellow",
+            )
+        )
     console.print(
         f"[dim]Next step: saorsa-deploy elastic provision "
-        f"--name {args.name} --ssh-key-path ~/.ssh/id_rsa[/dim]"
+        f"--name {args.name} --ssh-key-path ~/.ssh/id_rsa"
+        + (" --public-ingest --ingest-hostname <fqdn>" if public_ingest else "")
+        + "[/dim]"
     )

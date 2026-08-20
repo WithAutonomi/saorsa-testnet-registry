@@ -36,7 +36,7 @@ from saorsa_deploy.state import (
     load_monitoring_state,
 )
 
-INVENTORY_SCHEMA_VERSION = 5
+INVENTORY_SCHEMA_VERSION = 6
 DEFAULT_SSH_USER = "root"
 DEFAULT_SSH_KEY = "~/.ssh/id_rsa"
 DEFAULT_OUTPUT_TEMPLATE = "~/.autonomi/testnets/{name}/inventory.json"
@@ -473,6 +473,104 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
     return config
 
 
+ELASTICSEARCH_KIND = "elasticsearch"
+
+
+def build_elasticsearch_config(elastic_state: dict, ssh_key: str) -> dict:
+    """How to reach a standalone Elasticsearch instance, for whoever reads this.
+
+    Two different routes, and conflating them is the trap this section exists to
+    avoid: the public URL accepts **writes only** — its proxy allowlists the bulk
+    and document endpoints and 404s everything else — so a read API key used
+    against it fails with a 404 that looks like a missing index rather than a
+    permissions problem. Reads have to reach Elasticsearch on the box, which
+    means SSH. Both are spelled out rather than left to be discovered.
+
+    The admin password is deliberately absent: this file gets shared. Anyone who
+    needs it has SSH access and can read it from the box, or run `elastic info`.
+    """
+    vm_ip = elastic_state.get("vm_ip", "")
+    hostname = elastic_state.get("elasticsearch_ingest_hostname", "")
+    ssh_key_path = str(Path(ssh_key).expanduser())
+    return {
+        "kind": ELASTICSEARCH_KIND,
+        "public_ingest": bool(elastic_state.get("public_ingest", False)),
+        # --- writing (community forwarders) --------------------------------
+        "ingest": {
+            "url": elastic_state.get("elasticsearch_url", ""),
+            "hostname": hostname,
+            "index_pattern": elastic_state.get("elasticsearch_index_pattern", ""),
+            "index_naming": "beta-nodes-YYYY.MM.DD (UTC, one shared daily index)",
+            "time_field": "@timestamp",
+            "bulk_action": "create",
+            "auth_header": "Authorization: ApiKey <credential>",
+            "max_body_bytes": 50_000_000,
+            "min_log_level": elastic_state.get("elasticsearch_min_log_level", ""),
+            "note": (
+                "Write-only. The proxy exposes _bulk/_doc/_create and 404s "
+                "everything else; the action must be `create` (an `index` "
+                "action is refused 403). Documents below min_log_level are "
+                "dropped at ingest and answer 200/noop, which is not an error. "
+                "Mint a participant credential with `saorsa-deploy elastic "
+                "mint-key --user <handle>`."
+            ),
+        },
+        # --- reading (us, and the beta-health-verdict skill) ----------------
+        "read": {
+            "api_key": elastic_state.get("elasticsearch_api_key", ""),
+            "index_patterns": [
+                elastic_state.get("elasticsearch_index_pattern", "")
+            ],
+            "url": "http://localhost:9200",
+            "tunnel_command": (
+                f"ssh -i {ssh_key_path} -L 9200:localhost:9200 "
+                f"{DEFAULT_SSH_USER}@{vm_ip}"
+            ),
+            "note": (
+                "Elasticsearch binds to loopback and 9200 is firewalled, so "
+                "this key CANNOT be used against the public URL — that returns "
+                "404 at the proxy. Open the tunnel above (or query from the box "
+                "over SSH) and use the key against http://localhost:9200."
+            ),
+        },
+        "retention_days": elastic_state.get("elasticsearch_retention_days"),
+        "paths": {
+            "data": "/mnt/elastic-storage/elasticsearch",
+            "logs": "/mnt/elastic-storage/elasticsearch/logs",
+            "credentials": "/etc/elasticsearch/ant-credentials",
+            "proxy_config": "/etc/caddy/Caddyfile",
+        },
+        "services": ["elasticsearch", "caddy"],
+    }
+
+
+def build_elasticsearch_inventory(
+    name: str,
+    *,
+    elastic_state: dict,
+    ssh_key: str,
+) -> dict:
+    """Inventory for a standalone Elasticsearch deployment.
+
+    No node/bootstrap/client VMs and no devnet manifest: this kind stands up one
+    observability VM and nothing else. The VM itself is described in
+    ``observability_vms`` alongside every other stack's, so a reader does not
+    need a special case to find it.
+    """
+    return {
+        "schema_version": INVENTORY_SCHEMA_VERSION,
+        "name": name,
+        "node_vms": [],
+        "bootstrap_vms": [],
+        "client_vms": [],
+        "observability_vms": _build_observability_vms_field(
+            name, ssh_key, None, elastic_state
+        ),
+        "client_config": None,
+        "elasticsearch_config": build_elasticsearch_config(elastic_state, ssh_key),
+    }
+
+
 def build_client_inventory(
     name: str,
     clients: list[dict] | None,
@@ -623,6 +721,39 @@ def _load_deploy_args(name: str) -> dict | None:
     return deployment.deploy_args or None
 
 
+def _write_inventory_file(args, inventory: dict, console: Console) -> Path:
+    """Write the inventory to --output (or the default path) and summarise it."""
+    if args.output:
+        output_path = Path(os.path.expanduser(args.output))
+    else:
+        output_path = _default_output_path(args.name)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(inventory, indent=2) + "\n")
+    console.print(f"[bold green]Wrote inventory to {output_path}[/bold green]")
+
+    config = inventory.get("elasticsearch_config")
+    if config:
+        for vm in inventory["observability_vms"]:
+            console.print(
+                f"  {vm['role']} VM {vm['name']} — {vm['provider']}/"
+                f"{vm['region']} {vm['ip']}"
+            )
+        console.print(f"  ingest:    {config['ingest']['url']} (write-only)")
+        console.print(f"  index:     {config['ingest']['index_pattern']}")
+        console.print(
+            f"  min level: {config['ingest']['min_log_level'] or 'unrecorded'}"
+            f"   retention: {config.get('retention_days') or 'unrecorded'}d"
+        )
+        # The read key is in the file. Say so plainly rather than let it be
+        # discovered by whoever the file is forwarded to.
+        console.print(
+            "  [yellow]Contains a read-only API key for the log indices. It "
+            "cannot write, and it cannot be used against the public URL — but "
+            "treat the file accordingly.[/yellow]"
+        )
+    return output_path
+
+
 def _write_client_inventory(
     args,
     clients: list[dict],
@@ -638,6 +769,18 @@ def _write_client_inventory(
     exist, so say so with the original error rather than inventing an empty
     inventory.
     """
+    deploy_args = _load_deploy_args(args.name)
+
+    # A standalone Elasticsearch deployment has neither deployment state nor
+    # client VMs — the instance IS the deployment — so it would otherwise fall
+    # through the client path below and report "nothing to describe".
+    if elastic_state and (deploy_args or {}).get("kind") == ELASTICSEARCH_KIND:
+        inventory = build_elasticsearch_inventory(
+            args.name, elastic_state=elastic_state, ssh_key=args.ssh_key_path
+        )
+        _write_inventory_file(args, inventory, console)
+        return
+
     if not clients:
         console.print(f"[bold red]Error:[/bold red] {state_error}")
         console.print(
@@ -646,7 +789,6 @@ def _write_client_inventory(
         )
         sys.exit(1)
 
-    deploy_args = _load_deploy_args(args.name)
     kind = (deploy_args or {}).get("kind")
     if deploy_args is None:
         console.print(

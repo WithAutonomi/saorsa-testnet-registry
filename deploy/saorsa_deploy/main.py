@@ -2152,6 +2152,31 @@ def main(argv=None):
         "--force`, which is never gated by this flag.",
     )
 
+    elastic_infra_parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help="This Elasticsearch instance IS the deployment (manifest kind "
+        "`elasticsearch`), not a testnet's subordinate stack. Registers a "
+        "deployment row in the registry. Omit for a testnet's own ES, whose row "
+        "is created by `bootstraps infra`.",
+    )
+    elastic_infra_parser.add_argument(
+        "--public-ingest",
+        action="store_true",
+        help="Harden for internet-facing ingest: open 443 instead of 9200 and "
+        "pin a reserved IP so the DNS record survives a rebuild. Pair with "
+        "`elastic provision --public-ingest --ingest-hostname <fqdn>`, which "
+        "binds Elasticsearch to loopback behind a TLS proxy.",
+    )
+    elastic_infra_parser.add_argument(
+        "--reserved-ip",
+        type=str,
+        default=None,
+        help="Adopt this already-allocated DigitalOcean reserved IP instead of "
+        "creating a new one (use when rebuilding, so the existing DNS record "
+        "keeps working). Requires --public-ingest.",
+    )
+
     # elastic provision
     elastic_provision_parser = elastic_subparsers.add_parser(
         "provision", help="Provision Elasticsearch on Elasticsearch VM"
@@ -2190,6 +2215,145 @@ def main(argv=None):
             "`elastic provision` runs — existing indices retain their "
             "original shard count."
         ),
+    )
+
+    elastic_provision_parser.add_argument(
+        "--public-ingest",
+        action="store_true",
+        help="Configure this instance for internet-facing ingest: bind "
+        "Elasticsearch to loopback, disable anonymous access, and front it with "
+        "a TLS-terminating proxy that exposes only the bulk/document write "
+        "endpoints. Requires --ingest-hostname.",
+    )
+    elastic_provision_parser.add_argument(
+        "--ingest-hostname",
+        type=str,
+        default=None,
+        help="Public DNS name the TLS certificate is issued for (e.g. "
+        "logs.autonomi.com). It must already resolve to this instance: the "
+        "certificate is obtained during provisioning, and provisioning "
+        "preflights the record before touching the VM.",
+    )
+    elastic_provision_parser.add_argument(
+        "--min-log-level",
+        type=str,
+        default=None,
+        choices=["info", "debug", "trace"],
+        help="Minimum log level accepted from community forwarders (default: "
+        "info). Anything more verbose is dropped at ingest by the index's "
+        "final_pipeline, which the client cannot override. Change later without "
+        "redeploying via `elastic set-log-level`.",
+    )
+    elastic_provision_parser.add_argument(
+        "--letsencrypt-staging",
+        action="store_true",
+        help="Use Let's Encrypt's staging CA. Production issuance allows only 5 "
+        "duplicate certificates per week, which repeated test deploys of the "
+        "same hostname will exhaust; the resulting lockout outlasts the "
+        "debugging session. Staging certificates are not publicly trusted.",
+    )
+
+    # elastic mint-key / list-keys / revoke-key
+    elastic_mint_key_parser = elastic_subparsers.add_parser(
+        "mint-key",
+        help="Mint a write-only ingest API key for one community user",
+    )
+    elastic_mint_key_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+    elastic_mint_key_parser.add_argument(
+        "--user",
+        type=str,
+        required=True,
+        help="Identifier for the community participant this key is issued to "
+        "(e.g. their GitHub handle). Recorded on the key and used to revoke it.",
+    )
+    elastic_mint_key_parser.add_argument(
+        "--expiration",
+        type=str,
+        default=None,
+        help="Optional key lifetime, e.g. 90d. By default a key does NOT "
+        "expire: a beta participant runs their node indefinitely, so a fixed "
+        "lifetime means re-keying everyone on a rolling schedule, and a lapsed "
+        "forwarder fails silently. Revoke with `revoke-key` instead. Note an "
+        "expiry cannot be cleared later — only extended — so set it here or "
+        "not at all.",
+    )
+
+    elastic_mint_key_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
+    )
+
+    elastic_list_keys_parser = elastic_subparsers.add_parser(
+        "list-keys", help="List active ingest keys for an Elasticsearch instance"
+    )
+    elastic_list_keys_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+
+    elastic_list_keys_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
+    )
+
+    elastic_revoke_key_parser = elastic_subparsers.add_parser(
+        "revoke-key", help="Revoke a community user's ingest key"
+    )
+    elastic_revoke_key_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+    elastic_revoke_key_parser.add_argument(
+        "--user",
+        type=str,
+        required=True,
+        help="The participant whose key should be invalidated (immediate).",
+    )
+
+    elastic_revoke_key_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
+    )
+
+    elastic_set_level_parser = elastic_subparsers.add_parser(
+        "set-log-level",
+        help="Change the minimum log level this instance accepts (no redeploy)",
+    )
+    elastic_set_level_parser.add_argument(
+        "--name", type=str, required=True, help="Elasticsearch instance name"
+    )
+    elastic_set_level_parser.add_argument(
+        "--min-level",
+        type=str,
+        required=True,
+        choices=["info", "debug", "trace"],
+        help="Keep this level and above; anything more verbose is dropped at "
+        "ingest. `info` drops DEBUG and TRACE; `debug` drops TRACE only; "
+        "`trace` keeps everything. Enforced server-side via the index's "
+        "final_pipeline, which a community forwarder cannot override. Takes "
+        "effect on the next document written; already-indexed logs are "
+        "unaffected.",
+    )
+
+    elastic_set_level_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="SSH key for the Elasticsearch VM. Administrative requests run on "
+        "the box itself: the public endpoint deliberately exposes only the "
+        "ingest paths.",
     )
 
     # =========================================================================
@@ -6301,6 +6465,22 @@ def main(argv=None):
             from saorsa_deploy.cmd.provision_elastic import cmd_provision_elastic
 
             cmd_provision_elastic(args)
+        elif args.elastic_subcommand == "mint-key":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_mint_key
+
+            cmd_elastic_mint_key(args)
+        elif args.elastic_subcommand == "list-keys":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_list_keys
+
+            cmd_elastic_list_keys(args)
+        elif args.elastic_subcommand == "revoke-key":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_revoke_key
+
+            cmd_elastic_revoke_key(args)
+        elif args.elastic_subcommand == "set-log-level":
+            from saorsa_deploy.cmd.elastic_keys import cmd_elastic_set_log_level
+
+            cmd_elastic_set_log_level(args)
     elif args.command == "monitoring":
         if args.monitoring_subcommand == "clean":
             from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring
