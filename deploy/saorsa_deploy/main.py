@@ -2272,10 +2272,12 @@ def main(argv=None):
         "--expiration",
         type=str,
         default=None,
-        help="Key lifetime, e.g. 90d (default: 90d). Pass an empty string for a "
-        "key that never expires — not advised for a cohort that turns over. "
-        "(Left unset here so the default lives with the command; main.py stays "
-        "free of heavyweight imports.)",
+        help="Optional key lifetime, e.g. 90d. By default a key does NOT "
+        "expire: a beta participant runs their node indefinitely, so a fixed "
+        "lifetime means re-keying everyone on a rolling schedule, and a lapsed "
+        "forwarder fails silently. Revoke with `revoke-key` instead. Note an "
+        "expiry cannot be cleared later — only extended — so set it here or "
+        "not at all.",
     )
 
     elastic_mint_key_parser.add_argument(

@@ -1536,8 +1536,12 @@ the public-ingest shape. Impl: `orchestrator/elastic.py`,
   overwrite a document, or touch another index. A shared key would mean a leak
   re-keys *everyone* and nothing is attributable. The pre-existing
   `ant_log_writer` role is deliberately **not** reused (it grants `read` and
-  `manage`). Keys expire (default 90d) so access does not outlive involvement,
-  and the encoded credential is shown **once**.
+  `manage`). Keys **do not expire** by default — a participant runs their node
+  indefinitely, so a lifetime means re-keying everyone on a schedule and a
+  lapsed forwarder fails silently; revocation is the real control. An expiry
+  **cannot be cleared** once set (the update API rejects a null, but accepts a
+  longer value), so it is set at mint time or not at all. The encoded credential
+  is shown **once**.
 - **Log level is enforced server-side, because a participant's forwarder config
   is theirs to change.** `min_log_level` (default `info`) drops anything more
   verbose at ingest, via an ingest pipeline attached as the index's

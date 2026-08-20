@@ -3033,10 +3033,22 @@ nothing more — it cannot pull another participant's logs, cannot overwrite an
 existing document, and cannot touch any other index. (The pre-existing
 `ant_log_writer` role is *not* reused: it grants `read` and `manage`.)
 
-Keys carry an expiration (default 90d) so a credential does not outlive the
-participant's involvement, and the encoded credential is shown **once** — if it
-is lost, revoke and re-mint. `revoke-key` reports honestly when no active key
-matched, rather than claiming a revocation that did not happen.
+Keys **do not expire** by default. An expiring credential sounds prudent, but a
+beta participant runs their node indefinitely, so a fixed lifetime means chasing
+everyone to re-key on a rolling schedule — and a forwarder whose key lapses fails
+silently from our side, because nobody is watching their logs stop arriving.
+Revocation is the control that matters, and it is immediate and per-participant.
+Pass `--expiration 90d` to time-box a key deliberately.
+
+Note an expiry **cannot be cleared** once set: Elasticsearch's update-API-key
+endpoint rejects a null expiration, though it will accept a longer one. So a key
+minted with a lifetime can be extended (`PUT /_security/api_key/<id>` with
+`{"expiration": "36500d"}`) but never made truly perpetual — set it at mint time
+or not at all.
+
+The encoded credential is shown **once** — if it is lost, revoke and re-mint.
+`revoke-key` reports honestly when no active key matched, rather than claiming a
+revocation that did not happen.
 
 | Manifest key | Default | Notes |
 |---|---|---|

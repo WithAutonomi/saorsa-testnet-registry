@@ -37,10 +37,13 @@ from saorsa_deploy.state import load_elastic_state
 #: other key on the instance and can be listed without guessing.
 KEY_NAME_PREFIX = "beta-ingest"
 
-#: Default lifetime. A beta cohort turns over, and a credential that never
-#: expires outlives the participant's involvement — expiry makes stale access
-#: self-clearing rather than something anyone has to remember to revoke.
-DEFAULT_EXPIRATION = "90d"
+#: No expiry by default. An expiring credential sounds prudent, but a beta
+#: participant runs their node indefinitely, so a fixed lifetime means chasing
+#: every participant to re-key on a rolling schedule — and a forwarder whose key
+#: lapses fails silently from our side, since nobody is watching their logs stop.
+#: Revocation is the control that matters here, and it is immediate and
+#: per-participant. Pass --expiration explicitly to time-box a key.
+DEFAULT_EXPIRATION = None
 
 
 class EsAdminError(RuntimeError):
@@ -162,9 +165,9 @@ def cmd_elastic_mint_key(args):
             "issued_at": datetime.now(timezone.utc).isoformat(),
         },
     }
-    # None means "not specified" and takes the default; an explicit empty
-    # string means the operator asked for a key with no expiry. Collapsing the
-    # two would make the no-expiry request silently produce a 90-day key.
+    # Omitting `expiration` entirely is what makes a key never expire; there is
+    # no way to clear it afterwards (the update API rejects a null), so this has
+    # to be right at creation time.
     expiration = (
         DEFAULT_EXPIRATION if args.expiration is None else args.expiration
     )

@@ -687,3 +687,22 @@ def test_up_generates_an_inventory_as_a_best_effort_final_step():
     # The instance is already up and billing by then; failing to describe it
     # must not fail the run.
     assert steps[-1].best_effort is True
+
+
+# --------------------------------------------------------------------------- #
+# key expiry
+# --------------------------------------------------------------------------- #
+def test_keys_do_not_expire_by_default():
+    # A beta participant runs their node indefinitely. A fixed lifetime means
+    # re-keying everyone on a rolling schedule, and a lapsed forwarder fails
+    # silently from our side — nobody is watching their logs stop arriving.
+    from saorsa_deploy.cmd.elastic_keys import DEFAULT_EXPIRATION
+
+    assert DEFAULT_EXPIRATION is None
+
+
+def test_an_explicit_expiration_is_still_honoured():
+    # The option remains for deliberately time-boxed access.
+    from saorsa_deploy.cmd import elastic_keys
+
+    assert "expiration" in elastic_keys.cmd_elastic_mint_key.__code__.co_names
