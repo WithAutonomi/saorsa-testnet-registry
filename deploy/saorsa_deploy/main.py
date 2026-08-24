@@ -6233,6 +6233,11 @@ def main(argv=None):
     # =========================================================================
     # === utils group (hetzner-availability, list-regions, vultr-availability) ===
     # =========================================================================
+    # analysis (run-time measurement; parsers live with their modules)
+    from saorsa_deploy.cmd.analysis import add_analysis_parser
+
+    add_analysis_parser(subparsers)
+
     utils_parser = subparsers.add_parser(
         "utils",
         help="Provider/region introspection helpers.",
@@ -6919,6 +6924,10 @@ def main(argv=None):
                 cmd_release_candidates_show,
             )
             cmd_release_candidates_show(args)
+    elif args.command == "analysis":
+        from saorsa_deploy.cmd.analysis import dispatch_analysis
+
+        dispatch_analysis(args)
     elif args.command == "utils":
         if args.utils_subcommand == "hetzner-availability":
             from saorsa_deploy.cmd.hetzner_availability import cmd_hetzner_availability

@@ -66,6 +66,7 @@ deploy/
     ssh.py                      # SSH operations
     state.py                    # Deployment state management (S3)
     terraform.py                # Terraform orchestration
+    analysis/                   # `analysis` run-time measurement: snapshots, captures, restarts, ES/Influx extraction, pcap analysers
     cmd/                        # CLI subcommands (bootstraps infra, nodes infra, nodes provision, nodes destroy, monitoring, etc.)
     provisioning/               # Pyinfra provisioning logic (genesis, node, build, monitoring)
     resources/                  # Terraform manifests (digitalocean/, digitalocean-monitoring/, aws-build-infra/)

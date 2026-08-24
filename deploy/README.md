@@ -1184,6 +1184,77 @@ All thresholds live in `deploy/saorsa_deploy/resources/gates/staging-thresholds.
 
 The verdict is upserted into `deployment_gate_verdicts`, keyed `(deployment_id, baseline_deployment_id, window_label)` so re-running replaces its previous answer rather than accumulating rival ones. The row stores the full JSON payload, the rendered markdown, and the threshold config version, so the exact text attached to a release issue can be recovered later without recomputing anything.
 
+### Run-time measurement (`analysis`)
+
+The `analysis` command group holds the tooling testnet runs use to take the
+measurements their gates rest on. It grew out of the keep-alive A/B
+(V2-996/V2-988), the backstop run (V2-1059) and the relay-teardown run
+(V2-1061); the remote-side shell payloads are kept verbatim from those runs,
+where they were proven on live fleets.
+
+Every command takes `--name <deployment>` and reads hosts, the NAT tier and the
+SSH key from `~/.autonomi/testnets/<name>/inventory.json` (`deployments
+generate-inventory --name <name>` writes it). An IP that is not in the
+inventory is refused rather than treated as an ad-hoc host.
+
+**Why the NAT tier matters everywhere.** NAT-simulated VMs run every node
+service inside the `ant_nat` network namespace. `/proc/net/snmp` is
+per-namespace, so telegraf — which runs on the host — reports ~0 UDP for those
+VMs, and InfluxDB's fleet series silently covers only the plain tier. Captures,
+counter snapshots and iptables rules on a NAT'd VM are therefore taken inside
+the namespace (`ip netns exec ant_nat …`, interface `veth-node`); plain VMs use
+the default-route interface. The commands decide this per VM from the
+inventory's `nat_simulated` flag.
+
+**Everything ES/InfluxDB-backed dies with the testnet.** Extract before
+teardown; there is no backfill.
+
+| Command | What it does |
+|---|---|
+| `analysis snapshot --name N --tag T [--ips … \| --tier nat\|plain\|all] [--out F]` | One JSON line per VM of `/proc` UDP datagram / byte / `RcvbufErrors` counters from **both** namespaces. Take one at every phase boundary; a phase figure is the delta between two snapshots (`phase-extract` computes it). |
+| `analysis capture --name N --seconds S --tag T --ips …` | File pcap (`/var/tmp/saorsa-analysis-<tag>.pcap`, snaplen 96, `udp and not port 53 and not port 123`) on each VM through a **transient systemd unit**, so it survives the SSH session dying. Aborts if any host fails to start; blocks until done; exits non-zero if any host's span is < 95% of the request. Use for windows that must equal the measurement window. |
+| `analysis capture-stream --name N --seconds S --tag T --ips …` | Streams tcpdump into `flowstat` on the VM; only a JSON summary survives. Use for loaded phases (a 10-min loaded pcap is 8–21 GB). Pushes the analyser to the VM first. |
+| `analysis fetch --name N --tag T --ips … --out-dir D` | scp back the pcap / json / log / tcpdump.err / probe log for a tag. |
+| `analysis restart-nodes --name N --ips … [--services …] [--stagger-seconds 30] --tag T [--out F]` | Graceful stop + start of every (or the named) ant-node service on each VM in turn, recording per-service **stop duration** (the shutdown cost) and per-VM UTC window edges. Exits non-zero if any service is not active afterwards. |
+| `analysis stall-probe --name N --ip IP --seconds S --peers K --tag T [--dry-run]` | Blocks UDP to/from K live peers, one at a time, for S seconds via iptables in the nodes' namespace, with trap-cleaned rules and a JSONL log. Always `--dry-run` first on the real VM, then one 3 s smoke probe. |
+| `analysis smoke --name N` | ES + InfluxDB reachable, node logs arriving, `net` fields present. |
+| `analysis log-count --name N --phrase P --start … --end … [--index node\|client] [--hosts …]` | Count of a log phrase in a window with host cardinality, top hosts and level breakdown. |
+| `analysis counter-delta --name N --field tail.X --start … --end …` | Delta and rate of a cumulative per-service counter (per host, per service, max − min; single-sample services reported, not folded in as zero). |
+| `analysis udp-rate --name N --start … --end … [--every 1m]` | Per-host UDP out-datagram rate from InfluxDB (`udp_outdatagrams`, lower case) — plain tier only, see above. |
+| `analysis relay-report --name N --start … --end … [--hosts …]` | Counts of every relay-lifecycle phrase plus the `relay recv stream closed` ÷ `Proactive relay torn down` ratio (V2-1061's gate metric), optionally for a host cohort. |
+| `analysis teardowns --name N --start … --end … --out F.jsonl` | Exports each `Proactive relay torn down` document (ts, host, service, `relay_addr`, `relay_server`, `allocation_id`). |
+| `analysis relay-servers --name N --start … --end …` | Ranks relay servers by number of NAT'd clients, mapped to inventory VMs. |
+| `analysis phase-extract --name N --label L --start … --end … [--snap-before F --snap-after F]` | The per-phase record set: dial success/failure, relay events, close-probe phrases, cumulative counters, InfluxDB UDP (plain tier) and the snapshot delta (both tiers). Writes `extract-<label>.json`. |
+| `analysis flowstat PCAP [--expect-seconds S] [--label L] [--json-out F] [--lifetimes-out F]` | Per-flow analysis: per-direction keep-alive cadence, edge-censored lifetime histogram, concurrency, churn. Stdlib only; the same file runs on a VM. |
+| `analysis backstop PCAP [--local IP]` | Dialler/acceptor role inference and acceptor-originated unsolicited datagrams (the accept-side keep-alive fingerprint). |
+| `analysis probe-score PCAP --probes F.jsonl --local IP` | Joins a stall-probe log with a pcap: SURVIVED / DIED per probed flow. |
+| `analysis close-delivery PCAP --teardowns F.jsonl --local IP` | For each flow to a torn-down relay address that ended around the teardown: TOLD (last datagram inbound, ≤ 1 outbound after) vs UNTOLD (≥ 2 outbound after the last inbound — the dialler pinging into the void). |
+
+#### The failure the capture commands guard against (V2-988, 2026-08-15)
+
+Arm B's decisive 20-minute idle window died 29 seconds in and nobody noticed
+until analysis, by which time clients had restarted and the window was gone;
+the run was abandoned. The capture had been owned by the SSH session, and a
+truncated window does not look broken: it yields an **all-zero lifetime
+histogram** (nothing can be born *and* die in a short window, so everything is
+censored — which reads as "no connections died") and a **downward-biased
+cadence**. Hence: captures launch through `systemd-run` so PID 1 owns them,
+`capture` verifies the pcap is growing before reporting success, every capture's
+span is verified against the request before any derived number is read, and
+`flowstat --expect-seconds` exits non-zero on a short window.
+
+#### Query traps these commands bake in
+
+* ES normalises `tag.host` to **upper case**; host filters match both spellings.
+* Tag fields are analysed — aggregations use `.keyword`; the message field is
+  `tail.message` (no document has `message`); counts use `track_total_hits`.
+* Telegraf lowercases the InfluxDB field to `udp_outdatagrams`; the `/proc`
+  spelling returns a silent zero.
+* Every Flux `range()` carries an explicit `stop`, and Flux CSV is split on
+  raw text (blank lines separate tables; `iter_lines()` eats them).
+* Cumulative counters are emitted every 300 s, so a window's effective
+  coverage is up to 5 min shorter than the window.
+
 ### `monitoring info` command
 
 Print monitoring stack connection details from S3 state. Useful for retrieving credentials after provisioning, or for getting a ready-to-use Telegraf config for external setups.
