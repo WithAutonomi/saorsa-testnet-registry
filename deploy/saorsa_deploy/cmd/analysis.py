@@ -4,6 +4,7 @@ Each module under :mod:`saorsa_deploy.analysis` registers its own subcommands
 via a ``register(subparsers)`` function and sets ``func`` on its parser, so the
 hub here only knows the list of modules and the argument helpers they share.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,10 +16,12 @@ ANALYSIS_MODULES = (
     "saorsa_deploy.analysis.snapshot",
     "saorsa_deploy.analysis.capture",
     "saorsa_deploy.analysis.restart_nodes",
+    "saorsa_deploy.analysis.isolate",
     "saorsa_deploy.analysis.stall_probe",
     "saorsa_deploy.analysis.es",
     "saorsa_deploy.analysis.relay",
     "saorsa_deploy.analysis.phase_extract",
+    "saorsa_deploy.analysis.recovery",
     "saorsa_deploy.analysis.flowstat",
     "saorsa_deploy.analysis.backstop",
     "saorsa_deploy.analysis.probe_score",
@@ -71,8 +74,8 @@ def add_analysis_parser(subparsers: argparse._SubParsersAction) -> None:
         "analysis",
         help=(
             "Run-time measurement for testnet runs: fleet counter snapshots, packet "
-            "captures, cohort restarts, stall probes, ES/InfluxDB phrase and counter "
-            "extraction, and offline pcap analysers."
+            "captures, cohort restarts and network cuts, stall probes, ES/InfluxDB phrase "
+            "and counter extraction, and offline pcap analysers."
         ),
     )
     sub = parser.add_subparsers(dest="analysis_subcommand", required=True)
