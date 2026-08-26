@@ -166,6 +166,19 @@ def _send_with_nonce_retry(
     raise last_exc  # pragma: no cover — loop always returns or raises above
 
 
+# Headroom on top of an `eth_estimateGas` result. Estimation runs the call in a
+# context where the accounts it touches are already warm, so real execution can
+# cost more than the estimate (EIP-2929 cold-access surcharges, and a first-time
+# ERC-20 transfer writing a zero -> nonzero balance slot). Without a buffer the
+# tx reverts out-of-gas having burned the full limit.
+GAS_LIMIT_BUFFER_NUM = 12
+GAS_LIMIT_BUFFER_DEN = 10
+
+
+def _with_gas_buffer(estimated: int) -> int:
+    return int(estimated) * GAS_LIMIT_BUFFER_NUM // GAS_LIMIT_BUFFER_DEN
+
+
 def _gas_fields(w3: Web3) -> dict:
     """Compute gas fields with headroom against base-fee fluctuations.
 
@@ -206,7 +219,7 @@ def transfer_eth(w3: Web3, from_secret_key: str, to_address: str, value_wei: int
             "value": value_wei,
             "nonce": nonce,
             "chainId": w3.eth.chain_id,
-            "gas": int(estimated * 12 // 10),
+            "gas": _with_gas_buffer(estimated),
             **_gas_fields(w3),
         }
 
@@ -229,7 +242,7 @@ def transfer_token(
     )
 
     def _build(nonce: int) -> dict:
-        return fn.build_transaction(
+        tx = fn.build_transaction(
             {
                 "from": acct.address,
                 "nonce": nonce,
@@ -237,6 +250,11 @@ def transfer_token(
                 **_gas_fields(w3),
             }
         )
+        # `build_transaction` fills `gas` straight from `eth_estimateGas` with
+        # no headroom, unlike transfer_eth. Apply the same buffer.
+        if "gas" in tx:
+            tx["gas"] = _with_gas_buffer(tx["gas"])
+        return tx
 
     return _send_with_nonce_retry(w3, acct, _build)
 

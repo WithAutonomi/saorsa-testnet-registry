@@ -419,3 +419,81 @@ def test_ensure_uploader_wallets_resumes_partial_funding():
     p_eth.assert_not_called()
     p_ant.assert_called_once()
     assert p_ant.call_args.args[4] == 100 * 10**18
+
+
+TOKEN = "0x4bc1ace0e66170375462cb4e6af42ad4d5ec689c"
+
+
+# --- gas limit headroom ---------------------------------------------------
+
+def test_transfer_eth_applies_gas_buffer():
+    w3 = _mock_w3()
+    w3.eth.estimate_gas.return_value = 21_000
+    key = wallet.create_wallet().secret_key
+    target = wallet.create_wallet().address
+    sent = {}
+
+    def _capture(_w3, _acct, build):
+        sent.update(build(0))
+        return "0xtx"
+
+    with patch.object(wallet, "_send_with_nonce_retry", side_effect=_capture):
+        wallet.transfer_eth(w3, key, target, 10**17)
+
+    assert sent["gas"] == 25_200  # 21_000 * 1.2
+
+
+def test_transfer_token_applies_gas_buffer():
+    """An ERC-20 transfer must not go out with a bare `eth_estimateGas` value.
+
+    Estimation runs with the touched accounts already warm, so real execution
+    can cost more (cold-access surcharges; a first-time transfer writing a
+    zero -> nonzero balance slot). On the 2026-08-24 staging run an uploader
+    top-up reverted having burned exactly its limit: gasUsed 58149 of 58149.
+    """
+    w3 = _mock_w3()
+    key = wallet.create_wallet().secret_key
+    target = wallet.create_wallet().address
+    built = {"gas": 58_149, "to": target, "data": "0x"}
+    sent = {}
+
+    def _capture(_w3, _acct, build):
+        sent.update(build(0))
+        return "0xtx"
+
+    contract = MagicMock()
+    contract.functions.transfer.return_value.build_transaction.return_value = built
+
+    with (
+        patch.object(wallet, "_erc20", return_value=contract),
+        patch.object(wallet, "_send_with_nonce_retry", side_effect=_capture),
+    ):
+        wallet.transfer_token(w3, TOKEN, key, target, 10**21)
+
+    assert sent["gas"] == 69_778  # 58_149 * 1.2, floored
+    assert sent["gas"] > 58_149
+
+
+def test_transfer_token_tolerates_missing_gas_key():
+    # build_transaction omits `gas` if the caller supplied one; don't KeyError.
+    w3 = _mock_w3()
+    key = wallet.create_wallet().secret_key
+    target = wallet.create_wallet().address
+    sent = {}
+
+    def _capture(_w3, _acct, build):
+        sent.update(build(0))
+        return "0xtx"
+
+    contract = MagicMock()
+    contract.functions.transfer.return_value.build_transaction.return_value = {
+        "to": target
+    }
+
+    with (
+        patch.object(wallet, "_erc20", return_value=contract),
+        patch.object(wallet, "_send_with_nonce_retry", side_effect=_capture),
+    ):
+        wallet.transfer_token(w3, TOKEN, key, target, 10**21)
+
+    assert "gas" not in sent
