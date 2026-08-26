@@ -284,10 +284,27 @@ on a terminal failure is `deployments down --name STG-02`. Start the 1h clock wh
 
 Both must hold. A failure here is a hard gate.
 
-1. **Zero failed uploads or downloads while the mixed fleet is live.** Check every
-   ~15 minutes with `print-uploads` / `print-downloads` on **STG-01** (the clients
-   live there). Compare against the counts at phase start — the criterion is on the
-   delta during the phase, not the run total.
+1. **Transfers meet the main-phase success floors while the mixed fleet is live** —
+   upload success **>99%**, download success **>99.5%**, measured on the delta during
+   the phase, not the run total. Check every ~15 minutes with `print-uploads` /
+   `print-downloads` on **STG-01** (the clients live there), and confirm the final
+   figures against the per-op Postgres records at extraction — `print-uploads`
+   truncates its output, so a single failing row can be absent from it entirely.
+
+   This was **zero failed transfers** until the 2026-08-24 train, and that bar was
+   wrong: an upload or download can fail for reasons that have nothing to do with
+   running mixed versions, so an absolute zero made the gate fire on unrelated
+   noise. It did exactly that on run #544, where one upload of 866 failed 12
+   minutes into the phase and every peer the client could not reach was running the
+   **new** version — no older-version node was involved at all. Same floors as the
+   main phase, so the phase is judged by the standard the run is already held to.
+
+   **A failure is still worth explaining, not just counting.** If any transfer
+   fails, establish whether an older-version node was involved before writing it
+   off: the client's forwarded logs name the peers it could not reach, and the
+   deployment inventories say which fleet each IP belongs to. That attribution is
+   what distinguishes a compatibility problem from a coincidence, and it must be
+   done while the run's Elasticsearch is alive.
 2. **Previous-version nodes are storing chunks.** Check on the extension fleet. No
    CLI reports record-store counts yet, so:
 
@@ -381,11 +398,9 @@ Read the table it prints before moving on:
 - The **Hosts** column matters as much as the count. A large count spread over
   two hosts of seventy is usually a service restart, not a fleet-wide change.
 
-The counts land under the `full-run` label by default, which is everything the
-index holds. If you also want them for the steady-state phase, record that slice
-separately with its own label — but note the caveat the command prints: a
-time-filtered count is applied against each host's own deliberately-skewed
-clock.
+**Record BOTH labels. This is two invocations, not one.** The bare command lands
+its counts under `full-run`, which is everything the index holds. Then record the
+steady-state slice as well:
 
 ```bash
 uv run saorsa-deploy deployments record-log-counts --name STG-01 \
@@ -393,9 +408,24 @@ uv run saorsa-deploy deployments record-log-counts --name STG-01 \
   --label steady-state
 ```
 
-Do not pass `--window`. The defaults cover the whole run, which is what we want —
-narrowing to a phase is done later in post-processing, using the boundary timestamps
-recorded in the summary.
+Both are needed because `deployments compare` looks the counts up under **the same
+window label it is comparing on**, and the baseline carries both. Record only
+`full-run` and a steady-state comparison reports every connection-error gate as NOT
+ASSESSED; record only `steady-state` and a full-run comparison does the same. There
+is no backfill — the run's Elasticsearch is destroyed at teardown — so a label you
+skip here is a gate that cannot be assessed for this train. This was skipped on the
+2026-08-24 train because the slice was written up as optional; the verification had
+to fall back to a full-run comparison to assess those gates at all.
+
+Each label has a distinct weakness, which is why both are recorded rather than one
+being chosen:
+
+- **`full-run`** covers everything the index holds, so it is unaffected by clock
+  skew — but it spans the mixed-version phase and any pre-measurement period.
+- **`steady-state`** isolates the measurement phase, but the command warns that a
+  time-filtered count is applied against each host's own deliberately-skewed clock.
+
+Do not pass `--window`; it is a different flag and is not how the label is set.
 
 **`record-results` can take several minutes.** Give it a timeout of at least 10
 minutes (600000 ms). A short timeout will kill it mid-write and look like a failure.
@@ -500,10 +530,11 @@ State these in the final report rather than working around them:
   CPU/mem/net/disk-IO aggregates) plus `record-log-counts` (connection-error
   string counts), and none of them stores the RC tag or profile version as a
   column.
-- **Connection-error counts have no history before this train.** They were not
-  recorded on any earlier run and cannot be backfilled, so the first verification
-  to use them will report every connection-error gate as NOT ASSESSED. That is
-  expected, not a failure of the run.
+- **Connection-error counts cannot be backfilled**, so a gate is only assessable
+  when both the candidate and the baseline recorded counts under the label being
+  compared. Baselines from the 2026-08-18 train onward carry both `full-run` and
+  `steady-state`; anything earlier carries neither, and those gates read NOT
+  ASSESSED against it. That is expected, not a failure of the run.
 - No comparison or verdict tool. This skill stops at "run recorded".
 - No CLI or metric for record-store counts, so the mixed-version chunk-storage
   criterion needs an SSH check. The chunk store is LMDB, so what is actually

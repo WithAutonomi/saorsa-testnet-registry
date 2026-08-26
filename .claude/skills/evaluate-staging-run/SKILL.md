@@ -59,9 +59,10 @@ there would read as a pass:
 - **Crashes / panics / OOM / unexplained restarts** — panics reach stderr and journald, not the
   JSON logs Telegraf forwards, and the run's Elasticsearch is destroyed at teardown. If the
   staging run session did not capture this while the testnet was up, it cannot be recovered.
-- **Mixed-version phase** — zero failed transfers while the mixed fleet was live is derivable from
-  the per-op records if you know the phase boundary; "previous-version nodes demonstrably storing
-  chunks" is an SSH check on `chunks.mdb` growth and must come from the run session.
+- **Mixed-version phase** — whether in-phase transfers met the success floors (>99% upload, >99.5%
+  download) is derivable from the per-op records if you know the phase boundary; "previous-version
+  nodes demonstrably storing chunks" is an SSH check on `chunks.mdb` growth and must come from the
+  run session.
 - **Canaries** — a separate production deployment, assessed by the `evaluate-canary` skill on its
   own sub-issue. Out of scope for this report entirely: do not reference, summarise or re-derive
   it. The gate verdict combines the two.
@@ -150,18 +151,40 @@ Two rules the command enforces and you should not try to work around:
   shorter window truncates the disk numerator while still counting the full denominator.
 
 The connection-error counts are looked up under the **same label**, so a steady-state comparison
-finds none unless the run session recorded that slice as well. If only `full-run` counts exist,
-those gates read NOT ASSESSED on a steady-state comparison — that is the honest outcome and not
-something to work around by comparing a steady-state window against whole-run counts. If both
-runs' Elasticsearch instances are still up, you can record the slice now on each run:
+finds none unless the run session recorded that slice as well. Check what each run actually holds
+before choosing the window:
+
+```sql
+SELECT deployment_id, window_label, count(*) FROM deployment_log_event_counts
+WHERE deployment_id IN (<candidate>, <baseline>) GROUP BY 1, 2;
+```
+
+If both runs' Elasticsearch instances are still up, record the missing slice on each and compare on
+steady-state as normal:
 
 ```bash
 uv run saorsa-deploy deployments record-log-counts --id <id> \
   --window-start <start> --window-end <end> --label steady-state
 ```
 
-Note the caveat the command prints: a time-filtered count is applied against each host's own
-clock, and the staging profile skews those deliberately.
+**If they are not — and after teardown they never are — a `full-run` comparison is a legitimate
+route, not a workaround.** What you must not do is pair a steady-state metric window with whole-run
+counts inside one comparison; that mixes two windows in a single verdict. Running the whole
+comparison on `full-run`, where both runs hold counts, is internally consistent and assesses every
+gate. Prefer it over accepting five NOT ASSESSED rows when the windows are comparable — confirm
+first that the two `full-run` windows are close on span, total forwarded lines, host count and
+activity coverage, and say in the report that the train was gated on `full-run` and why.
+
+`full-run` is in any case the **sounder** window for these particular gates. They are raw counts
+normalised by total lines, so none of the reasons steady-state is preferred for the metric gates —
+clock skew dragging the window, idle time inflating per-GB numerators — applies to them. The
+opposite does: the command warns that a *time-filtered* count is applied against each host's own
+deliberately-skewed clock, which is an argument against the steady-state slice, not for it.
+
+Be aware the two windows can disagree on a metric gate. On the 2026-08-24 train, outbound bytes per
+GB read +12.08% (FAIL) on steady-state and +2.13% (PASS) on full-run. Where that happens, report
+both figures — a gate whose verdict flips with the window is not a settled finding, and quoting
+only the passing one misrepresents it.
 
 ## Step 4 — Gather the accepted-run history (optional)
 
@@ -235,11 +258,20 @@ exists**. Do not infer a pass from the absence of a report.
 |---|---|
 | Data integrity | Nothing verifies downloaded content. Expect NOT ASSESSED and say why. |
 | Crashes | The `Staging run — rc.N` sub-issue's steady-state observations. If the run session did not check `systemctl --state=failed` while the testnet was up, it cannot be recovered — ES died at teardown. NOT ASSESSED, not PASS. |
-| Mixed-version phase | The run sub-issue records both criteria: zero failed transfers while the mixed fleet was live, and previous-version nodes storing chunks (`chunks.mdb` growth over SSH). |
+| Mixed-version phase | The run sub-issue records both criteria: in-phase transfers meeting the success floors (>99% upload, >99.5% download), and previous-version nodes storing chunks (`chunks.mdb` growth over SSH). |
 
 Note that `deployment_upload_records` / `deployment_download_records` carry per-op `finished_at`,
-so if the run sub-issue records the mixed-version phase boundary you can confirm the zero-failed
--transfers half of that gate directly from Postgres rather than taking it on trust.
+so if the run sub-issue records the mixed-version phase boundary you can confirm the transfer half
+of that gate directly from Postgres rather than taking it on trust. Do check it there rather than
+from the run's own in-flight counts: `print-uploads` truncates its output, so a single failing row
+can be missing from what the run session saw.
+
+The transfer criterion was **zero failed transfers** until the 2026-08-24 train, when the RM
+replaced it with the main-phase success floors. A transfer can fail for reasons unrelated to
+running mixed versions, and an absolute-zero bar made the gate fire on that noise — on run #544 one
+upload of 866 failed and every peer the client could not reach was running the **new** version. If
+a transfer did fail in-phase, still say in the report whether an older-version node was involved;
+that attribution is the difference between a compatibility finding and a coincidence.
 
 ## Step 7 — Write the verification
 
