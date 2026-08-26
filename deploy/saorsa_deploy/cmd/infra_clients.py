@@ -339,6 +339,35 @@ def _spec_signature(spec: dict) -> tuple:
     )
 
 
+def _merge_client_specs(
+    created: list[dict], resumed: list[dict], blank_new: bool = False
+) -> list[dict]:
+    """Full client list: the VMs kept from a previous run plus the new ones.
+
+    Restores the canonical uploaders-then-downloaders ordering so a resumed
+    state file is indistinguishable from one written by a clean run.
+    """
+    out = [dict(c) for c in resumed]
+    out.extend({**spec, "ip": ""} if blank_new else dict(spec) for spec in created)
+    out.sort(key=lambda s: (0 if s["role"] == ROLE_UPLOAD else 1, s["client_index"]))
+    return out
+
+
+def _print_client_line(console, spec: dict) -> None:
+    """Render one already-provisioned client VM."""
+    label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
+    skew_str = (
+        f", clock-skew {format_skew_offset(spec['clock_skew'])}"
+        if spec.get("clock_skew")
+        else ""
+    )
+    console.print(
+        f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
+        f"({spec.get('provider', 'digitalocean')}:{spec['region']}, "
+        f"{spec['vm_size']}{skew_str})"
+    )
+
+
 def _client_specs_match(existing: list[dict], requested: list[dict]) -> bool:
     if len(existing) != len(requested):
         return False
@@ -409,35 +438,48 @@ def cmd_infra_clients(args):
     except RuntimeError:
         existing_state = None
 
+    # `resumed_ips` maps a spec signature to the IP of a VM that already exists,
+    # so a partial failure re-creates only what is missing.
+    resumed_ips: dict[tuple, str] = {}
+    resumed_clients: list[dict] = []
+
     if existing_state and existing_state.get("clients"):
         existing_clients = existing_state["clients"]
-        if _client_specs_match(existing_clients, client_specs) and all(
-            c.get("ip") for c in existing_clients
-        ):
+        if not _client_specs_match(existing_clients, client_specs):
+            console.print(
+                f"[bold red]Error:[/bold red] Client state for '{args.name}' "
+                f"already exists but does not match the requested spec. "
+                f"Run `clients destroy --name {args.name} --force` first if you "
+                f"want to recreate with a different layout."
+            )
+            sys.exit(1)
+
+        resumed_clients = [c for c in existing_clients if c.get("ip")]
+        resumed_ips = {_spec_signature(c): c["ip"] for c in resumed_clients}
+        if len(resumed_ips) == len(existing_clients):
             console.print(
                 f"[bold]Reusing {len(existing_clients)} existing client VM(s) "
                 f"for '{args.name}'.[/bold]"
             )
             for spec in existing_clients:
-                label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
-                skew_str = (
-            f", clock-skew {format_skew_offset(spec['clock_skew'])}"
-            if spec.get("clock_skew")
-            else ""
-        )
-                console.print(
-                    f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
-                    f"({spec.get('provider', 'digitalocean')}:{spec['region']}, "
-                    f"{spec['vm_size']}{skew_str})"
-                )
+                _print_client_line(console, spec)
             return
+
+        # Partial state: the spec matches, but some VMs never came up (a
+        # provider capacity failure mid-apply). Keep the ones that did and
+        # create only the rest — destroying a healthy client tier to recover
+        # two VMs would churn the whole workload.
+        client_specs = [
+            spec for spec in client_specs if _spec_signature(spec) not in resumed_ips
+        ]
         console.print(
-            f"[bold red]Error:[/bold red] Client state for '{args.name}' "
-            f"already exists but does not match the requested spec. "
-            f"Run `clients destroy --name {args.name} --force` first if you "
-            f"want to recreate with a different layout."
+            f"[bold]Resuming: reusing {len(resumed_ips)} existing client VM(s), "
+            f"creating the {len(client_specs)} that are missing.[/bold]"
         )
-        sys.exit(1)
+        for spec in existing_clients:
+            if spec.get("ip"):
+                _print_client_line(console, spec)
+        console.print()
 
     # OVH targets a specific Public Cloud project; the manifest needs its UUID
     # as a Terraform variable. Mirror the migration command's env-var sourcing.
@@ -488,8 +530,14 @@ def cmd_infra_clients(args):
         )
         configs.append(config)
 
-    # Check for stale Terraform state files
-    stale_keys = [c.state_key for c in configs if check_terraform_state_exists(c.state_key)]
+    # Check for stale Terraform state files. On a resume the state belonging to
+    # a VM we are re-creating is not stale — it is that VM's own state, left by
+    # the apply whose create call failed, and applying against it is correct.
+    stale_keys = (
+        []
+        if resumed_ips
+        else [c.state_key for c in configs if check_terraform_state_exists(c.state_key)]
+    )
     if stale_keys:
         if not getattr(args, "force", False):
             console.print("[bold red]Error:[/bold red] Stale Terraform state found:")
@@ -504,7 +552,7 @@ def cmd_infra_clients(args):
     # Save client state UPFRONT (with empty IPs) so that clients destroy can
     # always tear down whatever terraform may have started, even on partial
     # or total failure. IPs get merged in after the apply completes.
-    upfront_specs = [{**spec, "ip": ""} for spec in client_specs]
+    upfront_specs = _merge_client_specs(client_specs, resumed_clients, blank_new=True)
     try:
         save_client_state(args.name, upfront_specs)
     except Exception as e:
@@ -527,7 +575,10 @@ def cmd_infra_clients(args):
             spec["ip"] = ""
 
     try:
-        update_client_state(args.name, {"clients": client_specs})
+        update_client_state(
+            args.name,
+            {"clients": _merge_client_specs(client_specs, resumed_clients)},
+        )
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to update client state: {e}[/yellow]")
 

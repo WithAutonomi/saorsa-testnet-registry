@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from saorsa_deploy.cmd.infra_clients import cmd_infra_clients
+from saorsa_deploy.cmd.infra_clients import cmd_infra_clients, parse_uploader_spec
 from saorsa_deploy.terraform import TerraformResult
 
 
@@ -131,3 +131,113 @@ class TestNoClients:
 
         patches.execute.assert_not_called()
         patches.save.assert_not_called()
+
+
+class TestPartialFailureResume:
+    """A partial `clients infra` failure must be resumable.
+
+    A provider capacity failure leaves state recording every requested VM but
+    with an empty IP for the ones that never came up. Re-running must create
+    only those, not refuse — recovering two VMs by destroying a healthy client
+    tier churns the whole workload and changes what the run measures.
+    """
+
+    def _partial_state(self):
+        """State as `clients infra` writes it when the second VM fails.
+
+        Built through the real spec parser rather than hand-written, so it
+        carries every field the signature match compares.
+        """
+        clients = []
+        for i, raw in enumerate(_args().uploader, start=1):
+            spec = parse_uploader_spec(raw)
+            spec["client_index"] = i
+            spec["ip"] = "10.0.0.1" if i == 1 else ""
+            clients.append(spec)
+        return {"clients": clients}
+
+    def test_creates_only_the_missing_vm(self, patches):
+        patches.load.side_effect = None
+        patches.load.return_value = self._partial_state()
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="nyc3",
+                outputs={"vm_ip": "10.0.0.2"},
+            ),
+        ]
+
+        cmd_infra_clients(_args())
+
+        # Exactly one terraform run, and it is the VM that was missing.
+        configs = patches.execute.call_args.args[0]
+        assert [c.region for c in configs] == ["nyc3"]
+
+    def test_resume_preserves_the_surviving_ip(self, patches):
+        patches.load.side_effect = None
+        patches.load.return_value = self._partial_state()
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="nyc3",
+                outputs={"vm_ip": "10.0.0.2"},
+            ),
+        ]
+
+        cmd_infra_clients(_args())
+
+        # The upfront save must not blank the VM that is still running — that
+        # state is what `clients destroy` uses to find it.
+        upfront = {c["region"]: c["ip"] for c in patches.save.call_args.args[1]}
+        assert upfront == {"lon1": "10.0.0.1", "nyc3": ""}
+
+        final = {
+            c["region"]: c["ip"]
+            for c in patches.update.call_args.args[1]["clients"]
+        }
+        assert final == {"lon1": "10.0.0.1", "nyc3": "10.0.0.2"}
+
+    def test_resume_does_not_treat_own_state_as_stale(self, patches):
+        # The failed apply leaves a Terraform state file for that VM. It is not
+        # stale — it is that VM's own state — so the resume must not demand
+        # --force to delete it.
+        patches.load.side_effect = None
+        patches.load.return_value = self._partial_state()
+        patches.check.return_value = True
+        patches.execute.return_value = [
+            TerraformResult(
+                success=True,
+                provider="digitalocean",
+                region="nyc3",
+                outputs={"vm_ip": "10.0.0.2"},
+            ),
+        ]
+
+        cmd_infra_clients(_args(force=False))
+
+        patches.delete.assert_not_called()
+        patches.execute.assert_called_once()
+
+    def test_full_state_still_short_circuits(self, patches):
+        state = self._partial_state()
+        state["clients"][1]["ip"] = "10.0.0.2"
+        patches.load.side_effect = None
+        patches.load.return_value = state
+
+        cmd_infra_clients(_args())
+
+        patches.execute.assert_not_called()
+        patches.save.assert_not_called()
+
+    def test_genuine_spec_mismatch_still_refuses(self, patches):
+        state = self._partial_state()
+        state["clients"].pop()
+        patches.load.side_effect = None
+        patches.load.return_value = state
+
+        with pytest.raises(SystemExit):
+            cmd_infra_clients(_args())
+
+        patches.execute.assert_not_called()
