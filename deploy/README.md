@@ -483,6 +483,75 @@ uv run saorsa-deploy nodes provision --name DEV-01 --node-count 25 \
 `--node-version` and `--branch-name`/`--repo-owner` are mutually exclusive.
 `--branch-name` and `--repo-owner` must be used together.
 
+### `nodes swap-binary`
+
+Replace the ant-node binary on every node VM of a **running** testnet and
+restart the `ant-node-<i>` services on it. Unit files, ports, data
+directories, NAT and clock-skew setup are left exactly as `nodes provision`
+wrote them, so the services come back on the new build with the same
+`--root-dir` — from the node's point of view the same thing an automatic
+upgrade does (`--stop-on-upgrade` exit + `Restart=on-success`), only at a
+moment you choose and immune to anyone publishing a release mid-run.
+
+Use it for tests whose subject only exists on a node that already holds data
+written by an older build — a storage-format migration, for instance: deploy
+on the released version, let the uploaders fill it, then swap to the branch
+under test.
+
+```bash
+# Phase 0: fleet on the current release
+uv run saorsa-deploy nodes provision --name DEV-01 --node-count 15 --node-version 0.17.2
+uv run saorsa-deploy nodes start --name DEV-01
+# ... later, swap the whole fleet to the branch build (built with `build ant-node`)
+uv run saorsa-deploy nodes swap-binary --name DEV-01 \
+    --branch-name storage/file-chunk-store --repo-owner WithAutonomi
+```
+
+The target must be explicit — `--node-version` or `--branch-name`/`--repo-owner`
+— there is no "latest" default. On each host the new binary is downloaded
+beside the old one, `--version` is run on it, and only then is it renamed
+over `/usr/local/bin/ant-node` (an atomic rename on the same filesystem); a
+download that does not run (`ANT_SWAP:BAD_BINARY`) leaves the old binary and
+the services untouched. All VMs are swapped in one parallel pass by default;
+`--stagger-secs N` does them one at a time, `N` seconds apart. `--no-restart`
+replaces the binary but leaves the services on the old one; `--region`
+limits the swap to one region. Bootstraps are not touched.
+
+`--node-config <local.toml>` installs a node config file alongside the swap.
+`ant-node --config` is a CLI flag with no environment alias, so the file is
+written to `/etc/ant-node/config.toml` on each VM and every `ant-node-<i>`
+service gets a systemd drop-in (`ant-node-<i>.service.d/10-node-config.conf`)
+that re-declares its `ExecStart` from the main unit with `--config
+/etc/ant-node/config.toml` appended. The main unit is never edited; re-running
+with a different file regenerates the drop-ins. Every `NodeConfig` field has a
+default, so the file only needs the keys being changed, and the CLI flags in
+`ExecStart` (`--root-dir`, `--port`, …) still override it. It is applied at
+swap time on purpose: the old binary would honour some of the same keys.
+
+```bash
+# e.g. a shed-test cohort: zero the migration hold/wave and squeeze the file store
+cat > shed.toml <<'EOF'
+[storage]
+disk_reserve_mb = 95000
+[storage.migration]
+shed_hold_hours = 0
+wave_hours = 0
+copier_slack_mb = 0
+EOF
+uv run saorsa-deploy nodes swap-binary --name DEV-01-SHED \
+    --branch-name storage/file-chunk-store --repo-owner WithAutonomi \
+    --node-config shed.toml
+```
+
+Only TOML validity is checked locally; a key the installed build rejects
+shows up as the services failing to come back (`ANT_SWAP:NOT_ACTIVE`), with
+the reason in the node's journal. The file's content and SHA-256 are recorded
+in the `nodes_binary_swapped` event.
+
+A whole-fleet swap records a `nodes_binary_swapped` event on the deployment
+and updates its `node_binary` in the registry, so the swap time is on the
+run's timeline.
+
 ### `nodes destroy` / `bootstraps destroy`
 
 Tear down in reverse phase order: nodes first, bootstraps second.

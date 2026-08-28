@@ -3425,6 +3425,66 @@ def main(argv=None):
         help="Path to SSH key (default: ~/.ssh/id_rsa)",
     )
 
+    # nodes swap-binary
+    nodes_swap_parser = nodes_subparsers.add_parser(
+        "swap-binary",
+        help=(
+            "Replace the ant-node binary on every node VM of a RUNNING testnet and "
+            "restart the services on it (unit files and data dirs untouched)"
+        ),
+    )
+    nodes_swap_parser.add_argument(
+        "--branch-name",
+        type=str,
+        help="Swap to the custom build from this branch (requires --repo-owner; "
+        "run `build ant-node` first)",
+    )
+    nodes_swap_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (must match the name used with `nodes infra`)",
+    )
+    nodes_swap_parser.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="Replace the binary on disk but leave the services running the old one",
+    )
+    nodes_swap_parser.add_argument(
+        "--node-config",
+        type=str,
+        help="Local TOML file to install as the node config (ant-node --config) on every "
+        "swapped VM; each service's ExecStart gains --config via a systemd drop-in",
+    )
+    nodes_swap_parser.add_argument(
+        "--node-version",
+        type=str,
+        help="Swap to this GitHub release (e.g., 0.17.2)",
+    )
+    nodes_swap_parser.add_argument(
+        "--region",
+        type=str,
+        help="Swap only VMs in this region (e.g., digitalocean/lon1)",
+    )
+    nodes_swap_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        help="GitHub repo owner for the custom build (requires --branch-name)",
+    )
+    nodes_swap_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa)",
+    )
+    nodes_swap_parser.add_argument(
+        "--stagger-secs",
+        type=int,
+        default=0,
+        help="Swap VMs one at a time with this many seconds between them "
+        "(default 0: all VMs in one parallel pass)",
+    )
+
     # =========================================================================
     # === prod (nested: prod <subsystem> <action>) ===
     # =========================================================================
@@ -6583,6 +6643,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.start_nodes import cmd_start_nodes
 
             cmd_start_nodes(args)
+        elif args.nodes_subcommand == "swap-binary":
+            from saorsa_deploy.cmd.swap_nodes_binary import cmd_swap_nodes_binary
+
+            cmd_swap_nodes_binary(args)
     elif args.command == "prod":
         if args.prod_subcommand == "bootstrap" and args.prod_bootstrap_action == "deploy":
             from saorsa_deploy.cmd.bootstrap_production import cmd_bootstrap_production
