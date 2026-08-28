@@ -182,6 +182,7 @@ def _args(**overrides):
         "branch_name": None,
         "repo_owner": None,
         "region": None,
+        "hosts": None,
         "stagger_secs": 0,
         "no_restart": False,
         "node_config": None,
@@ -282,6 +283,36 @@ class TestCmdSwapNodesBinary:
         patches.event.assert_called_once()
         patches.args.assert_not_called()
         patches.update.assert_not_called()
+
+    def test_hosts_limits_the_swap_to_the_named_vms_in_the_order_given(self, patches):
+        patches.swap.return_value = (["10.0.1.1", "10.0.0.1"], [])
+        cmd_swap_nodes_binary(_args(node_version="0.17.2", hosts="10.0.1.1, 10.0.0.1"))
+        assert patches.swap.call_args.args[0] == ["10.0.1.1", "10.0.0.1"]
+
+    def test_hosts_swap_is_partial_and_does_not_rewrite_the_fleet_binary(self, patches):
+        patches.swap.return_value = (["10.0.0.1"], [])
+        cmd_swap_nodes_binary(_args(node_version="0.17.2", hosts="10.0.0.1"))
+        patches.event.assert_called_once()
+        assert patches.event.call_args.args[2]["hosts"] == "10.0.0.1"
+        patches.args.assert_not_called()
+        patches.update.assert_not_called()
+
+    def test_an_ip_outside_the_deployment_is_an_error(self, patches):
+        with pytest.raises(SystemExit):
+            cmd_swap_nodes_binary(_args(node_version="0.17.2", hosts="10.0.0.1,9.9.9.9"))
+        patches.swap.assert_not_called()
+
+    def test_hosts_and_region_together_are_refused(self, patches):
+        with pytest.raises(SystemExit):
+            cmd_swap_nodes_binary(
+                _args(node_version="0.17.2", hosts="10.0.0.1", region="vultr/ams")
+            )
+        patches.swap.assert_not_called()
+
+    def test_hosts_with_no_usable_address_is_an_error(self, patches):
+        with pytest.raises(SystemExit):
+            cmd_swap_nodes_binary(_args(node_version="0.17.2", hosts=" , "))
+        patches.swap.assert_not_called()
 
     def test_unknown_region_is_an_error(self, patches):
         with pytest.raises(SystemExit):

@@ -3440,6 +3440,13 @@ def main(argv=None):
         "run `build ant-node` first)",
     )
     nodes_swap_parser.add_argument(
+        "--hosts",
+        type=str,
+        help="Swap only these node VMs (comma-separated IPs, e.g. 1.2.3.4,5.6.7.8). "
+        "Mutually exclusive with --region. Every address must belong to this "
+        "deployment. Use it to give one VM its own --node-config.",
+    )
+    nodes_swap_parser.add_argument(
         "--name",
         type=str,
         required=True,

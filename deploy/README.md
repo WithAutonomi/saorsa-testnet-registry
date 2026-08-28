@@ -515,7 +515,9 @@ download that does not run (`ANT_SWAP:BAD_BINARY`) leaves the old binary and
 the services untouched. All VMs are swapped in one parallel pass by default;
 `--stagger-secs N` does them one at a time, `N` seconds apart. `--no-restart`
 replaces the binary but leaves the services on the old one; `--region`
-limits the swap to one region. Bootstraps are not touched.
+limits the swap to one region and `--hosts <ip,ip,…>` to named node VMs (the
+two are mutually exclusive, and an address that is not a node VM of this
+deployment is an error, not a silent skip). Bootstraps are not touched.
 
 `--node-config <local.toml>` installs a node config file alongside the swap.
 `ant-node --config` is a CLI flag with no environment alias, so the file is
@@ -548,9 +550,30 @@ shows up as the services failing to come back (`ANT_SWAP:NOT_ACTIVE`), with
 the reason in the node's journal. The file's content and SHA-256 are recorded
 in the `nodes_binary_swapped` event.
 
+`--hosts` is what makes a **per-VM** config possible: the installed file is one
+file per invocation, so a cohort whose config differs per VM — a
+`disk_reserve_mb` computed from that VM's own `df`, say — is swapped one host at
+a time in a loop, which also makes `--stagger-secs` redundant for it.
+
+```bash
+# per-VM config: reserve all but half of each VM's own node payload
+for ip in $(cat shed-vms.txt); do
+    free_mb=$(ssh -i ~/.ssh/ant_deploy root@$ip "df -m --output=avail /mnt/ant-node-storage | tail -1")
+    payload_mb=$(ssh -i ~/.ssh/ant_deploy root@$ip "du -sm /mnt/ant-node-storage/ant-node-* | awk '{s+=\$1} END {print s}'")
+    printf '[storage]\ndisk_reserve_mb = %d\n[storage.migration]\nshed_hold_hours = 0\nwave_hours = 1\ncopier_slack_mb = 0\n' \
+        $((free_mb - payload_mb / 2)) > shed-$ip.toml
+    uv run saorsa-deploy nodes swap-binary --name DEV-01-SHED --hosts "$ip" \
+        --branch-name storage/file-chunk-store --repo-owner WithAutonomi \
+        --node-config shed-$ip.toml
+done
+```
+
 A whole-fleet swap records a `nodes_binary_swapped` event on the deployment
 and updates its `node_binary` in the registry, so the swap time is on the
-run's timeline.
+run's timeline. A swap narrowed by `--region` or `--hosts` records the event but
+deliberately leaves `node_binary` alone: the fleet is then running more than one
+build, and recording a single one would mislead every later command that reads
+it.
 
 ### `nodes destroy` / `bootstraps destroy`
 

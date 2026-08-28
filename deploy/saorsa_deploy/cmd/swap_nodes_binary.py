@@ -22,6 +22,15 @@ By default every VM is swapped in one parallel pass, so the whole fleet restarts
 within seconds of each other. ``--stagger-secs N`` swaps the VMs one at a time
 with ``N`` seconds between them instead, for a fleet where a simultaneous
 restart would itself be the event under observation.
+
+``--region`` and ``--hosts`` narrow which VMs are swapped. ``--hosts`` takes
+explicit node VM addresses, which is what makes a *per-VM* ``--node-config``
+possible: the installed config is one file for the whole invocation, so a fleet
+whose config differs per VM (a disk reserve computed from that VM's own ``df``,
+say) is swapped one host at a time. A narrowed swap is recorded as an event but
+deliberately does not rewrite the deployment's recorded binary — the fleet is
+then running more than one build, and claiming otherwise would mislead every
+later command that reads it.
 """
 
 from __future__ import annotations
@@ -105,6 +114,15 @@ def _resolve_host_ips(args, state, console) -> list[str]:
         )
         sys.exit(1)
     region = getattr(args, "region", None)
+    hosts = getattr(args, "hosts", None)
+    if region and hosts:
+        console.print(
+            "[bold red]Error:[/bold red] --region and --hosts both narrow the "
+            "same thing; pass one or the other."
+        )
+        sys.exit(1)
+    if hosts:
+        return _resolve_named_hosts(hosts, vm_ips, console)
     if region:
         if region not in vm_ips:
             available = ", ".join(sorted(vm_ips.keys()))
@@ -118,6 +136,42 @@ def _resolve_host_ips(args, state, console) -> list[str]:
     for region_key in sorted(vm_ips.keys()):
         host_ips.extend(vm_ips[region_key])
     return host_ips
+
+
+def _resolve_named_hosts(hosts: str, vm_ips: dict, console) -> list[str]:
+    """Resolve ``--hosts`` to node VM IPs, refusing anything not in this fleet.
+
+    An IP this deployment does not own is never merely a no-op to skip: it is a
+    typo that would silently leave the intended VM on the old binary, or a real
+    machine belonging to something else. Both are worse than stopping, so an
+    unknown address is an error naming the fleet's own addresses.
+
+    Order follows the argument, so a caller driving one VM at a time in a chosen
+    sequence gets that sequence back. Duplicates collapse — swapping the same VM
+    twice in one pass has no meaning.
+    """
+    known = {ip for ips in vm_ips.values() for ip in ips}
+    resolved: list[str] = []
+    unknown: list[str] = []
+    for raw in hosts.split(","):
+        ip = raw.strip()
+        if not ip:
+            continue
+        if ip not in known:
+            unknown.append(ip)
+        elif ip not in resolved:
+            resolved.append(ip)
+    if unknown:
+        console.print(
+            f"[bold red]Error:[/bold red] --hosts names {len(unknown)} address(es) "
+            f"that are not node VMs of this deployment: {', '.join(unknown)}. "
+            f"Known node VMs: {', '.join(sorted(known))}"
+        )
+        sys.exit(1)
+    if not resolved:
+        console.print("[bold red]Error:[/bold red] --hosts is empty")
+        sys.exit(1)
+    return resolved
 
 
 def _summarise(results, console) -> tuple[list[str], list[str]]:
@@ -263,6 +317,7 @@ def cmd_swap_nodes_binary(args):
         "restarted": restart,
         "stagger_secs": stagger,
         "region": getattr(args, "region", None),
+        "hosts": getattr(args, "hosts", None),
         "duration_secs": round(time.time() - started_at, 1),
     }
     if node_config is not None:
@@ -274,7 +329,8 @@ def cmd_swap_nodes_binary(args):
             "content": node_config,
         }
     record_event(args.name, EVENT_TYPE, details)
-    if not failed and not getattr(args, "region", None):
+    partial = bool(getattr(args, "region", None) or getattr(args, "hosts", None))
+    if not failed and not partial:
         # Only a whole-fleet swap changes what the deployment is running.
         record_deploy_args_update(args.name, {"node_binary": descriptor})
         try:
