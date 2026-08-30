@@ -232,18 +232,26 @@ def test_teardown_rows_warns_once_when_relay_addr_missing(capsys):
 
 
 def test_rank_relay_servers_maps_to_inventory():
+    """Ranked by server IP, one bucket per VM.
+
+    The port on `relay_server` is PER ALLOCATION, not a stable listening port:
+    measured on DEV-01 (V2-1061), one server IP carried 8 distinct
+    `relay_server` ports across 8 clients. Keying on the full `ip:port` would
+    split that VM into 8 buckets of one client each and rank nothing, so the
+    ports below deliberately differ per row.
+    """
     vms = [_vm("DEV-01-ant-node-A", "10.0.0.1"), _vm("DEV-01-ant-node-B", "10.0.0.2", nat=True)]
     docs = [
-        {"tag": {"host": "C1", "service_number": "1"}, "tail": {"relay_server": "10.0.0.1:10000"}},
+        {"tag": {"host": "C1", "service_number": "1"}, "tail": {"relay_server": "10.0.0.1:35940"}},
         # duplicate of the row above: must count once
-        {"tag": {"host": "C1", "service_number": "1"}, "tail": {"relay_server": "10.0.0.1:10000"}},
-        {"tag": {"host": "C1", "service_number": "2"}, "tail": {"relay_server": "10.0.0.1:10000"}},
-        {"tag": {"host": "C2", "service_number": "1"}, "tail": {"relay_server": "10.0.0.1:10000"}},
-        {"tag": {"host": "C3", "service_number": "1"}, "tail": {"relay_server": "10.0.0.9:10000"}},
+        {"tag": {"host": "C1", "service_number": "1"}, "tail": {"relay_server": "10.0.0.1:35940"}},
+        {"tag": {"host": "C1", "service_number": "2"}, "tail": {"relay_server": "10.0.0.1:41157"}},
+        {"tag": {"host": "C2", "service_number": "1"}, "tail": {"relay_server": "10.0.0.1:50698"}},
+        {"tag": {"host": "C3", "service_number": "1"}, "tail": {"relay_server": "10.0.0.9:37923"}},
         {"tag": {"host": "C4", "service_number": "1"}, "tail": {}},
     ]
     ranked = relay_mod.rank_relay_servers(docs, vms)
-    assert [r["relay_server"] for r in ranked] == ["10.0.0.1:10000", "10.0.0.9:10000"]
+    assert [r["relay_server"] for r in ranked] == ["10.0.0.1", "10.0.0.9"]
     top = ranked[0]
     assert top["vm"] == "DEV-01-ant-node-A" and top["ip"] == "10.0.0.1" and top["nat"] is False
     assert top["clients"] == 3 and top["client_hosts"] == 2

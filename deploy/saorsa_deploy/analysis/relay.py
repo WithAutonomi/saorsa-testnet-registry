@@ -120,22 +120,42 @@ def teardown_rows(docs: list[dict], console: Console | None = None) -> list[dict
     return rows
 
 
+def _server_ip(src: dict) -> str | None:
+    """The relay server's IP for a relay document.
+
+    `Proactive relay torn down` carries an explicit `relay_server`, but
+    `Proactive relay allocation prepared` -- the line this ranking is built from
+    -- carries only `relay_addr`. Both are addresses ON the relay server, so
+    either identifies the VM once the port is dropped. Keying on `relay_server`
+    alone silently skipped every prepared document and produced an empty
+    ranking.
+    """
+    addr = _get(src, RELAY_SERVER_SRC) or _get(src, RELAY_ADDR_SRC)
+    if addr is None:
+        return None
+    return str(addr).rsplit(":", 1)[0].strip("[]")
+
+
 def rank_relay_servers(docs: list[dict], vms: list[hosts_mod.Vm]) -> list[dict]:
-    """Distinct (host, service) clients per relay server, mapped to inventory VMs."""
+    """Distinct (host, service) clients per relay server, mapped to inventory VMs.
+
+    Grouped by server IP, not by the full `ip:port`: a relay server hands each
+    allocation its own port, so grouping on the full address would split one
+    VM into one bucket per client and rank nothing.
+    """
     clients: dict[str, set[tuple]] = defaultdict(set)
     for src in docs:
-        server = _get(src, RELAY_SERVER_SRC)
-        if server is None:
+        ip = _server_ip(src)
+        if ip is None:
             continue
-        clients[str(server)].add((_get(src, HOST_SRC), _get(src, SERVICE_SRC)))
+        clients[ip].add((_get(src, HOST_SRC), _get(src, SERVICE_SRC)))
     by_ip = {v.ip: v for v in vms}
     out = []
-    for server, members in clients.items():
-        ip = server.rsplit(":", 1)[0].strip("[]")
+    for ip, members in clients.items():
         vm = by_ip.get(ip)
         out.append(
             {
-                "relay_server": server,
+                "relay_server": ip,
                 "vm": vm.name if vm else None,
                 "ip": ip,
                 "nat": vm.nat if vm else None,

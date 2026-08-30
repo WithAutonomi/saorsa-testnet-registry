@@ -832,6 +832,40 @@ class _LazyMeasurements(dict):
         return self._factories.keys()
 
 
+_WINDOW_UNITS = ("ns", "us", "ms", "s", "m", "h", "d", "w", "mo", "y")
+
+
+def validate_flux_window(window: str) -> str:
+    """Reject a `--window` that Flux would read as a range starting in the FUTURE.
+
+    The value is interpolated straight into `range(start: ...)`. Flux treats a
+    bare `6h` as *now + 6h*, so the query can only ever return an empty result --
+    which the callers report as "no host metric points found", indistinguishable
+    from a run whose monitoring genuinely collected nothing. A relative window
+    must therefore be negative (`-6h`); `0` means the whole run.
+
+    Returns the value unchanged when it is usable, raises ValueError otherwise.
+    """
+    w = (window or "").strip()
+    if w in ("0", ""):
+        return "0"
+    if w.startswith("-"):
+        return w
+    # An absolute RFC3339 instant is fine (2026-08-30T13:34:16Z).
+    if any(c in w for c in ("T", ":")) or w[:1].isdigit() and w.endswith("Z"):
+        return w
+    if w[:1].isdigit() and w.endswith(_WINDOW_UNITS):
+        raise ValueError(
+            f"--window {w!r} is a POSITIVE duration: Flux reads it as a range "
+            f"starting {w} in the future, which always returns nothing. "
+            f"Use -{w} for the last {w}, or 0 for the whole run."
+        )
+    raise ValueError(
+        f"--window {w!r} is not a Flux range start. Use 0 (whole run), a "
+        f"negative duration such as -6h, or an RFC3339 instant."
+    )
+
+
 def iter_host_metric_points(
     url: str,
     token: str,

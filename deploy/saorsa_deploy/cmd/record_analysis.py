@@ -22,6 +22,7 @@ from saorsa_deploy.influx import (
     node_storage_device,
     normalise_host_metric_points,
     peak_rss_service,
+    validate_flux_window,
 )
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_monitoring_state
@@ -187,6 +188,12 @@ def _print_derived_metrics(rows: list, console: Console) -> None:
 def cmd_record_analysis(args):
     """Pull per-host CPU/memory/bandwidth aggregates from InfluxDB and upsert them."""
     console = Console()
+
+    try:
+        args.window = validate_flux_window(args.window)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
 
     repo = get_repository()
     if repo is None:
