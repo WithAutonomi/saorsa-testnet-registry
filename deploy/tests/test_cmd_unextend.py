@@ -23,12 +23,18 @@ def patches():
         patch(
             "saorsa_deploy.cmd.unextend.delete_deployment_state"
         ) as p_delete_state,
+        patch(
+            "saorsa_deploy.cmd.unextend.load_client_state"
+        ) as p_load_client_state,
     ):
+        # Most extensions have no client tier; absence is a RuntimeError.
+        p_load_client_state.side_effect = RuntimeError("No client state")
         yield SimpleNamespace(
             record_event=p_record_event,
             record_status=p_record_status,
             load_state=p_load_state,
             delete_state=p_delete_state,
+            load_client_state=p_load_client_state,
         )
 
 
@@ -85,3 +91,38 @@ class TestValidation:
             cmd_unextend(_args())
 
         patches.delete_state.assert_not_called()
+
+    def test_refuses_when_clients_still_present(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "shared_bootstrap_from": "DEV-01",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [],
+        }
+        patches.load_client_state.side_effect = None
+        patches.load_client_state.return_value = {
+            "clients": [{"role": "upload", "region": "syd", "client_index": 1}],
+        }
+
+        with pytest.raises(SystemExit):
+            cmd_unextend(_args())
+
+        patches.delete_state.assert_not_called()
+
+    def test_empty_client_state_does_not_block(self, patches):
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "shared_bootstrap_from": "DEV-01",
+            "bootstrap_nodes": [
+                {"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1},
+            ],
+            "regions": [],
+        }
+        patches.load_client_state.side_effect = None
+        patches.load_client_state.return_value = {"clients": []}
+
+        cmd_unextend(_args())
+
+        patches.delete_state.assert_called_once_with("DEV-02")

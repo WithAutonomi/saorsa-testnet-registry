@@ -5,6 +5,7 @@ from rich.console import Console
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.state import (
     delete_deployment_state,
+    load_client_state,
     load_deployment_state,
 )
 
@@ -46,6 +47,20 @@ def cmd_unextend(args):
             f"[bold red]Error:[/bold red] Extension '{name}' still has "
             f"{len(regions)} node region(s) in state. Run "
             f"`saorsa-deploy nodes destroy --name {name}` first."
+        )
+        sys.exit(1)
+
+    # An extension may carry its own client tier (`clients destroy` deletes the
+    # client state as its final act, so an orchestrated `down` never trips this).
+    try:
+        client_state = load_client_state(name)
+    except RuntimeError:
+        client_state = None
+    if client_state and client_state.get("clients"):
+        console.print(
+            f"[bold red]Error:[/bold red] Extension '{name}' still has "
+            f"{len(client_state['clients'])} client VM(s) in state. Run "
+            f"`saorsa-deploy clients destroy --name {name}` first."
         )
         sys.exit(1)
 

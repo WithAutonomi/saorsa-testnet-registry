@@ -707,6 +707,88 @@ def test_extension_destroy_ends_with_unextend():
     assert steps[-1].argv == ["deployments", "unextend", "--name", "DEV-02", "--force"]
 
 
+def _extension_with_clients():
+    """An extension carrying its own client tier (a second client-version cohort).
+
+    The clients ride the extension's name end to end: their VMs, wallet state,
+    S3 addresses prefix (downloaders fetch what THIS cohort's uploaders publish)
+    and monitoring stack are all keyed by the extension, so a mixed-version run
+    gets per-cohort metrics for free.
+    """
+    return Manifest.model_validate(
+        {
+            "name": "DEV-02",
+            "kind": "testnet-extension",
+            "purpose": "mixed-version client cohort",
+            "ssh_key_path": SSH,
+            "extension": {
+                "source": "DEV-01",
+                "mode": True,
+                "binaries": {
+                    "ant_node": {"version": "2.0"},
+                    "ant": {"version": "0.4.1"},
+                },
+                "nodes": {
+                    "per_vm": 10,
+                    "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+                },
+                "clients": {
+                    "uploaders": [
+                        {"provider": "vultr", "region": "syd", "file_size_mb": 100}
+                    ],
+                    "downloaders": [{"provider": "digital_ocean", "region": "lon1"}],
+                },
+            },
+        }
+    )
+
+
+def test_extension_with_clients_deploys_client_tier():
+    steps = build_deploy_steps(_extension_with_clients())
+    cmds = [s.argv[:2] for s in steps]
+    cinfra = next(s for s in steps if s.argv[:2] == ["clients", "infra"])
+    assert cinfra.group == "infra" and cinfra.lane == "clients"
+    assert cmds.index(["clients", "provision"]) > cmds.index(["nodes", "start"])
+    assert cmds.index(["clients", "start"]) == cmds.index(["clients", "provision"]) + 1
+    assert cmds[-1] == ["deployments", "generate-inventory"]
+    cprov = next(s for s in steps if s.argv[:2] == ["clients", "provision"])
+    assert "--ant-version" in cprov.argv and "0.4.1" in cprov.argv
+    # Metrics land in the EXTENSION's own InfluxDB, not the source's: each
+    # client-version cohort records and compares as its own deployment.
+    assert cprov.argv[cprov.argv.index("--monitoring-name") + 1] == "DEV-02"
+
+
+def test_extension_with_clients_destroy_order():
+    steps = build_destroy_steps(_extension_with_clients())
+    cmds = [s.argv[:2] for s in steps]
+    # Clients drain first (stopping uploaders + draining wallets needs live
+    # VMs); unextend stays last so bootstrap state outlives every tier.
+    assert cmds[0] == ["clients", "destroy"]
+    assert cmds.index(["clients", "destroy"]) < cmds.index(["nodes", "destroy"])
+    assert steps[-1].argv[:2] == ["deployments", "unextend"]
+
+
+def test_extension_clients_require_ant_binary():
+    manifest = _extension_with_clients().model_dump()
+    raw = {
+        "name": "DEV-02",
+        "kind": "testnet-extension",
+        "purpose": "mixed-version client cohort",
+        "ssh_key_path": SSH,
+        "extension": {
+            "source": "DEV-01",
+            "binaries": {"ant_node": {"version": "2.0"}},
+            "nodes": {
+                "per_vm": 10,
+                "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
+            },
+            "clients": manifest["extension"]["clients"],
+        },
+    }
+    with pytest.raises(Exception, match="extension.binaries.ant is required"):
+        Manifest.model_validate(raw)
+
+
 def test_clients_bootstrap_cache_token_in_specs():
     m = _minimal(
         binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "1.0"}},

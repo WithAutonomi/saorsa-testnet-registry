@@ -347,9 +347,11 @@ NOTE: the MCP server currently still shells out to the pre-split `infra`/`destro
 A testnet can be deployed as an **extension** of another — it reuses the source testnet's bootstrap VMs and peers with them, but has its own fresh node VMs (typically running a different `ant-node` binary for compatibility testing). Commands:
 
 - `deployments extend --name DEV-02 --source DEV-01` — seeds DEV-02's state with a copy of DEV-01's `bootstrap_nodes` / `bootstrap_ip` / `bootstrap_port` and records `shared_bootstrap_from: "DEV-01"`. No infrastructure is created. Idempotent: re-running refreshes the bootstrap fields from the source.
-- `deployments unextend --name DEV-02 --force` — inverse: deletes DEV-02's deployment state. Never touches the source. Refuses if DEV-02 still has nodes (run `nodes destroy` first).
+- `deployments unextend --name DEV-02 --force` — inverse: deletes DEV-02's deployment state. Never touches the source. Refuses if DEV-02 still has nodes or clients (run `nodes destroy` / `clients destroy` first).
 
 The pipeline for an extension skips the bootstrap/genesis stages entirely: `deployments extend` → `nodes infra` → `nodes provision` → `nodes start`. Destroy: `nodes destroy` → `deployments unextend`.
+
+An extension may also carry its **own client tier** (`extension.clients`, same shape as `testnet.clients`, requires `extension.binaries.ant`) — the way to run a second client-version cohort against the same network for mixed-version testing. Extension clients ride the normal `clients infra` → `clients provision` → `clients start` pipeline under the extension's name: they bootstrap off the seeded (source) bootstrap peers, publish/fetch upload addresses under the extension's own S3 prefix (its downloaders consume its uploaders' addresses, not the source's), and report metrics to the extension's own monitoring stack — so each cohort's client metrics stay separable per deployment name. Destroy order becomes `clients destroy` → `nodes destroy` → `deployments unextend`.
 
 `bootstraps destroy` now scans for any deployment whose `shared_bootstrap_from` matches the name being destroyed and refuses if dependents exist. `--force` does not override this — the user must `deployments unextend` each dependent first.
 
