@@ -95,6 +95,34 @@ submit_metric() {
         --data-binary "$line_protocol" || echo "WARN: failed to submit metric to InfluxDB"
 }
 
+# Exact ANT balance of this uploader's wallet in atto (an integer string), or
+# empty when the RPC call fails. `ant wallet balance` needs no network
+# connection — it is a single EVM read against the configured RPC — so the
+# ~1s it costs bounds the per-upload overhead. Read immediately before and
+# after each `ant` process: the merkle payment awaits its receipt before any
+# PUT, so by process exit every payment the attempt made is already mined and
+# the before/after delta is exactly what that attempt spent. Balances can
+# exceed i64 (1000 ANT = 1e21 atto), so they travel as string fields and only
+# the delta is emitted numerically.
+wallet_balance_atto() {
+    local out
+    out=$("$ANT" --evm-network arbitrum-sepolia wallet balance 2>/dev/null) || { echo ""; return 0; }
+    out=$(printf '%s' "$out" | tail -n1 | tr -d '[:space:]')
+    if [[ "$out" =~ ^[0-9]+$ ]]; then
+        echo "$out"
+    else
+        echo ""
+    fi
+}
+
+# Settlement-version refusal markers (ADR-0013), matched against the attempt's
+# stderr. The first is the storer's terminal wording, surfaced by ant when the
+# refusal is corroborated and the upload aborts; the second is the per-peer
+# warning logged while a single refusal awaits corroboration, so an attempt
+# with refusal_seen=1 but refused=0 met one refusing peer and carried on.
+REFUSAL_TERMINAL_MARKER="too old to pay the current storage rate"
+REFUSAL_SEEN_MARKER="refused this client's settlement version"
+
 flush_to_s3() {
     # Rotate local buffer to last ADDRESSES_TAIL_SIZE lines, then upload.
     # If upload fails we keep the buffer and try again next flush window.
@@ -163,6 +191,7 @@ while true; do
     # so a failed run remains diagnosable.
     output_file="/tmp/ant-upload-${seq_num}.json"
     stderr_file="/tmp/ant-upload-${seq_num}.err"
+    wallet_before=$(wallet_balance_atto)
     start_ns=$(date +%s%N)
 
     HEAPTRACK_PREFIX=()
@@ -180,11 +209,15 @@ while true; do
 
     end_ns=$(date +%s%N)
     total_ms=$(( (end_ns - start_ns) / 1000000 ))
+    wallet_after=$(wallet_balance_atto)
 
     # Parse the JSON record. Older `ant` binaries that don't carry the
     # chunk_attempts_total / retries_histogram / store_durations_ms fields
     # (added in WithAutonomi/ant-client PR #87) fall back to zeros so the
-    # script keeps working unchanged.
+    # script keeps working unchanged. The record is present on success AND on
+    # a partial_upload failure (ant prints the JSON, carrying what the failed
+    # attempt spent, before exiting non-zero), so cost is read on both paths;
+    # an attempt that aborted before paying prints no JSON and reads as 0.
     parsed_fields=$(python3 - "$output_file" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -205,6 +238,12 @@ hist = list(data.get("retries_histogram") or [0, 0, 0, 0])
 hist = (hist + [0, 0, 0, 0])[:4]
 durs = [int(v) for v in (data.get("store_durations_ms") or []) if isinstance(v, (int, float))]
 
+def atto(v):
+    try:
+        return str(int(str(v)))
+    except (TypeError, ValueError):
+        return "0"
+
 print(
     data.get("elapsed_secs", 0),
     data.get("address") or "-",
@@ -215,12 +254,16 @@ print(
     hist[0], hist[1], hist[2], hist[3],
     pct(durs, 0.50), pct(durs, 0.95),
     max(durs) if durs else 0,
+    atto(data.get("storage_cost_atto")),
+    atto(data.get("gas_cost_wei")),
+    data.get("error") or "-",
 )
 PY
 )
     read -r upload_secs address chunks_stored chunks_failed total_chunks \
         chunk_attempts_total retries_round_0 retries_round_1 retries_round_2 retries_round_3 \
         store_duration_p50_ms store_duration_p95_ms store_duration_max_ms \
+        storage_cost_atto gas_cost_wei error_kind \
         <<< "$parsed_fields"
     upload_secs="${upload_secs:-0}"
     address="${address:-}"
@@ -236,13 +279,53 @@ PY
     store_duration_p50_ms="${store_duration_p50_ms:-0}"
     store_duration_p95_ms="${store_duration_p95_ms:-0}"
     store_duration_max_ms="${store_duration_max_ms:-0}"
+    storage_cost_atto="${storage_cost_atto:-0}"
+    gas_cost_wei="${gas_cost_wei:-0}"
+    error_kind="${error_kind:-}"
+    [ "$error_kind" = "-" ] && error_kind=""
+
+    # Settlement-refusal classification from stderr (see the markers above).
+    refused=0
+    refusal_seen=0
+    if grep -qF -- "$REFUSAL_TERMINAL_MARKER" "$stderr_file" 2>/dev/null; then
+        refused=1
+    fi
+    if [ "$refused" -eq 1 ] || grep -qF -- "$REFUSAL_SEEN_MARKER" "$stderr_file" 2>/dev/null; then
+        refusal_seen=1
+    fi
+
+    # Spend and cost fields. Exact integer arithmetic in Python: the balances
+    # are beyond i64, so they are emitted as string fields, while the delta and
+    # the ant-reported costs are emitted as i64 when they fit (they always do
+    # for a single upload) and dropped otherwise rather than rounded.
+    spend_fields=$(python3 - "$wallet_before" "$wallet_after" "$storage_cost_atto" "$gas_cost_wei" <<'PY'
+import sys
+before, after, cost, gas = sys.argv[1:5]
+parts = []
+
+def i64(name, value):
+    if -2**63 < value < 2**63:
+        parts.append(f"{name}={value}i")
+
+if before and after:
+    i64("wallet_spend_atto", int(before) - int(after))
+if before:
+    parts.append(f'wallet_before_atto="{before}"')
+if after:
+    parts.append(f'wallet_after_atto="{after}"')
+i64("storage_cost_atto", int(cost))
+i64("gas_cost_wei", int(gas))
+print(",".join(parts))
+PY
+)
+    wallet_spend_display="${wallet_before:-?}->${wallet_after:-?}"
 
     if [ "$exit_code" -eq 0 ] && [ -n "$address" ]; then
         echo "$address" >> "$ADDRESSES_FILE"
         addresses_since_flush=$((addresses_since_flush + 1))
-        echo "[$(date -u +%H:%M:%S)] Upload #${seq_num} OK: address=${address} total=${total_ms}ms upload_time=${upload_secs}s"
+        echo "[$(date -u +%H:%M:%S)] Upload #${seq_num} OK: address=${address} total=${total_ms}ms upload_time=${upload_secs}s cost_atto=${storage_cost_atto} wallet=${wallet_spend_display} refusal_seen=${refusal_seen}"
     else
-        echo "[$(date -u +%H:%M:%S)] Upload #${seq_num} FAILED: exit_code=${exit_code} total=${total_ms}ms"
+        echo "[$(date -u +%H:%M:%S)] Upload #${seq_num} FAILED: exit_code=${exit_code} total=${total_ms}ms error=${error_kind:-none} refused=${refused} cost_atto=${storage_cost_atto} wallet=${wallet_spend_display}"
     fi
 
     # Flush to S3 if enough addresses accrued or enough time elapsed
@@ -267,7 +350,14 @@ PY
     # timestamp would land the point in the future, hiding it behind the
     # implicit `stop: now()` of every read query. The client's perceived
     # upload-start time is still preserved in the `start_ns` field.
-    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,chunks_stored=${chunks_stored}i,chunks_failed=${chunks_failed}i,total_chunks=${total_chunks}i,chunk_attempts_total=${chunk_attempts_total}i,retries_round_0=${retries_round_0}i,retries_round_1=${retries_round_1}i,retries_round_2=${retries_round_2}i,retries_round_3=${retries_round_3}i,store_duration_p50_ms=${store_duration_p50_ms}i,store_duration_p95_ms=${store_duration_p95_ms}i,store_duration_max_ms=${store_duration_max_ms}i"
+    #
+    # refused / refusal_seen / error_kind / storage_cost_atto / gas_cost_wei /
+    # wallet_*_atto are the ADR-0013 settlement-gate fields: `refused=1` with
+    # `wallet_spend_atto=0` is an upload turned away before it paid anything.
+    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,chunks_stored=${chunks_stored}i,chunks_failed=${chunks_failed}i,total_chunks=${total_chunks}i,chunk_attempts_total=${chunk_attempts_total}i,retries_round_0=${retries_round_0}i,retries_round_1=${retries_round_1}i,retries_round_2=${retries_round_2}i,retries_round_3=${retries_round_3}i,store_duration_p50_ms=${store_duration_p50_ms}i,store_duration_p95_ms=${store_duration_p95_ms}i,store_duration_max_ms=${store_duration_max_ms}i,refused=${refused}i,refusal_seen=${refusal_seen}i,error_kind=\"${error_kind}\""
+    if [ -n "$spend_fields" ]; then
+        line="${line},${spend_fields}"
+    fi
     submit_metric "$line"
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"
