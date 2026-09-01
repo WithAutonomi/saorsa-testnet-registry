@@ -532,9 +532,21 @@ State these in the final report rather than working around them:
   column.
 - **Connection-error counts cannot be backfilled**, so a gate is only assessable
   when both the candidate and the baseline recorded counts under the label being
-  compared. Baselines from the 2026-08-18 train onward carry both `full-run` and
-  `steady-state`; anything earlier carries neither, and those gates read NOT
-  ASSESSED against it. That is expected, not a failure of the run.
+  compared. Do not assume a given baseline carries a label — **check it**, because
+  which runs carry what is a history of who followed this prose on the day, not a
+  cutoff date:
+
+  ```sql
+  SELECT deployment_id, window_label, count(*) FROM deployment_log_event_counts
+  WHERE deployment_id IN (<candidate>, <baseline>) GROUP BY 1, 2;
+  ```
+
+  Measured on the registry: #513 (2026-08-11) `full-run` only; #532 (2026-08-18)
+  both; **#544 (2026-08-26) `full-run` only**; #566 (2026-09-01) both. Recording
+  both labels only became mandatory in this skill on 2026-08-26 at 21:01 UTC —
+  about three hours after #544's extraction that same afternoon — so #544 missed
+  it and, its Elasticsearch being long destroyed, never can. A gate reading NOT
+  ASSESSED for that reason is expected, not a failure of the run.
 - No comparison or verdict tool. This skill stops at "run recorded".
 - No CLI or metric for record-store counts, so the mixed-version chunk-storage
   criterion needs an SSH check. The chunk store is LMDB, so what is actually
