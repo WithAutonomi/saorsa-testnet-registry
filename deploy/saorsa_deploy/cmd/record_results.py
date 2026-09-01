@@ -646,7 +646,33 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
     if not claims:
         return
 
+    # Indexed twice. The locator is the reliable key: both upload tables record
+    # the `source_url` they fetched, and the claim records the `locator_used`
+    # it handed out, so the two sides hold the same string by construction.
+    #
+    # The name is NOT reliable, and matching on it alone was V2-1058. An
+    # uploader records the raw percent-encoded URL basename
+    # (`NBC%20Atlanta1%2083.avi`) while the pool catalogues the decoded name
+    # (`NBC Atlanta1 83.avi`), so every file whose name contains a space or `#`
+    # failed to match and its claim was left open — reported as "no matching
+    # upload result", which reads as "the run never touched this file" while
+    # the file was in fact on the network and paid for. It stayed a name match
+    # as a *fallback* only, for a row predating `source_url` or a locator that
+    # was rewritten after the upload.
+    by_locator: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
+
+    def _index(locator: str | None, name: str | None, payload: dict) -> None:
+        for table, key in ((by_locator, locator), (by_name, name)):
+            if not key:
+                continue
+            existing = table.get(key)
+            if existing is not None and existing["complete"] and not payload["complete"]:
+                # A file uploaded successfully on one attempt and partially on
+                # another is on the network: the success wins.
+                continue
+            table[key] = payload
+
     if kind == "prod-uploaders":
         for row in repo.list_prod_upload_results_for_deployment(deployment.id):
             # Partials matter as much as successes. A part-uploaded file put
@@ -659,31 +685,34 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
                 complete = False
             else:
                 continue
-            existing = by_name.get(row.file_name)
-            if existing is not None and existing["complete"] and not complete:
-                # A file uploaded successfully on one attempt and partially on
-                # another is on the network: the success wins.
-                continue
-            by_name[row.file_name] = {
-                "complete": complete,
-                "address": row.address,
-                "chunks_stored": row.chunks_stored,
-                "chunks_failed": row.chunks_failed,
-                "total_chunks": row.total_chunks,
-                "storage_cost_atto": row.storage_cost_atto,
-                "gas_cost_wei": row.gas_cost_wei,
-            }
+            _index(
+                row.source_url,
+                row.file_name,
+                {
+                    "complete": complete,
+                    "address": row.address,
+                    "chunks_stored": row.chunks_stored,
+                    "chunks_failed": row.chunks_failed,
+                    "total_chunks": row.total_chunks,
+                    "storage_cost_atto": row.storage_cost_atto,
+                    "gas_cost_wei": row.gas_cost_wei,
+                },
+            )
     elif kind == "prod-canary":
         for row in repo.list_prod_canary_uploads_for_deployment(deployment.id):
-            by_name[row.file_name] = {
-                "complete": True,
-                "address": row.top_address,
-                "chunks_stored": None,
-                "chunks_failed": None,
-                "total_chunks": row.num_chunks,
-                "storage_cost_atto": row.storage_cost_atto,
-                "gas_cost_wei": row.gas_cost_wei,
-            }
+            _index(
+                row.source_url,
+                row.file_name,
+                {
+                    "complete": True,
+                    "address": row.top_address,
+                    "chunks_stored": None,
+                    "chunks_failed": None,
+                    "total_chunks": row.num_chunks,
+                    "storage_cost_atto": row.storage_cost_atto,
+                    "gas_cost_wei": row.gas_cost_wei,
+                },
+            )
     else:
         return
 
@@ -695,7 +724,16 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
         pool_file = pool_repo.get_pool_file(claim.file_id)
         if pool_file is None:
             continue
-        payload = dict(by_name.get(pool_file.name) or {})
+        # `locator_used` before the canonical row's own locator: a claim
+        # attaches to the canonical file, but the content may be reachable two
+        # ways (a local copy and an Internet Archive URL), and the run fetched
+        # exactly one of them.
+        match = (
+            by_locator.get(claim.locator_used or "")
+            or by_locator.get(pool_file.locator)
+            or by_name.get(pool_file.name)
+        )
+        payload = dict(match or {})
         if not payload:
             if claim.is_open:
                 still_open += 1

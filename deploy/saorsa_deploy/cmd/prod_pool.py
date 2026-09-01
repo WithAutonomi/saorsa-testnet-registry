@@ -1472,8 +1472,16 @@ def cmd_prod_pool_import_history(args) -> None:
         console.print("[yellow]No recorded production uploads to import.[/yellow]")
         return
 
+    # Locator first, name second — see V2-1058. The recorded `file_name` is the
+    # raw percent-encoded URL basename while the pool holds the decoded name,
+    # so a name-only match misses every file with a space or `#` in it. Here
+    # that was worse than a missed claim: with --catalogue-missing the miss
+    # made the command catalogue a *second* pool entry for content already in
+    # the pool, splitting one file's history across two rows.
+    by_locator: dict[str, object] = {}
     by_name: dict[str, list] = {}
     for pool_file in repo.list_pool_files(active=None):
+        by_locator[pool_file.locator] = pool_file
         by_name.setdefault(pool_file.name, []).append(pool_file)
 
     imported = 0
@@ -1523,7 +1531,8 @@ def cmd_prod_pool_import_history(args) -> None:
             deployment_id, (ClaimSource.PROD_UPLOADERS, None)
         )
         source = known_source or resolved_source
-        candidates = by_name.get(name)
+        exact = by_locator.get(source_url) if source_url else None
+        candidates = [exact] if exact is not None else by_name.get(name)
         if not candidates:
             if not getattr(args, "catalogue_missing", False):
                 unmatched += 1

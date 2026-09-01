@@ -504,3 +504,53 @@ class TestCatalogueMissing:
 
         assert len(pool_repo.list_pool_files(active=None)) == 1
         assert len(pool_repo.list_pool_claims()) == 1
+
+
+class TestPercentEncodedNames:
+    """V2-1058, the second call site.
+
+    The uploader records the raw percent-encoded URL basename while the pool
+    holds the decoded name, so a name-only match misses every file with a
+    space or `#`. Here the miss was worse than a stuck claim: under
+    --catalogue-missing it made the command catalogue a *second* pool entry
+    for content the pool already held, splitting one file's history in two and
+    leaving the duplicate available for a canary to draw.
+    """
+
+    def test_an_encoded_name_matches_the_existing_entry_by_locator(
+        self, wired, capsys
+    ):
+        pool_repo, _, session = wired
+        locator = "https://example.org/NBC%20Atlanta1%2083.avi"
+        pool_file, _ = pool_repo.add_pool_file(
+            PoolFileKind.URL, locator, "NBC Atlanta1 83.avi", size_bytes=50 * MIB
+        )
+        deployment = _deployment(session, "STG-UL-01")
+        _upload_result(session, deployment, "NBC%20Atlanta1%2083.avi")
+
+        prod_pool.cmd_prod_pool_import_history(_args())
+
+        claims = pool_repo.list_pool_claims()
+        assert len(claims) == 1
+        assert claims[0].file_id == pool_file.id
+        assert claims[0].status is ClaimStatus.UPLOADED
+        out = _flat(capsys.readouterr().out)
+        assert "imported 1" in out
+        assert "unmatched 0" in out
+
+    def test_catalogue_missing_does_not_duplicate_an_encoded_name(
+        self, wired, capsys
+    ):
+        # The regression that matters: one file must not become two rows.
+        pool_repo, _, session = wired
+        locator = "https://example.org/NBC%20Atlanta1%2083.avi"
+        pool_repo.add_pool_file(
+            PoolFileKind.URL, locator, "NBC Atlanta1 83.avi", size_bytes=50 * MIB
+        )
+        deployment = _deployment(session, "STG-UL-01")
+        _upload_result(session, deployment, "NBC%20Atlanta1%2083.avi")
+
+        prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True))
+
+        assert len(pool_repo.list_pool_files(active=None)) == 1
+        assert "catalogued" not in _flat(capsys.readouterr().out)
