@@ -17,7 +17,12 @@ from saorsa_db.models.prod_canary import (
     DeploymentProdCanaryUpload,
     ProdCanaryInitialVerifyStatus,
 )
-from saorsa_db.models.prod_file_pool import ClaimSource, ClaimStatus, PoolFileKind
+from saorsa_db.models.prod_file_pool import (
+    ClaimSource,
+    ClaimStatus,
+    PoolFileKind,
+    ProdFilePoolClaim,
+)
 from saorsa_db.models.prod_upload_result import (
     DeploymentProdUploadResult,
     ProdUploadStatus,
@@ -323,3 +328,133 @@ class TestScoping:
             deployment_repo, deployment, "prod-uploaders", Console()
         )
         assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
+
+
+class TestPercentEncodedNames:
+    """V2-1058: the two sides spell the file name differently.
+
+    An uploader records the raw percent-encoded URL basename
+    (``NBC%20Atlanta1%2083.avi``); the pool catalogues the decoded name
+    (``NBC Atlanta1 83.avi``). Matching on the name alone therefore missed
+    every file containing a space or ``#`` — 195 of 378 claims on
+    PROD-CANARY-04, and one per run on STG-UL-01 — leaving files that were on
+    the network and paid for reported as "no matching upload result".
+
+    The locator is the same string on both sides, so it is matched on first.
+    """
+
+    def _claim_for(self, pool_repo, deployment, *, locator, name):
+        pool_repo.add_pool_file(
+            PoolFileKind.URL, locator, name, size_bytes=50 * MIB
+        )
+        return pool_repo.claim_pool_files(
+            PoolFileKind.URL,
+            {SizeClass.SMALL: 1},
+            ClaimSource.PROD_UPLOADERS,
+            deployment_id=deployment.id,
+            deployment_name=deployment.name,
+        )[0]
+
+    def _upload_row(self, deployment, *, locator, file_name):
+        return DeploymentProdUploadResult(
+            deployment_id=deployment.id,
+            client_hostname="host-1",
+            region="lon1",
+            source_url=locator,
+            file_name=file_name,
+            file_size_bytes=50 * MIB,
+            status=ProdUploadStatus.SUCCESS,
+            address="a7f3c2",
+            chunks_stored=63,
+            chunks_failed=0,
+            total_chunks=63,
+            started_at=NOW,
+            finished_at=NOW,
+        )
+
+    @pytest.mark.parametrize(
+        "encoded_name, decoded_name",
+        [
+            ("NBC%20Atlanta1%2083.avi", "NBC Atlanta1 83.avi"),
+            ("track%20%2312.mp3", "track #12.mp3"),
+        ],
+    )
+    def test_a_space_or_hash_in_the_name_still_resolves(
+        self, env, capsys, encoded_name, decoded_name
+    ):
+        from rich.console import Console
+
+        pool_repo, deployment_repo, session, deployment = env
+        locator = f"https://archive.org/download/item/{encoded_name}"
+        self._claim_for(
+            pool_repo, deployment, locator=locator, name=decoded_name
+        )
+        # The uploader records the encoded basename, never the pool's name.
+        session.add(
+            self._upload_row(deployment, locator=locator, file_name=encoded_name)
+        )
+        session.commit()
+
+        _resolve_pool_claims(
+            deployment_repo, deployment, "prod-uploaders", Console()
+        )
+
+        claim = pool_repo.list_pool_claims()[0]
+        assert claim.status is ClaimStatus.UPLOADED
+        assert claim.address == "a7f3c2"
+        assert claim.total_chunks == 63
+        assert "no matching upload result" not in _flat(capsys.readouterr().out)
+
+    def test_a_genuinely_absent_upload_is_still_left_open(self, env, capsys):
+        # The locator match must not become a way of guessing: a claim whose
+        # file was never uploaded stays open, which is the whole point of the
+        # open-claims list.
+        from rich.console import Console
+
+        pool_repo, deployment_repo, session, deployment = env
+        self._claim_for(
+            pool_repo,
+            deployment,
+            locator="https://archive.org/download/item/NBC%20Atlanta1%2083.avi",
+            name="NBC Atlanta1 83.avi",
+        )
+        session.add(
+            self._upload_row(
+                deployment,
+                locator="https://archive.org/download/item/something%20else.avi",
+                file_name="something%20else.avi",
+            )
+        )
+        session.commit()
+
+        _resolve_pool_claims(
+            deployment_repo, deployment, "prod-uploaders", Console()
+        )
+
+        assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
+        assert "no matching upload result" in _flat(capsys.readouterr().out)
+
+    def test_the_locator_actually_fetched_wins_over_the_canonical_row(self, env):
+        # A claim attaches to the canonical file, but a duplicate group may be
+        # reachable two ways and the run fetched exactly one of them. The
+        # upload records the URL it used, so that is what must match.
+        from rich.console import Console
+
+        pool_repo, deployment_repo, session, deployment = env
+        canonical = "https://archive.org/download/item/NBC%20Atlanta1%2083.avi"
+        fetched = "https://mirror.example.org/NBC%20Atlanta1%2083.avi"
+        claim = self._claim_for(
+            pool_repo, deployment, locator=canonical, name="NBC Atlanta1 83.avi"
+        )
+        session.get(ProdFilePoolClaim, claim.id).locator_used = fetched
+        session.add(
+            self._upload_row(
+                deployment, locator=fetched, file_name="NBC%20Atlanta1%2083.avi"
+            )
+        )
+        session.commit()
+
+        _resolve_pool_claims(
+            deployment_repo, deployment, "prod-uploaders", Console()
+        )
+        assert pool_repo.list_pool_claims()[0].status is ClaimStatus.UPLOADED
