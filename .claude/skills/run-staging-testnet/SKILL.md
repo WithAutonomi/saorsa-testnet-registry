@@ -147,6 +147,52 @@ stop to show the plan or ask for approval — the network shape is a standard,
 well-known configuration and the profile is not edited here. This applies to the
 plan and config only; it does not license skipping the Step 1 version confirmation.
 
+## Step 3a — Gas preflight (blocking)
+
+Uploader wallets are funded with a **fixed** amount of native ETH, so their runway is
+inversely proportional to the gas price. Check that the profile's `eth:` figures will
+survive a full run at *today's* price, before spending five hours finding out:
+
+```bash
+uv run saorsa-deploy clients estimate-gas \
+  --config deploy/manifests/runs/staging/STG-01.yaml \
+  --baseline-id <previous STG-01 run id>
+```
+
+It reads the current base fee from the chain, takes each uploader's throughput from
+the baseline run, and prints the ETH each one needs plus whether the funding wallet
+can cover the total. **Exit 2 means something is short** — either an uploader's `eth:`
+or the funding wallet itself.
+
+On exit 2, stop and hand back to the RM with the command's output. Two different
+fixes, and neither is yours to make unilaterally:
+
+- **An uploader is under-funded.** The command prints the exact `eth:` value for each
+  uploader, in manifest order. Raising them edits `deploy/manifests/profiles/staging-short.yaml`,
+  which changes the profile SHA — a re-baselining event that needs the RM, exactly as
+  a shape change would.
+- **The funding wallet is short.** No profile edit helps; the wallet needs topping up
+  before the run. Top-up is per-wallet and sequential, so an under-funded funder does
+  **not** fail cleanly up front — it funds the first few uploaders and then runs dry,
+  leaving a half-provisioned run.
+
+Do not proceed on a exit 2 by reducing the run's scope or by hoping. This exists
+because staging run #566 lost six of ten uploaders from ~T0+3h57m: whole-run upload
+success came out at 96.02% and the mixed-version phase at 79.35%, both below their
+hard-gate floors, and the verification could not close as a result. Nothing warned
+beforehand, and mid-run the failure looks exactly like a network fault.
+
+Two notes on reading the output:
+
+- The estimate uses each baseline client's **rate over its own active window**, not
+  its raw upload count. A client that exhausted its wallet mid-run stopped early, so
+  its raw count understates a funded client's work — sizing from it would reproduce
+  the shortfall. The command says which clients it corrected.
+- It sizes against the base fee **right now**. That fee moved 0.025 → 0.050 → 0.124 →
+  0.437 gwei on four consecutive days around this feature's calibration, so an
+  estimate taken a day early can already be stale. Run it immediately before the
+  deploy, not the evening before.
+
 ## Step 4 — Deploy
 
 ```bash
@@ -532,9 +578,21 @@ State these in the final report rather than working around them:
   column.
 - **Connection-error counts cannot be backfilled**, so a gate is only assessable
   when both the candidate and the baseline recorded counts under the label being
-  compared. Baselines from the 2026-08-18 train onward carry both `full-run` and
-  `steady-state`; anything earlier carries neither, and those gates read NOT
-  ASSESSED against it. That is expected, not a failure of the run.
+  compared. Do not assume a given baseline carries a label — **check it**, because
+  which runs carry what is a history of who followed this prose on the day, not a
+  cutoff date:
+
+  ```sql
+  SELECT deployment_id, window_label, count(*) FROM deployment_log_event_counts
+  WHERE deployment_id IN (<candidate>, <baseline>) GROUP BY 1, 2;
+  ```
+
+  Measured on the registry: #513 (2026-08-11) `full-run` only; #532 (2026-08-18)
+  both; **#544 (2026-08-26) `full-run` only**; #566 (2026-09-01) both. Recording
+  both labels only became mandatory in this skill on 2026-08-26 at 21:01 UTC —
+  about three hours after #544's extraction that same afternoon — so #544 missed
+  it and, its Elasticsearch being long destroyed, never can. A gate reading NOT
+  ASSESSED for that reason is expected, not a failure of the run.
 - No comparison or verdict tool. This skill stops at "run recorded".
 - No CLI or metric for record-store counts, so the mixed-version chunk-storage
   criterion needs an SSH check. The chunk store is LMDB, so what is actually

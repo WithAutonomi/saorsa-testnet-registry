@@ -1,0 +1,120 @@
+# Gas-funding model for testnet uploader client wallets.
+#
+# This is CONFIG, not code, for the same reason the gate thresholds beside it
+# are: the numbers are an empirical calibration against a real run and will be
+# recalibrated as the chain, the client and the profile change. Recalibrating
+# must not require a release of saorsa-deploy.
+#
+# `version` is echoed into every estimate. An estimate produced under one
+# version is only comparable to another if the model did not change in
+# between -- the version is what tells you to check.
+version: 1
+
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS
+#
+# Uploader wallets are funded with a FIXED amount of native ETH, so their
+# runway is inversely proportional to the gas price. On staging run #566
+# (2026-09-01) the Arbitrum Sepolia base fee had risen ~10x in the preceding
+# three days and six of ten uploaders exhausted their wallets from ~T0+3h57m,
+# failing every subsequent upload. That dragged whole-run upload success to
+# 96.02% and the mixed-version phase to 79.35% -- both below their hard-gate
+# floors, for a reason with nothing to do with the release under test.
+#
+# Throughput was NOT the cause: #566 did less work than its baseline #544
+# (3571 uploads / 470 GB vs 3663 / 483 GB) with the same transaction counts.
+# The price moved, the funding did not.
+
+# ---------------------------------------------------------------------------
+# THE MODEL
+#
+# Gas UNITS consumed per upload are a property of the client and the file, not
+# of the market, so they are stable across runs. Cost is units x price. We
+# therefore calibrate cost-per-upload at a known reference base fee and scale
+# linearly by the ratio of the current base fee to that reference.
+#
+# Scaling on BASE FEE (not on the effective price actually paid) is deliberate.
+# The effective price includes a priority fee and the estimator's 1.2x buffer;
+# assuming those scale with the base fee makes the ratio cancel them, which is
+# more robust than trying to predict them.
+#
+# Cost per upload is affine in file size, not proportional: there is a fixed
+# per-transaction overhead plus a per-GB component. Fitting a pure per-GB rate
+# under-funds small-file clients badly -- they pay the fixed overhead most
+# often. Measured spread across the calibration set is 3.4e-3 ETH/GB at 20 MB
+# versus 1.3e-3 ETH/GB at 1000 MB.
+model:
+  # eth_per_upload = fixed_eth_per_upload + eth_per_gb * file_size_gb
+  # ...evaluated at reference_base_fee_gwei, then scaled by
+  # (current_base_fee_gwei / reference_base_fee_gwei).
+  fixed_eth_per_upload: 5.0888e-05
+  eth_per_gb: 1.2833e-03
+  reference_base_fee_gwei: 0.145
+
+# Multiplier applied to the modelled requirement.
+#
+# It absorbs three distinct things and must not be trimmed to just one:
+#   1. Fit error. Worst under-estimate across the calibration set is 10.2%.
+#   2. Intra-run price drift. #566's base fee rose 0.117 -> 0.221 gwei DURING
+#      the run; an estimate taken at T0 is already stale by the end.
+#   3. Price drift between the estimate and the run, and between runs. The
+#      fee moved 0.025 -> 0.050 -> 0.124 -> 0.437 gwei on four consecutive
+#      days around this calibration.
+#
+# 3.0 covers a doubling of the price mid-run on top of the fit error. Raise it
+# while the fee is trending; there is no cost to over-funding beyond the
+# funding wallet's balance, since the surplus is swept back on destroy.
+safety_factor: 3.0
+
+# Round each per-uploader figure UP to a multiple of this, so the manifest
+# carries a legible number rather than 0.4187364.
+round_up_to_eth: 0.05
+
+# Never recommend less than this per uploader, however small the model says.
+# A client that cannot afford a single payment transaction fails in a way that
+# looks like a network fault (see the failure mode described above).
+minimum_eth_per_uploader: 0.05
+
+# ---------------------------------------------------------------------------
+# CALIBRATION PROVENANCE
+#
+# Derived from staging run #566 (deployment id 566, 2026-09-01, profile
+# staging-short @ c44451e), from the six uploaders that exhausted their wallets
+# and therefore have a KNOWN spend: funded amount minus the residual balance
+# observed on chain. The four survivors give only lower bounds and are excluded
+# -- including them would bias the fit downward and under-fund the next run.
+#
+# Least-squares fit over these points; worst under-estimate 10.2% (at 300 MB).
+calibration:
+  source_deployment_id: 566
+  source_date: "2026-09-01"
+  profile_sha: c44451e
+  method: >-
+    Spend per client taken as (funded ETH - residual on-chain balance).
+    Denominator is SUCCESSFUL uploads only: an attempt that failed at the
+    payment step never sent a transaction and so consumed no gas.
+  reference_base_fee_source: >-
+    Time-weighted mean of Arbitrum Sepolia baseFeePerGas over the run window
+    15:37-20:49Z, sampled from the public RPC.
+  points:
+    - { client: DE1-8,   size_gb: 0.02, payment: default,   funded_eth: 0.04, residual_eth: 0.000144, uploads: 594 }
+    - { client: RBX-A-9, size_gb: 0.02, payment: default,   funded_eth: 0.04, residual_eth: 0.000101, uploads: 597 }
+    - { client: UK1-10,  size_gb: 0.02, payment: default,   funded_eth: 0.04, residual_eth: 0.000138, uploads: 597 }
+    - { client: sgp-6,   size_gb: 0.05, payment: default,   funded_eth: 0.04, residual_eth: 0.000185, uploads: 367 }
+    - { client: ams-4,   size_gb: 0.30, payment: no-merkle, funded_eth: 0.10, residual_eth: 0.000508, uploads: 205 }
+    - { client: UK1-2,   size_gb: 1.00, payment: no-merkle, funded_eth: 0.10, residual_eth: 0.000982, uploads: 75  }
+
+# ---------------------------------------------------------------------------
+# KNOWN LIMITS -- state these rather than working around them.
+#
+# * Payment mode is NOT a model variable, though it matters: merkle batches
+#   many chunks into one payment. SBG5-1 (1000 MB, merkle) did 125 uploads on
+#   135 transactions and survived, while UK1-2 (1000 MB, no-merkle) needed 306
+#   transactions for 75 uploads and did not. The calibration set is
+#   default/no-merkle only, so the model OVER-funds merkle clients. That is the
+#   safe direction, and it is why the fit is not split by mode on six points.
+# * The fit is six points from ONE run at one gas regime. It has no
+#   cross-run validation, because no earlier run recorded per-wallet spend.
+# * Arbitrum folds L1 calldata cost into inflated gas UNITS rather than the
+#   price, so baseFeePerGas tracks only the L2 component. The ratio-scaling
+#   above assumes the L1 component moves with it, which is not guaranteed.

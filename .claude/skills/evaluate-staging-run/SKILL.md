@@ -411,9 +411,12 @@ State these in the final report rather than working around them:
   `disk_bytes_per_gb_stored` is NOT ASSESSED against an older baseline. No backfill is possible.
 - **Nothing records which staging run a release shipped on**, so the baseline is chosen by the
   operator and confirmed by hand every time.
-- **Connection-error counts cannot be backfilled**, so they are NOT ASSESSED against any
-  baseline recorded before the measurement existed. The 10% threshold is a starting point with
-  no run history behind it, not a calibrated level.
+- **Connection-error counts cannot be backfilled**, so a gate is assessable only when the
+  candidate AND the baseline both hold counts under the label being compared. Which runs hold
+  which label is not a cutoff date — it is a record of who ran the second invocation on the day,
+  so **query it, never assume it** (the `deployment_log_event_counts` check in Step 3). Measured:
+  #513 `full-run` only, #532 both, **#544 `full-run` only**, #566 both. The 10% threshold is a
+  starting point with no run history behind it, not a calibrated level.
 - **The memory-leak threshold is calibrated against the noise floor, not against a known leak.**
   It was set from four runs, none of which is known to contain one. A PASS there means "no
   fleet-wide RSS trend", not "no leak".

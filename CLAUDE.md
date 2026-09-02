@@ -1002,6 +1002,37 @@ See `deploy/README.md` §"Recording releases and channel state" for the full
 argument tables and the promote payload schema.
 
 
+### Sizing uploader gas funding (`clients estimate-gas`)
+
+Testnet uploader wallets hold a **fixed** amount of native ETH, so runway is inversely
+proportional to the gas price — when the price rises the same funding buys fewer
+payment transactions and an exhausted client fails **every** subsequent upload, in a
+way indistinguishable from a network fault in the gate data. Staging run #566
+(2026-09-01) lost six of ten uploaders that way after the Arbitrum Sepolia base fee
+rose ~10x in three days, putting whole-run upload success (96.02%) and the
+mixed-version phase (79.35%) below their hard-gate floors for a non-product reason.
+Throughput was **not** the cause — that run did less work than its baseline.
+
+`clients estimate-gas --config <manifest> --baseline-id <id>` is the read-only
+preflight, run as **Step 3a of the `run-staging-testnet` skill**. It reads the current
+base fee from the chain, takes per-uploader throughput from a previous run, and prints
+the ETH each uploader needs plus whether the funding wallet covers the total.
+**Exit 2 = something is short**; the fix is either the profile's `eth:` values (a
+profile SHA change, so a re-baselining event needing the RM) or a top-up of the
+funding wallet — no profile edit helps the latter.
+
+Three load-bearing details: throughput is taken as each client's **rate over its own
+active window**, never its raw count (a client that ran dry stopped early, so its
+count would teach the next run to under-fund); scaling is on **base fee**, so the
+priority fee and estimator buffer cancel in the ratio; and the funder check compares
+against the **full** recommended total, because top-up is per-wallet and sequential
+and a short funder leaves a half-provisioned run rather than failing up front.
+
+Model + calibration: `resources/gas/client-gas-model.yaml` (versioned config, like the
+gate thresholds — recalibration needs no release). Pure logic in `gas_model.py`, I/O in
+`cmd/estimate_client_gas.py`, tests in `deploy/tests/test_gas_model.py` (which assert
+the shipped config still reproduces its own six calibration points).
+
 ## Monitoring
 
 Optional per-testnet monitoring stack: InfluxDB 2.x (always) plus an **optional**

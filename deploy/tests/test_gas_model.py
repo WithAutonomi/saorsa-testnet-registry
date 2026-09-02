@@ -1,0 +1,504 @@
+"""Uploader gas-funding model and its `clients estimate-gas` wrapper.
+
+Staging run #566 lost six of ten uploaders to gas exhaustion mid-run because
+their wallets hold a FIXED amount of ETH and the Arbitrum Sepolia base fee had
+risen ~10x in three days. That pushed two hard gates below their floors for a
+reason unrelated to the release. These tests pin the behaviours that stop it
+recurring silently.
+"""
+import copy
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+import yaml
+
+from saorsa_deploy.gas_model import (
+    ClientRun,
+    GasModel,
+    GasModelError,
+    UploaderPlan,
+    estimate_funding,
+    estimate_uploader,
+    get_default_gas_model_path,
+    load_gas_model,
+    project_throughput,
+    rate_for_size,
+)
+
+
+@pytest.fixture()
+def model():
+    return load_gas_model()
+
+
+@pytest.fixture()
+def raw():
+    return yaml.safe_load(get_default_gas_model_path().read_text())
+
+
+# ---------------------------------------------------------------------------
+# The shipped config
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_model_loads(model):
+    assert model.version >= 1
+    assert model.reference_base_fee_gwei > 0
+    assert model.safety_factor >= 1.0
+
+
+def test_model_is_frozen(model):
+    with pytest.raises(Exception):
+        model.eth_per_gb = 1.0
+
+
+def test_shipped_model_reproduces_its_own_calibration(model, raw):
+    """The config must predict the run it was calibrated from.
+
+    This is the regression guard on the coefficients. An edit that fits the
+    numbers badly — or a units slip between ETH and gwei — shows up here as a
+    prediction that no longer matches the six measured points, rather than as
+    an under-funded run discovered four hours in.
+    """
+    for point in raw["calibration"]["points"]:
+        spent = point["funded_eth"] - point["residual_eth"]
+        actual_per_upload = spent / point["uploads"]
+        modelled = model.eth_per_upload(
+            point["size_gb"], model.reference_base_fee_gwei
+        )
+        rel = abs(modelled - actual_per_upload) / actual_per_upload
+        assert rel < 0.20, (
+            f"{point['client']}: model predicts {modelled:.3e} ETH/upload but "
+            f"the run actually spent {actual_per_upload:.3e} ({rel:.1%} off)"
+        )
+
+
+def test_safety_factor_exceeds_the_worst_calibration_underestimate(model, raw):
+    """The safety factor must cover the fit's own error, with room to spare.
+
+    It absorbs fit error AND intra-run price drift AND drift between runs. If
+    it ever drops below the fit's worst under-estimate it is absorbing nothing.
+    """
+    worst_under = 0.0
+    for point in raw["calibration"]["points"]:
+        spent = point["funded_eth"] - point["residual_eth"]
+        actual = spent / point["uploads"]
+        modelled = model.eth_per_upload(
+            point["size_gb"], model.reference_base_fee_gwei
+        )
+        if modelled < actual:
+            worst_under = max(worst_under, (actual - modelled) / actual)
+    assert model.safety_factor > 1.0 + worst_under
+
+
+# ---------------------------------------------------------------------------
+# Validation: a malformed model must fail loudly, never default quietly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key", ["fixed_eth_per_upload", "eth_per_gb", "reference_base_fee_gwei"]
+)
+def test_missing_model_coefficient_is_rejected(raw, key, tmp_path):
+    bad = copy.deepcopy(raw)
+    del bad["model"][key]
+    path = tmp_path / "m.yaml"
+    path.write_text(yaml.safe_dump(bad))
+    with pytest.raises(GasModelError, match=key):
+        load_gas_model(path)
+
+
+@pytest.mark.parametrize("key", ["safety_factor", "round_up_to_eth"])
+def test_zero_top_level_value_is_rejected(raw, key, tmp_path):
+    """A zero here would recommend funding every uploader with nothing."""
+    bad = copy.deepcopy(raw)
+    bad[key] = 0
+    path = tmp_path / "m.yaml"
+    path.write_text(yaml.safe_dump(bad))
+    with pytest.raises(GasModelError, match=key):
+        load_gas_model(path)
+
+
+def test_missing_version_is_rejected(raw, tmp_path):
+    bad = copy.deepcopy(raw)
+    del bad["version"]
+    path = tmp_path / "m.yaml"
+    path.write_text(yaml.safe_dump(bad))
+    with pytest.raises(GasModelError, match="version"):
+        load_gas_model(path)
+
+
+def test_missing_file_is_rejected(tmp_path):
+    with pytest.raises(GasModelError, match="not found"):
+        load_gas_model(tmp_path / "nope.yaml")
+
+
+# ---------------------------------------------------------------------------
+# The arithmetic
+# ---------------------------------------------------------------------------
+
+
+def _model(**over):
+    base = dict(
+        version=1,
+        fixed_eth_per_upload=1e-4,
+        eth_per_gb=1e-3,
+        reference_base_fee_gwei=0.1,
+        safety_factor=2.0,
+        round_up_to_eth=0.05,
+        minimum_eth_per_uploader=0.05,
+    )
+    base.update(over)
+    return GasModel(**base)
+
+
+def test_cost_scales_linearly_with_base_fee():
+    """Doubling the price doubles the cost. This is the whole mechanism."""
+    m = _model()
+    at_ref = m.eth_per_upload(1.0, 0.1)
+    at_double = m.eth_per_upload(1.0, 0.2)
+    assert at_double == pytest.approx(at_ref * 2)
+
+
+def test_cost_is_affine_in_size_not_proportional():
+    """A fixed per-transaction overhead exists and must not be modelled away.
+
+    Fitting a pure per-GB rate under-funds small-file clients badly: they pay
+    the overhead most often. A 10x smaller file must cost MORE than a tenth.
+    """
+    m = _model()
+    big = m.eth_per_upload(1.0, 0.1)
+    small = m.eth_per_upload(0.1, 0.1)
+    assert small > big / 10
+
+
+def test_safety_factor_applied_once_not_per_upload():
+    m = _model(safety_factor=3.0, round_up_to_eth=1e-12, minimum_eth_per_uploader=0)
+    per = m.eth_per_upload(0.5, 0.1)
+    est = estimate_uploader(UploaderPlan("x", 0.5, 100), 0.1, m)
+    assert est.modelled_eth == pytest.approx(per * 100 * 3.0)
+
+
+def test_recommendation_rounds_up_never_down():
+    m = _model(round_up_to_eth=0.05, minimum_eth_per_uploader=0)
+    est = estimate_uploader(UploaderPlan("x", 1.0, 100), 0.1, m)
+    assert est.recommended_eth >= est.modelled_eth
+    steps = est.recommended_eth / 0.05
+    assert steps == pytest.approx(round(steps), abs=1e-6)
+
+
+def test_exact_multiple_is_not_pushed_to_the_next_step():
+    """0.15 / 0.05 is 2.9999999999999996 in binary floating point."""
+    m = _model(
+        fixed_eth_per_upload=0.15,
+        eth_per_gb=0.0,
+        reference_base_fee_gwei=0.1,
+        safety_factor=1.0,
+        round_up_to_eth=0.05,
+        minimum_eth_per_uploader=0,
+    )
+    est = estimate_uploader(UploaderPlan("x", 0.0, 1), 0.1, m)
+    assert est.recommended_eth == pytest.approx(0.15)
+
+
+def test_minimum_floor_applies_to_a_tiny_workload():
+    """A client that cannot afford one transaction fails like a network fault."""
+    m = _model(minimum_eth_per_uploader=0.05)
+    est = estimate_uploader(UploaderPlan("x", 0.001, 1), 0.1, m)
+    assert est.recommended_eth == pytest.approx(0.05)
+
+
+def test_negative_upload_count_is_rejected():
+    with pytest.raises(GasModelError):
+        estimate_uploader(UploaderPlan("x", 1.0, -1), 0.1, _model())
+
+
+def test_zero_base_fee_is_rejected():
+    with pytest.raises(GasModelError):
+        _model().eth_per_upload(1.0, 0.0)
+
+
+def test_shortfall_and_adequacy():
+    m = _model()
+    plans = [
+        UploaderPlan("rich", 0.02, 10, current_eth=99.0),
+        UploaderPlan("poor", 1.0, 1000, current_eth=0.01),
+        UploaderPlan("unset", 1.0, 10),
+    ]
+    est = estimate_funding(plans, 0.1, m)
+    by = {u.plan.name: u for u in est.uploaders}
+    assert by["rich"].adequate is True
+    assert by["rich"].shortfall_eth == 0.0
+    assert by["poor"].adequate is False
+    assert by["poor"].shortfall_eth > 0
+    assert by["unset"].adequate is None
+
+
+def test_funder_check_uses_the_full_total_not_the_deficit():
+    """Top-up is per-wallet and sequential.
+
+    A funder that cannot cover the whole draw does not fail cleanly up front —
+    it funds the first few uploaders and then runs dry, leaving a
+    half-provisioned run. So the check is against the full recommendation.
+    """
+    m = _model()
+    plans = [UploaderPlan(f"u{i}", 1.0, 500, current_eth=0.9) for i in range(4)]
+    est = estimate_funding(plans, 0.1, m, funder_balance_eth=1.0)
+    assert est.total_recommended_eth > 1.0
+    assert est.funder_covers is False
+
+
+def test_funder_unknown_is_none_not_false():
+    est = estimate_funding([UploaderPlan("u", 1.0, 1)], 0.1, _model())
+    assert est.funder_covers is None
+
+
+def test_price_ratio_reports_the_multiple_of_the_reference():
+    est = estimate_funding([UploaderPlan("u", 1.0, 1)], 0.5, _model())
+    assert est.price_ratio == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# Projecting throughput — the correction that stops under-funding compounding
+# ---------------------------------------------------------------------------
+
+
+def test_rate_is_taken_over_the_active_window_not_the_run():
+    """A client that died early must not teach the next run to under-fund.
+
+    This is the crux. #566's UK1-2 managed 75 uploads before its wallet
+    emptied at 3.83h of a 5.18h run. Sizing from the raw count of 75 would
+    fund the next run for a truncated run — reproducing the exact shortfall.
+    Its RATE (19.6/h) projected over 5.18h is ~101 uploads.
+    """
+    t = project_throughput(
+        [ClientRun("uk1-2", uploads=75, active_hours=3.83, size_gb=1.0)],
+        run_hours=5.18,
+    )
+    rate = t.rate_by_size_gb[1.0]
+    assert rate == pytest.approx(75 / 3.83, rel=1e-6)
+    assert rate * 5.18 > 95
+    assert [c.host for c in t.truncated] == ["uk1-2"]
+
+
+def test_a_client_that_ran_the_whole_run_is_not_flagged_truncated():
+    t = project_throughput(
+        [ClientRun("ok", uploads=500, active_hours=5.0, size_gb=0.02)],
+        run_hours=5.18,
+    )
+    assert t.truncated == []
+
+
+def test_fastest_client_wins_when_several_share_a_size():
+    """Under-funding fails a run; over-funding is swept back on destroy."""
+    t = project_throughput(
+        [
+            ClientRun("slow", uploads=100, active_hours=5.0, size_gb=0.02),
+            ClientRun("fast", uploads=300, active_hours=5.0, size_gb=0.02),
+        ],
+        run_hours=5.0,
+    )
+    assert t.rate_by_size_gb[0.02] == pytest.approx(60.0)
+
+
+def test_zero_active_window_does_not_divide_by_zero():
+    t = project_throughput(
+        [ClientRun("blip", uploads=1, active_hours=0.0, size_gb=1.0)],
+        run_hours=5.0,
+    )
+    assert t.rate_by_size_gb[1.0] < 10
+
+
+def test_client_with_no_uploads_is_ignored():
+    t = project_throughput(
+        [ClientRun("dead", uploads=0, active_hours=5.0, size_gb=1.0)],
+        run_hours=5.0,
+    )
+    assert t.rate_by_size_gb == {}
+
+
+def test_rate_lookup_prefers_an_exact_size_match():
+    rates = {0.02: 100.0, 1.0: 20.0}
+    assert rate_for_size(1.0, rates) == 20.0
+
+
+def test_rate_lookup_borrows_only_across_comparable_sizes():
+    """A 20 MB client's rate says nothing useful about a 1 GB one."""
+    rates = {0.02: 100.0}
+    assert rate_for_size(1.0, rates) is None
+    assert rate_for_size(0.025, rates) == 100.0
+
+
+def test_rate_lookup_on_empty_history_returns_none():
+    assert rate_for_size(1.0, {}) is None
+
+
+# ---------------------------------------------------------------------------
+# The CLI wrapper
+# ---------------------------------------------------------------------------
+
+MODULE = "saorsa_deploy.cmd.estimate_client_gas"
+
+MANIFEST = """
+kind: testnet
+name: TEST-01
+purpose: "gas model test fixture"
+testnet:
+  binaries:
+    ant_node:
+      version: 0.18.1-rc.1
+    ant:
+      version: 0.3.6-rc.1
+  nodes:
+    per_vm: 15
+    providers:
+      digital_ocean:
+        vm_count: 1
+        regions_list: [lon1]
+        size: s-8vcpu-16gb
+        attached_volume_size: 100
+  clients:
+    uploaders:
+      - { provider: ovh, region: SBG5, file_size_mb: 1000, vm_size: b3-8, ant: 1000, eth: 0.5 }
+      - { provider: ovh, region: DE1, file_size_mb: 20, vm_size: b3-8, ant: 200, eth: 0.2 }
+    downloaders:
+      - { provider: digital_ocean, region: tor1 }
+"""
+
+
+@pytest.fixture()
+def manifest_path(tmp_path):
+    path = tmp_path / "manifest.yaml"
+    path.write_text(MANIFEST)
+    return str(path)
+
+
+def _args(**over):
+    defaults = {
+        "config": None,
+        "set": None,
+        "name": "STG-01",
+        "baseline_id": None,
+        "uploads_per_hour": 100.0,
+        "duration_hours": 5.0,
+        "base_fee_gwei": 0.42,
+        "network": "arbitrum-sepolia",
+        "funder_balance_eth": 100.0,
+        "model_path": None,
+    }
+    defaults.update(over)
+    return SimpleNamespace(**defaults)
+
+
+def test_exits_2_when_uploaders_are_under_funded(capsys, manifest_path):
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(_args(config=manifest_path, base_fee_gwei=50.0))
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "under-funded" in out
+
+
+def test_exits_0_when_funding_is_ample(capsys, manifest_path):
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(_args(config=manifest_path, base_fee_gwei=1e-6))
+    assert exc.value.code == 0
+    assert "adequate" in capsys.readouterr().out
+
+
+def test_exits_2_when_the_funding_wallet_cannot_cover_it(capsys, manifest_path):
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(
+            _args(config=manifest_path, base_fee_gwei=1e-6, funder_balance_eth=0.0001)
+        )
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "short of" in out
+    assert "half-provisioned" in out
+
+
+def test_baseline_id_without_a_database_exits_1(capsys, manifest_path):
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with patch(f"{MODULE}.get_repository", return_value=None):
+        with pytest.raises(SystemExit) as exc:
+            cmd_estimate_client_gas(
+                _args(
+                    config=manifest_path,
+                    baseline_id=1,
+                    uploads_per_hour=None,
+                )
+            )
+    assert exc.value.code == 1
+    assert "DATABASE_URL" in capsys.readouterr().out
+
+
+def test_unknown_network_exits_1(capsys, manifest_path):
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(_args(config=manifest_path, network="not-a-chain"))
+    assert exc.value.code == 1
+    assert "Unknown EVM network" in capsys.readouterr().out
+
+
+def test_base_fee_is_not_fetched_when_supplied(manifest_path):
+    """--base-fee-gwei must make the command work with no chain access."""
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with patch(f"{MODULE}._fetch_base_fee_gwei") as fetch:
+        with pytest.raises(SystemExit):
+            cmd_estimate_client_gas(_args(config=manifest_path))
+    fetch.assert_not_called()
+
+
+def test_argv_plumbing_reaches_the_handler():
+    """The exact invocation the staging skill emits must parse."""
+    from saorsa_deploy.main import main
+
+    seen = {}
+
+    def _stub(args):
+        seen["config"] = args.config
+        seen["baseline"] = args.baseline_id
+
+    with patch(f"{MODULE}.cmd_estimate_client_gas", _stub):
+        main(
+            [
+                "clients",
+                "estimate-gas",
+                "--config",
+                "deploy/manifests/runs/staging/STG-01.yaml",
+                "--baseline-id",
+                "566",
+            ]
+        )
+    assert seen["baseline"] == 566
+
+
+def test_a_current_value_below_the_minimum_floor_is_under_funded(
+    capsys, tmp_path
+):
+    """The floor is a hard requirement, not a suggestion.
+
+    A client funded below `minimum_eth_per_uploader` cannot afford even one
+    payment transaction, and that failure is indistinguishable from a network
+    fault in the gate data. So it must be reported short even when the
+    modelled requirement is vanishingly small.
+    """
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    path = tmp_path / "m.yaml"
+    path.write_text(MANIFEST.replace("eth: 0.2", "eth: 0.0001"))
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(
+            _args(config=str(path), base_fee_gwei=1e-9)
+        )
+    assert exc.value.code == 2
+    assert "under-funded" in capsys.readouterr().out

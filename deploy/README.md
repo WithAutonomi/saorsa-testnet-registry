@@ -836,6 +836,71 @@ any) and provisions host-stat Telegraf on them with `host_role="CLIENT"`, routed
 to the dedicated **`client-metrics`** bucket (the client→ES forwarder is installed
 separately by `clients provision`).
 
+## Sizing uploader gas funding (`clients estimate-gas`)
+
+Testnet uploader VMs each get a generated wallet funded with a **fixed** amount of
+native ETH (the `eth:` key on `clients.uploaders[]`, default `0.5`). Runway is
+therefore inversely proportional to the gas price: when the price rises, the same
+funding buys proportionally fewer payment transactions, and a client that runs dry
+fails **every** subsequent upload.
+
+That is not hypothetical. On staging run #566 (2026-09-01) the Arbitrum Sepolia base
+fee had risen roughly 10x in three days — 0.0205 gwei flat for a fortnight, then
+0.025 → 0.050 → 0.124 gwei on consecutive days — and six of ten uploaders exhausted
+their wallets from ~T0+3h57m. Whole-run upload success came out at 96.02% and the
+mixed-version phase at 79.35%, both below their hard-gate floors, for a reason with
+nothing to do with the release under test. Throughput was not the cause: that run did
+*less* work than its baseline with the same transaction counts.
+
+`clients estimate-gas` is the read-only preflight. It changes nothing; it answers
+whether a manifest's `eth:` figures will survive a full run at today's price.
+
+```bash
+uv run saorsa-deploy clients estimate-gas \
+  --config deploy/manifests/runs/staging/STG-01.yaml \
+  --baseline-id 566
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--config` | required | Manifest whose `testnet.clients.uploaders` to size. |
+| `--set` / `--name` | — | Manifest overrides, as elsewhere. |
+| `--baseline-id` | — | Previous run to take upload throughput from. |
+| `--uploads-per-hour` | — | Flat rate instead of a baseline run. |
+| `--duration-hours` | baseline span, else 5 | Run length to size for. |
+| `--base-fee-gwei` | read from chain | Size against a supplied fee; also works offline. |
+| `--network` | `arbitrum-sepolia` | Which RPC supplies the base fee. |
+| `--funder-balance-eth` | from `ANT_DEPLOY_SECRET_KEY` | Funding wallet balance. |
+| `--model-path` | shipped config | Override the gas model. |
+
+**Exit 2** means an uploader's `eth:`, or the funding wallet itself, is short. Exit 1
+is an operator error (bad manifest, no `DATABASE_URL` with `--baseline-id`, unknown
+network); exit 0 means the current funding is adequate.
+
+Three design points worth knowing when reading the output:
+
+- **Rates, not raw counts.** Each baseline client's rate is measured over its OWN
+  active window and projected across the full run. A client that exhausted its wallet
+  stopped early, so its raw count understates a funded client's work — sizing from it
+  would reproduce the very shortfall the command exists to prevent. The command names
+  the clients it corrected.
+- **Scaled on base fee, not the effective price paid.** The effective price includes a
+  priority fee and the estimator's 1.2x buffer; assuming those scale with the base fee
+  makes them cancel in the ratio, which is more robust than predicting them.
+- **The funder check is against the FULL total, not the deficit.** Top-up is
+  per-wallet and sequential, so a funder that cannot cover the whole draw does not
+  fail cleanly up front — it funds the first few uploaders and then runs dry, leaving
+  a half-provisioned run.
+
+The model and its calibration live in
+`deploy/saorsa_deploy/resources/gas/client-gas-model.yaml` — versioned config, not
+code, so recalibrating after a price regime change needs no release. It carries the
+six measured points it was fitted from, and the model's own known limits (payment
+mode is not a variable; the fit is one run at one gas regime; Arbitrum folds L1
+calldata cost into gas units rather than the price). `deploy/tests/test_gas_model.py`
+asserts the shipped config still reproduces its own calibration, so a bad edit fails
+there rather than four hours into a run.
+
 ## Monitoring
 
 Optional per-testnet monitoring stack: InfluxDB 2.x (always) plus an **optional**

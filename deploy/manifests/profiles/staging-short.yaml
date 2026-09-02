@@ -67,16 +67,16 @@ testnet:
     # client-log volume this generates against the staging elastic config
     # before deciding whether/how to enable it for a real release-train run.
     uploaders:
-      - { provider: ovh,   region: SBG5, file_size_mb: 1000, vm_size: b3-8,      payment: merkle,    ant: 1000, eth: 0.1, forward_logs: true, rust_log: info }
-      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 1000, vm_size: b3-8,       payment: no-merkle, ant: 1000, eth: 0.1, forward_logs: true, rust_log: info }
-      - { provider: vultr, clock_skew: -2h, region: ewr, file_size_mb: 500,  vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.1, forward_logs: true, rust_log: info }
-      - { provider: vultr, region: ams, file_size_mb: 300,  vm_size: vc2-2c-4gb, payment: no-merkle, ant: 500,  eth: 0.1, forward_logs: true, rust_log: info }
-      - { provider: vultr, region: sjc, file_size_mb: 100,  vm_size: vc2-2c-4gb,                       ant: 500,  eth: 0.1, forward_logs: true, rust_log: info }
-      - { provider: vultr, region: sgp, file_size_mb: 50,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.04, forward_logs: true, rust_log: info }
-      - { provider: vultr, region: sgp, file_size_mb: 25,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.04, forward_logs: true, rust_log: info }
-      - { provider: ovh,   region: DE1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04, forward_logs: true, rust_log: info }
-      - { provider: ovh,   region: RBX-A,file_size_mb: 20,   vm_size: b3-8,                             ant: 200,  eth: 0.04, forward_logs: true, rust_log: info }
-      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04, forward_logs: true, rust_log: info }
+      - { provider: ovh,   region: SBG5, file_size_mb: 1000, vm_size: b3-8,      payment: merkle,    ant: 1000, eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 1000, vm_size: b3-8,       payment: no-merkle, ant: 1000, eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, clock_skew: -2h, region: ewr, file_size_mb: 500,  vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: ams, file_size_mb: 300,  vm_size: vc2-2c-4gb, payment: no-merkle, ant: 500,  eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: sjc, file_size_mb: 100,  vm_size: vc2-2c-4gb,                       ant: 500,  eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: sgp, file_size_mb: 50,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: sgp, file_size_mb: 25,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: ovh,   region: DE1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: ovh,   region: RBX-A,file_size_mb: 20,   vm_size: b3-8,                             ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
     downloaders:
       - { provider: digital_ocean, region: tor1, forward_logs: true, rust_log: info }
       - { provider: digital_ocean, clock_skew: -2h, region: lon1, forward_logs: true, rust_log: info }
