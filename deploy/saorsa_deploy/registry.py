@@ -203,10 +203,15 @@ def record_disk_survey(
     surveyed_at: datetime,
     services: list[dict],
     host_disk: dict,
+    failed_hosts: dict | None = None,
+    attempted_host_count: int | None = None,
     repo: ProdFleetRepository | None = None,
 ) -> int | None:
     """Best-effort persist of a disk survey; returns the new survey id or None.
-    Silent no-op when DATABASE_URL is unset; warns (never raises) on error."""
+    Silent no-op when DATABASE_URL is unset; warns (never raises) on error.
+
+    ``failed_hosts`` records which hosts the survey could not reach and why, so
+    the totals are readable as short rather than as a reclaim (V2-1147)."""
     repo = repo or get_prod_fleet_repository()
     if repo is None:
         return None
@@ -216,6 +221,8 @@ def record_disk_survey(
             surveyed_at=surveyed_at,
             services=services,
             host_disk=host_disk,
+            failed_hosts=failed_hosts,
+            attempted_host_count=attempted_host_count,
         )
         return survey.id
     except Exception:

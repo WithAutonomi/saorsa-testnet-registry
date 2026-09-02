@@ -2774,6 +2774,71 @@ which can drift after a prior `rm`/`add`.
   exists. heaptrack wrapping (the `prod nodes` kind) is **not** cloned — a
   heaptrack-wrapped sibling yields a new service without heaptrack.
 
+#### Surveying the whole fleet (`disk-survey` / `survey-report`)
+
+`prod services ls` looks at one host. `prod services disk-survey` walks
+**every** host in an inventory in parallel, ranks all node services ascending
+by data-dir size (smallest first = deletion candidates), prints per-host free
+space most-pressured-first, and stores the survey in the registry so
+`prod services survey-report` can read today against yesterday.
+
+```bash
+saorsa-deploy prod services disk-survey \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json
+
+saorsa-deploy prod services survey-report \
+  --inventory-path ~/.autonomi/testnets/ant-prod-01/inventory.json
+```
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--inventory-path` | yes | — | Inventory JSON; its `testnet_id` keys the stored surveys. |
+| `--provider` | no | every provider | Restrict the survey to one provider. |
+| `--limit-to` | no | every host | Comma-separated VM names to survey. |
+| `--ssh-key-path` | no | each host's inventory `ssh_key` | Override the SSH key for every host. |
+| `--no-store` | no | store | Print the survey without persisting it. |
+| `--survey-retries` | no | `1` | Extra attempts for a host whose probe failed. `0` disables. |
+| `--retry-backoff-secs` | no | `5` | Base backoff before each retry, multiplied by attempt number. |
+| `--max-parallel` | no | `16` | Maximum concurrent host probes. |
+
+**A host that fails its probe is not a host with no data.** The survey used to
+make one SSH attempt per host and drop the host entirely when it failed, so the
+fleet total was computed over whatever remained — a silent under-count that
+reads as reclaimed disk. Survey 39 (2026-09-01) reported node data falling
+28.1 → 26.9 TiB, an apparent 1.192 TiB reclaim; two hosts had simply dropped
+out, and across the 63 hosts present in both runs node data had actually
+**grown 21.5 GiB**. The two hosts were not down — they answered ICMP, port 22
+was open, SSH worked by hand, 15/15 services were running. They were
+CPU-saturated, so the probe missed its deadline. "Host is slow" is exactly the
+condition a disk-pressure survey most needs to see.
+
+Three things follow from that, and all three are load-bearing:
+
+- **Failed hosts are retried serially, after the parallel pass**, with a longer
+  deadline (300s vs 120s). Serial and afterwards because sixteen concurrent
+  `du` walks are themselves part of why a loaded host misses its deadline —
+  retrying inside the worker retries into the same storm — and with a longer
+  deadline because re-running an identical 120s probe against a host that just
+  missed 120s fails identically. An **authentication** failure is never
+  retried: a rejected key will be rejected again.
+- **The delta is computed like-for-like over the hosts both runs reached**, in
+  both `disk-survey` (against the previous stored survey) and `survey-report`.
+  A retry only reduces how often a host drops; any host can still drop, and a
+  whole-survey total then describes a different fleet. Both numbers are printed
+  — the raw one explicitly labelled as spanning differing host sets — and when
+  they point in opposite directions the output says outright that the raw total
+  is misleading. Neither is ever silently substituted for the other.
+- **The failed set is stored with the survey** (`failed_hosts`,
+  `attempted_host_count`), so `survey-report` renders the caveat
+  retrospectively instead of the failure existing only in the scrollback of
+  whoever ran it. Both columns are **nullable with no backfill**: NULL means a
+  survey predating the feature, whose failed set is *unknown* — deliberately
+  not the same claim as an empty set ("every host was reached").
+
+Failures are reported grouped by reason, because they are not equivalent: a
+timeout means the host is probably up but saturated (its disk still counts, we
+just failed to read it) while a refusal means it may genuinely be gone.
+
 ### Running canaries against production (`prod canary`)
 
 A *canary deployment* uploads a fixed list of public files to the production
