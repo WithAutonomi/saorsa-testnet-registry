@@ -551,6 +551,89 @@ def main(argv=None):
         ),
     )
 
+    # clients estimate-gas
+    clients_estimate_gas_parser = clients_subparsers.add_parser(
+        "estimate-gas",
+        help=(
+            "Size uploader wallet gas funding against the CURRENT chain base "
+            "fee and a previous run's measured throughput. Read-only "
+            "preflight: it changes nothing, it tells you whether the `eth:` "
+            "figures in a manifest will carry the uploaders through a full "
+            "run. Uploader wallets hold a FIXED amount of native ETH, so "
+            "their runway is inversely proportional to the gas price -- on "
+            "staging run #566 the base fee had risen ~10x in three days and "
+            "six of ten uploaders exhausted mid-run, pushing two hard gates "
+            "below their floors for a reason unrelated to the release. Exits "
+            "2 when the current funding, or the funding wallet, is short."
+        ),
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--config",
+        required=True,
+        help="Manifest whose testnet.clients.uploaders should be sized.",
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--set",
+        action="append",
+        help="Override a manifest value, as dotted.key=value. Repeatable.",
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--name",
+        help="Override the manifest's deployment name.",
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--baseline-id",
+        type=int,
+        help=(
+            "Deployment id of a previous run to take upload throughput from. "
+            "Per-client RATES are used, measured over each client's own "
+            "active window and projected across the full run -- not its raw "
+            "counts, because a client that exhausted its wallet stopped "
+            "early and its count understates a funded client's work."
+        ),
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--uploads-per-hour",
+        type=float,
+        help=(
+            "Flat per-uploader rate to use instead of a baseline run. Useful "
+            "when no comparable previous run exists."
+        ),
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--duration-hours",
+        type=float,
+        help=(
+            "Run length to size for. Defaults to the baseline's own span, or "
+            "5 hours if neither is available."
+        ),
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--base-fee-gwei",
+        type=float,
+        help=(
+            "Base fee to size against, instead of reading the chain. Use it "
+            "to ask what-if, or when the RPC is unreachable."
+        ),
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--network",
+        default="arbitrum-sepolia",
+        help="EVM network whose RPC supplies the base fee.",
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--funder-balance-eth",
+        type=float,
+        help=(
+            "Funding wallet balance, instead of deriving it from "
+            "ANT_DEPLOY_SECRET_KEY."
+        ),
+    )
+    clients_estimate_gas_parser.add_argument(
+        "--model-path",
+        help="Override the shipped gas model config.",
+    )
+
     # clients infra
     clients_infra_parser = clients_subparsers.add_parser(
         "infra",
@@ -6412,6 +6495,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.stop_clients import cmd_stop_clients
 
             cmd_stop_clients(args)
+        elif args.clients_subcommand == "estimate-gas":
+            from saorsa_deploy.cmd.estimate_client_gas import (
+                cmd_estimate_client_gas,
+            )
+
+            cmd_estimate_client_gas(args)
     elif args.command == "deployments":
         if args.deployments_subcommand == "config":
             if args.config_subcommand == "show":
