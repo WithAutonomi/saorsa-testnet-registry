@@ -5620,6 +5620,29 @@ def main(argv=None):
         action="store_true",
         help="Print the survey but do NOT persist it to the registry DB.",
     )
+    prod_services_survey_parser.add_argument(
+        "--survey-retries",
+        type=int,
+        default=1,
+        help="Extra attempts for a host whose probe failed, made serially "
+        "after the parallel pass with a longer deadline (default: 1; 0 "
+        "disables). A host that fails is usually saturated rather than down, "
+        "and dropping it silently under-counts the fleet.",
+    )
+    prod_services_survey_parser.add_argument(
+        "--retry-backoff-secs",
+        type=float,
+        default=5.0,
+        help="Base backoff before each retry, multiplied by the attempt number "
+        "(default: 5).",
+    )
+    prod_services_survey_parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=16,
+        help="Maximum concurrent host probes (default: 16). Lower it if the "
+        "fan-out is itself loading the surveyed hosts.",
+    )
 
     prod_services_survey_report_parser = prod_services_subparsers.add_parser(
         "survey-report",

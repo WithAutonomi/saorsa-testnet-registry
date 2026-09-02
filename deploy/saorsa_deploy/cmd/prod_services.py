@@ -16,9 +16,11 @@ command, since the live SSH change has already happened by that point).
 """
 
 import json
+import logging
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +35,15 @@ from rich.table import Table
 from saorsa_db.models.prod_service_audit import ProdServiceAuditAction
 
 from saorsa_deploy import registry
+from saorsa_deploy.disk_survey import (
+    FAILURE_KIND_LABELS,
+    SurveyFailure,
+    SurveyFailureKind,
+    classify_survey_failure,
+    compare_host_data,
+    host_data_bytes,
+    should_retry,
+)
 from saorsa_deploy.inventory import (
     NodeVm,
     load_node_inventory,
@@ -162,12 +173,17 @@ def _ssh_read_file(vm: NodeVm, ssh_key: str, path: str) -> str:
 
 
 def _format_bytes(size: int) -> str:
-    value = float(size)
+    # Scale on the magnitude: a negative delta reached the "< 1024" branch
+    # immediately and printed as raw bytes, so a shrinking figure was the one
+    # case that came out unreadable.
+    sign = "-" if size < 0 else ""
+    value = float(abs(size))
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if value < 1024 or unit == "TiB":
-            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+            body = f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+            return sign + body
         value /= 1024
-    return f"{value:.1f} TiB"
+    return f"{sign}{value:.1f} TiB"
 
 
 def _list_services(vm: NodeVm, ssh_key: str, console: Console) -> list[dict]:
@@ -212,6 +228,15 @@ def cmd_prod_services_ls(args) -> None:
     console.print(table)
 
 
+logger = logging.getLogger(__name__)
+
+#: Deadline for the first probe of each host. The probe walks every service's
+#: data dir with ``du``, so it is not instant even on a healthy host.
+SURVEY_TIMEOUT_SECS = 120
+#: Deadline for a retry. Deliberately longer: the hosts that fail are the ones
+#: under load, and re-running the identical probe would fail identically.
+SURVEY_RETRY_TIMEOUT_SECS = 300
+
 _SURVEY_SSH_OPTS = [
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "UserKnownHostsFile=/dev/null",
@@ -220,9 +245,15 @@ _SURVEY_SSH_OPTS = [
 ]
 
 
-def _survey_one_host(vm: NodeVm, ssh_key: str) -> dict:
+def _survey_one_host(vm: NodeVm, ssh_key: str, timeout: int = SURVEY_TIMEOUT_SECS) -> dict:
     """SSH one host, run the disk-survey probe, return its parsed services +
-    device disk figures (or an ``error`` string). Never raises."""
+    device disk figures, or a classified failure. Never raises.
+
+    A failure result carries ``error`` (the message) plus ``failure_kind``, so
+    the caller can tell "host is slow" from "host is down" — the distinction
+    V2-1147 turns on, since a saturated host is exactly what a disk-pressure
+    survey most needs to see and is also the one most likely to time out.
+    """
     try:
         result = subprocess.run(
             [
@@ -231,20 +262,248 @@ def _survey_one_host(vm: NodeVm, ssh_key: str) -> dict:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return {"vm": vm, "error": "ssh timed out"}
+        kind, msg = classify_survey_failure(timed_out=True)
+        return {"vm": vm, "error": msg, "failure_kind": kind}
     except OSError as e:
-        return {"vm": vm, "error": str(e)}
+        kind, msg = classify_survey_failure(os_error=str(e))
+        return {"vm": vm, "error": msg, "failure_kind": kind}
     if result.returncode != 0:
-        return {"vm": vm, "error": result.stderr.strip() or f"ssh exit {result.returncode}"}
+        kind, msg = classify_survey_failure(
+            returncode=result.returncode, stderr=result.stderr
+        )
+        return {"vm": vm, "error": msg, "failure_kind": kind}
     lines = result.stdout.splitlines()
     return {
         "vm": vm,
         "services": parse_service_list(lines),
         "disk": parse_df_line(lines),
     }
+
+
+def _failure_of(result: dict, attempts: int = 1) -> SurveyFailure:
+    """Turn a failed probe result into a SurveyFailure. Tolerates a result with
+    no ``failure_kind`` (a test double, or an older caller)."""
+    kind = result.get("failure_kind") or SurveyFailureKind.PROBE_FAILED
+    if not isinstance(kind, SurveyFailureKind):
+        kind = SurveyFailureKind(str(kind))
+    return SurveyFailure(
+        host=result["vm"].name,
+        kind=kind,
+        message=result.get("error") or "",
+        attempts=attempts,
+    )
+
+
+def _retry_failed_hosts(
+    failed: list[dict],
+    ssh_key_for,
+    console: Console,
+    *,
+    retries: int,
+    backoff_secs: float,
+    timeout: int,
+    sleep=time.sleep,
+) -> tuple[list[dict], dict[str, SurveyFailure]]:
+    """Re-probe the hosts that failed the parallel pass, one at a time.
+
+    Serial and after the fan-out on purpose: sixteen concurrent ``du`` walks
+    are themselves part of why a loaded host misses its deadline, so retrying
+    inside the worker would retry into the same storm. The retry also gets a
+    longer deadline than the first attempt — re-running an identical 120s probe
+    against a host that just missed 120s would fail the same way.
+
+    Returns the results that succeeded on retry, and the failures that remain
+    (keyed by host, carrying the total attempt count).
+    """
+    recovered: list[dict] = []
+    remaining: dict[str, SurveyFailure] = {}
+    pending = list(failed)
+
+    for host_result in pending:
+        vm = host_result["vm"]
+        failure = _failure_of(host_result)
+        if retries <= 0 or not should_retry(failure.kind):
+            remaining[vm.name] = failure
+            continue
+
+        attempts = 1
+        for attempt in range(1, retries + 1):
+            if backoff_secs > 0:
+                sleep(backoff_secs * attempt)
+            console.print(
+                f"[dim]Retrying [cyan]{vm.name}[/cyan] "
+                f"({failure.label}), attempt {attempt + 1}...[/dim]"
+            )
+            result = _survey_one_host(vm, ssh_key_for(vm), timeout)
+            attempts += 1
+            if "error" not in result:
+                console.print(f"[green]Recovered {vm.name} on retry.[/green]")
+                recovered.append(result)
+                break
+            failure = _failure_of(result, attempts=attempts)
+        else:
+            remaining[vm.name] = failure
+
+    return recovered, remaining
+
+
+def _print_survey_failures(
+    console: Console, failures: dict[str, SurveyFailure]
+) -> None:
+    """Render the hosts that could not be surveyed, grouped by reason.
+
+    Grouped rather than listed flat because the reasons are not equivalent: a
+    timeout means the host is probably up but saturated (its disk still counts,
+    we just failed to read it), while a refusal means it may genuinely be gone.
+    """
+    if not failures:
+        return
+    console.print(
+        f"[bold yellow]Warning:[/bold yellow] {len(failures)} host(s) could not "
+        f"be surveyed — the totals below EXCLUDE them:"
+    )
+    by_kind: dict[SurveyFailureKind, list[SurveyFailure]] = {}
+    for failure in failures.values():
+        by_kind.setdefault(failure.kind, []).append(failure)
+    for kind in SurveyFailureKind:
+        group = by_kind.get(kind)
+        if not group:
+            continue
+        console.print(f"  [yellow]{FAILURE_KIND_LABELS[kind]}[/yellow]:")
+        for failure in sorted(group, key=lambda f: f.host):
+            attempts = (
+                f" after {failure.attempts} attempts" if failure.attempts > 1 else ""
+            )
+            console.print(
+                f"    [yellow]{failure.host}[/yellow]{attempts}: {failure.message}"
+            )
+
+
+def _signed_bytes(value: int) -> str:
+    return ("+" if value >= 0 else "-") + _format_bytes(abs(value))
+
+
+def _print_stored_failures(console: Console, survey, label: str) -> None:
+    """Render a stored survey's failed-host set.
+
+    A NULL ``failed_hosts`` means the survey predates V2-1147 and its failed set
+    is *unknown*; it is reported as such rather than as "no host failed", which
+    is a different claim and the one that made survey 39 look like a reclaim.
+    """
+    failed = getattr(survey, "failed_hosts", None)
+    if failed is None:
+        console.print(
+            f"[dim]({label}: recorded before failed-host tracking — whether any "
+            f"host was missed is unknown)[/dim]"
+        )
+        return
+    if not failed:
+        return
+    attempted = getattr(survey, "attempted_host_count", None)
+    of_attempted = f" of {attempted} attempted" if attempted else ""
+    console.print(
+        f"[bold yellow]Warning:[/bold yellow] the {label} survey missed "
+        f"{len(failed)} host(s){of_attempted}, so its totals are short:"
+    )
+    for host, detail in sorted(failed.items()):
+        detail = detail if isinstance(detail, dict) else {}
+        kind = detail.get("kind", "unknown")
+        message = detail.get("message", "")
+        console.print(f"  [yellow]{host}[/yellow] ({kind}): {message}")
+
+
+def _print_coverage_comparison(
+    console: Console,
+    inventory_name: str,
+    latest_host_data: dict[str, int],
+    surveyed_hosts: set,
+    failures: dict[str, SurveyFailure],
+) -> None:
+    """Compare this survey's node-data total against the previous stored one,
+    like-for-like over the hosts both runs reached.
+
+    This is the half of V2-1147 that actually misled: a retry reduces how often
+    a host drops out, but any host can still drop, and a whole-survey total
+    computed over whatever remains reads a missing host as reclaimed disk.
+    """
+    repo = registry.get_prod_fleet_repository()
+    if repo is None:
+        return
+    try:
+        previous = repo.latest_disk_surveys(inventory_name, limit=1)
+        if not previous:
+            return
+        prev = previous[0]
+        prev_host_data = repo.disk_survey_host_data_bytes(prev.id)
+    except Exception:
+        logger.warning("Could not read the previous survey for comparison", exc_info=True)
+        return
+    if not prev_host_data:
+        return
+
+    comparison = compare_host_data(prev_host_data, latest_host_data)
+    console.print(
+        f"[dim]Previous survey {prev.surveyed_at.isoformat(timespec='minutes')} "
+        f"covered {len(prev_host_data)} host(s).[/dim]"
+    )
+    if comparison.dropped_hosts:
+        console.print(
+            f"[bold yellow]Coverage dropped:[/bold yellow] "
+            f"{len(comparison.dropped_hosts)} host(s) counted last time are "
+            f"missing from this survey: "
+            f"{', '.join(comparison.dropped_hosts)}"
+        )
+    if comparison.added_hosts:
+        console.print(
+            f"[dim]{len(comparison.added_hosts)} host(s) new to this survey: "
+            f"{', '.join(comparison.added_hosts)}[/dim]"
+        )
+    _print_delta_lines(console, comparison)
+
+
+def _print_delta_lines(console, comparison) -> None:
+    """Print the raw and like-for-like deltas together — never one alone.
+
+    When coverage is identical the two are the same number, so only one line is
+    printed. When it differs, both are shown and the raw one is labelled as
+    spanning different host sets, so it can never be read as a clean total.
+    """
+    raw = (
+        f"{_format_bytes(comparison.previous_total)} → "
+        f"{_format_bytes(comparison.latest_total)} "
+        f"(Δ {_signed_bytes(comparison.raw_delta)})"
+    )
+    if comparison.coverage_changed:
+        console.print(f"[dim]Raw total: {raw} — across DIFFERING host sets.[/dim]")
+    else:
+        console.print(f"[dim]Total node data: {raw}.[/dim]")
+    if not comparison.common_hosts:
+        console.print(
+            "[yellow]No host was covered by both surveys — no like-for-like "
+            "comparison is possible.[/yellow]"
+        )
+        return
+    if not comparison.coverage_changed:
+        return
+    per_host = comparison.common_delta_per_host
+    console.print(
+        f"[bold]Like-for-like[/bold] over the {len(comparison.common_hosts)} "
+        f"host(s) in both surveys: "
+        f"{_format_bytes(comparison.previous_common_total)} → "
+        f"{_format_bytes(comparison.latest_common_total)} "
+        f"(Δ {_signed_bytes(comparison.common_delta)}, "
+        f"{_signed_bytes(int(per_host))}/host)."
+    )
+    if comparison.misleading:
+        direction = "growth" if comparison.common_delta > 0 else "a reduction"
+        console.print(
+            f"[bold red]The raw total is misleading:[/bold red] it points the "
+            f"opposite way to the like-for-like figure, which shows {direction}. "
+            f"Read the like-for-like line, not the raw one."
+        )
 
 
 def cmd_prod_services_disk_survey(args) -> None:
@@ -277,25 +536,51 @@ def cmd_prod_services_disk_survey(args) -> None:
     except (ValueError, OSError):
         inventory_name = inv_path.stem
 
+    max_parallel = max(1, int(getattr(args, "max_parallel", None) or 16))
+    retries = getattr(args, "survey_retries", None)
+    retries = 1 if retries is None else max(0, int(retries))
+    backoff = getattr(args, "retry_backoff_secs", None)
+    backoff = 5.0 if backoff is None else max(0.0, float(backoff))
+
+    def ssh_key_for(vm):
+        return _resolve_ssh_key(vm, args.ssh_key_path)
+
     console.print(
         f"Surveying {len(vms)} host(s) from [cyan]{inventory_name}[/cyan]..."
     )
+    attempted_host_count = len(vms)
     results = []
-    with ThreadPoolExecutor(max_workers=min(16, len(vms))) as pool:
+    with ThreadPoolExecutor(max_workers=min(max_parallel, len(vms))) as pool:
         futures = {
-            pool.submit(_survey_one_host, vm, _resolve_ssh_key(vm, args.ssh_key_path)): vm
+            pool.submit(_survey_one_host, vm, ssh_key_for(vm)): vm
             for vm in vms
         }
         for fut in as_completed(futures):
             results.append(fut.result())
 
+    # Retry the failures serially, now that the fan-out load has dropped.
+    first_pass_failures = [r for r in results if "error" in r]
+    remaining_failures: dict[str, SurveyFailure] = {}
+    if first_pass_failures:
+        console.print(
+            f"[yellow]{len(first_pass_failures)} host(s) failed the first pass; "
+            f"retrying serially.[/yellow]"
+        )
+        recovered, remaining_failures = _retry_failed_hosts(
+            first_pass_failures,
+            ssh_key_for,
+            console,
+            retries=retries,
+            backoff_secs=backoff,
+            timeout=SURVEY_RETRY_TIMEOUT_SECS,
+        )
+        results = [r for r in results if "error" not in r] + recovered
+
     services: list[dict] = []
     host_disk: dict = {}
-    failures: list[tuple[str, str]] = []
     for r in results:
         vm = r["vm"]
         if "error" in r:
-            failures.append((vm.name, r["error"]))
             continue
         disk = r.get("disk")
         if disk is not None:
@@ -351,17 +636,21 @@ def cmd_prod_services_disk_survey(args) -> None:
         console.print(htable)
 
     total = sum(s["size_bytes"] for s in services)
+    surveyed_hosts = {s["host"] for s in services} | set(host_disk)
     console.print(
-        f"[dim]{len(services)} services across {len(host_disk)} host(s); "
+        f"[dim]{len(services)} services across {len(host_disk)} host(s) "
+        f"of {attempted_host_count} attempted; "
         f"total node data {_format_bytes(total)}.[/dim]"
     )
 
-    if failures:
-        console.print(
-            f"[bold yellow]Warning:[/bold yellow] {len(failures)} host(s) failed to survey:"
-        )
-        for name, err in failures:
-            console.print(f"  [yellow]{name}[/yellow]: {err}")
+    _print_survey_failures(console, remaining_failures)
+    _print_coverage_comparison(
+        console,
+        inventory_name,
+        host_data_bytes(services),
+        surveyed_hosts,
+        remaining_failures,
+    )
 
     if getattr(args, "no_store", False):
         console.print("[dim]--no-store: survey not persisted.[/dim]")
@@ -371,6 +660,8 @@ def cmd_prod_services_disk_survey(args) -> None:
         surveyed_at=surveyed_at,
         services=services,
         host_disk=host_disk,
+        failed_hosts={h: f.to_dict() for h, f in remaining_failures.items()},
+        attempted_host_count=attempted_host_count,
     )
     if survey_id is not None:
         console.print(f"[green]Stored survey id {survey_id}[/green] in the registry.")
@@ -407,6 +698,7 @@ def cmd_prod_services_survey_report(args) -> None:
         f"{latest.service_count} services on {latest.host_count} hosts, "
         f"total node data {_format_bytes(latest.total_data_bytes)}."
     )
+    _print_stored_failures(console, latest, "latest")
     if len(surveys) < 2:
         console.print("[dim]Only one survey on record — nothing to compare yet.[/dim]")
         return
@@ -415,6 +707,7 @@ def cmd_prod_services_survey_report(args) -> None:
     console.print(
         f"[dim]Comparing against previous survey {prev.surveyed_at.isoformat()}.[/dim]"
     )
+    _print_stored_failures(console, prev, "previous")
 
     # Per-host free-disk delta (freed disk is positive).
     dtable = Table(title="Free-disk change per host (freed = positive)")
@@ -431,14 +724,43 @@ def cmd_prod_services_survey_report(args) -> None:
             host,
             _format_bytes(pf) if pf is not None else "?",
             _format_bytes(nf),
-            (("+" if delta >= 0 else "") + _format_bytes(delta)) if delta is not None else "?",
+            _signed_bytes(delta) if delta is not None else "?",
         )
     console.print(dtable)
-    console.print(
-        f"[dim]Total node data: {_format_bytes(prev.total_data_bytes)} → "
-        f"{_format_bytes(latest.total_data_bytes)} "
-        f"(Δ {_format_bytes(latest.total_data_bytes - prev.total_data_bytes)}).[/dim]"
-    )
+
+    # The node-data delta, like-for-like over the hosts both surveys reached.
+    # Computed from the per-host child rows rather than the stored whole-survey
+    # totals, because a host missing from one run makes those totals describe
+    # different fleets (V2-1147).
+    try:
+        prev_host_data = repo.disk_survey_host_data_bytes(prev.id)
+        latest_host_data = repo.disk_survey_host_data_bytes(latest.id)
+    except Exception:
+        logger.warning("Could not load per-host survey data", exc_info=True)
+        prev_host_data = latest_host_data = {}
+    if prev_host_data or latest_host_data:
+        comparison = compare_host_data(prev_host_data, latest_host_data)
+        if comparison.dropped_hosts:
+            console.print(
+                f"[bold yellow]Coverage dropped:[/bold yellow] "
+                f"{len(comparison.dropped_hosts)} host(s) in the previous survey "
+                f"are missing from the latest: "
+                f"{', '.join(comparison.dropped_hosts)}"
+            )
+        if comparison.added_hosts:
+            console.print(
+                f"[dim]{len(comparison.added_hosts)} host(s) new to the latest "
+                f"survey: {', '.join(comparison.added_hosts)}[/dim]"
+            )
+        _print_delta_lines(console, comparison)
+    else:
+        console.print(
+            f"[dim]Total node data: {_format_bytes(prev.total_data_bytes)} → "
+            f"{_format_bytes(latest.total_data_bytes)} "
+            f"(Δ {_signed_bytes(latest.total_data_bytes - prev.total_data_bytes)}) "
+            f"— per-host detail unavailable, so this spans whatever each run "
+            f"reached.[/dim]"
+        )
 
     # Audit events between the two surveys.
     events = repo.list_service_audit(

@@ -126,5 +126,11 @@ Summarise this for the user — it's the running picture of whether fleet pressu
 - **Removal reduces the host's node count permanently** — that's the intended fix for an
   oversubscribed host (nodes' true footprint ≈ disk). It is not reversible by re-adding without a
   full fresh bootstrap; prefer removing genuinely-redundant/smallest services.
-- If `disk-survey` reports host failures (SSH timeouts), those hosts are simply absent from the
-  survey — note them; they are not counted as zero.
+- If `disk-survey` reports host failures, those hosts are **absent from the survey**, not counted
+  as zero. Since V2-1147 the command retries a failed host serially after the parallel pass (with
+  a longer deadline), groups the failures that remain by reason, and stores the failed set with
+  the survey. It also prints the node-data delta **like-for-like over the hosts both runs
+  reached** — a host dropping out otherwise reads as reclaimed disk (survey 39 showed an apparent
+  1.192 TiB reclaim that was really 21.5 GiB of growth). Read the like-for-like line, not the raw
+  total, whenever coverage changed. A **timeout** means the host is probably up but saturated —
+  which is itself worth noting as disk/CPU pressure — while a refusal means it may be down.

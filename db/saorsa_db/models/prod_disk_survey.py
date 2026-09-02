@@ -41,6 +41,19 @@ class ProdDiskSurvey(Base):
     service_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_data_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
+    # Hosts whose probe failed, so the survey's totals are known to be short:
+    # {host: {"kind": str, "message": str, "attempts": int}}. NULL means the
+    # survey predates V2-1147 and the failed set is *unknown* — deliberately
+    # not the same as an empty dict, which means "every host was reached".
+    failed_hosts: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # How many hosts the survey set out to reach. Not derivable from
+    # host_count + len(failed_hosts): a host can answer SSH yet return no df
+    # line, landing in neither. NULL on pre-V2-1147 rows.
+    attempted_host_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -62,6 +75,8 @@ class ProdDiskSurvey(Base):
             "host_count": self.host_count,
             "service_count": self.service_count,
             "total_data_bytes": self.total_data_bytes,
+            "failed_hosts": self.failed_hosts,
+            "attempted_host_count": self.attempted_host_count,
             "recorded_at": self.recorded_at.isoformat(),
             "services": [s.to_dict() for s in self.services],
         }

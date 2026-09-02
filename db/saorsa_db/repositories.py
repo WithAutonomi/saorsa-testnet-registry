@@ -3085,6 +3085,8 @@ class ProdFleetRepository(ABC):
         surveyed_at: datetime,
         services: list[dict],
         host_disk: dict,
+        failed_hosts: dict | None = None,
+        attempted_host_count: int | None = None,
     ) -> ProdDiskSurvey:
         """Persist one survey: a header row plus one child row per service.
 
@@ -3092,11 +3094,27 @@ class ProdFleetRepository(ABC):
         ``service_name``, ``size_bytes``, ``active``, ``enabled``. ``host_disk``
         maps host name → ``{provider, total_bytes, used_bytes, free_bytes}``.
         Summary counts are derived here.
+
+        ``failed_hosts`` maps host name → ``{kind, message, attempts}`` for the
+        hosts whose probe failed, so a reader knows the totals are short and
+        why (V2-1147). Passing None stores NULL, which means *unknown* rather
+        than "none failed" — callers that surveyed successfully should pass an
+        empty dict. ``attempted_host_count`` is how many hosts the survey set
+        out to reach.
         """
         ...
 
     @abstractmethod
     def get_disk_survey(self, survey_id: int) -> ProdDiskSurvey | None:
+        ...
+
+    @abstractmethod
+    def disk_survey_host_data_bytes(self, survey_id: int) -> dict[str, int]:
+        """Node data bytes per host for one survey, summed in the database.
+
+        Used for the like-for-like comparison between two surveys, which must
+        be computed over the hosts both runs actually reached.
+        """
         ...
 
     @abstractmethod
@@ -3142,6 +3160,8 @@ class SqlAlchemyProdFleetRepository(ProdFleetRepository):
         surveyed_at: datetime,
         services: list[dict],
         host_disk: dict,
+        failed_hosts: dict | None = None,
+        attempted_host_count: int | None = None,
     ) -> ProdDiskSurvey:
         survey = ProdDiskSurvey(
             inventory_name=inventory_name,
@@ -3150,6 +3170,8 @@ class SqlAlchemyProdFleetRepository(ProdFleetRepository):
             host_count=len(host_disk or {}),
             service_count=len(services),
             total_data_bytes=sum(int(s.get("size_bytes", 0)) for s in services),
+            failed_hosts=failed_hosts,
+            attempted_host_count=attempted_host_count,
         )
         for s in services:
             survey.services.append(
@@ -3168,6 +3190,18 @@ class SqlAlchemyProdFleetRepository(ProdFleetRepository):
 
     def get_disk_survey(self, survey_id: int) -> ProdDiskSurvey | None:
         return self.session.get(ProdDiskSurvey, survey_id)
+
+    def disk_survey_host_data_bytes(self, survey_id: int) -> dict[str, int]:
+        rows = (
+            self.session.query(
+                ProdDiskSurveyService.host,
+                func.sum(ProdDiskSurveyService.size_bytes),
+            )
+            .filter(ProdDiskSurveyService.survey_id == survey_id)
+            .group_by(ProdDiskSurveyService.host)
+            .all()
+        )
+        return {host: int(total or 0) for host, total in rows}
 
     def latest_disk_surveys(
         self, inventory_name: str, limit: int = 2
