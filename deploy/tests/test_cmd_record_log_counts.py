@@ -84,9 +84,9 @@ def _run(args, repo, responses):
 def test_records_one_row_per_pattern():
     repo = FakeRepo()
     # First response is the total-documents query, then one per pattern.
-    _run(_args(), repo, [_es_response(1_000_000)] + [_es_response(500)] * 6)
+    _run(_args(), repo, [_es_response(1_000_000)] + [_es_response(500)] * 4)
 
-    assert len(repo.rows) == 6
+    assert len(repo.rows) == 4
     keys = {row["event_key"] for row in repo.rows}
     assert "connection_attempt_failed" in keys
     assert "dial_failed_all_candidates" in keys
@@ -94,15 +94,17 @@ def test_records_one_row_per_pattern():
 
 def test_recorded_row_carries_everything_the_gate_and_a_reader_need():
     repo = FakeRepo()
-    _run(_args(), repo, [_es_response(1_000_000)] + [_es_response(500)] * 6)
+    _run(_args(), repo, [_es_response(1_000_000)] + [_es_response(500)] * 4)
 
-    row = next(r for r in repo.rows if r["event_key"] == "quic_disconnect")
+    row = next(
+        r for r in repo.rows if r["event_key"] == "dial_failed_all_candidates"
+    )
     assert row["deployment_id"] == 474
     assert row["count"] == 500
     assert row["hosts"] == 40
     assert row["total_documents"] == 1_000_000
-    assert row["event_group"] == "quic_disconnect"
-    assert row["pattern"] == "QUIC disconnect for peer"
+    assert row["event_group"] == "dial_failure"
+    assert row["pattern"] == "dial failed for all"
     assert row["pattern_set"] == "connection-errors"
     assert row["pattern_version"] >= 1
     assert row["window_label"] == "full-run"
@@ -141,8 +143,8 @@ def test_a_zero_count_against_a_populated_index_is_still_recorded():
         },
     }
     repo = FakeRepo()
-    _run(_args(), repo, [_es_response(1_000_000)] + [empty] * 6)
-    assert len(repo.rows) == 6
+    _run(_args(), repo, [_es_response(1_000_000)] + [empty] * 4)
+    assert len(repo.rows) == 4
     assert all(row["count"] == 0 for row in repo.rows)
     assert all(row["observed_start"] is None for row in repo.rows)
     assert all(row["total_documents"] == 1_000_000 for row in repo.rows)
@@ -171,7 +173,7 @@ def test_a_labelled_window_is_recorded_under_that_label():
             label="steady-state",
         ),
         repo,
-        [_es_response(1_000_000)] + [_es_response(10)] * 6,
+        [_es_response(1_000_000)] + [_es_response(10)] * 4,
     )
     assert {row["window_label"] for row in repo.rows} == {"steady-state"}
     assert repo.rows[0]["details"]["scope_start"] == "2026-08-11T13:00:00+00:00"

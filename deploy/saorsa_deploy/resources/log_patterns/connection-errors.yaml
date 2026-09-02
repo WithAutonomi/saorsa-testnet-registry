@@ -8,7 +8,28 @@
 # `version` is stored on every recorded count. Counts captured under different
 # pattern versions are only comparable if the pattern itself did not change --
 # the version is what tells you to check.
-version: 1
+#
+# v2 (2026-09-02, V2-1091): retired two patterns that could not fire -- see
+# "Retired patterns" at the foot of this file -- and corrected two `module:`
+# fields that had been transposed. Counts for the four surviving patterns are
+# unaffected: no phrase changed, so v1 and v2 counts of them ARE comparable.
+# The two retired keys simply stop being recorded.
+version: 2
+
+# ---------------------------------------------------------------------------
+# Verification.
+#
+# Every phrase below was confirmed to be a reachable emit in the pinned source
+# on 2026-09-02, against:
+#
+#   saorsa-core       upstream/main @ f0e1e88 (v0.27.3; identical on
+#                     rc-2026.9.1 and rc-2026.8.4 for every phrase here)
+#   saorsa-transport  0.36.3 (pinned by that saorsa-core)
+#
+# Worth repeating whenever a gate starts reading zero. V2-1091 found one
+# pattern that had counted real lines for months and then went silent because
+# an upstream refactor removed the failure it watched -- from Elasticsearch
+# alone that is indistinguishable from a healthy network.
 
 # ---------------------------------------------------------------------------
 # Which forwarded logs are counted.
@@ -52,14 +73,6 @@ groups:
     label: Dial failures (all candidates)
     aggregate: sum
 
-  - key: accept_stream_failure
-    label: Accept stream errors
-    aggregate: sum
-
-  - key: quic_disconnect
-    label: QUIC disconnects
-    aggregate: sum
-
   - key: identity_announce_failure
     label: Identity announce failures
     aggregate: sum
@@ -84,16 +97,29 @@ groups:
 # because the bug is fixed" and "the string was renamed" are indistinguishable
 # from Elasticsearch alone. Confirm a zero against the pinned source before
 # reporting it as an improvement.
+#
+# V2-1091 added a third possibility, and it is the one that hides longest: the
+# emit is still there, spelled exactly as catalogued, but the branch it sits on
+# can no longer execute. Checking that the phrase still appears in the source
+# is NOT enough -- check that something can still reach it.
 patterns:
+  # These two `module:` fields were transposed until v2 -- each carried the
+  # other's. Corrected 2026-09-02 against the pinned source; a wrong module
+  # sends the next person verifying a zero into the wrong crate, which is
+  # exactly how V2-1091's investigation lost time.
   - key: connection_attempt_failed
     group: connection_failure
+    # One per ADDRESS attempt inside the happy-eyeballs race, so this side can
+    # only ever be >= the saorsa_core one below. That is why the group takes
+    # the max rather than the sum.
     phrase: "Connection attempt failed"
-    module: saorsa_core::transport_handle
+    module: saorsa_transport::happy_eyeballs
 
   - key: happy_eyeballs_failed
     group: connection_failure
+    # One per OVERALL happy-eyeballs failure, logged by the caller.
     phrase: "connect_happy_eyeballs failed"
-    module: saorsa_transport::happy_eyeballs
+    module: saorsa_core::transport_handle
 
   - key: dial_failed_all_candidates
     group: dial_failure
@@ -101,24 +127,76 @@ patterns:
     phrase: "dial failed for all"
     module: saorsa_core::dht_network_manager
 
-  - key: accept_stream_connection_not_found
-    group: accept_stream_failure
-    phrase: "Accept stream error: connection failed: Connection not found"
-    module: saorsa_core::transport::saorsa_transport_adapter
-    # Seen at 2 hosts of 72 on DEV-02 run 502, both explained by a service
-    # restart -- peers log `Connection not found` for ~20 minutes while
-    # connections re-establish. Always read this one's host spread before
-    # calling a rise a regression.
-    note: >-
-      Concentrated on a couple of hosts usually means a service restart, not a
-      fleet-wide change.
-
-  - key: quic_disconnect
-    group: quic_disconnect
-    phrase: "QUIC disconnect for peer"
-    module: saorsa_transport_adapter.rs:626
-
   - key: identity_announce_failed
     group: identity_announce_failure
     phrase: "Failed to send identity announce"
     module: saorsa_core::transport_handle
+
+# ---------------------------------------------------------------------------
+# Retired patterns.
+#
+# Kept as prose, deliberately: both look like obvious gaps in the coverage and
+# would be re-added by anyone who did not know why they went. Each was retired
+# because the code that emits it CANNOT RUN -- not because the error stopped
+# being interesting.
+#
+# Both retired at v2 (2026-09-02, V2-1091), after counting zero on every run
+# that has ever recorded these counts (deployments 513, 532, 538, 544).
+#
+# ---------------------------------------------------------------------------
+# `accept_stream_connection_not_found` -- group `accept_stream_failure`
+#     phrase: "Accept stream error: connection failed: Connection not found"
+#
+# This one was RIGHT, and the failure it watched has since been fixed.
+#
+# The phrase was transcribed from a real log line: under saorsa-transport
+# 0.35.3, `LinkTransport::accept()` accepted a peer and then looked the
+# connection up again by address, and an `Ok(None)` miss yielded
+# `LinkError::ConnectionFailed("Connection not found")`. Rendered through
+# saorsa-core's `warn!("Accept stream error: {}", e)` that produced the
+# catalogued phrase character for character. It last matched on DEV-02 run 502
+# (2 hosts of 72, during service restarts).
+#
+# saorsa-transport 0.36.0 rewrote the path onto `accept_with_connection()`,
+# which keeps the authoritative accepted handle. Its doc comment gives the
+# reason: looking the connection up again "races connection cleanup when a
+# short-lived peer closes immediately after the handshake" -- precisely the
+# restart-time race the counts had been showing. From 0.36.0 the accept stream
+# yields only `Ok`, so saorsa-core's `Err(e)` arm is unreachable and the phrase
+# cannot be emitted at all.
+#
+# Note this is why WIDENING the phrase (to the stable prefix "Accept stream
+# error") does not help: the emit itself is unreachable, so any phrase over it
+# still counts zero.
+#
+# If you want accept-path coverage again, the reachable candidate is
+# saorsa-transport's `error!("Failed to spawn connection handler: {}", e)`
+# (p2p_endpoint.rs, ERROR, does reach Elasticsearch). It counts a DIFFERENT
+# failure, so it needs its own key and label rather than reusing these.
+# Its sibling `debug!("Accept failed: {}", e)` is DEBUG and is dropped by the
+# node telegraf filter at `log_level: info`, so it would read zero for a
+# second, unrelated reason.
+#
+# ---------------------------------------------------------------------------
+# `quic_disconnect` -- group `quic_disconnect`
+#     phrase: "QUIC disconnect for peer"
+#
+# This one was never alive at any version we can inspect.
+#
+# The phrase is a correct, stable prefix of saorsa-core's
+# `warn!("QUIC disconnect for peer {}: {}", addr, e)`, but that arm is dead
+# code. `P2pEndpoint::disconnect()` is total and returns exactly `Ok(())` or
+# `EndpointError::PeerNotFound` -- in 0.35.3, 0.36.0 and 0.36.3 alike -- and
+# the two arms above it consume both outcomes:
+#
+#     Ok(()) => {}
+#     Err(EndpointError::PeerNotFound(_)) => { debug!(...) }
+#     Err(e) => warn!("QUIC disconnect for peer {}: {}", addr, e)   // dead
+#
+# Its `module:` was `saorsa_transport_adapter.rs:626` -- a file:line rather
+# than a module path, the signature of an entry transcribed by reading code
+# rather than from an observed log line. That is the tell to watch for.
+#
+# There is no replacement: saorsa-transport's `p2p_endpoint.rs` has no
+# WARN- or ERROR-level disconnect or cleanup emit at 0.36.3, and saorsa-core
+# has none besides the dead arm itself.

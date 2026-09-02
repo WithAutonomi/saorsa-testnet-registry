@@ -11,6 +11,7 @@ rather than an error if it breaks:
 * absence being NOT ASSESSED and never zero, since no run predating this
   measurement has counts and none can be backfilled.
 """
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -66,22 +67,82 @@ def patterns():
 
 
 def test_shipped_catalogue_covers_every_string_from_the_issue(patterns):
-    """All six strings V2-842 names are counted, under stable phrases."""
+    """The strings V2-842 named that can still fire, under stable phrases.
+
+    Four of the original six. The other two were retired at catalogue v2 —
+    see the test below.
+    """
     by_key = {p.key: p for p in patterns.patterns}
     assert set(by_key) == {
         "connection_attempt_failed",
         "happy_eyeballs_failed",
         "dial_failed_all_candidates",
-        "accept_stream_connection_not_found",
-        "quic_disconnect",
         "identity_announce_failed",
     }
     assert by_key["connection_attempt_failed"].phrase == "Connection attempt failed"
     assert by_key["happy_eyeballs_failed"].phrase == "connect_happy_eyeballs failed"
-    assert by_key["quic_disconnect"].phrase == "QUIC disconnect for peer"
+    assert by_key["dial_failed_all_candidates"].phrase == "dial failed for all"
     assert (
         by_key["identity_announce_failed"].phrase == "Failed to send identity announce"
     )
+
+
+def test_the_two_unreachable_patterns_stay_retired(patterns):
+    """V2-1091: both counted zero on every run because their emit cannot run.
+
+    `accept_stream_connection_not_found` watched a handshake/cleanup race that
+    saorsa-transport 0.36.0 designed out via `accept_with_connection()`; from
+    that version the accept stream yields only `Ok`, so saorsa-core's `Err(e)`
+    arm is unreachable. `quic_disconnect` sits on an arm that never could run:
+    `P2pEndpoint::disconnect()` returns only `Ok(())` or `PeerNotFound`, and
+    both are consumed by the arms above it.
+
+    Pinned as a test because both look like obvious coverage gaps, and the
+    reason they are absent lives in a comment that a re-adder may not read.
+    Widening the accept phrase does not help either — the emit is unreachable
+    whatever phrase is matched against it.
+    """
+    keys = {p.key for p in patterns.patterns}
+    assert "accept_stream_connection_not_found" not in keys
+    assert "quic_disconnect" not in keys
+
+    # The groups must go with them: a group with no patterns is a gate that can
+    # never be measured, and the loader rejects one.
+    group_keys = {g.key for g in patterns.groups}
+    assert "accept_stream_failure" not in group_keys
+    assert "quic_disconnect" not in group_keys
+
+
+def test_the_connection_failure_modules_are_not_transposed(patterns):
+    """V2-1091: until v2 these two carried each other's module.
+
+    `Connection attempt failed` is emitted by saorsa-transport's happy-eyeballs
+    racer (`src/happy_eyeballs.rs`), once per address attempt;
+    `connect_happy_eyeballs failed` is emitted by its caller in saorsa-core
+    (`src/transport_handle.rs`), once per overall failure. The catalogue had
+    them the other way round, which sends anyone verifying a zero into the
+    wrong crate — it is how V2-1091's own investigation lost time.
+    """
+    by_key = {p.key: p for p in patterns.patterns}
+    assert by_key["connection_attempt_failed"].module == (
+        "saorsa_transport::happy_eyeballs"
+    )
+    assert by_key["happy_eyeballs_failed"].module == "saorsa_core::transport_handle"
+
+
+def test_no_module_field_is_a_file_line(patterns):
+    """A file:line drifts on every edit to the file and cannot document anything.
+
+    `quic_disconnect` carried `saorsa_transport_adapter.rs:626` (by V2-1091 it
+    was line 643), and that was the tell that the entry had been transcribed by
+    reading code rather than from an observed log line — which is why nobody
+    noticed it had never matched.
+    """
+    for pattern in patterns.patterns:
+        assert not re.search(r"\.rs:\d+$", pattern.module), (
+            f"{pattern.key} has a file:line module ({pattern.module}); use a "
+            "module path, which survives edits to the file"
+        )
 
 
 def test_dial_failure_phrase_avoids_the_interpolated_count(patterns):
@@ -444,10 +505,10 @@ def _connection_gates(verdict: dict) -> dict:
 
 
 def test_a_rise_above_the_threshold_fails(config, patterns):
-    candidate = _run(2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 1200)])
-    baseline = _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 1000)])
+    candidate = _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 1200)])
+    baseline = _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 1000)])
     verdict = compare_runs(candidate, baseline, config, pattern_set=patterns)
-    gate = _connection_gates(verdict)["Connection errors: QUIC disconnects"]
+    gate = _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"]
     assert gate["verdict"] == FAIL
     assert gate["delta_percent"] == pytest.approx(20.0)
     assert gate["kind"] == "soft"
@@ -455,22 +516,22 @@ def test_a_rise_above_the_threshold_fails(config, patterns):
 
 
 def test_a_rise_within_the_threshold_passes(config, patterns):
-    candidate = _run(2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 1050)])
-    baseline = _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 1000)])
+    candidate = _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 1050)])
+    baseline = _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 1000)])
     verdict = compare_runs(candidate, baseline, config, pattern_set=patterns)
     assert (
-        _connection_gates(verdict)["Connection errors: QUIC disconnects"]["verdict"]
+        _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"]["verdict"]
         == PASS
     )
 
 
 def test_a_fall_passes(config, patterns):
     """One-sided, like every other soft gate: an improvement is not a regression."""
-    candidate = _run(2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 10)])
-    baseline = _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 1000)])
+    candidate = _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 10)])
+    baseline = _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 1000)])
     verdict = compare_runs(candidate, baseline, config, pattern_set=patterns)
     assert (
-        _connection_gates(verdict)["Connection errors: QUIC disconnects"]["verdict"]
+        _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"]["verdict"]
         == PASS
     )
 
@@ -503,7 +564,7 @@ def test_a_baseline_with_no_counts_is_not_assessed_never_a_regression(config, pa
     backfilled — the run's Elasticsearch dies at teardown. Treating absence as
     zero would show the candidate's real counts against nothing."""
     candidate = _run(
-        2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 50_000)]
+        2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 50_000)]
     )
     baseline = _run(1, "STG-01", [])
     verdict = compare_runs(candidate, baseline, config, pattern_set=patterns)
@@ -516,11 +577,13 @@ def test_a_baseline_with_no_counts_is_not_assessed_never_a_regression(config, pa
 def test_not_assessed_names_the_missing_side_and_the_remedy(config, patterns):
     verdict = compare_runs(
         _run(2, "STG-01", []),
-        _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 10)]),
+        _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 10)]),
         config,
         pattern_set=patterns,
     )
-    detail = _connection_gates(verdict)["Connection errors: QUIC disconnects"]["detail"]
+    detail = _connection_gates(verdict)[
+        "Connection errors: Dial failures (all candidates)"
+    ]["detail"]
     assert "candidate" in detail
     assert "record-log-counts" in detail
     assert "backfilled" in detail
@@ -553,12 +616,12 @@ def test_appearing_where_the_baseline_had_none_fails(config, patterns):
     this gate can see.
     """
     verdict = compare_runs(
-        _run(2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 50_000)]),
-        _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 0)]),
+        _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 50_000)]),
+        _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 0)]),
         config,
         pattern_set=patterns,
     )
-    gate = _connection_gates(verdict)["Connection errors: QUIC disconnects"]
+    gate = _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"]
     assert gate["verdict"] == FAIL
     assert gate["delta_percent"] is None
     assert "undefined" in gate["detail"]
@@ -569,12 +632,12 @@ def test_zero_on_both_runs_passes_rather_than_reading_as_unmeasurable(
 ):
     """A permanently eliminated string is a measurement, not a missing one."""
     verdict = compare_runs(
-        _run(2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 0)]),
-        _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 0)]),
+        _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 0)]),
+        _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 0)]),
         config,
         pattern_set=patterns,
     )
-    gate = _connection_gates(verdict)["Connection errors: QUIC disconnects"]
+    gate = _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"]
     assert gate["verdict"] == PASS
     assert gate["detail"] == "neither run logged this at all"
 
@@ -585,17 +648,19 @@ def test_gate_detail_carries_the_rate_and_host_spread(config, patterns):
         _run(
             2,
             "STG-01",
-            [_row("quic_disconnect", "quic_disconnect", 4000, hosts=68)],
+            [_row("dial_failed_all_candidates", "dial_failure", 4000, hosts=68)],
         ),
         _run(
             1,
             "STG-01",
-            [_row("quic_disconnect", "quic_disconnect", 4000, hosts=2)],
+            [_row("dial_failed_all_candidates", "dial_failure", 4000, hosts=2)],
         ),
         config,
         pattern_set=patterns,
     )
-    detail = _connection_gates(verdict)["Connection errors: QUIC disconnects"]["detail"]
+    detail = _connection_gates(verdict)[
+        "Connection errors: Dial failures (all candidates)"
+    ]["detail"]
     assert "68 hosts" in detail
     assert "2 hosts" in detail
     assert "/h" in detail
@@ -646,23 +711,23 @@ def test_no_warning_when_a_run_has_no_counts_at_all():
 
 def test_report_renders_counts_with_thousands_separators(config, patterns):
     verdict = compare_runs(
-        _run(2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 71309)]),
-        _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 1415)]),
+        _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 71309)]),
+        _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 1415)]),
         config,
         pattern_set=patterns,
     )
     report = render_report(verdict)
     assert "71,309" in report
     assert "1,415" in report
-    assert "Connection errors: QUIC disconnects" in report
+    assert "Connection errors: Dial failures (all candidates)" in report
 
 
 def test_report_is_byte_identical_for_the_same_inputs(config, patterns):
     def build():
         return render_report(
             compare_runs(
-                _run(2, "STG-01", [_row("quic_disconnect", "quic_disconnect", 71309)]),
-                _run(1, "STG-01", [_row("quic_disconnect", "quic_disconnect", 1415)]),
+                _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 71309)]),
+                _run(1, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 1415)]),
                 config,
                 pattern_set=patterns,
             )
@@ -716,8 +781,8 @@ def test_re_recording_replaces_rather_than_accumulates(repo):
     """Two rival counts for one window would make the comparison
     non-deterministic — the same rule the derived metrics follow."""
     deployment = repo.create(name="STG-01", deploy_args={})
-    _store(repo, deployment.id, "quic_disconnect", "quic_disconnect", 100)
-    _store(repo, deployment.id, "quic_disconnect", "quic_disconnect", 250)
+    _store(repo, deployment.id, "dial_failed_all_candidates", "dial_failure", 100)
+    _store(repo, deployment.id, "dial_failed_all_candidates", "dial_failure", 250)
 
     rows = repo.list_log_event_counts_for_deployment(deployment.id)
     assert len(rows) == 1
@@ -726,12 +791,12 @@ def test_re_recording_replaces_rather_than_accumulates(repo):
 
 def test_counts_are_kept_per_window_label(repo):
     deployment = repo.create(name="STG-01", deploy_args={})
-    _store(repo, deployment.id, "quic_disconnect", "quic_disconnect", 100)
+    _store(repo, deployment.id, "dial_failed_all_candidates", "dial_failure", 100)
     _store(
         repo,
         deployment.id,
-        "quic_disconnect",
-        "quic_disconnect",
+        "dial_failed_all_candidates",
+        "dial_failure",
         30,
         label="steady-state",
     )
@@ -747,7 +812,7 @@ def test_a_large_count_survives_the_round_trip(repo):
     """The column is a BigInteger: a staging fleet's log volume makes a
     32-bit count reachable."""
     deployment = repo.create(name="STG-01", deploy_args={})
-    _store(repo, deployment.id, "quic_disconnect", "quic_disconnect", 4_000_000_000)
+    _store(repo, deployment.id, "dial_failed_all_candidates", "dial_failure", 4_000_000_000)
     assert (
         repo.list_log_event_counts_for_deployment(deployment.id)[0].count
         == 4_000_000_000
@@ -758,8 +823,8 @@ def test_stored_rows_drive_the_gate_end_to_end(repo, config, patterns):
     """The rows the recorder writes are the rows the comparison reads."""
     candidate_row = repo.create(name="STG-01", deploy_args={})
     baseline_row = repo.create(name="STG-01", deploy_args={})
-    _store(repo, candidate_row.id, "quic_disconnect", "quic_disconnect", 1200)
-    _store(repo, baseline_row.id, "quic_disconnect", "quic_disconnect", 1000)
+    _store(repo, candidate_row.id, "dial_failed_all_candidates", "dial_failure", 1200)
+    _store(repo, baseline_row.id, "dial_failed_all_candidates", "dial_failure", 1000)
 
     def as_metrics(deployment):
         return _run(
@@ -790,19 +855,19 @@ def test_stored_rows_drive_the_gate_end_to_end(repo, config, patterns):
         config,
         pattern_set=patterns,
     )
-    gate = _connection_gates(verdict)["Connection errors: QUIC disconnects"]
+    gate = _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"]
     assert gate["verdict"] == FAIL
     assert gate["delta_percent"] == pytest.approx(20.0)
 
 
 def test_deleting_counts_is_scoped_to_a_window(repo):
     deployment = repo.create(name="STG-01", deploy_args={})
-    _store(repo, deployment.id, "quic_disconnect", "quic_disconnect", 100)
+    _store(repo, deployment.id, "dial_failed_all_candidates", "dial_failure", 100)
     _store(
         repo,
         deployment.id,
-        "quic_disconnect",
-        "quic_disconnect",
+        "dial_failed_all_candidates",
+        "dial_failure",
         30,
         label="steady-state",
     )
