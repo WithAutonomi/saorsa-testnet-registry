@@ -76,6 +76,30 @@ def _fetch_funder_balance_eth(rpc_url: str) -> Optional[float]:
         return None
 
 
+def _resolve_uploaders(manifest):
+    """Uploaders from whichever spec this manifest kind carries.
+
+    `testnet` and `testnet-extension` both hold a `clients:` block of the same
+    shape, and an extension's uploaders are funded from the same wallet in the
+    same way — so sizing has to reach both. Reading only `testnet` meant a
+    `testnet-extension` manifest was refused outright ("no wallets to fund"),
+    which reads as "nothing to check" rather than "this tool cannot see your
+    uploaders". V2-1150's released cohort went unsized for that reason.
+
+    Returns (uploaders, spec_label); the label names the block the figures
+    came from, so the "set these in the profile" advice points at the right
+    place. The prod kinds are deliberately NOT included: they pay from an
+    Arbitrum One mainnet wallet, and this model is calibrated on Sepolia.
+    """
+    for attr, label in (("testnet", "testnet"), ("extension", "extension")):
+        spec = getattr(manifest, attr, None)
+        clients = getattr(spec, "clients", None) if spec else None
+        uploaders = list(getattr(clients, "uploaders", []) or []) if clients else []
+        if uploaders:
+            return uploaders, f"{label}.clients.uploaders"
+    return [], "testnet.clients.uploaders"
+
+
 def _read_baseline_clients(repo, deployment_id: int):
     """Fetch one run's per-client successful-upload shape.
 
@@ -140,13 +164,12 @@ def cmd_estimate_client_gas(args) -> None:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
 
-    testnet = getattr(manifest, "testnet", None)
-    clients = getattr(testnet, "clients", None) if testnet else None
-    uploaders = list(getattr(clients, "uploaders", []) or []) if clients else []
+    uploaders, spec_label = _resolve_uploaders(manifest)
     if not uploaders:
         console.print(
             "[bold red]Error:[/bold red] this manifest declares no "
-            "testnet.clients.uploaders, so there are no wallets to fund."
+            "testnet.clients.uploaders or extension.clients.uploaders, so "
+            "there are no wallets to fund."
         )
         sys.exit(1)
 
@@ -336,8 +359,8 @@ def cmd_estimate_client_gas(args) -> None:
     if inadequate:
         console.print(
             f"\n[bold red]{len(inadequate)} uploader(s) under-funded at this "
-            "gas price.[/bold red] Set these in the profile's "
-            "clients.uploaders, in order:"
+            f"gas price.[/bold red] Set these in the profile's "
+            f"{spec_label}, in order:"
         )
         for u in estimate.uploaders:
             console.print(f"  {u.plan.name:<20} eth: {u.recommended_eth:g}")

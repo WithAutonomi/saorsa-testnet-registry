@@ -502,3 +502,128 @@ def test_a_current_value_below_the_minimum_floor_is_under_funded(
         )
     assert exc.value.code == 2
     assert "under-funded" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Extension manifests must be sizeable too
+#
+# A `testnet-extension` carries its own client tier, funded from the same
+# wallet in the same way, but the command read only `testnet.clients` and so
+# refused every extension with "no wallets to fund" — which reads as "nothing
+# to check" rather than "this tool cannot see your uploaders". On V2-1150 the
+# released cohort (DEV-01-REL) went unsized for exactly that reason, and its
+# uploaders exhausted their wallets mid-run.
+# ---------------------------------------------------------------------------
+
+EXTENSION_MANIFEST = """
+kind: testnet-extension
+name: TEST-01-REL
+purpose: "gas model test fixture, extension"
+extension:
+  source: TEST-01
+  binaries:
+    ant_node:
+      version: 0.17.2
+    ant:
+      version: 0.3.4
+  nodes:
+    per_vm: 15
+    providers:
+      digital_ocean:
+        vm_count: 1
+        regions_list: [lon1]
+        size: s-8vcpu-16gb
+        attached_volume_size: 100
+  clients:
+    uploaders:
+      - { provider: ovh, region: SBG5, file_size_mb: 1000, vm_size: b3-8, ant: 1000, eth: 0.5 }
+      - { provider: ovh, region: DE1, file_size_mb: 20, vm_size: b3-8, ant: 200, eth: 0.2 }
+    downloaders:
+      - { provider: digital_ocean, region: tor1 }
+"""
+
+
+@pytest.fixture()
+def extension_manifest_path(tmp_path):
+    path = tmp_path / "extension.yaml"
+    path.write_text(EXTENSION_MANIFEST)
+    return str(path)
+
+
+def test_extension_manifest_is_sized_not_refused(capsys, extension_manifest_path):
+    """The regression: an extension used to exit 1 with "no wallets to fund"."""
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(
+            _args(config=extension_manifest_path, name="TEST-01-REL",
+                  base_fee_gwei=1e-6)
+        )
+    out = capsys.readouterr().out
+    assert "no wallets to fund" not in out
+    assert exc.value.code == 0
+    # both uploaders reached the table
+    assert "SBG5/1000MB" in out
+    assert "DE1/20MB" in out
+
+
+def test_extension_under_funding_is_reported_against_the_extension_block(
+    capsys, extension_manifest_path
+):
+    """The remediation advice must name the block the values actually live in."""
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(
+            _args(config=extension_manifest_path, name="TEST-01-REL",
+                  base_fee_gwei=50.0)
+        )
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "extension.clients.uploaders" in out
+    assert "testnet.clients.uploaders" not in out
+
+
+def test_a_testnet_manifest_still_reports_against_the_testnet_block(
+    capsys, manifest_path
+):
+    """Guard the other side of the branch: a base manifest is unchanged."""
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(_args(config=manifest_path, base_fee_gwei=50.0))
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "testnet.clients.uploaders" in out
+
+
+def test_prod_uploader_kinds_are_still_refused(capsys, tmp_path):
+    """Deliberate non-coverage: prod pays from an Arbitrum One mainnet wallet
+    and this model is calibrated on Sepolia, so a prod manifest must not be
+    silently sized against the wrong chain."""
+    from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+    path = tmp_path / "prod.yaml"
+    path.write_text(
+        """
+kind: prod-uploaders
+name: PROD-UL-TEST
+purpose: "gas model test fixture, prod"
+prod_uploaders:
+  binary:
+    version: 0.3.4
+  uploaders:
+    - region: lon1
+      vm_size: s-4vcpu-8gb
+      pool:
+        small: 3
+"""
+    )
+    with pytest.raises(SystemExit) as exc:
+        cmd_estimate_client_gas(_args(config=str(path), name="PROD-UL-TEST"))
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    # refused for the right reason: the manifest parsed, we just decline to
+    # size a mainnet-funded kind against a Sepolia-calibrated model.
+    assert "invalid manifest" not in out
+    assert "no wallets to fund" in out
