@@ -11,7 +11,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
-from saorsa_deploy.client_roles import is_wasm, unit_for_role
+from saorsa_deploy.client_roles import is_upload, is_wasm, unit_for_role
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
@@ -125,6 +125,16 @@ WASM_CLIENT_ENV_PATH = "/etc/ant-wasm-client.env"
 WASM_NODE_MAJOR = "22"
 
 
+def _normalize_secret(k: str) -> str:
+    """0x-prefix a wallet key, tolerating whitespace and a missing prefix."""
+    k = (k or "").strip()
+    if not k:
+        return ""
+    if not k.startswith("0x"):
+        k = "0x" + k
+    return k
+
+
 def _build_wasm_unit(role: str) -> str:
     """systemd unit for a WASM client service.
 
@@ -224,6 +234,72 @@ class AntClientProvisioner:
         self.wasm_bundle_url = wasm_bundle_url
         self.bootstrap_webrtc_multiaddrs = list(bootstrap_webrtc_multiaddrs or [])
         self.wasm_rpc_url = wasm_rpc_url
+
+    def _build_ip_to_env(self, fallback_secret: str) -> dict:
+        """Per-VM service environment, keyed by IP.
+
+        Each entry carries the client's ACTUAL role. It must never be
+        normalised to "upload"/"download": the WASM roles are what select the
+        WASM provisioning ops and the WASM systemd unit, and collapsing them
+        here silently provisions a WASM VM as a native one.
+        """
+        ip_to_env = {}
+        for c in self.clients:
+            if not c.get("ip"):
+                continue
+            role = c.get("role", "upload")
+            # heaptrack wraps the native `ant` invocation, so it is
+            # meaningless on the WASM roles — keep it native-only.
+            heap = (
+                "1"
+                if (role == "upload" and "uploader" in self.heaptrack_targets)
+                or (role == "download" and "downloader" in self.heaptrack_targets)
+                else "0"
+            )
+            bootstrap_cache = (
+                "true" if c.get("bootstrap_cache", True) else "false"
+            )
+            forward_logs = "true" if c.get("forward_logs") else "false"
+            rust_log = c.get("rust_log") or ""
+            # The env entry carries the client's ACTUAL role, never a
+            # normalised "upload"/"download". Collapsing it here made both
+            # WASM roles look like native downloaders: `_add_wasm_ops` saw
+            # no WASM hosts and installed nothing, while the native unit
+            # writer put an `ant-downloader.service` on those VMs — and
+            # `clients start`, which maps the real role to its unit, then
+            # failed on a service that was never written.
+            if is_upload(role):
+                per_uploader_key = _normalize_secret(c.get("wallet_secret_key", ""))
+                ip_to_env[c["ip"]] = {
+                    "role": role,
+                    "file_size_kb": c["file_size_mb"] * 1024,
+                    "region": c["region"],
+                    "client_index": c["client_index"],
+                    "payment_type": c.get("payment_type") or "",
+                    "secret_key": per_uploader_key or fallback_secret,
+                    "heaptrack": heap,
+                    "bootstrap_cache": bootstrap_cache,
+                    "forward_logs": forward_logs,
+                    "rust_log": rust_log,
+                    "upload_presigned_url": self._presigned_put_url(
+                        c["region"], c["client_index"]
+                    ),
+                }
+            else:
+                ip_to_env[c["ip"]] = {
+                    "role": role,
+                    "file_size_kb": 0,
+                    "region": c["region"],
+                    "client_index": c["client_index"],
+                    "payment_type": "",
+                    "secret_key": fallback_secret,
+                    "heaptrack": heap,
+                    "bootstrap_cache": bootstrap_cache,
+                    "forward_logs": forward_logs,
+                    "rust_log": rust_log,
+                    "upload_presigned_url": "",
+                }
+        return ip_to_env
 
     def _add_wasm_ops(self, state, ip_to_env: dict) -> None:
         """Provision the WASM client on every host running a wasm-* role.
@@ -688,63 +764,9 @@ class AntClientProvisioner:
 
             # Build a case statement that maps IP to role-specific values.
             # Emits ROLE / FILE_SIZE_KB / REGION / CLIENT_INDEX.
-            def _normalize_secret(k: str) -> str:
-                k = (k or "").strip()
-                if not k:
-                    return ""
-                if not k.startswith("0x"):
-                    k = "0x" + k
-                return k
-
             fallback_secret = _normalize_secret(self.wallet_secret_key)
 
-            ip_to_env = {}
-            for c in self.clients:
-                if not c.get("ip"):
-                    continue
-                role = c.get("role", "upload")
-                heap = (
-                    "1"
-                    if (role == "upload" and "uploader" in self.heaptrack_targets)
-                    or (role == "download" and "downloader" in self.heaptrack_targets)
-                    else "0"
-                )
-                bootstrap_cache = (
-                    "true" if c.get("bootstrap_cache", True) else "false"
-                )
-                forward_logs = "true" if c.get("forward_logs") else "false"
-                rust_log = c.get("rust_log") or ""
-                if role == "upload":
-                    per_uploader_key = _normalize_secret(c.get("wallet_secret_key", ""))
-                    ip_to_env[c["ip"]] = {
-                        "role": "upload",
-                        "file_size_kb": c["file_size_mb"] * 1024,
-                        "region": c["region"],
-                        "client_index": c["client_index"],
-                        "payment_type": c.get("payment_type") or "",
-                        "secret_key": per_uploader_key or fallback_secret,
-                        "heaptrack": heap,
-                        "bootstrap_cache": bootstrap_cache,
-                        "forward_logs": forward_logs,
-                        "rust_log": rust_log,
-                        "upload_presigned_url": self._presigned_put_url(
-                            c["region"], c["client_index"]
-                        ),
-                    }
-                else:
-                    ip_to_env[c["ip"]] = {
-                        "role": "download",
-                        "file_size_kb": 0,
-                        "region": c["region"],
-                        "client_index": c["client_index"],
-                        "payment_type": "",
-                        "secret_key": fallback_secret,
-                        "heaptrack": heap,
-                        "bootstrap_cache": bootstrap_cache,
-                        "forward_logs": forward_logs,
-                        "rust_log": rust_log,
-                        "upload_presigned_url": "",
-                    }
+            ip_to_env = self._build_ip_to_env(fallback_secret)
 
             case_entries = []
             for ip, env in ip_to_env.items():

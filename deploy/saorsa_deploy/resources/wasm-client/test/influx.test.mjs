@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildLine, escapeFieldString, escapeTag } from "../dist/influx.js";
+import { buildLine, escapeFieldString, escapeTag, i64Field } from "../dist/influx.js";
 
 test("integer fields carry the i suffix", () => {
   const line = buildLine("upload", { host: "h", region: "lon1" }, { status: { int: 0 } });
@@ -70,4 +70,41 @@ test("no timestamp is appended", () => {
   // metrics would scatter across the timeline.
   const line = buildLine("download", { host: "h" }, { status: { int: 0 } });
   assert.ok(!/\s\d{15,}$/.test(line), `line must not end with a timestamp: ${line}`);
+});
+
+test("int64 fields are emitted with the i suffix", () => {
+  // The native uploader.sh types storage_cost_atto and gas_cost_wei as int64.
+  // Influx fixes a field's type on first write and REJECTS THE WHOLE POINT of
+  // any later write that disagrees — observed on DEV-01-wasm, where every WASM
+  // upload metric was dropped with "field type conflict: storage_cost_atto is
+  // type string, already exists as type integer".
+  const line = buildLine("upload", {}, { storage_cost_atto: i64Field("46875000000000000") });
+  assert.equal(line, "upload storage_cost_atto=46875000000000000i");
+});
+
+test("an int64 field accepts a bigint as well as a string", () => {
+  assert.deepEqual(i64Field(42n), { i64: 42n });
+  assert.deepEqual(i64Field("42"), { i64: 42n });
+});
+
+test("a value beyond int64 is dropped rather than sent as a string", () => {
+  // uploader.sh's i64() helper appends the field only when it is in range;
+  // falling back to a string would recreate the type conflict.
+  assert.equal(i64Field((2n ** 63n).toString()), undefined);
+  assert.equal(i64Field((-(2n ** 63n)).toString()), undefined);
+});
+
+test("empty and unparseable values are dropped", () => {
+  for (const v of [null, undefined, "", "not-a-number"]) {
+    assert.equal(i64Field(v), undefined);
+  }
+});
+
+test("a dropped field leaves the rest of the line intact", () => {
+  const line = buildLine(
+    "upload",
+    { host: "h" },
+    { status: { int: 0 }, storage_cost_atto: i64Field("nonsense"), file_size: { int: 10 } },
+  );
+  assert.equal(line, "upload,host=h status=0i,file_size=10i");
 });

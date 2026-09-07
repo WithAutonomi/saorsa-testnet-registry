@@ -26,7 +26,7 @@ import {
   installWebRtc,
 } from "./client.js";
 import { type Config, loadConfig } from "./config.js";
-import { buildLine, type InfluxTarget, submitMetric } from "./influx.js";
+import { buildLine, i64Field, type InfluxTarget, submitMetric } from "./influx.js";
 import { makeWallet, type PaymentNetwork, type PayForQuotes } from "./wallet.js";
 
 const STATUS_SUCCESS = 0;
@@ -146,7 +146,9 @@ async function runUploader(
           file_size: { int: cfg.fileSizeBytes },
           start_ns: { int: Number(startNs) },
           records: { int: records },
-          storage_cost_atto: costAtto,
+          // int64, matching uploader.sh — a string here conflicts with the
+          // field type Influx already holds and drops the whole point.
+          storage_cost_atto: i64Field(costAtto),
           error_kind: errorKind,
         },
       ),

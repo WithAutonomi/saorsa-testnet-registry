@@ -202,3 +202,86 @@ class TestTeardownRoleParsing:
     def test_unparseable_key_is_rejected(self):
         assert self._parse("banana-lon1-1") is None
         assert self._parse("upload-lon1-notanumber") is None
+
+
+class TestIpToEnvPreservesTheRealRole:
+    """Regression: `ip_to_env` used to normalise every role to upload/download.
+
+    Found on the first real deployment (DEV-01-wasm, 2026-09-07). The entry for
+    a non-`upload` client hardcoded `"role": "download"`, so both WASM roles
+    arrived as native downloaders. `_add_wasm_ops` then saw no WASM hosts and
+    installed nothing, the native unit writer put an `ant-downloader.service` on
+    those VMs, and `clients start` — which maps the client's REAL role to its
+    unit — failed with "Unit file ant-wasm-downloader.service does not exist".
+
+    The earlier tests all fed `_add_wasm_ops` a hand-built dict, so none of them
+    exercised the construction that was actually wrong.
+    """
+
+    @staticmethod
+    def _clients():
+        return [
+            {
+                "ip": "10.0.0.1",
+                "role": "upload",
+                "region": "lon1",
+                "client_index": 1,
+                "file_size_mb": 10,
+            },
+            {"ip": "10.0.0.2", "role": "download", "region": "lon1", "client_index": 1},
+            {
+                "ip": "10.0.0.3",
+                "role": "wasm-upload",
+                "region": "lon1",
+                "client_index": 1,
+                "file_size_mb": 10,
+            },
+            {
+                "ip": "10.0.0.4",
+                "role": "wasm-download",
+                "region": "lon1",
+                "client_index": 1,
+            },
+        ]
+
+    def _env(self):
+        p = _provisioner(clients=self._clients())
+        with patch.object(AntClientProvisioner, "_presigned_put_url", return_value="https://x"):
+            return p._build_ip_to_env("0xdead")
+
+    def test_every_role_survives_verbatim(self):
+        env = self._env()
+        assert env["10.0.0.1"]["role"] == "upload"
+        assert env["10.0.0.2"]["role"] == "download"
+        assert env["10.0.0.3"]["role"] == ROLE_WASM_UPLOAD
+        assert env["10.0.0.4"]["role"] == ROLE_WASM_DOWNLOAD
+
+    def test_wasm_hosts_are_visible_to_the_wasm_provisioning(self):
+        # The predicate `_add_wasm_ops` gates on. This was False for every host.
+        from saorsa_deploy.client_roles import is_wasm as _is_wasm
+
+        env = self._env()
+        assert [ip for ip, e in env.items() if _is_wasm(e["role"])] == [
+            "10.0.0.3",
+            "10.0.0.4",
+        ]
+
+    def test_a_wasm_uploader_keeps_its_upload_side_settings(self):
+        # It fell into the download branch, which zeroes the file size and drops
+        # the wallet key and the presigned URL — so even with a unit written it
+        # could not have uploaded anything.
+        e = self._env()["10.0.0.3"]
+        assert e["file_size_kb"] == 10 * 1024
+        assert e["secret_key"] == "0xdead"
+        assert e["upload_presigned_url"] == "https://x"
+
+    def test_a_wasm_downloader_still_has_no_upload_settings(self):
+        e = self._env()["10.0.0.4"]
+        assert e["file_size_kb"] == 0
+        assert e["upload_presigned_url"] == ""
+
+    def test_native_entries_are_unchanged(self):
+        env = self._env()
+        assert env["10.0.0.1"]["file_size_kb"] == 10 * 1024
+        assert env["10.0.0.2"]["file_size_kb"] == 0
+        assert env["10.0.0.2"]["upload_presigned_url"] == ""

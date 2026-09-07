@@ -29,21 +29,46 @@ export function escapeFieldString(value: string): string {
   return value.replace(/(["\\])/g, "\\$1");
 }
 
-export type FieldValue = number | string | { int: number };
+export type FieldValue = number | string | { int: number } | { i64: bigint };
+
+/**
+ * An int64 line-protocol field, or nothing when the value will not fit.
+ *
+ * Influx types a field on first write and rejects every later point that
+ * disagrees, dropping the WHOLE point rather than the offending field. The
+ * native `uploader.sh` emits `storage_cost_atto` and `gas_cost_wei` as int64
+ * (its `i64()` helper appends the field only when it is in range), so a WASM
+ * client writing the same names as strings loses every upload metric it
+ * records. Same measurement, same names, same types.
+ */
+export function i64Field(value: bigint | string | null | undefined): { i64: bigint } | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  let v: bigint;
+  try {
+    v = BigInt(value);
+  } catch {
+    return undefined;
+  }
+  if (v <= -(2n ** 63n) || v >= 2n ** 63n) return undefined;
+  return { i64: v };
+}
 
 export function buildLine(
   measurement: string,
   tags: Record<string, string>,
-  fields: Record<string, FieldValue>,
+  fields: Record<string, FieldValue | undefined>,
 ): string {
   const tagPart = Object.entries(tags)
     .filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `${escapeTag(k)}=${escapeTag(v)}`)
     .join(",");
   const fieldPart = Object.entries(fields)
+    .filter(([, v]) => v !== undefined)
     .map(([k, v]) => {
+      if (v === undefined) return "";
       if (typeof v === "number") return `${k}=${v}`;
       if (typeof v === "string") return `${k}="${escapeFieldString(v)}"`;
+      if ("i64" in v) return `${k}=${v.i64}i`;
       return `${k}=${Math.trunc(v.int)}i`;
     })
     .join(",");
