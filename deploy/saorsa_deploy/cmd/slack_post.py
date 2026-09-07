@@ -16,6 +16,7 @@ from pathlib import Path
 import requests
 from rich.console import Console
 
+from saorsa_deploy.client_roles import is_upload, is_wasm
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.slack_api import SlackApiError, post_message
 from saorsa_deploy.state import (
@@ -494,33 +495,60 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
     return blocks
 
 
+def _client_line(c: dict) -> str:
+    """One rendered client entry."""
+    role = c.get("role", "upload")
+    region = c.get("region", "?")
+    vm_size = c.get("vm_size", "?")
+    skew_str = " — ⏰ clock-skew" if c.get("clock_skew") else ""
+    net_str = _network_suffix(c)
+    # The ant peer cache does not exist on the WASM path — a browser client
+    # seeds from the deployment's webrtc-direct addresses — so rendering a
+    # cache marker there would describe a setting that has no effect.
+    cache_str = "" if is_wasm(role) else _bootstrap_cache_marker(c.get("bootstrap_cache"))
+    fwd_str = _forward_logs_marker(c.get("forward_logs"))
+    rust_str = _rust_log_marker(c.get("rust_log"))
+    if is_upload(role):
+        file_size = c.get("file_size_mb")
+        # file_size_mb is 0 for prod uploaders (real files of arbitrary
+        # size) — only render the size for testnet uploaders, where it
+        # is the configured upload size.
+        size_str = f", {file_size}MB files" if file_size else ""
+        payment = c.get("payment_type") or "default"
+        return (
+            f"• upload — {region} ({vm_size}{size_str}) — "
+            f"payment: {payment}{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
+        )
+    return (
+        f"• download — {region} ({vm_size})"
+        f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
+    )
+
+
 def _clients_block(clients: list[dict]) -> dict:
-    lines = []
-    for c in clients:
-        role = c.get("role", "upload")
-        region = c.get("region", "?")
-        vm_size = c.get("vm_size", "?")
-        skew_str = " — ⏰ clock-skew" if c.get("clock_skew") else ""
-        net_str = _network_suffix(c)
-        cache_str = _bootstrap_cache_marker(c.get("bootstrap_cache"))
-        fwd_str = _forward_logs_marker(c.get("forward_logs"))
-        rust_str = _rust_log_marker(c.get("rust_log"))
-        if role == "upload":
-            file_size = c.get("file_size_mb")
-            # file_size_mb is 0 for prod uploaders (real files of arbitrary
-            # size) — only render the size for testnet uploaders, where it
-            # is the configured upload size.
-            size_str = f", {file_size}MB files" if file_size else ""
-            payment = c.get("payment_type") or "default"
-            lines.append(
-                f"• upload — {region} ({vm_size}{size_str}) — "
-                f"payment: {payment}{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
-            )
-        else:
-            lines.append(
-                f"• download — {region} ({vm_size})"
-                f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
-            )
+    """Render the client tier, splitting the two transports.
+
+    A WASM client drives ant-core compiled to WASM over WebRTC-Direct; a native
+    one drives the `ant` binary over QUIC. Their results are not comparable
+    like-for-like, so a post that ran both and listed them as one undifferentiated
+    set would misreport the run. (Worse, before this split every WASM client fell
+    through the `role == "upload"` test and was rendered as a downloader.)
+
+    The headings appear ONLY when the deployment actually has WASM clients, so
+    every existing testnet's post is unchanged.
+    """
+    native = [c for c in clients if not is_wasm(c.get("role", "upload"))]
+    wasm = [c for c in clients if is_wasm(c.get("role", "upload"))]
+
+    if not wasm:
+        return _section("*Clients:*\n" + "\n".join(_client_line(c) for c in native))
+
+    lines: list[str] = []
+    if native:
+        lines.append("_Native (QUIC):_")
+        lines.extend(_client_line(c) for c in native)
+    lines.append("_WASM (WebRTC-Direct):_")
+    lines.extend(_client_line(c) for c in wasm)
     return _section("*Clients:*\n" + "\n".join(lines))
 
 
