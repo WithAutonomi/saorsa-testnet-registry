@@ -204,6 +204,7 @@ class DeploymentRepository(ABC):
         finished_at: datetime | None,
         duration_ms: int | None,
         network_profile: str | None = None,
+        client_kind: str | None = None,
     ) -> DeploymentUploadRecord:
         ...
 
@@ -221,6 +222,7 @@ class DeploymentRepository(ABC):
         finished_at: datetime | None,
         duration_ms: int | None,
         network_profile: str | None = None,
+        client_kind: str | None = None,
     ) -> DeploymentDownloadRecord:
         ...
 
@@ -835,6 +837,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         finished_at: datetime | None,
         duration_ms: int | None,
         network_profile: str | None = None,
+        client_kind: str | None = None,
     ):
         existing = (
             self.session.query(model_cls)
@@ -858,6 +861,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 finished_at=finished_at,
                 duration_ms=duration_ms,
                 network_profile=network_profile,
+                client_kind=client_kind,
             )
             self.session.add(existing)
         else:
@@ -869,6 +873,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.finished_at = finished_at
             existing.duration_ms = duration_ms
             existing.network_profile = network_profile
+            existing.client_kind = client_kind
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -886,6 +891,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         finished_at: datetime | None,
         duration_ms: int | None,
         network_profile: str | None = None,
+        client_kind: str | None = None,
     ) -> DeploymentUploadRecord:
         return self._upsert_op_record(
             DeploymentUploadRecord,
@@ -900,6 +906,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             finished_at=finished_at,
             duration_ms=duration_ms,
             network_profile=network_profile,
+            client_kind=client_kind,
         )
 
     def upsert_download_record(
@@ -915,6 +922,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         finished_at: datetime | None,
         duration_ms: int | None,
         network_profile: str | None = None,
+        client_kind: str | None = None,
     ) -> DeploymentDownloadRecord:
         return self._upsert_op_record(
             DeploymentDownloadRecord,
@@ -929,6 +937,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             finished_at=finished_at,
             duration_ms=duration_ms,
             network_profile=network_profile,
+            client_kind=client_kind,
         )
 
     def list_upload_records_for_deployment(

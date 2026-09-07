@@ -4,6 +4,17 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers)
+    ALL_CLIENT_ROLES,
+    ROLE_DOWNLOAD,
+    ROLE_LABELS,
+    ROLE_ORDER,
+    ROLE_UPLOAD,
+    ROLE_WASM_DOWNLOAD,
+    ROLE_WASM_UPLOAD,
+    UPLOAD_ROLES,
+    WASM_ROLES,
+)
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import CLIENT_PROVIDERS, resolve_client_provider
 from saorsa_deploy.provisioning.clock_skew import format_skew_offset, parse_skew_duration
@@ -19,8 +30,6 @@ from saorsa_deploy.state import (
 from saorsa_deploy.terraform import TerraformRunConfig
 
 DEFAULT_VM_SIZE = "s-2vcpu-4gb"
-ROLE_UPLOAD = "upload"
-ROLE_DOWNLOAD = "download"
 
 
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
@@ -37,6 +46,12 @@ _VALID_UPLOADER_KEYS = (
     "network",
 )
 _VALID_DOWNLOADER_KEYS = ("clock_skew", "bootstrap_cache", "forward_logs", "network")
+# No `bootstrap_cache` on either WASM role: that option chooses between ant's
+# peer cache and an explicit --bootstrap invocation, and a WASM client does
+# neither. It seeds from the bootstrap tier's webrtc-direct multiaddrs and
+# discovers the rest of the network over authenticated find_node.
+_VALID_WASM_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew", "forward_logs", "network")
+_VALID_WASM_DOWNLOADER_KEYS = ("clock_skew", "forward_logs", "network")
 DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
 # ant peer cache default: invoke ant WITHOUT --bootstrap, shipping a
@@ -135,6 +150,141 @@ def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
     return format(amount, "f").rstrip("0").rstrip(".") or "0"
 
 
+def _split_spec(spec: str, valid_keys: tuple, label: str) -> tuple[list[str], dict, str | None]:
+    """Shared token split for every client spec grammar.
+
+    Returns ``(positional, options, rust_log)``. ``rust_log`` is pulled off the
+    end BEFORE the ``:``-split because its value can contain ``:`` (RUST_LOG
+    module paths use ``::``).
+    """
+    spec_body, rust_log = _extract_rust_log(spec)
+    positional: list[str] = []
+    options: dict[str, str] = {}
+    for part in spec_body.split(":"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            if key not in valid_keys:
+                raise ValueError(f"Invalid {label} spec '{spec}': unknown key '{key}'.")
+            if key in options:
+                raise ValueError(f"Invalid {label} spec '{spec}': duplicate key '{key}'.")
+            options[key] = value
+        else:
+            positional.append(part)
+    return positional, options, rust_log
+
+
+def _common_options(spec: str, options: dict, valid_keys: tuple) -> dict:
+    """The options every client role shares."""
+    out = {
+        "clock_skew": (
+            _parse_clock_skew(spec, options["clock_skew"])
+            if "clock_skew" in options
+            else None
+        ),
+        "forward_logs": (
+            _parse_forward_logs(spec, options["forward_logs"])
+            if "forward_logs" in options
+            else None
+        ),
+        "network": _parse_network(spec, options["network"]) if "network" in options else None,
+    }
+    # bootstrap_cache is native-only: it selects between ant's peer cache and an
+    # explicit --bootstrap invocation, neither of which exists on the WASM path.
+    if "bootstrap_cache" in valid_keys:
+        out["bootstrap_cache"] = (
+            _parse_bootstrap_cache(spec, options["bootstrap_cache"])
+            if "bootstrap_cache" in options
+            else DEFAULT_BOOTSTRAP_CACHE
+        )
+    return out
+
+
+def _parse_uploader_like(spec: str, valid_keys: tuple, role: str, label: str) -> dict:
+    """Parse ``provider:region:file_size_mb[:vm_size][:key=value...]``."""
+    positional, options, rust_log = _split_spec(spec, valid_keys, label)
+
+    if len(positional) < 3 or len(positional) > 4:
+        raise ValueError(
+            f"Invalid {label} spec '{spec}'. "
+            f"Expected format: provider:region:file_size_mb[:vm_size]"
+            f"[:payment=MODE][:ant=N][:eth=N]"
+        )
+    try:
+        provider = resolve_client_provider(positional[0]).name
+    except ValueError as e:
+        raise ValueError(f"Invalid {label} spec '{spec}': {e}")
+    region = positional[1]
+    if not region:
+        raise ValueError(f"Invalid {label} spec '{spec}': region cannot be empty.")
+    try:
+        file_size_mb = int(positional[2])
+    except ValueError:
+        raise ValueError(
+            f"Invalid file size '{positional[2]}' in {label} spec '{spec}'. "
+            f"Must be an integer (MB)."
+        )
+    vm_size = positional[3] if len(positional) == 4 else DEFAULT_VM_SIZE
+
+    payment_type: str | None = options.get("payment")
+    if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
+        raise ValueError(
+            f"Invalid {label} spec '{spec}': payment must be one of "
+            f"{', '.join(_VALID_PAYMENT_VALUES)}."
+        )
+
+    ant_funding = (
+        _parse_positive_decimal(spec, "ant", options["ant"])
+        if "ant" in options
+        else DEFAULT_ANT_FUNDING
+    )
+    eth_funding = (
+        _parse_positive_decimal(spec, "eth", options["eth"])
+        if "eth" in options
+        else DEFAULT_ETH_FUNDING
+    )
+
+    return {
+        "role": role,
+        "provider": provider,
+        "region": region,
+        "file_size_mb": file_size_mb,
+        "vm_size": vm_size,
+        "payment_type": payment_type,
+        "ant_funding": ant_funding,
+        "eth_funding": eth_funding,
+        "rust_log": rust_log,
+        **_common_options(spec, options, valid_keys),
+    }
+
+
+def _parse_downloader_like(spec: str, valid_keys: tuple, role: str, label: str) -> dict:
+    """Parse ``provider:region[:vm_size][:key=value...]``."""
+    positional, options, rust_log = _split_spec(spec, valid_keys, label)
+
+    if len(positional) < 2 or len(positional) > 3:
+        raise ValueError(
+            f"Invalid {label} spec '{spec}'. "
+            f"Expected format: provider:region[:vm_size][:clock_skew=DURATION]"
+        )
+    try:
+        provider = resolve_client_provider(positional[0]).name
+    except ValueError as e:
+        raise ValueError(f"Invalid {label} spec '{spec}': {e}")
+    region = positional[1]
+    if not region:
+        raise ValueError(f"Invalid {label} spec '{spec}': region cannot be empty.")
+    vm_size = positional[2] if len(positional) == 3 else DEFAULT_VM_SIZE
+
+    return {
+        "role": role,
+        "provider": provider,
+        "region": region,
+        "vm_size": vm_size,
+        "rust_log": rust_log,
+        **_common_options(spec, options, valid_keys),
+    }
+
+
 def parse_uploader_spec(spec: str) -> dict:
     """Parse an uploader spec.
 
@@ -154,96 +304,7 @@ def parse_uploader_spec(spec: str) -> dict:
     True — invoke ant without --bootstrap, shipping a bootstrap_peers.toml),
     forward_logs (bool or None), rust_log (str or None).
     """
-    spec_body, rust_log = _extract_rust_log(spec)
-    raw_parts = spec_body.split(":")
-    positional: list[str] = []
-    options: dict[str, str] = {}
-    for part in raw_parts:
-        if "=" in part:
-            key, value = part.split("=", 1)
-            if key not in _VALID_UPLOADER_KEYS:
-                raise ValueError(
-                    f"Invalid uploader spec '{spec}': unknown key '{key}'."
-                )
-            if key in options:
-                raise ValueError(
-                    f"Invalid uploader spec '{spec}': duplicate key '{key}'."
-                )
-            options[key] = value
-        else:
-            positional.append(part)
-
-    if len(positional) < 3 or len(positional) > 4:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}'. "
-            f"Expected format: provider:region:file_size_mb[:vm_size]"
-            f"[:payment=MODE][:ant=N][:eth=N]"
-        )
-    try:
-        provider = resolve_client_provider(positional[0]).name
-    except ValueError as e:
-        raise ValueError(f"Invalid uploader spec '{spec}': {e}")
-    region = positional[1]
-    if not region:
-        raise ValueError(f"Invalid uploader spec '{spec}': region cannot be empty.")
-    try:
-        file_size_mb = int(positional[2])
-    except ValueError:
-        raise ValueError(
-            f"Invalid file size '{positional[2]}' in uploader spec '{spec}'. "
-            f"Must be an integer (MB)."
-        )
-    vm_size = positional[3] if len(positional) == 4 else DEFAULT_VM_SIZE
-
-    payment_type: str | None = options.get("payment")
-    if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}': payment must be one of "
-            f"{', '.join(_VALID_PAYMENT_VALUES)}."
-        )
-
-    ant_funding = (
-        _parse_positive_decimal(spec, "ant", options["ant"])
-        if "ant" in options
-        else DEFAULT_ANT_FUNDING
-    )
-    eth_funding = (
-        _parse_positive_decimal(spec, "eth", options["eth"])
-        if "eth" in options
-        else DEFAULT_ETH_FUNDING
-    )
-    clock_skew = (
-        _parse_clock_skew(spec, options["clock_skew"])
-        if "clock_skew" in options
-        else None
-    )
-    bootstrap_cache = (
-        _parse_bootstrap_cache(spec, options["bootstrap_cache"])
-        if "bootstrap_cache" in options
-        else DEFAULT_BOOTSTRAP_CACHE
-    )
-    forward_logs = (
-        _parse_forward_logs(spec, options["forward_logs"])
-        if "forward_logs" in options
-        else None
-    )
-    network = _parse_network(spec, options["network"]) if "network" in options else None
-
-    return {
-        "role": ROLE_UPLOAD,
-        "provider": provider,
-        "region": region,
-        "file_size_mb": file_size_mb,
-        "vm_size": vm_size,
-        "payment_type": payment_type,
-        "ant_funding": ant_funding,
-        "eth_funding": eth_funding,
-        "clock_skew": clock_skew,
-        "bootstrap_cache": bootstrap_cache,
-        "forward_logs": forward_logs,
-        "rust_log": rust_log,
-        "network": network,
-    }
+    return _parse_uploader_like(spec, _VALID_UPLOADER_KEYS, ROLE_UPLOAD, "uploader")
 
 
 def parse_downloader_spec(spec: str) -> dict:
@@ -258,65 +319,34 @@ def parse_downloader_spec(spec: str) -> dict:
     bootstrap_cache (bool, default True), forward_logs (bool or None), rust_log
     (str or None).
     """
-    spec_body, rust_log = _extract_rust_log(spec)
-    raw_parts = spec_body.split(":")
-    positional: list[str] = []
-    options: dict[str, str] = {}
-    for part in raw_parts:
-        if "=" in part:
-            key, value = part.split("=", 1)
-            if key not in _VALID_DOWNLOADER_KEYS:
-                raise ValueError(
-                    f"Invalid downloader spec '{spec}': unknown key '{key}'."
-                )
-            if key in options:
-                raise ValueError(
-                    f"Invalid downloader spec '{spec}': duplicate key '{key}'."
-                )
-            options[key] = value
-        else:
-            positional.append(part)
+    return _parse_downloader_like(spec, _VALID_DOWNLOADER_KEYS, ROLE_DOWNLOAD, "downloader")
 
-    if len(positional) < 2 or len(positional) > 3:
-        raise ValueError(
-            f"Invalid downloader spec '{spec}'. "
-            f"Expected format: provider:region[:vm_size][:clock_skew=DURATION]"
-        )
-    try:
-        provider = resolve_client_provider(positional[0]).name
-    except ValueError as e:
-        raise ValueError(f"Invalid downloader spec '{spec}': {e}")
-    region = positional[1]
-    if not region:
-        raise ValueError(f"Invalid downloader spec '{spec}': region cannot be empty.")
-    vm_size = positional[2] if len(positional) == 3 else DEFAULT_VM_SIZE
-    clock_skew = (
-        _parse_clock_skew(spec, options["clock_skew"])
-        if "clock_skew" in options
-        else None
+
+def parse_wasm_uploader_spec(spec: str) -> dict:
+    """Parse a WASM uploader spec:
+    ``provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]``
+    ``[:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE][:rust_log=VALUE]``
+
+    Identical to :func:`parse_uploader_spec` minus ``bootstrap_cache``, which has
+    no meaning on the WASM path. ``rust_log``, if present, MUST be the final
+    token (its value may contain ``:``).
+    """
+    parsed = _parse_uploader_like(
+        spec, _VALID_WASM_UPLOADER_KEYS, ROLE_WASM_UPLOAD, "wasm uploader"
     )
-    bootstrap_cache = (
-        _parse_bootstrap_cache(spec, options["bootstrap_cache"])
-        if "bootstrap_cache" in options
-        else DEFAULT_BOOTSTRAP_CACHE
+    return parsed
+
+
+def parse_wasm_downloader_spec(spec: str) -> dict:
+    """Parse a WASM downloader spec:
+    ``provider:region[:vm_size][:clock_skew=DURATION][:forward_logs=BOOL]``
+    ``[:network=PROFILE][:rust_log=VALUE]``
+
+    Identical to :func:`parse_downloader_spec` minus ``bootstrap_cache``.
+    """
+    return _parse_downloader_like(
+        spec, _VALID_WASM_DOWNLOADER_KEYS, ROLE_WASM_DOWNLOAD, "wasm downloader"
     )
-    forward_logs = (
-        _parse_forward_logs(spec, options["forward_logs"])
-        if "forward_logs" in options
-        else None
-    )
-    network = _parse_network(spec, options["network"]) if "network" in options else None
-    return {
-        "role": ROLE_DOWNLOAD,
-        "provider": provider,
-        "region": region,
-        "vm_size": vm_size,
-        "clock_skew": clock_skew,
-        "bootstrap_cache": bootstrap_cache,
-        "forward_logs": forward_logs,
-        "rust_log": rust_log,
-        "network": network,
-    }
 
 
 def _spec_signature(spec: dict) -> tuple:
@@ -349,13 +379,16 @@ def _merge_client_specs(
     """
     out = [dict(c) for c in resumed]
     out.extend({**spec, "ip": ""} if blank_new else dict(spec) for spec in created)
-    out.sort(key=lambda s: (0 if s["role"] == ROLE_UPLOAD else 1, s["client_index"]))
+    # Canonical ordering so a resumed state file is indistinguishable from a
+    # clean run's. Roles are ranked explicitly rather than by an upload/download
+    # boolean, which would interleave the native and WASM tiers.
+    out.sort(key=lambda s: (ROLE_ORDER.get(s["role"], 99), s["client_index"]))
     return out
 
 
 def _print_client_line(console, spec: dict) -> None:
     """Render one already-provisioned client VM."""
-    label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
+    label = ROLE_LABELS.get(spec["role"], spec["role"])
     skew_str = (
         f", clock-skew {format_skew_offset(spec['clock_skew'])}"
         if spec.get("clock_skew")
@@ -380,26 +413,30 @@ def cmd_infra_clients(args):
     """Execute the clients infra command: create client VMs via Terraform."""
     console = Console()
 
-    uploader_specs_raw = args.uploader or []
-    downloader_specs_raw = args.downloader or []
+    # (flag value, parser) per role. Each role is indexed from 1 independently,
+    # because the index is part of the VM hostname and the Terraform state key,
+    # which are already namespaced by role.
+    role_inputs = [
+        (args.uploader or [], parse_uploader_spec),
+        (args.downloader or [], parse_downloader_spec),
+        (getattr(args, "wasm_uploader", None) or [], parse_wasm_uploader_spec),
+        (getattr(args, "wasm_downloader", None) or [], parse_wasm_downloader_spec),
+    ]
 
-    if not uploader_specs_raw and not downloader_specs_raw:
+    if not any(raw for raw, _ in role_inputs):
         console.print(
-            "[bold red]Error:[/bold red] At least one --uploader or --downloader "
-            "spec is required."
+            "[bold red]Error:[/bold red] At least one --uploader, --downloader, "
+            "--wasm-uploader or --wasm-downloader spec is required."
         )
         sys.exit(1)
 
     client_specs: list[dict] = []
     try:
-        for i, spec_str in enumerate(uploader_specs_raw, start=1):
-            spec = parse_uploader_spec(spec_str)
-            spec["client_index"] = i
-            client_specs.append(spec)
-        for i, spec_str in enumerate(downloader_specs_raw, start=1):
-            spec = parse_downloader_spec(spec_str)
-            spec["client_index"] = i
-            client_specs.append(spec)
+        for raw_specs, parser in role_inputs:
+            for i, spec_str in enumerate(raw_specs, start=1):
+                spec = parser(spec_str)
+                spec["client_index"] = i
+                client_specs.append(spec)
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -411,20 +448,21 @@ def cmd_infra_clients(args):
             if spec.get("clock_skew")
             else ""
         )
-        if spec["role"] == ROLE_UPLOAD:
+        label = ROLE_LABELS.get(spec["role"], spec["role"])
+        if spec["role"] in UPLOAD_ROLES:
             payment = spec.get("payment_type")
             payment_str = f", payment={payment}" if payment else ""
             ant = spec.get("ant_funding", DEFAULT_ANT_FUNDING)
             eth = spec.get("eth_funding", DEFAULT_ETH_FUNDING)
             console.print(
-                f"  Uploader #{spec['client_index']}: {spec['provider']}:"
+                f"  {label} #{spec['client_index']}: {spec['provider']}:"
                 f"{spec['region']} "
                 f"({spec['vm_size']}, {spec['file_size_mb']}MB uploads"
                 f"{payment_str}, fund {ant} ANT + {eth} ETH{skew_str})"
             )
         else:
             console.print(
-                f"  Downloader #{spec['client_index']}: {spec['provider']}:"
+                f"  {label} #{spec['client_index']}: {spec['provider']}:"
                 f"{spec['region']} ({spec['vm_size']}{skew_str})"
             )
     console.print()

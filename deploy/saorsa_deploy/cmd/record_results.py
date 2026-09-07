@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.table import Table
 from saorsa_db.models import FileOpType, OpRecordStatus, ProdUploadStatus
 
+from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.influx import (
     aggregate_file_results,
     fetch_operation_points,
@@ -393,6 +394,44 @@ def _network_map_from_client_state(name: str) -> dict[str, str]:
     return out
 
 
+def _build_client_kind_lookup(deployment):
+    """Return host -> "native" | "wasm", or a constant None.
+
+    Both transports emit the same `upload`/`download` Influx measurements (so the
+    whole results pipeline works on WASM ops unchanged), which means the
+    measurement cannot say which one produced a point. The client VM's ROLE can,
+    and the deployment's client state already records it per VM -- the same
+    mechanism `_network_map_from_client_state` uses, keyed on the same hostname
+    the Influx `host` tag carries.
+
+    Returns None per host when the state is unreadable or the deployment has no
+    WASM clients at all: an unannotated row is right for a native-only run, and
+    guessing would be worse than saying nothing.
+    """
+    name = getattr(deployment, "name", "") or ""
+    if not name:
+        return lambda host: None
+    try:
+        state = load_client_state(name)
+    except (RuntimeError, FileNotFoundError):
+        return lambda host: None
+
+    clients = state.get("clients", [])
+    if not any(is_wasm(c.get("role", "upload")) for c in clients):
+        # Native-only deployment: leave every row NULL, exactly as it was before
+        # this column existed.
+        return lambda host: None
+
+    by_host = {
+        f"{name}-ant-client-{c.get('role', 'upload')}-"
+        f"{c.get('region')}-{c.get('client_index')}": (
+            "wasm" if is_wasm(c.get("role", "upload")) else "native"
+        )
+        for c in clients
+    }
+    return lambda host: by_host.get(host)
+
+
 def _record_file_op_records(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
@@ -405,6 +444,7 @@ def _record_file_op_records(
     Idempotent via the ``(deployment_id, host, start_ns)`` upsert key.
     """
     network_profile_for_host = _build_network_profile_lookup(deployment)
+    client_kind_for_host = _build_client_kind_lookup(deployment)
     console.print(
         "[bold]Fetching per-operation records (full range)...[/bold]"
     )
@@ -460,6 +500,7 @@ def _record_file_op_records(
             finished_at=finished_at,
             duration_ms=duration_ms,
             network_profile=network_profile_for_host(p["host"]),
+            client_kind=client_kind_for_host(p["host"]),
         )
         if measurement == "upload":
             repo.upsert_upload_record(**kwargs)
@@ -477,6 +518,7 @@ def _record_file_op_records(
                 "file_size_bytes": file_size,
                 "duration_ms": duration_ms,
                 "started_at": started_at,
+                "client_kind": client_kind_for_host(p["host"]),
             }
         )
 

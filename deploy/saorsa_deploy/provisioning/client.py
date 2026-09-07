@@ -11,6 +11,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.client_roles import is_wasm, unit_for_role
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
@@ -113,6 +114,48 @@ WantedBy=multi-user.target
 """
 
 
+#: Where the WASM bundle (wasm-pack output + compiled TS client + node_modules)
+#: is unpacked on a client VM.
+WASM_CLIENT_DIR = "/opt/ant-wasm-client"
+WASM_CLIENT_DATA_DIR = "/var/lib/ant-wasm-client"
+WASM_CLIENT_LOG_DIR = "/var/log/ant-wasm-client"
+WASM_CLIENT_ENV_PATH = "/etc/ant-wasm-client.env"
+#: Node major installed on WASM client VMs. Matches ant-client's own CI, which
+#: builds and tests the WASM package under Node 22.
+WASM_NODE_MAJOR = "22"
+
+
+def _build_wasm_unit(role: str) -> str:
+    """systemd unit for a WASM client service.
+
+    Node rather than bash, and one unit shape for both roles (the program
+    branches on ROLE from the environment file), because upload and download
+    share the whole WASM setup -- loading the module, installing the WebRTC
+    polyfill, seeding from the bootstrap multiaddrs.
+    """
+    label = "Uploader" if role == "wasm-upload" else "Downloader"
+    return f"""\
+[Unit]
+Description=Ant WASM Client {label}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile={WASM_CLIENT_ENV_PATH}
+Environment=NODE_ENV=production
+WorkingDirectory={WASM_CLIENT_DIR}
+ExecStart=/usr/bin/node {WASM_CLIENT_DIR}/dist/main.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 class AntClientProvisioner:
     """Provisions ant client upload/download services on hosts using Pyinfra.
 
@@ -148,6 +191,9 @@ class AntClientProvisioner:
         elasticsearch_username: str = "",
         elasticsearch_password: str = "",
         forward_buffer_limit: int | None = None,
+        wasm_bundle_url: str | None = None,
+        bootstrap_webrtc_multiaddrs: list[str] | None = None,
+        wasm_rpc_url: str | None = None,
     ):
         self.clients = clients
         self.deployment_name = deployment_name
@@ -172,6 +218,131 @@ class AntClientProvisioner:
         self.elasticsearch_username = elasticsearch_username
         self.elasticsearch_password = elasticsearch_password
         self.forward_buffer_limit = forward_buffer_limit
+        # WASM (browser-path) clients. All empty on a deployment with none, in
+        # which case not one of the WASM ops is added and every native client VM
+        # is provisioned exactly as it was before this existed.
+        self.wasm_bundle_url = wasm_bundle_url
+        self.bootstrap_webrtc_multiaddrs = list(bootstrap_webrtc_multiaddrs or [])
+        self.wasm_rpc_url = wasm_rpc_url
+
+    def _add_wasm_ops(self, state, ip_to_env: dict) -> None:
+        """Provision the WASM client on every host running a wasm-* role.
+
+        No-op when the deployment has no WASM clients, which keeps every
+        existing testnet's client provisioning byte-for-byte unchanged.
+        """
+        wasm_ips = {ip for ip, env in ip_to_env.items() if is_wasm(env["role"])}
+        if not wasm_ips:
+            return
+        if not self.wasm_bundle_url:
+            raise RuntimeError(
+                "WASM clients are configured but no bundle URL was resolved — "
+                "run `build ant-wasm --name <name> --branch-name <branch> "
+                "--repo-owner <owner>` first"
+            )
+        if not self.bootstrap_webrtc_multiaddrs:
+            # Without a seed address a WASM client cannot reach the network at
+            # all, and the failure would only surface as an unexplained
+            # connection error minutes after the VMs are up and billing.
+            raise RuntimeError(
+                "WASM clients are configured but the deployment state holds no "
+                "bootstrap WebRTC-Direct addresses — run `bootstraps "
+                "webrtc-addresses --name <name>` after the bootstrap tier is up"
+            )
+
+        wasm_hosts = [h for h in state.inventory.get_active_hosts() if h.name in wasm_ips]
+        if not wasm_hosts:
+            return
+
+        self.console.print(
+            f"[cyan]Provisioning {len(wasm_hosts)} WASM client host(s) "
+            f"({len(self.bootstrap_webrtc_multiaddrs)} seed address(es)).[/cyan]"
+        )
+
+        add_op(
+            state,
+            server.shell,
+            name=f"Install Node.js {WASM_NODE_MAJOR}",
+            commands=[
+                f"command -v node >/dev/null 2>&1 && echo 'NODE:SKIP' || "
+                f"(curl -fsSL https://deb.nodesource.com/setup_{WASM_NODE_MAJOR}.x "
+                f"| bash - && apt-get install -y -qq nodejs && echo 'NODE:INSTALLED')"
+            ],
+            host=wasm_hosts,
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install WASM client bundle",
+            commands=[
+                # Always re-fetch rather than presence-gating on the directory:
+                # the bundle is namespaced by deployment name and the builder
+                # overwrites it, so a re-provision after a rebuild must pick up
+                # the new one. (The ant binary install is presence-gated, which
+                # is exactly why `deployments upgrade-ant-binary` had to exist.)
+                f"rm -rf {WASM_CLIENT_DIR} && mkdir -p {WASM_CLIENT_DIR} "
+                f"{WASM_CLIENT_DATA_DIR} {WASM_CLIENT_LOG_DIR} && "
+                f"wget -q '{self.wasm_bundle_url}' -O /tmp/ant-wasm-client.tar.gz && "
+                f"tar xzf /tmp/ant-wasm-client.tar.gz -C {WASM_CLIENT_DIR} && "
+                f"rm -f /tmp/ant-wasm-client.tar.gz && "
+                f"test -f {WASM_CLIENT_DIR}/dist/main.js && "
+                f"test -f {WASM_CLIENT_DIR}/pkg/ant_core_bg.wasm"
+            ],
+            host=wasm_hosts,
+        )
+
+        seeds = ",".join(self.bootstrap_webrtc_multiaddrs)
+        for host in wasm_hosts:
+            env = ip_to_env[host.name]
+            lines = [
+                f'ROLE={env["role"]}',
+                f'REGION={env["region"]}',
+                f'CLIENT_INDEX={env["client_index"]}',
+                f'BOOTSTRAP_MULTIADDRS="{seeds}"',
+                f'FILE_SIZE_KB={env["file_size_kb"]}',
+                f"WASM_DIR={WASM_CLIENT_DIR}/pkg",
+                f"LOG_DIR={WASM_CLIENT_LOG_DIR}",
+                f"ADDRESSES_FILE={WASM_CLIENT_DATA_DIR}/addresses.txt",
+                f'ADDRESSES_S3_BUCKET="{self.addresses_s3_bucket}"',
+                f'ADDRESSES_S3_PREFIX="{self.addresses_s3_prefix}"',
+                f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}"',
+                f'SECRET_KEY="{env["secret_key"]}"',
+                f'RPC_URL="{self.wasm_rpc_url or ""}"',
+                f'RUST_LOG="{env["rust_log"]}"',
+            ]
+            if self.influx_url and self.influx_token:
+                lines += [
+                    f"INFLUX_URL={self.influx_url}",
+                    f"INFLUX_TOKEN={self.influx_token}",
+                    f"INFLUX_ORG={self.influx_org}",
+                    f"INFLUX_BUCKET={self.influx_bucket}",
+                ]
+            body = "\n".join(lines) + "\n"
+            unit = unit_for_role(env["role"])
+            other = unit_for_role(
+                "wasm-download" if env["role"] == "wasm-upload" else "wasm-upload"
+            )
+            add_op(
+                state,
+                server.shell,
+                name="Write WASM client env file and unit",
+                commands=[
+                    f"cat > {WASM_CLIENT_ENV_PATH} << 'ENV_EOF'\n{body}ENV_EOF\n"
+                    f"chmod 600 {WASM_CLIENT_ENV_PATH}\n"
+                    f"cat > /etc/systemd/system/{unit}.service << 'UNIT_EOF'\n"
+                    f"{_build_wasm_unit(env['role'])}UNIT_EOF\n"
+                    f"rm -f /etc/systemd/system/{other}.service\n"
+                    "systemctl daemon-reload"
+                ],
+                host=[host],
+            )
+
+    @property
+    def wasm_clients(self) -> list[dict]:
+        """Clients running the WASM transport (either role), with an IP."""
+        return [
+            c for c in self.clients if c.get("ip") and is_wasm(c.get("role", "upload"))
+        ]
 
     #: Per-role aggregate log files that uploader.sh/downloader.sh append to
     #: when FORWARD_LOGS=true, and the role label tagged on forwarded lines.
@@ -660,22 +831,37 @@ ENV_EOF"""
                 commands=[env_script],
             )
 
+            # --- WASM (browser-path) clients ------------------------------
+            # Targeted per host rather than gated by a case block, so a
+            # deployment's native client VMs never see a Node install or a WASM
+            # bundle they have no use for.
+            self._add_wasm_ops(state, ip_to_env)
+
             # Write only the systemd unit matching each host's role. The old
             # unit (if any) is removed so stale services don't linger when a VM
             # flips role during reprovisioning.
             uploader_unit = _build_uploader_unit()
             downloader_unit = _build_downloader_unit()
 
-            unit_case_entries = []
-            for ip, env in ip_to_env.items():
-                unit_case_entries.append(f'    "{ip}") ROLE={env["role"]} ;;')
-            unit_case_block = "\n".join(unit_case_entries)
+            # Native roles only: a WASM host's unit is written by
+            # _add_wasm_ops, and must not be overwritten here.
+            native_env = {
+                ip: env for ip, env in ip_to_env.items() if not is_wasm(env["role"])
+            }
+            if native_env:
+                unit_case_entries = [
+                    f'    "{ip}") ROLE={env["role"]} ;;' for ip, env in native_env.items()
+                ]
+                unit_case_block = "\n".join(unit_case_entries)
 
-            systemd_script = f"""\
+                systemd_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {unit_case_block}
-    *) ROLE=upload ;;
+    # No default. This op runs on every client host including the WASM ones,
+    # whose units are written elsewhere; silently falling through to the
+    # uploader unit would install a native ant service on a WASM VM.
+    *) exit 0 ;;
 esac
 if [ "$ROLE" = "upload" ]; then
     cat > /etc/systemd/system/ant-uploader.service << 'UNIT_EOF'
@@ -688,12 +874,12 @@ else
 fi
 systemctl daemon-reload"""
 
-            add_op(
-                state,
-                server.shell,
-                name="Write systemd unit files (role-aware)",
-                commands=[systemd_script],
-            )
+                add_op(
+                    state,
+                    server.shell,
+                    name="Write systemd unit files (role-aware)",
+                    commands=[systemd_script],
+                )
 
             if self.addresses_file_content is not None:
                 download_ips = [

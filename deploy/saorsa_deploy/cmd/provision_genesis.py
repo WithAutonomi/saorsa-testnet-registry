@@ -134,6 +134,7 @@ def cmd_provision_genesis(args):
         "rewards_address": args.rewards_address,
         "testnet_name": args.name,
         "extra_op_providers": extra_op_providers,
+        "webrtc_port": getattr(args, "webrtc_port", None),
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel
@@ -160,9 +161,14 @@ def cmd_provision_genesis(args):
 
     try:
         state_updates = {"bootstrap_port": args.port}
+        webrtc_port = getattr(args, "webrtc_port", None)
+        if webrtc_port:
+            state_updates["bootstrap_webrtc_port"] = webrtc_port
         # Update the genesis node entry with its port
         if bootstrap_nodes:
             bootstrap_nodes[0]["port"] = args.port
+            if webrtc_port:
+                bootstrap_nodes[0]["webrtc_port"] = webrtc_port
             state_updates["bootstrap_nodes"] = bootstrap_nodes
         update_deployment_state(args.name, state_updates)
         console.print("[dim]Bootstrap port saved to deployment state.[/dim]")

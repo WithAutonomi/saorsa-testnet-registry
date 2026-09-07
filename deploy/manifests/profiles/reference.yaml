@@ -29,12 +29,16 @@ testnet:
       validation: "expected-string-baked-into-the-binary"   # optional --validation-string build sanity check
       debug: true            # optional (branch form only): build WITHOUT --release — a larger,
                              # slower binary with full debug info, for memory profiling. Default off.
-    ant:                     # release form (prebuilt GitHub release); required when `clients` is present
+    ant:                     # release form (prebuilt GitHub release); required when native `clients` are present
       version: 0.2.5-rc.4
+    ant_wasm:                # the ant-core WASM package; required when wasm clients are present.
+      branch: web-support    # BRANCH FORM ONLY — no WASM package is published as a GitHub
+      repo_owner: WithAutonomi  # release, so there is no version to pin. Built by `build ant-wasm`.
 
   bootstraps:
     count: 7                 # >1 => orchestrator also emits `bootstraps provision`
     port: 10000
+    webrtc_port: 42768       # optional: PIN the WebRTC-Direct listener on every bootstrap. Bootstraps are the one tier whose browser-facing address must not move — a WASM/browser client seeds from it — and left unset ant-node DERIVES this port from `port` above, so it changes whenever that does. Regular nodes deliberately keep the derived port (their address changes propagate over the DHT like QUIC's). NB the port is only half of a stable address: the multiaddr also embeds the node's DTLS certificate hash, persisted at <root_dir>/webrtc-direct.pem — wiping a bootstrap's data volume rotates it and invalidates every cached browser address.
     regions_list: [lon1, nyc1, ams3]   # bootstraps infra --do-regions-list; when set it overrides `count`
     attached_volume_size: 100          # GB attached volume per bootstrap VM
 
@@ -99,6 +103,19 @@ testnet:
       - { provider: digital_ocean, region: tor1, vm_size: s-2vcpu-4gb, forward_logs: true }   # forward this downloader's ant logs to ES (needs elastic.enabled)
       - { provider: digital_ocean, region: lon1, clock_skew: -2h, bootstrap_cache: false }   # clock_skew applies to downloaders too (negative = clock runs slow); bootstrap_cache likewise per-downloader
       - { provider: digital_ocean, region: ams3, network: home-adsl }   # the downstream cap is what matters for a downloader
+    # WASM (browser-path) clients. Independent of the native pair above: a testnet may
+    # run either, or both side by side for a comparison. They drive `ant-core` compiled
+    # to WASM over WebRTC-Direct via a Node.js program — `ant-cli` cannot substitute,
+    # because it links native ant-core and so takes the native transport regardless.
+    # Same options as the native entries EXCEPT `bootstrap_cache`, which has no meaning
+    # here: a WASM client seeds from the bootstraps' webrtc-direct multiaddrs (collected
+    # by `bootstraps webrtc-addresses`) rather than from ant's peer cache or --bootstrap.
+    # Requires binaries.ant_wasm. Like the native pair, needs >=1 of each — wasm
+    # downloaders consume the addresses wasm uploaders publish.
+    wasm_uploaders:          # one --wasm-uploader per entry: provider:region:file_size_mb[:vm_size][:payment][:ant][:eth][:clock_skew][:forward_logs][:network][:rust_log]
+      - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.1 }
+    wasm_downloaders:        # one --wasm-downloader per entry: provider:region[:vm_size][:clock_skew][:forward_logs][:network][:rust_log]
+      - { provider: digital_ocean, region: lon1 }
 
   elastic:                   # optional log-forwarding stack. Remove the block (or set enabled: false) to skip.
     enabled: true

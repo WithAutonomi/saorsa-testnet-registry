@@ -1,0 +1,20 @@
+{
+  "name": "ant-wasm-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Continuous upload/download client driving ant-core compiled to WASM over WebRTC-Direct.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "node --test 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.33.2",
+    "viem": "^2.56.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

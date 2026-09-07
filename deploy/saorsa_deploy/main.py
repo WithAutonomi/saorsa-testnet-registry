@@ -299,6 +299,15 @@ def main(argv=None):
         help="Port the bootstrap nodes will run with",
     )
     bootstraps_provision_parser.add_argument(
+        "--webrtc-port",
+        type=int,
+        help="Pin the WebRTC-Direct listener to this UDP port. Bootstraps are "
+        "the one tier where the browser address must stay put -- web clients "
+        "seed themselves from a bootstrap multiaddr. Omit for ant-node's "
+        "default, which DERIVES the port from --port and so moves if --port "
+        "ever does.",
+    )
+    bootstraps_provision_parser.add_argument(
         "--repo-owner",
         type=str,
         help="GitHub repo owner for custom-built binary (requires --branch-name)",
@@ -326,6 +335,28 @@ def main(argv=None):
         default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
         help="Arbitrum wallet address for node rewards "
         "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
+    )
+
+    bootstraps_webrtc_parser = bootstraps_subparsers.add_parser(
+        "webrtc-addresses",
+        help="Collect each bootstrap's WebRTC-Direct multiaddr and save it to "
+        "deployment state (browser/WASM clients seed from these).",
+    )
+    bootstraps_webrtc_parser.add_argument(
+        "--name", type=str, required=True, help="Deployment name"
+    )
+    bootstraps_webrtc_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to the SSH private key (default: ~/.ssh/id_rsa)",
+    )
+    bootstraps_webrtc_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=180,
+        help="Seconds to wait for a bootstrap to publish its address "
+        "(the listener binds shortly after the service starts; default: 180)",
     )
 
     # =========================================================================
@@ -390,6 +421,44 @@ def main(argv=None):
         help="Build without --release (a debug build: larger, slower, but with full "
         "debug info — intended for memory profiling). The artifact overwrites the "
         "deployment's S3 build key as usual.",
+    )
+
+    # build ant-wasm
+    build_ant_wasm_parser = build_subparsers.add_parser(
+        "ant-wasm",
+        help="Build the ant-core WASM package plus the TypeScript client and "
+        "upload the bundle to S3 (for WASM/browser-path clients).",
+    )
+    build_ant_wasm_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (used to isolate build artifacts)",
+    )
+    build_ant_wasm_parser.add_argument(
+        "--branch-name",
+        type=str,
+        required=True,
+        help="ant-client git branch to build from (there is no release form: no "
+        "ant-core WASM package is published as a GitHub release)",
+    )
+    build_ant_wasm_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        required=True,
+        help="GitHub repository owner (e.g., WithAutonomi)",
+    )
+    build_ant_wasm_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key for provisioning the build VM (default: ~/.ssh/id_rsa)",
+    )
+    build_ant_wasm_parser.add_argument(
+        "--build-vm-size",
+        type=str,
+        default=None,
+        help="DigitalOcean droplet size for the build VM (default: c-32)",
     )
 
     # build ant-node
@@ -688,6 +757,30 @@ def main(argv=None):
         "--downloader 'vultr:nrt:vc2-4c-8gb:clock_skew=-2h'",
     )
     clients_infra_parser.add_argument(
+        "--wasm-uploader",
+        type=str,
+        action="append",
+        default=[],
+        help="WASM uploader VM spec: "
+        "'provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N]"
+        "[:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE]"
+        "[:rust_log=VALUE]'. Runs a Node.js client driving ant-core compiled to "
+        "WASM over WebRTC-Direct, instead of the native ant binary — the only "
+        "way to exercise the browser path (ant-cli links native ant-core). "
+        "Same grammar as --uploader minus bootstrap_cache, which has no meaning "
+        "here: a WASM client seeds from the bootstraps' webrtc-direct "
+        "multiaddrs. rust_log, if given, must be last.",
+    )
+    clients_infra_parser.add_argument(
+        "--wasm-downloader",
+        type=str,
+        action="append",
+        default=[],
+        help="WASM downloader VM spec: "
+        "'provider:region[:vm_size][:clock_skew=DURATION][:forward_logs=BOOL]"
+        "[:network=PROFILE][:rust_log=VALUE]'. See --wasm-uploader.",
+    )
+    clients_infra_parser.add_argument(
         "--force",
         action="store_true",
         help="Delete stale Terraform state files and proceed",
@@ -790,6 +883,18 @@ def main(argv=None):
         "heaptrack apt package and writes profiles to /var/log/ant-heaptrack/ "
         "on each matching VM (named upload-<seq>.gz / download-<seq>.gz). "
         "Fetch via scp before destroying the client VMs.",
+    )
+    clients_provision_parser.add_argument(
+        "--wasm-branch-name",
+        type=str,
+        help="ant-client branch the WASM bundle was built from (defaults to "
+        "--branch-name). Only used when the deployment has WASM clients.",
+    )
+    clients_provision_parser.add_argument(
+        "--wasm-repo-owner",
+        type=str,
+        help="GitHub owner the WASM bundle was built from (defaults to "
+        "--repo-owner). Only used when the deployment has WASM clients.",
     )
     clients_provision_parser.add_argument(
         "--forward-buffer-limit",
@@ -3454,6 +3559,15 @@ def main(argv=None):
         type=int,
         required=True,
         help="Port the genesis node will run with (required for bootstrap address)",
+    )
+    nodes_provision_genesis_parser.add_argument(
+        "--webrtc-port",
+        type=int,
+        help="Pin the WebRTC-Direct listener to this UDP port. Bootstraps are "
+        "the one tier where the browser address must stay put -- web clients "
+        "seed themselves from a bootstrap multiaddr. Omit for ant-node's "
+        "default, which DERIVES the port from --port and so moves if --port "
+        "ever does.",
     )
     nodes_provision_genesis_parser.add_argument(
         "--repo-owner",
@@ -6484,11 +6598,21 @@ def main(argv=None):
             from saorsa_deploy.cmd.provision_bootstraps import cmd_provision_bootstraps
 
             cmd_provision_bootstraps(args)
+        elif args.bootstraps_subcommand == "webrtc-addresses":
+            from saorsa_deploy.cmd.bootstrap_webrtc_addresses import (
+                cmd_bootstrap_webrtc_addresses,
+            )
+
+            cmd_bootstrap_webrtc_addresses(args)
     elif args.command == "build":
         if args.build_subcommand == "ant":
             from saorsa_deploy.cmd.build_ant import cmd_build_ant
 
             cmd_build_ant(args)
+        elif args.build_subcommand == "ant-wasm":
+            from saorsa_deploy.cmd.build_ant_wasm import cmd_build_ant_wasm
+
+            cmd_build_ant_wasm(args)
         elif args.build_subcommand == "ant-node":
             from saorsa_deploy.cmd.build import cmd_build
 

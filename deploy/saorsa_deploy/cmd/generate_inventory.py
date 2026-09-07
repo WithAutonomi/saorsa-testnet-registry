@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from saorsa_deploy.client_roles import unit_for_role
 from saorsa_deploy.evm import get_evm_network_info
 from saorsa_deploy.provisioning.prod_downloader import (
     ADDRESSES_PATH as PROD_DOWNLOADER_ADDRESSES_PATH,
@@ -171,7 +172,7 @@ def _build_client_vms_field(
         # the VM's actual hostname (set by the client provisioner), which is
         # what the InfluxDB `host` tag carries.
         role = client.get("role", "upload")
-        service = "ant-uploader" if role == "upload" else "ant-downloader"
+        service = unit_for_role(role)
         entries.append(
             {
                 "name": f"{name}-ant-client-{role}-{region}-{index}",

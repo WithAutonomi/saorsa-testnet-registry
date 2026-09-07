@@ -90,6 +90,7 @@ def cmd_provision_bootstraps(args):
         "rewards_address": args.rewards_address,
         "testnet_name": args.name,
         "extra_op_providers": extra_op_providers,
+        "webrtc_port": getattr(args, "webrtc_port", None),
     }
     if args.upgrade_channel:
         kwargs["upgrade_channel"] = args.upgrade_channel
@@ -115,14 +116,18 @@ def cmd_provision_bootstraps(args):
         sys.exit(1)
 
     # Update state with all bootstrap ports
+    webrtc_port = getattr(args, "webrtc_port", None)
     all_bootstrap_nodes = []
     for node in bootstrap_nodes:
-        all_bootstrap_nodes.append({
-            **node,
-            "port": args.port,
-        })
+        entry = {**node, "port": args.port}
+        if webrtc_port:
+            entry["webrtc_port"] = webrtc_port
+        all_bootstrap_nodes.append(entry)
     try:
-        update_deployment_state(args.name, {"bootstrap_nodes": all_bootstrap_nodes})
+        state_updates = {"bootstrap_nodes": all_bootstrap_nodes}
+        if webrtc_port:
+            state_updates["bootstrap_webrtc_port"] = webrtc_port
+        update_deployment_state(args.name, state_updates)
         console.print("[dim]Bootstrap node ports saved to deployment state.[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Failed to save state: {e}[/yellow]")
