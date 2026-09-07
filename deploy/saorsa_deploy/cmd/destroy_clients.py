@@ -11,6 +11,12 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.client_roles import (
+    ALL_CLIENT_ROLES,
+    ROLE_DOWNLOAD,  # noqa: F401  (re-exported; used by callers and tests)
+    ROLE_UPLOAD,
+    is_upload,
+)
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.providers import CLIENT_PROVIDERS
 from saorsa_deploy.resources import get_resources_dir
@@ -34,9 +40,7 @@ from saorsa_deploy.wallet import (
     get_web3,
 )
 
-ROLE_UPLOAD = "upload"
-ROLE_DOWNLOAD = "download"
-VALID_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD)
+VALID_ROLES = ALL_CLIENT_ROLES
 
 
 def cmd_destroy_clients(args):
@@ -405,19 +409,27 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
             # Key shape:
             # {state_key_prefix}-{name}-{role}-{region}-{client_index}.tfstate
             suffix = key[len(prefix) : -len(".tfstate")]
+            # The role must be matched as a whole known value, not taken as the
+            # first "-"-separated token: `wasm-upload` contains a hyphen, so
+            # splitting would read its role as "wasm" and silently skip the key
+            # as unparseable — leaving a real VM running and billing.
+            # Longest first, so `wasm-upload` is never shadowed by `upload`.
+            role = next(
+                (
+                    r
+                    for r in sorted(VALID_ROLES, key=len, reverse=True)
+                    if suffix.startswith(f"{r}-")
+                ),
+                None,
+            )
             parts = suffix.split("-")
-            if (
-                len(parts) < 3
-                or not parts[-1].isdigit()
-                or parts[0] not in VALID_ROLES
-            ):
+            if role is None or not parts[-1].isdigit() or len(parts) < 3:
                 console.print(
                     f"[yellow]Skipping unparseable tfstate key: {key}[/yellow]"
                 )
                 continue
-            role = parts[0]
             client_index = int(parts[-1])
-            region = "-".join(parts[1:-1])
+            region = suffix[len(role) + 1 : -(len(parts[-1]) + 1)]
 
             vm_size = "s-2vcpu-4gb"
             try:
@@ -441,7 +453,7 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
                 "vm_size": vm_size,
                 "ip": "",
             }
-            if role == ROLE_UPLOAD:
+            if is_upload(role):
                 entry["file_size_mb"] = 0
             recovered.append(entry)
 

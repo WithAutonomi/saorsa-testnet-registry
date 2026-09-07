@@ -100,6 +100,45 @@ def _downloader_spec(d) -> str:
     return ":".join(parts)
 
 
+def _wasm_uploader_spec(u) -> str:
+    """Token string for a WASM uploader. No bootstrap_cache: see WasmUploader."""
+    parts = [u.provider, u.region, str(u.file_size_mb)]
+    if u.vm_size:
+        parts.append(u.vm_size)
+    if u.payment:
+        parts.append(f"payment={u.payment}")
+    if u.ant is not None:
+        parts.append(f"ant={u.ant}")
+    if u.eth is not None:
+        parts.append(f"eth={u.eth}")
+    if u.clock_skew:
+        parts.append(f"clock_skew={u.clock_skew}")
+    if u.forward_logs is not None:
+        parts.append(f"forward_logs={str(u.forward_logs).lower()}")
+    if u.network is not None:
+        parts.append(f"network={format_network_token(u.network)}")
+    # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
+    if u.rust_log is not None:
+        parts.append(f"rust_log={u.rust_log}")
+    return ":".join(parts)
+
+
+def _wasm_downloader_spec(d) -> str:
+    """Token string for a WASM downloader. See :func:`_wasm_uploader_spec`."""
+    parts = [d.provider, d.region]
+    if d.vm_size:
+        parts.append(d.vm_size)
+    if d.clock_skew:
+        parts.append(f"clock_skew={d.clock_skew}")
+    if d.forward_logs is not None:
+        parts.append(f"forward_logs={str(d.forward_logs).lower()}")
+    if d.network is not None:
+        parts.append(f"network={format_network_token(d.network)}")
+    if d.rust_log is not None:
+        parts.append(f"rust_log={d.rust_log}")
+    return ":".join(parts)
+
+
 def _nodes_infra_argv(name: str, nodes: Nodes) -> list[str]:
     argv = ["nodes", "infra", "--name", name]
     for provider in _PROVIDER_ORDER:
@@ -190,6 +229,10 @@ def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
         argv += ["--uploader", _uploader_spec(u)]
     for d in clients.downloaders:
         argv += ["--downloader", _downloader_spec(d)]
+    for u in clients.wasm_uploaders:
+        argv += ["--wasm-uploader", _wasm_uploader_spec(u)]
+    for d in clients.wasm_downloaders:
+        argv += ["--wasm-downloader", _wasm_downloader_spec(d)]
     return argv
 
 
@@ -254,6 +297,7 @@ def _provision_and_start_steps(
     upgrade_channel,
     bootstrap_count: int,
     bootstrap_port: int,
+    bootstrap_webrtc_port: int | None = None,
     elastic: Elastic,
     monitoring: Monitoring,
     clients: Clients | None,
@@ -299,6 +343,13 @@ def _provision_and_start_steps(
             if elastic.buffer_limit is not None:
                 common += ["--buffer-limit", str(elastic.buffer_limit)]
 
+    # A pinned WebRTC port rides both bootstrap-tier provisions and nothing else:
+    # only bootstraps need a browser address that never moves. `*common` is
+    # splatted last, so the flag is built into the list rather than inserted.
+    webrtc_flags: list[str] = []
+    if bootstrap_webrtc_port is not None:
+        webrtc_flags = ["--webrtc-port", str(bootstrap_webrtc_port)]
+
     if include_genesis:
         steps.append(
             Step(
@@ -309,6 +360,7 @@ def _provision_and_start_steps(
                     name,
                     "--port",
                     str(bootstrap_port),
+                    *webrtc_flags,
                     *common,
                 ],
                 "Provision genesis node",
@@ -324,6 +376,7 @@ def _provision_and_start_steps(
                         name,
                         "--port",
                         str(bootstrap_port),
+                        *webrtc_flags,
                         *common,
                     ],
                     "Provision bootstrap nodes",
@@ -353,8 +406,37 @@ def _provision_and_start_steps(
     # metrics are installed by `clients provision` below.
     steps.append(Step(["nodes", "start", "--name", name, "--ssh-key-path", ssh_key], "Start nodes"))
 
+    if clients is not None and clients.has_wasm:
+        # Collect the bootstrap tier's WebRTC-Direct multiaddrs before the
+        # clients are provisioned: a WASM client seeds from them and has no
+        # other way into the network. It has to run here rather than at
+        # bootstrap-provision time because the address embeds the node's DTLS
+        # certificate hash, which only exists once the node has started.
+        steps.append(
+            Step(
+                [
+                    "bootstraps",
+                    "webrtc-addresses",
+                    "--name",
+                    name,
+                    "--ssh-key-path",
+                    ssh_key,
+                ],
+                "Collect bootstrap WebRTC addresses",
+            )
+        )
+
     if clients is not None:
-        argv = ["clients", "provision", "--name", name, *ant_binary_flags(binaries.ant)]
+        argv = ["clients", "provision", "--name", name]
+        if clients.uploaders or clients.downloaders:
+            argv += list(ant_binary_flags(binaries.ant))
+        if clients.has_wasm and binaries.ant_wasm is not None:
+            argv += [
+                "--wasm-branch-name",
+                binaries.ant_wasm.branch,
+                "--wasm-repo-owner",
+                binaries.ant_wasm.repo_owner or "maidsafe",
+            ]
         if monitoring.enabled:
             argv += ["--monitoring-name", name]
         # Scale the client→ES log forwarder's buffer with the same knob the node
@@ -387,7 +469,11 @@ def build_testnet_deploy_steps(
     steps: list[Step] = []
     if not skip_builds:
         steps += build_steps_for_branches(
-            name, ssh_key, spec.binaries.ant_node, spec.binaries.ant
+            name,
+            ssh_key,
+            spec.binaries.ant_node,
+            spec.binaries.ant,
+            spec.binaries.ant_wasm,
         )
 
     # --- infra ---
@@ -457,6 +543,7 @@ def build_testnet_deploy_steps(
         upgrade_channel=spec.upgrade_channel,
         bootstrap_count=spec.bootstraps.count,
         bootstrap_port=spec.bootstraps.port,
+        bootstrap_webrtc_port=spec.bootstraps.webrtc_port,
         elastic=spec.elastic,
         monitoring=spec.monitoring,
         clients=spec.clients,
@@ -499,7 +586,11 @@ def build_extension_deploy_steps(
     steps: list[Step] = []
     if not skip_builds:
         steps += build_steps_for_branches(
-            name, ssh_key, spec.binaries.ant_node, spec.binaries.ant
+            name,
+            ssh_key,
+            spec.binaries.ant_node,
+            spec.binaries.ant,
+            spec.binaries.ant_wasm,
         )
 
     steps.append(

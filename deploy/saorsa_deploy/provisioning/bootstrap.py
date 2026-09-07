@@ -66,6 +66,7 @@ def _build_exec_start(
     upgrade_channel=None,
     rewards_address=DEFAULT_REWARDS_ADDRESS,
     evm_network="arbitrum-sepolia",
+    webrtc_port=None,
 ) -> str:
     """Build the ExecStart command line for a bootstrap node service.
 
@@ -73,6 +74,20 @@ def _build_exec_start(
         bootstrap_index: Node index (1 = genesis with no bootstrap, 2+ = uses bootstrap_peers).
         bootstrap_peers: List of "ip:port" strings for the genesis node.
             Required for index > 1, ignored for index 1 (genesis).
+        webrtc_port: When set, pin the WebRTC-Direct listener to this UDP port
+            via ``--webrtc-port``. Bootstraps are the one tier where the browser
+            address must not move: a web client seeds itself from a bootstrap
+            multiaddr, and ant-node otherwise *derives* the port from the QUIC
+            port (``automatic_webrtc_port``), which silently changes the
+            advertised address if the QUIC port ever changes. Left unset the
+            flag is omitted entirely, so the rendered unit is byte-for-byte
+            what it was before this option existed.
+
+            NB the port is only half of a stable address -- the multiaddr also
+            embeds the DTLS certificate hash. ant-node persists that
+            certificate at ``<root_dir>/webrtc-direct.pem``, so it survives a
+            restart, but wiping a bootstrap's data directory rotates it and
+            invalidates every cached browser address.
     """
     service_name = f"ant-bootstrap-{bootstrap_index}"
     root_dir = f"{MOUNT_POINT}/data/{service_name}"
@@ -84,6 +99,8 @@ def _build_exec_start(
             parts.append(f"--bootstrap {peer}")
     if port:
         parts.append(f"--port {port}")
+    if webrtc_port:
+        parts.append(f"--webrtc-port {webrtc_port}")
     # --enable-logging must precede the other log-related flags, otherwise
     # ant-node silently ignores them.
     parts.append("--enable-logging")
@@ -150,6 +167,7 @@ class AntBootstrapNodeProvisioner:
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         testnet_name: str | None = None,
         extra_op_providers: list | None = None,
+        webrtc_port: int | None = None,
     ):
         self.ip = ip
         self.bootstrap_index = bootstrap_index
@@ -164,6 +182,7 @@ class AntBootstrapNodeProvisioner:
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
         self.testnet_name = testnet_name
+        self.webrtc_port = webrtc_port
         # Telegraf forwarders folded into this single-host pyinfra pass.
         self.extra_op_providers = list(extra_op_providers or [])
 
@@ -196,6 +215,7 @@ class AntBootstrapNodeProvisioner:
             testnet=self.testnet,
             upgrade_channel=self.upgrade_channel,
             rewards_address=self.rewards_address,
+            webrtc_port=self.webrtc_port,
         )
         unit_content = _build_unit_file(self.service_name, exec_start)
         unit_file_path = f"/etc/systemd/system/{self.service_name}.service"
@@ -341,6 +361,7 @@ class AntBootstrapNodesProvisioner:
         rewards_address: str = DEFAULT_REWARDS_ADDRESS,
         testnet_name: str | None = None,
         extra_op_providers: list | None = None,
+        webrtc_port: int | None = None,
     ):
         """``nodes`` is a list of dicts, each with ``ip`` and ``bootstrap_index``
         (``region`` is accepted and ignored — it is only used for display by the
@@ -357,6 +378,7 @@ class AntBootstrapNodesProvisioner:
         self.upgrade_channel = upgrade_channel
         self.rewards_address = rewards_address
         self.testnet_name = testnet_name
+        self.webrtc_port = webrtc_port
         self._index_by_ip = {n["ip"]: n["bootstrap_index"] for n in nodes}
         # Telegraf forwarders folded into this single pyinfra pass over the fleet.
         self.extra_op_providers = list(extra_op_providers or [])
@@ -384,6 +406,7 @@ class AntBootstrapNodesProvisioner:
             testnet=self.testnet,
             upgrade_channel=self.upgrade_channel,
             rewards_address=self.rewards_address,
+            webrtc_port=self.webrtc_port,
         )
         unit_content = _build_unit_file(service_name, exec_start)
         unit_path = f"/etc/systemd/system/{service_name}.service"

@@ -1,0 +1,204 @@
+"""Provisioning and teardown of WASM client VMs (V2-1169).
+
+The theme throughout: a deployment with no WASM clients must be untouched, and a
+deployment with them must fail EARLY and loudly rather than stand up VMs that
+can never reach the network.
+"""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from saorsa_deploy.client_roles import ROLE_UPLOAD, ROLE_WASM_DOWNLOAD, ROLE_WASM_UPLOAD
+from saorsa_deploy.cmd.destroy_clients import VALID_ROLES
+from saorsa_deploy.provisioning.client import AntClientProvisioner
+
+SEED = (
+    "/ip4/1.2.3.4/udp/42768/webrtc-direct/certhash/"
+    "uEiAHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw/p2p/" + "ab" * 32
+)
+
+
+def _provisioner(**overrides):
+    kwargs = dict(
+        clients=[],
+        bootstrap_peers=["1.2.3.4:10000"],
+        aws_access_key_id="k",
+        aws_secret_access_key="s",
+        addresses_s3_bucket="bucket",
+        addresses_s3_prefix="prefix",
+        console=MagicMock(),
+    )
+    kwargs.update(overrides)
+    return AntClientProvisioner(**kwargs)
+
+
+def _wasm_env(role=ROLE_WASM_UPLOAD):
+    return {
+        "1.2.3.4": {
+            "role": role,
+            "file_size_kb": 10240,
+            "region": "lon1",
+            "client_index": 1,
+            "payment_type": "",
+            "secret_key": "0xabc",
+            "heaptrack": "0",
+            "bootstrap_cache": "true",
+            "forward_logs": "false",
+            "rust_log": "",
+            "upload_presigned_url": "https://example/put",
+        }
+    }
+
+
+class TestNoWasmClientsIsANoOp:
+    def test_defaults_are_empty(self):
+        p = _provisioner()
+        assert p.wasm_bundle_url is None
+        assert p.bootstrap_webrtc_multiaddrs == []
+        assert p.wasm_clients == []
+
+    def test_add_wasm_ops_returns_immediately_for_native_hosts(self):
+        # Not even the state object is touched, so a native-only deployment
+        # cannot acquire a Node install or a bundle it has no use for.
+        p = _provisioner()
+        state = MagicMock()
+        native_env = {"1.2.3.4": {"role": ROLE_UPLOAD}}
+        with patch("saorsa_deploy.provisioning.client.add_op") as add_op:
+            p._add_wasm_ops(state, native_env)
+        add_op.assert_not_called()
+
+
+class TestFailsEarlyRatherThanLate:
+    def test_missing_bundle_url_raises(self):
+        p = _provisioner(bootstrap_webrtc_multiaddrs=[SEED])
+        with pytest.raises(RuntimeError, match="build ant-wasm"):
+            p._add_wasm_ops(MagicMock(), _wasm_env())
+
+    def test_missing_seed_addresses_raises(self):
+        # Without a seed a WASM client cannot reach the network at all, and the
+        # failure would otherwise surface as an unexplained connection error
+        # minutes after the VMs are up and billing.
+        p = _provisioner(wasm_bundle_url="https://example/bundle.tar.gz")
+        with pytest.raises(RuntimeError, match="bootstraps webrtc-addresses"):
+            p._add_wasm_ops(MagicMock(), _wasm_env())
+
+
+class TestWasmOps:
+    def _run(self, role=ROLE_WASM_UPLOAD):
+        p = _provisioner(
+            wasm_bundle_url="https://example/bundle.tar.gz",
+            bootstrap_webrtc_multiaddrs=[SEED, SEED.replace("1.2.3.4", "5.6.7.8")],
+            wasm_rpc_url="https://rpc.example",
+        )
+        host = MagicMock()
+        host.name = "1.2.3.4"
+        state = MagicMock()
+        state.inventory.get_active_hosts.return_value = [host]
+        with patch("saorsa_deploy.provisioning.client.add_op") as add_op:
+            p._add_wasm_ops(state, _wasm_env(role))
+        return [c.kwargs for c in add_op.call_args_list]
+
+    def test_installs_node_and_the_bundle(self):
+        names = [k["name"] for k in self._run()]
+        assert any("Install Node.js" in n for n in names)
+        assert any("Install WASM client bundle" in n for n in names)
+
+    def test_bundle_install_is_not_presence_gated(self):
+        # The bundle is namespaced by deployment name and the builder always
+        # overwrites, so a re-provision after a rebuild must pick up the new one.
+        cmds = " ".join(
+            " ".join(k.get("commands", []))
+            for k in self._run()
+            if "bundle" in k["name"]
+        )
+        assert "rm -rf /opt/ant-wasm-client" in cmds
+        assert "test -f" not in cmds.split("wget")[0]
+
+    def test_env_file_carries_every_seed_address(self):
+        # A failed endpoint gets a 30-minute cooldown inside ant-core, so a
+        # single seed would strand the client for that long.
+        cmds = " ".join(
+            " ".join(k.get("commands", []))
+            for k in self._run()
+            if "env file" in k["name"]
+        )
+        assert "BOOTSTRAP_MULTIADDRS=" in cmds
+        assert cmds.count("/webrtc-direct/") == 2
+
+    def test_env_file_is_not_world_readable(self):
+        # It carries the uploader's wallet key.
+        cmds = " ".join(
+            " ".join(k.get("commands", []))
+            for k in self._run()
+            if "env file" in k["name"]
+        )
+        assert "chmod 600 /etc/ant-wasm-client.env" in cmds
+
+    def test_writes_the_matching_unit_and_removes_the_other(self):
+        cmds = " ".join(
+            " ".join(k.get("commands", []))
+            for k in self._run(ROLE_WASM_UPLOAD)
+            if "env file" in k["name"]
+        )
+        assert "/etc/systemd/system/ant-wasm-uploader.service" in cmds
+        assert "rm -f /etc/systemd/system/ant-wasm-downloader.service" in cmds
+
+    def test_downloader_role_writes_the_downloader_unit(self):
+        cmds = " ".join(
+            " ".join(k.get("commands", []))
+            for k in self._run(ROLE_WASM_DOWNLOAD)
+            if "env file" in k["name"]
+        )
+        assert "/etc/systemd/system/ant-wasm-downloader.service" in cmds
+        assert "rm -f /etc/systemd/system/ant-wasm-uploader.service" in cmds
+
+
+class TestTeardownRoleParsing:
+    """Orphan-tfstate recovery must recognise the hyphenated WASM roles.
+
+    The role used to be read as the first "-"-separated token of the state key
+    suffix, which reads `wasm-upload` as `wasm`, fails the known-role check and
+    silently skips the key — leaving a real VM running and billing.
+    """
+
+    @staticmethod
+    def _parse(suffix: str):
+        role = next(
+            (
+                r
+                for r in sorted(VALID_ROLES, key=len, reverse=True)
+                if suffix.startswith(f"{r}-")
+            ),
+            None,
+        )
+        parts = suffix.split("-")
+        if role is None or not parts[-1].isdigit() or len(parts) < 3:
+            return None
+        return role, suffix[len(role) + 1 : -(len(parts[-1]) + 1)], int(parts[-1])
+
+    def test_wasm_roles_are_recognised(self):
+        assert self._parse("wasm-upload-lon1-2") == ("wasm-upload", "lon1", 2)
+        assert self._parse("wasm-download-nyc1-1") == ("wasm-download", "nyc1", 1)
+
+    def test_native_roles_still_parse(self):
+        assert self._parse("upload-lon1-1") == ("upload", "lon1", 1)
+        assert self._parse("download-ams3-3") == ("download", "ams3", 3)
+
+    def test_hyphenated_regions_survive(self):
+        assert self._parse("download-eu-west-par-3") == ("download", "eu-west-par", 3)
+        assert self._parse("wasm-upload-eu-west-par-1") == (
+            "wasm-upload",
+            "eu-west-par",
+            1,
+        )
+
+    def test_longest_role_wins(self):
+        # "upload" is a suffix of nothing here, but the sort order is what stops
+        # a shorter role shadowing a longer one that shares its tail.
+        role, _, _ = self._parse("wasm-upload-lon1-1")
+        assert role == "wasm-upload"
+
+    def test_unparseable_key_is_rejected(self):
+        assert self._parse("banana-lon1-1") is None
+        assert self._parse("upload-lon1-notanumber") is None

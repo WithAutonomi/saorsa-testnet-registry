@@ -3,6 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
@@ -372,6 +373,39 @@ def _ensure_uploader_wallets(
     return clients
 
 
+def _resolve_wasm_bundle(args, console) -> str:
+    """S3 URL of the WASM client bundle for this deployment.
+
+    Branch-build only: no ant-core WASM package is published as a release, so
+    unlike the native `ant` binary there is no version to fall back to.
+    """
+    from saorsa_deploy.binary_source import (
+        check_ant_wasm_build_exists,
+        get_ant_wasm_build_url,
+    )
+
+    branch = getattr(args, "wasm_branch_name", None) or getattr(args, "branch_name", None)
+    owner = getattr(args, "wasm_repo_owner", None) or getattr(args, "repo_owner", None)
+    if not branch or not owner:
+        console.print(
+            "[bold red]Error:[/bold red] WASM clients need --wasm-branch-name and "
+            "--wasm-repo-owner (or --branch-name/--repo-owner) so the bundle "
+            "built by `build ant-wasm` can be located."
+        )
+        sys.exit(1)
+    if not check_ant_wasm_build_exists(args.name, owner, branch):
+        console.print(
+            f"[bold red]Error:[/bold red] no WASM client bundle found for "
+            f"'{args.name}' ({owner}/{branch}). Run `saorsa-deploy build "
+            f"ant-wasm --name {args.name} --branch-name {branch} "
+            f"--repo-owner {owner}` first."
+        )
+        sys.exit(1)
+    url = get_ant_wasm_build_url(args.name, owner, branch)
+    console.print(f"[cyan]WASM bundle: {url}[/cyan]")
+    return url
+
+
 def cmd_provision_clients(args):
     """Execute the clients provision command: provision client VMs with uploader/downloader."""
     console = Console()
@@ -533,6 +567,27 @@ def cmd_provision_clients(args):
 
     clear_known_hosts(host_ips, console)
 
+    # --- WASM (browser-path) clients ------------------------------------
+    # Resolved only when the deployment actually has one, so a native-only
+    # deployment neither reads the state key nor needs a bundle.
+    wasm_bundle_url = None
+    bootstrap_webrtc_multiaddrs: list[str] = []
+    if any(is_wasm(c.get("role", "upload")) for c in clients):
+        wasm_bundle_url = _resolve_wasm_bundle(args, console)
+        bootstrap_webrtc_multiaddrs = deploy_state.get("bootstrap_webrtc_multiaddrs") or []
+        if not bootstrap_webrtc_multiaddrs:
+            console.print(
+                "[bold red]Error:[/bold red] this deployment has WASM clients but "
+                "no bootstrap WebRTC-Direct addresses in its state. Run "
+                f"`saorsa-deploy bootstraps webrtc-addresses --name {args.name}` "
+                "after the bootstrap tier is up."
+            )
+            sys.exit(1)
+        console.print(
+            f"[cyan]WASM clients seed from {len(bootstrap_webrtc_multiaddrs)} "
+            f"bootstrap address(es).[/cyan]"
+        )
+
     provisioner = AntClientProvisioner(
         clients=clients,
         bootstrap_peers=bootstrap_peers,
@@ -556,6 +611,9 @@ def cmd_provision_clients(args):
         elasticsearch_username=es_username,
         elasticsearch_password=es_password,
         forward_buffer_limit=getattr(args, "forward_buffer_limit", None),
+        wasm_bundle_url=wasm_bundle_url,
+        bootstrap_webrtc_multiaddrs=bootstrap_webrtc_multiaddrs,
+        wasm_rpc_url=ARBITRUM_SEPOLIA["rpc_url"],
     )
 
     try:

@@ -843,6 +843,96 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
 See `deploy/README.md` §"Running crash-debug nodes against production" for the
 full argument table.
 
+### WebRTC-Direct testnets and the WASM client tier
+
+`ant-cli` **cannot** exercise the WebRTC-Direct browser path — it links native
+`ant-core`, so it takes the native transport however it is invoked. A new client
+tier (V2-1169) runs a Node.js program importing **`ant-core` compiled to WASM**,
+reaching nodes over WebRTC-Direct. Roles `wasm-upload` / `wasm-download`,
+manifest keys `clients.wasm_uploaders[]` / `clients.wasm_downloaders[]`,
+independent of the native pair (a testnet may run either or both side by side).
+Example: `deploy/manifests/profiles/webrtc-wasm.yaml`.
+
+They are **distinct roles, not a flag on the native ones**, because the role names
+the VM, its Terraform workspace and its S3 state key — telling the transports
+apart in all three is the point of running both. The role-to-unit map is explicit
+in `deploy/saorsa_deploy/client_roles.py`; it replaced an `f"ant-{role}er"` string
+trick that spells the right thing for exactly the two native roles.
+
+Three pieces beyond an ordinary testnet, all no-ops when no WASM client is
+configured (every existing deployment renders byte-identical):
+
+- **A pinned WebRTC port on the bootstrap tier** — `bootstraps.webrtc_port`
+  (CLI `--webrtc-port` on `nodes provision-genesis` / `bootstraps provision`;
+  ant-node's flag is `--webrtc-direct-port`, alias `--webrtc-port`). Bootstraps
+  are the one tier whose browser-facing address must not move: a WASM client
+  seeds from it. Left unset ant-node **derives** the WebRTC port from the QUIC
+  port, so it moves whenever that does. Regular nodes deliberately keep the
+  derived port — their address changes propagate over the DHT as QUIC's do.
+  **The port is only half of a stable address**: the multiaddr also embeds the
+  DTLS certificate hash, which ant-node persists at
+  `<root_dir>/webrtc-direct.pem`. It survives restarts, but **wiping a
+  bootstrap's data volume rotates it and invalidates every cached browser
+  address**. WebRTC-Direct is ON by default in a stock ant-node build (no
+  feature flag, and no CLI flag to disable it).
+- **`build ant-wasm`** — builds the WASM package plus the TypeScript client to
+  `builds/{name}/{owner}/{branch}/ant-wasm-client.tar.gz`. A separate build path
+  is unavoidable: `ant-core` declares `default = ["native"]` and a `browser-wasm`
+  feature mutually exclusive with it (a wasm32 build without it stops at an
+  explicit `compile_error!`), and the artifact comes from `wasm-pack`, not
+  `cargo build --bin`. **Branch form only** — no WASM package is published as a
+  release, so `binaries.ant_wasm` rejects a version.
+- **`bootstraps webrtc-addresses`** — SSHes each bootstrap, reads
+  `<root_dir>/webrtc-direct.multiaddr`, saves them as
+  `bootstrap_webrtc_multiaddrs` in deployment state. Cannot run at
+  bootstrap-provision time (the address embeds the certhash, which exists only
+  once the node has started) and must run before `clients provision` (a WASM
+  client has no other way in). `deployments up` sequences both automatically.
+  Addresses advertising a non-public host are rewritten to the VM's real IP —
+  ant-node falls back to a routed local address, then loopback, when its
+  transport has not learned an external one.
+
+`clients provision` installs Node 22, unpacks the bundle to
+`/opt/ant-wasm-client`, and writes `/etc/ant-wasm-client.env` plus the
+`ant-wasm-uploader`/`ant-wasm-downloader` unit — targeted per host, so native
+client VMs see none of it. The bundle is **always re-fetched** (unlike the
+presence-gated `ant` binary install, which is why `deployments
+upgrade-ant-binary` had to exist).
+
+**No `bootstrap_cache` option on either WASM role** — it selects between ant's
+peer cache and an explicit `--bootstrap`, and a WASM client does neither. Passing
+the token is a hard error, not a silent no-op.
+
+**Payment: no private key ever enters WASM.** `ant-core` verifies each storage
+quote and hands the set to a JS callback, which does ERC-20 `approve` then one
+`payForQuotes` on the vault and returns the **mined** tx hash; `totalAmount` must
+exactly equal the sum of quote amounts or the upload is rejected. The payment
+network (chain id / token / vault) is read from a node's own `HELLO` rather than
+configured locally, so the client cannot pay on the wrong chain.
+
+**Results.** WASM clients emit the **same** `upload`/`download` Influx
+measurements as the native ones, so `record-results`, the per-op tables,
+`print-uploads` and `deployments compare` work unchanged. A nullable
+**`client_kind`** column (`native`/`wasm`) on `deployment_{upload,download}_records`
+keeps them separable, resolved from each VM's role — the same denormalisation
+pattern as `network_profile`. NULL on every pre-feature row.
+
+**Verified against a local `ant-devnet`** (2026-09-07), not a cloud testnet: the
+WASM client runs under **plain Node.js** with `node-datachannel` supplying
+`globalThis.RTCPeerConnection` — no headless browser. HELLO, `find_node`, a
+5 MiB download and a real paid upload with byte-identical round-trip all pass.
+
+Two facts for whoever composes a run manifest:
+- **NAT.** Nodes behind the testnet's simulated inbound NAT are unreachable over
+  WebRTC-Direct without relayed WebRTC, and each dial burns a 10s DataChannel
+  timeout (`ant-node/docs/WEBRTC_DIRECT_TESTNET.md`). Use `nodes.nat_percent: 0`
+  — which also makes the run incomparable to a native baseline that used a
+  different NAT fraction.
+- **A WASM upload needs >= 7 initial PUT peers** before it will pay, so a small
+  fleet fails every upload with "Witnessed close group returned only N/7".
+
+See `deploy/README.md` §"WASM client VMs (the browser path)".
+
 ### Simulating residential connections on client VMs (`network`)
 
 Client VMs sit on ~gigabit cloud links, which is not how real users reach the

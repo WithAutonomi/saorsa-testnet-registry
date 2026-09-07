@@ -148,10 +148,38 @@ def ant_build_steps(name: str, ssh_key: str, ant: Binary | None) -> list[Step]:
     return [Step(argv, "Build ant client from branch")]
 
 
+def ant_wasm_build_steps(name: str, ssh_key: str, ant_wasm: Binary | None) -> list[Step]:
+    """`build ant-wasm` step, for the WASM client bundle.
+
+    Branch-only by construction: no ant-core WASM package is published as a
+    release, so :class:`TestnetBinaries` rejects the version form for this
+    binary and there is no non-branch case to handle.
+    """
+    if ant_wasm is None:
+        return []
+    argv = [
+        "build",
+        "ant-wasm",
+        "--name",
+        name,
+        "--branch-name",
+        ant_wasm.branch,
+        "--repo-owner",
+        ant_wasm.repo_owner or "maidsafe",
+        "--ssh-key-path",
+        ssh_key,
+    ]
+    return [Step(argv, "Build WASM client bundle from branch")]
+
+
 def build_steps_for_branches(
-    name: str, ssh_key: str, ant_node: Binary, ant: Binary | None
+    name: str,
+    ssh_key: str,
+    ant_node: Binary,
+    ant: Binary | None,
+    ant_wasm: Binary | None = None,
 ) -> list[Step]:
-    """`build ant-node` / `build ant` steps, only for binaries sourced from a branch."""
+    """`build ant-node` / `build ant` / `build ant-wasm` steps for branch binaries."""
     steps: list[Step] = []
     if ant_node.is_branch:
         argv = [
@@ -172,12 +200,13 @@ def build_steps_for_branches(
             argv.append("--debug")
         steps.append(Step(argv, "Build ant-node from branch"))
     steps += ant_build_steps(name, ssh_key, ant)
-    # The two branch builds are independent (~5 min each), so when both are
+    steps += ant_wasm_build_steps(name, ssh_key, ant_wasm)
+    # The branch builds are independent (~5 min each), so when more than one is
     # needed run them concurrently: tag each as its own lane of a single
     # ``build`` parallel group (collapsed by :func:`iter_units`, executed by
     # ``parallel_infra.run_parallel_group`` with a live lane table). A lone
     # build (or none) is left as a plain sequential step so prod kinds and
     # single-binary testnets keep their byte-for-byte argv and journal contract.
-    if len(steps) == 2:
+    if len(steps) > 1:
         steps = [replace(s, group="build", lane=s.argv[1]) for s in steps]
     return steps

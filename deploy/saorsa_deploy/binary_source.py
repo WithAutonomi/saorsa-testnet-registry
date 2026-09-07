@@ -224,3 +224,33 @@ def check_ant_custom_build_exists(
         return True
     except botocore.exceptions.ClientError:
         return False
+
+
+# --- ant-core WASM package (browser/WASM clients) ---
+
+#: Filename of the WASM client bundle in S3. A tarball rather than a single
+#: file: the artifact is the wasm-pack output (`ant_core_bg.wasm`, `ant_core.js`,
+#: `ant_core.d.ts`, `package.json`) plus the compiled TypeScript client and its
+#: node_modules, which must land on the VM together.
+ANT_WASM_ARCHIVE_NAME = "ant-wasm-client.tar.gz"
+
+
+def get_ant_wasm_build_url(name: str, repo_owner: str, branch_name: str) -> str:
+    """Return the S3 URL for a built WASM client bundle.
+
+    There is no release form: no ant-core WASM package is published as a GitHub
+    release, so this bundle is always built from source by `build ant-wasm`.
+    """
+    key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_ARCHIVE_NAME}"
+    return f"https://{BUILDS_BUCKET}.s3.{BUILDS_REGION}.amazonaws.com/{key}"
+
+
+def check_ant_wasm_build_exists(name: str, repo_owner: str, branch_name: str) -> bool:
+    """Check whether a built WASM client bundle exists in S3."""
+    key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_ARCHIVE_NAME}"
+    s3 = boto3.client("s3", region_name=BUILDS_REGION)
+    try:
+        s3.head_object(Bucket=BUILDS_BUCKET, Key=key)
+        return True
+    except botocore.exceptions.ClientError:
+        return False

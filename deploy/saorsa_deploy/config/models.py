@@ -202,12 +202,33 @@ class Binary(_Base):
 # --------------------------------------------------------------------------- #
 class TestnetBinaries(_Base):
     ant_node: Binary
-    ant: Optional[Binary] = None  # only required when clients are present
+    ant: Optional[Binary] = None  # only required when native clients are present
+    # The `ant-core` WASM package, required when WASM clients are present.
+    #
+    # Branch form only: no WASM package is published as a GitHub release, so
+    # there is no version to pin. It is built from source by `build ant-wasm`
+    # (wasm-pack against the ant-client checkout) exactly as `ant` is built by
+    # `build ant`.
+    ant_wasm: Optional[Binary] = None
 
 
 class Bootstraps(_Base):
     count: int = 1
     port: int = 10000
+    # Pin the WebRTC-Direct listener on every bootstrap to this UDP port.
+    #
+    # Bootstraps are the one tier where the browser-facing address must not
+    # move: a WASM/browser client seeds itself from a bootstrap multiaddr, and
+    # left unset ant-node DERIVES the WebRTC port from the QUIC port
+    # (automatic_webrtc_port), so it silently changes if `port` above ever
+    # changes. Non-bootstrap nodes deliberately keep the derived/random port --
+    # their address changes propagate over the DHT the same way QUIC's do.
+    #
+    # NB the port is only half of a stable address: the multiaddr also embeds
+    # the DTLS certificate hash, which ant-node persists at
+    # <root_dir>/webrtc-direct.pem. Wiping a bootstrap's data directory rotates
+    # it and invalidates every cached browser address.
+    webrtc_port: Optional[int] = None
     regions_list: Optional[list[str]] = None  # bootstraps infra --do-regions-list
     attached_volume_size: Optional[int] = None
 
@@ -333,20 +354,127 @@ class Downloader(_Base):
     rust_log: Optional[str] = None
 
 
+class WasmUploader(_Base):
+    """An uploader driving `ant-core` compiled to WASM instead of the native `ant`.
+
+    Exists because `ant-cli` cannot exercise the WASM path at all: it links
+    native `ant-core`, so it takes the native transport no matter how it is
+    invoked. This client runs a Node.js program that imports the WASM build and
+    reaches nodes over WebRTC-Direct, which is the whole point -- it is the only
+    way to measure the browser path the way the native client is measured.
+
+    Deliberately NOT a flag on `Uploader`. The role is what gives a client VM
+    its hostname, its Terraform workspace and its S3 state key, so a WASM and a
+    native uploader in the same region would otherwise be indistinguishable in
+    all three -- and telling them apart is the entire purpose of the comparison.
+    """
+
+    provider: str
+    region: str
+    file_size_mb: int
+    vm_size: Optional[str] = None
+    payment: Optional[Payment] = None
+    ant: Optional[str] = None  # wallet funding (ANT tokens)
+    eth: Optional[str] = None  # wallet funding (ETH)
+    clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # Simulated residential link conditions on this VM — see Uploader.network.
+    network: Optional[Network] = None
+    # Forward this client's stdout+stderr to the deployment's Elasticsearch
+    # instance (index telegraf-ant-clients-{name}). Requires elastic.enabled.
+    forward_logs: Optional[bool] = None
+    # RUST_LOG for the WASM client's tracing subscriber.
+    rust_log: Optional[str] = None
+
+    # NB there is no `bootstrap_cache` here. That option selects between ant's
+    # peer cache and an explicit `--bootstrap` invocation, and neither exists on
+    # this path: a WASM client seeds itself from the bootstrap tier's
+    # webrtc-direct multiaddrs and discovers the rest of the network over
+    # authenticated find_node.
+
+
+class WasmDownloader(_Base):
+    """A downloader driving `ant-core` compiled to WASM. See :class:`WasmUploader`."""
+
+    provider: str
+    region: str
+    vm_size: Optional[str] = None
+    clock_skew: Optional[ClockSkew] = None  # signed duration skew on this VM (e.g. "2h", "-2h")
+    # Simulated residential link conditions on this VM — see Uploader.network.
+    network: Optional[Network] = None
+    forward_logs: Optional[bool] = None
+    rust_log: Optional[str] = None
+
+
 class Clients(_Base):
     uploaders: list[Uploader] = []
     downloaders: list[Downloader] = []
+    # WASM (browser-path) clients. Independent of the native pair above: a
+    # testnet may run either, or both side by side for a comparison.
+    wasm_uploaders: list[WasmUploader] = []
+    wasm_downloaders: list[WasmDownloader] = []
 
     @model_validator(mode="after")
     def _both_roles(self) -> "Clients":
         # Downloaders fetch addresses that uploaders publish; one without the
         # other is pointless. Mirror the deploy-runbook skill's refusal.
+        #
+        # The rule is applied to each transport SEPARATELY rather than to the
+        # union. WASM downloaders read the addresses WASM uploaders publish (own
+        # S3 prefix), and native downloaders read the native uploaders' — so a
+        # deployment with native uploaders and WASM downloaders satisfies a
+        # union check while leaving both halves with nothing to do.
         if (self.uploaders or self.downloaders) and not (self.uploaders and self.downloaders):
             raise ValueError(
                 "clients: need at least one uploader AND one downloader "
                 "(downloaders consume addresses uploaders publish)"
             )
+        if (self.wasm_uploaders or self.wasm_downloaders) and not (
+            self.wasm_uploaders and self.wasm_downloaders
+        ):
+            raise ValueError(
+                "clients: need at least one wasm_uploader AND one wasm_downloader "
+                "(wasm downloaders consume addresses wasm uploaders publish)"
+            )
         return self
+
+    @property
+    def all_entries(self) -> list:
+        """Every client entry across both transports, for cross-cutting checks."""
+        return [
+            *self.uploaders,
+            *self.downloaders,
+            *self.wasm_uploaders,
+            *self.wasm_downloaders,
+        ]
+
+    @property
+    def has_wasm(self) -> bool:
+        return bool(self.wasm_uploaders or self.wasm_downloaders)
+
+
+def _require_client_binaries(clients, binaries, kind: str) -> None:
+    """Each client transport needs its own binary; neither substitutes for the other.
+
+    `ant` is the native CLI and `ant_wasm` is the `ant-core` WASM package. A
+    deployment running only WASM clients has no use for `ant`, and one running
+    only native clients has no use for the WASM package, so the two are required
+    independently rather than together.
+    """
+    if clients is None:
+        return
+    if (clients.uploaders or clients.downloaders) and binaries.ant is None:
+        raise ValueError(f"{kind}.binaries.ant is required when clients are configured")
+    if clients.has_wasm:
+        if binaries.ant_wasm is None:
+            raise ValueError(
+                f"{kind}.binaries.ant_wasm is required when wasm clients are configured"
+            )
+        if not binaries.ant_wasm.is_branch:
+            raise ValueError(
+                f"{kind}.binaries.ant_wasm must use the branch form "
+                "(no ant-core WASM package is published as a release, so there "
+                "is no version to pin — it is built from source by `build ant-wasm`)"
+            )
 
 
 def _require_elastic_for_forward_logs(clients, elastic, kind: str) -> None:
@@ -357,7 +485,7 @@ def _require_elastic_for_forward_logs(clients, elastic, kind: str) -> None:
     """
     if clients is None or (elastic is not None and elastic.enabled):
         return
-    wants = [c for c in (clients.uploaders + clients.downloaders) if c.forward_logs]
+    wants = [c for c in clients.all_entries if c.forward_logs]
     if wants:
         raise ValueError(
             f"{kind}: forward_logs requires elastic.enabled: true "
@@ -428,8 +556,7 @@ class TestnetSpec(_Base):
 
     @model_validator(mode="after")
     def _ant_binary_when_clients(self) -> "TestnetSpec":
-        if self.clients and self.binaries.ant is None:
-            raise ValueError("testnet.binaries.ant is required when clients are configured")
+        _require_client_binaries(self.clients, self.binaries, "testnet")
         return self
 
     @model_validator(mode="after")
@@ -452,8 +579,7 @@ class ExtensionSpec(_Base):
 
     @model_validator(mode="after")
     def _ant_binary_when_clients(self) -> "ExtensionSpec":
-        if self.clients and self.binaries.ant is None:
-            raise ValueError("extension.binaries.ant is required when clients are configured")
+        _require_client_binaries(self.clients, self.binaries, "extension")
         return self
 
     @model_validator(mode="after")

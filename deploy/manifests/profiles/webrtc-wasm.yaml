@@ -1,0 +1,100 @@
+# WebRTC-Direct testnet with WASM (browser-path) clients.
+#
+# Stands up an ordinary testnet whose bootstrap tier advertises a PINNED
+# WebRTC-Direct address, plus a pair of WASM clients that reach the network the
+# way a browser does: ant-core compiled to WASM, over WebRTC-Direct, driven by a
+# Node.js program. `ant-cli` cannot substitute — it links native ant-core, so it
+# takes the native transport however it is invoked.
+#
+# Run it:
+#   saorsa-deploy deployments plan --config deploy/manifests/profiles/webrtc-wasm.yaml
+#   saorsa-deploy deployments up   --config deploy/manifests/profiles/webrtc-wasm.yaml
+#
+# The sequence gains two steps over a normal testnet:
+#   build ant-wasm             (alongside build ant-node, in the parallel build group)
+#   bootstraps webrtc-addresses (after the bootstrap tier is up, before clients provision)
+#
+# ---------------------------------------------------------------------------
+# READ BEFORE RUNNING THIS AS A COMPARISON
+#
+#   * NAT. Nodes behind the testnet's simulated inbound NAT are unreachable over
+#     WebRTC-Direct without relayed WebRTC, and each such dial burns a 10-second
+#     DataChannel timeout (ant-node/docs/WEBRTC_DIRECT_TESTNET.md). This profile
+#     therefore sets `nat_percent: 0`. Raising it measures the NAT simulation as
+#     much as it measures WebRTC — and makes the run incomparable to a native
+#     baseline that used a different NAT fraction.
+#
+#   * Fleet size. A WASM upload needs at least 7 initial PUT peers before it
+#     will pay, so a small node fleet fails every upload with
+#     "Witnessed close group returned only N/7 initial PUT peers".
+# ---------------------------------------------------------------------------
+
+name: WASM-01
+kind: testnet
+purpose: "WebRTC-Direct validation with a WASM client tier"
+ssh_key_path: ~/.ssh/ant_deploy
+
+testnet:
+  mode: true
+
+  binaries:
+    ant_node:
+      branch: web-support
+      repo_owner: WithAutonomi
+    # The native client, for a side-by-side comparison against the WASM tier.
+    # Drop it (and the `uploaders`/`downloaders` below) for a WASM-only run.
+    ant:
+      branch: web-support
+      repo_owner: WithAutonomi
+    # The ant-core WASM package. Branch form only — no WASM package is
+    # published as a GitHub release, so there is no version to pin. Built by
+    # `build ant-wasm` (wasm-pack against the ant-client checkout).
+    ant_wasm:
+      branch: web-support
+      repo_owner: WithAutonomi
+
+  bootstraps:
+    count: 5
+    port: 10000
+    # Pin the WebRTC-Direct listener. Bootstraps are the one tier whose
+    # browser-facing address must not move: a WASM client seeds from it, and
+    # left unset ant-node DERIVES this port from `port` above, so it changes
+    # whenever that does. Regular nodes deliberately keep the derived port —
+    # their address changes propagate over the DHT exactly as QUIC's do.
+    #
+    # The port is only half of a stable address: the multiaddr also embeds the
+    # node's DTLS certificate hash, which ant-node persists at
+    # <root_dir>/webrtc-direct.pem. Wiping a bootstrap's data volume rotates it
+    # and invalidates every cached browser address.
+    webrtc_port: 42768
+    attached_volume_size: 100
+
+  nodes:
+    per_vm: 10
+    # See the NAT note above — deliberately 0 for a WebRTC run.
+    nat_percent: 0
+    providers:
+      digital_ocean:
+        vm_count: 5
+        regions_list: [lon1, nyc1, ams3]
+        size: s-4vcpu-8gb
+        attached_volume_size: 100
+
+  clients:
+    # Native tier: the control arm.
+    uploaders:
+      - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.1 }
+    downloaders:
+      - { provider: digital_ocean, region: lon1 }
+
+    # WASM tier: the arm under test. Same options as the native entries except
+    # `bootstrap_cache`, which has no meaning here — a WASM client seeds from
+    # the bootstraps' webrtc-direct multiaddrs rather than from ant's peer cache
+    # or an explicit --bootstrap.
+    wasm_uploaders:
+      - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.1 }
+    wasm_downloaders:
+      - { provider: digital_ocean, region: lon1 }
+
+  monitoring:
+    enabled: true

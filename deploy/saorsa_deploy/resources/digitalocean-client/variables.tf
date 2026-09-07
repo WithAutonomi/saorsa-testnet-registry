@@ -13,10 +13,14 @@ variable "region" {
 
 variable "role" {
   type        = string
-  description = "Client role: 'upload' or 'download'"
+  description = "Client role: 'upload', 'download', 'wasm-upload' or 'wasm-download'"
   validation {
-    condition     = contains(["upload", "download"], var.role)
-    error_message = "role must be either 'upload' or 'download'."
+    # The wasm-* roles run a Node.js client driving ant-core compiled to WASM
+    # over WebRTC-Direct. They are distinct roles rather than a flag on the
+    # native ones because the role names the VM, its Terraform workspace and its
+    # S3 state key -- telling the two transports apart is the point.
+    condition     = contains(["upload", "download", "wasm-upload", "wasm-download"], var.role)
+    error_message = "role must be one of 'upload', 'download', 'wasm-upload', 'wasm-download'."
   }
 }
 

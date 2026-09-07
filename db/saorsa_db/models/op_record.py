@@ -33,6 +33,18 @@ class _BaseOpRecord:
     # deploy_args JSON; the full resolved knob set (rates, delay, loss, profile
     # set version) lives once in the deployment's deploy_args.
     network_profile: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Which client transport performed this operation: "native" (the `ant`
+    # binary over QUIC) or "wasm" (ant-core compiled to WASM over
+    # WebRTC-Direct). NULL on every row predating the WASM client, which was
+    # necessarily native.
+    #
+    # Denormalised onto each op for the same reason as network_profile: the
+    # whole point of running both transports on one testnet is to compare them,
+    # and a comparison that has to join through deploy_args JSON to tell them
+    # apart is a comparison nobody runs. Both transports emit the same
+    # `upload`/`download` Influx measurements, so this column — resolved from
+    # the client VM's role — is what keeps them separable.
+    client_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     region: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[OpRecordStatus] = mapped_column(
@@ -63,6 +75,7 @@ class _BaseOpRecord:
             "deployment_id": self.deployment_id,
             "client_hostname": self.client_hostname,
             "network_profile": self.network_profile,
+            "client_kind": self.client_kind,
             "region": self.region,
             "file_size_bytes": self.file_size_bytes,
             "status": self.status.value,
