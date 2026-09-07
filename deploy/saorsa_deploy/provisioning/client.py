@@ -11,7 +11,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
-from saorsa_deploy.client_roles import is_upload, is_wasm, unit_for_role
+from saorsa_deploy.client_roles import ROLE_UPLOAD, is_upload, is_wasm, unit_for_role
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
@@ -282,7 +282,7 @@ class AntClientProvisioner:
                     "forward_logs": forward_logs,
                     "rust_log": rust_log,
                     "upload_presigned_url": self._presigned_put_url(
-                        c["region"], c["client_index"]
+                        role, c["region"], c["client_index"]
                     ),
                 }
             else:
@@ -322,8 +322,8 @@ class AntClientProvisioner:
             # connection error minutes after the VMs are up and billing.
             raise RuntimeError(
                 "WASM clients are configured but the deployment state holds no "
-                "bootstrap WebRTC-Direct addresses — run `bootstraps "
-                "webrtc-addresses --name <name>` after the bootstrap tier is up"
+                "WebRTC-Direct seed addresses — run `deployments "
+                "webrtc-addresses --name <name>` after the nodes are started"
             )
 
         wasm_hosts = [h for h in state.inventory.get_active_hosts() if h.name in wasm_ips]
@@ -497,7 +497,7 @@ class AntClientProvisioner:
                 **buffer_kwargs,
             ).execute()
 
-    def _presigned_put_url(self, region: str, client_index) -> str:
+    def _presigned_put_url(self, role: str, region: str, client_index) -> str:
         """Mint a presigned PUT URL for one uploader's address-list object.
 
         The uploader flushes its address list with a plain curl PUT against
@@ -522,7 +522,14 @@ class AntClientProvisioner:
                 s3={"addressing_style": "virtual"},
             ),
         )
-        key = f"{self.addresses_s3_prefix}/upload-{region}-{client_index}.txt"
+        # The key is namespaced by role. client_index restarts at 1 for each
+        # role, so a native and a WASM uploader in the same region would
+        # otherwise both own `upload-<region>-1.txt` — and since each flush is a
+        # whole-object PUT, each would repeatedly erase the other's address
+        # list. The native name is unchanged, so existing deployments keep
+        # writing exactly where they always did.
+        key_role = "upload" if role == ROLE_UPLOAD else role
+        key = f"{self.addresses_s3_prefix}/{key_role}-{region}-{client_index}.txt"
         return s3.generate_presigned_url(
             "put_object",
             Params={"Bucket": self.addresses_s3_bucket, "Key": key},

@@ -280,7 +280,7 @@ class TestOrchestrator:
         # provision time, and it must exist before a WASM client is provisioned.
         steps = build_deploy_steps(_manifest(WASM_PAIR))
         argvs = [s.argv for s in steps]
-        collect = argvs.index(_step(steps, ["bootstraps", "webrtc-addresses"]).argv)
+        collect = argvs.index(_step(steps, ["deployments", "webrtc-addresses"]).argv)
         provision = argvs.index(_step(steps, ["clients", "provision"]).argv)
         assert collect < provision
 
@@ -301,7 +301,7 @@ class TestOrchestrator:
             binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "0.3.0"}},
         )
         steps = build_deploy_steps(m)
-        assert _maybe_step(steps, ["bootstraps", "webrtc-addresses"]) is None
+        assert _maybe_step(steps, ["deployments", "webrtc-addresses"]) is None
         assert _maybe_step(steps, ["build", "ant-wasm"]) is None
         argv = _step(steps, ["clients", "provision"]).argv
         assert "--wasm-branch-name" not in argv

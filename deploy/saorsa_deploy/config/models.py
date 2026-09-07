@@ -419,10 +419,10 @@ class Clients(_Base):
         # other is pointless. Mirror the deploy-runbook skill's refusal.
         #
         # The rule is applied to each transport SEPARATELY rather than to the
-        # union. WASM downloaders read the addresses WASM uploaders publish (own
-        # S3 prefix), and native downloaders read the native uploaders' — so a
-        # deployment with native uploaders and WASM downloaders satisfies a
-        # union check while leaving both halves with nothing to do.
+        # union. Addresses are a shared pool, so a union check would pass for a
+        # deployment with native uploaders and WASM downloaders — but that
+        # deployment never exercises a WASM upload or a native download, which
+        # is precisely what configuring that tier was for.
         if (self.uploaders or self.downloaders) and not (self.uploaders and self.downloaders):
             raise ValueError(
                 "clients: need at least one uploader AND one downloader "

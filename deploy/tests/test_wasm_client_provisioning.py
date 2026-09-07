@@ -80,7 +80,7 @@ class TestFailsEarlyRatherThanLate:
         # failure would otherwise surface as an unexplained connection error
         # minutes after the VMs are up and billing.
         p = _provisioner(wasm_bundle_url="https://example/bundle.tar.gz")
-        with pytest.raises(RuntimeError, match="bootstraps webrtc-addresses"):
+        with pytest.raises(RuntimeError, match="deployments webrtc-addresses"):
             p._add_wasm_ops(MagicMock(), _wasm_env())
 
 
@@ -285,3 +285,38 @@ class TestIpToEnvPreservesTheRealRole:
         assert env["10.0.0.1"]["file_size_kb"] == 10 * 1024
         assert env["10.0.0.2"]["file_size_kb"] == 0
         assert env["10.0.0.2"]["upload_presigned_url"] == ""
+
+
+class TestAddressKeyNamespacing:
+    """Each uploader must own a distinct S3 object (V2-1169, found on DEV-01-wasm).
+
+    `client_index` restarts at 1 per role, so a native and a WASM uploader in the
+    same region both resolved to `upload-<region>-1.txt`. Every flush is a
+    whole-object PUT, so the two would have repeatedly erased each other's
+    address lists.
+    """
+
+    @staticmethod
+    def _url(role):
+        p = _provisioner(
+            aws_access_key_id="AKIAEXAMPLE",
+            aws_secret_access_key="x" * 40,
+            addresses_s3_bucket="bucket",
+            addresses_s3_prefix="saorsa-deploy/addresses/DEV-01",
+        )
+        return p._presigned_put_url(role, "lon1", 1)
+
+    def test_native_key_is_unchanged(self):
+        # Existing deployments must keep writing exactly where they always did.
+        assert "/saorsa-deploy/addresses/DEV-01/upload-lon1-1.txt" in self._url(ROLE_UPLOAD)
+
+    def test_wasm_key_is_distinct(self):
+        assert (
+            "/saorsa-deploy/addresses/DEV-01/wasm-upload-lon1-1.txt"
+            in self._url(ROLE_WASM_UPLOAD)
+        )
+
+    def test_the_two_cannot_collide(self):
+        native = self._url(ROLE_UPLOAD).split("?")[0]
+        wasm = self._url(ROLE_WASM_UPLOAD).split("?")[0]
+        assert native != wasm

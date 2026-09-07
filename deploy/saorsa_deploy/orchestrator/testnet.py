@@ -407,22 +407,22 @@ def _provision_and_start_steps(
     steps.append(Step(["nodes", "start", "--name", name, "--ssh-key-path", ssh_key], "Start nodes"))
 
     if clients is not None and clients.has_wasm:
-        # Collect the bootstrap tier's WebRTC-Direct multiaddrs before the
-        # clients are provisioned: a WASM client seeds from them and has no
-        # other way into the network. It has to run here rather than at
-        # bootstrap-provision time because the address embeds the node's DTLS
-        # certificate hash, which only exists once the node has started.
+        # Collect the WebRTC-Direct seed addresses before the clients are
+        # provisioned: a WASM client seeds from them and has no other way into
+        # the network. It runs here, after `nodes start`, rather than at
+        # bootstrap-provision time, because the address embeds the node's DTLS
+        # certificate hash — which exists only once a node has actually run.
         steps.append(
             Step(
                 [
-                    "bootstraps",
+                    "deployments",
                     "webrtc-addresses",
                     "--name",
                     name,
                     "--ssh-key-path",
                     ssh_key,
                 ],
-                "Collect bootstrap WebRTC addresses",
+                "Collect WebRTC seed addresses",
             )
         )
 

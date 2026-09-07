@@ -882,15 +882,22 @@ configured (every existing deployment renders byte-identical):
   explicit `compile_error!`), and the artifact comes from `wasm-pack`, not
   `cargo build --bin`. **Branch form only** — no WASM package is published as a
   release, so `binaries.ant_wasm` rejects a version.
-- **`bootstraps webrtc-addresses`** — SSHes each bootstrap, reads
-  `<root_dir>/webrtc-direct.multiaddr`, saves them as
-  `bootstrap_webrtc_multiaddrs` in deployment state. Cannot run at
-  bootstrap-provision time (the address embeds the certhash, which exists only
-  once the node has started) and must run before `clients provision` (a WASM
-  client has no other way in). `deployments up` sequences both automatically.
-  Addresses advertising a non-public host are rewritten to the VM's real IP —
-  ant-node falls back to a routed local address, then loopback, when its
-  transport has not learned an external one.
+- **`deployments webrtc-addresses`** — SSHes every VM, reads each service's
+  `<root_dir>/webrtc-direct.multiaddr`, saves `bootstrap_webrtc_multiaddrs` plus
+  a `webrtc_seed_multiaddrs` sample. Cannot run at provision time (the address
+  embeds the certhash, which exists only once a node has started) and must run
+  before `clients provision` (a WASM client has no other way in). `deployments
+  up` sequences it after `nodes start`. Addresses advertising a non-public host
+  are rewritten to the VM's real IP.
+  **It collects the NODE tier, not just the bootstraps, and that is the point.**
+  A node publishes its browser endpoint only to peers close to ITSELF, so a
+  client seeded with the bootstraps alone reaches the bootstraps and nothing
+  else — a bootstrap asked for the peers closest to some chunk returns 20 nodes
+  of which ~1 is reachable, and the walk stalls on its first hop. Measured on
+  DEV-01-wasm (100 nodes), same 10 MB target: **3 bootstrap seeds FAILED**,
+  **30 spread seeds succeeded in 31s**. `--sample-nodes` (default 32) picks
+  seeds evenly across the peer-id keyspace. Upstream's "one address is enough"
+  holds on a 5-node devnet where everyone is in everyone's close group.
 
 `clients provision` installs Node 22, unpacks the bundle to
 `/opt/ant-wasm-client`, and writes `/etc/ant-wasm-client.env` plus the
@@ -898,6 +905,14 @@ configured (every existing deployment renders byte-identical):
 client VMs see none of it. The bundle is **always re-fetched** (unlike the
 presence-gated `ant` binary install, which is why `deployments
 upgrade-ant-binary` had to exist).
+
+**Addresses are one shared pool per deployment** — both tiers publish under the
+same prefix and downloaders list the whole prefix (as the native tier always
+has), so a WASM downloader may fetch native-uploaded content and vice versa. The
+per-uploader *object* is namespaced by role (`upload-` vs `wasm-upload-`)
+because `client_index` restarts at 1 per role: without that a native and a WASM
+uploader in one region both own `upload-<region>-1.txt`, and each whole-object
+PUT flush erases the other's list.
 
 **No `bootstrap_cache` option on either WASM role** — it selects between ant's
 peer cache and an explicit `--bootstrap`, and a WASM client does neither. Passing

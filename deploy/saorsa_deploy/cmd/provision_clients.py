@@ -574,12 +574,21 @@ def cmd_provision_clients(args):
     bootstrap_webrtc_multiaddrs: list[str] = []
     if any(is_wasm(c.get("role", "upload")) for c in clients):
         wasm_bundle_url = _resolve_wasm_bundle(args, console)
-        bootstrap_webrtc_multiaddrs = deploy_state.get("bootstrap_webrtc_multiaddrs") or []
+        # Prefer the keyspace-spread seed list over the bootstrap-only one: a
+        # node publishes its browser endpoint only to peers close to itself, so
+        # a client seeded with the bootstraps alone cannot walk to a chunk
+        # stored anywhere else. Falls back for state written before the seed
+        # list existed.
+        bootstrap_webrtc_multiaddrs = (
+            deploy_state.get("webrtc_seed_multiaddrs")
+            or deploy_state.get("bootstrap_webrtc_multiaddrs")
+            or []
+        )
         if not bootstrap_webrtc_multiaddrs:
             console.print(
                 "[bold red]Error:[/bold red] this deployment has WASM clients but "
                 "no bootstrap WebRTC-Direct addresses in its state. Run "
-                f"`saorsa-deploy bootstraps webrtc-addresses --name {args.name}` "
+                f"`saorsa-deploy deployments webrtc-addresses --name {args.name}` "
                 "after the bootstrap tier is up."
             )
             sys.exit(1)

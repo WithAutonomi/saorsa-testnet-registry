@@ -43,6 +43,44 @@ def multiaddr_path(bootstrap_index: int) -> str:
     return f"{bootstrap_root_dir(bootstrap_index)}/{MULTIADDR_FILENAME}"
 
 
+#: Glob matching every node-tier service's persisted browser address on a VM.
+#: Covers both tiers: bootstraps live in ``ant-bootstrap-<n>`` and regular nodes
+#: in ``ant-node-<n>``, side by side under the same data directory.
+MULTIADDR_GLOB = f"{MOUNT_POINT}/data/*/{MULTIADDR_FILENAME}"
+
+
+def peer_id(multiaddr: str) -> str:
+    """The 64-hex peer id at the end of a WebRTC-Direct multiaddr."""
+    return multiaddr.rsplit("/p2p/", 1)[-1]
+
+
+def spread_sample(multiaddrs: list[str], count: int) -> list[str]:
+    """Pick ``count`` addresses spread evenly across the peer-id keyspace.
+
+    Seeding matters far more than it looks. A node publishes its browser
+    endpoint to the peers CLOSEST TO ITSELF, so a node knows endpoints for its
+    own neighbourhood and nobody else's. A client seeded only with the bootstrap
+    tier can therefore reach the bootstraps and nothing else: asked for the
+    peers closest to some chunk, a bootstrap returns 20 nodes of which ~1 has a
+    reachable endpoint, and the iterative walk toward that chunk stalls on its
+    first hop.
+
+    Measured on DEV-01-wasm (100 nodes), downloading the same 10 MB address:
+    3 bootstrap seeds failed with "no closest WebRtcDirect node returned chunk";
+    30 seeds spread across the fleet succeeded in 31s. Upstream's "one address
+    is enough" holds on a 5-node devnet, where every node is in every other
+    node's close group, and stops holding well before 100.
+
+    Sorting by peer id and taking evenly-spaced entries gives coverage of the
+    XOR keyspace, so whatever a client looks up, some seed is near it.
+    """
+    if count <= 0 or len(multiaddrs) <= count:
+        return list(multiaddrs)
+    ordered = sorted(multiaddrs, key=peer_id)
+    step = len(ordered) / count
+    return [ordered[int(i * step)] for i in range(count)]
+
+
 def parse_multiaddr(raw: str) -> str:
     """Validate one address read off a VM and return it stripped.
 

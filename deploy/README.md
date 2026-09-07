@@ -761,6 +761,16 @@ testnet:
       - { provider: digital_ocean, region: lon1 }
 ```
 
+**Addresses are one shared pool per deployment.** Both tiers publish under the
+same S3 prefix and both tiers' downloaders list the whole prefix, exactly as the
+native tier always has — so a WASM downloader may fetch content a native
+uploader published, and vice versa. What is *not* shared is the object each
+uploader owns: `client_index` restarts at 1 per role, so the key is namespaced
+(`upload-<region>-<n>.txt` for native, `wasm-upload-<region>-<n>.txt` for WASM).
+Without that, a native and a WASM uploader in the same region would both own
+`upload-<region>-1.txt`, and since each flush is a whole-object PUT they would
+repeatedly erase each other's address lists.
+
 **CLI**: `clients infra --wasm-uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE][:rust_log=SPEC]`
 and `--wasm-downloader provider:region[:vm_size][:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE][:rust_log=SPEC]`.
 Both are repeatable and take the same grammar as their native counterparts with
@@ -803,15 +813,30 @@ Example profile: `deploy/manifests/profiles/webrtc-wasm.yaml`.
      --branch-name web-support --repo-owner WithAutonomi
    ```
 
-3. **`bootstraps webrtc-addresses`** — SSHes each bootstrap, reads
-   `<root_dir>/webrtc-direct.multiaddr`, and saves the results to the deployment
-   state as `bootstrap_webrtc_multiaddrs`. It cannot run at bootstrap-provision
-   time because the address embeds the certificate hash, which only exists once
-   the node has started; it must run before `clients provision`, because a WASM
-   client has no other way into the network. `deployments up` sequences both
-   automatically. Addresses whose advertised host is not the VM's public IP are
-   rewritten to it (ant-node falls back to a routed local address, then
-   loopback, when its transport has not yet learned an external one).
+3. **`deployments webrtc-addresses`** — SSHes every VM, reads each service's
+   `<root_dir>/webrtc-direct.multiaddr`, and saves the deployment's seed list.
+   It cannot run at provision time because the address embeds the certificate
+   hash, which exists only once a node has started; it must run before
+   `clients provision`, because a WASM client has no other way into the network.
+   `deployments up` sequences it automatically, after `nodes start`. Addresses
+   whose advertised host is not the VM's public IP are rewritten to it (ant-node
+   falls back to a routed local address, then loopback, when its transport has
+   not yet learned an external one).
+
+   **It collects the NODE tier, not just the bootstraps, and that is the point.**
+   A node publishes its browser endpoint only to the peers closest to *itself*,
+   so it knows endpoints for its own neighbourhood and nobody else's. A client
+   seeded with the bootstraps alone can reach the bootstraps and nothing else:
+   asked for the peers closest to some chunk, a bootstrap returns 20 nodes of
+   which about one has a reachable endpoint, and the iterative walk toward that
+   chunk stalls on its first hop. Measured on a 100-node testnet, downloading
+   the same 10 MB address: **3 bootstrap seeds failed** with "no closest
+   WebRtcDirect node returned chunk"; **30 seeds spread across the fleet
+   succeeded in 31s**. `--sample-nodes` (default 32) sets how many seeds a
+   client gets, chosen evenly across the peer-id keyspace so that whatever a
+   client looks up, some seed is near it. Upstream's "one address is enough to
+   enter the network" holds on a 5-node devnet, where every node is in every
+   other node's close group; it stops holding well before 100.
 
 #### On the client VM
 

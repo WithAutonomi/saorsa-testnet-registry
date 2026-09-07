@@ -337,28 +337,6 @@ def main(argv=None):
         "(default: 0x03B770D9cD32077cC0bF330c13C114a87643B124)",
     )
 
-    bootstraps_webrtc_parser = bootstraps_subparsers.add_parser(
-        "webrtc-addresses",
-        help="Collect each bootstrap's WebRTC-Direct multiaddr and save it to "
-        "deployment state (browser/WASM clients seed from these).",
-    )
-    bootstraps_webrtc_parser.add_argument(
-        "--name", type=str, required=True, help="Deployment name"
-    )
-    bootstraps_webrtc_parser.add_argument(
-        "--ssh-key-path",
-        type=str,
-        default="~/.ssh/id_rsa",
-        help="Path to the SSH private key (default: ~/.ssh/id_rsa)",
-    )
-    bootstraps_webrtc_parser.add_argument(
-        "--timeout",
-        type=int,
-        default=180,
-        help="Seconds to wait for a bootstrap to publish its address "
-        "(the listener binds shortly after the service starts; default: 180)",
-    )
-
     # =========================================================================
     # === build group (ant, ant-node) ===
     # =========================================================================
@@ -1070,6 +1048,38 @@ def main(argv=None):
         required=True,
         help="Free-text description of what this testnet is for. "
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
+
+    # deployments webrtc-addresses
+    deployments_webrtc_parser = deployments_subparsers.add_parser(
+        "webrtc-addresses",
+        help="Collect every node's WebRTC-Direct multiaddr into deployment "
+        "state, for WASM/browser clients to seed from.",
+    )
+    deployments_webrtc_parser.add_argument(
+        "--name", type=str, required=True, help="Deployment name"
+    )
+    deployments_webrtc_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to the SSH private key (default: ~/.ssh/id_rsa)",
+    )
+    deployments_webrtc_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=180,
+        help="Seconds to wait for a bootstrap to publish its address "
+        "(the listener binds shortly after the service starts; default: 180)",
+    )
+    deployments_webrtc_parser.add_argument(
+        "--sample-nodes",
+        type=int,
+        default=32,
+        help="How many addresses to hand a client as seeds, sampled evenly "
+        "across the peer-id keyspace (default: 32). A node publishes its "
+        "browser endpoint only to peers close to itself, so a client seeded "
+        "narrowly cannot walk to a chunk stored elsewhere in the keyspace.",
     )
 
     # deployments generate-inventory
@@ -6598,12 +6608,6 @@ def main(argv=None):
             from saorsa_deploy.cmd.provision_bootstraps import cmd_provision_bootstraps
 
             cmd_provision_bootstraps(args)
-        elif args.bootstraps_subcommand == "webrtc-addresses":
-            from saorsa_deploy.cmd.bootstrap_webrtc_addresses import (
-                cmd_bootstrap_webrtc_addresses,
-            )
-
-            cmd_bootstrap_webrtc_addresses(args)
     elif args.command == "build":
         if args.build_subcommand == "ant":
             from saorsa_deploy.cmd.build_ant import cmd_build_ant
@@ -6672,6 +6676,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.extend import cmd_extend
 
             cmd_extend(args)
+        elif args.deployments_subcommand == "webrtc-addresses":
+            from saorsa_deploy.cmd.webrtc_addresses import cmd_webrtc_addresses
+
+            cmd_webrtc_addresses(args)
         elif args.deployments_subcommand == "generate-inventory":
             from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
 

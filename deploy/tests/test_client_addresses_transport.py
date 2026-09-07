@@ -43,7 +43,7 @@ class TestPresignedPutUrl:
             s3.generate_presigned_url.return_value = "https://example/presigned"
             mock_client.return_value = s3
 
-            url = _provisioner()._presigned_put_url("lon1", 1)
+            url = _provisioner()._presigned_put_url("upload", "lon1", 1)
 
         assert url == "https://example/presigned"
         s3.generate_presigned_url.assert_called_once_with(
@@ -57,7 +57,7 @@ class TestPresignedPutUrl:
 
     def test_empty_when_no_credentials(self):
         with patch("saorsa_deploy.provisioning.client.boto3.client") as mock_client:
-            url = _provisioner(aws_access_key_id="")._presigned_put_url("lon1", 1)
+            url = _provisioner(aws_access_key_id="")._presigned_put_url("upload", "lon1", 1)
         assert url == ""
         mock_client.assert_not_called()
 

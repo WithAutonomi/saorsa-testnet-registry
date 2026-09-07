@@ -7,7 +7,9 @@ from saorsa_deploy.webrtc_addresses import (
     bootstrap_root_dir,
     multiaddr_path,
     parse_multiaddr,
+    peer_id,
     rewrite_host,
+    spread_sample,
 )
 
 CERTHASH = "uEiAHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
@@ -79,3 +81,67 @@ class TestRewriteHost:
         # The certhash is the one part of the address the deployment cannot
         # derive -- it comes from the node's persisted DTLS certificate.
         assert CERTHASH in rewrite_host(VALID, "9.9.9.9")
+
+
+def _addr(peer_hex: str, ip: str = "1.2.3.4") -> str:
+    return f"/ip4/{ip}/udp/42768/webrtc-direct/certhash/{CERTHASH}/p2p/{peer_hex}"
+
+
+class TestSpreadSample:
+    """Seeds must cover the peer-id keyspace, not just be the first N.
+
+    A node publishes its browser endpoint only to the peers CLOSEST TO ITSELF,
+    so a node knows endpoints for its own neighbourhood and nobody else's. A
+    client seeded only with the bootstrap tier can reach the bootstraps and
+    nothing else: asked for the peers closest to some chunk, a bootstrap returns
+    20 nodes of which ~1 has a reachable endpoint, and the walk stalls.
+
+    Measured on DEV-01-wasm (100 nodes), same 10 MB target: 3 bootstrap seeds
+    failed with "no closest WebRtcDirect node returned chunk"; 30 spread seeds
+    succeeded in 31s.
+    """
+
+    @staticmethod
+    def _fleet(n: int) -> list[str]:
+        # Peer ids spread across the space, deliberately supplied out of order.
+        return [_addr(f"{i:02x}" * 32) for i in reversed(range(n))]
+
+    def test_returns_everything_when_the_fleet_is_small(self):
+        fleet = self._fleet(5)
+        assert sorted(spread_sample(fleet, 32)) == sorted(fleet)
+
+    def test_returns_the_requested_count(self):
+        assert len(spread_sample(self._fleet(100), 32)) == 32
+
+    def test_samples_are_distinct(self):
+        out = spread_sample(self._fleet(100), 32)
+        assert len(set(out)) == 32
+
+    def test_covers_the_whole_keyspace_not_just_the_start(self):
+        # Truncating a sorted list would take only the low end of the keyspace,
+        # leaving every chunk in the upper half unreachable. The fleet's ids run
+        # 0x00..0x63, so an even sample must reach most of the way to 0x63 —
+        # a truncation would stop at 0x09.
+        out = spread_sample(self._fleet(100), 10)
+        positions = sorted(int(peer_id(a)[:2], 16) for a in out)
+        assert positions[0] == 0x00
+        assert positions[-1] >= 0x50, positions
+
+    def test_spacing_is_even(self):
+        out = spread_sample(self._fleet(100), 10)
+        positions = sorted(int(peer_id(a)[:2], 16) for a in out)
+        gaps = [b - a for a, b in zip(positions, positions[1:])]
+        assert max(gaps) - min(gaps) <= 1, gaps
+
+    def test_ordering_of_the_input_does_not_matter(self):
+        fleet = self._fleet(50)
+        assert spread_sample(fleet, 8) == spread_sample(list(reversed(fleet)), 8)
+
+    def test_zero_or_negative_count_returns_everything(self):
+        fleet = self._fleet(10)
+        assert spread_sample(fleet, 0) == fleet
+
+
+class TestPeerId:
+    def test_extracts_the_trailing_hex_id(self):
+        assert peer_id(_addr("ab" * 32)) == "ab" * 32
