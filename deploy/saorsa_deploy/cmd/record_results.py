@@ -29,6 +29,7 @@ from saorsa_deploy.influx import (
     fetch_operation_points,
     fetch_prod_upload_points,
 )
+from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.slack_api import SlackApiError, post_reply
 from saorsa_deploy.slack_results import (
@@ -239,6 +240,45 @@ def _resolve_influx(args, console: Console):
 # ---------------------------------------------------------------------------
 
 
+def _fetch_all_op_points(influx_url, influx_token, influx_org, influx_bucket, start):
+    """Operation points from every bucket a client tier may write to.
+
+    WASM clients emit the same `upload`/`download` measurements into a bucket of
+    their own, so a single-bucket query would silently record only the native
+    tier's operations. A missing WASM bucket is not an error — every deployment
+    made before the tier existed has none — so it is tolerated and simply
+    contributes nothing.
+    """
+    points = fetch_operation_points(
+        url=influx_url, token=influx_token, org=influx_org,
+        bucket=influx_bucket, start=start,
+    )
+    if influx_bucket == INFLUXDB_WASM_BUCKET:
+        return points
+    try:
+        points += fetch_operation_points(
+            url=influx_url, token=influx_token, org=influx_org,
+            bucket=INFLUXDB_WASM_BUCKET, start=start,
+        )
+    except Exception:
+        pass
+
+    # Deduplicate on the operation's identity — the same key Postgres uses for
+    # the per-op upsert. Reading two buckets should never return the same point
+    # twice, but a double-count here would silently inflate both the aggregate
+    # success counts and the per-GB denominators, and nothing downstream would
+    # look wrong. Cheap insurance against a misconfigured bucket.
+    seen = set()
+    unique = []
+    for p in points:
+        key = (p.get("host"), p.get("start_ns"), p.get("_measurement"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+    return unique
+
+
 def _record_file_ops(
     repo, deployment, args, console,
     influx_url, influx_token, influx_org, influx_bucket,
@@ -248,12 +288,8 @@ def _record_file_ops(
         f"(bucket={influx_bucket}, window={args.window})...[/bold]"
     )
     try:
-        points = fetch_operation_points(
-            url=influx_url,
-            token=influx_token,
-            org=influx_org,
-            bucket=influx_bucket,
-            start=args.window,
+        points = _fetch_all_op_points(
+            influx_url, influx_token, influx_org, influx_bucket, args.window
         )
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
@@ -449,12 +485,8 @@ def _record_file_op_records(
         "[bold]Fetching per-operation records (full range)...[/bold]"
     )
     try:
-        points = fetch_operation_points(
-            url=influx_url,
-            token=influx_token,
-            org=influx_org,
-            bucket=influx_bucket,
-            start="0",
+        points = _fetch_all_op_points(
+            influx_url, influx_token, influx_org, influx_bucket, "0"
         )
     except Exception as e:
         console.print(

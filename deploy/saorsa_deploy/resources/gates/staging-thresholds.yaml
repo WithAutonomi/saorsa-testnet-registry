@@ -231,3 +231,14 @@ max_window_length_ratio: 1.25
 # blocking a release on it, and the coverage figures are printed in the report
 # either way so the reader can judge.
 max_activity_coverage_ratio: 1.3
+
+# WASM (browser-path) client gates are reported but never block the ship.
+#
+# A native and a WASM client are different instruments, so `deployments compare`
+# evaluates the client gates once per transport when a run has both. The WASM
+# gates are judged against the same floors above, which that tier does not yet
+# meet — on the first measured run it managed 92.1% upload and 94.9% download
+# against 99% / 99.5% — so gating on them would hard-fail every run on a tier
+# that is not yet what ships. One run is no basis for a WASM-specific floor;
+# set this false once there is enough history to calibrate one.
+wasm_gates_advisory: true

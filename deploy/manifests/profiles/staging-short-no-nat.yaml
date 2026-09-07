@@ -1,0 +1,91 @@
+# staging-short.yaml
+#
+# Full-scale staging profile (~990 nodes) intended for SHORT-RUNTIME runs (spin up,
+# exercise, tear down). The "short" is the intended runtime, not a smaller network.
+# Same components as staging-rc (7 bootstraps, ~1000 nodes, 10 uploaders + 2
+# downloaders, Elasticsearch, InfluxDB monitoring, Slack post); the differences are
+# the geographic split and the new ovh_3az provider.
+#
+# Geographic distribution (one tier per role):
+#   * EU  -> OVH, UNMETERED bandwidth ($0 egress):
+#       - 1-AZ regions (RBX-A/SBG5/DE1): have block storage, so nodes attach a volume.
+#       - 3-AZ regions (EU-WEST-PAR/EU-SOUTH-MIL) via the `ovh_3az` provider: OVH's
+#         native API 500s on user_data/AZ there, so these go through OpenStack/Nova;
+#         3-AZ has NO block storage, so they run ROOT-DISK-ONLY (b3-16 ~94 GB usable)
+#         and MUST NOT set attached_volume_size (it errors). Empty regions with 40
+#         free cores each, so this is where extra free-bandwidth nodes are added.
+#   * North America -> Vultr (metered). ord/lax are the proven-safe NA regions.
+#   * Asia/Pacific -> DigitalOcean (metered). blr1/sgp1/syd1 (India/Singapore/Sydney).
+# Vultr and DO cost the same per GB ($0.01 overage, 6 TB/mo on the 8-vCPU plans),
+# so the split is by region reliability, not price. OVH carries ~55% of nodes free.
+
+kind: testnet
+
+ssh_key_path: ~/.ssh/ant_deploy
+slack_post: true
+
+testnet:
+  mode: true
+
+  bootstraps:
+    count: 7
+    port: 10000
+    attached_volume_size: 50
+
+  nodes:
+    clock_skew: 1
+    per_vm: 15
+    nat_percent: 0
+    providers:
+      # EU — OVH 1-AZ (unmetered; regions have block storage). 6*3 = 18 VMs.
+      ovh:
+        vm_count: 6
+        regions_list: [RBX-A, SBG5, DE1]
+        size: b3-16
+        attached_volume_size: 100
+      # EU — OVH 3-AZ (unmetered; NO block storage -> root-disk only, no volume).
+      # 9*2 = 18 VMs; the extra free-bandwidth capacity vs the metered tiers.
+      ovh_3az:
+        vm_count: 9
+        regions_list: [EU-WEST-PAR, EU-SOUTH-MIL]
+        size: b3-16
+      # North America — Vultr (metered). 6*2 = 12 VMs.
+      vultr:
+        vm_count: 6
+        regions_list: [ord, lax]
+        size: vhp-8c-16gb-intel
+        attached_volume_size: 100
+      # Asia/Pacific — DigitalOcean (metered). 6*3 = 18 VMs (incl. syd1 Sydney).
+      digital_ocean:
+        vm_count: 6
+        regions_list: [blr1, sgp1, syd1]
+        size: s-8vcpu-16gb
+        attached_volume_size: 100
+
+  clients:
+    # forward_logs/rust_log added across the fleet 2026-07-30 to measure the
+    # client-log volume this generates against the staging elastic config
+    # before deciding whether/how to enable it for a real release-train run.
+    uploaders:
+      - { provider: ovh,   region: SBG5, file_size_mb: 1000, vm_size: b3-8,      payment: merkle,    ant: 1000, eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 1000, vm_size: b3-8,       payment: no-merkle, ant: 1000, eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, clock_skew: -2h, region: ewr, file_size_mb: 500,  vm_size: vc2-2c-4gb, payment: merkle, ant: 1000, eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: ams, file_size_mb: 300,  vm_size: vc2-2c-4gb, payment: no-merkle, ant: 500,  eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: sjc, file_size_mb: 100,  vm_size: vc2-2c-4gb,                       ant: 500,  eth: 0.5, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: sgp, file_size_mb: 50,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: vultr, region: sgp, file_size_mb: 25,   vm_size: vc2-2c-4gb,                       ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: ovh,   region: DE1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: ovh,   region: RBX-A,file_size_mb: 20,   vm_size: b3-8,                             ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+    downloaders:
+      - { provider: digital_ocean, region: tor1, forward_logs: true, rust_log: info }
+      - { provider: digital_ocean, clock_skew: -2h, region: lon1, forward_logs: true, rust_log: info }
+
+  elastic:
+    enabled: true
+    droplet_size: s-8vcpu-16gb
+    volume_size: 500
+    shards: 8
+
+  monitoring:
+    enabled: true

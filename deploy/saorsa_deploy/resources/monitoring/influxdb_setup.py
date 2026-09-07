@@ -9,6 +9,7 @@ Placeholder values (replaced at deploy time):
   {{INFLUXDB_ORG}}          - organisation name
   {{INFLUXDB_BUCKET}}       - node-tier bucket name
   {{INFLUXDB_CLIENT_BUCKET}} - client-tier bucket name
+  {{INFLUXDB_WASM_BUCKET}}   - WASM client file-operations bucket name
   {{INFLUXDB_RETENTION_SECONDS}} - bucket retention in seconds (0 = infinite)
 """
 
@@ -71,6 +72,16 @@ client_retention_rules = (
 api("POST", "/api/v2/buckets", {
     "orgID": org_id,
     "name": "{{INFLUXDB_CLIENT_BUCKET}}",
+    "retentionRules": client_retention_rules,
+}, token=admin_token)
+
+# Step 2b: Create the WASM client bucket. WASM clients emit the same
+# `upload`/`download` measurements as the native ones, so keeping them in a
+# bucket of their own is what stops a dashboard panel or an ad-hoc query
+# averaging two transports that are ~2-4x apart.
+api("POST", "/api/v2/buckets", {
+    "orgID": org_id,
+    "name": "{{INFLUXDB_WASM_BUCKET}}",
     "retentionRules": client_retention_rules,
 }, token=admin_token)
 

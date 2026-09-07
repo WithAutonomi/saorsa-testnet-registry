@@ -90,10 +90,15 @@ def _gate_table(gates: list[dict]) -> list[str]:
         if statistic in ("mean", "p50", "p50~"):
             marker = f"[{statistic}]"
             detail = f"{marker} {detail}".strip()
+        # An advisory FAIL is not a ship blocker, and a bare "FAIL" in this
+        # column reads as one. Say so where it is read, not only in the detail.
+        verdict = gate["verdict"]
+        if gate.get("advisory"):
+            verdict = f"{verdict} (advisory)"
         lines.append(
             "| {gate} | {verdict} | {cand} | {base} | {delta} | {thr} | {detail} |".format(
                 gate=_escape(gate["gate"]),
-                verdict=gate["verdict"],
+                verdict=verdict,
                 cand=_fmt(gate.get("candidate"), unit),
                 base=_fmt(gate.get("baseline"), unit),
                 delta=_fmt_delta(gate.get("delta_percent"), unit),

@@ -49,7 +49,7 @@ each one silently produces a wrong verdict if dropped:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from saorsa_db.models.derived_metric import (
@@ -549,6 +549,12 @@ class GateResult:
     statistic: str | None = None
     detail: str = ""
     noise: dict | None = None
+    # Reported but never blocking, whatever its verdict. The WASM client tier
+    # starts advisory: its gates would otherwise be judged against floors
+    # calibrated on the native transport, which it does not yet meet (92.1%
+    # upload / 94.9% download against 99% / 99.5% on the first measured run) --
+    # so every run would hard-fail on a tier that is not yet what ships.
+    advisory: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -563,6 +569,7 @@ class GateResult:
             "statistic": self.statistic,
             "detail": self.detail,
             "noise": self.noise,
+            "advisory": self.advisory,
         }
 
 
@@ -854,6 +861,86 @@ def check_comparability(
     return problems
 
 
+#: Transport of a client operation. NULL on every row predating the WASM client,
+#: which was necessarily native, so NULL reads as native rather than unknown.
+NATIVE = "native"
+WASM = "wasm"
+
+
+def _records_for(records: list, transport: str) -> list:
+    if transport == NATIVE:
+        return [r for r in records if getattr(r, "client_kind", None) in (None, NATIVE)]
+    return [r for r in records if getattr(r, "client_kind", None) == transport]
+
+
+def _has_wasm(run: RunMetrics) -> bool:
+    return bool(
+        _records_for(run.upload_records, WASM) or _records_for(run.download_records, WASM)
+    )
+
+
+def _transport_view(run: RunMetrics, transport: str) -> RunMetrics:
+    """The same run restricted to one client transport.
+
+    Only the client-operation fields are filtered. Host metrics, RSS buckets,
+    derived ratios and log counts are node-tier measurements -- one fleet serves
+    both transports, so splitting them would be meaningless.
+    """
+    return replace(
+        run,
+        upload_records=_records_for(run.upload_records, transport),
+        download_records=_records_for(run.download_records, transport),
+    )
+
+
+def _client_gates(
+    candidate: RunMetrics,
+    baseline: RunMetrics,
+    config: GateConfig,
+    history: dict,
+) -> list[GateResult]:
+    """Gates computed from client operations, evaluated per transport.
+
+    A native and a WASM client are not the same instrument. On the first
+    measured run the WASM tier was ~2.2x slower on upload and ~4.2x on download,
+    so a merged percentile describes neither -- and its value moves with however
+    many VMs of each the run happened to use, which makes two runs
+    incomparable to each other as well.
+
+    When neither run has WASM records the gates are emitted exactly as before,
+    with no transport suffix, so every existing comparison is unchanged.
+    """
+    def gates(run_c, run_b):
+        return [
+            *_hard_success_floors(run_c, config),
+            *_soft_success_rates(run_c, run_b, config, history),
+            *_soft_transfer_durations(run_c, run_b, config, history),
+        ]
+
+    if not (_has_wasm(candidate) or _has_wasm(baseline)):
+        return gates(candidate, baseline)
+
+    results: list[GateResult] = []
+    for transport in (NATIVE, WASM):
+        advisory = transport == WASM and config.wasm_gates_advisory
+        for gate in gates(
+            _transport_view(candidate, transport), _transport_view(baseline, transport)
+        ):
+            results.append(
+                replace(
+                    gate,
+                    gate=f"{gate.gate} [{transport}]",
+                    advisory=advisory,
+                    detail=(
+                        f"{gate.detail} — advisory, not blocking"
+                        if advisory and gate.detail
+                        else ("advisory, not blocking" if advisory else gate.detail)
+                    ),
+                )
+            )
+    return results
+
+
 def compare_runs(
     candidate: RunMetrics,
     baseline: RunMetrics,
@@ -879,9 +966,7 @@ def compare_runs(
     history = history or {}
     results: list[GateResult] = []
 
-    results.extend(_hard_success_floors(candidate, config))
-    results.extend(_soft_success_rates(candidate, baseline, config, history))
-    results.extend(_soft_transfer_durations(candidate, baseline, config, history))
+    results.extend(_client_gates(candidate, baseline, config, history))
     results.extend(_soft_host_metrics(candidate, baseline, config, history))
     results.append(_soft_memory_leak(candidate, config))
     results.extend(_soft_derived_ratios(candidate, baseline, config, history))
@@ -936,9 +1021,12 @@ def compare_runs(
                 "rather than comparable."
             )
 
-    verdicts = [r.verdict for r in results]
-    hard_failed = any(r.verdict == FAIL for r in results if r.kind == "hard")
-    soft_failed = any(r.verdict == FAIL for r in results if r.kind == "soft")
+    # Advisory gates are reported in full but excluded from the overall verdict,
+    # so a tier whose thresholds are not yet calibrated cannot block a ship.
+    blocking = [r for r in results if not r.advisory]
+    verdicts = [r.verdict for r in blocking]
+    hard_failed = any(r.verdict == FAIL for r in blocking if r.kind == "hard")
+    soft_failed = any(r.verdict == FAIL for r in blocking if r.kind == "soft")
     if hard_failed:
         overall = "HARD FAIL"
     elif soft_failed:

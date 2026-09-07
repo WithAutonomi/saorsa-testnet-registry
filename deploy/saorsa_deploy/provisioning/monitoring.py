@@ -31,6 +31,17 @@ INFLUXDB_BUCKET = "testnet-metrics"
 # Statistics dashboard is physically isolated from node data (and vice versa)
 # rather than relying on a mutable host_role dropdown to keep them apart.
 INFLUXDB_CLIENT_BUCKET = "client-metrics"
+# WASM (browser-path) client file operations live in a bucket of their own.
+#
+# They are the SAME `upload`/`download` measurements the native clients emit, so
+# in one bucket every dashboard panel and ad-hoc Flux query would silently
+# average two different transports — measured at ~2.2x (upload) and ~4.2x
+# (download) apart. Physically separating them is the same reasoning that put
+# client host metrics in their own bucket rather than behind a mutable tag: a
+# query cannot mix what it cannot reach. Note this is the *file operations*
+# bucket; a WASM client VM's host metrics still go to INFLUXDB_CLIENT_BUCKET
+# alongside every other client's, because a host metric is a host metric.
+INFLUXDB_WASM_BUCKET = "wasm-client-metrics"
 INFLUXDB_ADMIN_USER = "admin"
 
 GRAFANA_DATASOURCE_PATH = "/etc/grafana/provisioning/datasources/influxdb.yml"
@@ -470,6 +481,7 @@ class MonitoringProvisioner:
             "influxdb_org": INFLUXDB_ORG,
             "influxdb_bucket": INFLUXDB_BUCKET,
             "influxdb_client_bucket": INFLUXDB_CLIENT_BUCKET,
+            "influxdb_wasm_bucket": INFLUXDB_WASM_BUCKET,
             "grafana_url": f"http://{self.grafana_ip}:3000" if self.grafana_ip else "",
             "grafana_password": self.grafana_password if self.grafana_ip else "",
         }
@@ -489,6 +501,7 @@ class MonitoringProvisioner:
             .replace("{{INFLUXDB_ORG}}", INFLUXDB_ORG)
             .replace("{{INFLUXDB_BUCKET}}", INFLUXDB_BUCKET)
             .replace("{{INFLUXDB_CLIENT_BUCKET}}", INFLUXDB_CLIENT_BUCKET)
+            .replace("{{INFLUXDB_WASM_BUCKET}}", INFLUXDB_WASM_BUCKET)
             .replace("{{INFLUXDB_RETENTION_SECONDS}}", str(retention_seconds))
         )
 

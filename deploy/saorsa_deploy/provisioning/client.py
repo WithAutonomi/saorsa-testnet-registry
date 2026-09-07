@@ -27,6 +27,7 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
 )
+from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.provisioning.network_profile import (
     build_network_impairment_command,
     format_network_label,
@@ -391,7 +392,13 @@ class AntClientProvisioner:
                     f"INFLUX_URL={self.influx_url}",
                     f"INFLUX_TOKEN={self.influx_token}",
                     f"INFLUX_ORG={self.influx_org}",
-                    f"INFLUX_BUCKET={self.influx_bucket}",
+                    # WASM file operations go to their own bucket. They are the
+                    # same `upload`/`download` measurements the native clients
+                    # write, so sharing a bucket would let any dashboard panel
+                    # or ad-hoc query average two transports measured ~2-4x
+                    # apart. (Host metrics are unaffected — a WASM client VM's
+                    # telegraf still reports to the shared client bucket.)
+                    f"INFLUX_BUCKET={INFLUXDB_WASM_BUCKET}",
                 ]
             body = "\n".join(lines) + "\n"
             unit = unit_for_role(env["role"])

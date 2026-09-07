@@ -925,12 +925,45 @@ exactly equal the sum of quote amounts or the upload is rejected. The payment
 network (chain id / token / vault) is read from a node's own `HELLO` rather than
 configured locally, so the client cannot pay on the wrong chain.
 
-**Results.** WASM clients emit the **same** `upload`/`download` Influx
-measurements as the native ones, so `record-results`, the per-op tables,
-`print-uploads` and `deployments compare` work unchanged. A nullable
-**`client_kind`** column (`native`/`wasm`) on `deployment_{upload,download}_records`
-keeps them separable, resolved from each VM's role — the same denormalisation
-pattern as `network_profile`. NULL on every pre-feature row.
+**Results are kept separate at every layer, because the two transports are not
+the same instrument** — measured on DEV-01-wasm the WASM tier ran ~2.2x slower on
+upload and ~4.2x on download, so any blended figure describes neither and moves
+with whatever VM mix a run happened to use.
+- **Influx:** WASM file operations go to their own **`wasm-client-metrics`**
+  bucket (`INFLUXDB_WASM_BUCKET`). They are the same `upload`/`download`
+  measurements the native clients write, so one bucket would let any dashboard
+  panel or ad-hoc Flux query average the two — the same reasoning that put
+  client host metrics in their own bucket rather than behind a mutable tag. A
+  WASM VM's *host* metrics still go to `client-metrics` like every other
+  client's. `record-results` reads both buckets and deduplicates on
+  `(host, start_ns, measurement)`, tolerating a missing WASM bucket so
+  pre-feature deployments still record.
+- **Postgres:** a nullable **`client_kind`** column (`native`/`wasm`) on
+  `deployment_{upload,download}_records`, resolved from each VM's role — the same
+  denormalisation pattern as `network_profile`. NULL on every pre-feature row,
+  and NULL reads as native rather than unknown.
+- **`deployments compare`:** the client-record gates (upload/download success
+  floors, success rates, transfer p50/p95 per size bucket) are evaluated **once
+  per transport** and suffixed `[native]` / `[wasm]` whenever a run has WASM
+  records; with none, the gates are emitted exactly as before. Node-tier gates
+  (CPU, RSS, leak, per-GB ratios, log counts) are NOT split — one fleet serves
+  both transports.
+- **WASM gates are advisory** (`wasm_gates_advisory: true` in
+  `resources/gates/staging-thresholds.yaml`): reported in full, excluded from the
+  overall verdict and the exit code. They are judged against floors calibrated on
+  the native transport which WASM does not yet meet (92.1% upload / 94.9%
+  download against 99% / 99.5% on the first measured run), so gating on them
+  would hard-fail every run on a tier that is not yet what ships. Flip the flag
+  once there is history to calibrate a WASM floor.
+- `deployments slack-post` lists the two tiers under separate headings, and only
+  when WASM clients exist.
+
+**Profile:** `deploy/manifests/profiles/staging-rc-wasm.yaml` — staging-rc with
+three of its ten uploaders and one of its two downloaders moved to the WASM tier
+(same VM count and the same spread of sizes, regions, providers, payment modes
+and clock skew) and `nat_percent: 0`, since WebRTC has no NAT traversal yet. That
+last point makes it non-comparable to a staging-rc run on any node-tier metric
+NAT affects.
 
 **Verified against a local `ant-devnet`** (2026-09-07), not a cloud testnet: the
 WASM client runs under **plain Node.js** with `node-datachannel` supplying
