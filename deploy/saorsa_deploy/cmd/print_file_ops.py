@@ -24,10 +24,12 @@ from statistics import median
 from rich.console import Console
 from rich.table import Table
 
+from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.influx import (
-    fetch_operation_points,
+    fetch_all_operation_points,
     fetch_prod_upload_points,
 )
+from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_client_state, load_monitoring_state
 
@@ -183,16 +185,24 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         return
     influx_url, influx_token, influx_org, influx_bucket = creds
 
+    buckets = influx_bucket
+    if influx_bucket != INFLUXDB_WASM_BUCKET:
+        buckets = f"{influx_bucket} + {INFLUXDB_WASM_BUCKET}"
     console.print(
         f"[bold]Querying {influx_url} "
-        f"(bucket={influx_bucket}, window={args.window})...[/bold]"
+        f"(bucket={buckets}, window={args.window})...[/bold]"
     )
     try:
-        points = fetch_operation_points(
+        # Both buckets: WASM clients write the same upload/download
+        # measurements to a bucket of their own, so querying only the native
+        # bucket would render a dead WASM tier indistinguishable from one that
+        # was never configured.
+        points = fetch_all_operation_points(
             url=influx_url,
             token=influx_token,
             org=influx_org,
             bucket=influx_bucket,
+            wasm_bucket=INFLUXDB_WASM_BUCKET,
             start=args.window,
         )
     except Exception as e:
@@ -219,6 +229,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         _build_payment_map(args.name) if op_type == "upload" else {}
     )
     cache_by_host = _build_bootstrap_cache_map(args.name)
+    role_by_host = _build_role_map(args.name)
 
     for host in sorted(by_host.keys()):
         ops = sorted(
@@ -234,6 +245,11 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             else f"{len(ops)} op(s)"
         )
         title_parts = [host]
+        role = role_by_host.get(host)
+        if role is not None:
+            title_parts.append(
+                f"transport={'wasm' if is_wasm(role) else 'native'}"
+            )
         if op_type == "upload":
             payment = payment_by_host.get(host, "default")
             title_parts.append(f"payment={payment}")
@@ -264,6 +280,42 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             )
         console.print(table)
 
+    _print_transport_totals(op_type, by_host, role_by_host, console)
+
+
+def _print_transport_totals(
+    op_type: str, by_host: dict, role_by_host: dict, console: Console
+) -> None:
+    """Success counts split by transport.
+
+    A blended figure describes neither transport: the native and WASM tiers run
+    different client code over different transports, so their rates are not
+    comparable and their union moves with whatever VM mix a run happened to
+    use. Printed only when the run actually has both, so a native-only
+    deployment renders exactly as it did before.
+    """
+    tiers: dict[str, list[int]] = {}
+    for host, ops in by_host.items():
+        role = role_by_host.get(host)
+        if role is None:
+            continue
+        tier = "wasm" if is_wasm(role) else "native"
+        slot = tiers.setdefault(tier, [0, 0])
+        for op in ops:
+            slot[1] += 1
+            if op.get("status") == 0:
+                slot[0] += 1
+    if len(tiers) < 2:
+        return
+    console.print(f"[bold]{op_type} success by transport[/bold]")
+    for tier in ("native", "wasm"):
+        if tier not in tiers:
+            continue
+        ok, total = tiers[tier]
+        rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
+        colour = "green" if tier == "native" else "cyan"
+        console.print(f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}")
+
 
 def _build_payment_map(name: str) -> dict[str, str]:
     """Map hostname → payment_type label for the deployment's upload clients.
@@ -285,6 +337,29 @@ def _build_payment_map(name: str) -> dict[str, str]:
             f"{name}-ant-client-{c['role']}-{c['region']}-{c['client_index']}"
         )
         out[host] = c.get("payment_type") or "default"
+    return out
+
+
+def _build_role_map(name: str) -> dict[str, str]:
+    """Map hostname → client role for every client in the deployment.
+
+    Used to label which transport each host's operations came from. Derived
+    from client state rather than by sniffing the hostname, so the canonical
+    role names in `client_roles` stay the single source of truth. Missing
+    client state returns an empty map — the caller omits the label rather than
+    guessing a transport, which would be worse than saying nothing.
+    """
+    try:
+        state = load_client_state(name)
+    except RuntimeError:
+        return {}
+    out: dict[str, str] = {}
+    for c in state.get("clients", []):
+        role = c.get("role")
+        if not role:
+            continue
+        host = f"{name}-ant-client-{role}-{c['region']}-{c['client_index']}"
+        out[host] = role
     return out
 
 

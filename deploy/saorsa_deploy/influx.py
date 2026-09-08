@@ -133,6 +133,57 @@ def fetch_operation_points(
     return _parse_pivoted_csv(iter_response_lines(resp))
 
 
+def fetch_all_operation_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    wasm_bucket: str,
+    start: str = "-30d",
+    stop: str = FLUX_FAR_FUTURE,
+    timeout: int = 30,
+) -> list[dict]:
+    """Operation points from every bucket a client tier may write to.
+
+    WASM clients emit the same ``upload``/``download`` measurements into a
+    bucket of their own, so a single-bucket query silently returns only the
+    native tier's operations — a WASM tier that is completely dead then looks
+    identical to one that was never configured. Every caller that reports or
+    records file operations must read both.
+
+    A missing WASM bucket is not an error — every deployment made before the
+    tier existed has none — so it is tolerated and simply contributes nothing.
+    """
+    points = fetch_operation_points(
+        url=url, token=token, org=org, bucket=bucket,
+        start=start, stop=stop, timeout=timeout,
+    )
+    if bucket == wasm_bucket:
+        return points
+    try:
+        points += fetch_operation_points(
+            url=url, token=token, org=org, bucket=wasm_bucket,
+            start=start, stop=stop, timeout=timeout,
+        )
+    except Exception:
+        pass
+
+    # Deduplicate on the operation's identity — the same key Postgres uses for
+    # the per-op upsert. Reading two buckets should never return the same point
+    # twice, but a double-count here would silently inflate both the aggregate
+    # success counts and the per-GB denominators, and nothing downstream would
+    # look wrong. Cheap insurance against a misconfigured bucket.
+    seen = set()
+    unique = []
+    for p in points:
+        key = (p.get("host"), p.get("start_ns"), p.get("_measurement"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+    return unique
+
+
 def _csv_lines(body: "str | Iterable[str]") -> Iterable[str]:
     """Adapt either a whole CSV body or a stream of lines to `csv.reader`.
 

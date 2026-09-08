@@ -78,7 +78,7 @@ def test_record_results_upserts_download_rows_for_prod_deployment(repo_and_sessi
             "saorsa_deploy.cmd.record_results.get_repository", return_value=repo
         ),
         patch(
-            "saorsa_deploy.cmd.record_results.fetch_operation_points",
+            "saorsa_deploy.influx.fetch_operation_points",
             return_value=canned_points,
         ),
     ):
@@ -113,7 +113,7 @@ def test_record_results_no_ops_no_rows_no_crash(repo_and_session):
             "saorsa_deploy.cmd.record_results.get_repository", return_value=repo
         ),
         patch(
-            "saorsa_deploy.cmd.record_results.fetch_operation_points",
+            "saorsa_deploy.influx.fetch_operation_points",
             return_value=[],
         ),
     ):

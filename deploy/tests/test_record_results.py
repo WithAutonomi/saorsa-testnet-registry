@@ -271,7 +271,11 @@ def test_record_file_op_records_persists_each_op(repo, monkeypatch):
             "total_ms": 100,
         },
     ]
-    monkeypatch.setattr(rr, "fetch_operation_points", lambda **kw: points)
+    # The both-buckets fetch moved into `influx`; patch it at its new home so
+    # the test exercises the same path record-results now takes.
+    import saorsa_deploy.influx as _influx
+
+    monkeypatch.setattr(_influx, "fetch_operation_points", lambda **kw: points)
 
     class _Args:
         name = "DEV-TEST"

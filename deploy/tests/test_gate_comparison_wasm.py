@@ -255,7 +255,7 @@ class TestRecordResultsReadsBothBuckets:
 
         pt = {"host": "h1", "start_ns": 1, "_measurement": "upload"}
         with patch(
-            "saorsa_deploy.cmd.record_results.fetch_operation_points",
+            "saorsa_deploy.influx.fetch_operation_points",
             return_value=[dict(pt)],
         ) as fetch:
             out = _fetch_all_op_points("u", "t", "o", "testnet-metrics", "0")
@@ -272,7 +272,7 @@ class TestRecordResultsReadsBothBuckets:
             [{"host": "h2", "start_ns": 2, "_measurement": "upload"}],
         ]
         with patch(
-            "saorsa_deploy.cmd.record_results.fetch_operation_points",
+            "saorsa_deploy.influx.fetch_operation_points",
             side_effect=calls,
         ):
             out = _fetch_all_op_points("u", "t", "o", "testnet-metrics", "0")
@@ -290,7 +290,7 @@ class TestRecordResultsReadsBothBuckets:
             return [{"host": "h1", "start_ns": 1, "_measurement": "upload"}]
 
         with patch(
-            "saorsa_deploy.cmd.record_results.fetch_operation_points",
+            "saorsa_deploy.influx.fetch_operation_points",
             side_effect=side_effect,
         ):
             out = _fetch_all_op_points("u", "t", "o", "testnet-metrics", "0")

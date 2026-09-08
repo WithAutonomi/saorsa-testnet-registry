@@ -26,7 +26,7 @@ from saorsa_db.models import FileOpType, OpRecordStatus, ProdUploadStatus
 from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.influx import (
     aggregate_file_results,
-    fetch_operation_points,
+    fetch_all_operation_points,
     fetch_prod_upload_points,
 )
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
@@ -243,40 +243,19 @@ def _resolve_influx(args, console: Console):
 def _fetch_all_op_points(influx_url, influx_token, influx_org, influx_bucket, start):
     """Operation points from every bucket a client tier may write to.
 
-    WASM clients emit the same `upload`/`download` measurements into a bucket of
-    their own, so a single-bucket query would silently record only the native
-    tier's operations. A missing WASM bucket is not an error — every deployment
-    made before the tier existed has none — so it is tolerated and simply
-    contributes nothing.
+    Thin wrapper over :func:`fetch_all_operation_points`, which is shared with
+    `deployments print-uploads` / `print-downloads` so the reporting commands
+    and the recording command can never disagree about which buckets a client
+    tier writes to.
     """
-    points = fetch_operation_points(
-        url=influx_url, token=influx_token, org=influx_org,
-        bucket=influx_bucket, start=start,
+    return fetch_all_operation_points(
+        url=influx_url,
+        token=influx_token,
+        org=influx_org,
+        bucket=influx_bucket,
+        wasm_bucket=INFLUXDB_WASM_BUCKET,
+        start=start,
     )
-    if influx_bucket == INFLUXDB_WASM_BUCKET:
-        return points
-    try:
-        points += fetch_operation_points(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=INFLUXDB_WASM_BUCKET, start=start,
-        )
-    except Exception:
-        pass
-
-    # Deduplicate on the operation's identity — the same key Postgres uses for
-    # the per-op upsert. Reading two buckets should never return the same point
-    # twice, but a double-count here would silently inflate both the aggregate
-    # success counts and the per-GB denominators, and nothing downstream would
-    # look wrong. Cheap insurance against a misconfigured bucket.
-    seen = set()
-    unique = []
-    for p in points:
-        key = (p.get("host"), p.get("start_ns"), p.get("_measurement"))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(p)
-    return unique
 
 
 def _record_file_ops(
