@@ -101,7 +101,7 @@ class TestSpecParsing:
     )
     def test_bootstrap_cache_is_rejected(self, spec):
         # bootstrap_cache selects between ant's peer cache and an explicit
-        # --bootstrap invocation. A WASM client does neither -- it seeds from the
+        # --bootstrap invocation. A WASM client does neither -- it bootstraps from the
         # bootstraps' webrtc-direct multiaddrs -- so accepting the token would
         # silently do nothing.
         with pytest.raises(ValueError, match="unknown key 'bootstrap_cache'"):
@@ -326,7 +326,7 @@ class TestUnitRendering:
 
     def test_both_roles_run_the_same_program(self):
         # One program branching on ROLE, because upload and download share the
-        # whole WASM setup: module load, WebRTC polyfill, seed addresses.
+        # whole WASM setup: module load, WebRTC polyfill, bootstrap addresses.
         up = _build_wasm_unit(ROLE_WASM_UPLOAD)
         down = _build_wasm_unit(ROLE_WASM_DOWNLOAD)
         exec_line = "ExecStart=/usr/bin/node /opt/ant-wasm-client/dist/main.js"

@@ -57,7 +57,7 @@ testnet:
     count: 5
     port: 10000
     # Pin the WebRTC-Direct listener. Bootstraps are the one tier whose
-    # browser-facing address must not move: a WASM client seeds from it, and
+    # browser-facing address must not move: a WASM client bootstraps from it, and
     # left unset ant-node DERIVES this port from `port` above, so it changes
     # whenever that does. Regular nodes deliberately keep the derived port —
     # their address changes propagate over the DHT exactly as QUIC's do.
@@ -88,7 +88,7 @@ testnet:
       - { provider: digital_ocean, region: lon1 }
 
     # WASM tier: the arm under test. Same options as the native entries except
-    # `bootstrap_cache`, which has no meaning here — a WASM client seeds from
+    # `bootstrap_cache`, which has no meaning here — a WASM client bootstraps from
     # the bootstraps' webrtc-direct multiaddrs rather than from ant's peer cache
     # or an explicit --bootstrap.
     wasm_uploaders:

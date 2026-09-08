@@ -12,7 +12,7 @@ export interface Config {
   role: Role;
   region: string;
   clientIndex: number;
-  /** WebRTC-Direct seed addresses of the bootstrap tier. */
+  /** WebRTC-Direct bootstrap addresses handed to this client. */
   bootstrapMultiaddrs: string[];
   fileSizeBytes: number;
   sleepSecs: number;
@@ -70,8 +70,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   // Comma-separated, because a multiaddr contains '/' and ':' but never ','.
-  // Seed more than one: a failed endpoint gets a 30-minute cooldown inside
-  // ant-core, so a single dead seed would strand the client for that long.
+  // More than one: a failed endpoint gets a 30-minute cooldown inside
+  // ant-core, so a single dead bootstrap would strand the client for that long.
   const bootstrapMultiaddrs = req("BOOTSTRAP_MULTIADDRS")
     .split(",")
     .map((s) => s.trim())

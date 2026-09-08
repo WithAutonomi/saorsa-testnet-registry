@@ -776,7 +776,7 @@ and `--wasm-downloader provider:region[:vm_size][:clock_skew=DURATION][:forward_
 Both are repeatable and take the same grammar as their native counterparts with
 one exception: **there is no `bootstrap_cache`**. That option chooses between
 ant's peer cache and an explicit `--bootstrap`, and a WASM client does neither —
-it seeds from the bootstrap tier's WebRTC-Direct multiaddrs and discovers the
+it bootstraps from the deployment's WebRTC-Direct multiaddrs and discovers the
 rest of the network over authenticated `find_node`. Passing the token is a hard
 error rather than a silent no-op.
 
@@ -787,7 +787,7 @@ Example profile: `deploy/manifests/profiles/webrtc-wasm.yaml`.
 1. **A pinned WebRTC port on the bootstrap tier** — `bootstraps.webrtc_port`
    (CLI `--webrtc-port` on `nodes provision-genesis` and `bootstraps provision`).
    Bootstraps are the one tier whose browser-facing address must not move: a WASM
-   client seeds from it. Left unset, `ant-node` **derives** the WebRTC port from
+   client bootstraps from it. Left unset, `ant-node` **derives** the WebRTC port from
    the QUIC port, so it changes whenever that does. Regular nodes deliberately
    keep the derived port — their address changes propagate over the DHT exactly
    as QUIC's do.
@@ -813,30 +813,32 @@ Example profile: `deploy/manifests/profiles/webrtc-wasm.yaml`.
      --branch-name web-support --repo-owner WithAutonomi
    ```
 
-3. **`deployments webrtc-addresses`** — SSHes every VM, reads each service's
-   `<root_dir>/webrtc-direct.multiaddr`, and saves the deployment's seed list.
-   It cannot run at provision time because the address embeds the certificate
-   hash, which exists only once a node has started; it must run before
-   `clients provision`, because a WASM client has no other way into the network.
-   `deployments up` sequences it automatically, after `nodes start`. Addresses
-   whose advertised host is not the VM's public IP are rewritten to it (ant-node
-   falls back to a routed local address, then loopback, when its transport has
-   not yet learned an external one).
+3. **`deployments webrtc-addresses`** — SSHes the **bootstrap VMs**, reads each
+   bootstrap service's `<root_dir>/webrtc-direct.multiaddr`, and saves them to
+   deployment state as `bootstrap_webrtc_multiaddrs`. It cannot run at provision
+   time because the address embeds the certificate hash, which exists only once
+   a node has started; it must run before `clients provision`, because a WASM
+   client has no other way into the network. `deployments up` sequences it
+   automatically, after `nodes start`. Addresses whose advertised host is not
+   the VM's public IP are rewritten to it (ant-node falls back to a routed local
+   address, then loopback, when its transport has not yet learned an external
+   one).
 
-   **It collects the NODE tier, not just the bootstraps, and that is the point.**
-   A node publishes its browser endpoint only to the peers closest to *itself*,
-   so it knows endpoints for its own neighbourhood and nobody else's. A client
-   seeded with the bootstraps alone can reach the bootstraps and nothing else:
-   asked for the peers closest to some chunk, a bootstrap returns 20 nodes of
-   which about one has a reachable endpoint, and the iterative walk toward that
-   chunk stalls on its first hop. Measured on a 100-node testnet, downloading
-   the same 10 MB address: **3 bootstrap seeds failed** with "no closest
-   WebRtcDirect node returned chunk"; **30 seeds spread across the fleet
-   succeeded in 31s**. `--sample-nodes` (default 32) sets how many seeds a
-   client gets, chosen evenly across the peer-id keyspace so that whatever a
-   client looks up, some seed is near it. Upstream's "one address is enough to
-   enter the network" holds on a 5-node devnet, where every node is in every
-   other node's close group; it stops holding well before 100.
+   **A WASM client gets the same bootstraps as a native client — no more.** The
+   only difference between the two is the address format: the native tier is
+   handed bare `ip:port` peers, while a browser client needs the full multiaddr,
+   which also carries the UDP port, the DTLS certhash and the peer id. A command
+   is needed only because the certhash does not exist until a node has run, so
+   unlike `ip:port` the list cannot be written ahead of time.
+
+   The node tier is deliberately **not** sampled. A client must reach the rest
+   of the network by walking the DHT from its bootstraps, exactly as the native
+   client does from its seven. An earlier revision handed each client ~32
+   ordinary node addresses chosen across the peer-id keyspace; that is not a
+   shape production can supply — a browser gets a small bootstrap list — so it
+   masked any failure to discover peers instead of exposing it. **If uploads or
+   downloads do not work from the bootstraps alone, that is a node-side defect
+   to fix, not a reason to hand out more addresses.**
 
 #### On the client VM
 

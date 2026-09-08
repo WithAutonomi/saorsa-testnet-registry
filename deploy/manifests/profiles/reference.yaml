@@ -38,7 +38,7 @@ testnet:
   bootstraps:
     count: 7                 # >1 => orchestrator also emits `bootstraps provision`
     port: 10000
-    webrtc_port: 42768       # optional: PIN the WebRTC-Direct listener on every bootstrap. Bootstraps are the one tier whose browser-facing address must not move — a WASM/browser client seeds from it — and left unset ant-node DERIVES this port from `port` above, so it changes whenever that does. Regular nodes deliberately keep the derived port (their address changes propagate over the DHT like QUIC's). NB the port is only half of a stable address: the multiaddr also embeds the node's DTLS certificate hash, persisted at <root_dir>/webrtc-direct.pem — wiping a bootstrap's data volume rotates it and invalidates every cached browser address.
+    webrtc_port: 42768       # optional: PIN the WebRTC-Direct listener on every bootstrap. Bootstraps are the one tier whose browser-facing address must not move — a WASM/browser client bootstraps from it — and left unset ant-node DERIVES this port from `port` above, so it changes whenever that does. Regular nodes deliberately keep the derived port (their address changes propagate over the DHT like QUIC's). NB the port is only half of a stable address: the multiaddr also embeds the node's DTLS certificate hash, persisted at <root_dir>/webrtc-direct.pem — wiping a bootstrap's data volume rotates it and invalidates every cached browser address.
     regions_list: [lon1, nyc1, ams3]   # bootstraps infra --do-regions-list; when set it overrides `count`
     attached_volume_size: 100          # GB attached volume per bootstrap VM
 
@@ -108,7 +108,7 @@ testnet:
     # to WASM over WebRTC-Direct via a Node.js program — `ant-cli` cannot substitute,
     # because it links native ant-core and so takes the native transport regardless.
     # Same options as the native entries EXCEPT `bootstrap_cache`, which has no meaning
-    # here: a WASM client seeds from the bootstraps' webrtc-direct multiaddrs (collected
+    # here: a WASM client bootstraps from the deployment's webrtc-direct multiaddrs (collected
     # by `bootstraps webrtc-addresses`) rather than from ant's peer cache or --bootstrap.
     # Requires binaries.ant_wasm. Like the native pair, needs >=1 of each — wasm
     # downloaders consume the addresses wasm uploaders publish.

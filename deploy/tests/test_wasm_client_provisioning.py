@@ -13,7 +13,7 @@ from saorsa_deploy.client_roles import ROLE_UPLOAD, ROLE_WASM_DOWNLOAD, ROLE_WAS
 from saorsa_deploy.cmd.destroy_clients import VALID_ROLES
 from saorsa_deploy.provisioning.client import AntClientProvisioner
 
-SEED = (
+BOOTSTRAP_ADDR = (
     "/ip4/1.2.3.4/udp/42768/webrtc-direct/certhash/"
     "uEiAHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw/p2p/" + "ab" * 32
 )
@@ -71,12 +71,12 @@ class TestNoWasmClientsIsANoOp:
 
 class TestFailsEarlyRatherThanLate:
     def test_missing_bundle_url_raises(self):
-        p = _provisioner(bootstrap_webrtc_multiaddrs=[SEED])
+        p = _provisioner(bootstrap_webrtc_multiaddrs=[BOOTSTRAP_ADDR])
         with pytest.raises(RuntimeError, match="build ant-wasm"):
             p._add_wasm_ops(MagicMock(), _wasm_env())
 
-    def test_missing_seed_addresses_raises(self):
-        # Without a seed a WASM client cannot reach the network at all, and the
+    def test_missing_bootstrap_addresses_raises(self):
+        # Without a bootstrap address a WASM client cannot reach the network at all, and the
         # failure would otherwise surface as an unexplained connection error
         # minutes after the VMs are up and billing.
         p = _provisioner(wasm_bundle_url="https://example/bundle.tar.gz")
@@ -88,7 +88,10 @@ class TestWasmOps:
     def _run(self, role=ROLE_WASM_UPLOAD):
         p = _provisioner(
             wasm_bundle_url="https://example/bundle.tar.gz",
-            bootstrap_webrtc_multiaddrs=[SEED, SEED.replace("1.2.3.4", "5.6.7.8")],
+            bootstrap_webrtc_multiaddrs=[
+                BOOTSTRAP_ADDR,
+                BOOTSTRAP_ADDR.replace("1.2.3.4", "5.6.7.8"),
+            ],
             wasm_rpc_url="https://rpc.example",
         )
         host = MagicMock()
@@ -115,9 +118,9 @@ class TestWasmOps:
         assert "rm -rf /opt/ant-wasm-client" in cmds
         assert "test -f" not in cmds.split("wget")[0]
 
-    def test_env_file_carries_every_seed_address(self):
+    def test_env_file_carries_every_bootstrap_address(self):
         # A failed endpoint gets a 30-minute cooldown inside ant-core, so a
-        # single seed would strand the client for that long.
+        # single dead bootstrap would strand the client for that long.
         cmds = " ".join(
             " ".join(k.get("commands", []))
             for k in self._run()

@@ -303,7 +303,7 @@ def main(argv=None):
         type=int,
         help="Pin the WebRTC-Direct listener to this UDP port. Bootstraps are "
         "the one tier where the browser address must stay put -- web clients "
-        "seed themselves from a bootstrap multiaddr. Omit for ant-node's "
+        "bootstrap themselves from a bootstrap multiaddr. Omit for ant-node's "
         "default, which DERIVES the port from --port and so moves if --port "
         "ever does.",
     )
@@ -746,7 +746,7 @@ def main(argv=None):
         "WASM over WebRTC-Direct, instead of the native ant binary — the only "
         "way to exercise the browser path (ant-cli links native ant-core). "
         "Same grammar as --uploader minus bootstrap_cache, which has no meaning "
-        "here: a WASM client seeds from the bootstraps' webrtc-direct "
+        "here: a WASM client bootstraps from the deployment's webrtc-direct "
         "multiaddrs. rust_log, if given, must be last.",
     )
     clients_infra_parser.add_argument(
@@ -1053,8 +1053,8 @@ def main(argv=None):
     # deployments webrtc-addresses
     deployments_webrtc_parser = deployments_subparsers.add_parser(
         "webrtc-addresses",
-        help="Collect every node's WebRTC-Direct multiaddr into deployment "
-        "state, for WASM/browser clients to seed from.",
+        help="Collect the bootstrap tier's WebRTC-Direct multiaddrs into "
+        "deployment state, for WASM/browser clients to bootstrap from.",
     )
     deployments_webrtc_parser.add_argument(
         "--name", type=str, required=True, help="Deployment name"
@@ -1071,15 +1071,6 @@ def main(argv=None):
         default=180,
         help="Seconds to wait for a bootstrap to publish its address "
         "(the listener binds shortly after the service starts; default: 180)",
-    )
-    deployments_webrtc_parser.add_argument(
-        "--sample-nodes",
-        type=int,
-        default=32,
-        help="How many addresses to hand a client as seeds, sampled evenly "
-        "across the peer-id keyspace (default: 32). A node publishes its "
-        "browser endpoint only to peers close to itself, so a client seeded "
-        "narrowly cannot walk to a chunk stored elsewhere in the keyspace.",
     )
 
     # deployments generate-inventory
@@ -3575,7 +3566,7 @@ def main(argv=None):
         type=int,
         help="Pin the WebRTC-Direct listener to this UDP port. Bootstraps are "
         "the one tier where the browser address must stay put -- web clients "
-        "seed themselves from a bootstrap multiaddr. Omit for ant-node's "
+        "bootstrap themselves from a bootstrap multiaddr. Omit for ant-node's "
         "default, which DERIVES the port from --port and so moves if --port "
         "ever does.",
     )

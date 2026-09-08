@@ -574,15 +574,18 @@ def cmd_provision_clients(args):
     bootstrap_webrtc_multiaddrs: list[str] = []
     if any(is_wasm(c.get("role", "upload")) for c in clients):
         wasm_bundle_url = _resolve_wasm_bundle(args, console)
-        # Prefer the keyspace-spread seed list over the bootstrap-only one: a
-        # node publishes its browser endpoint only to peers close to itself, so
-        # a client seeded with the bootstraps alone cannot walk to a chunk
-        # stored anywhere else. Falls back for state written before the seed
-        # list existed.
+        # The bootstrap tier's addresses, and only those: a WASM client gets
+        # the same bootstraps as a native client, differing only in that it
+        # needs the full multiaddr rather than a bare ip:port.
+        #
+        # Deployments whose state predates this carry a node-tier sample under
+        # `webrtc_client_bootstrap_multiaddrs`/`webrtc_seed_multiaddrs`. Those
+        # keys are deliberately NOT read: falling back to one would pre-load a
+        # client with a slice of the node tier that production could never
+        # supply, and hide exactly the discovery failure this is meant to
+        # expose.
         bootstrap_webrtc_multiaddrs = (
-            deploy_state.get("webrtc_seed_multiaddrs")
-            or deploy_state.get("bootstrap_webrtc_multiaddrs")
-            or []
+            deploy_state.get("bootstrap_webrtc_multiaddrs") or []
         )
         if not bootstrap_webrtc_multiaddrs:
             console.print(
@@ -593,8 +596,8 @@ def cmd_provision_clients(args):
             )
             sys.exit(1)
         console.print(
-            f"[cyan]WASM clients seed from {len(bootstrap_webrtc_multiaddrs)} "
-            f"bootstrap address(es).[/cyan]"
+            f"[cyan]WASM clients bootstrap from "
+            f"{len(bootstrap_webrtc_multiaddrs)} address(es).[/cyan]"
         )
 
     provisioner = AntClientProvisioner(

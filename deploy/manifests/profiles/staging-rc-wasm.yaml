@@ -57,7 +57,7 @@ testnet:
     downloaders:
       - { provider: digital_ocean, clock_skew: -2h, region: lon1 }
     # WASM (browser-path) clients: ant-core compiled to WASM, over WebRTC-Direct.
-    # No `bootstrap_cache` key on these — a WASM client seeds from the
+    # No `bootstrap_cache` key on these — a WASM client bootstraps from the
     # deployment's webrtc-direct addresses, not from ant's peer cache.
     wasm_uploaders:
       - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 1000, vm_size: b3-8,       payment: no-merkle, ant: 1000, eth: 0.1 }

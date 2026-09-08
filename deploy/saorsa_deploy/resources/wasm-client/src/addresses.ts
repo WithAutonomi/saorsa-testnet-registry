@@ -140,7 +140,7 @@ export class AddressSource {
   }
 }
 
-/** Write the local static address list, used when the deploy seeds one. */
+/** Write the local static address list, used when the deploy provides one. */
 export async function writeStaticAddresses(path: string, addresses: string[]): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${addresses.join("\n")}\n`);

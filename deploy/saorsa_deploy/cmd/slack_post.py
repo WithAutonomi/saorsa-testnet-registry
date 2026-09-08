@@ -503,7 +503,7 @@ def _client_line(c: dict) -> str:
     skew_str = " — ⏰ clock-skew" if c.get("clock_skew") else ""
     net_str = _network_suffix(c)
     # The ant peer cache does not exist on the WASM path — a browser client
-    # seeds from the deployment's webrtc-direct addresses — so rendering a
+    # bootstraps from the deployment's webrtc-direct addresses — so rendering a
     # cache marker there would describe a setting that has no effect.
     cache_str = "" if is_wasm(role) else _bootstrap_cache_marker(c.get("bootstrap_cache"))
     fwd_str = _forward_logs_marker(c.get("forward_logs"))

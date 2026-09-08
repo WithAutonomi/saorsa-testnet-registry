@@ -218,7 +218,7 @@ class Bootstraps(_Base):
     # Pin the WebRTC-Direct listener on every bootstrap to this UDP port.
     #
     # Bootstraps are the one tier where the browser-facing address must not
-    # move: a WASM/browser client seeds itself from a bootstrap multiaddr, and
+    # move: a WASM/browser client bootstraps itself from a bootstrap multiaddr, and
     # left unset ant-node DERIVES the WebRTC port from the QUIC port
     # (automatic_webrtc_port), so it silently changes if `port` above ever
     # changes. Non-bootstrap nodes deliberately keep the derived/random port --
@@ -387,7 +387,7 @@ class WasmUploader(_Base):
 
     # NB there is no `bootstrap_cache` here. That option selects between ant's
     # peer cache and an explicit `--bootstrap` invocation, and neither exists on
-    # this path: a WASM client seeds itself from the bootstrap tier's
+    # this path: a WASM client bootstraps itself from the bootstrap tier's
     # webrtc-direct multiaddrs and discovers the rest of the network over
     # authenticated find_node.
 

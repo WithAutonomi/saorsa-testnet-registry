@@ -142,7 +142,7 @@ def _build_wasm_unit(role: str) -> str:
     Node rather than bash, and one unit shape for both roles (the program
     branches on ROLE from the environment file), because upload and download
     share the whole WASM setup -- loading the module, installing the WebRTC
-    polyfill, seeding from the bootstrap multiaddrs.
+    polyfill, bootstrapping from the bootstrap multiaddrs.
     """
     label = "Uploader" if role == "wasm-upload" else "Downloader"
     return f"""\
@@ -318,12 +318,12 @@ class AntClientProvisioner:
                 "--repo-owner <owner>` first"
             )
         if not self.bootstrap_webrtc_multiaddrs:
-            # Without a seed address a WASM client cannot reach the network at
+            # Without a bootstrap address a WASM client cannot reach the network at
             # all, and the failure would only surface as an unexplained
             # connection error minutes after the VMs are up and billing.
             raise RuntimeError(
                 "WASM clients are configured but the deployment state holds no "
-                "WebRTC-Direct seed addresses — run `deployments "
+                "WebRTC-Direct bootstrap addresses — run `deployments "
                 "webrtc-addresses --name <name>` after the nodes are started"
             )
 
@@ -333,7 +333,7 @@ class AntClientProvisioner:
 
         self.console.print(
             f"[cyan]Provisioning {len(wasm_hosts)} WASM client host(s) "
-            f"({len(self.bootstrap_webrtc_multiaddrs)} seed address(es)).[/cyan]"
+            f"({len(self.bootstrap_webrtc_multiaddrs)} bootstrap address(es)).[/cyan]"
         )
 
         add_op(
@@ -368,14 +368,14 @@ class AntClientProvisioner:
             host=wasm_hosts,
         )
 
-        seeds = ",".join(self.bootstrap_webrtc_multiaddrs)
+        bootstraps = ",".join(self.bootstrap_webrtc_multiaddrs)
         for host in wasm_hosts:
             env = ip_to_env[host.name]
             lines = [
                 f'ROLE={env["role"]}',
                 f'REGION={env["region"]}',
                 f'CLIENT_INDEX={env["client_index"]}',
-                f'BOOTSTRAP_MULTIADDRS="{seeds}"',
+                f'BOOTSTRAP_MULTIADDRS="{bootstraps}"',
                 f'FILE_SIZE_KB={env["file_size_kb"]}',
                 f"WASM_DIR={WASM_CLIENT_DIR}/pkg",
                 f"LOG_DIR={WASM_CLIENT_LOG_DIR}",

@@ -1,14 +1,28 @@
-"""``deployments webrtc-addresses`` -- collect the browser seed addresses.
+"""``deployments webrtc-addresses`` -- collect the bootstrap tier's WebRTC addresses.
 
-Reads every node-tier service's ``webrtc-direct.multiaddr`` off the deployment's
-VMs and stores the results in S3 deployment state, so WASM/browser clients
-(which cannot use the bare ``ip:port`` peers the native tier passes around) have
-somewhere to bootstrap from.
+Reads each bootstrap service's ``webrtc-direct.multiaddr`` off the deployment's
+bootstrap VMs and stores them in S3 deployment state as
+``bootstrap_webrtc_multiaddrs``, so WASM/browser clients have somewhere to
+bootstrap from.
 
-Covers the NODE tier as well as the bootstraps, and that is the whole point --
-see :func:`~saorsa_deploy.webrtc_addresses.spread_sample`. Runs after the nodes
-are started, because the address embeds a certificate hash that exists only once
-a node has run.
+**A WASM client gets the same bootstraps as a native client**, and nothing more.
+The only difference between the two is the address format: the native tier is
+handed bare ``ip:port`` peers, while a browser client needs the full multiaddr
+because a WebRTC-Direct address also carries the UDP port, the DTLS certificate
+hash and the peer id. Collecting them requires a command like this one only
+because the certhash does not exist until the node has started and written
+``<root_dir>/webrtc-direct.pem`` -- so, unlike ``ip:port``, the list cannot be
+written ahead of time.
+
+This deliberately does NOT sample the node tier. A client given the bootstraps
+must be able to reach the rest of the network by walking the DHT, exactly as the
+native client does from its seven bootstrap peers; pre-loading it with a slice of
+the node tier would hide any failure to do so behind a list that production
+could never supply. If uploads or downloads do not work from the bootstraps
+alone, that is a node-side defect to fix, not a reason to hand out more
+addresses.
+
+Runs after the nodes are started, because of the certhash above.
 """
 
 import subprocess
@@ -23,7 +37,6 @@ from saorsa_deploy.webrtc_addresses import (
     MULTIADDR_GLOB,
     parse_multiaddr,
     rewrite_host,
-    spread_sample,
 )
 
 _SSH_OPTS = [
@@ -39,10 +52,6 @@ _SSH_OPTS = [
 #: already created and billing.
 DEFAULT_TIMEOUT_SECS = 180
 _POLL_INTERVAL_SECS = 5
-
-#: Seeds handed to each WASM client. Enough to cover the keyspace without
-#: bloating the service environment file (~180 bytes per address).
-DEFAULT_SAMPLE = 32
 
 
 def _read_addresses(ip: str, ssh_key_path: str) -> list[str]:
@@ -82,53 +91,52 @@ def _collect(ip: str, ssh_key_path: str, timeout_secs: int, require: bool) -> tu
         time.sleep(_POLL_INTERVAL_SECS)
 
 
-def _vm_ips(state: dict) -> tuple[list[str], list[str]]:
-    """(bootstrap VM IPs, node VM IPs) from deployment state."""
+def _bootstrap_vm_ips(state: dict) -> list[str]:
+    """Bootstrap VM IPs from deployment state."""
     boots = [n["ip"] for n in (state.get("bootstrap_nodes") or []) if n.get("ip")]
     if not boots and state.get("bootstrap_ip"):
         boots = [state["bootstrap_ip"]]
-    nodes: list[str] = []
-    for ips in (state.get("vm_ips") or {}).values():
-        nodes.extend(ips)
-    return boots, nodes
+    return boots
 
 
 def cmd_webrtc_addresses(args):
-    """Collect and persist the deployment's WebRTC-Direct seed addresses."""
+    """Collect and persist the bootstrap tier's WebRTC-Direct addresses."""
     console = Console()
 
     state = load_deployment_state(args.name)
-    boot_ips, node_ips = _vm_ips(state)
-    if not boot_ips and not node_ips:
-        console.print(f"[bold red]Error:[/bold red] no VMs in state for '{args.name}'")
+    boot_ips = _bootstrap_vm_ips(state)
+    if not boot_ips:
+        console.print(
+            f"[bold red]Error:[/bold red] no bootstrap VMs in state for "
+            f"'{args.name}'"
+        )
         sys.exit(1)
 
     console.print(
-        f"[bold]Collecting WebRTC-Direct addresses from {len(boot_ips)} bootstrap "
-        f"and {len(node_ips)} node VM(s)...[/bold]"
+        f"[bold]Collecting WebRTC-Direct addresses from {len(boot_ips)} "
+        f"bootstrap VM(s)...[/bold]"
     )
 
-    targets = [(ip, True) for ip in boot_ips] + [(ip, False) for ip in node_ips]
-    with ThreadPoolExecutor(max_workers=min(32, len(targets))) as pool:
+    with ThreadPoolExecutor(max_workers=min(32, len(boot_ips))) as pool:
         results = dict(
             pool.map(
-                lambda t: _collect(t[0], args.ssh_key_path, args.timeout, t[1]),
-                targets,
+                lambda ip: _collect(ip, args.ssh_key_path, args.timeout, True),
+                boot_ips,
             )
         )
 
     bootstrap_addrs = [a for ip in boot_ips for a in results.get(ip, [])]
-    node_addrs = [a for ip in node_ips for a in results.get(ip, [])]
-    all_addrs = bootstrap_addrs + node_addrs
-
     silent = [ip for ip, found in results.items() if not found]
+
     console.print(
-        f"  [green]{len(bootstrap_addrs)}[/green] bootstrap and "
-        f"[green]{len(node_addrs)}[/green] node address(es) collected"
+        f"  [green]{len(bootstrap_addrs)}[/green] bootstrap address(es) collected"
     )
     if silent:
+        # Every bootstrap is polled to the deadline, so a silent one here is a
+        # real failure to advertise, not a race.
         console.print(
-            f"  [yellow]{len(silent)} VM(s) reported no address[/yellow]"
+            f"  [yellow]{len(silent)} bootstrap VM(s) reported no address: "
+            f"{', '.join(silent)}[/yellow]"
         )
 
     if not bootstrap_addrs:
@@ -139,23 +147,11 @@ def cmd_webrtc_addresses(args):
         )
         sys.exit(1)
 
-    # Seeds are sampled across the peer-id keyspace, not simply truncated: a
-    # client can only walk toward a chunk if some seed is already near it.
-    seeds = spread_sample(all_addrs, args.sample_nodes)
     update_deployment_state(
         args.name,
-        {
-            "bootstrap_webrtc_multiaddrs": bootstrap_addrs,
-            "webrtc_seed_multiaddrs": seeds,
-        },
+        {"bootstrap_webrtc_multiaddrs": bootstrap_addrs},
     )
     console.print(
-        f"[green]Saved {len(bootstrap_addrs)} bootstrap address(es) and "
-        f"{len(seeds)} client seed(s) to deployment state.[/green]"
+        f"[green]Saved {len(bootstrap_addrs)} bootstrap address(es) to "
+        f"deployment state.[/green]"
     )
-    if len(all_addrs) > len(bootstrap_addrs) and len(seeds) <= len(bootstrap_addrs):
-        console.print(
-            "[yellow]Warning: seeds cover only the bootstrap tier. A client "
-            "seeded this narrowly cannot reach chunks stored elsewhere in the "
-            "keyspace — raise --sample-nodes.[/yellow]"
-        )

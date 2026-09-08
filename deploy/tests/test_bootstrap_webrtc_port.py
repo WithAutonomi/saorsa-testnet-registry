@@ -1,7 +1,7 @@
 """The pinned WebRTC-Direct port on the bootstrap tier (V2-1169).
 
 Bootstraps are the one node tier whose browser-facing address must not move: a
-WASM/browser client seeds itself from a bootstrap multiaddr. Left unset,
+WASM/browser client bootstraps itself from a bootstrap multiaddr. Left unset,
 ant-node *derives* the WebRTC port from the QUIC port, so it changes whenever
 the QUIC port does. Non-bootstrap nodes deliberately keep the derived port.
 

@@ -866,7 +866,7 @@ configured (every existing deployment renders byte-identical):
   (CLI `--webrtc-port` on `nodes provision-genesis` / `bootstraps provision`;
   ant-node's flag is `--webrtc-direct-port`, alias `--webrtc-port`). Bootstraps
   are the one tier whose browser-facing address must not move: a WASM client
-  seeds from it. Left unset ant-node **derives** the WebRTC port from the QUIC
+  bootstraps from it. Left unset ant-node **derives** the WebRTC port from the QUIC
   port, so it moves whenever that does. Regular nodes deliberately keep the
   derived port — their address changes propagate over the DHT as QUIC's do.
   **The port is only half of a stable address**: the multiaddr also embeds the
@@ -882,22 +882,26 @@ configured (every existing deployment renders byte-identical):
   explicit `compile_error!`), and the artifact comes from `wasm-pack`, not
   `cargo build --bin`. **Branch form only** — no WASM package is published as a
   release, so `binaries.ant_wasm` rejects a version.
-- **`deployments webrtc-addresses`** — SSHes every VM, reads each service's
-  `<root_dir>/webrtc-direct.multiaddr`, saves `bootstrap_webrtc_multiaddrs` plus
-  a `webrtc_seed_multiaddrs` sample. Cannot run at provision time (the address
+- **`deployments webrtc-addresses`** — SSHes the **bootstrap VMs**, reads each
+  bootstrap service's `<root_dir>/webrtc-direct.multiaddr`, and saves them as
+  `bootstrap_webrtc_multiaddrs`. Cannot run at provision time (the address
   embeds the certhash, which exists only once a node has started) and must run
   before `clients provision` (a WASM client has no other way in). `deployments
   up` sequences it after `nodes start`. Addresses advertising a non-public host
   are rewritten to the VM's real IP.
-  **It collects the NODE tier, not just the bootstraps, and that is the point.**
-  A node publishes its browser endpoint only to peers close to ITSELF, so a
-  client seeded with the bootstraps alone reaches the bootstraps and nothing
-  else — a bootstrap asked for the peers closest to some chunk returns 20 nodes
-  of which ~1 is reachable, and the walk stalls on its first hop. Measured on
-  DEV-01-wasm (100 nodes), same 10 MB target: **3 bootstrap seeds FAILED**,
-  **30 spread seeds succeeded in 31s**. `--sample-nodes` (default 32) picks
-  seeds evenly across the peer-id keyspace. Upstream's "one address is enough"
-  holds on a 5-node devnet where everyone is in everyone's close group.
+  **A WASM client gets the SAME bootstraps as a native client, and no more.**
+  The sole difference is address format — native takes bare `ip:port`, a browser
+  needs the full multiaddr (UDP port + DTLS certhash + peer id) — which is the
+  only reason a collection command exists at all: the certhash does not exist
+  until the node has run, so the list cannot be written ahead of time.
+  The node tier is deliberately **not** sampled, and there is no `--sample-nodes`
+  flag. An earlier revision handed each client ~32 ordinary node addresses spread
+  across the peer-id keyspace; production cannot supply that shape (a browser
+  gets a small bootstrap list), so it masked discovery failures rather than
+  exposing them. **If transfers do not work from the bootstraps alone, fix the
+  node.** `clients provision` reads only `bootstrap_webrtc_multiaddrs` — the
+  older `webrtc_client_bootstrap_multiaddrs` / `webrtc_seed_multiaddrs` keys in
+  pre-change state are deliberately not read.
 
 `clients provision` installs Node 22, unpacks the bundle to
 `/opt/ant-wasm-client`, and writes `/etc/ant-wasm-client.env` plus the

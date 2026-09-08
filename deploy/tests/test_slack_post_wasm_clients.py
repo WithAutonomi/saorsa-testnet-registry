@@ -72,7 +72,7 @@ class TestWasmIsListedSeparately:
 class TestMarkersThatDoNotApplyToWasm:
     def test_bootstrap_cache_marker_is_suppressed_for_wasm(self):
         # bootstrap_cache selects between ant's peer cache and an explicit
-        # --bootstrap. A WASM client does neither — it seeds from the
+        # --bootstrap. A WASM client does neither — it bootstraps from the
         # deployment's webrtc-direct addresses — so a marker here would describe
         # a setting with no effect.
         c = [{**WASM[0], "bootstrap_cache": False}]

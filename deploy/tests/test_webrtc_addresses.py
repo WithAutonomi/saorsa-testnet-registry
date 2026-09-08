@@ -1,4 +1,4 @@
-"""Parsing and repairing the bootstrap tier's WebRTC-Direct seed addresses (V2-1169)."""
+"""Parsing and repairing the WebRTC-Direct bootstrap addresses (V2-1169)."""
 
 import pytest
 
@@ -7,9 +7,7 @@ from saorsa_deploy.webrtc_addresses import (
     bootstrap_root_dir,
     multiaddr_path,
     parse_multiaddr,
-    peer_id,
     rewrite_host,
-    spread_sample,
 )
 
 CERTHASH = "uEiAHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
@@ -87,61 +85,55 @@ def _addr(peer_hex: str, ip: str = "1.2.3.4") -> str:
     return f"/ip4/{ip}/udp/42768/webrtc-direct/certhash/{CERTHASH}/p2p/{peer_hex}"
 
 
-class TestSpreadSample:
-    """Seeds must cover the peer-id keyspace, not just be the first N.
+class TestClientBootstrapsAreTheBootstrapTierOnly:
+    """A WASM client is given the bootstrap tier and nothing more.
 
-    A node publishes its browser endpoint only to the peers CLOSEST TO ITSELF,
-    so a node knows endpoints for its own neighbourhood and nobody else's. A
-    client seeded only with the bootstrap tier can reach the bootstraps and
-    nothing else: asked for the peers closest to some chunk, a bootstrap returns
-    20 nodes of which ~1 has a reachable endpoint, and the walk stalls.
+    It differs from a native client only in address FORMAT: the native tier
+    takes bare ``ip:port`` peers, a browser client needs the full multiaddr
+    (UDP port + DTLS certhash + peer id). It must then find the rest of the
+    network by walking the DHT, exactly as the native client does.
 
-    Measured on DEV-01-wasm (100 nodes), same 10 MB target: 3 bootstrap seeds
-    failed with "no closest WebRtcDirect node returned chunk"; 30 spread seeds
-    succeeded in 31s.
+    An earlier revision sampled the node tier and handed a client ~32 ordinary
+    node addresses. That is not a shape production can supply — a browser gets
+    a small bootstrap list — so it masked any failure to discover peers rather
+    than exposing it. If transfers do not work from the bootstraps alone, the
+    defect is node-side.
     """
 
-    @staticmethod
-    def _fleet(n: int) -> list[str]:
-        # Peer ids spread across the space, deliberately supplied out of order.
-        return [_addr(f"{i:02x}" * 32) for i in reversed(range(n))]
+    def test_state_carries_only_the_bootstrap_tier_key(self):
+        import inspect
 
-    def test_returns_everything_when_the_fleet_is_small(self):
-        fleet = self._fleet(5)
-        assert sorted(spread_sample(fleet, 32)) == sorted(fleet)
+        from saorsa_deploy.cmd import webrtc_addresses as cmd
 
-    def test_returns_the_requested_count(self):
-        assert len(spread_sample(self._fleet(100), 32)) == 32
+        src = inspect.getsource(cmd.cmd_webrtc_addresses)
+        assert '"bootstrap_webrtc_multiaddrs"' in src
+        # The node-tier sample must not come back under any name.
+        assert "webrtc_client_bootstrap_multiaddrs" not in src
+        assert "webrtc_seed_multiaddrs" not in src
 
-    def test_samples_are_distinct(self):
-        out = spread_sample(self._fleet(100), 32)
-        assert len(set(out)) == 32
+    def test_the_node_tier_is_not_collected(self):
+        import inspect
 
-    def test_covers_the_whole_keyspace_not_just_the_start(self):
-        # Truncating a sorted list would take only the low end of the keyspace,
-        # leaving every chunk in the upper half unreachable. The fleet's ids run
-        # 0x00..0x63, so an even sample must reach most of the way to 0x63 —
-        # a truncation would stop at 0x09.
-        out = spread_sample(self._fleet(100), 10)
-        positions = sorted(int(peer_id(a)[:2], 16) for a in out)
-        assert positions[0] == 0x00
-        assert positions[-1] >= 0x50, positions
+        from saorsa_deploy.cmd import webrtc_addresses as cmd
 
-    def test_spacing_is_even(self):
-        out = spread_sample(self._fleet(100), 10)
-        positions = sorted(int(peer_id(a)[:2], 16) for a in out)
-        gaps = [b - a for a, b in zip(positions, positions[1:])]
-        assert max(gaps) - min(gaps) <= 1, gaps
+        # `state["vm_ips"]` is the node-tier VM list; reading it would only be
+        # to build a sample. (The bootstrap helper is named `_vm_ips`, so match
+        # the state lookup itself rather than the bare word.)
+        assert 'state.get("vm_ips")' not in inspect.getsource(cmd)
 
-    def test_ordering_of_the_input_does_not_matter(self):
-        fleet = self._fleet(50)
-        assert spread_sample(fleet, 8) == spread_sample(list(reversed(fleet)), 8)
+    def test_sampling_helpers_are_gone(self):
+        import saorsa_deploy.webrtc_addresses as mod
 
-    def test_zero_or_negative_count_returns_everything(self):
-        fleet = self._fleet(10)
-        assert spread_sample(fleet, 0) == fleet
+        assert not hasattr(mod, "spread_sample")
 
+    def test_provisioning_does_not_fall_back_to_a_node_tier_sample(self):
+        # A stale pre-change deployment state still holds the old sample keys.
+        # Reading one would silently reintroduce the pre-loading.
+        import inspect
 
-class TestPeerId:
-    def test_extracts_the_trailing_hex_id(self):
-        assert peer_id(_addr("ab" * 32)) == "ab" * 32
+        from saorsa_deploy.cmd import provision_clients
+
+        src = inspect.getsource(provision_clients)
+        assert 'deploy_state.get("bootstrap_webrtc_multiaddrs")' in src
+        assert 'deploy_state.get("webrtc_seed_multiaddrs")' not in src
+        assert 'deploy_state.get("webrtc_client_bootstrap_multiaddrs")' not in src

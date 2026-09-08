@@ -255,7 +255,7 @@ async function main(): Promise<void> {
   const core = await initAntCore(cfg.wasmDir);
   console.log(
     `ant-core WASM initialised; role=${cfg.role} region=${cfg.region} ` +
-      `seeds=${cfg.bootstrapMultiaddrs.length}`,
+      `bootstraps=${cfg.bootstrapMultiaddrs.length}`,
   );
 
   const client = new core.BrowserNetworkClient(cfg.bootstrapMultiaddrs);
