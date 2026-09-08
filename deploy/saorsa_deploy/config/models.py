@@ -354,6 +354,22 @@ class Downloader(_Base):
     rust_log: Optional[str] = None
 
 
+#: ant-core refuses a browser upload larger than this, client-side, in about
+#: 0.2s and without touching the network:
+#:
+#:     invalid browser data: browser files are limited to 1000000000 bytes
+#:
+#: It is a DECIMAL gigabyte, while `file_size_mb` is binary (the provisioner
+#: emits `FILE_SIZE_KB = file_size_mb * 1024` and the client reads
+#: `fileSizeBytes = FILE_SIZE_KB * 1024`). So the obvious `file_size_mb: 1000`
+#: is 1,048,576,000 bytes and is rejected on every single attempt -- on the
+#: cancelled V2-1174 run that was 227 of 235 WASM upload failures, which made
+#: the tier's success rate describe nothing. Validated here so a manifest fails
+#: before any VM is created rather than after the run is already billing.
+WASM_MAX_FILE_BYTES = 1_000_000_000
+WASM_MAX_FILE_MB = WASM_MAX_FILE_BYTES // (1024 * 1024)  # 953
+
+
 class WasmUploader(_Base):
     """An uploader driving `ant-core` compiled to WASM instead of the native `ant`.
 
@@ -390,6 +406,19 @@ class WasmUploader(_Base):
     # this path: a WASM client bootstraps itself from the bootstrap tier's
     # webrtc-direct multiaddrs and discovers the rest of the network over
     # authenticated find_node.
+
+    @model_validator(mode="after")
+    def _file_size_within_the_browser_cap(self):
+        size_bytes = self.file_size_mb * 1024 * 1024
+        if size_bytes > WASM_MAX_FILE_BYTES:
+            raise ValueError(
+                f"clients.wasm_uploaders: file_size_mb {self.file_size_mb} is "
+                f"{size_bytes:,} bytes, over ant-core's browser limit of "
+                f"{WASM_MAX_FILE_BYTES:,}. The largest whole MiB that fits is "
+                f"{WASM_MAX_FILE_MB}. NB `file_size_mb` is binary (MiB) while "
+                f"the cap is decimal, so 1000 does not fit."
+            )
+        return self
 
 
 class WasmDownloader(_Base):

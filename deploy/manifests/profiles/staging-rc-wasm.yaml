@@ -59,8 +59,14 @@ testnet:
     # WASM (browser-path) clients: ant-core compiled to WASM, over WebRTC-Direct.
     # No `bootstrap_cache` key on these — a WASM client bootstraps from the
     # deployment's webrtc-direct addresses, not from ant's peer cache.
+    # 900, not 1000, to mirror the native 1000 MB uploader as closely as the
+    # browser path allows: ant-core caps a browser upload at 1,000,000,000
+    # bytes (decimal) while file_size_mb is binary, so 1000 is 1,048,576,000
+    # and every upload is rejected client-side in ~0.2s without touching the
+    # network. 953 is the largest whole MiB that fits; 900 leaves headroom.
+    # Enforced by a validator on WasmUploader, so this cannot regress silently.
     wasm_uploaders:
-      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 1000, vm_size: b3-8,       payment: no-merkle, ant: 1000, eth: 0.1 }
+      - { provider: ovh, clock_skew: 2h,   region: UK1, file_size_mb: 900,  vm_size: b3-8,       payment: no-merkle, ant: 1000, eth: 0.1 }
       - { provider: vultr, region: ams, file_size_mb: 300,  vm_size: vc2-2c-4gb, payment: no-merkle, ant: 500,  eth: 0.1 }
       - { provider: ovh,   region: BHS5,file_size_mb: 20,   vm_size: b3-8,                              ant: 200,  eth: 0.04 }
     wasm_downloaders:
