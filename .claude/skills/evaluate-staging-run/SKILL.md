@@ -186,6 +186,76 @@ GB read +12.08% (FAIL) on steady-state and +2.13% (PASS) on full-run. Where that
 both figures — a gate whose verdict flips with the window is not a settled finding, and quoting
 only the passing one misrepresents it.
 
+### The clock-skewed host will corrupt a steady-state connection-error count. Always subtract it.
+
+**This is not a theoretical caveat — it inverted a published verdict on the 2026-09-08 train.**
+Before quoting *any* windowed connection-error delta, decompose it by host and recompute with the
+skewed host removed.
+
+Each staging run skews **one** node VM's clock by ±3h. The direction is
+`blake2b(vm_ip)[0] % 2` (`skew_direction_for_ip` in `provisioning/clock_skew.py`) — a hash of the
+**VM's IP address**. Nothing in the profile controls it, and because every run provisions fresh VMs
+with fresh IPs, **the direction flips between runs at random**. Do not go looking for a config
+change to explain a flip; there isn't one.
+
+A windowed count is applied against each host's own clock, so that host contributes a *different
+stretch of its run* than everyone else. Which stretch depends on the sign, and the two stretches are
+nothing like each other in volume:
+
+- **+3h** → the steady-state filter captures that host's **startup burst**, when the fleet is forming
+  and connection errors run 10–50x their settled rate.
+- **−3h** → it captures a quiet late-run or post-teardown stretch.
+
+Measured on #579 vs #566, where the sign happened to differ between the two runs:
+
+| | Baseline #566 (−3h) | Candidate #579 (+3h) | Delta |
+|---|---:|---:|---:|
+| Steady-state total | 4,299 | 8,611 | +100.3% |
+| of which `BLR1-6` | 302 (7.0%) | 2,395 (27.8%) | — |
+| **Excluding `BLR1-6`** | **3,997** | **6,216** | **+55.5%** |
+
+One host produced **48.5% of the entire apparent increase**. The first published report quoted
++100.3% as the settled-network figure; the true figure is +55.5%.
+
+**How to do it.** The per-host breakdown is already stored — no Elasticsearch needed, so this works
+after teardown:
+
+```sql
+SELECT deployment_id, count, details->'top_hosts'
+FROM deployment_log_event_counts
+WHERE deployment_id IN (<candidate>, <baseline>)
+  AND window_label = 'steady-state' AND event_key = 'connection_attempt_failed';
+```
+
+Identify the skewed host from the bucket data (it needs no Elasticsearch either) — any host whose
+final bucket is >15 min off the fleet median:
+
+```sql
+SELECT host, max(bucket_start) FROM deployment_host_metric_buckets
+WHERE deployment_id = <id> AND metric = 'rss_bytes' GROUP BY 1 ORDER BY 2;
+```
+
+Expect **exactly one** such host per run. Then subtract it from both sides and report the corrected
+delta, saying which host was excluded and why.
+
+**Cross-check against `full-run`, which is immune.** It applies no time filter, so every host
+contributes its whole run regardless of skew. On #579 vs #566 the skewed host was 3.7–3.8% of each
+run and excluding it moved the figure from +23.4% to +23.5% — no effect. If removing the skewed host
+changes the steady-state figure a lot and the full-run figure barely at all, that confirms the
+mechanism rather than merely being consistent with it.
+
+### Host cardinality tracks event volume, not coverage
+
+The `hosts` column counts hosts that logged **at least one** matching line in the window. A low
+number does **not** mean hosts were dropped from the window, and must never be used to argue that a
+slice is unrepresentative — that argument is circular, because low cardinality is a *consequence* of
+the run having fewer events.
+
+Demonstrated within a single run: #579's steady state shows 65 hosts at 8,611 events, but one of its
+own hours shows **52 hosts at 1,756 events** — fewer hosts than the baseline's 62, on the same fleet,
+in the same run. Only one host per run is clock-skewed, so skew can never account for a shortfall of
+more than one.
+
 ## Step 4 — Gather the accepted-run history (optional)
 
 The 2σ noise criterion needs roughly five prior **accepted** runs per metric. Which runs count as
