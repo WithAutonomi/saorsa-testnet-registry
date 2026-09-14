@@ -94,6 +94,25 @@ class TestBuildTelegrafConfig:
         assert "inputs" in parsed
         assert "tail" in parsed["inputs"]
 
+    def test_promotes_node_build_fields_to_tags(self):
+        # ant-node stamps `node_version` / `node_commit` on every JSON log
+        # line; they must land as tags (`tag.node_version.keyword`) rather than
+        # as plain fields, and beat the static `[global_tags]` fallback.
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        p = _make_provisioner()
+        parsed = tomllib.loads(p._build_telegraf_config())
+        tag_keys = parsed["inputs"]["tail"][0]["tag_keys"]
+        assert "level" in tag_keys
+        assert "target" in tag_keys
+        assert "node_version" in tag_keys
+        assert "node_commit" in tag_keys
+        # The provisioning-time value stays as a fallback for pre-stamp binaries.
+        assert parsed["global_tags"]["node_version"] == "${ANT_NODE_VERSION}"
+
     def test_has_outputs_elasticsearch(self):
         try:
             import tomllib

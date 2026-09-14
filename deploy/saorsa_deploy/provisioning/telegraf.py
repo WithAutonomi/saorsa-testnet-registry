@@ -263,6 +263,12 @@ class TelegrafProvisioner:
   host_role = "${ANT_HOST_ROLE}"
   host_cpu_architecture = "${ANT_HOST_CPU_ARCH}"
   branch_commit = "${ANT_BRANCH_COMMIT}"
+  # Fallback only. ant-node stamps `node_version` / `node_commit` onto every
+  # JSON log line itself (see `tag_keys` below), and an input-supplied tag
+  # wins over a global tag of the same name, so this value is only seen on
+  # lines written by a binary that predates the stamp. It is a static
+  # provisioning-time string and can never be right across an auto-upgrade,
+  # which is exactly why the node reports its own version (ant-node V2-1153).
   node_version = "${ANT_NODE_VERSION}"
 
 ###############################################################################
@@ -324,7 +330,10 @@ class TelegrafProvisioner:
   json_time_key = "timestamp"
   json_time_format = "2006-01-02T15:04:05.999999999Z"
 
-  tag_keys = ["level", "target"]
+  # `node_version` and `node_commit` are written by the node onto every JSON
+  # line; promoting them to tags gives `tag.node_version.keyword`, so a staged
+  # rollout can be split by the build each line was actually written by.
+  tag_keys = ["level", "target", "node_version", "node_commit"]
 __TAGDROP_BLOCK__
 ###############################################################################
 #                            PROCESSORS                                       #
