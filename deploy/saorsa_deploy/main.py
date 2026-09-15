@@ -5596,6 +5596,75 @@ def main(argv=None):
         help="Skip the interactive confirmation prompt.",
     )
 
+    # --- prod restart-telegraf ---
+    prod_rt_parser = prod_subparsers.add_parser(
+        "restart-telegraf",
+        help="Restart the Elasticsearch log forwarder on every node VM in a "
+        "production inventory, reclaiming the disk it holds open in already-"
+        "deleted rotated logs. Non-destructive: no node, record or data dir is "
+        "touched.",
+    )
+    prod_rt_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        required=True,
+        help="Path to the production inventory JSON (schema_version 3, 4 or 5).",
+    )
+    prod_rt_parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        choices=["aws", "digitalocean", "hetzner", "ovh", "vultr", "contabo"],
+        help="Restrict to a single provider (default: every provider in the inventory).",
+    )
+    prod_rt_parser.add_argument(
+        "--limit-to",
+        type=str,
+        default=None,
+        help="Comma-separated VM names to restrict the run to (matched against "
+        "the inventory 'name' field).",
+    )
+    prod_rt_parser.add_argument(
+        "--min-held-gb",
+        type=float,
+        default=0.0,
+        help="Only restart hosts holding at least this many GiB in deleted "
+        "files (default: 0, i.e. every selected host). Every host is still "
+        "probed and reported — this filters what gets restarted, so a routine "
+        "sweep can skip hosts with nothing worth reclaiming.",
+    )
+    prod_rt_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Probe and report what would be reclaimed, then stop without "
+        "restarting anything.",
+    )
+    prod_rt_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key for every host (default: each host's inventory ssh_key).",
+    )
+    prod_rt_parser.add_argument(
+        "--max-parallel",
+        type=int,
+        default=None,
+        help="Maximum concurrent host probes for the measure pass (default: 16).",
+    )
+    prod_rt_parser.add_argument(
+        "--restart-parallel",
+        type=int,
+        default=None,
+        help="Maximum concurrent restarts (default: 8). Bounded so the fleet's "
+        "log shipping does not stop in the same instant, not for host safety — "
+        "the restart itself is cheap and touches nothing but the forwarder.",
+    )
+    prod_rt_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt.",
+    )
+
     # --- prod services (ls/rm/add a single ant-node service on one host) ---
     prod_services_parser = prod_subparsers.add_parser(
         "services",
@@ -7066,6 +7135,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.set_volume_reserve import cmd_set_volume_reserve
 
             cmd_set_volume_reserve(args)
+        elif args.prod_subcommand == "restart-telegraf":
+            from saorsa_deploy.cmd.prod_restart_telegraf import (
+                cmd_prod_restart_telegraf,
+            )
+
+            cmd_prod_restart_telegraf(args)
         elif args.prod_subcommand == "services" and args.prod_services_action == "ls":
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_ls
 
