@@ -43,6 +43,12 @@ export interface DownloadResult {
 }
 
 export interface BrowserNetworkClient {
+  /**
+   * Trailing parameters were added by ant-client's payment-recovery work
+   * (2026-09-14): `checkpoint`/`onCheckpoint` journal the paid attempt
+   * (onCheckpoint is MANDATORY for a paid upload), `paymentMode` selects
+   * single/merkle/auto, and `payForMerkle` is the merkle-batch wallet.
+   */
   uploadPublicFile(
     content: Uint8Array,
     name: string,
@@ -50,6 +56,10 @@ export interface BrowserNetworkClient {
     paymentNetwork: unknown,
     payForQuotes: unknown,
     onProgress?: ((msg: string) => void) | null,
+    checkpoint?: string | null,
+    onCheckpoint?: ((snapshot: string) => unknown) | null,
+    paymentMode?: string | null,
+    payForMerkle?: unknown | null,
   ): Promise<UploadResult>;
   downloadPublicFile(
     file: unknown,
@@ -59,10 +69,22 @@ export interface BrowserNetworkClient {
   close(): void;
 }
 
+/**
+ * `connect()` completes PQ authentication and HELLO and hands back the session;
+ * the application RPCs (including `hello()`) live on the session, not the
+ * connector. ant-client `web-support` moved them there on 2026-09-14
+ * ("require authenticated sessions"); the pre-change shape had `hello()` on
+ * the connector itself.
+ */
 export interface BrowserNodeClient {
-  connect(): Promise<void>;
+  connect(): Promise<BrowserNodeSession>;
+  free(): void;
+}
+
+export interface BrowserNodeSession {
   hello(): Promise<Record<string, unknown>>;
   close(): void;
+  free(): void;
   readonly peerId: string | undefined;
 }
 
@@ -100,15 +122,18 @@ export async function fetchPaymentNetwork(
   endpoint: string,
 ): Promise<Record<string, unknown>> {
   const node = new core.BrowserNodeClient(endpoint);
+  let session: BrowserNodeSession | undefined;
   try {
-    await node.connect();
-    const hello = (await node.hello()) as Record<string, unknown>;
+    session = await node.connect();
+    const hello = (await session.hello()) as Record<string, unknown>;
     const payment = (hello.payment ?? hello.payment_network) as Record<string, unknown> | undefined;
     if (!payment) throw new Error("node HELLO carried no payment network");
     return payment;
   } finally {
     try {
-      node.close();
+      session?.close();
+      session?.free();
+      node.free();
     } catch {
       /* already closed */
     }

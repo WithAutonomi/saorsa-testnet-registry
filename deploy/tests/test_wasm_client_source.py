@@ -97,9 +97,11 @@ class TestSources:
 
     def test_wallet_waits_for_the_payment_receipt(self):
         # Nodes verify the transaction on-chain during put_chunk, so returning an
-        # unmined hash makes every subsequent store fail.
+        # unmined hash makes every subsequent store fail. Both settlement paths
+        # (per-quote `payForQuotes` and the batched `payForMerkleTree`) wait on
+        # the approve AND the payment: four waits.
         wallet = (CLIENT_DIR / "src" / "wallet.ts").read_text()
-        assert wallet.count("waitForTransactionReceipt") == 2
+        assert wallet.count("waitForTransactionReceipt") == 4
 
 
 class TestBuildAndUnitTests:

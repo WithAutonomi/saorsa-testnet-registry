@@ -23,6 +23,15 @@ export interface Config {
   // Payment (upload role only).
   secretKey?: string;
   rpcUrl?: string;
+  /**
+   * ant-core payment mode, mirroring what the native `ant` does with the same
+   * manifest `payment:` value (PAYMENT_TYPE): `merkle` -> "merkle" (force the
+   * batched vault payment), `no-merkle` -> "single" (one payment per chunk),
+   * unset -> "auto" (ant-core's default: merkle at or above its chunk-count
+   * threshold, single below). All three need the merkle submission callback
+   * to be supplied, which the uploader always does.
+   */
+  paymentMode: "auto" | "single" | "merkle";
 
   // Address handoff, shared with the native tier's S3 layout.
   addressesS3Bucket?: string;
@@ -91,6 +100,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     downloadConcurrency: num("DOWNLOAD_CONCURRENCY", 4),
     secretKey: env.SECRET_KEY || undefined,
     rpcUrl: env.RPC_URL || undefined,
+    paymentMode:
+      env.PAYMENT_TYPE === "merkle" ? "merkle" : env.PAYMENT_TYPE === "no-merkle" ? "single" : "auto",
     addressesS3Bucket: env.ADDRESSES_S3_BUCKET || undefined,
     addressesS3Prefix: env.ADDRESSES_S3_PREFIX || undefined,
     addressesFile: env.ADDRESSES_FILE || "/var/lib/ant-wasm-client/addresses.txt",

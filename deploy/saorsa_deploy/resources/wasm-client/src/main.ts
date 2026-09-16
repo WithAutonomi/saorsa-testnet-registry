@@ -27,7 +27,11 @@ import {
 } from "./client.js";
 import { type Config, loadConfig } from "./config.js";
 import { buildLine, i64Field, type InfluxTarget, submitMetric } from "./influx.js";
-import { makeWallet, type PaymentNetwork, type PayForQuotes } from "./wallet.js";
+import { clearInflight, markInflight, recoverInflight } from "./inflight.js";
+import { makeWallet, type PaymentNetwork, type PayForQuotes,
+  makeMerklePayer,
+  type PayForMerkle,
+} from "./wallet.js";
 
 const STATUS_SUCCESS = 0;
 const STATUS_FAILURE = 1;
@@ -91,6 +95,9 @@ async function runUploader(
   );
 
   const pay: PayForQuotes = makeWallet(cfg.secretKey!, cfg.rpcUrl!, paymentNetwork);
+  // Always supplied: "auto" decides per upload whether the batch settles via
+  // merkle, so the callback must be there even when this entry is not forced.
+  const payMerkle: PayForMerkle = makeMerklePayer(cfg.secretKey!, cfg.rpcUrl!, paymentNetwork);
   const sink = new AddressSink({
     addressesFile: cfg.addressesFile,
     presignedUrl: cfg.uploadPresignedUrl,
@@ -106,12 +113,17 @@ async function runUploader(
     const name = `wasm-${cfg.region}-${cfg.clientIndex}-${seq}.bin`;
     const startNs = BigInt(Date.now()) * 1_000_000n;
     const t0 = Date.now();
+    await markInflight(cfg.logDir, { measurement: "upload", startedAt: t0, fileSize: cfg.fileSizeBytes });
 
     let status = STATUS_SUCCESS;
     let errorKind = "";
     let records = 0;
     let costAtto = "0";
     try {
+      // ant-core refuses a paid upload without a checkpoint callback. Each
+      // upload here is a fresh file that is never resumed across a restart,
+      // so the journal is held in memory for the life of the attempt only.
+      let checkpoint: string | undefined;
       const result = await client.uploadPublicFile(
         content,
         name,
@@ -119,7 +131,14 @@ async function runUploader(
         paymentNetwork,
         pay,
         null,
+        null,
+        (snapshot: string) => {
+          checkpoint = snapshot;
+        },
+        cfg.paymentMode,
+        payMerkle,
       );
+      void checkpoint;
       records = result.records ?? 0;
       costAtto = result.storageCostAtto ?? "0";
       await sink.record(result.file.address);
@@ -153,6 +172,7 @@ async function runUploader(
         },
       ),
     );
+    await clearInflight(cfg.logDir);
 
     if (cfg.runOnce) break;
     await sleep(cfg.sleepSecs * 1000);
@@ -189,6 +209,7 @@ async function runDownloader(
     seq += 1;
     const startNs = BigInt(Date.now()) * 1_000_000n;
     const t0 = Date.now();
+    await markInflight(cfg.logDir, { measurement: "download", startedAt: t0, fileSize: 0, address });
     let status = STATUS_SUCCESS;
     let errorKind = "";
     let size = 0;
@@ -219,6 +240,7 @@ async function runDownloader(
         },
       ),
     );
+    await clearInflight(cfg.logDir);
 
     if (cfg.runOnce) break;
     await sleep(cfg.sleepSecs * 1000);
@@ -250,6 +272,15 @@ async function main(): Promise<void> {
     org: cfg.influxOrg,
     bucket: cfg.influxBucket,
   };
+
+  const crashed = await recoverInflight(cfg.logDir, influx, { host, region: cfg.region });
+  if (crashed) {
+    console.error(
+      `previous process died inside a ${crashed.measurement} started at ` +
+        `${new Date(crashed.startedAt).toISOString()}` +
+        `${crashed.address ? ` (${crashed.address})` : ""}; recorded as a failure [crash]`,
+    );
+  }
 
   await installWebRtc();
   const core = await initAntCore(cfg.wasmDir);

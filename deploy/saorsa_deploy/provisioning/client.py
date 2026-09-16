@@ -385,6 +385,11 @@ class AntClientProvisioner:
                 f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}"',
                 f'SECRET_KEY="{env["secret_key"]}"',
                 f'RPC_URL="{self.wasm_rpc_url or ""}"',
+                # The manifest's `payment:` for this entry ("merkle" /
+                # "no-merkle" / unset). The harness maps it to ant-core's
+                # explicit payment mode; it must never rely on ant-core's
+                # "auto" default, which needs a merkle wallet for big batches.
+                f'PAYMENT_TYPE="{env["payment_type"]}"',
                 f'RUST_LOG="{env["rust_log"]}"',
             ]
             if self.influx_url and self.influx_token:
