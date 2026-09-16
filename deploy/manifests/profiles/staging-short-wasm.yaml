@@ -86,8 +86,14 @@ testnet:
       - { provider: ovh,   region: SBG5, file_size_mb: 900,  vm_size: b3-8,      payment: merkle,    ant: 1000, eth: 0.5, forward_logs: true, rust_log: info }
       - { provider: vultr, region: ams, file_size_mb: 300,  vm_size: vc2-2c-4gb, payment: no-merkle, ant: 500,  eth: 0.5, forward_logs: true, rust_log: info }
       - { provider: ovh,   region: RBX-A,file_size_mb: 20,   vm_size: b3-8,                             ant: 200,  eth: 0.2, forward_logs: true, rust_log: info }
+    # 8 GB, not the default client size: a browser-path download holds the
+    # whole file in WASM memory and peaks at ~4x its size (a 900 MB file
+    # measured 3.88 GB RSS on DEV-01-wasm, 2026-09-16). The shared address
+    # pool holds the 900 MB WASM and 1000 MB native uploads, so on a 4 GB VM
+    # every such pick is OOM-killed -- three times in one hour there, with
+    # no failure recorded until the harness learned to report a crash.
     wasm_downloaders:
-      - { provider: digital_ocean, region: tor1, forward_logs: true, rust_log: info }
+      - { provider: digital_ocean, region: tor1, vm_size: s-4vcpu-8gb, forward_logs: true, rust_log: info }
 
   elastic:
     enabled: true
