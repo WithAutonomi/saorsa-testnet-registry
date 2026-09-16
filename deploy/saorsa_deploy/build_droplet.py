@@ -61,26 +61,36 @@ def _find_droplet_by_name(droplet_name, headers):
 
 
 def _get_public_ip(droplet):
-    """Extract the public IP address from a droplet dict."""
-    ip_address = droplet["networks"]["v4"][0]["ip_address"]
-    for net in droplet["networks"]["v4"]:
+    """Extract the public IP address from a droplet dict, or None if it has none yet.
+
+    DO can report a droplet `active` a few seconds before `networks.v4` is
+    populated, so an empty list is a normal transient state, not an error.
+    """
+    v4 = droplet.get("networks", {}).get("v4") or []
+    for net in v4:
         if net["type"] == "public":
-            ip_address = net["ip_address"]
-            break
-    return ip_address
+            return net["ip_address"]
+    return v4[0]["ip_address"] if v4 else None
 
 
 def _wait_for_droplet_active(droplet_id, headers, timeout=300):
-    """Poll until the droplet status is 'active'."""
+    """Poll until the droplet status is 'active' AND it has a public IP.
+
+    `status == "active"` alone is not enough: on 2026-09-16 three build
+    droplets went active within ~26s of creation while `networks.v4` was
+    still `[]`, and every lane died with `list index out of range`.
+    """
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         resp = requests.get(f"{DO_API_URL}/droplets/{droplet_id}", headers=headers)
         resp.raise_for_status()
-        status = resp.json()["droplet"]["status"]
-        if status == "active":
-            return resp.json()["droplet"]
+        droplet = resp.json()["droplet"]
+        if droplet["status"] == "active" and _get_public_ip(droplet) is not None:
+            return droplet
         time.sleep(5)
-    raise TimeoutError(f"Droplet {droplet_id} did not become active within {timeout}s")
+    raise TimeoutError(
+        f"Droplet {droplet_id} did not become active with a public IP within {timeout}s"
+    )
 
 
 def wait_for_ssh(ip: str, timeout: int = 300) -> None:
@@ -121,6 +131,9 @@ def create_build_vm(
     existing = _find_droplet_by_name(droplet_name, headers)
     if existing:
         ip_address = _get_public_ip(existing)
+        if ip_address is None:
+            # Left over from a run that died in the networking race above.
+            ip_address = _get_public_ip(_wait_for_droplet_active(existing["id"], headers))
         return {
             "droplet_id": existing["id"],
             "droplet_name": droplet_name,

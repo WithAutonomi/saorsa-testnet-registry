@@ -43,6 +43,85 @@ class TestBuildDropletName:
 class TestCreateBuildVm:
     @patch("saorsa_deploy.build_droplet.time.sleep")
     @patch("saorsa_deploy.build_droplet.requests")
+    def test_waits_for_public_ip_not_just_active(self, mock_requests, _mock_sleep):
+        """DO reports `active` before `networks.v4` is populated (seen 2026-09-16,
+        all three parallel build lanes died with `list index out of range`).
+        The wait must keep polling until a public IP is present."""
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            mock_list_resp = MagicMock()
+            mock_list_resp.json.return_value = {"droplets": []}
+
+            mock_create_resp = MagicMock()
+            mock_create_resp.status_code = 202
+            mock_create_resp.json.return_value = {"droplet": {"id": 12345}}
+
+            # active, but networking not yet populated
+            mock_active_no_net = MagicMock()
+            mock_active_no_net.json.return_value = {
+                "droplet": {"status": "active", "networks": {"v4": []}}
+            }
+            mock_active_with_net = MagicMock()
+            mock_active_with_net.json.return_value = {
+                "droplet": {
+                    "status": "active",
+                    "networks": {"v4": [{"type": "public", "ip_address": "1.2.3.4"}]},
+                }
+            }
+            mock_requests.get.side_effect = [
+                mock_list_resp,
+                mock_active_no_net,
+                mock_active_with_net,
+            ]
+            mock_requests.post.return_value = mock_create_resp
+
+            result = create_build_vm("ant-node", "DEV-01", "myorg", "feature-branch")
+
+            assert result["ip_address"] == "1.2.3.4"
+            assert mock_requests.get.call_count == 3
+            # The droplet was NOT destroyed and no second region was tried.
+            mock_requests.delete.assert_not_called()
+            assert mock_requests.post.call_count == 1
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.time.sleep")
+    @patch("saorsa_deploy.build_droplet.requests")
+    def test_reuses_existing_droplet_that_has_no_ip_yet(self, mock_requests, _mock_sleep):
+        """A leftover droplet from a run that died in that race may itself still
+        lack an IP when found; the reuse path must wait for it too."""
+        os.environ["DO_TOKEN"] = "test-token"
+        try:
+            expected_name = _expected_droplet_name("ant", "DEV-01", "myorg", "feature-branch")
+            mock_list_resp = MagicMock()
+            mock_list_resp.json.return_value = {
+                "droplets": [
+                    {"id": 777, "name": expected_name, "status": "active", "networks": {"v4": []}}
+                ]
+            }
+            mock_active_with_net = MagicMock()
+            mock_active_with_net.json.return_value = {
+                "droplet": {
+                    "status": "active",
+                    "networks": {"v4": [{"type": "public", "ip_address": "5.6.7.8"}]},
+                }
+            }
+            mock_requests.get.side_effect = [mock_list_resp, mock_active_with_net]
+
+            result = create_build_vm("ant", "DEV-01", "myorg", "feature-branch")
+
+            assert result == {
+                "droplet_id": 777,
+                "droplet_name": expected_name,
+                "ip_address": "5.6.7.8",
+                "reused": True,
+            }
+            mock_requests.post.assert_not_called()
+        finally:
+            os.environ.pop("DO_TOKEN", None)
+
+    @patch("saorsa_deploy.build_droplet.time.sleep")
+    @patch("saorsa_deploy.build_droplet.requests")
     def test_creates_droplet_with_correct_params(self, mock_requests, _mock_sleep):
         os.environ["DO_TOKEN"] = "test-token"
         try:
