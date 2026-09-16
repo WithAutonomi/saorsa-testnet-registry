@@ -4,9 +4,15 @@
  * Deliberately the same mechanism as the native clients: uploaders flush their
  * published addresses through a presigned S3 PUT (minted by `clients provision`,
  * so the VM never signs anything and a clock-skewed client keeps working), and
- * downloaders list and fetch them over unsigned public HTTPS. The WASM tier uses
- * its own key prefix, so its downloaders consume its uploaders' addresses and
- * not the native tier's -- keeping the two comparisons separable.
+ * downloaders list and fetch them over unsigned public HTTPS. Uploaders of both
+ * tiers publish under the deployment's one prefix, and this downloader lists
+ * the whole prefix, so it draws native-uploaded content as well as WASM.
+ *
+ * Each published line is `<address> <bytes>`. The size is what lets a
+ * downloader with a hard cap -- ant-core rejects a browser-path file above
+ * MAX_BROWSER_FILE_BYTES after resolving its data map -- skip an entry it
+ * could never download instead of spending a fetch to be told so. A bare line
+ * (no size; the pre-change format) is never excluded: unknown is not too big.
  */
 
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -27,9 +33,9 @@ export class AddressSink {
 
   constructor(private readonly opts: AddressSinkOptions) {}
 
-  async record(address: string): Promise<void> {
+  async record(address: string, sizeBytes: number): Promise<void> {
     await mkdir(dirname(this.opts.addressesFile), { recursive: true });
-    await appendFile(this.opts.addressesFile, `${address}\n`);
+    await appendFile(this.opts.addressesFile, `${formatAddressLine(address, sizeBytes)}\n`);
     this.pending += 1;
     const dueByCount = this.pending >= this.opts.flushEveryN;
     const dueByTime = Date.now() - this.lastFlush >= this.opts.flushIntervalSecs * 1000;
@@ -67,22 +73,65 @@ export class AddressSink {
   }
 }
 
+/** One published address and, when the publisher recorded it, its size. */
+export interface PublishedAddress {
+  address: string;
+  /** Uploaded size in bytes; undefined for a bare pre-change line. */
+  sizeBytes?: number;
+}
+
+/** `<address> <bytes>` -- the line format both tiers publish. */
+export function formatAddressLine(address: string, sizeBytes: number): string {
+  return `${address} ${sizeBytes}`;
+}
+
 /**
- * Reads addresses published by the WASM uploaders.
+ * Parse one published line. Returns undefined for a blank line. A second
+ * field that is not a non-negative integer is treated as absent rather than
+ * rejecting the address: the address is still usable, only the size is not.
+ */
+export function parseAddressLine(line: string): PublishedAddress | undefined {
+  const fields = line.trim().split(/\s+/);
+  const address = fields[0];
+  if (!address) return undefined;
+  const size = fields[1];
+  if (size !== undefined && /^\d+$/.test(size)) {
+    return { address, sizeBytes: Number(size) };
+  }
+  return { address };
+}
+
+/**
+ * The entries a downloader bounded by `maxBytes` may pick. `maxBytes` of 0
+ * means unbounded. An entry with no recorded size is kept.
+ */
+export function eligibleAddresses(
+  entries: readonly PublishedAddress[],
+  maxBytes: number,
+): PublishedAddress[] {
+  if (maxBytes <= 0) return [...entries];
+  return entries.filter((e) => e.sizeBytes === undefined || e.sizeBytes <= maxBytes);
+}
+
+/**
+ * Reads addresses published by the uploaders.
  *
  * Unsigned public HTTPS against the public-read addresses bucket, matching
  * `downloader.sh`: the VM signs nothing, so a skewed clock cannot get its
  * requests rejected.
  */
 export class AddressSource {
-  private cache: string[] = [];
+  private cache: PublishedAddress[] = [];
   private lastRefresh = 0;
+  private excludedAtLastRefresh = 0;
 
   constructor(
     private readonly bucket: string,
     private readonly prefix: string,
     private readonly refreshSecs = 60,
     private readonly staticFile?: string,
+    /** Largest file to pick, in bytes; 0 = no bound. */
+    private readonly maxBytes = 0,
   ) {}
 
   private baseUrl(): string {
@@ -98,11 +147,11 @@ export class AddressSource {
   }
 
   async refresh(): Promise<void> {
-    const collected: string[] = [];
+    const collected: PublishedAddress[] = [];
     if (this.staticFile) {
       try {
         const text = await readFile(this.staticFile, "utf8");
-        collected.push(...text.split("\n").map((s) => s.trim()).filter(Boolean));
+        collected.push(...parseAddressLines(text));
       } catch {
         /* optional */
       }
@@ -119,25 +168,50 @@ export class AddressSource {
           });
           if (!res.ok) continue;
           const text = await res.text();
-          collected.push(...text.split("\n").map((s) => s.trim()).filter(Boolean));
+          collected.push(...parseAddressLines(text));
         }
       } catch (e) {
         console.warn(`WARN: address refresh failed: ${String(e)}`);
       }
     }
     if (collected.length > 0) {
-      this.cache = [...new Set(collected)];
+      // Dedupe by address; the last occurrence wins so a republished line
+      // that gained a size supersedes an older bare one.
+      const byAddress = new Map<string, PublishedAddress>();
+      for (const entry of collected) byAddress.set(entry.address, entry);
+      const all = [...byAddress.values()];
+      this.cache = eligibleAddresses(all, this.maxBytes);
+      const excluded = all.length - this.cache.length;
+      if (excluded !== this.excludedAtLastRefresh) {
+        console.log(
+          `addresses: ${this.cache.length} eligible, ${excluded} over the ` +
+            `${this.maxBytes}-byte cap skipped`,
+        );
+        this.excludedAtLastRefresh = excluded;
+      }
       this.lastRefresh = Date.now();
     }
   }
 
-  /** A random published address, or undefined while none exist yet. */
+  /**
+   * A random eligible published address, or undefined while none exist yet
+   * (which includes "some are published but every one is over the cap").
+   */
   async pick(): Promise<string | undefined> {
     const stale = Date.now() - this.lastRefresh >= this.refreshSecs * 1000;
     if (this.cache.length === 0 || stale) await this.refresh();
     if (this.cache.length === 0) return undefined;
-    return this.cache[Math.floor(Math.random() * this.cache.length)];
+    return this.cache[Math.floor(Math.random() * this.cache.length)].address;
   }
+}
+
+function parseAddressLines(text: string): PublishedAddress[] {
+  const out: PublishedAddress[] = [];
+  for (const line of text.split("\n")) {
+    const parsed = parseAddressLine(line);
+    if (parsed) out.push(parsed);
+  }
+  return out;
 }
 
 /** Write the local static address list, used when the deploy provides one. */

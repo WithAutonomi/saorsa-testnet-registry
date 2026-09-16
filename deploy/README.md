@@ -761,15 +761,27 @@ testnet:
       - { provider: digital_ocean, region: lon1 }
 ```
 
-**Addresses are one shared pool per deployment.** Both tiers publish under the
-same S3 prefix and both tiers' downloaders list the whole prefix, exactly as the
-native tier always has — so a WASM downloader may fetch content a native
-uploader published, and vice versa. What is *not* shared is the object each
-uploader owns: `client_index` restarts at 1 per role, so the key is namespaced
-(`upload-<region>-<n>.txt` for native, `wasm-upload-<region>-<n>.txt` for WASM).
-Without that, a native and a WASM uploader in the same region would both own
-`upload-<region>-1.txt`, and since each flush is a whole-object PUT they would
-repeatedly erase each other's address lists.
+**Addresses are one shared pool per deployment, read one way.** Both tiers
+publish under the same S3 prefix. The WASM downloader lists the whole prefix, so
+it may fetch content a native uploader published; the native `downloader.sh`
+only lists `upload-*` keys, so it never draws a WASM upload. What is *not*
+shared is the object each uploader owns: `client_index` restarts at 1 per role,
+so the key is namespaced (`upload-<region>-<n>.txt` for native,
+`wasm-upload-<region>-<n>.txt` for WASM). Without that, a native and a WASM
+uploader in the same region would both own `upload-<region>-1.txt`, and since
+each flush is a whole-object PUT they would repeatedly erase each other's
+address lists.
+
+**Each published line is `<address> <bytes>`.** ant-core refuses a browser-path
+file larger than 1,000,000,000 bytes, but only after resolving its data map, so
+a WASM downloader that drew the native 1000 MiB uploads from the shared pool
+spent a fetch on every one to be told `invalid public file size 1048576000`.
+Uploaders of both tiers now record the uploaded size beside the address, and
+each downloader parses the first field. A downloader with `MAX_DOWNLOAD_BYTES`
+set (`clients provision` sets it to the browser cap for the WASM roles; `0` or
+unset means no bound) skips over-cap entries before fetching anything. A bare
+line — every list written before this change — is never excluded, because an
+unknown size is not a known-too-big one.
 
 **CLI**: `clients infra --wasm-uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE][:rust_log=SPEC]`
 and `--wasm-downloader provider:region[:vm_size][:clock_skew=DURATION][:forward_logs=BOOL][:network=PROFILE][:rust_log=SPEC]`.

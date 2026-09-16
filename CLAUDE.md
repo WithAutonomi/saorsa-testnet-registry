@@ -910,13 +910,28 @@ client VMs see none of it. The bundle is **always re-fetched** (unlike the
 presence-gated `ant` binary install, which is why `deployments
 upgrade-ant-binary` had to exist).
 
-**Addresses are one shared pool per deployment** — both tiers publish under the
-same prefix and downloaders list the whole prefix (as the native tier always
-has), so a WASM downloader may fetch native-uploaded content and vice versa. The
-per-uploader *object* is namespaced by role (`upload-` vs `wasm-upload-`)
-because `client_index` restarts at 1 per role: without that a native and a WASM
+**Addresses are one shared pool per deployment, read one way** — both tiers
+publish under the same prefix. The WASM downloader lists the whole prefix, so it
+fetches native-uploaded content as well as WASM; the native `downloader.sh`
+filters keys to `upload-*` and never sees WASM uploads. The per-uploader
+*object* is namespaced by role (`upload-` vs `wasm-upload-`) because
+`client_index` restarts at 1 per role: without that a native and a WASM
 uploader in one region both own `upload-<region>-1.txt`, and each whole-object
 PUT flush erases the other's list.
+
+**Every published address line is `<address> <bytes>`** (V2-1264, DEV-03 run
+588). ant-core refuses a browser-path file above `MAX_BROWSER_FILE_BYTES`
+(1,000,000,000) only *after* resolving its data map, so with bare lines the
+WASM downloader drew the native 1000 MiB uploads from the shared pool and each
+failed as `invalid public file size 1048576000`. Both uploaders now publish the
+size; both downloaders parse the first field, and one with a bound
+(`MAX_DOWNLOAD_BYTES`, `0` = none; `clients provision` sets it to
+`WASM_MAX_FILE_BYTES` for the WASM roles) skips over-cap entries before
+fetching anything. A bare line is never excluded — unknown is not "too big" —
+so pre-change lists keep working. `downloader.sh` tries up to five keys because
+one uploader's entire list can be over the cap. The constant lives in
+`client_roles.py` (the provisioner must not import the schema);
+`config.models` re-exports it.
 
 **No `bootstrap_cache` option on either WASM role** — it selects between ant's
 peer cache and an explicit `--bootstrap`, and a WASM client does neither. Passing

@@ -22,6 +22,15 @@ DOWNLOAD_ROLES = (ROLE_DOWNLOAD, ROLE_WASM_DOWNLOAD)
 WASM_ROLES = (ROLE_WASM_UPLOAD, ROLE_WASM_DOWNLOAD)
 NATIVE_ROLES = (ROLE_UPLOAD, ROLE_DOWNLOAD)
 
+#: ant-core refuses a browser-path file larger than this (a DECIMAL gigabyte,
+#: `MAX_BROWSER_FILE_BYTES`), on upload before touching the network and on
+#: download once the data map is resolved. The manifest validator uses it to
+#: refuse an over-cap WASM uploader, and `clients provision` hands it to the
+#: WASM downloader as `MAX_DOWNLOAD_BYTES` so it skips over-cap entries in the
+#: shared address pool instead of fetching and rejecting them. Defined here,
+#: not in `config.models`, because the provisioner must not import the schema.
+WASM_MAX_FILE_BYTES = 1_000_000_000
+
 ROLE_UNITS = {
     ROLE_UPLOAD: "ant-uploader",
     ROLE_DOWNLOAD: "ant-downloader",

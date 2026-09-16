@@ -81,7 +81,12 @@ def _run_function(
     env_vars: dict,
     stub_dir: Path,
 ) -> subprocess.CompletedProcess:
-    body = _extract_function(script, func_name)
+    # `pick_random_address` filters through `eligible_addresses`, so the
+    # helper has to travel with it (a shell function is resolved at call time).
+    deps = {"pick_random_address": ["eligible_addresses"]}
+    body = "\n".join(
+        _extract_function(script, name) for name in [*deps.get(func_name, []), func_name]
+    )
     exports = "\n".join(f'export {k}="{v}"' for k, v in env_vars.items())
     return subprocess.run(
         ["bash", "-c", f'export PATH="{stub_dir}:$PATH"\n{exports}\n{body}\n{call}'],

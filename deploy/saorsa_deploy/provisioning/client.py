@@ -11,7 +11,13 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
-from saorsa_deploy.client_roles import ROLE_UPLOAD, is_upload, is_wasm, unit_for_role
+from saorsa_deploy.client_roles import (
+    ROLE_UPLOAD,
+    WASM_MAX_FILE_BYTES,
+    is_upload,
+    is_wasm,
+    unit_for_role,
+)
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
@@ -391,6 +397,11 @@ class AntClientProvisioner:
                 # "auto" default, which needs a merkle wallet for big batches.
                 f'PAYMENT_TYPE="{env["payment_type"]}"',
                 f'RUST_LOG="{env["rust_log"]}"',
+                # The address pool is shared with the native tier, whose 1000 MB
+                # uploader publishes files ant-core's browser path cannot
+                # download. Address lines carry the size, so the downloader
+                # skips those instead of fetching a data map to be refused.
+                f"MAX_DOWNLOAD_BYTES={WASM_MAX_FILE_BYTES}",
             ]
             if self.influx_url and self.influx_token:
                 lines += [

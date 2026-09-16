@@ -15,6 +15,7 @@ from typing import Annotated, Literal, Optional, Union
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
+from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES as _WASM_MAX_FILE_BYTES
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
 from saorsa_deploy.provisioning.network_profile import resolve_network
 
@@ -366,7 +367,8 @@ class Downloader(_Base):
 #: cancelled V2-1174 run that was 227 of 235 WASM upload failures, which made
 #: the tier's success rate describe nothing. Validated here so a manifest fails
 #: before any VM is created rather than after the run is already billing.
-WASM_MAX_FILE_BYTES = 1_000_000_000
+#: Canonical value lives in `client_roles` (the provisioner reads it too).
+WASM_MAX_FILE_BYTES = _WASM_MAX_FILE_BYTES
 WASM_MAX_FILE_MB = WASM_MAX_FILE_BYTES // (1024 * 1024)  # 953
 
 

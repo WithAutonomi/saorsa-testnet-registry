@@ -37,6 +37,12 @@ export interface Config {
   addressesS3Bucket?: string;
   addressesS3Prefix?: string;
   addressesFile: string;
+  /**
+   * Largest file the downloader will pick, in bytes; 0 = unbounded. Set by
+   * `clients provision` to ant-core's browser cap so an over-cap native
+   * upload in the shared pool is skipped rather than fetched and rejected.
+   */
+  maxDownloadBytes: number;
   uploadPresignedUrl?: string;
   s3FlushIntervalSecs: number;
   s3FlushEveryN: number;
@@ -105,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     addressesS3Bucket: env.ADDRESSES_S3_BUCKET || undefined,
     addressesS3Prefix: env.ADDRESSES_S3_PREFIX || undefined,
     addressesFile: env.ADDRESSES_FILE || "/var/lib/ant-wasm-client/addresses.txt",
+    maxDownloadBytes: num("MAX_DOWNLOAD_BYTES", 0),
     uploadPresignedUrl: env.UPLOAD_PRESIGNED_URL || undefined,
     s3FlushIntervalSecs: num("S3_FLUSH_INTERVAL_SECS", 30),
     s3FlushEveryN: num("S3_FLUSH_EVERY_N", 50),

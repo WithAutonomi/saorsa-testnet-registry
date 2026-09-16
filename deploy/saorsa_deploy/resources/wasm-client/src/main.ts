@@ -141,7 +141,7 @@ async function runUploader(
       void checkpoint;
       records = result.records ?? 0;
       costAtto = result.storageCostAtto ?? "0";
-      await sink.record(result.file.address);
+      await sink.record(result.file.address, content.length);
       console.log(
         `upload #${seq} ok: ${result.file.address} ` +
           `(${records} records, ${costAtto} atto, ${Date.now() - t0}ms)`,
@@ -191,6 +191,7 @@ async function runDownloader(
     cfg.addressesS3Prefix ?? "",
     60,
     cfg.addressesFile,
+    cfg.maxDownloadBytes,
   );
 
   let seq = 0;

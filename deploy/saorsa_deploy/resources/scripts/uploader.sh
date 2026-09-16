@@ -321,7 +321,9 @@ PY
     wallet_spend_display="${wallet_before:-?}->${wallet_after:-?}"
 
     if [ "$exit_code" -eq 0 ] && [ -n "$address" ]; then
-        echo "$address" >> "$ADDRESSES_FILE"
+        # `<address> <bytes>`: the size lets a capped downloader (the WASM
+        # tier's browser limit) skip this entry without fetching it.
+        echo "$address $file_bytes" >> "$ADDRESSES_FILE"
         addresses_since_flush=$((addresses_since_flush + 1))
         echo "[$(date -u +%H:%M:%S)] Upload #${seq_num} OK: address=${address} total=${total_ms}ms upload_time=${upload_secs}s cost_atto=${storage_cost_atto} wallet=${wallet_spend_display} refusal_seen=${refusal_seen}"
     else

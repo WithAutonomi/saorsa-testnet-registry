@@ -11,6 +11,12 @@ fi
 : "${ADDRESSES_FILE:=/var/lib/ant-client/addresses.txt}"
 : "${ADDRESSES_S3_BUCKET:=}"
 : "${ADDRESSES_S3_PREFIX:=}"
+# Largest file this downloader will pick, in bytes; 0 = no bound. Address lines
+# carry the uploaded size as an optional second field (`<address> <bytes>`),
+# so a client with a hard cap (the WASM tier's browser limit) can skip an
+# over-cap entry before fetching anything. Lines with no size are never
+# excluded: the size is unknown, not known to be too big.
+: "${MAX_DOWNLOAD_BYTES:=0}"
 : "${INFLUX_URL:=}"
 : "${INFLUX_TOKEN:=}"
 : "${INFLUX_ORG:=ant}"
@@ -114,15 +120,29 @@ preserve_failure_logs() {
     echo "${FAILURE_LOG_DIR}/${stem}"
 }
 
+eligible_addresses() {
+    # stdin: address lines, `<address>` or `<address> <bytes>`. stdout: the
+    # bare addresses whose size is unknown or within MAX_DOWNLOAD_BYTES.
+    awk -v max="${MAX_DOWNLOAD_BYTES:-0}" '
+        NF == 0 { next }
+        max > 0 && NF >= 2 && ($2 + 0) > max { next }
+        { print $1 }'
+}
+
 pick_random_address() {
     # Prefer a locally-provisioned static address list (e.g. from
     # prod-continuous-downloader) when present and non-empty. Falls back to
     # listing S3 uploader-emitted objects when no local file is available
     # (the standard testnet flow). The S3 path uses unsigned public HTTPS so
     # it keeps working on clock-skewed VMs.
-    local listing key address
+    #
+    # Each address list is filtered through eligible_addresses, so an
+    # over-cap entry is skipped rather than fetched and rejected. One
+    # uploader's whole list may be over the cap (every entry it publishes is
+    # the same size), so the S3 path tries a few keys before giving up.
+    local listing key address attempt
     if [ -s "$ADDRESSES_FILE" ]; then
-        shuf -n 1 "$ADDRESSES_FILE" || true
+        eligible_addresses < "$ADDRESSES_FILE" | shuf -n 1 || true
         return 0
     fi
     if [ -z "$S3_HTTP_BASE" ]; then
@@ -135,12 +155,18 @@ pick_random_address() {
     if [ -z "$listing" ]; then
         return 0
     fi
-    key=$(echo "$listing" | shuf -n 1)
-    if [ -z "$key" ]; then
-        return 0
-    fi
-    address=$(curl -sf "${S3_HTTP_BASE}/${ADDRESSES_S3_PREFIX}/${key}" 2>/dev/null | shuf -n 1 || true)
-    echo "$address"
+    for attempt in 1 2 3 4 5; do
+        key=$(echo "$listing" | shuf -n 1)
+        if [ -z "$key" ]; then
+            return 0
+        fi
+        address=$(curl -sf "${S3_HTTP_BASE}/${ADDRESSES_S3_PREFIX}/${key}" 2>/dev/null \
+            | eligible_addresses | shuf -n 1 || true)
+        if [ -n "$address" ]; then
+            echo "$address"
+            return 0
+        fi
+    done
 }
 
 mkdir -p "$DOWNLOAD_DIR"
