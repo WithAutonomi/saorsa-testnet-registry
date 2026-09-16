@@ -96,7 +96,7 @@ def cmd_destroy_clients(args):
     # can fix the issue and retry.
     uploaders_with_wallet = [
         c for c in clients
-        if c.get("role", ROLE_UPLOAD) == ROLE_UPLOAD and c.get("wallet_secret_key")
+        if is_upload(c.get("role", ROLE_UPLOAD)) and c.get("wallet_secret_key")
     ]
     if uploaders_with_wallet:
         funding_secret_key = (

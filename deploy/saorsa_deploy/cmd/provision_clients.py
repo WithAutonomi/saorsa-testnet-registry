@@ -3,7 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
-from saorsa_deploy.client_roles import is_wasm
+from saorsa_deploy.client_roles import is_upload, is_wasm
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
@@ -296,9 +296,11 @@ def _ensure_uploader_wallets(
 
     from web3 import Web3
 
-    uploaders = [
-        c for c in clients if c.get("role", "upload") == "upload"
-    ]
+    # Both upload roles carry wallets. WASM uploaders were previously excluded
+    # here, so they signed from the shared FUNDING wallet: their `ant:`/`eth:`
+    # were silently ignored, per-wallet exhaustion was unobservable, and several
+    # VMs sharing one signing key risked nonce collisions.
+    uploaders = [c for c in clients if is_upload(c.get("role", "upload"))]
     if not uploaders:
         return clients
 
@@ -326,6 +328,7 @@ def _ensure_uploader_wallets(
                 client_index=client["client_index"],
                 wallet_address=wallet_obj.address,
                 wallet_secret_key=wallet_obj.secret_key,
+                role=client.get("role", "upload"),
             )
             client["wallet_address"] = wallet_obj.address
             client["wallet_secret_key"] = wallet_obj.secret_key
@@ -436,7 +439,7 @@ def cmd_provision_clients(args):
             f"state: {e}[/yellow]"
         )
 
-    has_uploaders = any(c.get("role", "upload") == "upload" for c in clients)
+    has_uploaders = any(is_upload(c.get("role", "upload")) for c in clients)
 
     if prod_mode and has_uploaders:
         console.print(
@@ -553,9 +556,9 @@ def cmd_provision_clients(args):
     console.print(f"  Client VMs: {len(host_ips)}")
     for c in clients:
         role = c.get("role", "upload")
-        if role == "upload":
+        if is_upload(role):
             console.print(
-                f"    Uploader #{c['client_index']}: {c.get('ip', 'N/A')} "
+                f"    {role} #{c['client_index']}: {c.get('ip', 'N/A')} "
                 f"({c['region']}, {c.get('file_size_mb', 0)}MB)"
             )
         else:

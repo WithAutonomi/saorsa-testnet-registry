@@ -354,18 +354,24 @@ def update_client_state(name: str, updates: dict) -> None:
 
 
 def update_client_wallet(
-    name: str, client_index: int, wallet_address: str, wallet_secret_key: str
+    name: str,
+    client_index: int,
+    wallet_address: str,
+    wallet_secret_key: str,
+    role: str = "upload",
 ) -> None:
     """Persist a generated per-uploader wallet onto its entry in client state.
 
-    Looks up the uploader by ``client_index`` (only uploaders carry wallets).
+    Looks up the uploader by ``(role, client_index)`` — only upload roles carry
+    wallets, and ``client_index`` restarts at 1 per role, so a ``wasm-upload``
+    wallet must never land on native uploader #1.
     Raises RuntimeError if the deployment or matching uploader entry is missing.
     """
     state = load_client_state(name)
     clients = state.get("clients", [])
     matched = False
     for entry in clients:
-        if entry.get("role") != "upload":
+        if entry.get("role", "upload") != role:
             continue
         if entry.get("client_index") == client_index:
             entry["wallet_address"] = wallet_address
@@ -374,8 +380,8 @@ def update_client_wallet(
             break
     if not matched:
         raise RuntimeError(
-            f"No uploader with client_index={client_index} found in client "
-            f"state for '{name}'."
+            f"No {role} client with client_index={client_index} found in "
+            f"client state for '{name}'."
         )
     client = _get_s3_client()
     client.put_object(

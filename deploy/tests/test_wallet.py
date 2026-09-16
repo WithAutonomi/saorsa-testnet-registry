@@ -497,3 +497,58 @@ def test_transfer_token_tolerates_missing_gas_key():
         wallet.transfer_token(w3, TOKEN, key, target, 10**21)
 
     assert "gas" not in sent
+
+
+def test_ensure_uploader_wallets_covers_wasm_uploaders_keyed_by_role():
+    """A wasm-upload client gets its own wallet, persisted under ITS role.
+
+    client_index restarts at 1 per role, so the native uploader #1 and the
+    WASM uploader #1 must each get a distinct wallet keyed by (role, index) —
+    the pre-fix code skipped WASM uploaders entirely, leaving them to sign
+    from the shared funding wallet.
+    """
+    from saorsa_deploy.cmd.provision_clients import _ensure_uploader_wallets
+
+    funding = wallet.create_wallet()
+    clients = [
+        {"role": "upload", "client_index": 1, "region": "lon1",
+         "ant_funding": "200", "eth_funding": "0.1"},
+        {"role": "wasm-upload", "client_index": 1, "region": "lon1",
+         "ant_funding": "200", "eth_funding": "0.1"},
+        {"role": "wasm-download", "client_index": 1, "region": "tor1"},
+    ]
+    console = MagicMock()
+    with (
+        patch("saorsa_deploy.cmd.provision_clients.get_web3", return_value=MagicMock()),
+        patch("saorsa_deploy.cmd.provision_clients.get_token_decimals", return_value=18),
+        patch("saorsa_deploy.cmd.provision_clients.get_token_balance", return_value=0),
+        patch("saorsa_deploy.cmd.provision_clients.get_eth_balance", return_value=0),
+        patch("saorsa_deploy.cmd.provision_clients.transfer_eth", return_value="0xeth"),
+        patch("saorsa_deploy.cmd.provision_clients.transfer_token", return_value="0xant"),
+        patch("saorsa_deploy.cmd.provision_clients.update_client_wallet") as p_persist,
+    ):
+        out = _ensure_uploader_wallets("DEV-01", clients, funding.secret_key, console)
+
+    assert "wallet_secret_key" in out[0] and "wallet_secret_key" in out[1]
+    assert out[0]["wallet_secret_key"] != out[1]["wallet_secret_key"]
+    assert "wallet_secret_key" not in out[2]
+    persisted = {
+        (c.kwargs["role"], c.kwargs["client_index"]) for c in p_persist.call_args_list
+    }
+    assert persisted == {("upload", 1), ("wasm-upload", 1)}
+
+
+def test_update_client_wallet_is_keyed_by_role(tmp_path):
+    from saorsa_deploy import state as state_mod
+
+    doc = {"clients": [
+        {"role": "upload", "client_index": 1},
+        {"role": "wasm-upload", "client_index": 1},
+    ]}
+    with (
+        patch.object(state_mod, "load_client_state", return_value=doc),
+        patch.object(state_mod, "_get_s3_client", return_value=MagicMock()),
+    ):
+        state_mod.update_client_wallet("DEV-01", 1, "0xW", "0xS", role="wasm-upload")
+    assert "wallet_address" not in doc["clients"][0]
+    assert doc["clients"][1]["wallet_address"] == "0xW"
