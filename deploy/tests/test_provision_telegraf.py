@@ -1,9 +1,12 @@
+import fnmatch
+import tomllib
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pyinfra.operations import server
 
 from saorsa_deploy.provisioning.telegraf import (
+    INFLUX_TRAFFIC_TARGET_PATTERNS,
     TELEGRAF_CONFIG_DIR,
     TELEGRAF_CONFIG_PATH,
     TELEGRAF_ENV_PATH,
@@ -840,3 +843,92 @@ class TestReadIpsFromFile:
 
         with pytest.raises(OSError):
             read_ips_from_file("/nonexistent/hosts.txt")
+
+
+class TestInfluxTrafficOutput:
+    """The ES forwarder's optional second output: traffic-accounting summaries
+    to InfluxDB (V2-1225)."""
+
+    _INFLUX = dict(
+        influxdb_url="http://mon:8086",
+        influxdb_token="s3cr3t-influx-token",
+        influxdb_org="ant",
+        influxdb_bucket="testnet-metrics",
+    )
+
+    def test_off_by_default_and_byte_identical(self):
+        plain = _make_provisioner()
+        assert not plain.influx_output_enabled
+        config = plain._build_telegraf_config()
+        assert "influxdb" not in config.lower()
+        assert "INFLUXDB" not in plain._build_env_file()
+        # No placeholder may leak when the block is empty.
+        assert "__INFLUX_OUTPUT_BLOCK__" not in config
+
+    def test_partial_credentials_rejected(self):
+        with pytest.raises(ValueError, match="together"):
+            _make_provisioner(influxdb_url="http://mon:8086")
+
+    def test_env_file_gains_the_four_influx_vars(self):
+        prov = _make_provisioner(**self._INFLUX)
+        env = dict(
+            line.split("=", 1) for line in prov._build_env_file().splitlines()
+        )
+        assert env["INFLUXDB_URL"] == "http://mon:8086"
+        assert env["INFLUXDB_TOKEN"] == "s3cr3t-influx-token"
+        assert env["INFLUXDB_ORG"] == "ant"
+        assert env["INFLUXDB_BUCKET"] == "testnet-metrics"
+
+    def test_output_block_reads_env_and_is_valid_toml(self):
+        prov = _make_provisioner(**self._INFLUX)
+        config = prov._build_telegraf_config()
+        parsed = tomllib.loads(config)
+        (out,) = parsed["outputs"]["influxdb_v2"]
+        assert out["urls"] == ["${INFLUXDB_URL}"]
+        assert out["token"] == "${INFLUXDB_TOKEN}"
+        assert out["organization"] == "${INFLUXDB_ORG}"
+        assert out["bucket"] == "${INFLUXDB_BUCKET}"
+        # The ES output is untouched -- the new output is purely additive.
+        assert len(parsed["outputs"]["elasticsearch"]) == 1
+        assert "s3cr3t" not in config, "credentials go through the env file only"
+
+    def test_output_is_scoped_to_tail_and_traffic_targets(self):
+        """Without namepass + tagpass EVERY parsed log line would hit Influx."""
+        prov = _make_provisioner(**self._INFLUX)
+        (out,) = tomllib.loads(prov._build_telegraf_config())["outputs"]["influxdb_v2"]
+        assert out["namepass"] == ["tail"]
+        assert out["tagpass"]["target"] == list(INFLUX_TRAFFIC_TARGET_PATTERNS)
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            # Every target emitting a cumulative summary on the shipped build
+            # (verified against ant-prod-01's Elasticsearch, 2026-09-17).
+            "saorsa_transport::traffic",
+            "saorsa_core::traffic",
+            "ant_node::replication::traffic",
+            "saorsa_transport::relay::traffic",
+            "saorsa_transport::masque::relay_server",
+            # The targets V2-834 (ant-node#230) adds -- must pass with no
+            # deploy change.
+            "ant_node::payment::traffic",
+            "ant_node::storage::traffic",
+            "ant_node::upgrade::traffic",
+        ],
+    )
+    def test_tagpass_admits_every_traffic_target(self, target):
+        assert _telegraf_tagpass_matches(target)
+
+    @pytest.mark.parametrize(
+        "target",
+        ["ant_node", "ant_node::node", "saorsa_transport::masque", "saorsa_core::traffic_shaper"],
+    )
+    def test_tagpass_rejects_ordinary_targets(self, target):
+        assert not _telegraf_tagpass_matches(target)
+
+
+def _telegraf_tagpass_matches(target: str) -> bool:
+    """Model telegraf's tagpass matching: each value is a glob compiled with NO
+    separator (gobwas/glob), so ``*`` spans ``::``. ``fnmatch`` has the same
+    semantics for ``*`` and literal text."""
+    return any(fnmatch.fnmatchcase(target, p) for p in INFLUX_TRAFFIC_TARGET_PATTERNS)

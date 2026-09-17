@@ -1,8 +1,10 @@
 import json
 from unittest.mock import MagicMock, patch
 
+from saorsa_deploy.provisioning import egress_dashboard
 from saorsa_deploy.provisioning.monitoring import (
     GRAFANA_CLIENT_DASHBOARD_PATH,
+    GRAFANA_EGRESS_DASHBOARD_PATH,
     INFLUXDB_BUCKET,
     INFLUXDB_CLIENT_BUCKET,
     MonitoringProvisioner,
@@ -240,3 +242,130 @@ class TestProvisioningWiresClientDashboard:
         )
         commands = "\n".join(client_call.kwargs["commands"])
         assert GRAFANA_CLIENT_DASHBOARD_PATH in commands
+
+
+class TestEgressAccountingDashboard:
+    """The accounted-vs-actual egress dashboard (V2-1225)."""
+
+    def _dash(self):
+        return json.loads(_make_provisioner()._build_egress_accounting_dashboard())
+
+    def test_identity_stable(self):
+        dash = self._dash()
+        assert dash["title"] == "Egress accounting"
+        assert dash["uid"] == "ant-egress-accounting"
+        assert "egress-accounting" in dash["tags"]
+
+    def test_exact_panel_set_in_order(self):
+        assert _panel_titles(self._dash()) == [
+            "Egress accounting coverage (%)",
+            "Unaccounted egress (mean over range, top 15)",
+            "Relay throughput (MASQUE relay server)",
+            "Active relay reservations",
+            "Replication serving",
+            "Numerator definition",
+        ]
+
+    def test_reads_only_the_node_bucket(self):
+        """No cross-datasource join: every query is Flux against testnet-metrics."""
+        dash = self._dash()
+        assert _buckets_referenced(dash) == {INFLUXDB_BUCKET}
+        for panel in dash["panels"]:
+            if panel["type"] != "text":
+                assert panel["datasource"] == {"type": "influxdb", "uid": "influxdb"}
+
+    def test_role_defaults_to_all_and_host_variable_present(self):
+        dash = self._dash()
+        assert _host_role_var(dash)["current"]["value"] == "$__all"
+        assert {v["name"] for v in dash["templating"]["list"]} == {"host_role", "host"}
+
+    def _query(self, title: str) -> str:
+        panel = next(p for p in self._dash()["panels"] if p["title"] == title)
+        return panel["targets"][0]["query"]
+
+    def test_numerator_is_exactly_udp_tx_plus_masque_relayed(self):
+        """wire_tx_bytes / fetch_response_tx_bytes would double-count the same
+        bytes at a higher layer, and bytes_relayed under the relay-CLIENT target
+        (saorsa_transport::relay::traffic) is the other, small leg."""
+        for title in ("Egress accounting coverage (%)",
+                      "Unaccounted egress (mean over range, top 15)"):
+            q = self._query(title)
+            assert (
+                '(r["target"] == "saorsa_transport::traffic" and r["_field"] == "udp_tx_bytes")'
+                in q
+            )
+            assert (
+                '(r["target"] == "saorsa_transport::masque::relay_server" '
+                'and r["_field"] == "bytes_relayed")' in q
+            )
+            assert "wire_tx_bytes" not in q
+            assert "fetch_response_tx_bytes" not in q
+            assert "saorsa_transport::relay::traffic" not in q
+
+    def test_tail_host_is_lowercased_before_joining_on_net(self):
+        """The ES forwarder upper-cases `host` before every output; `net` is
+        lowercase. Joining without folding case would match nothing."""
+        q = self._query("Egress accounting coverage (%)")
+        assert 'import "strings"' in q
+        assert "strings.toLower(v: r.host)" in q
+        assert 'join(tables: {a: accounted, n: nic}, on: ["_time", "host"])' in q
+
+    def test_counters_are_differenced_not_plotted_raw(self):
+        """The summaries are cumulative per process; a restart must not go negative."""
+        for title in ("Egress accounting coverage (%)", "Relay throughput (MASQUE relay server)",
+                      "Replication serving"):
+            q = self._query(title)
+            assert "difference(nonNegative: true)" in q
+            assert f"aggregateWindow(every: {egress_dashboard.WINDOW}, fn: last" in q
+            # Cross-service totals are a per-(host, _time) sum, NOT a second
+            # aggregateWindow -- that would re-stamp each increase one window
+            # late against the NIC side of the join.
+            assert q.count("aggregateWindow(") == (2 if "nic =" in q else 1)
+
+    def test_nic_denominator_is_busiest_non_loopback_interface(self):
+        q = self._query("Egress accounting coverage (%)")
+        assert 'r["_measurement"] == "net" and r["_field"] == "bytes_sent"' in q
+        assert 'r["interface"] != "lo" and r["interface"] != "all"' in q
+        assert 'group(columns: ["host", "_time"])\n  |> max()' in q
+
+    def test_coverage_panel_thresholds_red_below_80(self):
+        panel = next(p for p in self._dash()["panels"]
+                     if p["title"] == "Egress accounting coverage (%)")
+        steps = panel["fieldConfig"]["defaults"]["thresholds"]["steps"]
+        assert steps == [
+            {"color": "red", "value": None},
+            {"color": "green", "value": 80},
+        ]
+        assert panel["fieldConfig"]["defaults"]["unit"] == "percent"
+        assert "mean" in panel["options"]["legend"]["calcs"]
+
+    def test_unaccounted_panel_is_a_top_15_table_of_rates(self):
+        panel = next(p for p in self._dash()["panels"]
+                     if p["title"].startswith("Unaccounted egress"))
+        assert panel["type"] == "table"
+        assert panel["fieldConfig"]["defaults"]["unit"] == "Bps"
+        q = panel["targets"][0]["query"]
+        assert "limit(n: 15)" in q
+        assert 'sort(columns: ["_value"], desc: true)' in q
+        assert "/ 600.0" in q
+
+    def test_numerator_note_names_the_exclusions(self):
+        panel = next(p for p in self._dash()["panels"] if p["type"] == "text")
+        content = panel["options"]["content"]
+        for phrase in ("udp_tx_bytes", "bytes_relayed", "wire_tx_bytes",
+                       "fetch_response_tx_bytes", "upper bound", "V2-834"):
+            assert phrase in content
+
+    @patch("saorsa_deploy.provisioning.monitoring.add_op")
+    @patch("saorsa_deploy.provisioning.monitoring.server")
+    def test_configure_grafana_writes_egress_dashboard(self, _mock_server, mock_add_op):
+        _make_provisioner()._add_configure_grafana_ops(
+            MagicMock(), influxdb_url="http://10.0.0.1:8086", influx_token="tok",
+        )
+        call = next(
+            c for c in mock_add_op.call_args_list
+            if c.kwargs["name"] == "Write egress accounting dashboard"
+        )
+        commands = "\n".join(call.kwargs["commands"])
+        assert GRAFANA_EGRESS_DASHBOARD_PATH in commands
+        assert '"uid": "ant-egress-accounting"' in commands

@@ -997,6 +997,49 @@ any) and provisions host-stat Telegraf on them with `host_role="CLIENT"`, routed
 to the dedicated **`client-metrics`** bucket (the client→ES forwarder is installed
 separately by `clients provision`).
 
+#### Traffic-accounting counters → InfluxDB (the ES forwarder's second output)
+
+Whenever a deployment has **both** elastic and monitoring state, the ES log
+forwarder is rendered with a second output: an `[[outputs.influxdb_v2]]` that
+writes the node's periodic **traffic-accounting summaries** (V2-623: cumulative
+`udp_tx_bytes`, `bytes_relayed`, `wire_tx_bytes`, `fetch_response_tx_bytes`, …)
+to the deployment's InfluxDB as well as to Elasticsearch. The output is scoped
+with `namepass = ["tail"]` and a **`tagpass` on the `target` tag** —
+`["*::traffic", "saorsa_transport::masque::relay_server"]` — which is mandatory:
+without it every parsed log line would be written to Influx. Telegraf compiles
+those values as separator-less globs, so `*::traffic` admits every
+`<crate>::…::traffic` summary target, current
+(`saorsa_transport::traffic`, `saorsa_core::traffic`,
+`ant_node::replication::traffic`, `saorsa_transport::relay::traffic`) and the
+`ant_node::{payment,storage,upgrade}::traffic` targets V2-834 adds — no deploy
+change per new counter. The MASQUE relay-server summary lives under a component
+target, hence the explicit entry. Points land in the `tail` measurement of the
+node bucket (`testnet-metrics`), tagged `host` / `service_number` / `target`
+exactly as the ES documents are — which means the **`host` tag is upper-cased**
+(the forwarder upper-cases it for ES and processors run before every output);
+the Grafana queries lower-case it before joining on the lowercase `net` host.
+
+The credentials go into the ES forwarder's own env file (`/etc/default/telegraf-ant`
+gains `INFLUXDB_URL` / `INFLUXDB_TOKEN` / `INFLUXDB_ORG` / `INFLUXDB_BUCKET`, the
+same values `/etc/default/telegraf-ant-metrics` holds) via the same path that
+populates the metrics env file. Without monitoring state the rendered ES config
+and env file are byte-identical to before (asserted by a test). The ES output
+itself is unchanged, so Elasticsearch volume does not grow.
+
+**Retrofitting a running deployment:** `deployments provision-telegraf --name <name>
+--skip-metrics` — the Influx credentials are resolved even under `--skip-metrics`,
+so this regenerates and restarts only `telegraf-ant-elasticsearch`, now with the
+Influx output, and leaves `telegraf-ant-metrics` alone. Add `--only-new-logs` on a
+long-running fleet, or the restarted forwarder re-ingests every log still on disk
+into ES. Should the token in the deployment's monitoring S3 state ever be stale,
+`--influxdb-url` / `--influxdb-token` take precedence over state for **both**
+forwarders. Cost measured on the prod fleet: ~1.1M points/day across ~4,000
+series (73 hosts × ~11 services × 5 targets).
+
+The panels that consume this are the **Egress accounting** dashboard, provisioned
+by [`monitoring provision`](#monitoring-provision-command) alongside the host
+dashboards.
+
 ## Sizing uploader gas funding (`clients estimate-gas`)
 
 Testnet uploader VMs each get a generated wallet funded with a **fixed** amount of
@@ -1138,6 +1181,31 @@ uv run saorsa-deploy monitoring provision --name PROD-MON --retention-days 14
 | `--retention-days` | int | No | 0 | InfluxDB bucket retention in days (`0` = keep forever, the dev default). Applied to both buckets at first provision |
 
 On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `deployments provision-telegraf` command.
+
+Grafana (when enabled) is provisioned with four dashboards: **Node Host
+Statistics**, **Client Host Statistics**, **Node Overview**, and **Egress
+accounting** (V2-1225). The last reconciles the node's own traffic-accounting
+counters — shipped to Influx by the ES forwarder, see
+[Traffic-accounting counters → InfluxDB](#traffic-accounting-counters--influxdb-the-es-forwarders-second-output)
+— against the host NIC, per host, from the one `testnet-metrics` bucket: (1)
+**coverage %** = `(udp_tx_bytes + bytes_relayed) / net.bytes_sent`, red below 80%,
+with the legend's *mean* giving the figure for the selected range; (2)
+**unaccounted egress** as a rate, mean over the range, top-15 table; (3) MASQUE
+**relay throughput** with the `forwarded_to_client_bytes` /
+`forwarded_to_target_bytes` split; (4) **active relay reservations**; (5)
+**replication serving** (`fetch_response_tx_bytes`); plus a text panel defining
+the numerator. The numerator is *only* `udp_tx_bytes` (target
+`saorsa_transport::traffic`) + `bytes_relayed` (target
+`saorsa_transport::masque::relay_server` — the same field also exists under the
+small relay-client target and is not used); `wire_tx_bytes` and
+`fetch_response_tx_bytes` are excluded because they count the same bytes at a
+higher layer. Counters are cumulative per process and emitted every 5 minutes,
+so every panel differences them over 10-minute windows (`nonNegative`, so a
+service restart drops that window rather than going negative) and sums across
+the host's services; the NIC side is the busiest non-loopback interface per
+window, since interface names differ by provider. Until V2-834 C.1 lands the
+numerator can over-count relayed bytes, so coverage is an upper bound. Panel
+builders: `provisioning/egress_dashboard.py`.
 
 This step creates **two** InfluxDB buckets — `testnet-metrics` (node-tier host
 metrics, the `prometheus` per-node measurement, and application measurements

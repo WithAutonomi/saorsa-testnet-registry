@@ -1236,6 +1236,51 @@ Grafana VM.
 - State: separate S3 key prefix `saorsa-deploy/monitoring/{name}.json` (independent of deployment state); records `provider`, `vm_ip` (InfluxDB) and `grafana_ip`. tfstate key prefix is `do-monitoring`/`ovh-monitoring` per provider.
 - Telegraf metrics runs as a separate systemd service (`telegraf-ant-metrics`) alongside the existing log forwarding (`telegraf-ant-elasticsearch`)
 
+### Traffic-accounting counters in InfluxDB + the Egress accounting dashboard (V2-1225)
+
+An 18-hour bandwidth episode on a prod node (2026-09-14) was invisible in every
+dashboard although the node's own traffic-accounting counters (V2-623) recorded
+it — they sat in Elasticsearch, while the `net.bytes_sent` they must be divided
+by lives in InfluxDB, and labels differ (`tag.host.keyword` upper-cased vs
+lowercase `host`). So the ES forwarder (`provisioning/telegraf.py`) now renders a
+**second output** whenever a deployment has both elastic and monitoring state
+(every kind via `telegraf_fold`; retrofit via `provision-telegraf`, where the
+Influx creds are resolved even under `--skip-metrics`): `[[outputs.influxdb_v2]]`
+with `namepass=["tail"]` and `tagpass target = ["*::traffic",
+"saorsa_transport::masque::relay_server"]` (`INFLUX_TRAFFIC_TARGET_PATTERNS`).
+The tagpass is **mandatory** (else every log line hits Influx); it is a **glob,
+not the issue's literal 5-list**, because ant-node#230 (V2-834) adds
+`ant_node::{payment,storage,upgrade}::traffic` and a literal list would drop them
+silently — a parametrised test asserts all eight targets match. Creds are
+duplicated into `/etc/default/telegraf-ant` as `INFLUXDB_*`; without monitoring
+the ES config/env are byte-identical (tested). The ES output is untouched.
+
+Points land in `tail` in `testnet-metrics` with the **upper-cased `host`** (the
+uppercase processor runs before every output; changing it would alter ES docs),
+so the dashboard lower-cases the tail side in Flux before joining on `net`.
+Facts the Flux is shaped by (probed on prod ES): summaries are **cumulative per
+process, every 5 min** → `aggregateWindow(10m, last)` → `difference(nonNegative)`
+→ per-`(host,_time)` `sum()` across services (NOT a second `aggregateWindow`,
+which re-stamps each increase one window late and emits a bogus zero row);
+**`bytes_relayed` exists under two targets** (relay-client `saorsa_transport::
+relay::traffic`, small; relay-server `masque::relay_server`, the GB one — the
+ratio uses the latter, every filter names target AND field); the replication
+summary is three lines (`group` 1/2/3) and `fetch_response_tx_bytes` is on group
+2. Dashboard "Egress accounting" (uid `ant-egress-accounting`,
+`provisioning/egress_dashboard.py`, written by every `monitoring provision` with
+Grafana): coverage % (numerator = `udp_tx_bytes` + masque `bytes_relayed` only;
+`wire_tx_bytes`/`fetch_response_tx_bytes` excluded as double counts; red <80%;
+legend mean = the figure for the range; upper bound until V2-834 C.1),
+unaccounted egress top-15 table (mean rate over range), relay throughput with
+direction split, active reservations, replication serving, numerator note. NIC
+side = busiest non-loopback interface per window (names differ per provider).
+Flux verified against a local InfluxDB with synthetic points incl. a counter
+restart. Prod rollout: retrofit with `provision-telegraf --name ant-prod-01
+--host-ips-file <fleet ips> --host-role WAN_NODE --skip-metrics --only-new-logs`
+(the last flag or the restart re-ingests every on-disk log into ES); the
+dashboard JSON can be dropped into `/var/lib/grafana/dashboards/` on the Grafana
+VM — the file provider picks it up without a restart.
+
 ### Buckets (node vs client isolation)
 
 Host metrics are split across **two InfluxDB buckets** so the "Node Host

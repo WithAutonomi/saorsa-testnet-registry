@@ -10,6 +10,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.provisioning import egress_dashboard
 from saorsa_deploy.provisioning.apt import (
     DISABLE_UNATTENDED_UPGRADES_OP_NAME,
     build_disable_unattended_upgrades_command,
@@ -50,6 +51,7 @@ GRAFANA_DASHBOARD_DIR = "/var/lib/grafana/dashboards"
 GRAFANA_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/host-metrics.json"
 GRAFANA_CLIENT_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/client-host-metrics.json"
 GRAFANA_NODE_TABLE_PATH = f"{GRAFANA_DASHBOARD_DIR}/node-overview.json"
+GRAFANA_EGRESS_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/egress-accounting.json"
 
 
 class MonitoringProvisioner:
@@ -387,6 +389,17 @@ class MonitoringProvisioner:
             ],
         )
 
+        egress_json = self._build_egress_accounting_dashboard()
+        add_op(
+            state,
+            server.shell,
+            name="Write egress accounting dashboard",
+            commands=[
+                f"cat > {GRAFANA_EGRESS_DASHBOARD_PATH}"
+                f" << 'EGRESS_EOF'\n{egress_json}\nEGRESS_EOF",
+            ],
+        )
+
     def _add_influxdb_start_ops(self, state: State):
         add_op(
             state,
@@ -564,6 +577,19 @@ class MonitoringProvisioner:
                 (self._panel_network_outbound, {}),
             ],
             default_host_role="CLIENT",
+        )
+
+    def _build_egress_accounting_dashboard(self) -> str:
+        """Accounted vs actual node egress (V2-1225): the traffic-accounting
+        summaries the ES forwarder also ships to Influx, reconciled against the
+        host ``net`` counters. Panels live in ``egress_dashboard``; the Role /
+        Host template variables are the host-statistics ones."""
+        return self._build_host_dashboard(
+            title=egress_dashboard.DASHBOARD_TITLE,
+            uid=egress_dashboard.DASHBOARD_UID,
+            tag=egress_dashboard.DASHBOARD_TAG,
+            bucket=INFLUXDB_BUCKET,
+            panel_specs=list(egress_dashboard.EGRESS_ACCOUNTING_PANEL_SPECS),
         )
 
     def _build_host_dashboard(
