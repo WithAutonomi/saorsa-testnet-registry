@@ -26,6 +26,7 @@ import {
   installWebRtc,
 } from "./client.js";
 import { type Config, loadConfig } from "./config.js";
+import { describeError, fullErrorText } from "./errors.js";
 import { buildLine, i64Field, type InfluxTarget, submitMetric } from "./influx.js";
 import { clearInflight, markInflight, recoverInflight } from "./inflight.js";
 import { makeWallet, type PaymentNetwork, type PayForQuotes,
@@ -73,9 +74,12 @@ function classify(error: unknown): string {
   return "other";
 }
 
-/** Truncated single-line message, so one failure cannot flood the journal. */
+/**
+ * Single-line message, capped so one failure cannot flood the journal, that
+ * keeps the reason (see errors.ts for why a plain prefix does not).
+ */
 function shortMessage(error: unknown): string {
-  return String(error).replace(/\s+/g, " ").slice(0, 500);
+  return describeError(error);
 }
 
 async function runUploader(
@@ -150,6 +154,7 @@ async function runUploader(
       status = STATUS_FAILURE;
       errorKind = classify(e);
       console.error(`upload #${seq} failed [${errorKind}]: ${shortMessage(e)}`);
+      await preserveFailure(cfg, seq, "upload", e);
     }
 
     const totalMs = Date.now() - t0;
@@ -248,7 +253,11 @@ async function runDownloader(
   }
 }
 
-/** Keep a per-op record of a failed download, as `downloader.sh` does. */
+/**
+ * Keep a per-op record of a failed operation, as `downloader.sh` does for
+ * downloads. The journal line is capped; this file is not, so the whole
+ * error (stack and cause chain included) survives for a failed upload too.
+ */
 async function preserveFailure(
   cfg: Config,
   seq: number,
@@ -258,7 +267,7 @@ async function preserveFailure(
   try {
     await mkdir(cfg.logDir, { recursive: true });
     const stem = `${String(seq).padStart(4, "0")}-${address.slice(0, 16)}`;
-    await writeFile(join(cfg.logDir, `${stem}.stderr`), `${String(error)}\n`);
+    await writeFile(join(cfg.logDir, `${stem}.stderr`), fullErrorText(error));
   } catch {
     /* best effort */
   }
