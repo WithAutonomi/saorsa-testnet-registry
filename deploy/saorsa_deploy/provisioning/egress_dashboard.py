@@ -130,31 +130,50 @@ UNACCOUNTED_TOP_N = 15
 
 DATASOURCE = {"type": "influxdb", "uid": "influxdb"}
 
-NUMERATOR_NOTE = (
-    "### What is being reconciled\n\n"
-    "**Accounted egress** = `udp_tx_bytes` (target `saorsa_transport::traffic`: "
-    "bytes sent by QUIC connections on the tracked endpoint; on V2-834 builds "
-    "plus `relay_carrier_udp_tx_bytes`, a NAT'd node's carrier to its relay, "
-    "which that build splits out) **+** `bytes_relayed` "
-    "from both relay servers (`saorsa_transport::relay::traffic`, the stream relay "
-    "on raw UDP sockets, and `saorsa_transport::masque::relay_server`, the MASQUE "
-    "reservation relay -- whose summary only appears once a CONNECT has arrived). "
-    "**Actual egress** = the host's busiest interface that is not loopback and not "
-    "a NAT-simulation `veth*` (`net.bytes_sent`). Both are cumulative counters "
-    "differenced over windows (10 m, 30 m or 1 h depending on the range) and summed "
-    "across the host's node services.\n\n"
-    "`wire_tx_bytes` and `fetch_response_tx_bytes` are **deliberately excluded** "
-    "from the ratio: they measure the same bytes at a higher layer and would "
-    "double-count. Until V2-834 Part C.1 lands (relay connections counted both "
-    "virtually and on the carrier) the numerator can over-count, so coverage is an "
-    "**upper bound**.\n\n"
-    "**Socket ground truth** (`sock_tx_bytes` / `sock_rx_bytes`) exists only on "
-    "V2-834 builds: process-wide bytes at the real-socket boundary, the figure "
-    "V2-834's acceptance gate (within 2% of the NIC) is measured by. Empty on "
-    "older builds.\n\n"
-    "A restart resets a service's counters; that window is dropped for that "
-    "service, not negated."
-)
+NUMERATOR_NOTE = """\
+### Accounted egress
+
+The numerator of the coverage panel. Each is a cumulative counter on a node log line.
+
+- `udp_tx_bytes` — target `saorsa_transport::traffic`. Bytes sent by QUIC connections on the
+  tracked endpoint.
+- `relay_carrier_udp_tx_bytes` — target `saorsa_transport::traffic`. A NAT'd node's carrier
+  connection to its relay. Only on V2-834 builds, which split it out of `udp_tx_bytes`.
+- `bytes_relayed` — target `saorsa_transport::relay::traffic`. Bytes this node forwarded as a
+  stream relay server, on raw UDP sockets.
+- `bytes_relayed` — target `saorsa_transport::masque::relay_server`. Bytes this node forwarded
+  as a MASQUE reservation relay. The line is only written once a CONNECT has arrived, so an idle
+  relay has none.
+
+### Actual egress
+
+- `net.bytes_sent` on the host's busiest interface, ignoring loopback and the NAT-simulation
+  `veth*` pair.
+
+### Deliberately excluded
+
+- `wire_tx_bytes` — the same bytes as `udp_tx_bytes`, counted at the message layer.
+- `fetch_response_tx_bytes` — the same bytes, counted at the replication layer.
+- `virtual_udp_tx_bytes` — rides on the relay carrier, already counted there.
+
+### Socket ground truth
+
+- `sock_tx_bytes` and `sock_rx_bytes` — target `saorsa_transport::traffic`. Process-wide bytes
+  at the real-socket boundary.
+- `raw_rx_bytes` — target `saorsa_transport::relay::traffic`. Ingress on the relay server's own
+  sockets, outside `sock_rx_bytes`.
+- Only V2-834 builds emit these. They are the figure its acceptance gate, within 2% of the NIC,
+  is measured by.
+
+### How the numbers are made
+
+- Counters are differenced over 10 m, 30 m or 1 h windows depending on the range, then summed
+  across the host's node services.
+- A service restart resets its counters. That window is dropped for that service, not negated.
+- The window cut off by the end of the range is dropped on both sides.
+- Coverage is an upper bound until V2-834 Part C.1 lands: relay connections are counted both
+  virtually and on the carrier.
+"""
 
 
 def _field_clause(target: str, field: str) -> str:
