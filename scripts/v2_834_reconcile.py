@@ -58,6 +58,116 @@ from saorsa_deploy.analysis.es import (  # noqa: E402
     EsRun,
 )
 
+MESSAGE_FIELD = "tail.message"
+# Per-endpoint lines carry this discriminator (transport 69cc8761+): a
+# dual-stack node runs one endpoint per address family and each has its own
+# cumulative series. Aggregating both as one series makes the idle family's
+# zeros the window minimum. Lines without it bucket under "-".
+ENDPOINT_FIELD = "tail.endpoint.keyword"
+
+# Which summary line each field lives on. Pinning the aggregation to the
+# message keeps the relay server's per-session lines (same field names as
+# its summary, V2-1202) out of the relay-summary deltas.
+FIELD_MESSAGE = {
+    **dict.fromkeys(
+        [
+            "sock_tx_bytes",
+            "sock_tx_datagrams",
+            "sock_tx_errors",
+            "sock_rx_bytes",
+            "sock_rx_datagrams",
+            "stateless_tx_bytes",
+            "stateless_tx_count",
+            "failed_dial_tx_bytes",
+            "failed_dial_rx_bytes",
+            "failed_dial_count",
+        ],
+        "socket traffic summary (cumulative)",
+    ),
+    **dict.fromkeys(
+        [
+            "udp_tx_bytes",
+            "udp_rx_bytes",
+            "virtual_udp_tx_bytes",
+            "virtual_udp_rx_bytes",
+            "relay_carrier_udp_tx_bytes",
+            "relay_carrier_udp_rx_bytes",
+        ],
+        "endpoint traffic summary (cumulative)",
+    ),
+    **dict.fromkeys(
+        [
+            "forwarded_to_target_bytes",
+            "forwarded_to_target_count",
+            "relay_target_rx_bytes",
+            "relay_target_rx_count",
+            "forwarded_to_client_bytes",
+            "target_send_failed_bytes",
+            "stream_rx_keepalive_count",
+            "stream_tx_keepalive_count",
+        ],
+        "relay traffic summary (cumulative)",
+    ),
+    **dict.fromkeys(
+        [
+            "stream_tx_bytes",
+            "stream_rx_bytes",
+            "keepalive_tx_count",
+            "keepalive_rx_count",
+            "dropped_oversized_bytes",
+        ],
+        "relay client traffic summary (cumulative)",
+    ),
+    **dict.fromkeys(
+        [
+            "lost_bytes",
+            "lost_packets",
+            "congestion_events",
+            "black_holes_detected",
+            "tx_acks",
+            "tx_ping",
+            "tx_crypto",
+            "rx_acks",
+            "rx_ping",
+            "rx_crypto",
+        ],
+        "connection overhead summary (cumulative)",
+    ),
+    **dict.fromkeys(
+        [
+            "wire_tx_bytes",
+            "wire_rx_bytes",
+            "wire_failed_tx_bytes",
+            "wire_rejected_rx_bytes",
+            "wire_dropped_rx_bytes",
+        ],
+        "wire traffic summary (cumulative)",
+    ),
+    **dict.fromkeys(
+        [
+            "get_success_tx_bytes",
+            "put_success_tx_bytes",
+            "get_rx_bytes",
+            "put_rx_bytes",
+        ],
+        "chunk rpc traffic summary (cumulative)",
+    ),
+    "manifest_rx_count": "upgrade traffic summary (cumulative)",
+    **dict.fromkeys(
+        ["completed_payments_ok_count", "merkle_payment_ok_count"],
+        "evm rpc summary (cumulative)",
+    ),
+}
+
+
+def field_filters(f: str) -> list[dict]:
+    filters: list[dict] = [{"exists": {"field": f"tail.{f}"}}]
+    msg = FIELD_MESSAGE.get(f)
+    if msg:
+        filters.append({"match_phrase": {MESSAGE_FIELD: msg}})
+    return filters
+
+
 # Ethernet (14) + IPv4 (20) + UDP (8) header bytes per datagram. telegraf's
 # net.bytes_* come from /proc/net/dev, which counts the L2 frame; sock_*_bytes
 # counts UDP payload only. Confirmed empirically on the first DEV-01 run.
@@ -167,12 +277,56 @@ def load_snapshots(path: Path, start_tag: str, end_tag: str) -> dict[str, dict]:
 
 
 def fetch_deltas(run: EsRun, start: str, end: str) -> dict[str, dict[str, float]]:
-    """{host: {field: delta}} -- host-summed max-minus-min per service."""
+    """{host: {field: delta}} -- max-minus-min per (host, service, endpoint),
+    summed per host. Same idea as `EsRun.counter_delta`, plus the endpoint
+    split and the message pin (see `ENDPOINT_FIELD` / `FIELD_MESSAGE`)."""
     per_host: dict[str, dict[str, float]] = defaultdict(dict)
     for f in DELTA_FIELDS:
-        res = run.counter_delta(f"tail.{f}", start, end)
-        for host, delta in res["per_host"].items():
-            per_host[norm_host(host)][f] = float(delta)
+        field = f"tail.{f}"
+        body = {
+            "size": 0,
+            "track_total_hits": False,
+            "query": {
+                "bool": {
+                    "filter": [
+                        *field_filters(f),
+                        {"range": {TIMESTAMP_FIELD: {"gte": start, "lte": end}}},
+                    ]
+                }
+            },
+            "aggs": {
+                "per_host": {
+                    "terms": {"field": HOST_FIELD, "size": 200},
+                    "aggs": {
+                        "per_service": {
+                            "terms": {"field": SERVICE_FIELD, "size": 40},
+                            "aggs": {
+                                "per_endpoint": {
+                                    "terms": {
+                                        "field": ENDPOINT_FIELD,
+                                        "size": 8,
+                                        "missing": "-",
+                                    },
+                                    "aggs": {
+                                        "lo": {"min": {"field": field}},
+                                        "hi": {"max": {"field": field}},
+                                    },
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+        }
+        r = run.search(body)
+        for hb in r["aggregations"]["per_host"]["buckets"]:
+            total = 0.0
+            for sb in hb["per_service"]["buckets"]:
+                for eb in sb["per_endpoint"]["buckets"]:
+                    lo, hi = eb["lo"]["value"], eb["hi"]["value"]
+                    if lo is not None and hi is not None:
+                        total += hi - lo
+            per_host[norm_host(hb["key"])][f] = total
     return per_host
 
 
@@ -213,29 +367,33 @@ def _dig(doc: dict, dotted: str):
 
 
 def check_monotonic(run: EsRun, start: str, end: str) -> dict:
-    """I4: per (host, service, field), every sample >= the previous one."""
+    """I4: per (host, service, endpoint, field), every sample >= the previous one."""
     host_src = HOST_FIELD.removesuffix(".keyword")
     svc_src = SERVICE_FIELD.removesuffix(".keyword")
+    ep_src = ENDPOINT_FIELD.removesuffix(".keyword")
     checked = 0
     decreases: list[dict] = []
     for f in MONOTONIC_FIELDS:
         field = f"tail.{f}"
         docs = run.hits(
-            [{"exists": {"field": field}}],
+            field_filters(f),
             start,
             end,
-            fields=[TIMESTAMP_FIELD, host_src, svc_src, field],
+            fields=[TIMESTAMP_FIELD, host_src, svc_src, ep_src, field],
         )
-        series: dict[tuple[str, str], list[tuple[str, float]]] = defaultdict(list)
+        series: dict[tuple[str, str, str], list[tuple[str, float]]] = defaultdict(list)
         for d in docs:
             host = _dig(d, host_src)
             svc = _dig(d, svc_src)
+            ep = _dig(d, ep_src) or "-"
             val = _dig(d, field)
             ts = _dig(d, TIMESTAMP_FIELD)
             if host is None or val is None or ts is None:
                 continue
-            series[(norm_host(str(host)), str(svc))].append((str(ts), float(val)))
-        for (host, svc), samples in series.items():
+            series[(norm_host(str(host)), str(svc), str(ep))].append(
+                (str(ts), float(val))
+            )
+        for (host, svc, ep), samples in series.items():
             samples.sort()
             checked += 1
             prev = None
@@ -245,6 +403,7 @@ def check_monotonic(run: EsRun, start: str, end: str) -> dict:
                         {
                             "host": host,
                             "service": svc,
+                            "endpoint": ep,
                             "field": f,
                             "prev": {"ts": prev[0], "value": prev[1]},
                             "next": {"ts": ts, "value": val},
