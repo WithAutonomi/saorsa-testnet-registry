@@ -19,6 +19,7 @@ the difference between two snapshots taken at the phase boundaries.
 
 The remote payload is verbatim from the V2-996/V2-988 runs.
 """
+
 # ruff: noqa: E501 -- the remote bash payloads are kept verbatim from the proven scripts.
 from __future__ import annotations
 
@@ -85,7 +86,13 @@ def snapshot_vm(vm: hosts.Vm, tag: str) -> dict:
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
     console = Console(stderr=True)
-    vms = hosts.select_vms(args.name, args.ips, args.inventory, tier=args.tier)
+    # Bootstraps are the busiest relay servers on a testnet and hold plain
+    # per-session sockets of their own; the V2-834 reconciliation needs them
+    # in the kernel-side denominator as much as the node tier (V2-1274 found
+    # the default `("node",)` left 7 of 13 VMs out).
+    vms = hosts.select_vms(
+        args.name, args.ips, args.inventory, tier=args.tier, roles=("node", "bootstrap")
+    )
     if not vms:
         console.print("[bold red]Error:[/bold red] no node VMs matched.")
         return 1
