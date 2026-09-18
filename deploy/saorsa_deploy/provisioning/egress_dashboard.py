@@ -807,75 +807,25 @@ def panel_service_ingress(grid_pos: dict, *, bucket: str) -> dict:
     )
 
 
-def panel_service_relay(grid_pos: dict, *, bucket: str) -> dict:
-    return _per_service_panel(
-        "Relay bytes forwarded per service", grid_pos, bucket=bucket, specs=RELAY_BYTES,
-        description="Rate of bytes_relayed over both relay servers.",
-    )
+def _make_category_panel(label: str, target: str, field: str):
+    """A per-service panel for one egress category of the decomposition."""
+    name = label.split(" (")[0]
 
-
-def panel_service_chunk_serving(grid_pos: dict, *, bucket: str) -> dict:
-    return _per_service_panel(
-        "Chunk GET serving per service", grid_pos, bucket=bucket, specs=CHUNK_GET_SERVING,
-        description="Rate of get_success_tx_bytes.",
-    )
-
-
-def panel_service_decomposition_table(grid_pos: dict, *, bucket: str) -> dict:
-    """One row per service on the selected host, one column per egress counter,
-    mean rate over the range. Read across a row for what a service's egress is
-    made of; down a column for which service does the relaying or serving."""
-    specs = tuple((t, f) for _label, t, f in EGRESS_DECOMPOSITION)
-    query = (
-        WINDOW_PROLOGUE
-        + "\n"
-        + _counter_increase(
-            bucket, specs, stream="bytes", group_by=("service_number", "_field"),
-            service_label=True,
+    def panel(grid_pos: dict, *, bucket: str) -> dict:
+        return _per_service_panel(
+            f"{name} per service", grid_pos, bucket=bucket, specs=((target, field),),
+            description=f"Rate of {field} (target {target}).",
         )
-        + "\nbytes\n"
-        "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
-        '  |> group(columns: ["service_number", "_field"])\n'
-        "  |> mean()\n"
-        '  |> group(columns: ["service_number"])\n'
-        '  |> pivot(rowKey: ["service_number"], columnKey: ["_field"], valueColumn: "_value")\n'
-        "  |> group()\n"
-        '  |> sort(columns: ["service_number"])\n'
-        '  |> yield(name: "decomposition")'
-    )
-    overrides = [
-        {
-            "matcher": {"id": "byName", "options": "service_number"},
-            "properties": [
-                {"id": "displayName", "value": "Service"},
-                {"id": "custom.width", "value": 90},
-            ],
-        },
-    ] + [
-        {
-            "matcher": {"id": "byName", "options": field},
-            "properties": [
-                {"id": "displayName", "value": label.split(" (")[0]},
-                {"id": "unit", "value": "Bps"},
-            ],
-        }
-        for label, _t, field in EGRESS_DECOMPOSITION
-    ]
-    return {
-        "title": "Egress decomposition per service (mean over range)",
-        "description": (
-            "The counters of the Egress accounting dashboard's decomposition panel, per "
-            "service on the selected host, as mean rates over the selected range. "
-            "Columns overlap (wire and chunk RPC are inside the endpoint's udp_tx_bytes; "
-            "relay legs are outside it), so rows are attribution, not a partition."
-        ),
-        "type": "table",
-        "datasource": DATASOURCE,
-        "fieldConfig": {"defaults": {}, "overrides": overrides},
-        "gridPos": grid_pos,
-        "options": {"showHeader": True},
-        "targets": [{"query": query, "refId": "A"}],
-    }
+
+    panel.__name__ = f"panel_service_{field}"
+    return panel
+
+
+#: One per-service panel per category of the egress decomposition, in the
+#: decomposition's order.
+SERVICE_CATEGORY_PANELS: tuple = tuple(
+    _make_category_panel(label, target, field) for label, target, field in EGRESS_DECOMPOSITION
+)
 
 
 def panel_drilldown_note(grid_pos: dict, *, bucket: str) -> dict:  # noqa: ARG001
@@ -889,8 +839,9 @@ def panel_drilldown_note(grid_pos: dict, *, bucket: str) -> dict:  # noqa: ARG00
                 "The tables above rank every service in the fleet over the selected "
                 "range. The panels below draw one line per service for the **single "
                 "host** chosen in the Host selector -- pick the host of a row that "
-                "stands out. Same counters and windows as the Egress accounting "
-                "dashboard."
+                "stands out: socket egress and ingress, then one panel per category "
+                "of the Egress accounting dashboard's decomposition. Same counters "
+                "and windows."
             ),
         },
     }
@@ -904,9 +855,7 @@ BY_SERVICE_PANEL_SPECS: tuple[tuple, ...] = (
     (panel_top_ingress_services, {"h": 11}),
     (panel_top_chunk_serving_services, {"h": 11}),
     (panel_drilldown_note, {"h": 3}),
-    (panel_service_decomposition_table, {"h": 10}),
     (panel_service_egress, {"h": 9}),
     (panel_service_ingress, {"h": 9}),
-    (panel_service_relay, {"h": 9}),
-    (panel_service_chunk_serving, {"h": 9}),
+    *((panel, {"h": 9}) for panel in SERVICE_CATEGORY_PANELS),
 )

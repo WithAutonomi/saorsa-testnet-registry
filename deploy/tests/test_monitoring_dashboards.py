@@ -473,11 +473,17 @@ class TestNodeTrafficByServiceDashboard:
             "Top 20 services by socket ingress",
             "Top 20 services by chunk GET serving",
             "Per-service detail",
-            "Egress decomposition per service (mean over range)",
             "Socket egress per service",
             "Socket ingress per service",
-            "Relay bytes forwarded per service",
-            "Chunk GET serving per service",
+            "DHT / wire messaging per service",
+            "chunk GET serving per service",
+            "replication fetch responses per service",
+            "relay server per service",
+            "MASQUE relay server per service",
+            "relay client stream per service",
+            "QUIC retransmission per service",
+            "stateless packets per service",
+            "failed dials per service",
         ]
 
     def test_host_variable_is_single_select(self):
@@ -516,7 +522,7 @@ class TestNodeTrafficByServiceDashboard:
     def test_per_service_panels_are_scoped_to_the_selected_host(self):
         dash = self._dash()
         series = [p for p in dash["panels"] if p["type"] == "timeseries"]
-        assert len(series) == 4
+        assert len(series) == 2 + len(egress_dashboard.EGRESS_DECOMPOSITION)
         for panel in series:
             q = panel["targets"][0]["query"]
             assert 'r["host"] =~ /(?i)^$host$/' in q
@@ -526,17 +532,14 @@ class TestNodeTrafficByServiceDashboard:
                 "service ${__field.labels.service_number}"
             )
 
-    def test_decomposition_table_is_per_service_on_selected_host(self):
-        panel = next(p for p in self._dash()["panels"]
-                     if p["title"].startswith("Egress decomposition per service"))
-        q = panel["targets"][0]["query"]
-        assert 'r["host"] =~ /(?i)^$host$/' in q
-        assert 'pivot(rowKey: ["service_number"], columnKey: ["_field"]' in q
-        cols = {o["matcher"]["options"] for o in panel["fieldConfig"]["overrides"]}
-        for _label, _t, field in egress_dashboard.EGRESS_DECOMPOSITION:
-            assert field in cols
-            assert field in q
-        assert "unit" not in panel["fieldConfig"]["defaults"]
+    def test_one_per_service_panel_per_decomposition_category(self):
+        dash = self._dash()
+        series = [p for p in dash["panels"] if p["type"] == "timeseries"]
+        by_title = {p["title"]: p["targets"][0]["query"] for p in series}
+        for label, target, field in egress_dashboard.EGRESS_DECOMPOSITION:
+            q = by_title[f"{label.split(' (')[0]} per service"]
+            assert f'(r["target"] == "{target}" and r["_field"] == "{field}")' in q
+            assert q.count('r["_field"] ==') == 1, "one category per panel"
 
     def test_panels_are_stacked_full_width(self):
         for panel in self._dash()["panels"]:
