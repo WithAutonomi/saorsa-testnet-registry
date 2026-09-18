@@ -821,6 +821,63 @@ def panel_service_chunk_serving(grid_pos: dict, *, bucket: str) -> dict:
     )
 
 
+def panel_service_decomposition_table(grid_pos: dict, *, bucket: str) -> dict:
+    """One row per service on the selected host, one column per egress counter,
+    mean rate over the range. Read across a row for what a service's egress is
+    made of; down a column for which service does the relaying or serving."""
+    specs = tuple((t, f) for _label, t, f in EGRESS_DECOMPOSITION)
+    query = (
+        WINDOW_PROLOGUE
+        + "\n"
+        + _counter_increase(
+            bucket, specs, stream="bytes", group_by=("service_number", "_field"),
+            service_label=True,
+        )
+        + "\nbytes\n"
+        "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
+        '  |> group(columns: ["service_number", "_field"])\n'
+        "  |> mean()\n"
+        '  |> group(columns: ["service_number"])\n'
+        '  |> pivot(rowKey: ["service_number"], columnKey: ["_field"], valueColumn: "_value")\n'
+        "  |> group()\n"
+        '  |> sort(columns: ["service_number"])\n'
+        '  |> yield(name: "decomposition")'
+    )
+    overrides = [
+        {
+            "matcher": {"id": "byName", "options": "service_number"},
+            "properties": [
+                {"id": "displayName", "value": "Service"},
+                {"id": "custom.width", "value": 90},
+            ],
+        },
+    ] + [
+        {
+            "matcher": {"id": "byName", "options": field},
+            "properties": [
+                {"id": "displayName", "value": label.split(" (")[0]},
+                {"id": "unit", "value": "Bps"},
+            ],
+        }
+        for label, _t, field in EGRESS_DECOMPOSITION
+    ]
+    return {
+        "title": "Egress decomposition per service (mean over range)",
+        "description": (
+            "The counters of the Egress accounting dashboard's decomposition panel, per "
+            "service on the selected host, as mean rates over the selected range. "
+            "Columns overlap (wire and chunk RPC are inside the endpoint's udp_tx_bytes; "
+            "relay legs are outside it), so rows are attribution, not a partition."
+        ),
+        "type": "table",
+        "datasource": DATASOURCE,
+        "fieldConfig": {"defaults": {}, "overrides": overrides},
+        "gridPos": grid_pos,
+        "options": {"showHeader": True},
+        "targets": [{"query": query, "refId": "A"}],
+    }
+
+
 def panel_drilldown_note(grid_pos: dict, *, bucket: str) -> dict:  # noqa: ARG001
     return {
         "title": "Per-service detail",
@@ -847,6 +904,7 @@ BY_SERVICE_PANEL_SPECS: tuple[tuple, ...] = (
     (panel_top_ingress_services, {"h": 11}),
     (panel_top_chunk_serving_services, {"h": 11}),
     (panel_drilldown_note, {"h": 3}),
+    (panel_service_decomposition_table, {"h": 10}),
     (panel_service_egress, {"h": 9}),
     (panel_service_ingress, {"h": 9}),
     (panel_service_relay, {"h": 9}),

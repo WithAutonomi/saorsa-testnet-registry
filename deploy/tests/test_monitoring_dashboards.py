@@ -1,6 +1,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
+from saorsa_deploy.provisioning import egress_dashboard
 from saorsa_deploy.provisioning.monitoring import (
     GRAFANA_BY_SERVICE_DASHBOARD_PATH,
     GRAFANA_CLIENT_DASHBOARD_PATH,
@@ -472,6 +473,7 @@ class TestNodeTrafficByServiceDashboard:
             "Top 20 services by socket ingress",
             "Top 20 services by chunk GET serving",
             "Per-service detail",
+            "Egress decomposition per service (mean over range)",
             "Socket egress per service",
             "Socket ingress per service",
             "Relay bytes forwarded per service",
@@ -488,7 +490,8 @@ class TestNodeTrafficByServiceDashboard:
 
     def test_top_tables_rank_fleet_wide_without_host_filter(self):
         dash = self._dash()
-        tables = [p for p in dash["panels"] if p["type"] == "table"]
+        tables = [p for p in dash["panels"]
+                  if p["type"] == "table" and p["title"].startswith("Top ")]
         assert len(tables) == 4
         for panel in tables:
             q = panel["targets"][0]["query"]
@@ -522,6 +525,18 @@ class TestNodeTrafficByServiceDashboard:
             assert panel["fieldConfig"]["defaults"]["displayName"] == (
                 "service ${__field.labels.service_number}"
             )
+
+    def test_decomposition_table_is_per_service_on_selected_host(self):
+        panel = next(p for p in self._dash()["panels"]
+                     if p["title"].startswith("Egress decomposition per service"))
+        q = panel["targets"][0]["query"]
+        assert 'r["host"] =~ /(?i)^$host$/' in q
+        assert 'pivot(rowKey: ["service_number"], columnKey: ["_field"]' in q
+        cols = {o["matcher"]["options"] for o in panel["fieldConfig"]["overrides"]}
+        for _label, _t, field in egress_dashboard.EGRESS_DECOMPOSITION:
+            assert field in cols
+            assert field in q
+        assert "unit" not in panel["fieldConfig"]["defaults"]
 
     def test_panels_are_stacked_full_width(self):
         for panel in self._dash()["panels"]:
