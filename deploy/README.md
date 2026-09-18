@@ -1187,25 +1187,65 @@ Statistics**, **Client Host Statistics**, **Node Overview**, and **Egress
 accounting** (V2-1225). The last reconciles the node's own traffic-accounting
 counters — shipped to Influx by the ES forwarder, see
 [Traffic-accounting counters → InfluxDB](#traffic-accounting-counters--influxdb-the-es-forwarders-second-output)
-— against the host NIC, per host, from the one `testnet-metrics` bucket: (1)
-**coverage %** = `(udp_tx_bytes + bytes_relayed) / net.bytes_sent`, red below 80%,
-with the legend's *mean* giving the figure for the selected range; (2)
-**unaccounted egress** as a rate, mean over the range, top-15 table; (3) MASQUE
-**relay throughput** with the `forwarded_to_client_bytes` /
-`forwarded_to_target_bytes` split; (4) **active relay reservations**; (5)
-**replication serving** (`fetch_response_tx_bytes`); plus a text panel defining
-the numerator. The numerator is *only* `udp_tx_bytes` (target
-`saorsa_transport::traffic`) + `bytes_relayed` (target
-`saorsa_transport::masque::relay_server` — the same field also exists under the
-small relay-client target and is not used); `wire_tx_bytes` and
-`fetch_response_tx_bytes` are excluded because they count the same bytes at a
-higher layer. Counters are cumulative per process and emitted every 5 minutes,
-so every panel differences them over 10-minute windows (`nonNegative`, so a
-service restart drops that window rather than going negative) and sums across
-the host's services; the NIC side is the busiest non-loopback interface per
-window, since interface names differ by provider. Until V2-834 C.1 lands the
-numerator can over-count relayed bytes, so coverage is an upper bound. Panel
-builders: `provisioning/egress_dashboard.py`.
+— against the host NIC, per host, from the one `testnet-metrics` bucket:
+
+1. **Egress accounting coverage (%)** = (`udp_tx_bytes` + `relay_carrier_udp_tx_bytes`
+   + `bytes_relayed` from both relay servers) / `net.bytes_sent`, red below 80%;
+   the legend's *mean* is the figure for the selected range.
+2. **Unaccounted egress** as a rate, mean over the range, top-15 table.
+3. / 4. **Socket ground truth — egress / ingress (%)**: `sock_tx_bytes` /
+   `net.bytes_sent` and (`sock_rx_bytes` + relay `raw_rx_bytes`) / `net.bytes_recv`
+   — the socket-boundary counters V2-834 adds, i.e. the figure its "within 2% of
+   the NIC" acceptance gate is measured by. Empty on builds predating V2-834.
+5. **Egress decomposition** (stacked, summed over the selected hosts): DHT wire
+   messaging, chunk GET serving, replication fetch responses, both relay servers,
+   relay-client stream, QUIC retransmission, stateless packets, failed dials.
+   Layers overlap (attribution, not a partition); V2-1226 is the full picture.
+6. **Relay throughput** with the `forwarded_to_client_bytes` /
+   `forwarded_to_target_bytes` split, over both relay servers.
+7. **Active relay reservations / sessions**. 8. **Replication serving**
+   (`fetch_response_tx_bytes`). Plus a text panel defining the numerator.
+
+The numerator is *only* `udp_tx_bytes` (+ `relay_carrier_udp_tx_bytes`, which the
+V2-834 build splits out of it for a NAT'd node's carrier to its relay) plus
+`bytes_relayed` under **both** `saorsa_transport::relay::traffic` (the stream
+relay server on raw UDP sockets) and `saorsa_transport::masque::relay_server`
+(the MASQUE reservation relay, whose summary is only emitted once a CONNECT has
+arrived); `wire_tx_bytes` and `fetch_response_tx_bytes` are excluded because they
+count the same bytes at a higher layer. Until V2-834 C.1 lands the numerator can
+over-count relayed bytes, so coverage is an upper bound.
+
+Four facts the Flux is built on, all measured (ant-prod-01's ES on 2026-09-17; a
+DEV-01 run of the V2-834 branch on 2026-09-18) rather than assumed:
+
+- **Counters are cumulative per process and emitted every 5 minutes**, so every
+  panel differences them over 10-minute windows (`nonNegative`: a service restart
+  drops that window rather than going negative) and sums across the host's
+  services with a per-`(host, _time)` `sum()` — never a second `aggregateWindow`,
+  which re-stamps each increase one window late against the NIC side.
+- **One series can carry several lines per tick.** The V2-834 build emits the
+  endpoint summary once per endpoint (two lines ~30 ms apart, one with
+  `udp_tx_bytes = 0`), and `relay::traffic` interleaves per-session lines with the
+  summary under the same field names. Differenced as one series that flaps
+  `0, X, 0, X` and `nonNegative` keeps +X every tick — measured at 25× the NIC. So
+  each series is first collapsed per emission burst (1-minute window): `sum` for
+  per-endpoint counters, `max` for process-wide counters printed on several lines
+  and for a summary sharing field names with per-session lines.
+- **Host case differs on the two sides and is not simply lowercase:** `tail`
+  carries the upper-cased host, `net` the OS hostname, which on a testnet keeps
+  the deployment name's case (`DEV-01-ant-node-lon1-1`). Both sides are
+  lower-cased and the Host variable is matched case-insensitively; the variable
+  itself is pinned to the `cpu` measurement so the `tail` points don't list every
+  host twice.
+- **On a NAT-simulated VM `veth-nat` is the busiest interface and points the
+  wrong way** (its `bytes_sent` is traffic sent *into* the node's netns). The NIC
+  side excludes `lo`, `all` and `veth*` and takes the busiest remaining interface
+  per window, since interface names differ by provider.
+
+Measured on that DEV-01 run once all of the above was in place, every host reads
+79–95% on coverage and on both ground-truth panels — the remaining gap being what
+V2-834's 2% gate has yet to close. Panel builders:
+`provisioning/egress_dashboard.py`.
 
 This step creates **two** InfluxDB buckets — `testnet-metrics` (node-tier host
 metrics, the `prometheus` per-node measurement, and application measurements

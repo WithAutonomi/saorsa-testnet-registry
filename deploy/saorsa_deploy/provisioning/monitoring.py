@@ -689,9 +689,14 @@ class MonitoringProvisioner:
                             "value": "$__all",
                         },
                         "datasource": {"type": "influxdb", "uid": "influxdb"},
+                        # Pinned to `cpu` (every telegraf-metrics host emits it)
+                        # so the traffic-accounting `tail` points -- whose host
+                        # tag is UPPER-cased -- do not add a duplicate of every
+                        # host to the dropdown.
                         "definition": (
                             f'from(bucket: "{bucket}")\n'
                             '  |> range(start: -1h)\n'
+                            '  |> filter(fn: (r) => r["_measurement"] == "cpu")\n'
                             '  |> filter(fn: (r) => '
                             'r["host_role"] =~ /^${host_role}$/)\n'
                             '  |> keep(columns: ["host"])\n'
@@ -706,6 +711,7 @@ class MonitoringProvisioner:
                         "query": (
                             f'from(bucket: "{bucket}")\n'
                             '  |> range(start: -1h)\n'
+                            '  |> filter(fn: (r) => r["_measurement"] == "cpu")\n'
                             '  |> filter(fn: (r) => '
                             'r["host_role"] =~ /^${host_role}$/)\n'
                             '  |> keep(columns: ["host"])\n'

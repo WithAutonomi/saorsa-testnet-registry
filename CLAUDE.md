@@ -1256,30 +1256,41 @@ duplicated into `/etc/default/telegraf-ant` as `INFLUXDB_*`; without monitoring
 the ES config/env are byte-identical (tested). The ES output is untouched.
 
 Points land in `tail` in `testnet-metrics` with the **upper-cased `host`** (the
-uppercase processor runs before every output; changing it would alter ES docs),
-so the dashboard lower-cases the tail side in Flux before joining on `net`.
-Facts the Flux is shaped by (probed on prod ES): summaries are **cumulative per
-process, every 5 min** → `aggregateWindow(10m, last)` → `difference(nonNegative)`
-→ per-`(host,_time)` `sum()` across services (NOT a second `aggregateWindow`,
-which re-stamps each increase one window late and emits a bogus zero row);
-**`bytes_relayed` exists under two targets** (relay-client `saorsa_transport::
-relay::traffic`, small; relay-server `masque::relay_server`, the GB one — the
-ratio uses the latter, every filter names target AND field); the replication
-summary is three lines (`group` 1/2/3) and `fetch_response_tx_bytes` is on group
-2. Dashboard "Egress accounting" (uid `ant-egress-accounting`,
+uppercase processor runs before every output; changing it would alter ES docs).
+Dashboard "Egress accounting" (uid `ant-egress-accounting`,
 `provisioning/egress_dashboard.py`, written by every `monitoring provision` with
-Grafana): coverage % (numerator = `udp_tx_bytes` + masque `bytes_relayed` only;
-`wire_tx_bytes`/`fetch_response_tx_bytes` excluded as double counts; red <80%;
-legend mean = the figure for the range; upper bound until V2-834 C.1),
-unaccounted egress top-15 table (mean rate over range), relay throughput with
-direction split, active reservations, replication serving, numerator note. NIC
-side = busiest non-loopback interface per window (names differ per provider).
-Flux verified against a local InfluxDB with synthetic points incl. a counter
-restart. Prod rollout: retrofit with `provision-telegraf --name ant-prod-01
---host-ips-file <fleet ips> --host-role WAN_NODE --skip-metrics --only-new-logs`
-(the last flag or the restart re-ingests every on-disk log into ES); the
-dashboard JSON can be dropped into `/var/lib/grafana/dashboards/` on the Grafana
-VM — the file provider picks it up without a restart.
+Grafana): coverage % (numerator = `udp_tx_bytes` + `relay_carrier_udp_tx_bytes`
++ `bytes_relayed` under BOTH relay targets; `wire_tx_bytes`/`fetch_response_tx_bytes`
+excluded as double counts; red <80%; legend mean = the figure for the range),
+unaccounted top-15 table, **socket ground truth egress/ingress** (`sock_tx_bytes`,
+`sock_rx_bytes` + relay `raw_rx_bytes` — V2-834's own 2% gate; empty on older
+builds), a stacked egress decomposition, relay throughput/occupancy over both
+relay servers, replication serving, numerator note. Facts the Flux is shaped by,
+all MEASURED (prod ES 2026-09-17; DEV-01 on the V2-834 branch 2026-09-18):
+summaries are **cumulative per process, every 5 min** → `aggregateWindow(10m,
+last)` → `difference(nonNegative)` → per-`(host,_time)` `sum()` (NOT a second
+`aggregateWindow`: re-stamps one window late + bogus zero row); **one series can
+carry several lines per tick** (V2-834 emits the endpoint summary once per
+endpoint, one with `udp_tx_bytes=0`; `relay::traffic` interleaves per-session
+lines with the summary) — differenced raw it flaps `0,X,0,X` and reads 25× the
+NIC, so every series is collapsed per 1-min burst first (`sum` per-endpoint
+fields, `max` process-wide/summary fields); **`bytes_relayed` exists under two
+targets** (stream relay `relay::traffic`, dominant on V2-834 builds; MASQUE
+`masque::relay_server`, dominant on the shipped build and emitted only from the
+CONNECT path — an idle relay has no line); **host case**: `net` keeps the
+deployment name's case on a testnet (`DEV-01-ant-node-…`), so BOTH sides are
+lower-cased and `$host` matched `(?i)`, and the Host variable is pinned to `cpu`
+so tail points don't duplicate the dropdown; **NAT VMs**: `veth-nat` is the
+busiest interface and its `bytes_sent` is traffic INTO the netns → NIC side
+excludes `lo|all|veth*`. With all that, DEV-01 read 79–95% on every host on all
+three reconciliations. Verified on that live run AND against a local docker
+InfluxDB with synthetic points (restart, double endpoint line, per-session line,
+mixed-case host, veth-nat). Prod rollout: retrofit with `provision-telegraf
+--name ant-prod-01 --host-ips-file <fleet ips> --host-role WAN_NODE
+--skip-metrics --only-new-logs` (the last flag or the restart re-ingests every
+on-disk log into ES); the dashboard JSON can be dropped into
+`/var/lib/grafana/dashboards/` on the Grafana VM — the file provider picks it
+up without a restart.
 
 ### Buckets (node vs client isolation)
 

@@ -1,7 +1,6 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from saorsa_deploy.provisioning import egress_dashboard
 from saorsa_deploy.provisioning.monitoring import (
     GRAFANA_CLIENT_DASHBOARD_PATH,
     GRAFANA_EGRESS_DASHBOARD_PATH,
@@ -250,6 +249,10 @@ class TestEgressAccountingDashboard:
     def _dash(self):
         return json.loads(_make_provisioner()._build_egress_accounting_dashboard())
 
+    def _query(self, title: str) -> str:
+        panel = next(p for p in self._dash()["panels"] if p["title"] == title)
+        return panel["targets"][0]["query"]
+
     def test_identity_stable(self):
         dash = self._dash()
         assert dash["title"] == "Egress accounting"
@@ -260,8 +263,11 @@ class TestEgressAccountingDashboard:
         assert _panel_titles(self._dash()) == [
             "Egress accounting coverage (%)",
             "Unaccounted egress (mean over range, top 15)",
-            "Relay throughput (MASQUE relay server)",
-            "Active relay reservations",
+            "Socket ground truth — egress (%)",
+            "Socket ground truth — ingress (%)",
+            "Egress decomposition (selected hosts, stacked)",
+            "Relay throughput (relay servers)",
+            "Active relay reservations / sessions",
             "Replication serving",
             "Numerator definition",
         ]
@@ -279,54 +285,94 @@ class TestEgressAccountingDashboard:
         assert _host_role_var(dash)["current"]["value"] == "$__all"
         assert {v["name"] for v in dash["templating"]["list"]} == {"host_role", "host"}
 
-    def _query(self, title: str) -> str:
-        panel = next(p for p in self._dash()["panels"] if p["title"] == title)
-        return panel["targets"][0]["query"]
-
-    def test_numerator_is_exactly_udp_tx_plus_masque_relayed(self):
+    def test_numerator_is_udp_plus_relay_carrier_plus_relayed(self):
         """wire_tx_bytes / fetch_response_tx_bytes would double-count the same
-        bytes at a higher layer, and bytes_relayed under the relay-CLIENT target
-        (saorsa_transport::relay::traffic) is the other, small leg."""
+        bytes at a higher layer; virtual_udp_tx_bytes rides on the carrier."""
         for title in ("Egress accounting coverage (%)",
                       "Unaccounted egress (mean over range, top 15)"):
             q = self._query(title)
-            assert (
-                '(r["target"] == "saorsa_transport::traffic" and r["_field"] == "udp_tx_bytes")'
-                in q
-            )
-            assert (
-                '(r["target"] == "saorsa_transport::masque::relay_server" '
-                'and r["_field"] == "bytes_relayed")' in q
-            )
+            for target, field in (
+                ("saorsa_transport::traffic", "udp_tx_bytes"),
+                ("saorsa_transport::traffic", "relay_carrier_udp_tx_bytes"),
+                ("saorsa_transport::relay::traffic", "bytes_relayed"),
+                ("saorsa_transport::masque::relay_server", "bytes_relayed"),
+            ):
+                assert f'(r["target"] == "{target}" and r["_field"] == "{field}")' in q
             assert "wire_tx_bytes" not in q
             assert "fetch_response_tx_bytes" not in q
-            assert "saorsa_transport::relay::traffic" not in q
+            assert "virtual_udp_tx_bytes" not in q
+            assert "sock_tx_bytes" not in q
 
-    def test_tail_host_is_lowercased_before_joining_on_net(self):
-        """The ES forwarder upper-cases `host` before every output; `net` is
-        lowercase. Joining without folding case would match nothing."""
+    def test_burst_collapse_precedes_differencing(self):
+        """A series can carry several lines per tick (two endpoint summaries,
+        per-session relay lines): udp_tx_bytes sums them, the relay totals take
+        the max, and only then is the 10m window differenced."""
         q = self._query("Egress accounting coverage (%)")
-        assert 'import "strings"' in q
-        assert "strings.toLower(v: r.host)" in q
-        assert 'join(tables: {a: accounted, n: nic}, on: ["_time", "host"])' in q
+        assert "aggregateWindow(every: 1m, fn: sum, createEmpty: false)" in q
+        assert "aggregateWindow(every: 1m, fn: max, createEmpty: false)" in q
+        for stream in ("accounted_sum", "accounted_max"):
+            body = q.split(f"{stream} = ")[1]
+            burst = body.index("aggregateWindow(every: 1m")
+            window = body.index("aggregateWindow(every: 10m, fn: last")
+            diff = body.index("difference(nonNegative: true)")
+            assert burst < window < diff
+        assert "union(tables: [accounted_max, accounted_sum])" in q
 
-    def test_counters_are_differenced_not_plotted_raw(self):
-        """The summaries are cumulative per process; a restart must not go negative."""
-        for title in ("Egress accounting coverage (%)", "Relay throughput (MASQUE relay server)",
+    def test_cross_service_total_is_a_sum_not_a_second_window(self):
+        """Summing across services with another aggregateWindow re-stamps the
+        increase one window late against the NIC side of the join."""
+        for title in ("Egress accounting coverage (%)", "Relay throughput (relay servers)",
                       "Replication serving"):
             q = self._query(title)
-            assert "difference(nonNegative: true)" in q
-            assert f"aggregateWindow(every: {egress_dashboard.WINDOW}, fn: last" in q
-            # Cross-service totals are a per-(host, _time) sum, NOT a second
-            # aggregateWindow -- that would re-stamp each increase one window
-            # late against the NIC side of the join.
-            assert q.count("aggregateWindow(") == (2 if "nic =" in q else 1)
+            assert 'group(columns: ["host", "_time"])\n  |> sum()' in q or \
+                'group(columns: ["host", "_field", "_time"])\n  |> sum()' in q
+            # per stream: burst + 10m window; the nic stream: 10m window only.
+            streams = q.count(" = from(bucket")
+            nic = q.count("nic = from(bucket")
+            assert q.count("aggregateWindow(") == 2 * (streams - nic) + nic
 
-    def test_nic_denominator_is_busiest_non_loopback_interface(self):
+    def test_both_sides_lowercase_host_and_match_case_insensitively(self):
+        """tail carries the UPPER-cased host; net carries the OS hostname, which on
+        a testnet keeps the deployment name's case (DEV-01-ant-node-lon1-1). The
+        Host variable lists the raw net tags, so the match ignores case."""
+        q = self._query("Egress accounting coverage (%)")
+        assert 'import "strings"' in q
+        assert q.count("strings.toLower(v: r.host)") == 3  # 2 accounted streams + nic
+        assert 'r["host"] =~ /(?i)^$host$/' in q
+        assert 'r["host"] =~ /^$host$/' not in q
+        assert 'join(tables: {a: accounted, n: nic}, on: ["_time", "host"])' in q
+
+    def test_nic_denominator_excludes_lo_all_and_nat_veth(self):
+        """On a NAT-simulated VM the root end of the veth pair reports the node's
+        traffic in the opposite direction and is the busiest interface."""
         q = self._query("Egress accounting coverage (%)")
         assert 'r["_measurement"] == "net" and r["_field"] == "bytes_sent"' in q
-        assert 'r["interface"] != "lo" and r["interface"] != "all"' in q
+        assert 'r["interface"] !~ /^(lo|all|veth.*)$/' in q
         assert 'group(columns: ["host", "_time"])\n  |> max()' in q
+
+    def test_ground_truth_panels_use_socket_counters(self):
+        def clause(target, field):
+            return f'(r["target"] == "{target}" and r["_field"] == "{field}")'
+
+        tx = self._query("Socket ground truth — egress (%)")
+        assert clause("saorsa_transport::traffic", "sock_tx_bytes") in tx
+        assert 'r["_field"] == "bytes_sent"' in tx
+        rx = self._query("Socket ground truth — ingress (%)")
+        assert clause("saorsa_transport::traffic", "sock_rx_bytes") in rx
+        assert clause("saorsa_transport::relay::traffic", "raw_rx_bytes") in rx
+        assert 'r["_field"] == "bytes_recv"' in rx
+
+    def test_decomposition_is_stacked_per_field_over_selected_hosts(self):
+        panel = next(p for p in self._dash()["panels"]
+                     if p["title"].startswith("Egress decomposition"))
+        assert panel["fieldConfig"]["defaults"]["custom"]["stacking"]["mode"] == "normal"
+        q = panel["targets"][0]["query"]
+        assert 'group(columns: ["_field", "_time"])\n  |> sum()' in q
+        for field in ("wire_tx_bytes", "get_success_tx_bytes", "fetch_response_tx_bytes",
+                      "bytes_relayed", "lost_bytes", "stateless_tx_bytes", "failed_dial_tx_bytes"):
+            assert field in q
+        labelled = {o["matcher"]["options"] for o in panel["fieldConfig"]["overrides"]}
+        assert "wire_tx_bytes" in labelled
 
     def test_coverage_panel_thresholds_red_below_80(self):
         panel = next(p for p in self._dash()["panels"]
@@ -352,8 +398,9 @@ class TestEgressAccountingDashboard:
     def test_numerator_note_names_the_exclusions(self):
         panel = next(p for p in self._dash()["panels"] if p["type"] == "text")
         content = panel["options"]["content"]
-        for phrase in ("udp_tx_bytes", "bytes_relayed", "wire_tx_bytes",
-                       "fetch_response_tx_bytes", "upper bound", "V2-834"):
+        for phrase in ("udp_tx_bytes", "relay_carrier_udp_tx_bytes", "bytes_relayed",
+                       "wire_tx_bytes", "fetch_response_tx_bytes", "upper bound", "V2-834",
+                       "sock_tx_bytes"):
             assert phrase in content
 
     @patch("saorsa_deploy.provisioning.monitoring.add_op")
@@ -369,3 +416,16 @@ class TestEgressAccountingDashboard:
         commands = "\n".join(call.kwargs["commands"])
         assert GRAFANA_EGRESS_DASHBOARD_PATH in commands
         assert '"uid": "ant-egress-accounting"' in commands
+
+
+class TestHostVariableIgnoresTailPoints:
+    """The traffic-accounting `tail` points share the node bucket and carry the
+    UPPER-cased host; the Host dropdown must not list every host twice."""
+
+    def test_host_variable_pinned_to_cpu_measurement(self):
+        for build in ("_build_host_metrics_dashboard", "_build_client_host_metrics_dashboard",
+                      "_build_egress_accounting_dashboard"):
+            dash = json.loads(getattr(_make_provisioner(), build)())
+            var = next(v for v in dash["templating"]["list"] if v["name"] == "host")
+            assert 'r["_measurement"] == "cpu"' in var["query"]
+            assert 'r["_measurement"] == "cpu"' in var["definition"]
