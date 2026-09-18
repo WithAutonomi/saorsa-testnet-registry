@@ -1228,9 +1228,24 @@ DEV-01 run of the V2-834 branch on 2026-09-18) rather than assumed:
   `udp_tx_bytes = 0`), and `relay::traffic` interleaves per-session lines with the
   summary under the same field names. Differenced as one series that flaps
   `0, X, 0, X` and `nonNegative` keeps +X every tick — measured at 25× the NIC. So
-  each series is first collapsed per emission burst (1-minute window): `sum` for
-  per-endpoint counters, `max` for process-wide counters printed on several lines
-  and for a summary sharing field names with per-session lines.
+  each series is windowed with `max` rather than `last`: the summary total is ≥
+  every other line in the window. (A restart then costs a window and a half
+  rather than one, and a second endpoint carrying real bytes would be
+  under-counted — the fix for that is an endpoint tag upstream.)
+- **Everything before the window must be push-downable, and the window scales
+  with the range.** A 24-hour view of a 13-host testnet hit Grafana's 30 s
+  timeout on every panel that touches `net`: the raw 10-second samples (~450k
+  rows/day here, ~5M for 48 h of prod) and every `tail` line were being
+  materialised in Flux because `map`/`group` sat before `aggregateWindow`. With
+  the window placed directly after the filters the storage engine returns one row
+  per series per window and the same query takes 2 s; the window widens with the
+  range (10 m ≤ 6 h, 30 m ≤ 24 h, 1 h beyond) so row count stays roughly constant,
+  and the two sides are combined with `union` + `pivot` rather than `join()`.
+- **The partial window at the range end is dropped on both sides.** The summaries
+  tick every 5 minutes and `net` every 10 seconds, so a view cut a minute after a
+  tick pairs 5 minutes of counter bytes with 1 minute of NIC bytes (measured at
+  5×, dragging a 2-hour legend mean from 95% to 116%). The newest point is
+  therefore up to one window old.
 - **Host case differs on the two sides and is not simply lowercase:** `tail`
   carries the upper-cased host, `net` the OS hostname, which on a testnet keeps
   the deployment name's case (`DEV-01-ant-node-lon1-1`). Both sides are
@@ -1243,7 +1258,7 @@ DEV-01 run of the V2-834 branch on 2026-09-18) rather than assumed:
   per window, since interface names differ by provider.
 
 Measured on that DEV-01 run once all of the above was in place, every host reads
-79–95% on coverage and on both ground-truth panels — the remaining gap being what
+82–97% on coverage and on both ground-truth panels, at 2 h and 24 h alike — the remaining gap being what
 V2-834's 2% gate has yet to close. Panel builders:
 `provisioning/egress_dashboard.py`.
 

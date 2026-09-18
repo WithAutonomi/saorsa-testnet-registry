@@ -1273,8 +1273,7 @@ last)` → `difference(nonNegative)` → per-`(host,_time)` `sum()` (NOT a secon
 carry several lines per tick** (V2-834 emits the endpoint summary once per
 endpoint, one with `udp_tx_bytes=0`; `relay::traffic` interleaves per-session
 lines with the summary) — differenced raw it flaps `0,X,0,X` and reads 25× the
-NIC, so every series is collapsed per 1-min burst first (`sum` per-endpoint
-fields, `max` process-wide/summary fields); **`bytes_relayed` exists under two
+NIC, so every series is windowed with `max`, never `last`; **`bytes_relayed` exists under two
 targets** (stream relay `relay::traffic`, dominant on V2-834 builds; MASQUE
 `masque::relay_server`, dominant on the shipped build and emitted only from the
 CONNECT path — an idle relay has no line); **host case**: `net` keeps the
@@ -1282,8 +1281,12 @@ deployment name's case on a testnet (`DEV-01-ant-node-…`), so BOTH sides are
 lower-cased and `$host` matched `(?i)`, and the Host variable is pinned to `cpu`
 so tail points don't duplicate the dropdown; **NAT VMs**: `veth-nat` is the
 busiest interface and its `bytes_sent` is traffic INTO the netns → NIC side
-excludes `lo|all|veth*`. With all that, DEV-01 read 79–95% on every host on all
-three reconciliations. Verified on that live run AND against a local docker
+excludes `lo|all|veth*`; **performance**: range→filters→`aggregateWindow` with
+NOTHING in between (pushdown: one row per series per window; a 24h view went
+18s→2s), window scales with range (10m/30m/1h), `union`+`pivot` not `join()`;
+**the partial window at the range end is dropped on both sides** (5-min ticks vs
+10-s samples → measured 5× in that window, legend mean 95→116%). With all that,
+DEV-01 read 82–97% on every host on all three reconciliations at 2h and 24h. Verified on that live run AND against a local docker
 InfluxDB with synthetic points (restart, double endpoint line, per-session line,
 mixed-case host, veth-nat). Prod rollout: retrofit with `provision-telegraf
 --name ant-prod-01 --host-ips-file <fleet ips> --host-role WAN_NODE

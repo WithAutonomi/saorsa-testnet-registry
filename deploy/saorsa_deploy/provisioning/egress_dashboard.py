@@ -28,10 +28,19 @@ and on a DEV-01 run of the V2-834 branch (2026-09-18):
   ``udp_tx_bytes = 0`` -- and ``saorsa_transport::relay::traffic`` interleaves
   per-session lines with the summary under the same field names. Differenced
   as one series that flaps (``0, X, 0, X``) and ``nonNegative`` then keeps +X
-  every tick: measured at 25x the NIC. So every series is first collapsed per
-  **emission burst** (a 1-minute window): ``sum`` for per-endpoint counters,
-  ``max`` for process-wide counters printed on more than one line and for a
-  summary that shares field names with per-session lines.
+  every tick: measured at 25x the NIC. So each series is windowed with ``max``
+  (not ``last``): the summary total is >= any per-session or idle-endpoint
+  line in the same window. (If a second endpoint ever carries real bytes it is
+  under-counted -- the fix for that is an endpoint tag upstream.)
+* **Everything before the window must be push-downable.** A 24-hour view of a
+  13-host testnet timed out at Grafana's 30 s: the raw 10-second ``net`` samples
+  (~450k rows/day) and every ``tail`` line were being materialised in Flux
+  because ``map``/``group`` sat before ``aggregateWindow``. With the window
+  placed directly after the filters the storage engine returns one row per
+  series per window, and the same query takes 2 s. Row count is then series x
+  windows, so the window widens with the range (10 m up to 6 h, 30 m up to
+  24 h, 1 h beyond) to keep a 48-hour view of the 73-host prod fleet tractable.
+  The two sides are combined with ``union`` + ``pivot``, not ``join()``.
 * ``bytes_relayed`` exists under **two** targets: ``saorsa_transport::relay::
   traffic`` (the stream relay server, raw UDP sockets, dominant on the V2-834
   build) and ``saorsa_transport::masque::relay_server`` (the MASQUE
@@ -51,14 +60,15 @@ and on a DEV-01 run of the V2-834 branch (2026-09-18):
 
 from __future__ import annotations
 
-# Window over which the cumulative counters are differenced. Must be >= the
-# summary cadence (5 min) so every window holds a sample.
-WINDOW = "10m"
-WINDOW_SECS = 600.0
-
-# Window that collapses the lines one series emits within a single 5-minute
-# tick (they land ~30 ms apart) into one sample. Must be < the cadence.
-BURST_WINDOW = "1m"
+#: Flux prologue every query starts with: the differencing window ``w`` chosen
+#: from the selected range (never below the 5-minute summary cadence, so every
+#: window holds a sample) and its length in seconds for rates.
+WINDOW_PROLOGUE = (
+    'import "strings"\n\n'
+    "range_ns = int(v: v.timeRangeStop) - int(v: v.timeRangeStart)\n"
+    "w = if range_ns > int(v: 24h) then 1h else if range_ns > int(v: 6h) then 30m else 10m\n"
+    "w_secs = float(v: int(v: w)) / 1000000000.0\n"
+)
 
 TARGET_ENDPOINT = "saorsa_transport::traffic"
 TARGET_RELAY = "saorsa_transport::relay::traffic"
@@ -67,53 +77,49 @@ TARGET_REPLICATION = "ant_node::replication::traffic"
 TARGET_CORE = "saorsa_core::traffic"
 TARGET_STORAGE = "ant_node::storage::traffic"
 
-#: The numerator of the coverage ratio, as (target, field, burst_fn) triples.
+#: The numerator of the coverage ratio, as (target, field) pairs.
 #: ``wire_tx_bytes`` (saorsa_core::traffic) and ``fetch_response_tx_bytes``
 #: (replication) are deliberately NOT here: they measure the same bytes at a
-#: higher layer and would double-count. ``udp_tx_bytes`` is per endpoint (sum
-#: the burst); the relay fields are totals that share names with per-session
-#: lines (max the burst).
-ACCOUNTED_EGRESS_FIELDS: tuple[tuple[str, str, str], ...] = (
-    (TARGET_ENDPOINT, "udp_tx_bytes", "sum"),
+#: higher layer and would double-count.
+ACCOUNTED_EGRESS_FIELDS: tuple[tuple[str, str], ...] = (
+    (TARGET_ENDPOINT, "udp_tx_bytes"),
     # V2-834 splits a NAT'd node's traffic to its relay out of udp_tx_bytes
     # into this per-endpoint counter (a real socket; the virtual connections
     # riding on it are virtual_udp_tx_bytes and are NOT added). Absent on older
     # builds, where those bytes were still inside udp_tx_bytes. Measured on a
     # NAT'd DEV-01 node: coverage 5% without it, ~85% with it.
-    (TARGET_ENDPOINT, "relay_carrier_udp_tx_bytes", "sum"),
-    (TARGET_RELAY, "bytes_relayed", "max"),
-    (TARGET_MASQUE_RELAY_SERVER, "bytes_relayed", "max"),
+    (TARGET_ENDPOINT, "relay_carrier_udp_tx_bytes"),
+    (TARGET_RELAY, "bytes_relayed"),
+    (TARGET_MASQUE_RELAY_SERVER, "bytes_relayed"),
 )
 
 #: What the V2-834 build's socket-boundary counters say the process sent /
 #: received on real UDP sockets -- the ground truth its acceptance gate
 #: ("within 2% of the NIC") is measured by. ``sock_*`` is process-wide and
-#: printed on every endpoint summary line, hence ``max``. The relay server's
+#: printed on every endpoint summary line. The relay server's
 #: per-session sockets are outside it: their ingress is ``raw_rx_bytes`` on the
 #: relay summary (V2-834 Part A.4; measured on DEV-01 bootstraps: ingress
 #: coverage 21-33% without it), their egress is already in ``bytes_relayed`` /
 #: ``sock_tx_bytes``. Absent on older builds.
-GROUND_TRUTH_TX: tuple[tuple[str, str, str], ...] = (
-    (TARGET_ENDPOINT, "sock_tx_bytes", "max"),
-)
-GROUND_TRUTH_RX: tuple[tuple[str, str, str], ...] = (
-    (TARGET_ENDPOINT, "sock_rx_bytes", "max"),
-    (TARGET_RELAY, "raw_rx_bytes", "max"),
+GROUND_TRUTH_TX: tuple[tuple[str, str], ...] = ((TARGET_ENDPOINT, "sock_tx_bytes"),)
+GROUND_TRUTH_RX: tuple[tuple[str, str], ...] = (
+    (TARGET_ENDPOINT, "sock_rx_bytes"),
+    (TARGET_RELAY, "raw_rx_bytes"),
 )
 
-#: Egress decomposition: (label, target, field, burst_fn). Labels are what the
-#: legend shows. Fields absent on a build simply produce no series.
-EGRESS_DECOMPOSITION: tuple[tuple[str, str, str, str], ...] = (
-    ("DHT / wire messaging (wire_tx_bytes)", TARGET_CORE, "wire_tx_bytes", "max"),
-    ("chunk GET serving (get_success_tx_bytes)", TARGET_STORAGE, "get_success_tx_bytes", "max"),
+#: Egress decomposition: (label, target, field). Labels are what the legend
+#: shows. Fields absent on a build simply produce no series.
+EGRESS_DECOMPOSITION: tuple[tuple[str, str, str], ...] = (
+    ("DHT / wire messaging (wire_tx_bytes)", TARGET_CORE, "wire_tx_bytes"),
+    ("chunk GET serving (get_success_tx_bytes)", TARGET_STORAGE, "get_success_tx_bytes"),
     ("replication fetch responses (fetch_response_tx_bytes)", TARGET_REPLICATION,
-     "fetch_response_tx_bytes", "max"),
-    ("relay server (bytes_relayed)", TARGET_RELAY, "bytes_relayed", "max"),
-    ("MASQUE relay server (bytes_relayed)", TARGET_MASQUE_RELAY_SERVER, "bytes_relayed", "max"),
-    ("relay client stream (stream_tx_bytes)", TARGET_ENDPOINT, "stream_tx_bytes", "max"),
-    ("QUIC retransmission (lost_bytes)", TARGET_ENDPOINT, "lost_bytes", "sum"),
-    ("stateless packets (stateless_tx_bytes)", TARGET_ENDPOINT, "stateless_tx_bytes", "max"),
-    ("failed dials (failed_dial_tx_bytes)", TARGET_ENDPOINT, "failed_dial_tx_bytes", "max"),
+     "fetch_response_tx_bytes"),
+    ("relay server (bytes_relayed)", TARGET_RELAY, "bytes_relayed"),
+    ("MASQUE relay server (bytes_relayed)", TARGET_MASQUE_RELAY_SERVER, "bytes_relayed"),
+    ("relay client stream (stream_tx_bytes)", TARGET_ENDPOINT, "stream_tx_bytes"),
+    ("QUIC retransmission (lost_bytes)", TARGET_ENDPOINT, "lost_bytes"),
+    ("stateless packets (stateless_tx_bytes)", TARGET_ENDPOINT, "stateless_tx_bytes"),
+    ("failed dials (failed_dial_tx_bytes)", TARGET_ENDPOINT, "failed_dial_tx_bytes"),
 )
 
 #: Coverage below this reads red on the headline panel.
@@ -135,8 +141,8 @@ NUMERATOR_NOTE = (
     "reservation relay -- whose summary only appears once a CONNECT has arrived). "
     "**Actual egress** = the host's busiest interface that is not loopback and not "
     "a NAT-simulation `veth*` (`net.bytes_sent`). Both are cumulative counters "
-    f"differenced over {WINDOW} windows and summed across the host's node "
-    "services; the lines one service emits within a tick are collapsed first.\n\n"
+    "differenced over windows (10 m, 30 m or 1 h depending on the range) and summed "
+    "across the host's node services.\n\n"
     "`wire_tx_bytes` and `fetch_response_tx_bytes` are **deliberately excluded** "
     "from the ratio: they measure the same bytes at a higher layer and would "
     "double-count. Until V2-834 Part C.1 lands (relay connections counted both "
@@ -155,90 +161,62 @@ def _field_clause(target: str, field: str) -> str:
     return f'(r["target"] == "{target}" and r["_field"] == "{field}")'
 
 
-def _lower_host() -> str:
-    return "  |> map(fn: (r) => ({r with host: strings.toLower(v: r.host)}))\n"
+def _field_filter(specs: tuple[tuple[str, str], ...]) -> str:
+    return "(" + " or ".join(_field_clause(t, f) for t, f in specs) + ")"
 
 
 # The Host variable lists the bucket's raw host tags (mixed case on a testnet),
-# while both join sides are lower-cased -- so the match is case-insensitive.
+# while both sides are lower-cased after windowing -- so the match, which must
+# sit before the window to be pushed down, is case-insensitive.
 HOST_FILTER = '  |> filter(fn: (r) => r["host"] =~ /(?i)^$host$/)\n'
+
+# aggregateWindow stamps the window cut off by the range end at the range end
+# itself. In that partial window the two sides cover different spans -- the
+# summaries tick every 5 minutes, `net` samples every 10 seconds -- so a view
+# cut a minute after a tick pairs 5 minutes of counter bytes with 1 minute of
+# NIC bytes: measured at 5x, dragging a 2-hour legend mean from 95% to 116%.
+# Dropped on both sides; the newest point is then up to one window old.
+DROP_PARTIAL_LAST_WINDOW = "  |> filter(fn: (r) => r._time < v.timeRangeStop)\n"
 
 
 def _counter_increase(
     bucket: str,
-    field_filter: str,
-    *,
-    burst_fn: str,
-    group_by: tuple[str, ...] = ("host",),
-) -> str:
-    """Flux pipeline (no assignment) yielding bytes per window from ``tail`` counters.
-
-    ``field_filter`` selects the (target, field) pairs; ``burst_fn`` (``sum`` or
-    ``max``) collapses the lines a series emits within one tick; the differenced
-    increases are then summed per ``group_by`` (plus ``_time``). After
-    ``difference`` every series' rows sit on the same window boundaries, so the
-    cross-series total is a plain per-(group, _time) sum -- a second
-    aggregateWindow would re-stamp each increase at the NEXT window's stop (one
-    window late against the NIC side of the join) and emit a bogus zero row at
-    the range end.
-    """
-    cols = ", ".join(f'"{c}"' for c in group_by)
-    return (
-        f'from(bucket: "{bucket}")\n'
-        "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
-        '  |> filter(fn: (r) => r["_measurement"] == "tail")\n'
-        f"  |> filter(fn: (r) => {field_filter})\n"
-        + _lower_host()
-        + HOST_FILTER +
-        '  |> group(columns: ["host", "service_number", "target", "_field"])\n'
-        f"  |> aggregateWindow(every: {BURST_WINDOW}, fn: {burst_fn}, createEmpty: false)\n"
-        f"  |> aggregateWindow(every: {WINDOW}, fn: last, createEmpty: false)\n"
-        "  |> difference(nonNegative: true)\n"
-        f'  |> group(columns: [{cols}, "_time"])\n'
-        "  |> sum()\n"
-        f"  |> group(columns: [{cols}])\n"
-    )
-
-
-def _counter_increase_multi(
-    bucket: str,
-    specs: tuple[tuple[str, str, str], ...],
+    specs: tuple[tuple[str, str], ...],
     *,
     stream: str,
     group_by: tuple[str, ...] = ("host",),
+    tag: str | None = None,
 ) -> str:
-    """Assign ``stream`` = per-group bytes per window over several (target,
-    field, burst_fn) specs, each collapsed with its own burst function and then
-    unioned and summed per (group, _time)."""
-    by_fn: dict[str, list[str]] = {}
-    for target, field, fn in specs:
-        by_fn.setdefault(fn, []).append(_field_clause(target, field))
-    parts = []
-    names = []
-    for i, (fn, clauses) in enumerate(sorted(by_fn.items())):
-        name = f"{stream}_{fn}"
-        names.append(name)
-        parts.append(
-            f"{name} = "
-            + _counter_increase(bucket, "(" + " or ".join(clauses) + ")",
-                                burst_fn=fn, group_by=group_by)
-        )
+    """Assign ``stream`` = bytes per window from ``tail`` counters, summed per
+    ``group_by`` (+ ``_time``); ``tag`` adds a constant column ``k`` for pivoting.
+
+    Order matters for speed: range -> filters -> ``aggregateWindow`` is pushed
+    down into storage (one row per series per window); ``difference``, the
+    host lower-casing and the cross-series sum then run on that reduced set.
+    After ``difference`` every series' rows sit on the same window boundaries,
+    so the cross-series total is a per-(group, _time) ``sum()`` -- a second
+    aggregateWindow would re-stamp each increase at the NEXT window's stop.
+    """
     cols = ", ".join(f'"{c}"' for c in group_by)
-    if len(names) == 1:
-        combine = f"{stream} = {names[0]}\n"
-    else:
-        tables = ", ".join(names)
-        combine = (
-            f"{stream} = union(tables: [{tables}])\n"
-            f'  |> group(columns: [{cols}, "_time"])\n'
-            "  |> sum()\n"
-            f"  |> group(columns: [{cols}])\n"
-        )
-    return "\n".join(parts) + "\n" + combine
+    extra = f', k: "{tag}"' if tag else ""
+    return (
+        f'{stream} = from(bucket: "{bucket}")\n'
+        "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
+        '  |> filter(fn: (r) => r["_measurement"] == "tail")\n'
+        f"  |> filter(fn: (r) => {_field_filter(specs)})\n"
+        + HOST_FILTER
+        + "  |> aggregateWindow(every: w, fn: max, createEmpty: false)\n"
+        "  |> difference(nonNegative: true)\n"
+        + DROP_PARTIAL_LAST_WINDOW
+        + "  |> map(fn: (r) => ({r with host: strings.toLower(v: r.host), "
+        f"_value: float(v: r._value){extra}}}))\n"
+        f'  |> group(columns: [{cols}, "_time"{", " + chr(34) + "k" + chr(34) if tag else ""}])\n'
+        "  |> sum()\n"
+    )
 
 
 def _nic_increase_per_host(bucket: str, *, field: str = "bytes_sent", stream: str) -> str:
-    """Flux assigning ``stream`` = per-host NIC bytes per window.
+    """Assign ``stream`` = per-host NIC bytes per window, tagged ``k: "n"``.
 
     ``net.<field>`` is per interface and interface names differ by provider
     (``eth0``, ``ens3``, ...), so the busiest interface per window stands in for
@@ -253,32 +231,37 @@ def _nic_increase_per_host(bucket: str, *, field: str = "bytes_sent", stream: st
         "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
         f'  |> filter(fn: (r) => r["_measurement"] == "net" and r["_field"] == "{field}")\n'
         '  |> filter(fn: (r) => r["interface"] !~ /^(lo|all|veth.*)$/)\n'
-        + _lower_host()
-        + HOST_FILTER +
-        '  |> group(columns: ["host", "interface"])\n'
-        f"  |> aggregateWindow(every: {WINDOW}, fn: last, createEmpty: false)\n"
+        + HOST_FILTER
+        + "  |> aggregateWindow(every: w, fn: last, createEmpty: false)\n"
         "  |> difference(nonNegative: true)\n"
-        '  |> group(columns: ["host", "_time"])\n'
+        + DROP_PARTIAL_LAST_WINDOW
+        + "  |> map(fn: (r) => ({r with host: strings.toLower(v: r.host), "
+        '_value: float(v: r._value), k: "n"}))\n'
+        '  |> group(columns: ["host", "_time", "k"])\n'
         "  |> max()\n"
-        '  |> group(columns: ["host"])\n'
-        '  |> keep(columns: ["_time", "_value", "host"])\n'
     )
 
 
 def _joined(
     bucket: str,
-    specs: tuple[tuple[str, str, str], ...],
+    specs: tuple[tuple[str, str], ...],
     *,
     nic_field: str = "bytes_sent",
 ) -> str:
-    """``joined`` = per-host (accounted, nic) bytes per window."""
+    """``joined`` = per-host rows with ``a`` (accounted) and ``n`` (nic) bytes per
+    window. ``union`` + ``pivot`` rather than ``join()``, which is far slower."""
     return (
-        'import "strings"\n\n'
-        + _counter_increase_multi(bucket, specs, stream="accounted")
+        WINDOW_PROLOGUE
+        + "\n"
+        + _counter_increase(bucket, specs, stream="accounted", tag="a")
         + "\n"
         + _nic_increase_per_host(bucket, field=nic_field, stream="nic")
         + "\n"
-        'joined = join(tables: {a: accounted, n: nic}, on: ["_time", "host"])\n'
+        "joined = union(tables: [accounted, nic])\n"
+        '  |> keep(columns: ["_time", "host", "k", "_value"])\n'
+        '  |> group(columns: ["host"])\n'
+        '  |> pivot(rowKey: ["_time"], columnKey: ["k"], valueColumn: "_value")\n'
+        "  |> filter(fn: (r) => exists r.a and exists r.n)\n"
     )
 
 
@@ -287,11 +270,7 @@ def _joined_accounted_and_nic(bucket: str) -> str:
 
 
 COVERAGE_MAP = (
-    "  |> map(fn: (r) => ({r with\n"
-    "    _value: if float(v: r._value_n) > 0.0\n"
-    "      then 100.0 * float(v: r._value_a) / float(v: r._value_n)\n"
-    "      else 0.0,\n"
-    "  }))\n"
+    "  |> map(fn: (r) => ({r with _value: if r.n > 0.0 then 100.0 * r.a / r.n else 0.0}))\n"
     '  |> keep(columns: ["_time", "_value", "host"])\n'
 )
 
@@ -350,9 +329,10 @@ def panel_coverage(grid_pos: dict, *, bucket: str) -> dict:
         unit="percent",
         max_value=120,
         description=(
-            "(udp_tx_bytes + bytes_relayed from both relay servers) / "
-            f"net.bytes_sent per host, from the cumulative counters over {WINDOW} "
-            "windows. The legend's mean is the figure for the selected range. Red "
+            "(udp_tx_bytes + relay_carrier_udp_tx_bytes + bytes_relayed from both "
+            "relay servers) / net.bytes_sent per host, from the cumulative counters "
+            "over 10m/30m/1h windows by range. The legend's mean is the figure for "
+            "the selected range. Red "
             f"below {COVERAGE_RED_BELOW_PERCENT}%: most of the host's egress is "
             "bytes no counter explains. Upper bound until V2-834 C.1."
         ),
@@ -370,9 +350,7 @@ def panel_unaccounted(grid_pos: dict, *, bucket: str) -> dict:
     """Panel 2: the absolute gap as a rate, mean over the range, top-N hosts."""
     query = _joined_accounted_and_nic(bucket) + (
         "joined\n"
-        "  |> map(fn: (r) => ({r with\n"
-        f"    _value: (float(v: r._value_n) - float(v: r._value_a)) / {WINDOW_SECS},\n"
-        "  }))\n"
+        "  |> map(fn: (r) => ({r with _value: (r.n - r.a) / w_secs}))\n"
         "  |> mean()\n"
         "  |> group()\n"
         '  |> sort(columns: ["_value"], desc: true)\n'
@@ -415,24 +393,26 @@ def panel_unaccounted(grid_pos: dict, *, bucket: str) -> dict:
 
 def _rate_query(
     bucket: str,
-    specs: tuple[tuple[str, str, str], ...],
+    specs: tuple[tuple[str, str], ...],
     *,
     group_by: tuple[str, ...] = ("host",),
 ) -> str:
     return (
-        'import "strings"\n\n'
-        + _counter_increase_multi(bucket, specs, stream="bytes", group_by=group_by)
+        WINDOW_PROLOGUE
+        + "\n"
+        + _counter_increase(bucket, specs, stream="bytes", group_by=group_by)
         + "\nbytes\n"
-        f"  |> map(fn: (r) => ({{r with _value: float(v: r._value) / {WINDOW_SECS}}}))\n"
+        "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
+        + f"  |> group(columns: [{', '.join(chr(34) + c + chr(34) for c in group_by)}])\n"
         '  |> yield(name: "rate")'
     )
 
 
 def _ground_truth_panel(
     title: str, grid_pos: dict, *, bucket: str,
-    specs: tuple[tuple[str, str, str], ...], nic_field: str, direction: str,
+    specs: tuple[tuple[str, str], ...], nic_field: str, direction: str,
 ) -> dict:
-    fields = " + ".join(f for _t, f, _fn in specs)
+    fields = " + ".join(f for _t, f in specs)
     query = _joined(bucket, specs, nic_field=nic_field) + "joined\n" + COVERAGE_MAP + (
         '  |> yield(name: "coverage")'
     )
@@ -475,14 +455,14 @@ def panel_ground_truth_ingress(grid_pos: dict, *, bucket: str) -> dict:
 
 def panel_egress_decomposition(grid_pos: dict, *, bucket: str) -> dict:
     """Stacked rate per counter, summed over the selected hosts."""
-    specs = tuple((t, f, fn) for _label, t, f, fn in EGRESS_DECOMPOSITION)
+    specs = tuple((t, f) for _label, t, f in EGRESS_DECOMPOSITION)
     query = _rate_query(bucket, specs, group_by=("_field",))
     overrides = [
         {
             "matcher": {"id": "byName", "options": field},
             "properties": [{"id": "displayName", "value": label}],
         }
-        for label, _t, field, _fn in EGRESS_DECOMPOSITION
+        for label, _t, field in EGRESS_DECOMPOSITION
     ]
     panel = _timeseries(
         "Egress decomposition (selected hosts, stacked)",
@@ -508,7 +488,7 @@ def panel_egress_decomposition(grid_pos: dict, *, bucket: str) -> dict:
 def panel_relay_throughput(grid_pos: dict, *, bucket: str) -> dict:
     """Panel 3: MASQUE relay-server throughput per host, with the direction split."""
     specs = tuple(
-        (target, field, "max")
+        (target, field)
         for target in (TARGET_RELAY, TARGET_MASQUE_RELAY_SERVER)
         for field in ("bytes_relayed", "forwarded_to_client_bytes", "forwarded_to_target_bytes")
     )
@@ -531,21 +511,20 @@ def panel_relay_throughput(grid_pos: dict, *, bucket: str) -> dict:
 def panel_active_reservations(grid_pos: dict, *, bucket: str) -> dict:
     """Panel: relay occupancy per host -- MASQUE reservations and stream relay
     sessions, each summed over the host's services. Gauges, not counters."""
-    clause = (
-        f"({_field_clause(TARGET_MASQUE_RELAY_SERVER, 'active_reservations')} or "
-        f"{_field_clause(TARGET_RELAY, 'active_sessions')})"
+    specs = (
+        (TARGET_MASQUE_RELAY_SERVER, "active_reservations"),
+        (TARGET_RELAY, "active_sessions"),
     )
     query = (
-        'import "strings"\n\n'
+        WINDOW_PROLOGUE
+        + "\n"
         f'from(bucket: "{bucket}")\n'
         "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
         '  |> filter(fn: (r) => r["_measurement"] == "tail")\n'
-        f"  |> filter(fn: (r) => {clause})\n"
-        + _lower_host()
-        + HOST_FILTER +
-        '  |> group(columns: ["host", "service_number", "_field"])\n'
-        f"  |> aggregateWindow(every: {BURST_WINDOW}, fn: max, createEmpty: false)\n"
-        f"  |> aggregateWindow(every: {WINDOW}, fn: last, createEmpty: false)\n"
+        f"  |> filter(fn: (r) => {_field_filter(specs)})\n"
+        + HOST_FILTER
+        + "  |> aggregateWindow(every: w, fn: last, createEmpty: false)\n"
+        "  |> map(fn: (r) => ({r with host: strings.toLower(v: r.host)}))\n"
         '  |> group(columns: ["host", "_field", "_time"])\n'
         "  |> sum()\n"
         '  |> group(columns: ["host", "_field"])\n'
@@ -571,7 +550,7 @@ def panel_replication_serving(grid_pos: dict, *, bucket: str) -> dict:
     return _timeseries(
         "Replication serving",
         grid_pos,
-        _rate_query(bucket, ((TARGET_REPLICATION, "fetch_response_tx_bytes", "max"),)),
+        _rate_query(bucket, ((TARGET_REPLICATION, "fetch_response_tx_bytes"),)),
         unit="Bps",
         description=(
             "Rate of fetch_response_tx_bytes per host (target ant_node::"

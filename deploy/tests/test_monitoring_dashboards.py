@@ -303,33 +303,52 @@ class TestEgressAccountingDashboard:
             assert "virtual_udp_tx_bytes" not in q
             assert "sock_tx_bytes" not in q
 
-    def test_burst_collapse_precedes_differencing(self):
-        """A series can carry several lines per tick (two endpoint summaries,
-        per-session relay lines): udp_tx_bytes sums them, the relay totals take
-        the max, and only then is the 10m window differenced."""
+    def test_window_is_pushed_down_and_scales_with_range(self):
+        """range -> filters -> aggregateWindow, nothing in between: that is the
+        shape InfluxDB pushes into storage (one row per series per window
+        instead of every sample -- 18s -> 2s on a 24h view). The window widens
+        with the range so a 48h prod view stays tractable."""
         q = self._query("Egress accounting coverage (%)")
-        assert "aggregateWindow(every: 1m, fn: sum, createEmpty: false)" in q
-        assert "aggregateWindow(every: 1m, fn: max, createEmpty: false)" in q
-        for stream in ("accounted_sum", "accounted_max"):
-            body = q.split(f"{stream} = ")[1]
-            burst = body.index("aggregateWindow(every: 1m")
-            window = body.index("aggregateWindow(every: 10m, fn: last")
-            diff = body.index("difference(nonNegative: true)")
-            assert burst < window < diff
-        assert "union(tables: [accounted_max, accounted_sum])" in q
+        assert "range_ns = int(v: v.timeRangeStop) - int(v: v.timeRangeStart)" in q
+        assert ("w = if range_ns > int(v: 24h) then 1h "
+                "else if range_ns > int(v: 6h) then 30m else 10m") in q
+        for stream in ("accounted", "nic"):
+            body = q.split(f"{stream} = from(bucket")[1].split("\n\n")[0]
+            lines = [ln.strip() for ln in body.splitlines()[1:]]
+            first_non_filter = next(
+                i for i, ln in enumerate(lines)
+                if not ln.startswith("|> range") and not ln.startswith("|> filter")
+            )
+            assert lines[first_non_filter].startswith("|> aggregateWindow(every: w, fn:")
+            assert "|> difference(nonNegative: true)" in lines
+            # The cross-series total is a per-(host, _time) sum/max, not a second
+            # aggregateWindow, which would re-stamp each increase one window late.
+            assert body.count("aggregateWindow(") == 1
 
-    def test_cross_service_total_is_a_sum_not_a_second_window(self):
-        """Summing across services with another aggregateWindow re-stamps the
-        increase one window late against the NIC side of the join."""
+    def test_counters_windowed_with_max_not_last(self):
+        """One series can carry several lines per tick (two endpoint summaries,
+        one at udp_tx_bytes=0; per-session relay lines): `last` would flap and
+        `nonNegative` keep the full total every tick (25x the NIC). The
+        summary total is >= every other line in the window, so `max`."""
         for title in ("Egress accounting coverage (%)", "Relay throughput (relay servers)",
-                      "Replication serving"):
+                      "Replication serving", "Egress decomposition (selected hosts, stacked)"):
             q = self._query(title)
-            assert 'group(columns: ["host", "_time"])\n  |> sum()' in q or \
-                'group(columns: ["host", "_field", "_time"])\n  |> sum()' in q
-            # per stream: burst + 10m window; the nic stream: 10m window only.
-            streams = q.count(" = from(bucket")
-            nic = q.count("nic = from(bucket")
-            assert q.count("aggregateWindow(") == 2 * (streams - nic) + nic
+            assert "aggregateWindow(every: w, fn: max, createEmpty: false)" in q
+            assert "fn: last" not in q.split("nic = from")[0]
+
+    def test_partial_last_window_dropped_on_both_sides(self):
+        """The window cut off by the range end pairs 5 minutes of counter with
+        however many seconds of NIC -- measured at 5x, dragging the legend mean."""
+        q = self._query("Egress accounting coverage (%)")
+        assert q.count("|> filter(fn: (r) => r._time < v.timeRangeStop)") == 2
+
+    def test_sides_combined_with_pivot_not_join(self):
+        q = self._query("Egress accounting coverage (%)")
+        assert "union(tables: [accounted, nic])" in q
+        assert 'pivot(rowKey: ["_time"], columnKey: ["k"], valueColumn: "_value")' in q
+        assert "filter(fn: (r) => exists r.a and exists r.n)" in q
+        assert "join(" not in q
+        assert "100.0 * r.a / r.n" in q
 
     def test_both_sides_lowercase_host_and_match_case_insensitively(self):
         """tail carries the UPPER-cased host; net carries the OS hostname, which on
@@ -337,10 +356,9 @@ class TestEgressAccountingDashboard:
         Host variable lists the raw net tags, so the match ignores case."""
         q = self._query("Egress accounting coverage (%)")
         assert 'import "strings"' in q
-        assert q.count("strings.toLower(v: r.host)") == 3  # 2 accounted streams + nic
+        assert q.count("strings.toLower(v: r.host)") == 2  # accounted + nic
         assert 'r["host"] =~ /(?i)^$host$/' in q
         assert 'r["host"] =~ /^$host$/' not in q
-        assert 'join(tables: {a: accounted, n: nic}, on: ["_time", "host"])' in q
 
     def test_nic_denominator_excludes_lo_all_and_nat_veth(self):
         """On a NAT-simulated VM the root end of the veth pair reports the node's
@@ -348,7 +366,7 @@ class TestEgressAccountingDashboard:
         q = self._query("Egress accounting coverage (%)")
         assert 'r["_measurement"] == "net" and r["_field"] == "bytes_sent"' in q
         assert 'r["interface"] !~ /^(lo|all|veth.*)$/' in q
-        assert 'group(columns: ["host", "_time"])\n  |> max()' in q
+        assert 'group(columns: ["host", "_time", "k"])\n  |> max()' in q
 
     def test_ground_truth_panels_use_socket_counters(self):
         def clause(target, field):
@@ -368,6 +386,7 @@ class TestEgressAccountingDashboard:
         assert panel["fieldConfig"]["defaults"]["custom"]["stacking"]["mode"] == "normal"
         q = panel["targets"][0]["query"]
         assert 'group(columns: ["_field", "_time"])\n  |> sum()' in q
+        assert "r._value / w_secs" in q
         for field in ("wire_tx_bytes", "get_success_tx_bytes", "fetch_response_tx_bytes",
                       "bytes_relayed", "lost_bytes", "stateless_tx_bytes", "failed_dial_tx_bytes"):
             assert field in q
@@ -393,7 +412,7 @@ class TestEgressAccountingDashboard:
         q = panel["targets"][0]["query"]
         assert "limit(n: 15)" in q
         assert 'sort(columns: ["_value"], desc: true)' in q
-        assert "/ 600.0" in q
+        assert "(r.n - r.a) / w_secs" in q
 
     def test_numerator_note_names_the_exclusions(self):
         panel = next(p for p in self._dash()["panels"] if p["type"] == "text")
