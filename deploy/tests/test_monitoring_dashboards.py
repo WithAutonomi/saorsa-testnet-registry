@@ -497,7 +497,15 @@ class TestNodeTrafficByServiceDashboard:
             assert 'sort(columns: ["mean"], desc: true)' in q
             assert "limit(n: 20)" in q
             assert "peak: if r._value > accumulator.peak" in q
-            assert panel["fieldConfig"]["defaults"]["unit"] == "Bps"
+            # unit on the rate columns only -- a table default formats the
+            # service index as "4 B/s"
+            assert "unit" not in panel["fieldConfig"]["defaults"]
+            units = {
+                o["matcher"]["options"]: [p["value"] for p in o["properties"] if p["id"] == "unit"]
+                for o in panel["fieldConfig"]["overrides"]
+            }
+            assert units == {"host": [], "service_number": [], "mean": ["Bps"], "peak": ["Bps"]}
+            assert 'regexp.replaceAllString(r: /^.*ant-(node|bootstrap)-([0-9]+).*$/' in q
             # pushdown shape, same as the egress dashboard
             assert "aggregateWindow(every: w, fn: max, createEmpty: false)" in q
             assert "|> filter(fn: (r) => r._time < v.timeRangeStop)" in q
@@ -510,9 +518,15 @@ class TestNodeTrafficByServiceDashboard:
             q = panel["targets"][0]["query"]
             assert 'r["host"] =~ /(?i)^$host$/' in q
             assert 'group(columns: ["service_number", "_time"])' in q
+            assert 'regexp.replaceAllString(r: /^.*ant-(node|bootstrap)-([0-9]+).*$/' in q
             assert panel["fieldConfig"]["defaults"]["displayName"] == (
                 "service ${__field.labels.service_number}"
             )
+
+    def test_panels_are_stacked_full_width(self):
+        for panel in self._dash()["panels"]:
+            assert panel["gridPos"]["w"] == 24
+            assert panel["gridPos"]["x"] == 0
 
     def test_relay_tables_cover_both_relay_servers(self):
         panel = next(p for p in self._dash()["panels"]

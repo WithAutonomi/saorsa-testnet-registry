@@ -64,7 +64,8 @@ from __future__ import annotations
 #: from the selected range (never below the 5-minute summary cadence, so every
 #: window holds a sample) and its length in seconds for rates.
 WINDOW_PROLOGUE = (
-    'import "strings"\n\n'
+    'import "strings"\n'
+    'import "regexp"\n\n'
     "range_ns = int(v: v.timeRangeStop) - int(v: v.timeRangeStart)\n"
     "w = if range_ns > int(v: 24h) then 1h else if range_ns > int(v: 6h) then 30m else 10m\n"
     "w_secs = float(v: int(v: w)) / 1000000000.0\n"
@@ -188,6 +189,16 @@ def _field_filter(specs: tuple[tuple[str, str], ...]) -> str:
 # sit before the window to be pushed down, is case-insensitive.
 HOST_FILTER = '  |> filter(fn: (r) => r["host"] =~ /(?i)^$host$/)\n'
 
+# Normalises the service_number tag to the bare index. The forwarder's path
+# parser now handles every service directory shape, but data shipped before it
+# did (every testnet bootstrap) carries the whole log path as the tag, and
+# Influx keeps it for the retention period. Applied only where the label is
+# shown, on the already-reduced rows.
+SERVICE_LABEL_MAP = (
+    "service_number: regexp.replaceAllString("
+    "r: /^.*ant-(node|bootstrap)-([0-9]+).*$/, v: r.service_number, t: \"$2\")"
+)
+
 # aggregateWindow stamps the window cut off by the range end at the range end
 # itself. In that partial window the two sides cover different spans -- the
 # summaries tick every 5 minutes, `net` samples every 10 seconds -- so a view
@@ -205,6 +216,7 @@ def _counter_increase(
     group_by: tuple[str, ...] = ("host",),
     tag: str | None = None,
     host_filter: bool = True,
+    service_label: bool = False,
 ) -> str:
     """Assign ``stream`` = bytes per window from ``tail`` counters, summed per
     ``group_by`` (+ ``_time``); ``tag`` adds a constant column ``k`` for pivoting.
@@ -218,6 +230,8 @@ def _counter_increase(
     """
     cols = ", ".join(f'"{c}"' for c in group_by)
     extra = f', k: "{tag}"' if tag else ""
+    if service_label:
+        extra += ", " + SERVICE_LABEL_MAP
     return (
         f'{stream} = from(bucket: "{bucket}")\n'
         "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
@@ -422,6 +436,7 @@ def _rate_query(
         + "\n"
         + _counter_increase(
             bucket, specs, stream="bytes", group_by=group_by, host_filter=host_filter,
+            service_label="service_number" in group_by,
         )
         + "\nbytes\n"
         "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
@@ -642,7 +657,7 @@ def _top_services_query(bucket: str, specs: tuple[tuple[str, str], ...]) -> str:
         + "\n"
         + _counter_increase(
             bucket, specs, stream="bytes", group_by=("host", "service_number"),
-            host_filter=False,
+            host_filter=False, service_label=True,
         )
         + "\nbytes\n"
         "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
@@ -673,8 +688,10 @@ def _top_services_table(
         "description": description,
         "type": "table",
         "datasource": DATASOURCE,
+        # The unit goes on the two rate columns only: a table-wide default
+        # formats the service index ("4") as "4 B/s".
         "fieldConfig": {
-            "defaults": {"unit": "Bps"},
+            "defaults": {},
             "overrides": [
                 {
                     "matcher": {"id": "byName", "options": "host"},
@@ -691,6 +708,7 @@ def _top_services_table(
                     "matcher": {"id": "byName", "options": "mean"},
                     "properties": [
                         {"id": "displayName", "value": "Mean rate"},
+                        {"id": "unit", "value": "Bps"},
                         {"id": "custom.width", "value": 130},
                     ],
                 },
@@ -698,6 +716,7 @@ def _top_services_table(
                     "matcher": {"id": "byName", "options": "peak"},
                     "properties": [
                         {"id": "displayName", "value": "Peak window"},
+                        {"id": "unit", "value": "Bps"},
                         {"id": "custom.width", "value": 130},
                     ],
                 },
@@ -823,13 +842,13 @@ def panel_drilldown_note(grid_pos: dict, *, bucket: str) -> dict:  # noqa: ARG00
 #: Panel specs for the per-service dashboard: four fleet-wide top-N tables, a
 #: one-line note, then four single-host per-service time series.
 BY_SERVICE_PANEL_SPECS: tuple[tuple, ...] = (
-    (panel_top_relay_services, {"w": 12, "h": 11}),
-    (panel_top_egress_services, {"w": 12, "h": 11}),
-    (panel_top_ingress_services, {"w": 12, "h": 11}),
-    (panel_top_chunk_serving_services, {"w": 12, "h": 11}),
+    (panel_top_relay_services, {"h": 11}),
+    (panel_top_egress_services, {"h": 11}),
+    (panel_top_ingress_services, {"h": 11}),
+    (panel_top_chunk_serving_services, {"h": 11}),
     (panel_drilldown_note, {"h": 3}),
-    (panel_service_egress, {"w": 12, "h": 9}),
-    (panel_service_ingress, {"w": 12, "h": 9}),
-    (panel_service_relay, {"w": 12, "h": 9}),
-    (panel_service_chunk_serving, {"w": 12, "h": 9}),
+    (panel_service_egress, {"h": 9}),
+    (panel_service_ingress, {"h": 9}),
+    (panel_service_relay, {"h": 9}),
+    (panel_service_chunk_serving, {"h": 9}),
 )
