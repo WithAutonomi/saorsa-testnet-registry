@@ -438,6 +438,12 @@ __TAGDROP_BLOCK__
 #   /mnt/ant-node-storage/log/ant-node-17/ant-node.log -> "17"
 #   /mnt/ant-node-storage/log/ant-genesis-node/ant-node.log -> "genesis"
 #   /mnt/ant-node-storage/logs/ant-bootstrap/ant-node.log -> "1"
+#   /mnt/ant-node-storage/log/ant-bootstrap-3/ant-node.log -> "3"
+#
+# Anything unmatched keeps the raw path -- which is what every testnet
+# bootstrap carried until the `ant-bootstrap-{index}` form was added: the
+# bootstrap provisioner names its service and log dir by index, and only the
+# bare prod form was handled.
 [[processors.starlark]]
   order = 2
   source = '''
@@ -455,6 +461,11 @@ def apply(metric):
         if part == "ant-bootstrap":
             metric.tags["service_number"] = "1"
             return metric
+        if part.startswith("ant-bootstrap-"):
+            num = part[len("ant-bootstrap-"):]
+            if num.isdigit():
+                metric.tags["service_number"] = num
+                return metric
     return metric
 '''
 

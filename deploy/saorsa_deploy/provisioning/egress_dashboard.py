@@ -204,6 +204,7 @@ def _counter_increase(
     stream: str,
     group_by: tuple[str, ...] = ("host",),
     tag: str | None = None,
+    host_filter: bool = True,
 ) -> str:
     """Assign ``stream`` = bytes per window from ``tail`` counters, summed per
     ``group_by`` (+ ``_time``); ``tag`` adds a constant column ``k`` for pivoting.
@@ -222,7 +223,7 @@ def _counter_increase(
         "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
         '  |> filter(fn: (r) => r["_measurement"] == "tail")\n'
         f"  |> filter(fn: (r) => {_field_filter(specs)})\n"
-        + HOST_FILTER
+        + (HOST_FILTER if host_filter else "")
         + "  |> aggregateWindow(every: w, fn: max, createEmpty: false)\n"
         "  |> difference(nonNegative: true)\n"
         + DROP_PARTIAL_LAST_WINDOW
@@ -414,11 +415,14 @@ def _rate_query(
     specs: tuple[tuple[str, str], ...],
     *,
     group_by: tuple[str, ...] = ("host",),
+    host_filter: bool = True,
 ) -> str:
     return (
         WINDOW_PROLOGUE
         + "\n"
-        + _counter_increase(bucket, specs, stream="bytes", group_by=group_by)
+        + _counter_increase(
+            bucket, specs, stream="bytes", group_by=group_by, host_filter=host_filter,
+        )
         + "\nbytes\n"
         "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
         + f"  |> group(columns: [{', '.join(chr(34) + c + chr(34) for c in group_by)}])\n"
@@ -605,3 +609,227 @@ EGRESS_ACCOUNTING_PANEL_SPECS: tuple[tuple, ...] = (
 DASHBOARD_TITLE = "Egress accounting"
 DASHBOARD_UID = "ant-egress-accounting"
 DASHBOARD_TAG = "egress-accounting"
+
+
+# ---------------------------------------------------------------------------
+# "Node traffic by service" -- the per-service view.
+#
+# Every counter above exists per node service in Influx (`service_number` tag)
+# but the egress dashboard sums them per host, because coverage is a ratio to
+# the VM's one NIC. The production fleet runs 700+ services, so this dashboard
+# never plots per-service lines fleet-wide: fleet-wide it RANKS (top-N tables,
+# `sort |> limit`, which cost the same at 70 services or 7,000), and lines are
+# drawn only for the ~15 services of ONE selected host.
+# ---------------------------------------------------------------------------
+
+BY_SERVICE_TITLE = "Node traffic by service"
+BY_SERVICE_UID = "ant-node-traffic-by-service"
+BY_SERVICE_TAG = "node-traffic-by-service"
+
+TOP_N_SERVICES = 20
+
+RELAY_BYTES: tuple[tuple[str, str], ...] = (
+    (TARGET_RELAY, "bytes_relayed"),
+    (TARGET_MASQUE_RELAY_SERVER, "bytes_relayed"),
+)
+CHUNK_GET_SERVING: tuple[tuple[str, str], ...] = ((TARGET_STORAGE, "get_success_tx_bytes"),)
+
+
+def _top_services_query(bucket: str, specs: tuple[tuple[str, str], ...]) -> str:
+    """Fleet-wide: mean and peak per-window rate per (host, service), top N by mean."""
+    return (
+        WINDOW_PROLOGUE
+        + "\n"
+        + _counter_increase(
+            bucket, specs, stream="bytes", group_by=("host", "service_number"),
+            host_filter=False,
+        )
+        + "\nbytes\n"
+        "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
+        '  |> group(columns: ["host", "service_number"])\n'
+        "  |> reduce(\n"
+        "    fn: (r, accumulator) => ({\n"
+        "      sum: accumulator.sum + r._value,\n"
+        "      n: accumulator.n + 1,\n"
+        "      peak: if r._value > accumulator.peak then r._value else accumulator.peak,\n"
+        "    }),\n"
+        "    identity: {sum: 0.0, n: 0, peak: 0.0},\n"
+        "  )\n"
+        "  |> map(fn: (r) => ({r with mean: r.sum / float(v: r.n)}))\n"
+        "  |> group()\n"
+        '  |> sort(columns: ["mean"], desc: true)\n'
+        f"  |> limit(n: {TOP_N_SERVICES})\n"
+        '  |> keep(columns: ["host", "service_number", "mean", "peak"])\n'
+        '  |> yield(name: "top")'
+    )
+
+
+def _top_services_table(
+    title: str, grid_pos: dict, *, bucket: str,
+    specs: tuple[tuple[str, str], ...], description: str,
+) -> dict:
+    return {
+        "title": title,
+        "description": description,
+        "type": "table",
+        "datasource": DATASOURCE,
+        "fieldConfig": {
+            "defaults": {"unit": "Bps"},
+            "overrides": [
+                {
+                    "matcher": {"id": "byName", "options": "host"},
+                    "properties": [{"id": "displayName", "value": "Host"}],
+                },
+                {
+                    "matcher": {"id": "byName", "options": "service_number"},
+                    "properties": [
+                        {"id": "displayName", "value": "Service"},
+                        {"id": "custom.width", "value": 90},
+                    ],
+                },
+                {
+                    "matcher": {"id": "byName", "options": "mean"},
+                    "properties": [
+                        {"id": "displayName", "value": "Mean rate"},
+                        {"id": "custom.width", "value": 130},
+                    ],
+                },
+                {
+                    "matcher": {"id": "byName", "options": "peak"},
+                    "properties": [
+                        {"id": "displayName", "value": "Peak window"},
+                        {"id": "custom.width", "value": 130},
+                    ],
+                },
+            ],
+        },
+        "gridPos": grid_pos,
+        "options": {
+            "showHeader": True,
+            "sortBy": [{"displayName": "Mean rate", "desc": True}],
+        },
+        "targets": [{"query": _top_services_query(bucket, specs), "refId": "A"}],
+    }
+
+
+def panel_top_relay_services(grid_pos: dict, *, bucket: str) -> dict:
+    return _top_services_table(
+        f"Top {TOP_N_SERVICES} services by relay bytes forwarded", grid_pos, bucket=bucket,
+        specs=RELAY_BYTES,
+        description=(
+            "bytes_relayed over both relay servers, per service, fleet-wide. Mean rate "
+            "over the selected range, ranked; peak is the busiest single window. The "
+            "services being used as relays."
+        ),
+    )
+
+
+def panel_top_egress_services(grid_pos: dict, *, bucket: str) -> dict:
+    return _top_services_table(
+        f"Top {TOP_N_SERVICES} services by socket egress", grid_pos, bucket=bucket,
+        specs=GROUND_TRUTH_TX,
+        description=(
+            "sock_tx_bytes per service, fleet-wide: everything the process sent on "
+            "real UDP sockets. Mean rate over the range, ranked; peak is the busiest "
+            "single window."
+        ),
+    )
+
+
+def panel_top_ingress_services(grid_pos: dict, *, bucket: str) -> dict:
+    return _top_services_table(
+        f"Top {TOP_N_SERVICES} services by socket ingress", grid_pos, bucket=bucket,
+        specs=GROUND_TRUTH_RX,
+        description=(
+            "sock_rx_bytes plus the relay server's raw_rx_bytes per service, "
+            "fleet-wide. Mean rate over the range, ranked; peak is the busiest single "
+            "window."
+        ),
+    )
+
+
+def panel_top_chunk_serving_services(grid_pos: dict, *, bucket: str) -> dict:
+    return _top_services_table(
+        f"Top {TOP_N_SERVICES} services by chunk GET serving", grid_pos, bucket=bucket,
+        specs=CHUNK_GET_SERVING,
+        description=(
+            "get_success_tx_bytes per service, fleet-wide: bytes served in successful "
+            "chunk GET responses. Mean rate over the range, ranked; peak is the "
+            "busiest single window."
+        ),
+    )
+
+
+def _per_service_panel(
+    title: str, grid_pos: dict, *, bucket: str,
+    specs: tuple[tuple[str, str], ...], description: str,
+) -> dict:
+    return _timeseries(
+        title,
+        grid_pos,
+        _rate_query(bucket, specs, group_by=("service_number",)),
+        unit="Bps",
+        display_name="service ${__field.labels.service_number}",
+        description=description + " One line per node service on the selected host.",
+    )
+
+
+def panel_service_egress(grid_pos: dict, *, bucket: str) -> dict:
+    return _per_service_panel(
+        "Socket egress per service", grid_pos, bucket=bucket, specs=GROUND_TRUTH_TX,
+        description="Rate of sock_tx_bytes.",
+    )
+
+
+def panel_service_ingress(grid_pos: dict, *, bucket: str) -> dict:
+    return _per_service_panel(
+        "Socket ingress per service", grid_pos, bucket=bucket, specs=GROUND_TRUTH_RX,
+        description="Rate of sock_rx_bytes plus the relay server's raw_rx_bytes.",
+    )
+
+
+def panel_service_relay(grid_pos: dict, *, bucket: str) -> dict:
+    return _per_service_panel(
+        "Relay bytes forwarded per service", grid_pos, bucket=bucket, specs=RELAY_BYTES,
+        description="Rate of bytes_relayed over both relay servers.",
+    )
+
+
+def panel_service_chunk_serving(grid_pos: dict, *, bucket: str) -> dict:
+    return _per_service_panel(
+        "Chunk GET serving per service", grid_pos, bucket=bucket, specs=CHUNK_GET_SERVING,
+        description="Rate of get_success_tx_bytes.",
+    )
+
+
+def panel_drilldown_note(grid_pos: dict, *, bucket: str) -> dict:  # noqa: ARG001
+    return {
+        "title": "Per-service detail",
+        "type": "text",
+        "gridPos": grid_pos,
+        "options": {
+            "mode": "markdown",
+            "content": (
+                "The tables above rank every service in the fleet over the selected "
+                "range. The panels below draw one line per service for the **single "
+                "host** chosen in the Host selector -- pick the host of a row that "
+                "stands out. Same counters and windows as the Egress accounting "
+                "dashboard."
+            ),
+        },
+    }
+
+
+#: Panel specs for the per-service dashboard: four fleet-wide top-N tables, a
+#: one-line note, then four single-host per-service time series.
+BY_SERVICE_PANEL_SPECS: tuple[tuple, ...] = (
+    (panel_top_relay_services, {"w": 12, "h": 11}),
+    (panel_top_egress_services, {"w": 12, "h": 11}),
+    (panel_top_ingress_services, {"w": 12, "h": 11}),
+    (panel_top_chunk_serving_services, {"w": 12, "h": 11}),
+    (panel_drilldown_note, {"h": 3}),
+    (panel_service_egress, {"w": 12, "h": 9}),
+    (panel_service_ingress, {"w": 12, "h": 9}),
+    (panel_service_relay, {"w": 12, "h": 9}),
+    (panel_service_chunk_serving, {"w": 12, "h": 9}),
+)

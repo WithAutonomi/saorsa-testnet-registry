@@ -164,6 +164,21 @@ class TestBuildTelegrafConfig:
         p = _make_provisioner()
         config = p._build_telegraf_config()
         assert 'part == "ant-bootstrap"' in config
+
+    def test_starlark_handles_indexed_testnet_bootstrap(self):
+        """The bootstrap provisioner names its log dir ant-bootstrap-{index};
+        unmatched, the tag was the whole log path (seen as the `service_number`
+        of every testnet bootstrap in Influx and ES)."""
+        config = _make_provisioner()._build_telegraf_config()
+        assert 'part.startswith("ant-bootstrap-")' in config
+        source = config.split("source = '''")[1].split("'''")[0]
+        for path, expected in (
+            ("/mnt/ant-node-storage/log/ant-bootstrap-3/ant-node.log", "3"),
+            ("/mnt/ant-node-storage/logs/ant-bootstrap/ant-node.log", "1"),
+            ("/mnt/ant-node-storage/log/ant-node-17/ant-node.log", "17"),
+            ("/mnt/ant-node-storage/log/ant-genesis-node/ant-node.log", "genesis"),
+        ):
+            assert _run_starlark_parser(source, path) == expected
         assert '"service_number"] = "1"' in config
 
     def test_from_beginning_true_by_default(self):
@@ -932,3 +947,16 @@ def _telegraf_tagpass_matches(target: str) -> bool:
     separator (gobwas/glob), so ``*`` spans ``::``. ``fnmatch`` has the same
     semantics for ``*`` and literal text."""
     return any(fnmatch.fnmatchcase(target, p) for p in INFLUX_TRAFFIC_TARGET_PATTERNS)
+
+
+def _run_starlark_parser(source: str, path: str) -> str:
+    """Execute the forwarder's starlark `apply` as Python (the subset used is
+    identical) against a metric whose service_number tag is ``path``."""
+    ns: dict = {}
+    exec(source, ns)  # noqa: S102 - test-only, our own config text
+
+    class _Metric:
+        def __init__(self):
+            self.tags = {"service_number": path}
+
+    return ns["apply"](_Metric()).tags["service_number"]

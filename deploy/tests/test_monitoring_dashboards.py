@@ -2,6 +2,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from saorsa_deploy.provisioning.monitoring import (
+    GRAFANA_BY_SERVICE_DASHBOARD_PATH,
     GRAFANA_CLIENT_DASHBOARD_PATH,
     GRAFANA_EGRESS_DASHBOARD_PATH,
     INFLUXDB_BUCKET,
@@ -443,8 +444,94 @@ class TestHostVariableIgnoresTailPoints:
 
     def test_host_variable_pinned_to_cpu_measurement(self):
         for build in ("_build_host_metrics_dashboard", "_build_client_host_metrics_dashboard",
-                      "_build_egress_accounting_dashboard"):
+                      "_build_egress_accounting_dashboard",
+                      "_build_node_traffic_by_service_dashboard"):
             dash = json.loads(getattr(_make_provisioner(), build)())
             var = next(v for v in dash["templating"]["list"] if v["name"] == "host")
             assert 'r["_measurement"] == "cpu"' in var["query"]
             assert 'r["_measurement"] == "cpu"' in var["definition"]
+
+
+class TestNodeTrafficByServiceDashboard:
+    """The per-service companion: rank fleet-wide, plot only for one host."""
+
+    def _dash(self):
+        return json.loads(_make_provisioner()._build_node_traffic_by_service_dashboard())
+
+    def test_identity_stable(self):
+        dash = self._dash()
+        assert dash["title"] == "Node traffic by service"
+        assert dash["uid"] == "ant-node-traffic-by-service"
+        assert "node-traffic-by-service" in dash["tags"]
+        assert _buckets_referenced(dash) == {INFLUXDB_BUCKET}
+
+    def test_exact_panel_set_in_order(self):
+        assert _panel_titles(self._dash()) == [
+            "Top 20 services by relay bytes forwarded",
+            "Top 20 services by socket egress",
+            "Top 20 services by socket ingress",
+            "Top 20 services by chunk GET serving",
+            "Per-service detail",
+            "Socket egress per service",
+            "Socket ingress per service",
+            "Relay bytes forwarded per service",
+            "Chunk GET serving per service",
+        ]
+
+    def test_host_variable_is_single_select(self):
+        """Per-service lines only make sense for one VM; the prod fleet has 700+
+        services and must never be plotted line-per-service fleet-wide."""
+        var = next(v for v in self._dash()["templating"]["list"] if v["name"] == "host")
+        assert var["multi"] is False
+        assert var["includeAll"] is False
+        assert var["current"] == {}
+
+    def test_top_tables_rank_fleet_wide_without_host_filter(self):
+        dash = self._dash()
+        tables = [p for p in dash["panels"] if p["type"] == "table"]
+        assert len(tables) == 4
+        for panel in tables:
+            q = panel["targets"][0]["query"]
+            assert "$host" not in q
+            assert 'group(columns: ["host", "service_number", "_time"])' in q
+            assert 'sort(columns: ["mean"], desc: true)' in q
+            assert "limit(n: 20)" in q
+            assert "peak: if r._value > accumulator.peak" in q
+            assert panel["fieldConfig"]["defaults"]["unit"] == "Bps"
+            # pushdown shape, same as the egress dashboard
+            assert "aggregateWindow(every: w, fn: max, createEmpty: false)" in q
+            assert "|> filter(fn: (r) => r._time < v.timeRangeStop)" in q
+
+    def test_per_service_panels_are_scoped_to_the_selected_host(self):
+        dash = self._dash()
+        series = [p for p in dash["panels"] if p["type"] == "timeseries"]
+        assert len(series) == 4
+        for panel in series:
+            q = panel["targets"][0]["query"]
+            assert 'r["host"] =~ /(?i)^$host$/' in q
+            assert 'group(columns: ["service_number", "_time"])' in q
+            assert panel["fieldConfig"]["defaults"]["displayName"] == (
+                "service ${__field.labels.service_number}"
+            )
+
+    def test_relay_tables_cover_both_relay_servers(self):
+        panel = next(p for p in self._dash()["panels"]
+                     if p["title"].endswith("relay bytes forwarded"))
+        q = panel["targets"][0]["query"]
+        for target in ("saorsa_transport::relay::traffic",
+                       "saorsa_transport::masque::relay_server"):
+            assert f'(r["target"] == "{target}" and r["_field"] == "bytes_relayed")' in q
+
+    @patch("saorsa_deploy.provisioning.monitoring.add_op")
+    @patch("saorsa_deploy.provisioning.monitoring.server")
+    def test_configure_grafana_writes_by_service_dashboard(self, _mock_server, mock_add_op):
+        _make_provisioner()._add_configure_grafana_ops(
+            MagicMock(), influxdb_url="http://10.0.0.1:8086", influx_token="tok",
+        )
+        call = next(
+            c for c in mock_add_op.call_args_list
+            if c.kwargs["name"] == "Write node traffic by service dashboard"
+        )
+        commands = "\n".join(call.kwargs["commands"])
+        assert GRAFANA_BY_SERVICE_DASHBOARD_PATH in commands
+        assert '"uid": "ant-node-traffic-by-service"' in commands

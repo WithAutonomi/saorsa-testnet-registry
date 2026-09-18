@@ -52,6 +52,7 @@ GRAFANA_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/host-metrics.json"
 GRAFANA_CLIENT_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/client-host-metrics.json"
 GRAFANA_NODE_TABLE_PATH = f"{GRAFANA_DASHBOARD_DIR}/node-overview.json"
 GRAFANA_EGRESS_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/egress-accounting.json"
+GRAFANA_BY_SERVICE_DASHBOARD_PATH = f"{GRAFANA_DASHBOARD_DIR}/node-traffic-by-service.json"
 
 
 class MonitoringProvisioner:
@@ -400,6 +401,17 @@ class MonitoringProvisioner:
             ],
         )
 
+        by_service_json = self._build_node_traffic_by_service_dashboard()
+        add_op(
+            state,
+            server.shell,
+            name="Write node traffic by service dashboard",
+            commands=[
+                f"cat > {GRAFANA_BY_SERVICE_DASHBOARD_PATH}"
+                f" << 'BYSVC_EOF'\n{by_service_json}\nBYSVC_EOF",
+            ],
+        )
+
     def _add_influxdb_start_ops(self, state: State):
         add_op(
             state,
@@ -592,6 +604,19 @@ class MonitoringProvisioner:
             panel_specs=list(egress_dashboard.EGRESS_ACCOUNTING_PANEL_SPECS),
         )
 
+    def _build_node_traffic_by_service_dashboard(self) -> str:
+        """The per-service companion to the egress dashboard: fleet-wide top-N
+        tables (rank, never plot, at 700+ prod services) and per-service lines
+        for ONE selected host, so the Host variable is single-select."""
+        return self._build_host_dashboard(
+            title=egress_dashboard.BY_SERVICE_TITLE,
+            uid=egress_dashboard.BY_SERVICE_UID,
+            tag=egress_dashboard.BY_SERVICE_TAG,
+            bucket=INFLUXDB_BUCKET,
+            panel_specs=list(egress_dashboard.BY_SERVICE_PANEL_SPECS),
+            single_host=True,
+        )
+
     def _build_host_dashboard(
         self,
         *,
@@ -601,6 +626,7 @@ class MonitoringProvisioner:
         bucket: str,
         panel_specs: list[tuple],
         default_host_role: str | None = None,
+        single_host: bool = False,
     ) -> str:
         """Build a host-statistics dashboard from a list of panel specs.
 
@@ -610,7 +636,9 @@ class MonitoringProvisioner:
         physically separate InfluxDB buckets. When ``default_host_role`` is
         given, the Role template variable opens scoped to that single role
         instead of "All" (the panels themselves filter on the $host /
-        $host_role template variables regardless)."""
+        $host_role template variables regardless). ``single_host`` makes the
+        Host variable single-select with no "All", for dashboards whose panels
+        draw one line per service and must be scoped to one VM."""
         panels = []
         y = 0
         x = 0
@@ -683,11 +711,11 @@ class MonitoringProvisioner:
                         "type": "query",
                     },
                     {
-                        "current": {
-                            "selected": True,
-                            "text": "All",
-                            "value": "$__all",
-                        },
+                        "current": (
+                            {}
+                            if single_host
+                            else {"selected": True, "text": "All", "value": "$__all"}
+                        ),
                         "datasource": {"type": "influxdb", "uid": "influxdb"},
                         # Pinned to `cpu` (every telegraf-metrics host emits it)
                         # so the traffic-accounting `tail` points -- whose host
@@ -704,8 +732,8 @@ class MonitoringProvisioner:
                             '  |> distinct(column: "host")'
                         ),
                         "allValue": ".*",
-                        "includeAll": True,
-                        "multi": True,
+                        "includeAll": not single_host,
+                        "multi": not single_host,
                         "name": "host",
                         "label": "Host",
                         "query": (

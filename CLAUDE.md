@@ -1286,7 +1286,17 @@ NOTHING in between (pushdown: one row per series per window; a 24h view went
 18s→2s), window scales with range (10m/30m/1h), `union`+`pivot` not `join()`;
 **the partial window at the range end is dropped on both sides** (5-min ticks vs
 10-s samples → measured 5× in that window, legend mean 95→116%). With all that,
-DEV-01 read 82–97% on every host on all three reconciliations at 2h and 24h. Verified on that live run AND against a local docker
+DEV-01 read 82–97% on every host on all three reconciliations at 2h and 24h.
+Companion dashboard **"Node traffic by service"** (uid
+`ant-node-traffic-by-service`, same module): prod has 700+ services, so
+fleet-wide it RANKS (four top-20 `(host, service)` tables by mean rate with peak
+window — `sort|>limit`, flat cost at any fleet size) and draws per-service lines
+only for ONE host (single-select Host variable, `single_host=True` in
+`_build_host_dashboard`). Found while building it: the ES forwarder's path
+parser handled `ant-node-N`, `ant-genesis-*` and bare `ant-bootstrap` but not
+the testnet bootstrap provisioner's `ant-bootstrap-{index}` dir, so every
+testnet bootstrap's `service_number` (ES and Influx) was the raw log path —
+fixed in the starlark; a test executes the parser against all four shapes. Verified on that live run AND against a local docker
 InfluxDB with synthetic points (restart, double endpoint line, per-session line,
 mixed-case host, veth-nat). Prod rollout: retrofit with `provision-telegraf
 --name ant-prod-01 --host-ips-file <fleet ips> --host-role WAN_NODE

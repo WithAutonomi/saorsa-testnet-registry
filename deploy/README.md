@@ -1182,9 +1182,10 @@ uv run saorsa-deploy monitoring provision --name PROD-MON --retention-days 14
 
 On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `deployments provision-telegraf` command.
 
-Grafana (when enabled) is provisioned with four dashboards: **Node Host
-Statistics**, **Client Host Statistics**, **Node Overview**, and **Egress
-accounting** (V2-1225). The last reconciles the node's own traffic-accounting
+Grafana (when enabled) is provisioned with five dashboards: **Node Host
+Statistics**, **Client Host Statistics**, **Node Overview**, **Egress
+accounting** (V2-1225) and its per-service companion **Node traffic by
+service**. Egress accounting reconciles the node's own traffic-accounting
 counters — shipped to Influx by the ES forwarder, see
 [Traffic-accounting counters → InfluxDB](#traffic-accounting-counters--influxdb-the-es-forwarders-second-output)
 — against the host NIC, per host, from the one `testnet-metrics` bucket:
@@ -1256,6 +1257,18 @@ DEV-01 run of the V2-834 branch on 2026-09-18) rather than assumed:
   wrong way** (its `bytes_sent` is traffic sent *into* the node's netns). The NIC
   side excludes `lo`, `all` and `veth*` and takes the busiest remaining interface
   per window, since interface names differ by provider.
+
+**Node traffic by service** is the same data one level down. Every counter above
+exists per node service in Influx (`service_number` tag) but the egress dashboard
+sums them per host, because coverage is a ratio to the VM's one NIC. The
+production fleet runs 700+ services, so this dashboard never draws a line per
+service fleet-wide: fleet-wide it **ranks** — four top-20 tables (relay bytes
+forwarded, socket egress, socket ingress, chunk GET serving), each row a
+`(host, service)` with its mean rate over the range and its busiest window,
+costing the same at 70 services or 7,000 — and lines are drawn only for the
+services of **one** host, chosen in a single-select Host variable. Pick the host
+of a row that stands out and the four lower panels show its ~15 services over
+time. Same counters, same windows, same push-down query shape.
 
 Measured on that DEV-01 run once all of the above was in place, every host reads
 82–97% on coverage and on both ground-truth panels, at 2 h and 24 h alike — the remaining gap being what
