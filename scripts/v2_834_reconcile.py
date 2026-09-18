@@ -14,15 +14,21 @@ the results comment needs, with a pass/fail per invariant:
 
 Invariants (see V2-1274 for the reasoning):
 
-  I1  sum(sock_tx_datagrams + forwarded_to_target_count) vs dOutDatagrams   <= 2%
-      sum(sock_rx_datagrams + raw_rx_count)              vs dInDatagrams    <= 2%
-  I2  (sock_tx_bytes + forwarded_to_target_bytes + 28*tx_datagrams)
-        / d net.bytes_sent                                                >= 98%
-      (sock_rx_bytes + raw_rx_bytes + 28*rx_datagrams) / d net.bytes_recv  >= 98%
-  I3  sock_tx_bytes - (udp_tx + relay_carrier_udp_tx + failed_dial_tx
-        + stateless_tx)   in [0, 5%] of sock_tx_bytes; rx likewise, no stateless
+  I1  sum(sock_tx_datagrams) vs dOutDatagrams                          <= 2%
+      sum(sock_rx_datagrams) vs dInDatagrams                           <= 2%
+  I2  (sock_tx_bytes + 42*sock_tx_datagrams) / d net.bytes_sent        >= 98%
+      (sock_rx_bytes + 42*sock_rx_datagrams) / d net.bytes_recv        >= 98%
+  I3  sock_tx_bytes - (udp_tx + forwarded_to_target + relay_carrier_udp_tx
+        + failed_dial_tx + stateless_tx)         in [0, 5%] of sock_tx_bytes
+      sock_rx_bytes - (udp_rx + relay_target_rx + relay_carrier_udp_rx
+        + failed_dial_rx)                        in [0, 5%] of sock_rx_bytes
   I4  no cumulative field decreases between consecutive samples per
       (host, service)
+
+`sock_*` are the process's real-socket totals -- every QUIC socket plus the
+relay server's per-session plain sockets (saorsa-transport 4b13fec2 or
+later; earlier builds left the relay's plain sockets out and the relay
+fields had to be added by hand).
 
 Usage:
 
@@ -52,9 +58,10 @@ from saorsa_deploy.analysis.es import (  # noqa: E402
     EsRun,
 )
 
-# IPv4 (20) + UDP (8) header bytes per datagram: net.bytes_* counts them,
-# sock_*_bytes does not.
-HEADER_BYTES = 28
+# Ethernet (14) + IPv4 (20) + UDP (8) header bytes per datagram. telegraf's
+# net.bytes_* come from /proc/net/dev, which counts the L2 frame; sock_*_bytes
+# counts UDP payload only. Confirmed empirically on the first DEV-01 run.
+HEADER_BYTES = 42
 
 # Every cumulative field the table needs. Deltas are fetched per host (summed
 # over that host's services) via `EsRun.counter_delta`.
@@ -74,8 +81,8 @@ DELTA_FIELDS = [
     "relay_carrier_udp_rx_bytes",
     "forwarded_to_target_bytes",
     "forwarded_to_target_count",
-    "raw_rx_bytes",
-    "raw_rx_count",
+    "relay_target_rx_bytes",
+    "relay_target_rx_count",
     "forwarded_to_client_bytes",
     "stream_tx_bytes",
     "stream_rx_bytes",
@@ -312,8 +319,8 @@ def build_rows(
             continue
 
         # I1 -- datagrams vs the namespace's UDP counters
-        tx_dg = g("sock_tx_datagrams") + g("forwarded_to_target_count")
-        rx_dg = g("sock_rx_datagrams") + g("raw_rx_count")
+        tx_dg = g("sock_tx_datagrams")
+        rx_dg = g("sock_rx_datagrams")
         row["d_udp_out"] = s["d_udp_out"]
         row["sum_tx_datagrams"] = tx_dg
         row["i1_tx"] = pct(tx_dg, s["d_udp_out"])
@@ -327,25 +334,28 @@ def build_rows(
         row["iface"] = iface
         row["d_net_bytes_sent"] = n.get("bytes_sent")
         row["d_net_bytes_recv"] = n.get("bytes_recv")
-        tx_num = (
-            g("sock_tx_bytes") + g("forwarded_to_target_bytes") + HEADER_BYTES * tx_dg
-        )
-        rx_num = g("sock_rx_bytes") + g("raw_rx_bytes") + HEADER_BYTES * rx_dg
+        tx_num = g("sock_tx_bytes") + HEADER_BYTES * tx_dg
+        rx_num = g("sock_rx_bytes") + HEADER_BYTES * rx_dg
         row["i2_tx_numerator"] = tx_num
         row["i2_rx_numerator"] = rx_num
         row["i2_tx"] = pct(tx_num, n.get("bytes_sent") or 0)
         row["i2_rx"] = pct(rx_num, n.get("bytes_recv") or 0)
         row["log_shipping_bytes"] = shipping.get(host)
 
-        # I3 -- itemisation vs socket totals (virtual_udp_* deliberately absent)
+        # I3 -- itemisation vs socket totals. virtual_udp_* deliberately
+        # absent (rides the carrier); bytes_relayed deliberately absent (its
+        # dir-1 half is inside udp_tx via the carrier connection, its dir-2
+        # half IS forwarded_to_target).
         tx_item = (
             g("udp_tx_bytes")
+            + g("forwarded_to_target_bytes")
             + g("relay_carrier_udp_tx_bytes")
             + g("failed_dial_tx_bytes")
             + g("stateless_tx_bytes")
         )
         rx_item = (
             g("udp_rx_bytes")
+            + g("relay_target_rx_bytes")
             + g("relay_carrier_udp_rx_bytes")
             + g("failed_dial_rx_bytes")
         )
@@ -426,10 +436,10 @@ def render_markdown(rows: list[dict], mono: dict, args: argparse.Namespace) -> s
         )
     lines += [
         "",
-        "Numerators: I1 tx = sock_tx_datagrams + forwarded_to_target_count; I1 rx = sock_rx_datagrams + raw_rx_count. "
-        f"I2 tx = sock_tx_bytes + forwarded_to_target_bytes + {HEADER_BYTES} x tx datagrams over net.bytes_sent; "
-        "rx likewise with sock_rx_bytes + raw_rx_bytes. I3 residual = sock_*_bytes minus (udp + relay_carrier + "
-        "failed_dial [+ stateless on tx]); virtual_udp_* deliberately excluded. "
+        "Numerators: I1 = sock_tx/rx_datagrams vs the namespace's Udp Out/InDatagrams. "
+        f"I2 = sock_tx/rx_bytes + {HEADER_BYTES} B x datagrams (Ethernet+IPv4+UDP) over net.bytes_sent/recv. "
+        "I3 residual = sock_*_bytes minus (udp + forwarded_to_target | relay_target_rx + relay_carrier + "
+        "failed_dial [+ stateless on tx]); virtual_udp_* and bytes_relayed deliberately excluded. "
         "Log-ship B = ES doc count for the host x mean stored doc size (context only).",
     ]
     return "\n".join(lines) + "\n"
