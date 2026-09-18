@@ -138,7 +138,7 @@ The numerator of the coverage panel. Each is a cumulative counter on a node log 
 - `udp_tx_bytes` — target `saorsa_transport::traffic`. Bytes sent by QUIC connections on the
   tracked endpoint.
 - `relay_carrier_udp_tx_bytes` — target `saorsa_transport::traffic`. A NAT'd node's carrier
-  connection to its relay. Only on V2-834 builds, which split it out of `udp_tx_bytes`.
+  connection to its relay.
 - `bytes_relayed` — target `saorsa_transport::relay::traffic`. Bytes this node forwarded as a
   stream relay server, on raw UDP sockets.
 - `bytes_relayed` — target `saorsa_transport::masque::relay_server`. Bytes this node forwarded
@@ -162,8 +162,7 @@ The numerator of the coverage panel. Each is a cumulative counter on a node log 
   at the real-socket boundary.
 - `raw_rx_bytes` — target `saorsa_transport::relay::traffic`. Ingress on the relay server's own
   sockets, outside `sock_rx_bytes`.
-- Only V2-834 builds emit these. They are the figure its acceptance gate, within 2% of the NIC,
-  is measured by.
+- These are the figure V2-834's acceptance gate, within 2% of the NIC, is measured by.
 
 ### How the numbers are made
 
@@ -446,7 +445,7 @@ def _ground_truth_panel(
             "on real UDP sockets (V2-834's socket-boundary counters, incl. the "
             "relay server's raw sockets) against the NIC. "
             "This is the figure V2-834's acceptance gate (within 2%) is measured "
-            "by. Only V2-834 builds emit the field -- empty on older ones."
+            "by."
         ),
         thresholds={
             "mode": "absolute",
