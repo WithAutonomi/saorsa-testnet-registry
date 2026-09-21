@@ -48,12 +48,34 @@ done
 
 command -v claude  >/dev/null || { echo "claude not on PATH" >&2; exit 1; }
 command -v timeout >/dev/null || { echo "timeout(1) not on PATH" >&2; exit 1; }
+command -v jq      >/dev/null || { echo "jq not on PATH" >&2; exit 1; }
 
 cd "$REPO_ROOT"
 
+# Render claude's stream-json events as they arrive: what the agent says, each
+# tool call, a trimmed tool result, and the final result line with cost. The
+# raw JSON stream is kept in the log (`jq -c` per line) so nothing is lost.
+render() {
+    jq --unbuffered -r '
+        def clip(n): if length > n then .[:n] + " …" else . end;
+        def ts: (now | strftime("%H:%M:%S"));
+        if .type == "assistant" then
+            .message.content[]
+            | if .type == "text" then "\(ts) │ " + (.text | gsub("\n"; "\n         │ "))
+              elif .type == "tool_use" then
+                  "\(ts) ▶ \(.name): " + ((.input.description // .input.command // .input.prompt // .input.file_path // (.input | tojson)) | tostring | clip(160))
+              else empty end
+        elif .type == "user" then
+            .message.content[]? | select(.type == "tool_result")
+            | "\(ts) ◀ " + ((.content | if type == "array" then map(.text? // "") | join(" ") else tostring end) | gsub("\n"; " ⏎ ") | clip(240))
+        elif .type == "result" or has("duration_api_ms") then
+            "\(ts) ■ \(.subtype // .stop_reason // "end") in \((.duration_ms // .duration_api_ms) / 60000 | floor)m, cost $\(.total_cost_usd // 0 | . * 100 | round / 100)"
+        else empty end'
+}
+
 # claude -p returns when the agent ends its turn. `timeout` is the ceiling on
-# top of that; 124 means it was killed. Logs are streamed, not buffered, so a
-# run can be followed with `tail -f`.
+# top of that; 124 means it was killed. stdout is the JSON event stream: tee'd
+# raw into the log, rendered to the terminal. stderr goes to the log only.
 run_session() {
     local name="$1" prompt="$2" limit="$3" log="$4"
     timeout --signal=INT --kill-after=60s "$limit" \
@@ -62,8 +84,10 @@ run_session() {
             --name "$name" \
             --dangerously-skip-permissions \
             --permission-prompts none \
-            --output-format text \
-        > "$log" 2>&1
+            --output-format stream-json \
+            --verbose \
+        2>> "$log" | tee -a "$log" | render
+    return "${PIPESTATUS[0]}"
 }
 
 failed=()
@@ -77,7 +101,7 @@ for issue in "${ISSUES[@]}"; do
     if [[ $rc -eq 124 ]]; then
         echo "[$(date -u +%FT%TZ)] KILLED $issue after $RUN_TIMEOUT"
     else
-        echo "[$(date -u +%FT%TZ)] EXIT $issue rc=$rc  $(grep -o 'RUN COMPLETE.*' "$run_log" | tail -1)"
+        echo "[$(date -u +%FT%TZ)] EXIT $issue rc=$rc  $(grep -o 'RUN COMPLETE [^"\\]*' "$run_log" | tail -1)"
     fi
     [[ $rc -eq 0 ]] || failed+=("$issue")
 
