@@ -162,32 +162,42 @@ Carry out the phases as defined in the issue. This will typically take many hour
 
 ### The schedule
 
-At T0, arm **one wake per timed action**, plus the ceiling. If the issue has N timed actions there
-must be N wakes + 1. Use `ScheduleWakeup` or `CronCreate`, never one long `sleep` — a single
-backgrounded sleep has returned 8 hours late and cost a whole run. Prefer several shorter waits over
-one multi-hour one.
+This skill runs **headless** (`claude -p`): the process exits the moment you end your turn, and
+nothing scheduled for later — `ScheduleWakeup`, `CronCreate`, a Monitor, a background `sleep` —
+can fire after that. So the phase clock is driven by **foreground, bounded waits** inside the
+turn, and you do not end the turn until Step 7 is done.
 
-At **every** wake:
+At T0, write the absolute timestamp (epoch seconds, UTC) of **every** timed action plus the
+ceiling into the task list. If the issue has N timed actions there are N+1 boundaries. Then wait
+for the next one with a foreground loop, at most 10 minutes per tool call:
 
-1. Re-read the clock. Compute where you actually are relative to T0 before doing anything. A wake
-   that fires late runs the action that is due *now*, records the actual fire time, and never runs
-   an action whose window has passed as if it were on time.
+```bash
+until [ "$(date +%s)" -ge "$TARGET" ]; do sleep 30; done; date -u +%FT%TZ
+```
+
+Call it repeatedly (each call returns within its `timeout`, 600000 ms) until it prints a time at
+or past the boundary. Never one long sleep, never a backgrounded sleep — a single backgrounded
+sleep has returned 8 hours late and cost a whole run. Never `pgrep` for your own waiter.
+
+At **every** boundary:
+
+1. Re-read the clock. Compute where you actually are relative to T0 before doing anything. If you
+   are late, run the action that is due *now*, record the actual time, and never run an action
+   whose window has passed as if it were on time.
 2. Run the pre-written command for that boundary.
 3. Run the health read (transfer counts, `df` on node VMs, failed units) and record it.
 4. Update the task list with the fire time and outcome.
-5. Confirm the next wake is armed.
+5. Start the wait for the next boundary.
 
-A health monitor armed on failure signatures is a different job from a scheduled wake and does not
-replace one. Do not arm per-event monitors either — one wake per boundary, and reads only at those
-wakes.
+A health check is a different job from the schedule and does not replace it — the fleet being
+healthy is not evidence that an action is not due.
 
 ### The ceiling
 
-The ceiling wake is armed at T0 and is independent of the phase wakes. When it fires:
-
-* If Step 6 (compute teardown) has already run, do nothing.
-* Otherwise, the run is over regardless of phase: run Step 5 for whatever can be recorded, then
-  Step 6, then report. The results comment says which phases were incomplete and why.
+The ceiling is the last entry in the boundary list and is checked at every wake, not only its own:
+if the current time is past the ceiling and Step 6 (compute teardown) has not run, the run is over
+regardless of phase — run Step 5 for whatever can be recorded, then Step 6, then report. The
+results comment says which phases were incomplete and why.
 
 ### Acceptance criteria and stop conditions
 
@@ -316,3 +326,10 @@ Post a comment on `$issue_number` with:
   commands.
 
 Then set `$issue_number` to `Done` (or `Cancelled` if the run was abandoned).
+
+## Step 8 — Exit
+
+The run is finished only when Step 7 is done. Print one final line —
+`RUN COMPLETE <issue> <Done|Cancelled> <registry-id>` — and **end your turn with no pending tool
+calls, waits or schedules**. In headless mode that is what ends the process; the calling script
+waits on it and will not start the next issue until it exits.
