@@ -125,6 +125,9 @@ until ! kill -0 $PID 2>/dev/null; do sleep 30; done; echo "up ended"; tail -40 <
 ```
 
 Never `pgrep -f` a pattern that appears in the waiter's own command line (it self-matches).
+Do **not** `nohup`, `setsid` or `disown` the deploy: it must die with this session, so that an
+operator's Ctrl-C on the calling script stops the deploy too instead of orphaning a half-built
+fleet.
 
 The last step is `clients start`. When it completes, record the wall-clock time from the client
 units' `ActiveEnterTimestamp` (not from the log). That is **T0**, and every phase is measured from
