@@ -997,6 +997,49 @@ any) and provisions host-stat Telegraf on them with `host_role="CLIENT"`, routed
 to the dedicated **`client-metrics`** bucket (the client→ES forwarder is installed
 separately by `clients provision`).
 
+#### Traffic-accounting counters → InfluxDB (the ES forwarder's second output)
+
+Whenever a deployment has **both** elastic and monitoring state, the ES log
+forwarder is rendered with a second output: an `[[outputs.influxdb_v2]]` that
+writes the node's periodic **traffic-accounting summaries** (V2-623: cumulative
+`udp_tx_bytes`, `bytes_relayed`, `wire_tx_bytes`, `fetch_response_tx_bytes`, …)
+to the deployment's InfluxDB as well as to Elasticsearch. The output is scoped
+with `namepass = ["tail"]` and a **`tagpass` on the `target` tag** —
+`["*::traffic", "saorsa_transport::masque::relay_server"]` — which is mandatory:
+without it every parsed log line would be written to Influx. Telegraf compiles
+those values as separator-less globs, so `*::traffic` admits every
+`<crate>::…::traffic` summary target, current
+(`saorsa_transport::traffic`, `saorsa_core::traffic`,
+`ant_node::replication::traffic`, `saorsa_transport::relay::traffic`) and the
+`ant_node::{payment,storage,upgrade}::traffic` targets V2-834 adds — no deploy
+change per new counter. The MASQUE relay-server summary lives under a component
+target, hence the explicit entry. Points land in the `tail` measurement of the
+node bucket (`testnet-metrics`), tagged `host` / `service_number` / `target`
+exactly as the ES documents are — which means the **`host` tag is upper-cased**
+(the forwarder upper-cases it for ES and processors run before every output);
+the Grafana queries lower-case it before joining on the lowercase `net` host.
+
+The credentials go into the ES forwarder's own env file (`/etc/default/telegraf-ant`
+gains `INFLUXDB_URL` / `INFLUXDB_TOKEN` / `INFLUXDB_ORG` / `INFLUXDB_BUCKET`, the
+same values `/etc/default/telegraf-ant-metrics` holds) via the same path that
+populates the metrics env file. Without monitoring state the rendered ES config
+and env file are byte-identical to before (asserted by a test). The ES output
+itself is unchanged, so Elasticsearch volume does not grow.
+
+**Retrofitting a running deployment:** `deployments provision-telegraf --name <name>
+--skip-metrics` — the Influx credentials are resolved even under `--skip-metrics`,
+so this regenerates and restarts only `telegraf-ant-elasticsearch`, now with the
+Influx output, and leaves `telegraf-ant-metrics` alone. Add `--only-new-logs` on a
+long-running fleet, or the restarted forwarder re-ingests every log still on disk
+into ES. Should the token in the deployment's monitoring S3 state ever be stale,
+`--influxdb-url` / `--influxdb-token` take precedence over state for **both**
+forwarders. Cost measured on the prod fleet: ~1.1M points/day across ~4,000
+series (73 hosts × ~11 services × 5 targets).
+
+The panels that consume this are the **Egress accounting** dashboard, provisioned
+by [`monitoring provision`](#monitoring-provision-command) alongside the host
+dashboards.
+
 ## Sizing uploader gas funding (`clients estimate-gas`)
 
 Testnet uploader VMs each get a generated wallet funded with a **fixed** amount of
@@ -1138,6 +1181,101 @@ uv run saorsa-deploy monitoring provision --name PROD-MON --retention-days 14
 | `--retention-days` | int | No | 0 | InfluxDB bucket retention in days (`0` = keep forever, the dev default). Applied to both buckets at first provision |
 
 On completion, prints connection details including InfluxDB URL, API token, Grafana URL, and a ready-to-paste `deployments provision-telegraf` command.
+
+Grafana (when enabled) is provisioned with five dashboards: **Node Host
+Statistics**, **Client Host Statistics**, **Node Overview**, **Egress
+accounting** (V2-1225) and its per-service companion **Node traffic by
+service**. Egress accounting reconciles the node's own traffic-accounting
+counters — shipped to Influx by the ES forwarder, see
+[Traffic-accounting counters → InfluxDB](#traffic-accounting-counters--influxdb-the-es-forwarders-second-output)
+— against the host NIC, per host, from the one `testnet-metrics` bucket:
+
+1. **Egress accounting coverage (%)** = (`udp_tx_bytes` + `relay_carrier_udp_tx_bytes`
+   + `bytes_relayed` from both relay servers) / `net.bytes_sent`, red below 80%;
+   the legend's *mean* is the figure for the selected range.
+2. **Unaccounted egress** as a rate, mean over the range, top-15 table.
+3. / 4. **Socket ground truth — egress / ingress (%)**: `sock_tx_bytes` /
+   `net.bytes_sent` and `sock_rx_bytes` / `net.bytes_recv` — the socket-boundary
+   counters V2-834 adds, i.e. the figure its "within 2% of the NIC" acceptance
+   gate is measured by. Empty on builds predating V2-834. (An earlier revision of
+   that branch left the relay server's own-socket ingress out of `sock_rx_bytes`
+   — bootstraps read 21–33% — fixed upstream at this dashboard's request.)
+5. **Egress decomposition** (stacked, summed over the selected hosts): DHT wire
+   messaging, chunk GET serving, replication fetch responses, both relay servers,
+   relay-client stream, QUIC retransmission, stateless packets, failed dials.
+   Layers overlap (attribution, not a partition); V2-1226 is the full picture.
+6. **Relay throughput** with the `forwarded_to_client_bytes` /
+   `forwarded_to_target_bytes` split, over both relay servers.
+7. **Active relay reservations / sessions**. 8. **Replication serving**
+   (`fetch_response_tx_bytes`). Plus a text panel defining the numerator.
+
+The numerator is *only* `udp_tx_bytes` (+ `relay_carrier_udp_tx_bytes`, which the
+V2-834 build splits out of it for a NAT'd node's carrier to its relay) plus
+`bytes_relayed` under **both** `saorsa_transport::relay::traffic` (the stream
+relay server on raw UDP sockets) and `saorsa_transport::masque::relay_server`
+(the MASQUE reservation relay, whose summary is only emitted once a CONNECT has
+arrived); `wire_tx_bytes` and `fetch_response_tx_bytes` are excluded because they
+count the same bytes at a higher layer. Until V2-834 C.1 lands the numerator can
+over-count relayed bytes, so coverage is an upper bound.
+
+Four facts the Flux is built on, all measured (ant-prod-01's ES on 2026-09-17; a
+DEV-01 run of the V2-834 branch on 2026-09-18) rather than assumed:
+
+- **Counters are cumulative per process and emitted every 5 minutes**, so every
+  panel differences them over 10-minute windows (`nonNegative`: a service restart
+  drops that window rather than going negative) and sums across the host's
+  services with a per-`(host, _time)` `sum()` — never a second `aggregateWindow`,
+  which re-stamps each increase one window late against the NIC side.
+- **One series can carry several lines per tick.** The V2-834 build emits the
+  endpoint summary once per endpoint (two lines ~30 ms apart, one with
+  `udp_tx_bytes = 0`), and `relay::traffic` interleaves per-session lines with the
+  summary under the same field names. Differenced as one series that flaps
+  `0, X, 0, X` and `nonNegative` keeps +X every tick — measured at 25× the NIC. So
+  each series is windowed with `max` rather than `last`: the summary total is ≥
+  every other line in the window. (A restart then costs a window and a half
+  rather than one, and a second endpoint carrying real bytes would be
+  under-counted — the fix for that is an endpoint tag upstream.)
+- **Everything before the window must be push-downable, and the window scales
+  with the range.** A 24-hour view of a 13-host testnet hit Grafana's 30 s
+  timeout on every panel that touches `net`: the raw 10-second samples (~450k
+  rows/day here, ~5M for 48 h of prod) and every `tail` line were being
+  materialised in Flux because `map`/`group` sat before `aggregateWindow`. With
+  the window placed directly after the filters the storage engine returns one row
+  per series per window and the same query takes 2 s; the window widens with the
+  range (10 m ≤ 6 h, 30 m ≤ 24 h, 1 h beyond) so row count stays roughly constant,
+  and the two sides are combined with `union` + `pivot` rather than `join()`.
+- **The partial window at the range end is dropped on both sides.** The summaries
+  tick every 5 minutes and `net` every 10 seconds, so a view cut a minute after a
+  tick pairs 5 minutes of counter bytes with 1 minute of NIC bytes (measured at
+  5×, dragging a 2-hour legend mean from 95% to 116%). The newest point is
+  therefore up to one window old.
+- **Host case differs on the two sides and is not simply lowercase:** `tail`
+  carries the upper-cased host, `net` the OS hostname, which on a testnet keeps
+  the deployment name's case (`DEV-01-ant-node-lon1-1`). Both sides are
+  lower-cased and the Host variable is matched case-insensitively; the variable
+  itself is pinned to the `cpu` measurement so the `tail` points don't list every
+  host twice.
+- **On a NAT-simulated VM `veth-nat` is the busiest interface and points the
+  wrong way** (its `bytes_sent` is traffic sent *into* the node's netns). The NIC
+  side excludes `lo`, `all` and `veth*` and takes the busiest remaining interface
+  per window, since interface names differ by provider.
+
+**Node traffic by service** is the same data one level down. Every counter above
+exists per node service in Influx (`service_number` tag) but the egress dashboard
+sums them per host, because coverage is a ratio to the VM's one NIC. The
+production fleet runs 700+ services, so this dashboard never draws a line per
+service fleet-wide: fleet-wide it **ranks** — four top-20 tables (relay bytes
+forwarded, socket egress, socket ingress, chunk GET serving), each row a
+`(host, service)` with its mean rate over the range and its busiest window,
+costing the same at 70 services or 7,000 — and lines are drawn only for the
+services of **one** host, chosen in a single-select Host variable. Pick the host
+of a row that stands out and the four lower panels show its ~15 services over
+time. Same counters, same windows, same push-down query shape.
+
+Measured on that DEV-01 run once all of the above was in place, every host reads
+82–97% on coverage and on both ground-truth panels, at 2 h and 24 h alike — the remaining gap being what
+V2-834's 2% gate has yet to close. Panel builders:
+`provisioning/egress_dashboard.py`.
 
 This step creates **two** InfluxDB buckets — `testnet-metrics` (node-tier host
 metrics, the `prometheus` per-node measurement, and application measurements

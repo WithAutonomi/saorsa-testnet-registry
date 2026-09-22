@@ -183,7 +183,57 @@ class TestResolveBackends:
         es, influx = ptc._resolve_backends(_args(skip_metrics=True), MagicMock())
         assert es is not None
         assert influx is None
-        mock_mon.assert_not_called()
+        # The ES forwarder still gets the Influx credentials: it writes the
+        # traffic-accounting summaries to Influx too (V2-1225), so an ES-only
+        # retrofit must render that output rather than silently drop it.
+        assert es["influx"]["influxdb_url"] == "http://mon:8086"
+        assert es["influx"]["influxdb_token"] == "tok"
+
+    @patch.object(ptc, "load_monitoring_state")
+    @patch.object(ptc, "load_elastic_state")
+    def test_es_provisioner_carries_influx_creds(self, mock_es, mock_mon):
+        """Both backends resolved -> the ES provisioner renders the Influx output."""
+        mock_es.return_value = {
+            "elasticsearch_url": "http://es:9200",
+            "elasticsearch_username": "u",
+            "elasticsearch_password": "p",
+        }
+        mock_mon.return_value = {
+            "influxdb_url": "http://mon:8086",
+            "influxdb_token": "tok",
+            "influxdb_org": "ant",
+            "influxdb_bucket": "testnet-metrics",
+        }
+        args = _args()
+        es, influx = ptc._resolve_backends(args, MagicMock())
+        prov = ptc._make_es_provisioner(
+            args, es, host_ips=["1.1.1.1"], host_role="WAN_NODE", ssh_key="k",
+            ssh_user="root", name="DEV-01", console=MagicMock(),
+        )
+        assert prov.influx_output_enabled
+        assert prov.influxdb_bucket == "testnet-metrics"
+        assert "[[outputs.influxdb_v2]]" in prov._build_telegraf_config()
+
+    @patch.object(ptc, "load_monitoring_state")
+    @patch.object(ptc, "load_elastic_state")
+    def test_es_provisioner_without_monitoring_has_no_influx_output(
+        self, mock_es, mock_mon
+    ):
+        mock_es.return_value = {
+            "elasticsearch_url": "http://es:9200",
+            "elasticsearch_username": "u",
+            "elasticsearch_password": "p",
+        }
+        mock_mon.side_effect = RuntimeError("no monitoring state")
+        args = _args()
+        es, influx = ptc._resolve_backends(args, MagicMock())
+        assert influx is None
+        prov = ptc._make_es_provisioner(
+            args, es, host_ips=["1.1.1.1"], host_role="WAN_NODE", ssh_key="k",
+            ssh_user="root", name="DEV-01", console=MagicMock(),
+        )
+        assert not prov.influx_output_enabled
+        assert "influxdb_v2" not in prov._build_telegraf_config()
 
     @patch.object(ptc, "load_monitoring_state")
     @patch.object(ptc, "load_elastic_state")

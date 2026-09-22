@@ -70,6 +70,25 @@ def build_node_telegraf_providers(
     console = console or Console()
     providers: list = []
 
+    # Resolve the InfluxDB credentials FIRST: the metrics forwarder needs them,
+    # and so does the ES log-forwarder, which also writes the traffic-accounting
+    # summaries to Influx (V2-1225) whenever the deployment has monitoring.
+    try:
+        monitoring = load_monitoring_state(name)
+    except RuntimeError:
+        monitoring = None
+    influx: dict | None = None
+    if monitoring:
+        influx_url = monitoring.get("influxdb_url", "")
+        influx_token = monitoring.get("influxdb_token", "")
+        if influx_url and influx_token:
+            influx = {
+                "influxdb_url": influx_url,
+                "influxdb_token": influx_token,
+                "influxdb_org": monitoring.get("influxdb_org", "ant"),
+                "influxdb_bucket": monitoring.get("influxdb_bucket", "testnet-metrics"),
+            }
+
     try:
         elastic = load_elastic_state(name)
     except RuntimeError:
@@ -96,33 +115,24 @@ def build_node_telegraf_providers(
                     from_beginning=from_beginning,
                     console=console,
                     **metric_buffer,
+                    **(influx or {}),
                 )
             )
 
-    try:
-        monitoring = load_monitoring_state(name)
-    except RuntimeError:
-        monitoring = None
-    if monitoring:
-        influx_url = monitoring.get("influxdb_url", "")
-        influx_token = monitoring.get("influxdb_token", "")
-        if influx_url and influx_token:
-            providers.append(
-                TelegrafMetricsProvisioner(
-                    host_ips=host_ips,
-                    ssh_key_path=ssh_key_path,
-                    ssh_user=ssh_user,
-                    host_role=host_role,
-                    influxdb_url=influx_url,
-                    influxdb_token=influx_token,
-                    influxdb_org=monitoring.get("influxdb_org", "ant"),
-                    influxdb_bucket=monitoring.get("influxdb_bucket", "testnet-metrics"),
-                    testnet_name=name,
-                    collect_node_memory=collect_node_memory,
-                    node_memory_interval_secs=node_memory_interval_secs,
-                    console=console,
-                )
+    if influx:
+        providers.append(
+            TelegrafMetricsProvisioner(
+                host_ips=host_ips,
+                ssh_key_path=ssh_key_path,
+                ssh_user=ssh_user,
+                host_role=host_role,
+                testnet_name=name,
+                collect_node_memory=collect_node_memory,
+                node_memory_interval_secs=node_memory_interval_secs,
+                console=console,
+                **influx,
             )
+        )
 
     if not providers:
         console.print(

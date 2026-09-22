@@ -134,3 +134,29 @@ def test_genesis_provider_flags(mock_es, mock_mon):
     providers = _build(host_role="GENESIS")
     metrics = providers[0]
     assert metrics.host_role == "GENESIS"
+
+
+@patch.object(tf, "load_monitoring_state")
+@patch.object(tf, "load_elastic_state")
+def test_es_forwarder_gets_influx_creds_when_monitoring_exists(mock_es, mock_mon):
+    """With both stacks, the ES forwarder also writes the traffic summaries to
+    Influx -- using exactly the credentials the metrics forwarder gets."""
+    mock_es.return_value = _ES
+    mock_mon.return_value = _INFLUX
+    es, metrics = _build()
+    assert es.influx_output_enabled
+    assert (es.influxdb_url, es.influxdb_token, es.influxdb_org, es.influxdb_bucket) == (
+        metrics.influxdb_url, metrics.influxdb_token,
+        metrics.influxdb_org, metrics.influxdb_bucket,
+    )
+    assert "[[outputs.influxdb_v2]]" in es._build_telegraf_config()
+
+
+@patch.object(tf, "load_monitoring_state")
+@patch.object(tf, "load_elastic_state")
+def test_es_forwarder_without_monitoring_has_no_influx_output(mock_es, mock_mon):
+    mock_es.return_value = _ES
+    mock_mon.side_effect = RuntimeError("no monitoring")
+    (es,) = _build()
+    assert not es.influx_output_enabled
+    assert "influxdb_v2" not in es._build_telegraf_config()
