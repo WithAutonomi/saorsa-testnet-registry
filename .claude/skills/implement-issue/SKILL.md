@@ -46,6 +46,11 @@ one to use.
   the issue, a previous run got here first: comment on the issue with what you found and stop as
   above. Do not build on it.
 
+**If your turn was resumed** (the first message says your previous turn ended unexpectedly): the
+calling script re-attached you to the same session after an API error. Check `git status` and
+`git log` for where you got to and carry on from there — do not re-create the branch or redo
+completed steps.
+
 ## Step 2 — Branch
 
 ```bash

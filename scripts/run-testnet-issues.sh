@@ -15,6 +15,7 @@
 #
 # Env:
 #   CLAUDE_MODEL   model for the session        (default claude-opus-5)
+#   MAX_RESUMES    times a session that dies mid-run (API error) is resumed (default 6)
 #   LOG_DIR        where the raw session logs go (default ~/.autonomi/testnet-runs)
 
 set -uo pipefail
@@ -66,7 +67,7 @@ failed=()
 for issue in "${ISSUES[@]}"; do
     log="$LOG_DIR/$issue-$(date -u +%Y%m%dT%H%M%SZ).log"
     echo "[$(date -u +%FT%TZ)] START $issue  (raw log: $log)"
-    run_claude_session "Testnet Run: $issue" "/run-testnet-from-issue $issue" "$log"
+    run_claude_session "Testnet Run: $issue" "/run-testnet-from-issue $issue" "$log" "RUN COMPLETE"
     rc=$?
     echo "[$(date -u +%FT%TZ)] EXIT $issue rc=$rc  $(grep -o 'RUN COMPLETE [^"\\]*' "$log" | tail -1)"
     [[ $rc -eq 0 ]] || failed+=("$issue")

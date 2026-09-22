@@ -3,10 +3,12 @@
 #
 # Provides:
 #   render                 — turn claude's stream-json into readable terminal lines
-#   run_claude_session NAME PROMPT LOG
+#   run_claude_session NAME PROMPT LOG MARKER
 #                          — run `claude -p` headless in the background, render
 #                            live, keep the raw stream in LOG, wait, return its
-#                            exit code. Sets SESSION_PID for interrupt handlers.
+#                            exit code; resume the session if it dies before
+#                            printing MARKER. Sets SESSION_PID for interrupt
+#                            handlers.
 #   require_deps           — fail unless claude and jq are on PATH
 #   validate_issue_ids     — check a comma-separated list of Linear ids
 
@@ -52,12 +54,11 @@ render() {
 
 # Runs in the background and `wait`s so a trapped signal interrupts the wait
 # and the caller's handler runs even if claude itself ignores the signal.
-run_claude_session() {
-    local name="$1" prompt="$2" log="$3"
+_claude_once() {
+    local log="$1"; shift
     (
-        claude -p "$prompt" \
+        claude -p "$@" \
             --model "$CLAUDE_MODEL" \
-            --name "$name" \
             --dangerously-skip-permissions \
             --output-format stream-json \
             --verbose \
@@ -68,5 +69,39 @@ run_claude_session() {
     wait "$SESSION_PID"
     local rc=$?
     SESSION_PID=""
+    return $rc
+}
+
+# run_claude_session NAME PROMPT LOG MARKER
+#
+# A print-mode session ends its process on an API error (a 529 mid-run killed
+# a testnet session and left the fleet with no operator). So: if the session
+# exits non-zero WITHOUT having printed MARKER — the line the skill prints as
+# its very last act — it did not finish, and it is resumed by session id with
+# the same context (task list, T0, schedule). Up to MAX_RESUMES times, with a
+# growing pause for the outage to clear. A zero exit is never resumed.
+MAX_RESUMES="${MAX_RESUMES:-6}"
+run_claude_session() {
+    local name="$1" prompt="$2" log="$3" marker="$4"
+    local attempt=0 rc session_id delay
+    _claude_once "$log" "$prompt" --name "$name"
+    rc=$?
+    while (( rc != 0 )) && ! grep -q "$marker" "$log" && (( attempt < MAX_RESUMES )); do
+        attempt=$((attempt + 1))
+        session_id="$(jq -r 'select(.type=="system" and .subtype=="init") | .session_id' "$log" 2>/dev/null | tail -1)"
+        if [[ -z "$session_id" ]]; then
+            echo "[$(date -u +%FT%TZ)] session exited rc=$rc before it had a session id; cannot resume" >&2
+            break
+        fi
+        delay=$(( 60 * attempt ))
+        echo "[$(date -u +%FT%TZ)] session exited rc=$rc without finishing; resuming $session_id in ${delay}s (attempt $attempt/$MAX_RESUMES)"
+        sleep "$delay"
+        _claude_once "$log" --resume "$session_id" \
+"Your previous turn ended unexpectedly at $(date -u +%FT%TZ) (an API error or crash), not because the \
+work was done. The task is still in progress. Re-read your task list and the current clock, work out where \
+you are relative to the schedule, and continue from there. Do not start again from the beginning, do not \
+repeat steps already recorded as done, and do not ask anything."
+        rc=$?
+    done
     return $rc
 }

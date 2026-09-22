@@ -182,6 +182,11 @@ Call it repeatedly (each call returns within its `timeout`, 600000 ms) until it 
 or past the boundary. Never one long sleep, never a backgrounded sleep — a single backgrounded
 sleep has returned 8 hours late and cost a whole run. Never `pgrep` for your own waiter.
 
+**If your turn was resumed** (the first message says your previous turn ended unexpectedly): the
+calling script has re-attached you to the same session after an API error. Everything you knew is
+still in context. Re-read the task list and the clock, work out which boundary is next or overdue,
+and continue — never restart from Step 1, never re-run `up`.
+
 At **every** boundary:
 
 1. Re-read the clock. Compute where you actually are relative to T0 before doing anything. If you
