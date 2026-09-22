@@ -379,7 +379,9 @@ class TestEgressAccountingDashboard:
         assert 'r["_field"] == "bytes_sent"' in tx
         rx = self._query("Socket ground truth — ingress (%)")
         assert clause("saorsa_transport::traffic", "sock_rx_bytes") in rx
-        assert clause("saorsa_transport::relay::traffic", "raw_rx_bytes") in rx
+        # The relay server's per-session socket ingress is inside sock_rx_bytes
+        # since the V2-834 fix; adding the relay-summary field would double count.
+        assert "raw_rx_bytes" not in rx and "relay_target_rx_bytes" not in rx
         assert 'r["_field"] == "bytes_recv"' in rx
 
     def test_decomposition_is_stacked_per_field_over_selected_hosts(self):

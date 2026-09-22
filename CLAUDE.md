@@ -1263,8 +1263,10 @@ Grafana): coverage % (numerator = `udp_tx_bytes` + `relay_carrier_udp_tx_bytes`
 + `bytes_relayed` under BOTH relay targets; `wire_tx_bytes`/`fetch_response_tx_bytes`
 excluded as double counts; red <80%; legend mean = the figure for the range),
 unaccounted top-15 table, **socket ground truth egress/ingress** (`sock_tx_bytes`,
-`sock_rx_bytes` + relay `raw_rx_bytes` — V2-834's own 2% gate; empty on older
-builds), a stacked egress decomposition, relay throughput/occupancy over both
+`sock_rx_bytes` — V2-834's own 2% gate; empty on older builds; an earlier branch
+revision left relay-socket ingress in a separate `raw_rx_bytes`, bootstraps read
+21–33% without it — fixed upstream and renamed `relay_target_rx_bytes` at this
+dashboard's request; verified on DEV-02 2026-09-22 at 90–98% from `sock_rx` alone), a stacked egress decomposition, relay throughput/occupancy over both
 relay servers, replication serving, numerator note. Facts the Flux is shaped by,
 all MEASURED (prod ES 2026-09-17; DEV-01 on the V2-834 branch 2026-09-18):
 summaries are **cumulative per process, every 5 min** → `aggregateWindow(10m,

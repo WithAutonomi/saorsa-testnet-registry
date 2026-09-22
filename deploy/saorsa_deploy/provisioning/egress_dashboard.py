@@ -97,16 +97,13 @@ ACCOUNTED_EGRESS_FIELDS: tuple[tuple[str, str], ...] = (
 #: What the V2-834 build's socket-boundary counters say the process sent /
 #: received on real UDP sockets -- the ground truth its acceptance gate
 #: ("within 2% of the NIC") is measured by. ``sock_*`` is process-wide and
-#: printed on every endpoint summary line. The relay server's
-#: per-session sockets are outside it: their ingress is ``raw_rx_bytes`` on the
-#: relay summary (V2-834 Part A.4; measured on DEV-01 bootstraps: ingress
-#: coverage 21-33% without it), their egress is already in ``bytes_relayed`` /
-#: ``sock_tx_bytes``. Absent on older builds.
+#: printed on every endpoint summary line. Both directions include the relay
+#: server's per-session sockets: an earlier revision of the branch counted
+#: their ingress only in a relay-summary field (bootstraps read 21-33% ingress
+#: coverage without adding it), fixed upstream -- and that field renamed
+#: ``relay_target_rx_bytes`` -- at the dashboard's request. Absent on older builds.
 GROUND_TRUTH_TX: tuple[tuple[str, str], ...] = ((TARGET_ENDPOINT, "sock_tx_bytes"),)
-GROUND_TRUTH_RX: tuple[tuple[str, str], ...] = (
-    (TARGET_ENDPOINT, "sock_rx_bytes"),
-    (TARGET_RELAY, "raw_rx_bytes"),
-)
+GROUND_TRUTH_RX: tuple[tuple[str, str], ...] = ((TARGET_ENDPOINT, "sock_rx_bytes"),)
 
 #: Egress decomposition: (label, target, field). Labels are what the legend
 #: shows. Fields absent on a build simply produce no series.
@@ -160,9 +157,7 @@ The numerator of the coverage panel. Each is a cumulative counter on a node log 
 ### Socket ground truth
 
 - `sock_tx_bytes` and `sock_rx_bytes` — target `saorsa_transport::traffic`. Process-wide bytes
-  at the real-socket boundary.
-- `raw_rx_bytes` — target `saorsa_transport::relay::traffic`. Ingress on the relay server's own
-  sockets, outside `sock_rx_bytes`.
+  at the real-socket boundary, including the relay server's own sockets.
 - These are the figure V2-834's acceptance gate, within 2% of the NIC, is measured by.
 
 ### How the numbers are made
@@ -460,9 +455,9 @@ def _ground_truth_panel(
         unit="percent",
         max_value=120,
         description=(
-            f"({fields}) / net.{nic_field} per host: bytes the process {direction} "
-            "on real UDP sockets (V2-834's socket-boundary counters, incl. the "
-            "relay server's raw sockets) against the NIC. "
+            f"{fields} / net.{nic_field} per host: bytes the process {direction} "
+            "on real UDP sockets (V2-834's socket-boundary counter, including the "
+            "relay server's own sockets) against the NIC. "
             "This is the figure V2-834's acceptance gate (within 2%) is measured "
             "by."
         ),
@@ -760,9 +755,9 @@ def panel_top_ingress_services(grid_pos: dict, *, bucket: str) -> dict:
         f"Top {TOP_N_SERVICES} services by socket ingress", grid_pos, bucket=bucket,
         specs=GROUND_TRUTH_RX,
         description=(
-            "sock_rx_bytes plus the relay server's raw_rx_bytes per service, "
-            "fleet-wide. Mean rate over the range, ranked; peak is the busiest single "
-            "window."
+            "sock_rx_bytes per service, fleet-wide: everything the process received "
+            "on real UDP sockets. Mean rate over the range, ranked; peak is the "
+            "busiest single window."
         ),
     )
 
@@ -803,7 +798,7 @@ def panel_service_egress(grid_pos: dict, *, bucket: str) -> dict:
 def panel_service_ingress(grid_pos: dict, *, bucket: str) -> dict:
     return _per_service_panel(
         "Socket ingress per service", grid_pos, bucket=bucket, specs=GROUND_TRUTH_RX,
-        description="Rate of sock_rx_bytes plus the relay server's raw_rx_bytes.",
+        description="Rate of sock_rx_bytes.",
     )
 
 

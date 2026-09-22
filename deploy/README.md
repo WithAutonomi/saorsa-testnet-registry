@@ -1195,9 +1195,11 @@ counters — shipped to Influx by the ES forwarder, see
    the legend's *mean* is the figure for the selected range.
 2. **Unaccounted egress** as a rate, mean over the range, top-15 table.
 3. / 4. **Socket ground truth — egress / ingress (%)**: `sock_tx_bytes` /
-   `net.bytes_sent` and (`sock_rx_bytes` + relay `raw_rx_bytes`) / `net.bytes_recv`
-   — the socket-boundary counters V2-834 adds, i.e. the figure its "within 2% of
-   the NIC" acceptance gate is measured by. Empty on builds predating V2-834.
+   `net.bytes_sent` and `sock_rx_bytes` / `net.bytes_recv` — the socket-boundary
+   counters V2-834 adds, i.e. the figure its "within 2% of the NIC" acceptance
+   gate is measured by. Empty on builds predating V2-834. (An earlier revision of
+   that branch left the relay server's own-socket ingress out of `sock_rx_bytes`
+   — bootstraps read 21–33% — fixed upstream at this dashboard's request.)
 5. **Egress decomposition** (stacked, summed over the selected hosts): DHT wire
    messaging, chunk GET serving, replication fetch responses, both relay servers,
    relay-client stream, QUIC retransmission, stateless packets, failed dials.
