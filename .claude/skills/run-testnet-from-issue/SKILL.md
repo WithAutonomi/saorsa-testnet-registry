@@ -36,7 +36,7 @@ Abandon means, in this order:
 2. Tear down compute (Step 6), verified.
 3. Tear down the observability stacks too, unless the issue names them as retained.
 4. Post a comment on `$issue_number` describing what happened, what was recorded, what was skipped,
-   and the exact question or failure that ended the run. Set `$issue_number` to `Cancelled`.
+   and the exact question or failure that ended the run. Set `$issue_number` to `Canceled`.
 
 Precondition failures (Steps 1–2) happen before any infrastructure exists: stop, report which item
 failed, and leave the issue as it is. There is nothing to tear down.
@@ -328,11 +328,11 @@ Post a comment on `$issue_number` with:
 * Teardown verification result, and — if any stack is retained — its endpoints and destroy
   commands.
 
-Then set `$issue_number` to `Done` (or `Cancelled` if the run was abandoned).
+Then set `$issue_number` to `Done` (or `Canceled` if the run was abandoned).
 
 ## Step 8 — Exit
 
 The run is finished only when Step 7 is done. Print one final line —
-`RUN COMPLETE <issue> <Done|Cancelled> <registry-id>` — and **end your turn with no pending tool
+`RUN COMPLETE <issue> <Done|Canceled> <registry-id>` — and **end your turn with no pending tool
 calls, waits or schedules**. In headless mode that is what ends the process; the calling script
 waits on it and will not start the next issue until it exits.
