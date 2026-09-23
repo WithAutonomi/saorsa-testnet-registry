@@ -14,6 +14,8 @@ import pytest
 import yaml
 
 from saorsa_deploy.gas_model import (
+    NATIVE,
+    WASM,
     ClientRun,
     GasModel,
     GasModelError,
@@ -24,6 +26,7 @@ from saorsa_deploy.gas_model import (
     load_gas_model,
     project_throughput,
     rate_for_size,
+    wasm_rate_for_size,
 )
 
 
@@ -627,3 +630,235 @@ prod_uploaders:
     # size a mainnet-funded kind against a Sepolia-calibrated model.
     assert "invalid manifest" not in out
     assert "no wallets to fund" in out
+
+
+# ---------------------------------------------------------------------------
+# The WASM (browser-path) uploader tier (V2-1286)
+# ---------------------------------------------------------------------------
+
+WASM_MANIFEST = MANIFEST.replace(
+    """    downloaders:
+      - { provider: digital_ocean, region: tor1 }
+""",
+    """    downloaders:
+      - { provider: digital_ocean, region: tor1 }
+    wasm_uploaders:
+      - { provider: ovh, region: SBG5, file_size_mb: 900, vm_size: b3-8, ant: 1000, eth: 0.9 }
+    wasm_downloaders:
+      - { provider: digital_ocean, region: tor1, vm_size: s-4vcpu-8gb }
+""",
+).replace(
+    """    ant:
+      version: 0.3.6-rc.1
+""",
+    """    ant:
+      version: 0.3.6-rc.1
+    ant_wasm:
+      branch: ant-cli-v0.3.8-rc.1
+      repo_owner: WithAutonomi
+""",
+)
+
+
+@pytest.fixture()
+def wasm_manifest_path(tmp_path):
+    path = tmp_path / "wasm-manifest.yaml"
+    path.write_text(WASM_MANIFEST)
+    return str(path)
+
+
+class TestWasmCostModel:
+    """A WASM payment is two transactions where a native one is one."""
+
+    def test_the_fixed_term_is_doubled_and_the_per_gb_term_is_not(self):
+        m = _model(wasm_fixed_cost_multiplier=2.0)
+        # At zero size only the fixed term remains, so the ratio IS the
+        # multiplier.
+        assert m.eth_per_upload(0.0, 0.1, WASM) == pytest.approx(
+            2 * m.eth_per_upload(0.0, 0.1, NATIVE)
+        )
+        # The per-GB component is the quote payload, identical either way, so
+        # the difference at any size is exactly the extra fixed term.
+        diff = m.eth_per_upload(1.0, 0.1, WASM) - m.eth_per_upload(1.0, 0.1, NATIVE)
+        assert diff == pytest.approx(m.fixed_eth_per_upload)
+
+    def test_native_is_the_default_transport(self):
+        m = _model(wasm_fixed_cost_multiplier=2.0)
+        assert m.eth_per_upload(0.5, 0.1) == m.eth_per_upload(0.5, 0.1, NATIVE)
+
+    def test_the_shipped_config_carries_the_multiplier(self, model):
+        assert model.wasm_fixed_cost_multiplier == 2.0
+
+    def test_a_missing_multiplier_is_rejected(self, raw, tmp_path):
+        bad = copy.deepcopy(raw)
+        del bad["wasm_fixed_cost_multiplier"]
+        path = tmp_path / "m.yaml"
+        path.write_text(yaml.safe_dump(bad))
+        with pytest.raises(GasModelError, match="wasm_fixed_cost_multiplier"):
+            load_gas_model(path)
+
+    def test_the_plan_carries_the_transport_into_the_estimate(self):
+        m = _model(wasm_fixed_cost_multiplier=2.0, safety_factor=1.0,
+                   round_up_to_eth=1e-9, minimum_eth_per_uploader=0.0)
+        common = dict(size_gb=0.0, expected_uploads=100)
+        native = estimate_uploader(UploaderPlan(name="n", **common), 0.1, m)
+        wasm = estimate_uploader(
+            UploaderPlan(name="w", transport=WASM, **common), 0.1, m
+        )
+        assert wasm.modelled_eth == pytest.approx(2 * native.modelled_eth)
+
+
+class TestTransportThroughput:
+    def _clients(self):
+        # Same file size on both tiers; WASM is the slower instrument.
+        return [
+            ClientRun(host="native-1", uploads=300, active_hours=3.0,
+                      size_gb=1.0, transport=NATIVE),
+            ClientRun(host="wasm-1", uploads=45, active_hours=3.0,
+                      size_gb=1.0, transport=WASM),
+        ]
+
+    def test_native_sizing_ignores_wasm_records(self):
+        """The reason the filter exists: WASM is ~6-8x slower at the same size.
+
+        Without it, once WASM is in every staging baseline, a native uploader
+        would silently be sized from whichever tier happened to be faster.
+        """
+        t = project_throughput(self._clients(), 3.0, transport=NATIVE)
+        assert t.rate_by_size_gb == {1.0: 100.0}
+        assert t.host_by_size_gb == {1.0: "native-1"}
+
+    def test_wasm_sizing_ignores_native_records(self):
+        t = project_throughput(self._clients(), 3.0, transport=WASM)
+        assert t.rate_by_size_gb == {1.0: 15.0}
+
+    def test_unfiltered_projection_is_unchanged(self):
+        # Every pre-WASM caller passed no transport and must keep its answer.
+        t = project_throughput(self._clients(), 3.0)
+        assert t.rate_by_size_gb == {1.0: 100.0}
+
+    def test_null_client_kind_is_native(self):
+        t = project_throughput(
+            [ClientRun(host="old", uploads=10, active_hours=1.0, size_gb=0.02)],
+            1.0,
+            transport=NATIVE,
+        )
+        assert t.rate_by_size_gb == {0.02: 10.0}
+
+
+class TestWasmRateResolution:
+    def _native(self, sizes):
+        return project_throughput(
+            [
+                ClientRun(host=f"n-{s}", uploads=int(s[1] * 10), active_hours=1.0,
+                          size_gb=s[0], transport=NATIVE)
+                for s in sizes
+            ],
+            1.0,
+            transport=NATIVE,
+        )
+
+    def test_measured_wasm_throughput_is_preferred(self):
+        wasm = project_throughput(
+            [ClientRun(host="w", uploads=15, active_hours=1.0, size_gb=0.9,
+                       transport=WASM)],
+            1.0,
+            transport=WASM,
+        )
+        rate, basis = wasm_rate_for_size(0.9, wasm, self._native([(0.9, 10.0)]))
+        assert rate == 15.0
+        assert basis == ""
+
+    def test_falls_back_to_the_nearest_native_twin_and_names_it(self):
+        empty = project_throughput([], 1.0, transport=WASM)
+        native = self._native([(1.0486, 7.5), (0.0210, 60.0)])
+        rate, basis = wasm_rate_for_size(0.9, empty, native)
+        assert rate == 75.0
+        assert basis == "approx: native twin n-(1.0486, 7.5)"
+
+    def test_a_tie_takes_the_faster_native_client(self):
+        # 0.5 is equidistant from 0.4 and 0.6; over-funding is the safe side.
+        empty = project_throughput([], 1.0, transport=WASM)
+        native = project_throughput(
+            [
+                ClientRun(host="slow", uploads=10, active_hours=1.0, size_gb=0.4,
+                          transport=NATIVE),
+                ClientRun(host="fast", uploads=40, active_hours=1.0, size_gb=0.6,
+                          transport=NATIVE),
+            ],
+            1.0,
+            transport=NATIVE,
+        )
+        rate, basis = wasm_rate_for_size(0.5, empty, native)
+        assert rate == 40.0
+        assert "fast" in basis
+
+    def test_no_baseline_at_all_gives_no_rate(self):
+        empty = project_throughput([], 1.0)
+        assert wasm_rate_for_size(0.9, empty, empty) == (None, "")
+
+    def test_the_twin_is_taken_outside_the_native_size_band(self):
+        """`rate_for_size` refuses beyond +/-2x; the WASM twin deliberately does not.
+
+        WASM measured ~6-8x slower on the same work, so a native rate projects
+        more uploads than the WASM client will manage and over-funds it. The
+        surplus is swept back to the funder on destroy; refusing to size the
+        uploader leaves it on whatever the manifest happened to say.
+        """
+        empty = project_throughput([], 1.0, transport=WASM)
+        native = self._native([(1.0486, 7.5)])
+        assert rate_for_size(0.02, native.rate_by_size_gb) is None
+        rate, basis = wasm_rate_for_size(0.02, empty, native)
+        assert rate == 75.0
+        assert basis.startswith("approx: native twin")
+
+
+class TestWasmInTheCommand:
+    def test_wasm_uploaders_are_sized_and_labelled(self, capsys, wasm_manifest_path):
+        from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+        with pytest.raises(SystemExit):
+            cmd_estimate_client_gas(
+                _args(config=wasm_manifest_path, base_fee_gwei=1e-6)
+            )
+        out = capsys.readouterr().out
+        assert "[wasm]" in out
+        assert "two transactions" in out
+
+    def test_wasm_uploaders_count_toward_the_funder_total(
+        self, capsys, wasm_manifest_path, manifest_path
+    ):
+        """The funder check compares against the FULL total, so omitting the
+        WASM tier understated it by a whole wallet per WASM uploader."""
+        from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+        def _total(path):
+            with pytest.raises(SystemExit):
+                cmd_estimate_client_gas(_args(config=path, base_fee_gwei=1e-6))
+            out = capsys.readouterr().out
+            line = next(ln for ln in out.splitlines() if "Total to fund" in ln)
+            return float(line.split("Total to fund:")[1].split("ETH")[0].strip())
+
+        assert _total(wasm_manifest_path) > _total(manifest_path)
+
+    def test_the_advice_names_both_blocks(self, capsys, wasm_manifest_path):
+        from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_estimate_client_gas(
+                _args(config=wasm_manifest_path, base_fee_gwei=50.0)
+            )
+        assert exc.value.code == 2
+        out = capsys.readouterr().out.replace("\n", "")
+        assert "testnet.clients.uploaders" in out
+        assert "wasm_uploaders" in out
+
+    def test_a_native_only_manifest_says_nothing_about_wasm(
+        self, capsys, manifest_path
+    ):
+        from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
+
+        with pytest.raises(SystemExit):
+            cmd_estimate_client_gas(_args(config=manifest_path, base_fee_gwei=1e-6))
+        out = capsys.readouterr().out
+        assert "wasm" not in out.lower()

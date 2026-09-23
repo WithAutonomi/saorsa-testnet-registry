@@ -317,8 +317,8 @@ Reuse: `extends: <path>` (deep-merge a base profile; **lists replace, not
 append**), `--set dotted.key=value`, and `--name`. Secrets are never in a
 manifest — prod kinds name an env var (`secret_key_env`, default
 `ARBITRUM_ONE_SECRET_KEY`). Reusable profiles are committed under
-`deploy/manifests/profiles/` (`reference.yaml` = every option, `staging-rc.yaml` =
-a base); concrete run manifests live in the git-ignored `deploy/manifests/runs/`
+`deploy/manifests/profiles/` (`reference.yaml` = every option, `staging.yaml` =
+THE staging profile every release train extends); concrete run manifests live in the git-ignored `deploy/manifests/runs/`
 (they churn per run, like `runbooks/`). The
 legacy `runbooks/` bash scripts and the primitive `infra`/`provision` commands
 remain fully supported and unchanged. See `deploy/README.md` §"Declarative
@@ -967,22 +967,69 @@ with whatever VM mix a run happened to use.
   records; with none, the gates are emitted exactly as before. Node-tier gates
   (CPU, RSS, leak, per-GB ratios, log counts) are NOT split — one fleet serves
   both transports.
-- **WASM gates are advisory** (`wasm_gates_advisory: true` in
-  `resources/gates/staging-thresholds.yaml`): reported in full, excluded from the
-  overall verdict and the exit code. They are judged against floors calibrated on
-  the native transport which WASM does not yet meet (92.1% upload / 94.9%
-  download against 99% / 99.5% on the first measured run), so gating on them
-  would hard-fail every run on a tier that is not yet what ships. Flip the flag
-  once there is history to calibrate a WASM floor.
+- **The two KINDS of WASM gate get opposite answers** — two keys in
+  `resources/gates/staging-thresholds.yaml`, both **required** (the retired
+  single `wasm_gates_advisory` fails validation naming its replacements).
+  **`wasm_floor_gates_advisory: true`**: the success FLOORS are absolute numbers
+  calibrated on the native transport which WASM does not meet (92.1% upload /
+  94.9% download against 99% / 99.5% on the first measured run), and the gap is
+  NAT — a peer behind the simulated inbound NAT is unreachable over
+  WebRTC-Direct until relayed WebRTC exists — not the release under test, so
+  gating on it would hard-fail every run. **`wasm_relative_gates_advisory:
+  false`**: the success-rate and per-bucket p50/p95 gates against the BASELINE
+  need no absolute calibration — they ask only whether this release made the
+  WASM tier worse than the last one did — so they **COUNT**, as SOFT gates like
+  their native twins. No WASM gate ever reaches the **exit code**; that stays
+  the native hard floors'.
+- **`compare --new-baseline`** (mutually exclusive with `--baseline-id`, exactly
+  one required) is for a run with no comparable predecessor. It evaluates only
+  the single-run floors; every relative gate is EMITTED as **NOT ASSESSED** with
+  the exact reason `new baseline` — emitted, not omitted, because a gate missing
+  from the report reads as one nobody thought about. Comparability checks are
+  skipped, `--window-label` is still required, the header says
+  `Baseline: none (new baseline)`, and exit 2 still means a native hard-floor
+  FAIL. `deployment_gate_verdicts.baseline_deployment_id` is nullable for it,
+  with a **partial unique index** on `(deployment_id, window_label) WHERE
+  baseline_deployment_id IS NULL` — Postgres treats NULLs as distinct, so
+  without it a re-run would accumulate rows instead of replacing its answer.
+- **`record-results` never erases `client_kind`.** The transport is resolved
+  from the deployment's S3 client state and `clients destroy` deletes it, so a
+  re-run after teardown resolves NULL for every host — and an unconditional
+  write would relabel every WASM op as native, pushing WASM failures into the
+  NATIVE hard floors. The upsert therefore COALESCEs: a NULL never overwrites a
+  known transport, a known one still updates. When the state is gone it warns,
+  naming the WASM hosts it could not classify.
+- **`clients estimate-gas` sizes the WASM tier too**, labelled `[wasm]` and
+  counted in the funder total (a WASM uploader holds its own funded wallet).
+  Its `fixed_eth_per_upload` is **doubled** via `wasm_fixed_cost_multiplier: 2.0`
+  in `resources/gas/client-gas-model.yaml` — a browser-path payment is two
+  transactions (ERC-20 `approve`, then `payForQuotes`) where a native one is one
+  — while `eth_per_gb`, the quote payload, is unchanged. Throughput comes from
+  the baseline's own `client_kind = 'wasm'` records; failing that, from the
+  NEAREST native uploader by size, labelled `approx: native twin <host>` (WASM
+  measured ~6–8x slower, so a native rate over-funds, which is the safe side).
+  Native uploaders are sized from native records only, so a future baseline
+  carrying both tiers cannot pollute native sizing.
 - `deployments slack-post` lists the two tiers under separate headings, and only
-  when WASM clients exist.
+  when WASM clients exist. The `record-results --update-slack` reply likewise
+  renders `Native successes/failures` + `WASM successes/failures` instead of one
+  blended total whenever a run has WASM records (NULL counts as native); with
+  none, the output is byte-identical to before.
 
-**Profile:** `deploy/manifests/profiles/staging-rc-wasm.yaml` — staging-rc with
-three of its ten uploaders and one of its two downloaders moved to the WASM tier
-(same VM count and the same spread of sizes, regions, providers, payment modes
-and clock skew) and `nat_percent: 0`, since WebRTC has no NAT traversal yet. That
-last point makes it non-comparable to a staging-rc run on any node-tier metric
-NAT affects.
+**Profile:** the WASM tier lives in `deploy/manifests/profiles/staging.yaml`
+itself — 3 WASM uploaders (900/300/20 MB) and 1 WASM downloader (8 GB VM: a
+browser-path download holds the whole file in WASM memory, ~4x file size)
+**ADDED on top of** the unchanged native tier, not swapped into it. 900 not 1000
+MB because ant-core caps a browser upload at 1,000,000,000 bytes. The profile's
+`nat_percent` dropped **30 → 10** for the same reason WASM's floors are
+advisory. Both changes make the first run on this profile a full
+**REBASELINE** — no earlier run is a valid baseline for it, which is what
+`--new-baseline` is for. The WASM binary is built from an ant-client **git tag**
+(`binaries.ant_wasm.branch: ant-cli-v<rc>`, `repo_owner: WithAutonomi`); no WASM
+package is published as a release. `build ant-wasm-check --branch <ref>
+--repo-owner WithAutonomi` runs that same build **locally** in a temp dir and
+deploys nothing, so an ant-client API drift is caught before a build VM and ~10
+minutes are spent on it.
 
 **Verified against a local `ant-devnet`** (2026-09-07), not a cloud testnet: the
 WASM client runs under **plain Node.js** with `node-datachannel` supplying

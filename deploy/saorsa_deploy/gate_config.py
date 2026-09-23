@@ -81,15 +81,26 @@ class GateConfig:
     outbound_ratio_metric: str = "outbound_bytes_per_gb_traffic"
     max_window_length_ratio: float = 1.25
     max_activity_coverage_ratio: float = 1.3
-    # WASM (browser-path) client gates are reported but never block.
+    # WASM (browser-path) client gates, split into the two kinds because they
+    # deserve opposite answers.
     #
-    # They are judged against floors calibrated on the native transport, which
-    # the WASM tier does not yet meet: on the first measured run it managed
-    # 92.1% upload and 94.9% download against floors of 99% and 99.5%. Gating on
-    # those would hard-fail every run on a tier that is not yet what ships, and
-    # one run is no basis for setting a WASM-specific floor. Flip this to false
-    # once there is enough history to calibrate one.
-    wasm_gates_advisory: bool = True
+    # FLOOR gates -- "did 99% of uploads succeed" -- are judged against
+    # absolute numbers calibrated on the native transport, which the WASM tier
+    # does not yet meet: on the first measured run it managed 92.1% upload and
+    # 94.9% download against floors of 99% and 99.5%. That is not a regression,
+    # it is a NAT'd peer being unreachable over WebRTC-Direct until relayed
+    # WebRTC exists. Gating on it would hard-fail every run on a tier that is
+    # not yet what ships.
+    #
+    # RELATIVE gates -- success rate and per-bucket p50/p95 against the
+    # BASELINE -- need no absolute calibration at all: they ask whether this
+    # release made the WASM tier worse than the last one did, which is exactly
+    # the question a soft gate exists to answer. So they COUNT.
+    #
+    # Neither ever reaches the exit code: that is reserved for the native hard
+    # floors.
+    wasm_floor_gates_advisory: bool = True
+    wasm_relative_gates_advisory: bool = False
 
 
 _HARD_GATE_KEYS = (
@@ -143,6 +154,27 @@ def _require_number(
             "never fire."
         )
     return float(value)
+
+
+def _require_bool(data: dict, key: str, path: Path) -> bool:
+    """Require an explicit boolean. Absent is an error, not a default.
+
+    Whether a gate counts towards the verdict is not a detail to infer. A key
+    that quietly defaulted would decide, invisibly, whether a FAIL blocks the
+    ship -- the same reason every threshold in this file is required.
+    """
+    if key not in data:
+        raise GateConfigError(
+            f"{path}: '{key}:' is missing. It decides whether a failing gate "
+            "counts towards the overall verdict, which must be stated rather "
+            "than inferred."
+        )
+    value = data[key]
+    if not isinstance(value, bool):
+        raise GateConfigError(
+            f"{path}: '{key}:' must be true or false, got {value!r}."
+        )
+    return value
 
 
 def parse_gate_config(data: dict, source_path: str) -> GateConfig:
@@ -249,6 +281,17 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
             "standard deviation over fewer than two runs is undefined."
         )
 
+    if "wasm_gates_advisory" in data:
+        raise GateConfigError(
+            f"{path}: 'wasm_gates_advisory:' has been replaced by TWO keys, "
+            "because the two kinds of WASM gate deserve opposite answers: "
+            "'wasm_floor_gates_advisory:' (the success FLOORS -- reported, "
+            "never in the verdict, because a NAT'd peer is unreachable over "
+            "WebRTC-Direct until relayed WebRTC exists) and "
+            "'wasm_relative_gates_advisory:' (success rate and per-bucket "
+            "p50/p95 against the BASELINE -- soft gates that COUNT). Set both."
+        )
+
     return GateConfig(
         version=version,
         source_path=str(source_path),
@@ -276,9 +319,12 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
         outbound_ratio_metric=outbound_metric,
         max_window_length_ratio=max_ratio,
         max_activity_coverage_ratio=max_coverage_ratio,
-        # Optional: absent means advisory, which is the safe default for a
-        # transport whose floors have not been calibrated.
-        wasm_gates_advisory=bool(data.get("wasm_gates_advisory", True)),
+        wasm_floor_gates_advisory=_require_bool(
+            data, "wasm_floor_gates_advisory", path
+        ),
+        wasm_relative_gates_advisory=_require_bool(
+            data, "wasm_relative_gates_advisory", path
+        ),
     )
 
 

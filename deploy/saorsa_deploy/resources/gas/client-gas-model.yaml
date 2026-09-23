@@ -8,7 +8,7 @@
 # `version` is echoed into every estimate. An estimate produced under one
 # version is only comparable to another if the model did not change in
 # between -- the version is what tells you to check.
-version: 1
+version: 2
 
 # ---------------------------------------------------------------------------
 # WHY THIS EXISTS
@@ -74,6 +74,21 @@ round_up_to_eth: 0.05
 # A client that cannot afford a single payment transaction fails in a way that
 # looks like a network fault (see the failure mode described above).
 minimum_eth_per_uploader: 0.05
+
+# Multiplier applied to `fixed_eth_per_upload` for a WASM (browser-path)
+# uploader. `eth_per_gb` is deliberately NOT scaled.
+#
+# A WASM upload pays in TWO transactions where a native one pays in one: no
+# private key ever enters WASM, so ant-core hands the quote set to a JS
+# callback that does an ERC-20 `approve` and then a single `payForQuotes`
+# (resources/wasm-client/src/wallet.ts). The fixed per-upload term IS that
+# per-transaction overhead, so it is paid twice; the per-GB term is the quote
+# payload, which is the same set of quotes either way.
+#
+# 2.0 is derived from the transaction count, not calibrated against a measured
+# WASM run -- there has not been one. It will be recalibrated from the first
+# staging baseline that carries the tier, like every other number in this file.
+wasm_fixed_cost_multiplier: 2.0
 
 # ---------------------------------------------------------------------------
 # CALIBRATION PROVENANCE

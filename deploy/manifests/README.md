@@ -11,7 +11,7 @@ the hand-edited bash runbooks in `../../runbooks/`.
 deploy/manifests/
   profiles/        # COMMITTED — reusable base profiles + the reference template
     reference.yaml
-    staging-rc.yaml
+    staging.yaml
   examples/        # COMMITTED — standalone copy-me templates (mainly the prod kinds)
     prod-uploaders.yaml
     prod-local-uploads.yaml
@@ -44,23 +44,35 @@ saorsa-deploy deployments down --name STG-01                                # de
 | File | Kind | Notes |
 |---|---|---|
 | `profiles/reference.yaml` | testnet | Every available option, populated. Copy it into `runs/` and delete what you don't need. |
-| `profiles/staging-rc.yaml` | testnet | Reusable base profile (no `name`). A run `extends:` it. |
+| `profiles/staging.yaml` | testnet | THE staging profile every release train's run extends (no `name`). ~990 nodes at **10% NAT**, the native client tier (10 uploaders + 2 downloaders) and the WASM browser-path tier added on top of it (3 uploaders + 1 downloader). |
 | `profiles/small.yaml` | testnet | Small base profile (~100 nodes, a couple of 10 MB uploaders). |
 | `examples/prod-uploaders.yaml` | prod-uploaders | Standalone template: multi-VM prod upload run; shows per-uploader `log_level`. Copy into `runs/`. |
 | `examples/prod-local-uploads.yaml` | prod-local-uploads | Standalone template: upload to prod from the local machine; shows `log_level`. Copy into `runs/`. |
 
 ## Writing a run manifest
 
-A testnet run that extends the staging-rc profile (drop this in `runs/STG-01.yaml`):
+A testnet run that extends the staging profile (drop this in `runs/staging/STG-01.yaml`):
 
 ```yaml
-extends: ../profiles/staging-rc.yaml   # path is relative to THIS file
+extends: ../../profiles/staging.yaml   # path is relative to THIS file
 name: STG-01
 purpose: "RC sanity check"
 testnet:
   binaries:
     ant_node: { version: 0.11.5-rc.4 }
     ant:      { version: 0.2.5-rc.4 }
+    # The WASM (browser-path) tier. Branch form only — no WASM package is
+    # published as a GitHub release — so the train's ant-client RC TAG goes
+    # here, or the shipped tag on a train with no ant-client RC.
+    ant_wasm:
+      branch: ant-cli-v0.2.5-rc.4
+      repo_owner: WithAutonomi   # REQUIRED: the default owner is maidsafe
+```
+
+Check the WASM tier will build before spending a build VM and ~10 minutes on it:
+
+```bash
+saorsa-deploy build ant-wasm-check --branch ant-cli-v0.2.5-rc.4 --repo-owner WithAutonomi
 ```
 
 The prod kinds are single-command deployments — usually written standalone (no

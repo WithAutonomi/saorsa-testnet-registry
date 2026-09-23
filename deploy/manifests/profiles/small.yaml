@@ -1,6 +1,6 @@
 # Small base profile: ~100-node testnet with a couple of 10 MB uploaders.
 #
-# Like staging-rc.yaml, this is a base profile (no name/purpose/binaries) — a run
+# Like staging.yaml, this is a base profile (no name/purpose/binaries) — a run
 # `extends:` it and supplies those. Monitoring (InfluxDB + Grafana) is ON by default,
 # so client upload/download metrics are captured; no monitoring block is needed here.
 # Elastic log-forwarding stays opt-in — add an `elastic:` block to enable it.

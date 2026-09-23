@@ -92,6 +92,12 @@ def _gate_table(gates: list[dict]) -> list[str]:
             detail = f"{marker} {detail}".strip()
         # An advisory FAIL is not a ship blocker, and a bare "FAIL" in this
         # column reads as one. Say so where it is read, not only in the detail.
+        #
+        # Only the gate's own `advisory` flag decides this, never its transport:
+        # a [wasm] RELATIVE gate counts towards the verdict exactly as its
+        # native twin does, and must therefore render exactly as its native twin
+        # does. Marking every [wasm] row advisory would tell the reader to
+        # discount a fail that actually blocks nothing less than a native one.
         verdict = gate["verdict"]
         if gate.get("advisory"):
             verdict = f"{verdict} (advisory)"
@@ -132,9 +138,15 @@ def render_report(verdict: dict, computed_at: str | None = None) -> str:
     lines.append(
         f"- Candidate: `{candidate['name']}` (deployment {candidate['deployment_id']})"
     )
-    lines.append(
-        f"- Baseline: `{baseline['name']}` (deployment {baseline['deployment_id']})"
-    )
+    if verdict.get("new_baseline"):
+        # Named explicitly rather than left blank: a reader must be able to see
+        # at a glance that every relative gate below is NOT ASSESSED by design,
+        # not because the data was missing.
+        lines.append("- Baseline: none (new baseline)")
+    else:
+        lines.append(
+            f"- Baseline: `{baseline['name']}` (deployment {baseline['deployment_id']})"
+        )
     lines.append(f"- Window label: `{verdict['window_label']}`")
     if candidate.get("window_start") and candidate.get("window_end"):
         lines.append(

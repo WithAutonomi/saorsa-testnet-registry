@@ -163,18 +163,42 @@ class TestMixedRunsAreSplit:
         assert all(g.endswith("[native]") or g.endswith("[wasm]") for g in client_gates)
 
 
-class TestWasmGatesAreAdvisory:
-    def test_wasm_gates_are_flagged(self, config):
-        payload = compare_runs(_mixed(), _mixed(2), config)
-        assert all(g["advisory"] for g in payload["gates"] if "[wasm]" in g["gate"])
+class TestWasmFloorGatesAreAdvisory:
+    """The FLOORS are advisory; the RELATIVE gates count (V2-1286).
 
-    def test_native_gates_are_not(self, config):
+    A floor is an absolute number calibrated on the native transport, and the
+    gap the WASM tier shows against it is NAT — a peer behind the simulated
+    inbound NAT is unreachable over WebRTC-Direct until relayed WebRTC exists —
+    not the release under test. A relative gate asks only whether this release
+    made the WASM tier worse than the baseline did, which needs no absolute
+    calibration at all.
+    """
+
+    def test_wasm_floor_gates_are_flagged_advisory(self, config):
+        payload = compare_runs(_mixed(), _mixed(2), config)
+        floors = _gates(payload, "Upload success floor [wasm]") + _gates(
+            payload, "Download success floor [wasm]"
+        )
+        assert floors
+        assert all(g["advisory"] for g in floors)
+
+    def test_wasm_relative_gates_count(self, config):
+        payload = compare_runs(_mixed(), _mixed(2), config)
+        relative = [
+            g
+            for g in payload["gates"]
+            if "[wasm]" in g["gate"] and "success floor" not in g["gate"]
+        ]
+        assert relative
+        assert not any(g["advisory"] for g in relative)
+
+    def test_native_gates_are_never_advisory(self, config):
         payload = compare_runs(_mixed(), _mixed(2), config)
         assert not any(g["advisory"] for g in payload["gates"] if "[native]" in g["gate"])
 
-    def test_a_failing_wasm_hard_gate_does_not_block(self, config):
+    def test_a_failing_wasm_floor_does_not_block(self, config):
         # WASM is below both floors here, and the ship must not be blocked on a
-        # tier whose thresholds have not been calibrated.
+        # tier whose floors have not been calibrated for it.
         payload = compare_runs(_mixed(), _mixed(2), config)
         assert _gate(payload, "Upload success floor [wasm]")["verdict"] == FAIL
         assert payload["overall"] != "HARD FAIL"
@@ -189,11 +213,35 @@ class TestWasmGatesAreAdvisory:
         payload = compare_runs(candidate, _mixed(2), config)
         assert payload["overall"] == "HARD FAIL"
 
-    def test_advisory_can_be_switched_off(self, config):
-        strict = replace(config, wasm_gates_advisory=False)
+    def test_a_counted_wasm_relative_fail_is_soft_never_hard(self, config):
+        """It must reach the verdict, and must never reach the exit code."""
+        # The WASM tier collapses against its own baseline: a success-rate drop
+        # far beyond the threshold, on the relative gate that counts.
+        candidate = replace(
+            _mixed(),
+            upload_records=ops(100, kind="native") + ops(40, failures=30, kind="wasm"),
+        )
+        baseline = replace(
+            _mixed(2),
+            upload_records=ops(100, kind="native") + ops(40, kind="wasm"),
+        )
+        payload = compare_runs(candidate, baseline, config)
+        rate = _gate(payload, "Upload success rate [wasm]")
+        assert rate["verdict"] == FAIL
+        assert rate["advisory"] is False
+        assert rate["kind"] == "soft"
+        assert payload["overall"] == "SOFT FAIL"
+
+    def test_floor_advisory_can_be_switched_off(self, config):
+        strict = replace(config, wasm_floor_gates_advisory=False)
         payload = compare_runs(_mixed(), _mixed(2), strict)
         assert not any(g["advisory"] for g in payload["gates"])
         assert payload["overall"] == "HARD FAIL"
+
+    def test_relative_advisory_can_be_switched_on(self, config):
+        lax = replace(config, wasm_relative_gates_advisory=True)
+        payload = compare_runs(_mixed(), _mixed(2), lax)
+        assert all(g["advisory"] for g in payload["gates"] if "[wasm]" in g["gate"])
 
 
 class TestOneSidedComparisons:

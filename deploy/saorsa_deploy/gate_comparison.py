@@ -909,44 +909,81 @@ def _client_gates(
 
     When neither run has WASM records the gates are emitted exactly as before,
     with no transport suffix, so every existing comparison is unchanged.
+
+    The two KINDS of WASM gate are treated separately. A FLOOR ("99% of uploads
+    succeeded") is an absolute number calibrated on the native transport, which
+    the WASM tier does not meet for a reason that is not the release under test
+    -- a NAT'd peer is unreachable over WebRTC-Direct until relayed WebRTC
+    exists -- so it stays advisory. A RELATIVE gate asks only whether this
+    release made the WASM tier worse than the baseline did, needs no absolute
+    calibration, and counts. Which is which is config, not code.
     """
-    def gates(run_c, run_b):
+    def floor_gates(run_c):
+        return _hard_success_floors(run_c, config)
+
+    def relative_gates(run_c, run_b):
         return [
-            *_hard_success_floors(run_c, config),
             *_soft_success_rates(run_c, run_b, config, history),
             *_soft_transfer_durations(run_c, run_b, config, history),
         ]
 
     if not (_has_wasm(candidate) or _has_wasm(baseline)):
-        return gates(candidate, baseline)
+        return [*floor_gates(candidate), *relative_gates(candidate, baseline)]
 
     results: list[GateResult] = []
     for transport in (NATIVE, WASM):
-        advisory = transport == WASM and config.wasm_gates_advisory
-        for gate in gates(
-            _transport_view(candidate, transport), _transport_view(baseline, transport)
-        ):
-            results.append(
-                replace(
-                    gate,
-                    gate=f"{gate.gate} [{transport}]",
-                    advisory=advisory,
-                    detail=(
-                        f"{gate.detail} — advisory, not blocking"
-                        if advisory and gate.detail
-                        else ("advisory, not blocking" if advisory else gate.detail)
-                    ),
+        cand_view = _transport_view(candidate, transport)
+        base_view = _transport_view(baseline, transport)
+        groups = (
+            (floor_gates(cand_view), config.wasm_floor_gates_advisory),
+            (relative_gates(cand_view, base_view), config.wasm_relative_gates_advisory),
+        )
+        for gates, wasm_advisory in groups:
+            advisory = transport == WASM and wasm_advisory
+            for gate in gates:
+                results.append(
+                    replace(
+                        gate,
+                        gate=f"{gate.gate} [{transport}]",
+                        advisory=advisory,
+                        detail=(
+                            f"{gate.detail} — advisory, not blocking"
+                            if advisory and gate.detail
+                            else (
+                                "advisory, not blocking" if advisory else gate.detail
+                            )
+                        ),
+                    )
                 )
-            )
     return results
+
+
+#: The NOT ASSESSED reason every relative gate carries under ``--new-baseline``.
+#: Fixed string, not prose: the skills match on it.
+NEW_BASELINE_REASON = "new baseline"
+
+
+def empty_baseline(candidate: RunMetrics) -> RunMetrics:
+    """A stand-in baseline holding nothing, for ``--new-baseline``.
+
+    Carries the candidate's window label so the comparability check would pass
+    if it ran -- it does not -- and no measurements at all, so every gate that
+    needs a baseline reads as unmeasurable rather than as a zero.
+    """
+    return RunMetrics(
+        deployment_id=0,
+        name="none",
+        window_label=candidate.window_label,
+    )
 
 
 def compare_runs(
     candidate: RunMetrics,
-    baseline: RunMetrics,
+    baseline: RunMetrics | None,
     config: GateConfig,
     history: dict[str, list[float]] | None = None,
     pattern_set=None,
+    new_baseline: bool = False,
 ) -> dict:
     """Produce the full verdict payload for a candidate against a baseline.
 
@@ -958,10 +995,27 @@ def compare_runs(
     naming the connection-error groups and how each combines. It is passed in
     rather than loaded here so this stays a pure function of its inputs; with
     ``None`` the groups are still evaluated, derived from the stored rows.
+
+    ``new_baseline`` declares that there IS no comparable prior run -- the
+    staging profile changed shape, so nothing recorded before it is a valid
+    baseline for anything recorded after. The single-run gates (the success
+    floors) are still evaluated, because they are absolute; every relative gate
+    is emitted as NOT ASSESSED with the reason ``new baseline``. Emitted, not
+    omitted: a gate that vanishes from the report reads as one nobody thought
+    about, and the whole point of this report is that an unmeasured gate can
+    never be mistaken for a passing one. The comparability checks are skipped
+    because there is nothing on the other side to be comparable to.
     """
-    problems = check_comparability(candidate, baseline, config)
-    if problems:
-        raise ComparisonError("; ".join(problems))
+    if new_baseline:
+        baseline = empty_baseline(candidate)
+    elif baseline is None:
+        raise ComparisonError(
+            "a baseline run is required unless new_baseline is set."
+        )
+    else:
+        problems = check_comparability(candidate, baseline, config)
+        if problems:
+            raise ComparisonError("; ".join(problems))
 
     history = history or {}
     results: list[GateResult] = []
@@ -974,7 +1028,30 @@ def compare_runs(
         _soft_log_event_counts(candidate, baseline, config, history, pattern_set)
     )
 
-    warnings: list[str] = list(log_count_warnings(candidate, baseline))
+    if new_baseline:
+        # Every soft gate in this module is relative to the baseline (the leak
+        # check is absolute, but the spec groups it with the rest, and a single
+        # run's slope has nothing to be judged against here either). The hard
+        # floors are the only single-run gates, and they stand.
+        results = [
+            r
+            if r.kind == "hard"
+            else replace(
+                r,
+                verdict=NOT_ASSESSED,
+                baseline=None,
+                delta_percent=None,
+                noise=None,
+                detail=NEW_BASELINE_REASON,
+            )
+            for r in results
+        ]
+
+    warnings: list[str] = (
+        []
+        if new_baseline
+        else list(log_count_warnings(candidate, baseline))
+    )
 
     # Neither comparability guard inspects what the windows CONTAIN.
     #
@@ -989,7 +1066,7 @@ def compare_runs(
     #
     # This cannot be detected from stored data -- nothing records phase
     # boundaries -- so it is stated rather than measured.
-    if candidate.window_label == WINDOW_FULL_RUN:
+    if candidate.window_label == WINDOW_FULL_RUN and not new_baseline:
         warnings.append(
             "Comparing on the 'full-run' window. That window is the span of each "
             "run's observed metrics, not the shape of the run: it includes "
@@ -1004,9 +1081,16 @@ def compare_runs(
             "--window-label steady-state."
         )
 
+    if new_baseline:
+        warnings.append(
+            "Recorded as a NEW BASELINE: every gate relative to a prior run is "
+            "NOT ASSESSED. Only the single-run success floors were evaluated. "
+            "This run becomes the baseline the next one is compared against."
+        )
+
     cand_coverage = candidate.activity_coverage()
     base_coverage = baseline.activity_coverage()
-    if cand_coverage and base_coverage:
+    if cand_coverage and base_coverage and not new_baseline:
         coverage_ratio = max(cand_coverage, base_coverage) / min(
             cand_coverage, base_coverage
         )
@@ -1023,6 +1107,12 @@ def compare_runs(
 
     # Advisory gates are reported in full but excluded from the overall verdict,
     # so a tier whose thresholds are not yet calibrated cannot block a ship.
+    #
+    # A COUNTED [wasm] gate (the relative ones) still never reaches the exit
+    # code: `compare` exits 2 only on HARD FAIL, and every WASM gate that counts
+    # is soft. A WASM regression is therefore reported and folded into the
+    # overall verdict as a SOFT FAIL -- a judgment call, like every other soft
+    # gate -- rather than blocking the ship on a tier that is a test instrument.
     blocking = [r for r in results if not r.advisory]
     verdicts = [r.verdict for r in blocking]
     hard_failed = any(r.verdict == FAIL for r in blocking if r.kind == "hard")
@@ -1050,13 +1140,24 @@ def compare_runs(
             "window_end": _iso(candidate.window_end),
             "activity_coverage": cand_coverage,
         },
-        "baseline": {
-            "deployment_id": baseline.deployment_id,
-            "name": baseline.name,
-            "window_start": _iso(baseline.window_start),
-            "window_end": _iso(baseline.window_end),
-            "activity_coverage": base_coverage,
-        },
+        "new_baseline": new_baseline,
+        "baseline": (
+            {
+                "deployment_id": None,
+                "name": None,
+                "window_start": None,
+                "window_end": None,
+                "activity_coverage": None,
+            }
+            if new_baseline
+            else {
+                "deployment_id": baseline.deployment_id,
+                "name": baseline.name,
+                "window_start": _iso(baseline.window_start),
+                "window_end": _iso(baseline.window_end),
+                "activity_coverage": base_coverage,
+            }
+        ),
         "warnings": warnings,
         "counts": {
             PASS: verdicts.count(PASS),

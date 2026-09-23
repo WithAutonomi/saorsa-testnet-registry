@@ -239,6 +239,10 @@ class DeploymentRepository(ABC):
         ...
 
     @abstractmethod
+    def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]:
+        ...
+
+    @abstractmethod
     def upsert_host_result(
         self,
         deployment_id: int,
@@ -383,7 +387,7 @@ class DeploymentRepository(ABC):
     def upsert_gate_verdict(
         self,
         deployment_id: int,
-        baseline_deployment_id: int,
+        baseline_deployment_id: int | None,
         window_label: str,
         overall: str,
         threshold_config_version: int,
@@ -400,7 +404,10 @@ class DeploymentRepository(ABC):
 
     @abstractmethod
     def get_gate_verdict(
-        self, deployment_id: int, baseline_deployment_id: int, window_label: str
+        self,
+        deployment_id: int,
+        baseline_deployment_id: int | None,
+        window_label: str,
     ) -> DeploymentGateVerdict | None:
         ...
 
@@ -873,7 +880,15 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.finished_at = finished_at
             existing.duration_ms = duration_ms
             existing.network_profile = network_profile
-            existing.client_kind = client_kind
+            # COALESCE, not an unconditional assignment: `client_kind` is
+            # resolved from the deployment's S3 client state, and `clients
+            # destroy` deletes that state. A `record-results` re-run after
+            # teardown therefore resolves None for every host -- and writing
+            # that would relabel every WASM operation as native, pushing WASM
+            # failures into the native hard floors. A NULL never overwrites a
+            # known transport; a known one still updates.
+            if client_kind is not None:
+                existing.client_kind = client_kind
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -965,6 +980,26 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .all()
         )
+
+    def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]:
+        """Hosts this deployment already has WASM-labelled operations for.
+
+        The transport is resolved from the deployment's S3 client state, which
+        `clients destroy` deletes -- so after teardown the only surviving record
+        of which VMs were WASM is the rows already written. `record-results`
+        uses this to say which hosts it could not classify on a re-run, rather
+        than silently leaving them as they were.
+        """
+        hosts: set[str] = set()
+        for model in (DeploymentUploadRecord, DeploymentDownloadRecord):
+            rows = self.session.execute(
+                select(model.client_hostname)
+                .where(model.deployment_id == deployment_id)
+                .where(model.client_kind == "wasm")
+                .distinct()
+            ).scalars()
+            hosts.update(rows)
+        return sorted(hosts)
 
     def upsert_host_result(
         self,
@@ -1570,7 +1605,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
     def upsert_gate_verdict(
         self,
         deployment_id: int,
-        baseline_deployment_id: int,
+        baseline_deployment_id: int | None,
         window_label: str,
         overall: str,
         threshold_config_version: int,
@@ -1584,16 +1619,27 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         and a threshold config, so two rows for the same key could only ever
         differ because the inputs changed -- and leaving both would make "the
         verdict for this run" ambiguous at exactly the moment it matters.
+
+        ``baseline_deployment_id`` is None for a `--new-baseline` run. The
+        lookup must then test IS NULL rather than ``== None``: SQL equality
+        against NULL is never true, so a re-run would find nothing and insert a
+        second row -- the exact accumulation this method exists to prevent.
         """
-        existing = self.session.execute(
+        query = (
             select(DeploymentGateVerdict)
             .where(DeploymentGateVerdict.deployment_id == deployment_id)
-            .where(
+            .where(DeploymentGateVerdict.window_label == window_label)
+        )
+        if baseline_deployment_id is None:
+            query = query.where(
+                DeploymentGateVerdict.baseline_deployment_id.is_(None)
+            )
+        else:
+            query = query.where(
                 DeploymentGateVerdict.baseline_deployment_id
                 == baseline_deployment_id
             )
-            .where(DeploymentGateVerdict.window_label == window_label)
-        ).scalar_one_or_none()
+        existing = self.session.execute(query).scalar_one_or_none()
 
         if existing is None:
             existing = DeploymentGateVerdict(
@@ -1625,17 +1671,26 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         return list(self.session.execute(query).scalars().all())
 
     def get_gate_verdict(
-        self, deployment_id: int, baseline_deployment_id: int, window_label: str
+        self,
+        deployment_id: int,
+        baseline_deployment_id: int | None,
+        window_label: str,
     ) -> DeploymentGateVerdict | None:
-        return self.session.execute(
+        query = (
             select(DeploymentGateVerdict)
             .where(DeploymentGateVerdict.deployment_id == deployment_id)
-            .where(
+            .where(DeploymentGateVerdict.window_label == window_label)
+        )
+        if baseline_deployment_id is None:
+            query = query.where(
+                DeploymentGateVerdict.baseline_deployment_id.is_(None)
+            )
+        else:
+            query = query.where(
                 DeploymentGateVerdict.baseline_deployment_id
                 == baseline_deployment_id
             )
-            .where(DeploymentGateVerdict.window_label == window_label)
-        ).scalar_one_or_none()
+        return self.session.execute(query).scalar_one_or_none()
 
     def upsert_prod_upload_result(
         self,

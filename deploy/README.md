@@ -146,7 +146,7 @@ kind: testnet
 purpose: "RC sanity check"
 ssh_key_path: ~/.ssh/ant_deploy
 slack_post: true                       # optional (any kind): append a final `deployments slack-post` step to `up`
-extends: profiles/staging-rc.yaml      # optional: deep-merge a reusable base (lists REPLACE)
+extends: profiles/staging.yaml         # optional: deep-merge a reusable base (lists REPLACE)
 testnet:
   mode: true                            # --testnet
   upgrade_channel: beta                 # beta | stable | omit
@@ -685,6 +685,32 @@ missing token, or Slack error warns but never fails the recording.
 uv run saorsa-deploy deployments record-results --name PROD-UP-01 --update-slack
 ```
 
+When a testnet run carries WASM (browser-path) client operations, the reply's
+headline totals split into **`Native successes` / `Native failures` / `WASM
+successes` / `WASM failures`** instead of one blended pair. The two transports
+are not the same instrument — the WASM tier ran ~2.2x slower on upload and ~4.2x
+on download on the first measured run, and it is judged against its own gates —
+so a single total describes neither and moves with whatever VM mix the run used.
+A `client_kind` of NULL counts as native; with no WASM records the output is
+byte-identical to before.
+
+#### `record-results` never erases `client_kind`
+
+The transport of each operation is resolved from the deployment's **S3 client
+state**, and `clients destroy` deletes that state. So a `record-results` re-run
+after teardown resolves NULL for every host. The upsert therefore **coalesces**
+that column: a NULL never overwrites a known transport, while a known transport
+still updates.
+
+Without that, re-running after teardown would relabel every WASM operation as
+native — which pushes WASM failures into the **native hard floors**, the one
+place they must never count. When the client state is unreadable the command
+also warns, naming the WASM hosts it could not classify, so the silence is never
+mistaken for "these rows are native".
+
+Run `record-results` **before** `clients destroy`, as the process already
+requires.
+
 ### Client VMs (uploaders / downloaders)
 
 Client VMs run the ant binary as long-running upload-or-download workers against a testnet. Each VM runs *either* an uploader *or* a downloader — not both — and the downloader VMs pull addresses produced by uploaders through a per-testnet S3 folder.
@@ -820,9 +846,41 @@ Example profile: `deploy/manifests/profiles/webrtc-wasm.yaml`.
    no release form — no `ant-core` WASM package is published as a GitHub
    release, so `binaries.ant_wasm` accepts only the branch form.
 
+   The ref may be a **branch or a git TAG** — `git clone --branch` accepts
+   either, and nothing checks anything out afterwards. The staging profile uses
+   a tag: the release train's `ant-cli-v<rc>`, or the shipped `ant-cli-v<current>`
+   on a train with no ant-client RC.
+
    ```bash
    saorsa-deploy build ant-wasm --name WASM-01 \
-     --branch-name web-support --repo-owner WithAutonomi
+     --branch-name ant-cli-v0.3.8-rc.1 --repo-owner WithAutonomi
+   ```
+
+   **`build ant-wasm-check`** runs that same build **locally**, in a temp
+   directory, and deploys nothing. It exists because `build ant-wasm` costs a
+   build VM and ~10 minutes before it can tell you ant-client's browser API has
+   moved under the TypeScript harness — and in a release train that discovery
+   lands at the last step before the client tier comes up, on a testnet whose
+   node fleet is already running and billing. Exit 0 means `build ant-wasm`
+   would succeed against that ref; anything else prints the failing step's
+   output and leaves the working tree in place so you can open it.
+
+   The commands both paths run live in one module
+   (`saorsa_deploy/wasm_build.py`), because a local check that builds something
+   slightly different is worse than no check at all: it reports a pass the real
+   build will not honour.
+
+   | Argument | Default | Notes |
+   |---|---|---|
+   | `--branch` | *required* | ant-client git ref — a branch **or** a release tag. |
+   | `--repo-owner` | `WithAutonomi` | GitHub repository owner. |
+
+   It **installs nothing**. If the `wasm32-unknown-unknown` Rust target,
+   `wasm-pack` (pinned to the build VM's `0.15.0`) or Node >= 22 is missing, it
+   exits non-zero naming each one with the exact command to install it.
+
+   ```bash
+   saorsa-deploy build ant-wasm-check --branch main --repo-owner WithAutonomi
    ```
 
 3. **`deployments webrtc-addresses`** — SSHes the **bootstrap VMs**, reads each
@@ -1067,7 +1125,7 @@ uv run saorsa-deploy clients estimate-gas \
 
 | Argument | Default | Description |
 |---|---|---|
-| `--config` | required | Manifest whose `testnet.clients.uploaders` to size. |
+| `--config` | required | Manifest whose `testnet.clients.uploaders` **and** `.wasm_uploaders` to size. |
 | `--set` / `--name` | — | Manifest overrides, as elsewhere. |
 | `--baseline-id` | — | Previous run to take upload throughput from. |
 | `--uploads-per-hour` | — | Flat rate instead of a baseline run. |
@@ -1095,6 +1153,34 @@ Three design points worth knowing when reading the output:
   per-wallet and sequential, so a funder that cannot cover the whole draw does not
   fail cleanly up front — it funds the first few uploaders and then runs dry, leaving
   a half-provisioned run.
+
+### WASM (browser-path) uploaders
+
+A WASM uploader holds its own funded wallet and pays real testnet gas exactly as a
+native one does, so it is sized here too — labelled `[wasm]` in the table and
+included in the funder total. Omitting it understated the fleet requirement by a
+whole wallet per WASM uploader, against a check that compares the full total.
+
+- **Its fixed per-upload cost is doubled.** A browser-path payment is **two**
+  transactions where a native one is one: no private key ever enters WASM, so
+  ant-core hands the quote set to a JS callback that does an ERC-20 `approve` and
+  then a single `payForQuotes`. The fixed term *is* that per-transaction overhead,
+  so it is paid twice; `eth_per_gb` is the quote payload and is unchanged. The
+  multiplier is `wasm_fixed_cost_multiplier: 2.0` in the model config — derived from
+  the transaction count, not calibrated against a measured WASM run, because there
+  has not been one yet.
+- **Throughput** comes from the baseline's own `client_kind = 'wasm'` upload records
+  at a comparable size, computed exactly as native is (rate over the client's own
+  active window). Until a baseline carries any, the **nearest native uploader by
+  size** stands in and the row is labelled `approx: native twin <hostname>` in the
+  `Basis` column. Borrowing is sound in that direction only: WASM measured ~6–8x
+  slower on the same work, so a native rate projects more uploads than the WASM
+  client will manage and **over**-funds it — and the surplus is swept back to the
+  funder on destroy.
+- **Native uploaders are sized from native records only** (`client_kind IS NULL OR
+  'native'`). Without that filter, once WASM is in every staging baseline a native
+  uploader would silently be sized from whichever tier happened to be faster at its
+  size — a change to how the native tier has always been sized, made invisibly.
 
 The model and its calibration live in
 `deploy/saorsa_deploy/resources/gas/client-gas-model.yaml` — versioned config, not
@@ -1582,7 +1668,8 @@ Both runs are named by **deployment id, never by name** — staging names are re
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
 | `--id` | int | Yes | - | Deployment id of the candidate run |
-| `--baseline-id` | int | Yes | - | Deployment id of the baseline run |
+| `--baseline-id` | int | One of these two | - | Deployment id of the baseline run |
+| `--new-baseline` | flag | One of these two | - | This run has no comparable predecessor — see below |
 | `--window-label` | string | No | `full-run` | Which stored window to compare on both sides |
 | `--thresholds` | path | No | bundled | Threshold config YAML (`resources/gates/staging-thresholds.yaml`) |
 | `--patterns` | path | No | bundled | Log-pattern catalogue YAML (`resources/log_patterns/connection-errors.yaml`) |
@@ -1594,11 +1681,73 @@ Both runs are named by **deployment id, never by name** — staging names are re
 
 Exits `2` on a hard-gate failure (which blocks the ship with no override); soft-gate failures and GRAY exit `0`, since those are judgment calls.
 
+#### `--new-baseline`: a run with nothing to compare against
+
+When the staging profile changes shape — as it did when the WASM client tier was
+added and `nat_percent` went from 30 to 10 — **nothing recorded before the change
+is a valid baseline for anything recorded after it**. `--new-baseline` is how that
+run is still assessed and recorded:
+
+```bash
+uv run saorsa-deploy deployments compare --id 596 --new-baseline \
+  --window-label steady-state --markdown-out report.md
+```
+
+- It is **mutually exclusive with `--baseline-id`, and exactly one is required** —
+  there is no default, because which of the two applies is the operator's call and
+  getting it wrong silently produces the wrong verdict.
+- Only the **single-run** gates are evaluated: the native success floors (absolute
+  numbers, so they stand on their own) and the WASM floors (advisory, as always).
+- **Every relative gate is emitted as NOT ASSESSED** with the exact reason
+  `new baseline` — success rate, per-bucket p50/p95, node CPU, node RSS, leak
+  slope, outbound/GB, disk/GB and every connection-error group, for both
+  transports. *Emitted*, not omitted: a gate missing from the report reads as one
+  nobody thought about, and the entire point of this report is that an unmeasured
+  gate can never be mistaken for a passing one.
+- The **comparability guards below are skipped**, since there is nothing on the
+  other side to be comparable to. `--window-label` is still required and the
+  candidate must carry it.
+- The report header reads `Baseline: none (new baseline)`.
+- **Exit code is unchanged**: `2` only on a native hard-floor FAIL.
+- The verdict is stored with a NULL `baseline_deployment_id`. Postgres treats
+  NULLs as distinct, so a **partial unique index** on `(deployment_id,
+  window_label) WHERE baseline_deployment_id IS NULL` is what keeps a re-run
+  replacing its previous answer instead of accumulating rows.
+
+There is deliberately **no guard against comparing across a rebaseline** — the
+tool cannot know which profile change invalidated which history. That judgment
+belongs to the release process, and the `evaluate-staging-run` skill enforces it.
+
 #### What it covers
 
 Two hard gates (upload success floor < 99%, download success floor < 99.5%) and eight soft gates: upload/download success rate, transfer duration p50/p95 **per file-size bucket**, node CPU, node RSS, memory leak slope, outbound bytes per GB of traffic, and disk bytes per GB stored. Plus one soft gate per **connection-error group** recorded by `deployments record-log-counts` (see below).
 
 Transfer-duration percentiles are exact — they come from the per-op `deployment_upload_records` / `deployment_download_records`, which carry each operation's own `duration_ms` and timestamps. `deployment_file_results` is not used: it is an aggregate with no per-op timestamps and therefore cannot be windowed.
+
+#### Per-transport gates, and the two advisory settings
+
+When a run carries WASM (browser-path) client records, every client gate is
+evaluated **once per transport** and suffixed `[native]` / `[wasm]`. With no WASM
+records the gates are emitted exactly as before, unsuffixed. Node-tier gates (CPU,
+RSS, leak, per-GB ratios, log counts) are never split — one node fleet serves both
+transports.
+
+The two KINDS of WASM gate get opposite answers, so `resources/gates/staging-thresholds.yaml`
+carries **two required booleans**:
+
+| Key | Shipped | Covers | Why |
+|---|---|---|---|
+| `wasm_floor_gates_advisory` | `true` | `Upload/Download success floor [wasm]` | The floors are absolute numbers calibrated on the native transport. WASM does not meet them — 92.1% upload / 94.9% download against 99% / 99.5% on the first measured run — and the gap is **NAT**: a peer behind the simulated inbound NAT is unreachable over WebRTC-Direct until relayed WebRTC exists. That is not the release under test, so gating on it would hard-fail every run on a tier that is not yet what ships. |
+| `wasm_relative_gates_advisory` | `false` | `[wasm]` success rate and per-bucket p50/p95 | These need no absolute calibration: they ask only whether *this* release made the WASM tier worse than the baseline did — exactly what a soft gate is for. So they **COUNT**, as SOFT gates, like their native twins. |
+
+Both keys are **required**; an absent one is an error, not a default, because it
+decides whether a failing gate blocks the ship. The retired single
+`wasm_gates_advisory` fails validation naming both replacements rather than being
+silently ignored.
+
+**No WASM gate ever reaches the exit code.** A counted `[wasm]` relative FAIL makes
+the overall verdict `SOFT FAIL` — a judgment call, reported in full — while exit `2`
+stays reserved for the native hard floors.
 
 #### What it deliberately does NOT cover
 

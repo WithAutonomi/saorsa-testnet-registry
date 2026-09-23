@@ -439,6 +439,27 @@ def main(argv=None):
         help="DigitalOcean droplet size for the build VM (default: c-32)",
     )
 
+    # build ant-wasm-check
+    build_ant_wasm_check_parser = build_subparsers.add_parser(
+        "ant-wasm-check",
+        help="Run the WASM client build LOCALLY against an ant-client ref, in a "
+        "temp directory. Creates no infrastructure and deploys nothing; exit 0 "
+        "means `build ant-wasm` would succeed against that ref.",
+    )
+    build_ant_wasm_check_parser.add_argument(
+        "--branch",
+        type=str,
+        required=True,
+        help="ant-client git ref to check — a branch OR a release tag "
+        "(e.g. main, ant-cli-v0.3.8-rc.1)",
+    )
+    build_ant_wasm_check_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        default="WithAutonomi",
+        help="GitHub repository owner (default: WithAutonomi)",
+    )
+
     # build ant-node
     build_ant_node_parser = build_subparsers.add_parser(
         "ant-node", help="Build ant-node from source and upload to S3"
@@ -1776,14 +1797,29 @@ def main(argv=None):
             "resolve to whichever run was most recent."
         ),
     )
-    deployments_compare_parser.add_argument(
+    deployments_compare_baseline = (
+        deployments_compare_parser.add_mutually_exclusive_group(required=True)
+    )
+    deployments_compare_baseline.add_argument(
         "--baseline-id",
         dest="baseline_id",
         type=int,
-        required=True,
         help=(
             "Deployment id of the baseline run -- by the process, the staging "
             "run the last shipped release passed on."
+        ),
+    )
+    deployments_compare_baseline.add_argument(
+        "--new-baseline",
+        dest="new_baseline",
+        action="store_true",
+        help=(
+            "This run HAS no comparable predecessor: the staging profile "
+            "changed shape, so nothing recorded before it is a valid baseline. "
+            "Evaluates only the single-run success floors; every relative gate "
+            "is reported as NOT ASSESSED with the reason 'new baseline'. The "
+            "comparability checks are skipped, --window-label is still "
+            "required, and the run becomes the baseline for the next one."
         ),
     )
     deployments_compare_parser.add_argument(
@@ -6677,6 +6713,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.build_ant_wasm import cmd_build_ant_wasm
 
             cmd_build_ant_wasm(args)
+        elif args.build_subcommand == "ant-wasm-check":
+            from saorsa_deploy.cmd.build_ant_wasm_check import (
+                cmd_build_ant_wasm_check,
+            )
+
+            cmd_build_ant_wasm_check(args)
         elif args.build_subcommand == "ant-node":
             from saorsa_deploy.cmd.build import cmd_build
 
