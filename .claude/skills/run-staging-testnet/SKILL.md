@@ -164,25 +164,7 @@ stop to show the plan or ask for approval — the network shape is a standard,
 well-known configuration and the profile is not edited here. This applies to the
 plan and config only; it does not license skipping the Step 1 version confirmation.
 
-## Step 3b — WASM build check (blocking)
-
-After the manifest edits and before the gas preflight, check that the WASM client
-builds against the pinned tag. This deploys nothing — it is a local build:
-
-```bash
-uv run saorsa-deploy build ant-wasm-check --branch ant-cli-v<version> --repo-owner WithAutonomi
-```
-
-`<version>` is the one in `testnet.binaries.ant_wasm.branch`. Exit 0 means the build
-is OK.
-
-**A non-zero exit means stop.** Do not deploy. Post the failing step's output on the
-`Staging run — rc.N` sub-issue and hand back to the RM: the WASM harness has drifted
-from the RC's browser API, and that is a harness fix, not something to work around in
-the run. There is no DEV rehearsal of the WASM tier before staging; this check is the
-guard, so a failing one is never skipped.
-
-## Step 3c — Gas preflight (blocking)
+## Step 3b — Gas preflight (blocking)
 
 Uploader wallets are funded with a **fixed** amount of native ETH, so their runway is
 inversely proportional to the gas price. Check that the profile's `eth:` figures will
@@ -247,7 +229,16 @@ That is **T0**, and every phase is measured from it.
 
 ### When a deploy step fails
 
-There are two classes of failure and they are handled differently.
+**The WASM client build** (`build ant-wasm`, step 1 of the plan). The WASM client is
+built from the `ant_wasm` tag on a build VM, before any testnet infrastructure is
+created. It is the only check that the WASM harness still compiles against the RC's
+browser API — there is no local pre-check, deliberately: building Rust locally is
+slow and takes over the operator's machine. If it fails, `up` halts there with
+nothing to tear down. Do not retry and do not work around it: post the failing
+output on the `Staging run — rc.N` sub-issue and hand back to the RM. A harness that
+has drifted from the RC's API is a harness fix.
+
+For every other step there are two classes of failure, handled differently.
 
 **Infrastructure creation** (`bootstraps infra`, `nodes infra`, `clients infra`,
 `monitoring infra`, `elastic infra` — anything creating VMs or volumes at a cloud

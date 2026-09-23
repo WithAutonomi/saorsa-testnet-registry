@@ -1218,7 +1218,7 @@ mixed-version phase (79.35%) below their hard-gate floors for a non-product reas
 Throughput was **not** the cause — that run did less work than its baseline.
 
 `clients estimate-gas --config <manifest> --baseline-id <id>` is the read-only
-preflight, run as **Step 3a of the `run-staging-testnet` skill**. It reads the current
+preflight, run as **Step 3b of the `run-staging-testnet` skill**. It reads the current
 base fee from the chain, takes per-uploader throughput from a previous run, and prints
 the ETH each uploader needs plus whether the funding wallet covers the total.
 **Exit 2 = something is short**; the fix is either the profile's `eth:` values (a
