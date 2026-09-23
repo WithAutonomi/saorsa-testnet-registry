@@ -4,11 +4,13 @@ from typing import Optional
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -65,6 +67,17 @@ class DeploymentGateVerdict(Base):
             "window_label",
             name="uq_deployment_gate_verdicts_comparison",
         ),
+        # Postgres treats NULLs as distinct, so the constraint above does NOT
+        # stop a `--new-baseline` re-run accumulating rows. This partial index
+        # restores "one row per comparison" for the no-baseline case.
+        Index(
+            "uq_deployment_gate_verdicts_new_baseline",
+            "deployment_id",
+            "window_label",
+            unique=True,
+            postgresql_where=text("baseline_deployment_id IS NULL"),
+            sqlite_where=text("baseline_deployment_id IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -77,8 +90,13 @@ class DeploymentGateVerdict(Base):
     # baseline deployment must not silently erase the verdicts that were
     # computed against it, since the verdict is the durable artifact and the
     # baseline row is not needed to read it.
-    baseline_deployment_id: Mapped[int] = mapped_column(
-        ForeignKey("deployments.id"), nullable=False, index=True
+    #
+    # NULL means `--new-baseline`: the run had no comparable predecessor, so
+    # only its single-run floors were evaluated. Recorded as absent rather than
+    # pointed at some arbitrary earlier run, which would claim a comparison
+    # that was never made.
+    baseline_deployment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("deployments.id"), nullable=True, index=True
     )
 
     window_label: Mapped[str] = mapped_column(String(64), nullable=False)

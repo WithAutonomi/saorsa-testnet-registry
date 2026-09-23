@@ -21,7 +21,7 @@ measured basis and the known limits.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -48,6 +48,12 @@ class GasModelError(ValueError):
     """
 
 
+#: Transport of an uploader. NULL on every upload record predating the WASM
+#: client tier, which was necessarily native, so NULL reads as native.
+NATIVE = "native"
+WASM = "wasm"
+
+
 @dataclass(frozen=True)
 class GasModel:
     """Cost-per-upload model, calibrated at ``reference_base_fee_gwei``."""
@@ -59,12 +65,20 @@ class GasModel:
     safety_factor: float
     round_up_to_eth: float
     minimum_eth_per_uploader: float
+    wasm_fixed_cost_multiplier: float = 1.0
 
-    def eth_per_upload(self, size_gb: float, base_fee_gwei: float) -> float:
+    def eth_per_upload(
+        self, size_gb: float, base_fee_gwei: float, transport: str = NATIVE
+    ) -> float:
         """Modelled ETH for one upload of ``size_gb`` at ``base_fee_gwei``.
 
         Excludes the safety factor -- that is applied once per uploader in
         :func:`estimate_uploader`, not per upload, so it does not compound.
+
+        ``transport`` scales the FIXED per-upload term only. A WASM payment is
+        two transactions where a native one is one -- ERC-20 ``approve`` then
+        ``payForQuotes`` -- so the per-transaction overhead is paid twice while
+        the per-GB component, which is the quote payload, is unchanged.
         """
         if size_gb < 0:
             raise GasModelError(f"size_gb must be >= 0, got {size_gb}")
@@ -72,7 +86,10 @@ class GasModel:
             raise GasModelError(
                 f"base_fee_gwei must be > 0, got {base_fee_gwei}"
             )
-        at_reference = self.fixed_eth_per_upload + self.eth_per_gb * size_gb
+        fixed = self.fixed_eth_per_upload
+        if transport == WASM:
+            fixed *= self.wasm_fixed_cost_multiplier
+        at_reference = fixed + self.eth_per_gb * size_gb
         return at_reference * (base_fee_gwei / self.reference_base_fee_gwei)
 
 
@@ -126,6 +143,9 @@ def load_gas_model(path: Optional[Path] = None) -> GasModel:
         minimum_eth_per_uploader=_require(
             raw, "minimum_eth_per_uploader", path
         ),
+        wasm_fixed_cost_multiplier=_require(
+            raw, "wasm_fixed_cost_multiplier", path
+        ),
     )
 
 
@@ -138,6 +158,10 @@ class UploaderPlan:
     expected_uploads: int
     payment: Optional[str] = None
     current_eth: Optional[float] = None
+    transport: str = NATIVE
+    #: Where the projected throughput came from, for the report. Empty for the
+    #: ordinary case (this uploader's own size measured on the baseline).
+    basis: str = ""
 
 
 @dataclass(frozen=True)
@@ -187,7 +211,7 @@ def estimate_uploader(
             f"{plan.name}: expected_uploads must be >= 0, "
             f"got {plan.expected_uploads}"
         )
-    per_upload = model.eth_per_upload(plan.size_gb, base_fee_gwei)
+    per_upload = model.eth_per_upload(plan.size_gb, base_fee_gwei, plan.transport)
     modelled = per_upload * plan.expected_uploads * model.safety_factor
     recommended = max(
         _round_up(modelled, model.round_up_to_eth),
@@ -289,6 +313,7 @@ class ClientRun:
     uploads: int
     active_hours: float
     size_gb: float
+    transport: str = NATIVE
 
 
 @dataclass(frozen=True)
@@ -298,10 +323,15 @@ class Throughput:
     rate_by_size_gb: dict
     run_hours: float
     truncated: Sequence[ClientRun]
+    #: Which client supplied each size's rate, so a borrowed rate can name the
+    #: uploader it came from instead of appearing as a bare number.
+    host_by_size_gb: dict = field(default_factory=dict)
 
 
 def project_throughput(
-    clients: Iterable[ClientRun], run_hours: float
+    clients: Iterable[ClientRun],
+    run_hours: float,
+    transport: Optional[str] = None,
 ) -> Throughput:
     """Turn a previous run's per-client counts into rates per file size.
 
@@ -315,21 +345,36 @@ def project_throughput(
 
     Where several clients share a file size the fastest is kept: under-funding
     fails a run, while over-funding is swept back to the funder on destroy.
+
+    ``transport`` restricts the projection to one client tier. Sizing a NATIVE
+    uploader must pass ``"native"``: the WASM tier runs the same file sizes at
+    roughly a sixth of the rate, so a baseline carrying both would otherwise
+    hand a native uploader whichever of the two happened to be faster at its
+    size -- and once WASM is in every staging baseline, that is a silent
+    change to how the native tier has always been sized.
     """
     run_hours = max(run_hours, MIN_ACTIVE_HOURS)
     by_size: dict = {}
+    host_by_size: dict = {}
     truncated = []
     for c in clients:
         if c.uploads <= 0:
             continue
+        if transport is not None and c.transport != transport:
+            continue
         active = max(c.active_hours, MIN_ACTIVE_HOURS)
         rate = c.uploads / active
         key = round(c.size_gb, 4)
-        by_size[key] = max(by_size.get(key, 0.0), rate)
+        if rate > by_size.get(key, 0.0):
+            by_size[key] = rate
+            host_by_size[key] = c.host
         if active < run_hours * 0.9:
             truncated.append(c)
     return Throughput(
-        rate_by_size_gb=by_size, run_hours=run_hours, truncated=truncated
+        rate_by_size_gb=by_size,
+        run_hours=run_hours,
+        truncated=truncated,
+        host_by_size_gb=host_by_size,
     )
 
 
@@ -350,3 +395,38 @@ def rate_for_size(size_gb: float, rate_by_size_gb: dict) -> Optional[float]:
     if nearest > 0 and 0.5 <= size_gb / nearest <= 2.0:
         return rate_by_size_gb[nearest]
     return None
+
+
+def wasm_rate_for_size(
+    size_gb: float, wasm: Throughput, native: Throughput
+) -> tuple[Optional[float], str]:
+    """Rate for a WASM uploader, and a note saying where it came from.
+
+    Measured WASM throughput at a comparable size is preferred. Until a
+    baseline carries any -- which is every baseline before the first run of the
+    staging profile that introduced the tier -- the NATIVE uploader at the
+    nearest size stands in.
+
+    Borrowing across the transports is sound in exactly one direction: WASM
+    measured ~6-8x slower than native on the same work, so a native rate
+    projects MORE uploads than the WASM client will manage and over-funds it.
+    That is why the nearest native size is taken without the +/-2x size band
+    :func:`rate_for_size` applies -- an approximation that over-funds costs the
+    funder's balance, which is swept back on destroy, while refusing to size
+    the uploader at all leaves it on whatever the manifest happened to say.
+    """
+    rate = rate_for_size(size_gb, wasm.rate_by_size_gb)
+    if rate is not None:
+        return rate, ""
+    if not native.rate_by_size_gb:
+        return None, ""
+    # Nearest by absolute size difference; on a tie the FASTER of the two, for
+    # the same reason project_throughput keeps the fastest client per size.
+    key = min(
+        native.rate_by_size_gb,
+        key=lambda s: (abs(s - size_gb), -native.rate_by_size_gb[s]),
+    )
+    host = native.host_by_size_gb.get(key)
+    return native.rate_by_size_gb[key], (
+        f"approx: native twin {host}" if host else "approx: native twin"
+    )

@@ -25,7 +25,7 @@ committed profiles live in `deploy/manifests/profiles/`). No separate destroy fi
 same manifest.
 
 If a suitable base profile already exists under `deploy/manifests/profiles/` (e.g.
-`staging-rc.yaml`), prefer `extends:` it and override only what changes
+`staging.yaml`), prefer `extends:` it and override only what changes
 (name, purpose, binaries). That is the whole point — reuse the shape, edit the run.
 
 After writing, **do not run it**. Validate it (`saorsa-deploy deployments config validate

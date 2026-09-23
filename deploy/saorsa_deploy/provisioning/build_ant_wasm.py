@@ -37,15 +37,16 @@ from saorsa_deploy.provisioning.apt import (
 )
 from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.resources import get_resources_dir
-
-#: Pinned to match ant-client's own CI (`.github/workflows/ci.yml`, job
-#: `browser-wasm`). wasm-pack drives wasm-bindgen, whose generated glue must
-#: match the `wasm-bindgen` crate version the build resolves -- a mismatch fails
-#: at runtime inside the browser/Node loader rather than at build time.
-WASM_PACK_VERSION = "0.15.0"
-
-#: ant-client's CI builds and tests the WASM package on Node 22.
-NODE_MAJOR = "22"
+from saorsa_deploy.wasm_build import (  # noqa: F401  (re-exported)
+    NODE_MAJOR,
+    NPM_BUILD_ARGV,
+    NPM_INSTALL_ARGV,
+    WASM_PACK_ARGV,
+    WASM_PACK_VERSION,
+    bundle_load_check_source,
+    clone_argv,
+    shell,
+)
 
 BUILD_DIR = "/root/ant-client"
 CLIENT_SRC_DIR = "/root/wasm-client"
@@ -165,8 +166,9 @@ class AntWasmBuilder:
                     # Remove any leftover checkout first: a reused build droplet
                     # already has /root/ant-client and a bare clone aborts on it.
                     f"rm -rf {BUILD_DIR} && "
-                    f"git clone --branch {self.branch_name} --depth 1 "
-                    f"https://github.com/{self.repo_owner}/ant-client.git {BUILD_DIR}"
+                    + shell(
+                        clone_argv(self.repo_owner, self.branch_name, BUILD_DIR)
+                    )
                 ],
             )
             add_op(
@@ -175,13 +177,7 @@ class AntWasmBuilder:
                 name="Build ant-core to WASM",
                 commands=[
                     f"cd {BUILD_DIR} && "
-                    "PATH=/root/.cargo/bin:$PATH "
-                    # `--target web` (not nodejs/bundler): it is what ant-client's
-                    # own CI builds and tests under Node, and what the client's
-                    # explicit init call expects. `test-utils` is deliberately
-                    # NOT enabled -- it links a deterministic mock node.
-                    "wasm-pack build --target web ant-core "
-                    "--no-default-features --features browser-wasm"
+                    "PATH=/root/.cargo/bin:$PATH " + shell(WASM_PACK_ARGV)
                 ],
             )
 
@@ -194,8 +190,10 @@ class AntWasmBuilder:
                 server.shell,
                 name="Build the TypeScript client",
                 commands=[
-                    f"cd {CLIENT_SRC_DIR} && npm install --no-audit --no-fund && "
-                    "npm run build"
+                    f"cd {CLIENT_SRC_DIR} && "
+                    + shell(NPM_INSTALL_ARGV)
+                    + " && "
+                    + shell(NPM_BUILD_ARGV)
                 ],
             )
             add_op(
@@ -223,14 +221,8 @@ class AntWasmBuilder:
                     # A wasm-bindgen glue/crate mismatch only shows up at load
                     # time, so catch it here rather than on a client VM after the
                     # infrastructure is already up and billing.
-                    f"cd {STAGE_DIR} && node -e \""
-                    "const {readFileSync}=require('node:fs');"
-                    "import('./pkg/ant_core.js').then(async m=>{"
-                    "await m.default({module_or_path:readFileSync('./pkg/ant_core_bg.wasm')});"
-                    "if(typeof m.BrowserNetworkClient!=='function')"
-                    "throw new Error('BrowserNetworkClient missing');"
-                    "console.log('wasm bundle OK');})"
-                    ".catch(e=>{console.error(e);process.exit(1);})\""
+                    f"cd {STAGE_DIR} && "
+                    + shell(["node", "-e", bundle_load_check_source("./pkg")])
                 ],
             )
             add_op(

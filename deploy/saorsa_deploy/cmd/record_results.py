@@ -409,7 +409,35 @@ def _network_map_from_client_state(name: str) -> dict[str, str]:
     return out
 
 
-def _build_client_kind_lookup(deployment):
+def _warn_unclassifiable_wasm_hosts(repo, deployment, console) -> None:
+    """Say which WASM hosts this run can no longer classify, and why.
+
+    The transport is resolved from the deployment's S3 client state, and
+    `clients destroy` deletes it -- so a `record-results` re-run after teardown
+    resolves None for every host. The stored `client_kind` survives that (the
+    upsert coalesces rather than overwriting), but silence would read as "these
+    rows are native", which is exactly the misreading that pushes WASM failures
+    into the native hard floors. Name the hosts instead.
+    """
+    if repo is None or console is None:
+        return
+    try:
+        hosts = repo.list_wasm_client_hostnames(deployment.id)
+    except Exception:
+        return
+    if not hosts:
+        return
+    console.print(
+        "[yellow]Warning:[/yellow] this deployment's client state is gone, so "
+        "the transport of each operation could not be resolved. "
+        f"{len(hosts)} host(s) already recorded as WASM keep their existing "
+        "client_kind (the upsert never overwrites a known transport with "
+        "NULL), but any NEW operation recorded now is unlabelled: "
+        + ", ".join(hosts)
+    )
+
+
+def _build_client_kind_lookup(deployment, repo=None, console=None):
     """Return host -> "native" | "wasm", or a constant None.
 
     Both transports emit the same `upload`/`download` Influx measurements (so the
@@ -429,6 +457,7 @@ def _build_client_kind_lookup(deployment):
     try:
         state = load_client_state(name)
     except (RuntimeError, FileNotFoundError):
+        _warn_unclassifiable_wasm_hosts(repo, deployment, console)
         return lambda host: None
 
     clients = state.get("clients", [])
@@ -459,7 +488,7 @@ def _record_file_op_records(
     Idempotent via the ``(deployment_id, host, start_ns)`` upsert key.
     """
     network_profile_for_host = _build_network_profile_lookup(deployment)
-    client_kind_for_host = _build_client_kind_lookup(deployment)
+    client_kind_for_host = _build_client_kind_lookup(deployment, repo, console)
     console.print(
         "[bold]Fetching per-operation records (full range)...[/bold]"
     )

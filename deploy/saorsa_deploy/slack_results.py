@@ -69,6 +69,53 @@ def _format_duration_ms(ms) -> str:
     return f"{minutes}m {seconds}s"
 
 
+def _totals_section(
+    total_ok: int, total_fail: int, op_records: list[dict] | None
+) -> dict:
+    """Totals, split by transport when the run had a WASM client tier.
+
+    A native and a WASM client are not the same instrument -- measured on
+    DEV-01-wasm the WASM tier ran ~2.2x slower on upload and ~4.2x on download,
+    and it is judged against its own gates -- so one blended "Total failures"
+    describes neither and moves with whatever VM mix the run happened to use.
+    The reader of this reply is deciding whether a run went badly, and the
+    answer differs per tier.
+
+    ``client_kind`` is NULL on every row predating the WASM tier and on a run
+    whose client state could not be read, which counts as native: NULL reads as
+    native everywhere else in this pipeline, and it is what the gates do too.
+    With no WASM record at all the two original fields are emitted unchanged.
+    """
+    wasm_ok = wasm_fail = 0
+    for record in op_records or []:
+        if record.get("client_kind") != "wasm":
+            continue
+        if record.get("status") == "success":
+            wasm_ok += 1
+        else:
+            wasm_fail += 1
+
+    if not (wasm_ok or wasm_fail):
+        return _fields_section(
+            [
+                ("Total successes", str(total_ok)),
+                ("Total failures", str(total_fail)),
+            ]
+        )
+
+    # The aggregates are the authoritative totals (they cover the whole run,
+    # while the op list may be capped), so native is the remainder rather than
+    # a second count of its own.
+    return _fields_section(
+        [
+            ("Native successes", str(total_ok - wasm_ok)),
+            ("Native failures", str(total_fail - wasm_fail)),
+            ("WASM successes", str(wasm_ok)),
+            ("WASM failures", str(wasm_fail)),
+        ]
+    )
+
+
 def file_ops_result_blocks(
     aggregates: list[dict], op_records: list[dict] | None = None
 ) -> list[dict]:
@@ -77,23 +124,17 @@ def file_ops_result_blocks(
 
     ``op_records`` are the individual upload/download operations (one dict per
     op, with ``client_hostname`` / ``op_type`` / ``status`` (``success`` or
-    ``failure``) / ``file_size_bytes`` / ``duration_ms`` / ``started_at``). When
-    provided, the most recent operations are listed in full; the list is capped
-    at ``_MAX_OP_DETAIL_LINES`` with a note when it overflows.
+    ``failure``) / ``file_size_bytes`` / ``duration_ms`` / ``started_at`` /
+    ``client_kind``). When provided, the most recent operations are listed in
+    full; the list is capped at ``_MAX_OP_DETAIL_LINES`` with a note when it
+    overflows. ``client_kind`` also splits the headline totals per transport.
     """
     if not aggregates:
         return [_section("*Results:* _no upload/download points found._")]
 
     total_ok = sum(a["success_count"] for a in aggregates)
     total_fail = sum(a["failure_count"] for a in aggregates)
-    blocks: list[dict] = [
-        _fields_section(
-            [
-                ("Total successes", str(total_ok)),
-                ("Total failures", str(total_fail)),
-            ]
-        )
-    ]
+    blocks: list[dict] = [_totals_section(total_ok, total_fail, op_records)]
 
     host_lines: list[str] = []
     for a in sorted(aggregates, key=lambda x: (x["client_hostname"], x["op_type"])):

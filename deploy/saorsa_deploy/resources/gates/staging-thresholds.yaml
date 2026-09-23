@@ -10,7 +10,7 @@
 # it whenever a number below changes, so two reports can never disagree without
 # the difference being visible. Comparing verdicts produced under different
 # threshold versions is meaningless -- the version is what tells you that.
-version: 2
+version: 3
 
 # ---------------------------------------------------------------------------
 # Hard gates the command can evaluate from stored metrics.
@@ -232,13 +232,22 @@ max_window_length_ratio: 1.25
 # either way so the reader can judge.
 max_activity_coverage_ratio: 1.3
 
-# WASM (browser-path) client gates are reported but never block the ship.
+# WASM (browser-path) client gates. A native and a WASM client are different
+# instruments, so `deployments compare` evaluates the client gates once per
+# transport when a run has both. The two KINDS of WASM gate get opposite
+# answers, which is why this is two keys and not one.
 #
-# A native and a WASM client are different instruments, so `deployments compare`
-# evaluates the client gates once per transport when a run has both. The WASM
-# gates are judged against the same floors above, which that tier does not yet
-# meet — on the first measured run it managed 92.1% upload and 94.9% download
-# against 99% / 99.5% — so gating on them would hard-fail every run on a tier
-# that is not yet what ships. One run is no basis for a WASM-specific floor;
-# set this false once there is enough history to calibrate one.
-wasm_gates_advisory: true
+# The FLOORS are absolute numbers calibrated on the native transport, and the
+# WASM tier does not meet them: on the first measured run it managed 92.1%
+# upload and 94.9% download against 99% / 99.5%. That gap is NAT — a node behind
+# the simulated inbound NAT is unreachable over WebRTC-Direct until relayed
+# WebRTC exists — not a regression in the release under test. Gating on it would
+# hard-fail every run on a tier that is not yet what ships.
+wasm_floor_gates_advisory: true
+
+# The RELATIVE gates need no absolute calibration: they ask whether this release
+# made the WASM tier worse than the baseline did, which is exactly what a soft
+# gate is for. So they COUNT — a [wasm] success-rate or per-bucket p50/p95
+# regression is a SOFT fail, like its native twin. It is never hard, and no WASM
+# gate ever reaches the exit code; that is reserved for the native hard floors.
+wasm_relative_gates_advisory: false

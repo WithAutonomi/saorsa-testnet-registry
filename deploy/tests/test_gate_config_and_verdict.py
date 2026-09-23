@@ -154,6 +154,58 @@ def test_missing_file_is_reported_clearly():
 
 
 # ---------------------------------------------------------------------------
+# The two WASM advisory settings (V2-1286)
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_config_makes_wasm_floors_advisory_and_relatives_count():
+    config = load_gate_config()
+    assert config.wasm_floor_gates_advisory is True
+    assert config.wasm_relative_gates_advisory is False
+
+
+@pytest.mark.parametrize(
+    "key", ["wasm_floor_gates_advisory", "wasm_relative_gates_advisory"]
+)
+def test_missing_wasm_advisory_key_is_rejected(raw, key):
+    """Absent is an error, not a default.
+
+    Whether a failing gate counts towards the verdict must be stated. A key
+    that quietly defaulted would decide, invisibly, whether a FAIL blocks the
+    ship -- the same rule every threshold in this file follows.
+    """
+    data = copy.deepcopy(raw)
+    del data[key]
+    with pytest.raises(GateConfigError, match=key):
+        parse_gate_config(data, "test.yaml")
+
+
+@pytest.mark.parametrize(
+    "key", ["wasm_floor_gates_advisory", "wasm_relative_gates_advisory"]
+)
+def test_non_boolean_wasm_advisory_is_rejected(raw, key):
+    data = copy.deepcopy(raw)
+    data[key] = "yes"
+    with pytest.raises(GateConfigError, match=key):
+        parse_gate_config(data, "test.yaml")
+
+
+def test_the_retired_single_key_fails_loudly_naming_both_replacements():
+    """A config still carrying `wasm_gates_advisory` must not load.
+
+    Silently ignoring it would leave the operator believing they had switched
+    WASM gating off (or on) while the shipped defaults quietly applied instead.
+    """
+    data = yaml.safe_load(get_default_thresholds_path().read_text())
+    data["wasm_gates_advisory"] = True
+    with pytest.raises(GateConfigError) as exc:
+        parse_gate_config(data, "test.yaml")
+    message = str(exc.value)
+    assert "wasm_floor_gates_advisory" in message
+    assert "wasm_relative_gates_advisory" in message
+
+
+# ---------------------------------------------------------------------------
 # Verdict persistence
 # ---------------------------------------------------------------------------
 

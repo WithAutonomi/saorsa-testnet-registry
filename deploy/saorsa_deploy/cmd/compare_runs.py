@@ -223,7 +223,8 @@ def cmd_compare_runs(args) -> None:
         )
         sys.exit(1)
 
-    if args.id == args.baseline_id:
+    new_baseline = bool(getattr(args, "new_baseline", False))
+    if not new_baseline and args.id == args.baseline_id:
         console.print(
             "[bold red]Error:[/bold red] --id and --baseline-id are the same "
             "deployment. A run compared against itself is not a gate."
@@ -246,7 +247,9 @@ def cmd_compare_runs(args) -> None:
                 "list of deployment ids."
             )
             sys.exit(1)
-        if args.id in history_ids or args.baseline_id in history_ids:
+        if args.id in history_ids or (
+            not new_baseline and args.baseline_id in history_ids
+        ):
             console.print(
                 "[bold red]Error:[/bold red] --history must not include the "
                 "candidate or the baseline. Including either makes the variance "
@@ -264,12 +267,19 @@ def cmd_compare_runs(args) -> None:
         sys.exit(1)
 
     candidate = _load_run(repo, args.id, args.window_label, console)
-    baseline = _load_run(repo, args.baseline_id, args.window_label, console)
+    baseline = (
+        None if new_baseline else _load_run(repo, args.baseline_id, args.window_label, console)
+    )
     history = _collect_history(repo, history_ids, args.window_label, config, console)
 
     try:
         verdict = compare_runs(
-            candidate, baseline, config, history, pattern_set=pattern_set
+            candidate,
+            baseline,
+            config,
+            history,
+            pattern_set=pattern_set,
+            new_baseline=new_baseline,
         )
     except ComparisonError as exc:
         console.print(f"[bold red]These runs cannot be compared.[/bold red]\n\n{exc}")
@@ -280,11 +290,15 @@ def cmd_compare_runs(args) -> None:
     for warning in verdict.get("warnings", []):
         console.print(f"[yellow]Warning: {warning}[/yellow]")
 
+    against = (
+        "a NEW BASELINE (no prior run)"
+        if new_baseline
+        else f"{baseline.name} (#{baseline.deployment_id})"
+    )
     table = Table(
         title=(
             f"Gate comparison: {candidate.name} (#{candidate.deployment_id}) vs "
-            f"{baseline.name} (#{baseline.deployment_id}) "
-            f"[window: {args.window_label}]"
+            f"{against} [window: {args.window_label}]"
         )
     )
     table.add_column("Gate")
@@ -327,7 +341,7 @@ def cmd_compare_runs(args) -> None:
     else:
         repo.upsert_gate_verdict(
             deployment_id=candidate.deployment_id,
-            baseline_deployment_id=baseline.deployment_id,
+            baseline_deployment_id=None if new_baseline else baseline.deployment_id,
             window_label=args.window_label,
             overall=verdict["overall"],
             threshold_config_version=config.version,

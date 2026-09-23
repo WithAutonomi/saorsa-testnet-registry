@@ -72,9 +72,11 @@ class TestValidation:
 class TestShippedProfiles:
     """Every profile that ships a WASM uploader must satisfy the cap.
 
-    Two profiles carried `file_size_mb: 1000` — staging-short-wasm and
-    staging-rc-wasm — so the release-train profile would have failed the same
-    way the DEV-03 one did.
+    Two now-retired profiles carried `file_size_mb: 1000` — staging-short-wasm
+    and staging-rc-wasm — so the release-train profile would have failed the
+    same way the DEV-03 one did. Their WASM tier lives in `staging.yaml` now,
+    at 900 MB, and this sweep is what keeps it there: the native tier beside it
+    runs 1000 MB, so copying a native entry across is the obvious mistake.
     """
 
     def test_no_shipped_profile_exceeds_the_cap(self):
