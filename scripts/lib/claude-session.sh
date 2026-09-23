@@ -8,16 +8,21 @@
 #                            live, keep the raw stream in LOG, wait, return its
 #                            exit code; resume the session if it dies before
 #                            printing MARKER. Sets SESSION_PID for interrupt
-#                            handlers.
-#   require_deps           — fail unless claude and jq are on PATH
+#                            handlers and RUN_SESSION_ID for the caller.
+#   require_deps           — fail unless claude, jq and uuidgen are on PATH
 #   validate_issue_ids     — check a comma-separated list of Linear ids
 
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-5}"
 SESSION_PID=""
+# The session id this run will use. Generated up front rather than read back
+# from the stream, so it can be printed before the work starts, survives a
+# session that dies before emitting anything, and gives the operator something
+# to resume when they come back with review feedback.
+RUN_SESSION_ID=""
 
 require_deps() {
     local dep
-    for dep in claude jq; do
+    for dep in claude jq uuidgen; do
         command -v "$dep" >/dev/null || { echo "$dep not on PATH" >&2; exit 1; }
     done
 }
@@ -74,29 +79,41 @@ _claude_once() {
 
 # run_claude_session NAME PROMPT LOG MARKER
 #
-# A print-mode session ends its process on an API error (a 529 mid-run killed
-# a testnet session and left the fleet with no operator). So: if the session
-# exits non-zero WITHOUT having printed MARKER — the line the skill prints as
-# its very last act — it did not finish, and it is resumed by session id with
-# the same context (task list, T0, schedule). Up to MAX_RESUMES times, with a
-# growing pause for the outage to clear. A zero exit is never resumed.
+# The session id is assigned here (`--session-id`) instead of being read back
+# out of the stream, so the operator is told where the work lives *before* it
+# starts. Resuming it later — `claude --resume <id>` — reopens the same
+# conversation interactively, which is how review feedback gets handled without
+# re-explaining the task.
+#
+# A print-mode session also ends its process on an API error (a 529 mid-run
+# killed a testnet session and left the fleet with no operator). So: if the
+# session exits non-zero WITHOUT having printed MARKER — the line the skill
+# prints as its very last act — it did not finish, and it is resumed with the
+# same context. Up to MAX_RESUMES times, with a growing pause for the outage to
+# clear. A zero exit is never resumed.
 MAX_RESUMES="${MAX_RESUMES:-6}"
 run_claude_session() {
     local name="$1" prompt="$2" log="$3" marker="$4"
-    local attempt=0 rc session_id delay
-    _claude_once "$log" "$prompt" --name "$name"
+    local attempt=0 rc delay
+    RUN_SESSION_ID="$(uuidgen)"
+    # The skill puts this in the PR body, so review feedback lands next to the
+    # session that produced the change.
+    export CLAUDE_RUNNER_SESSION_ID="$RUN_SESSION_ID"
+    echo "[$(date -u +%FT%TZ)] session $RUN_SESSION_ID  (resume with: claude --resume $RUN_SESSION_ID)"
+    _claude_once "$log" "$prompt" --name "$name" --session-id "$RUN_SESSION_ID"
     rc=$?
     while (( rc != 0 )) && ! grep -q "$marker" "$log" && (( attempt < MAX_RESUMES )); do
-        attempt=$((attempt + 1))
-        session_id="$(jq -r 'select(.type=="system" and .subtype=="init") | .session_id' "$log" 2>/dev/null | tail -1)"
-        if [[ -z "$session_id" ]]; then
-            echo "[$(date -u +%FT%TZ)] session exited rc=$rc before it had a session id; cannot resume" >&2
+        # Only resume a session that actually started; otherwise the failure is
+        # in the invocation itself and resuming would loop on the same error.
+        if ! grep -q "$RUN_SESSION_ID" "$log"; then
+            echo "[$(date -u +%FT%TZ)] session exited rc=$rc before it started; not resuming" >&2
             break
         fi
+        attempt=$((attempt + 1))
         delay=$(( 60 * attempt ))
-        echo "[$(date -u +%FT%TZ)] session exited rc=$rc without finishing; resuming $session_id in ${delay}s (attempt $attempt/$MAX_RESUMES)"
+        echo "[$(date -u +%FT%TZ)] session exited rc=$rc without finishing; resuming $RUN_SESSION_ID in ${delay}s (attempt $attempt/$MAX_RESUMES)"
         sleep "$delay"
-        _claude_once "$log" --resume "$session_id" \
+        _claude_once "$log" --resume "$RUN_SESSION_ID" \
 "Your previous turn ended unexpectedly at $(date -u +%FT%TZ) (an API error or crash), not because the \
 work was done. The task is still in progress. Re-read your task list and the current clock, work out where \
 you are relative to the schedule, and continue from there. Do not start again from the beginning, do not \

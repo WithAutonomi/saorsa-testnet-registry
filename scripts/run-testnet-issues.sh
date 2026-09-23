@@ -70,6 +70,11 @@ for issue in "${ISSUES[@]}"; do
     run_claude_session "Testnet Run: $issue" "/run-testnet-from-issue $issue" "$log" "RUN COMPLETE"
     rc=$?
     echo "[$(date -u +%FT%TZ)] EXIT $issue rc=$rc  $(grep -o 'RUN COMPLETE [^"\\]*' "$log" | tail -1)"
+    # Where the work lives, for review feedback later. `claude --resume <id>`
+    # reopens this exact conversation; it is also in the /resume picker under
+    # the session name.
+    printf 'claude --resume %s\n' "$RUN_SESSION_ID" > "$LOG_DIR/$issue.session"
+    echo "[$(date -u +%FT%TZ)] RESUME $issue  claude --resume $RUN_SESSION_ID"
     [[ $rc -eq 0 ]] || failed+=("$issue")
 done
 

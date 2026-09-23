@@ -128,7 +128,11 @@ The PR body has, in this order:
    issue-specific verification and what it showed.
 4. **Deviations** — anything the issue asked for that you did differently or not at all, and why;
    pre-existing failures found on `origin/main`; things noticed but deliberately left alone.
-5. The attribution line the session's system reminder specifies, if one is present.
+5. **Session** — if `$CLAUDE_RUNNER_SESSION_ID` is set in the environment, a line reading
+   ``Resume the session that produced this PR: `claude --resume <that id>` `` so review feedback can
+   be handled in the conversation that has the full context, rather than from scratch. Omit the
+   section entirely when the variable is unset.
+6. The attribution line the session's system reminder specifies, if one is present.
 
 Then set the issue to **In Review** and post a comment with the PR URL.
 
