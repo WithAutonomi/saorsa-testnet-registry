@@ -41,7 +41,8 @@ Notes:
   as `0.15.0 → **0.16.0-rc.1**`. Read both sides of the arrow out of that one
   cell: before it is the previous release, after it is the RC.
 - `ant-cli` is the crate; `ant` is the binary. The `ant-cli` version goes into the
-  manifest's `testnet.binaries.ant`.
+  manifest's `testnet.binaries.ant`, and also names the tag the WASM client is
+  built from (`testnet.binaries.ant_wasm`, `ant-cli-v<version>` — Step 3).
 - The Cut record table is authoritative over the earlier "Final versions" table in
   the manifest section — that one lists the *planned* release versions (`0.16.0`),
   not the RC tags, and can be superseded at cut time. Read the Cut record.
@@ -63,8 +64,8 @@ for the next five hours or so, and leaving it in Todo makes a train that is
 actively running look untouched. You will update it again at the end.
 
 **Stop here and confirm the versions with the user before continuing.** Report the
-`ant-node` RC, the `ant` version, and the previous `ant-node` release, and wait for
-an answer. Do not edit a manifest or deploy anything until you have one.
+`ant-node` RC, the `ant` version, the WASM client tag (`ant-cli-v<that same ant
+version>`), and the previous `ant-node` release, and wait for an answer. Do not edit a manifest or deploy anything until you have one.
 
 This is the one hard stop in the runbook. If the versions are wrong the whole
 five-hour run is invalid — it costs real money, it is not comparable to the
@@ -100,16 +101,29 @@ Always use this manifest, path relative to the repo root:
 deploy/manifests/runs/staging/STG-01.yaml
 ```
 
-Edit two things and nothing else:
+Edit these four keys and nothing else:
 
 - `testnet.binaries.ant_node.version` → the `ant-node` RC version.
 - `testnet.binaries.ant.version` → the `ant-cli` RC version.
+- `testnet.binaries.ant_wasm` → `branch: ant-cli-v<version>` and
+  `repo_owner: WithAutonomi`.
 - `purpose` → `"Release Train <date>: staging run"`.
+
+For `ant_wasm`, `<version>` is the **same** version as `testnet.binaries.ant`: the
+ant-cli RC from the Cut record when the train has one, otherwise the current shipped
+ant-cli release, resolved and confirmed at Step 1 by the same rule. Never carry
+forward an old `-rc` tag. Two things about the key that differ from `ant`:
+
+- `branch:` takes a **tag** as well as a branch — `ant-cli-v0.3.8-rc.1` is a valid
+  value. The WASM client is built from source; no WASM package is published as a
+  release, so there is no `version:` form.
+- `repo_owner: WithAutonomi` is **required**. The tool defaults to `maidsafe`, which
+  does not carry the tag, and the build fails there.
 
 Result for the 2026-07-21 train:
 
 ```yaml
-extends: ../../profiles/staging-short.yaml
+extends: ../../profiles/staging.yaml
 
 name: STG-01
 purpose: "Release Train 2026-07-21: staging run"
@@ -121,16 +135,19 @@ testnet:
       version: 0.15.0-rc.1
     ant:
       version: 0.3.1-rc.1
+    ant_wasm:
+      branch: ant-cli-v0.3.1-rc.1
+      repo_owner: WithAutonomi
 ```
 
 Leave `extends`, `name` and `slack_post` alone. The profile
-(`deploy/manifests/profiles/staging-short.yaml`) holds the network shape and is not
+(`deploy/manifests/profiles/staging.yaml`) holds the network shape and is not
 edited here — a change to it is a re-baselining event and needs the RM.
 
 Record the profile version. Comparisons are only valid within one profile version:
 
 ```bash
-git log -1 --format=%h -- deploy/manifests/profiles/staging-short.yaml
+git log -1 --format=%h -- deploy/manifests/profiles/staging.yaml
 ```
 
 If the profile file has uncommitted changes, stop. The run would not be attributable
@@ -147,7 +164,25 @@ stop to show the plan or ask for approval — the network shape is a standard,
 well-known configuration and the profile is not edited here. This applies to the
 plan and config only; it does not license skipping the Step 1 version confirmation.
 
-## Step 3a — Gas preflight (blocking)
+## Step 3b — WASM build check (blocking)
+
+After the manifest edits and before the gas preflight, check that the WASM client
+builds against the pinned tag. This deploys nothing — it is a local build:
+
+```bash
+uv run saorsa-deploy build ant-wasm-check --branch ant-cli-v<version> --repo-owner WithAutonomi
+```
+
+`<version>` is the one in `testnet.binaries.ant_wasm.branch`. Exit 0 means the build
+is OK.
+
+**A non-zero exit means stop.** Do not deploy. Post the failing step's output on the
+`Staging run — rc.N` sub-issue and hand back to the RM: the WASM harness has drifted
+from the RC's browser API, and that is a harness fix, not something to work around in
+the run. There is no DEV rehearsal of the WASM tier before staging; this check is the
+guard, so a failing one is never skipped.
+
+## Step 3c — Gas preflight (blocking)
 
 Uploader wallets are funded with a **fixed** amount of native ETH, so their runway is
 inversely proportional to the gas price. Check that the profile's `eth:` figures will
@@ -159,16 +194,24 @@ uv run saorsa-deploy clients estimate-gas \
   --baseline-id <previous STG-01 run id>
 ```
 
+`--baseline-id` is the **previous STG-01 run**, whatever profile it ran on. This is
+funding sizing, not gating, so the previous run is a valid input even across the
+staging rebaseline — for the first run on `staging.yaml` it is #579. (Contrast the
+verification, where runs before the rebaseline are never a baseline.)
+
 It reads the current base fee from the chain, takes each uploader's throughput from
 the baseline run, and prints the ETH each one needs plus whether the funding wallet
-can cover the total. **Exit 2 means something is short** — either an uploader's `eth:`
+can cover the total. It sizes `wasm_uploaders` too, so **`[wasm]` rows are
+expected**. A WASM row labelled `approx: native twin <host>` was sized from the
+matching native uploader's throughput because the baseline has no WASM records; that
+is normal until a baseline run with WASM records exists, not a fault. **Exit 2 means something is short** — either an uploader's `eth:`
 or the funding wallet itself.
 
 On exit 2, stop and hand back to the RM with the command's output. Two different
 fixes, and neither is yours to make unilaterally:
 
 - **An uploader is under-funded.** The command prints the exact `eth:` value for each
-  uploader, in manifest order. Raising them edits `deploy/manifests/profiles/staging-short.yaml`,
+  uploader, in manifest order. Raising them edits `deploy/manifests/profiles/staging.yaml`,
   which changes the profile SHA — a re-baselining event that needs the RM, exactly as
   a shape change would.
 - **The funding wallet is short.** No profile edit helps; the wallet needs topping up
@@ -278,7 +321,23 @@ matters:
 
 - Any node panic, OOM, or unexplained restart. The deployment's Elasticsearch has
   the node logs; query it rather than SSH-ing around.
-- Upload success below 99%, or download success below 99.5%.
+- **Native** upload success below 99%, or native download success below 99.5%.
+
+**Report the WASM tier separately.** The profile runs WASM (browser-path,
+WebRTC-Direct) uploaders and downloaders alongside the native `ant` clients. In each
+status line give WASM upload and download success/failure counts as their own figures,
+never folded into the native ones. `print-uploads` / `print-downloads` list both;
+tell WASM hosts apart by the role in the hostname (`…-wasm-upload…` /
+`…-wasm-download…`). After Step 7's extraction the same split is available from
+Postgres by `client_kind`.
+
+- **WASM failures are recorded, never a reason to halt the run.** WASM floors are
+  advisory: NAT'd nodes are unreachable over WebRTC-Direct until relayed WebRTC
+  exists, so a WASM success rate below the native floors is expected, not a hard-gate
+  event.
+- A WASM downloader failure with `error_kind=crash` is the browser process dying
+  mid-operation — an **OOM**. Call it out explicitly in the status line, with the
+  host and time, rather than counting it as an ordinary failure.
 
 Also watch whatever the train issue's "Risks to watch in staging/canaries" section
 named.
@@ -303,9 +362,11 @@ Do not create a manifest on the fly. Edit two things in the existing one:
   version **before the arrow** in the Cut record table's `ant-node` row).
 - `purpose` → `"Release Train <date>: mixed-version phase, ant-node <previous release>."`
 
-Leave everything else alone. In particular the node distribution is deliberate:
+Leave everything else alone. The extension's nodes carry `nat_percent: 10`, matching
+the `staging.yaml` main fleet (it was 30 before the staging rebaseline). In
+particular the node distribution is deliberate:
 
-- **No OVH.** `staging-short` already runs ~36 OVH VMs and OVH enforces a per-region
+- **No OVH.** `staging` already runs ~36 OVH VMs and OVH enforces a per-region
   40-vCPU quota. Exhausting it shows up as a ~60-minute silent hang in node infra,
   not an error.
 - **No `upgrade_channel`.** Omitting it means the stable channel. At staging time
@@ -344,6 +405,34 @@ Both must hold. A failure here is a hard gate.
    minutes into the phase and every peer the client could not reach was running the
    **new** version — no older-version node was involved at all. Same floors as the
    main phase, so the phase is judged by the standard the run is already held to.
+
+   **Compute this criterion separately per transport**, from the Postgres per-op
+   records (`deployment_upload_records` / `deployment_download_records`) after
+   Step 7's `record-results`, taking ops whose `finished_at` falls inside the phase
+   window:
+
+   ```sql
+   SELECT 'upload' AS op, coalesce(client_kind, 'native') AS kind,
+          count(*) FILTER (WHERE status = 'success') AS ok, count(*) AS total
+   FROM deployment_upload_records
+   WHERE deployment_id = <STG-01 id> AND finished_at >= '<phase start>' AND finished_at < '<phase end>'
+   GROUP BY 2
+   UNION ALL
+   SELECT 'download', coalesce(client_kind, 'native'),
+          count(*) FILTER (WHERE status = 'success'), count(*)
+   FROM deployment_download_records
+   WHERE deployment_id = <STG-01 id> AND finished_at >= '<phase start>' AND finished_at < '<phase end>'
+   GROUP BY 2;
+   ```
+
+   `client_kind` NULL or `native` is the native tier; `wasm` is the WASM tier.
+
+   - The **native** figures decide pass/fail, against the floors above, exactly as
+     before.
+   - The **WASM** figures are reported as their own row, marked **advisory**. They
+     never fail the phase. Where the logs allow it, attribute WASM failures in this
+     phase to old-version peers (ant-node 0.19.x and earlier have no WebRTC-Direct
+     listener, so a browser client cannot reach them at all) or to NAT'd peers.
 
    **A failure is still worth explaining, not just counting.** If any transfer
    fails, establish whether an older-version node was involved before writing it
@@ -405,10 +494,15 @@ Both must hold. A failure here is a hard gate.
 Run this once, at the end of the run, covering the whole run. No extraction, no
 teardown. The testnet is scratch; Postgres is the record.
 
+**`record-results --name STG-01` runs before any `clients destroy`. This ordering is
+not negotiable.** Each op's `client_kind` (native vs WASM) is resolved from the client
+state that `clients destroy` deletes; record after it and the transports can no longer
+be told apart.
+
 ```bash
 uv run saorsa-deploy deployments record-results    --name STG-01
 uv run saorsa-deploy deployments record-analysis   --name STG-01 \
-  --summary "ant-node <RC>, ant <RC>. Profile staging-short @ <SHA>. T0=<ts>; steady <ts>..<ts>; mixed <ts>..<ts>. Mixed-phase criteria: <pass/fail + evidence>."
+  --summary "ant-node <RC>, ant <RC>. Profile staging @ <SHA>. T0=<ts>; steady <ts>..<ts>; mixed <ts>..<ts>. Mixed-phase criteria: <pass/fail + evidence>."
 uv run saorsa-deploy deployments record-log-counts --name STG-01
 ```
 
@@ -510,6 +604,9 @@ not the raw logs, and nothing can be recovered once the instances are gone.
 
 So destroy the compute tiers individually and keep the observability tiers:
 
+`record-results` for STG-01 must already have landed (Step 7) — `clients destroy`
+below deletes the state `client_kind` is resolved from.
+
 ```bash
 # STG-02 first — bootstraps destroy refuses while a dependent extension exists,
 # and --force does not override that.
@@ -557,7 +654,14 @@ Update the train's `Staging run — rc.N` sub-issue with:
   spread. Flag any zero count as needing a source check rather than reporting it
   as an improvement.
 - T0 and each phase boundary timestamp.
-- Mixed-version phase: PASS or FAIL against both criteria, with the evidence.
+- Transfer results as **separate native and WASM rows** (uploads and downloads,
+  success/total and rate for each), plus any WASM `error_kind=crash` (OOM) events.
+  The WASM rows are marked advisory.
+- Mixed-version phase: PASS or FAIL against both criteria, with the evidence,
+  plus the **mixed-phase WASM transfer row** (advisory) and its failure attribution.
+- Whether this run is the **first `staging.yaml` run** — the new-baseline run. It is
+  when no earlier STG-01 run's `record-analysis` summary says `Profile staging @
+  <SHA>`. Say so explicitly either way; the verification needs it.
 - Any hard-gate observation during steady state, or "none observed".
 - Any deviation from the standard phase durations.
 - **Which observability instances are still running**, and the commands to destroy

@@ -1,6 +1,6 @@
 ---
 name: evaluate-staging-run
-description: Produce the release train's staging verification by comparing the rc.N staging run against the baseline run of the last shipped release. Runs the deterministic `saorsa-deploy deployments compare` command for every metric gate, collects the three observational hard gates the tool cannot see (data integrity, crashes, mixed-version chunk storage), emits a fixed-format report, posts it on the "Staging verification — rc.N" sub-issue and closes it. Use when asked to "evaluate the staging run", "verify the staging run", "run the staging comparison", "compare staging against the baseline", "do the staging verification for rc.N", or "close Staging verification".
+description: Produce the release train's staging verification by comparing the rc.N staging run against the previous train's accepted staging run (or, for the first run on the staging.yaml profile, establishing a new baseline). Runs the deterministic `saorsa-deploy deployments compare` command for every metric gate, collects the three observational hard gates the tool cannot see (data integrity, crashes, mixed-version chunk storage), emits a fixed-format report, posts it on the "Staging verification — rc.N" sub-issue and closes it. Use when asked to "evaluate the staging run", "verify the staging run", "run the staging comparison", "compare staging against the baseline", "do the staging verification for rc.N", or "close Staging verification".
 ---
 
 # evaluate-staging-run
@@ -38,16 +38,30 @@ Rules:
 
 | | Gate | Source |
 |---|---|---|
-| **hard** | Upload success floor (< 99%) | `deployment_upload_records` |
-| **hard** | Download success floor (< 99.5%) | `deployment_download_records` |
-| soft | Upload / download success rate vs baseline | per-op records |
-| soft | Transfer duration p50 / p95, **per file-size bucket** | per-op records (true percentiles) |
+| **hard** | Upload success floor (< 99%) `[native]` | `deployment_upload_records` |
+| **hard** | Download success floor (< 99.5%) `[native]` | `deployment_download_records` |
+| advisory | Upload / download success floors `[wasm]` — rendered `… (advisory)`, never in the verdict | per-op records, `client_kind = 'wasm'` |
+| soft | Upload / download success rate vs baseline, `[native]` and `[wasm]` | per-op records |
+| soft | Transfer duration p50 / p95, **per file-size bucket**, `[native]` and `[wasm]` | per-op records (true percentiles) |
 | soft | Node CPU | host metric buckets / rollup |
 | soft | Node RSS (p95 across services) | per-service `rss_bytes` |
 | soft | Memory leak (median RSS slope, final 2h) | RSS buckets, fitted per service |
 | soft | Outbound bytes per GB of traffic | `deployment_derived_metrics` |
 | soft | Disk bytes per GB stored | `deployment_derived_metrics` |
 | soft | Connection errors, one gate per group | `deployment_log_event_counts` |
+
+Gate names carry a `[native]` or `[wasm]` suffix whenever either run has WASM records. The WASM
+(browser-path, WebRTC-Direct) client is a test instrument, but its results are not optional: every
+`[wasm]` row appears in full in the report.
+
+- **`[wasm]` floor gates are advisory.** NAT'd nodes are unreachable over WebRTC-Direct until
+  relayed WebRTC exists, so a WASM floor breach is expected and never fails a train. Report the
+  figures; never let them change the verdict.
+- **`[wasm]` relative gates are ordinary soft gates** and count exactly like native ones.
+
+With `--new-baseline` in place of `--baseline-id`, every relative (soft) gate reads NOT ASSESSED
+with the reason `new baseline`; only the floors and the observational hard gates are assessed. The
+command exits 2 only on a native hard-floor FAIL.
 
 It does **not** cover the following. The command's report says nothing about them at all, so it is
 **your** report's Observational hard gates table (Step 7) that must account for each one — silence
@@ -77,7 +91,7 @@ there would read as a pass:
 Extract the `ant-node` RC version and the previous release from the `## Cut record` versions
 table. **That table has no Old/New columns** — the old and new versions share one `Version` cell
 as `0.15.0 → **0.16.0-rc.1**`. The value *after* the arrow is the RC; the value *before* it is the
-last shipped release, which is what the baseline run must correspond to.
+previous release. The baseline is **not** chosen from that version — see Step 2.
 
 Then list the train's sub-issues (`list_issues` with `parentId`) and find
 `Staging verification — rc.N`. Move it to **In Progress** now.
@@ -97,13 +111,34 @@ uv run saorsa-deploy deployments ls
 
 - **Candidate**: the `STG-01` deployment for this train. Take the id from the `Staging run — rc.N`
   sub-issue; confirm the date matches this train.
-- **Baseline**: by the process, *the staging run the last shipped release passed on*. Not the
-  previous rc.N of this same train — comparing against the last shipped release is what stops
-  several "small" regressions inside one train chaining into a large unremarked one.
+- **Baseline**: the **previous train's accepted staging run** — the last build *shipped to beta*,
+  not the last one *promoted to stable* (the same definition `gate-verdict` and `train-manifest`
+  use). Not the previous rc.N of this same train: chaining train to train is what stops several
+  "small" regressions inside one train compounding into a large unremarked one. It must also be a
+  valid link in the baseline chain (below); if no valid baseline exists, this is the new-baseline
+  run.
 
 **Confirm both ids with the user before running anything.** Nothing in the registry records which
-run a release shipped on, so the baseline is a judgment you must have confirmed. State the two
-candidates you believe are right, with their dates and names, and ask.
+run a train was accepted on, so the baseline is a judgment you must have confirmed. State the two
+ids you believe are right, with their dates and names — or, for the new-baseline run, the candidate
+id and the statement that there is no valid baseline — and ask.
+
+### Baseline chain
+
+The staging baseline chain **breaks at the first STG-01 run on `staging.yaml`**, which added the
+WASM client tier and moved node NAT from 30% to 10%. Nothing either side of that break is
+comparable.
+
+- A valid baseline must be an STG-01 run whose `record-analysis` summary says
+  `Profile staging @ <SHA>`. Check it with `print-recorded-results --id <id>`.
+- Runs recorded with `Profile staging-short @ …` — STG-01 #579 and earlier — are **never** valid
+  baselines, for any gate, however recent.
+- If no valid baseline exists, this is the **new-baseline run**: the verification uses
+  `compare --new-baseline` (Step 5), and the decision rests on the native hard floors and the
+  observational hard gates.
+
+Baseline chain start: _(not yet established — Step 9 writes it here after the first
+`--new-baseline` verification)_
 
 Sanity-check that both have data before comparing:
 
@@ -130,7 +165,9 @@ The difference is not cosmetic. On that pair, moving to steady-state changed nod
 to +15.29%, disk bytes/GB from −2.35% to −1.07%, and brought both runs' absolute disk ratio to
 ~8.7 GB/GB — much closer to the network's physical replication factor than the full-run figures.
 
-Re-derive the phase on **both** runs, with the same label, **using `--id`**:
+Re-derive the phase on **both** runs, with the same label, **using `--id`**. For a
+**new-baseline** verification there is no baseline side: run `derive-metrics` on the **candidate
+only**, with `--label steady-state`.
 
 ```bash
 uv run saorsa-deploy deployments derive-metrics --id 474 \
@@ -258,6 +295,10 @@ more than one.
 
 ## Step 4 — Gather the accepted-run history (optional)
 
+**Skip this step for a new-baseline verification** — `--history` does not apply to
+`--new-baseline`. Only runs on the current chain (`Profile staging @ …`) are ever history
+candidates.
+
 The 2σ noise criterion needs roughly five prior **accepted** runs per metric. Which runs count as
 accepted is a judgment call — nothing in the registry records it — so it is yours, not the tool's.
 The tool does only the arithmetic.
@@ -283,6 +324,19 @@ uv run saorsa-deploy deployments compare \
   --window-label full-run \
   --markdown-out /tmp/staging-verification-rc<N>.md
 ```
+
+For the **new-baseline run**, replace `--baseline-id` with `--new-baseline` (the two are mutually
+exclusive) and use `steady-state`; the `full-run` fallback rules in Step 3 are unchanged:
+
+```bash
+uv run saorsa-deploy deployments compare \
+  --id <candidate> --new-baseline \
+  --window-label steady-state \
+  --markdown-out /tmp/staging-verification-rc<N>.md
+```
+
+Every relative gate then reads NOT ASSESSED with the reason `new baseline`, and the verdict is
+stored with a NULL baseline. It exits 2 only on a native hard-floor FAIL.
 
 The verdict is upserted to `deployment_gate_verdicts` keyed on
 `(candidate, baseline, window_label)`, so re-running replaces its previous answer rather than
@@ -328,13 +382,17 @@ exists**. Do not infer a pass from the absence of a report.
 |---|---|
 | Data integrity | Nothing verifies downloaded content. Expect NOT ASSESSED and say why. |
 | Crashes | The `Staging run — rc.N` sub-issue's steady-state observations. If the run session did not check `systemctl --state=failed` while the testnet was up, it cannot be recovered — ES died at teardown. NOT ASSESSED, not PASS. |
-| Mixed-version phase | The run sub-issue records both criteria: in-phase transfers meeting the success floors (>99% upload, >99.5% download), and previous-version nodes storing chunks (`chunks.mdb` growth over SSH). |
+| Mixed-version phase | The run sub-issue records both criteria: in-phase **native** transfers meeting the success floors (>99% upload, >99.5% download), and previous-version nodes storing chunks (`chunks.mdb` growth over SSH). |
+| Mixed-version WASM transfers (advisory) | The run sub-issue's mixed-phase WASM row. Reported, never in the verdict. |
 
 Note that `deployment_upload_records` / `deployment_download_records` carry per-op `finished_at`,
 so if the run sub-issue records the mixed-version phase boundary you can confirm the transfer half
 of that gate directly from Postgres rather than taking it on trust. Do check it there rather than
 from the run's own in-flight counts: `print-uploads` truncates its output, so a single failing row
-can be missing from what the run session saw.
+can be missing from what the run session saw. Split by transport: `client_kind` NULL or `native` is
+the native tier and decides the gate; `client_kind = 'wasm'` is the advisory WASM row. Where WASM
+ops failed in-phase, carry the run session's attribution (old-version peers — ant-node 0.19.x and
+earlier have no WebRTC-Direct listener — or NAT'd peers).
 
 The transfer criterion was **zero failed transfers** until the 2026-08-24 train, when the RM
 replaced it with the main-phase success floors. A transfer can fail for reasons unrelated to
@@ -357,7 +415,7 @@ rather than adding another. A reader should never have to reconcile two reports.
 | | |
 |---|---|
 | Candidate | STG-01 #<id> — ant-node <RC>, <date> |
-| Baseline | STG-01 #<id> — ant-node <last shipped release>, <date> |
+| Baseline | STG-01 #<id> — ant-node <previous train's RC>, <date> — or `none — new baseline (first run on staging.yaml)` |
 | Profile | `<profile> @ <sha>` (both runs) |
 | Window | <label> — candidate <start→end>, baseline <start→end> |
 | Threshold config | v<N> |
@@ -376,15 +434,21 @@ stated reasoning, and note the stored verdict is unchanged.>
 
 | Gate | Verdict | Detail |
 |---|---|---|
-| Upload success floor | PASS | 100.000% (2130/2130), floor >99% |
-| Download success floor | PASS | 100.000% (429/429), floor >99.5% |
+| Upload success floor [native] | PASS | 100.000% (2130/2130), floor >99% |
+| Download success floor [native] | PASS | 100.000% (429/429), floor >99.5% |
+| Upload success floor [wasm] (advisory — not in verdict) | … | …, floor >99% |
+| Download success floor [wasm] (advisory — not in verdict) | … | …, floor >99.5% |
 | Data integrity | NOT ASSESSED | No content verification exists in the system. |
 | Crashes (staging fleet) | … | … |
-| Mixed-version phase | … | … |
+| Mixed-version phase | … | native in-phase transfers + chunk storage |
+| Mixed-version WASM transfers (advisory — not in verdict) | … | in-phase WASM up/down + attribution |
 
 ## Soft gates
 
-<the tool's soft-gates table, verbatim>
+<new-baseline run only: "Relative gates NOT ASSESSED: this run establishes the new baseline (WASM
+tier added, NAT 30%→10%).">
+
+<the tool's soft-gates table, verbatim — every [native] and [wasm] row>
 ```
 
 ### The "What happened" section
@@ -395,7 +459,8 @@ underneath.
 
 Cover, in this order:
 
-1. **What the run did** — how it behaved overall, in a sentence or two. Did it hold up?
+1. **What the run did** — how it behaved overall, in a sentence or two. Did it hold up? Include
+   one sentence on the WASM tier's upload and download results (and any WASM downloader crash/OOM).
 2. **What improved** against the baseline, in plain terms, with the few numbers that matter.
    Group them ("every transfer measurement got faster, the largest uploads by about half")
    rather than listing all thirty.
@@ -425,7 +490,8 @@ Window row in the table is the whole of what a reader needs.
 hard gate is a hard gate whether the tool derived it or you observed it, and splitting them across
 two tables at opposite ends of the report made a reader reconcile two lists to answer one
 question: did anything blocking fail? So compose a single `Gate | Verdict | Detail` table
-combining the tool's two success floors with the three observational gates. Carry each floor's
+combining the tool's success floors (`[native]` hard, `[wasm]` marked "(advisory — not in
+verdict)") with the three observational gates and the advisory mixed-version WASM row. Carry each floor's
 figure and threshold into its Detail cell so nothing is lost in the reshaping. This table is the
 only place hard gates appear.
 
@@ -434,7 +500,7 @@ needs them will scroll, and the reader who doesn't should not have to scroll pas
 the answer.
 
 **The soft-gates table is pasted verbatim** — same columns, same ordering, same values, `[mean]` /
-`[p50]` markers and all. Two trains' reports must stay diffable, and the numbers are the tool's,
+`[p50]` markers and all, every `[native]` and `[wasm]` row. Two trains' reports must stay diffable, and the numbers are the tool's,
 not yours.
 
 Drop the report's `## Not evaluated by this tool` footer. Those gates are assessed directly in the
@@ -443,6 +509,8 @@ hard-gates table, so repeating them as "not evaluated" contradicts the report.
 **Canaries are out of scope.** They are a separate production deployment with their own sub-issue
 and feed the gate verdict independently. Do not add a canary row, do not summarise the canary
 result, and do not let a canary failure change this report's verdict.
+
+A `[wasm]` relative-gate FAIL is a soft FAIL, handled exactly like a native one.
 
 On a **soft-gate FAIL**, state the override path requirements — RM written justification, one
 engineer co-sign, `gate-override` label, and an auto-created P1 debt issue linked as blocking the
@@ -462,11 +530,31 @@ decision plainly and note that the stored verdict is unchanged.
 verify downloaded content, so that gate is NOT ASSESSED on every run and always will be; treating
 it as unresolved would mean no staging verification could ever close. Report it as the permanent
 structural gap it is and close on the rest. This is the one NOT ASSESSED that does not block —
-any other one does.
+any other one does — with one more exception: a relative gate NOT ASSESSED with the reason
+`new baseline` does **not** block either. On the new-baseline run every relative gate reads that
+way by design; close on the native hard floors and the observational hard gates.
 
-A **soft**-gate FAIL does not hold the sub-issue open either. Record it, state the override path,
+`[wasm]` floor gates are advisory and never block, whatever their figure.
+
+A **soft**-gate FAIL — native or `[wasm]` — does not hold the sub-issue open either. Record it, state the override path,
 and close; the decision is the RM's at the gate verdict. If the RM has already ruled on it, record
 that ruling and note the stored verdict is unchanged.
+
+## Step 9 — Record the chain start (new-baseline run only)
+
+After the **first** `--new-baseline` verification is posted, write this line — with the real
+candidate id and train date — in three places, replacing the placeholder in each:
+
+> Baseline chain start: STG-01 #<id> (<train date>), first run on staging.yaml
+
+1. This skill's **Baseline chain** section (Step 2).
+2. The equivalent **Baseline chain** entry in the `gate-verdict` skill
+   (`/home/chris/dev/releases/.claude/skills/gate-verdict/SKILL.md`).
+3. The memory note `project_staging_baseline_chain_break_wasm.md` in
+   `/home/chris/.claude/projects/-home-chris-dev-github-com-jacderida-saorsa-testnet-registry/memory/`.
+
+Commit and push only when the user says to. On every later train the chain start is already set:
+skip this step.
 
 ## Known gaps
 
@@ -479,7 +567,7 @@ State these in the final report rather than working around them:
   CPU and RSS as a sample-weighted mean, marked `[mean]`.
 - **Disk occupancy is absent from every run recorded before 2026-07-25**, so
   `disk_bytes_per_gb_stored` is NOT ASSESSED against an older baseline. No backfill is possible.
-- **Nothing records which staging run a release shipped on**, so the baseline is chosen by the
+- **Nothing records which staging run a train was accepted on**, so the baseline is chosen by the
   operator and confirmed by hand every time.
 - **Connection-error counts cannot be backfilled**, so a gate is assessable only when the
   candidate AND the baseline both hold counts under the label being compared. Which runs hold
