@@ -38,6 +38,40 @@ def test_fetch_prod_bootstraps_success_returns_list_of_peers():
     assert peers == ["207.148.94.42:10000", "45.77.50.10:10000"]
 
 
+# The shape ant-client #186 published at ant-core/resources/bootstrap_peers.toml.
+_QUIC_TOML = """\
+quic = [
+    "/ip4/207.148.94.42/udp/10000/quic",
+    "/ip4/45.77.50.10/udp/10000/quic/p2p/12D3KooWExample",
+    "/ip6/2001:db8::1/udp/10001/quic",
+]
+webrtc = []
+"""
+
+
+def test_fetch_prod_bootstraps_reduces_quic_multiaddrs_to_socket_addrs():
+    with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(_QUIC_TOML)
+        peers = fetch_prod_bootstraps()
+    assert peers == [
+        "207.148.94.42:10000",
+        "45.77.50.10:10000",
+        "[2001:db8::1]:10001",
+    ]
+
+
+def test_fetch_prod_bootstraps_rejects_a_non_quic_multiaddr():
+    toml = 'quic = ["/ip4/1.2.3.4/tcp/10000"]'
+    with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(toml)
+        with pytest.raises(ProdBootstrapsError, match="unusable entry"):
+            fetch_prod_bootstraps()
+
+
+def test_default_url_is_the_ant_core_resource():
+    assert PROD_BOOTSTRAPS_URL.endswith("/ant-core/resources/bootstrap_peers.toml")
+
+
 def test_fetch_prod_bootstraps_uses_default_url_when_none_supplied():
     with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
         mock_get.return_value = _mock_response(_VALID_TOML)
@@ -70,14 +104,14 @@ def test_fetch_prod_bootstraps_malformed_toml_raises():
 def test_fetch_prod_bootstraps_missing_peers_key_raises():
     with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
         mock_get.return_value = _mock_response('other_key = ["a", "b"]')
-        with pytest.raises(ProdBootstrapsError, match="non-empty 'peers'"):
+        with pytest.raises(ProdBootstrapsError, match="non-empty 'quic'"):
             fetch_prod_bootstraps()
 
 
 def test_fetch_prod_bootstraps_empty_peers_array_raises():
     with patch("saorsa_deploy.prod_bootstraps.requests.get") as mock_get:
         mock_get.return_value = _mock_response("peers = []")
-        with pytest.raises(ProdBootstrapsError, match="non-empty 'peers'"):
+        with pytest.raises(ProdBootstrapsError, match="non-empty 'quic'"):
             fetch_prod_bootstraps()
 
 

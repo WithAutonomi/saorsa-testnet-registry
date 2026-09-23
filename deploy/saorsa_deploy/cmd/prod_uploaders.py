@@ -758,9 +758,12 @@ def cmd_prod_uploaders_deploy(args):
     # Earliest possible gate for the legacy urls= path: refuse before any
     # infrastructure is created if a file to be uploaded is already present in
     # the prod uploads list. Pool-backed uploaders skip this by construction —
-    # selection cannot return a file that has already been handed out.
+    # selection cannot return a file that has already been handed out. Filter on
+    # pool_request, not _urls_file_content: selection has already written the
+    # drawn URLs into the latter, and a basename match on a pool file is a false
+    # positive (every DVD rip names its first title VTS_01_1.VOB).
     _check_for_duplicate_files(
-        [s for s in parsed_specs if s.get("_urls_file_content")],
+        [s for s in parsed_specs if not s.get("pool_request")],
         getattr(args, "allow_duplicate_files", False),
         console,
     )

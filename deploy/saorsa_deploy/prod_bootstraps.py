@@ -1,9 +1,15 @@
 """Fetch the canonical production bootstrap peers for the Autonomi network.
 
 The authoritative list is maintained at
-``https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml``
-and consists of a single top-level ``peers`` array of ``ip:port`` strings.
+``https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/ant-core/resources/bootstrap_peers.toml``
+and holds a ``quic`` array of QUIC multiaddrs (``/ip4/<ip>/udp/<port>/quic``,
+optionally ``/p2p/<peer-id>``) plus a ``webrtc`` array for browsers.
 ``saorsa-deploy`` fetches it at runtime so we never drift from upstream.
+
+ant-client #186 moved the file out of ``resources/`` and replaced the legacy
+``peers`` array of ``ip:port`` strings with ``quic``. The client still accepts
+``peers`` (as an alias) and bare socket addresses, so callers keep receiving
+``ip:port`` strings and the file rendered onto VMs is unchanged.
 """
 
 import tomllib
@@ -13,7 +19,7 @@ import requests
 
 PROD_BOOTSTRAPS_URL = (
     "https://raw.githubusercontent.com/WithAutonomi/ant-client/"
-    "refs/heads/main/resources/bootstrap_peers.toml"
+    "refs/heads/main/ant-core/resources/bootstrap_peers.toml"
 )
 
 DEFAULT_PROD_BOOTSTRAPS_PATH = "~/.config/ant/bootstrap_peers.toml"
@@ -49,16 +55,39 @@ def fetch_prod_bootstraps(url: str = PROD_BOOTSTRAPS_URL) -> list[str]:
             f"Prod bootstraps TOML at {url} is malformed: {e}"
         ) from e
 
-    peers = data.get("peers")
+    key = "quic" if "quic" in data else "peers"
+    peers = data.get(key)
     if not isinstance(peers, list) or not peers:
         raise ProdBootstrapsError(
-            f"Prod bootstraps TOML at {url} is missing a non-empty 'peers' array."
+            f"Prod bootstraps TOML at {url} is missing a non-empty 'quic' "
+            "(or legacy 'peers') array."
         )
     if not all(isinstance(p, str) and p for p in peers):
         raise ProdBootstrapsError(
-            f"Prod bootstraps TOML at {url} contains non-string entries in 'peers'."
+            f"Prod bootstraps TOML at {url} contains non-string entries in '{key}'."
         )
-    return list(peers)
+    try:
+        return [_to_socket_addr(p) for p in peers]
+    except ValueError as e:
+        raise ProdBootstrapsError(
+            f"Prod bootstraps TOML at {url} has an unusable entry: {e}"
+        ) from e
+
+
+def _to_socket_addr(peer: str) -> str:
+    """Reduce a QUIC multiaddr to ``ip:port``; pass a bare socket address through.
+
+    Any ``/p2p/<peer-id>`` suffix is dropped: every consumer downstream takes
+    bare socket addresses (``--bootstrap``, the rendered ``peers`` file, node
+    bootstrap state).
+    """
+    if not peer.startswith("/"):
+        return peer
+    parts = peer.strip("/").split("/")
+    if len(parts) < 5 or parts[0] not in ("ip4", "ip6") or parts[2] != "udp" or parts[4] != "quic":
+        raise ValueError(f"expected /ip4|ip6/<ip>/udp/<port>/quic, got {peer!r}")
+    ip, port = parts[1], parts[3]
+    return f"[{ip}]:{port}" if parts[0] == "ip6" else f"{ip}:{port}"
 
 
 def render_bootstrap_peers_toml(peers: list[str]) -> str:

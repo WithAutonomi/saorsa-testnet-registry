@@ -427,6 +427,32 @@ class TestDuplicateFileCheck:
         deploy_patches.record_create.assert_called_once()
         deploy_patches.provision.assert_called_once()
 
+    def test_pool_drawn_files_skip_the_name_check(self, deploy_patches):
+        # Selection writes the drawn URLs into _urls_file_content before the
+        # gate runs, so a pool file whose basename collides with an unrelated
+        # recorded upload must not be refused: the pool guarantees it is new.
+        def _fake_select(args, specs, console):
+            for spec in specs:
+                spec["_urls_file_content"] = (
+                    "https://archive.org/download/x/FBI%233/VTS_01_1.VOB\n"
+                )
+            return []
+
+        deploy_patches.get_repository.return_value = _FakeRepo(["VTS_01_1.VOB"])
+        args = _deploy_args(["lon1:s-2vcpu-4gb:pool=large:1"])
+
+        with (
+            patch(
+                "saorsa_deploy.cmd.prod_uploaders._select_pool_files",
+                side_effect=_fake_select,
+            ),
+            patch("saorsa_deploy.cmd.prod_uploaders._attach_pool_claims"),
+        ):
+            cmd_prod_uploaders_deploy(args)
+
+        deploy_patches.record_create.assert_called_once()
+        deploy_patches.provision.assert_called_once()
+
     def test_skips_check_when_no_database(self, deploy_patches, urls_file):
         # get_repository returns None (fixture default) → check is skipped.
         deploy_patches.get_repository.return_value = None
