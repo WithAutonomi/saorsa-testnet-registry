@@ -43,11 +43,19 @@ def load_node_inventory(
     inventory_path: str | Path,
     *,
     provider_filter: str | None = None,
+    require_provider_id: bool = True,
 ) -> list[NodeVm]:
     """Read a production inventory JSON file and return its node VMs.
 
     ``provider_filter`` restricts the result to a single provider when set.
     The inventory file is read-only — never mutated.
+
+    ``require_provider_id=False`` accepts an inventory whose entries carry no
+    ``provider_id``, which the production *bootstrap* inventory
+    (``bootstrap-inventory.json``) does not — those seven VMs predate the
+    field. It stays required by default because every other consumer needs it
+    to reach the host's cloud-side volume, and failing here names the missing
+    field instead of surfacing as a confusing API error later.
 
     Raises ``ValueError`` for an unrecognised schema, missing fields, or an
     unknown provider.
@@ -84,7 +92,7 @@ def load_node_inventory(
             continue
 
         provider_id = entry.get("provider_id")
-        if not provider_id:
+        if not provider_id and require_provider_id:
             raise ValueError(
                 f"Inventory entry {entry.get('name')!r} ({provider}) is missing "
                 "'provider_id' — required to look up its attached volume"
@@ -96,7 +104,7 @@ def load_node_inventory(
             NodeVm(
                 name=entry["name"],
                 provider=provider,
-                provider_id=str(provider_id),
+                provider_id=str(provider_id) if provider_id else "",
                 region=entry["region"],
                 ip=entry["ip"],
                 ssh_user=entry["ssh_user"],

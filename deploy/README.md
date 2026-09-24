@@ -2196,6 +2196,109 @@ uv run saorsa-deploy prod bootstrap destroy
 | `--ssh-key-path` | string | `~/.ssh/ant-production` | Path to SSH private key |
 | `--force` | flag | - | Skip confirmation prompt |
 
+### Upgrading the production bootstraps ahead of the fleet (`prod bootstrap upgrade`)
+
+The seven production bootstraps are every client's way into the network, so they
+are upgraded to a new ant-node release **ahead** of the fleet's own 24h staged
+rollout — and, in the same restart, have their WebRTC-Direct listener pinned to a
+fixed UDP port. Unpinned, ant-node derives that port afresh on every start, so any
+published browser address goes stale the moment the service restarts.
+
+```bash
+uv run saorsa-deploy prod bootstrap upgrade --node-version 0.20.0 -y
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--node-version` | string | **required** | Released ant-node version to install (e.g. `0.20.0`) |
+| `--inventory-path` | string | `~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json` | Bootstrap inventory JSON |
+| `--webrtc-port` | int | `10001` | UDP port to pin the WebRTC-Direct listener to |
+| `--limit-to` | string | every host | Comma-separated host names or regions, upgraded in that order (e.g. `nrt,syd`) |
+| `--skip-firewall` | flag | - | Skip the provider firewall preflight |
+| `--ssh-key-path` | string | per-host `ssh_key` | Override the inventory's SSH key |
+| `-y`, `--yes` | flag | - | Proceed without the confirmation prompt (required on a non-TTY) |
+
+Order of operations:
+
+1. **Local preflight.** Fetch `SHA256SUMS.txt` and `ant-node-cli-linux-x64.tar.gz`
+   for the version, check the archive's sha256 against the sums file, extract it and
+   run `--version`. That verified archive is what is uploaded to every host, so all
+   seven demonstrably run identical bytes.
+2. **Firewall preflight** (unless `--skip-firewall`). Hetzner hosts get a `udp/<port>`
+   inbound rule added to their attached firewall via `hcloud` (skipped if one already
+   exists); the AWS host gets the same via `aws ec2 authorize-security-group-ingress`
+   against the security group of the instance holding its public IP, treating
+   `InvalidPermission.Duplicate` as success; the four Vultr hosts have no firewall
+   group attached and need nothing. Needs `HCLOUD_TOKEN` and AWS credentials in the
+   environment. This runs for the whole tier up front — restarting a host onto a
+   listener the provider still blocks would fail its probe and roll it straight back.
+3. **Per host, serially, in inventory (or `--limit-to`) order.** The binary path, root
+   dir, log dir and service user are read from the live unit's `ExecStart` — **not**
+   from `bootstrap_production.BINARY_INSTALL_PATH`, which is `/usr/local/bin/ant-node`
+   and wrong for the live tier (it runs `/opt/ant-node/ant-node`). A unit that does not
+   pass `--stop-on-upgrade` or `--root-dir` is refused. The archive is uploaded,
+   extracted, `chown`ed to the service user and run with `--version` on the host; the
+   old binary is copied to `<binary>.backup` and replaced; the unit gains one appended
+   `--webrtc-direct-port <port>` argument line and nothing else changes; then
+   `daemon-reload` and `restart`.
+4. **Health gate**, up to 180 s, reading only what the restart wrote: the node's own
+   JSON log must carry `ant-node starting` at the requested **version** (an old binary
+   brought back by `Restart=always` writes that line too), then
+   `ADR-0015 WebRTC Direct listening` bound to the pinned port, then
+   `systemctl is-active` = `active`.
+5. **ICE probe** from this machine to `<inventory ip>:<port>` — three attempts, 5 s
+   each. A plain STUN binding is not enough: the listener's admission filter answers
+   anything unauthenticated with silence, so the probe sends a real ICE connectivity
+   check (see below).
+6. **On any failure**: the backup binary and the original unit are restored, the
+   service is restarted, `RESTORED` is printed and the run **stops** — hosts after it
+   are untouched.
+7. **On success**: 60 s settle, then the next host. After the last one,
+   `webrtc-addresses` runs automatically and prints the file it wrote.
+
+For a `--node-version` below `0.20.0` the WebRTC half is reported as `not expected`:
+the **unit is left alone**, the gate passes on the start line alone, the probe is
+skipped and no address list is collected. The unit exemption is load-bearing —
+ant-node 0.19.0 has no `--webrtc-direct-port` at all (verified on the live tier), and
+clap exits on an unknown argument, so appending it would leave a bootstrap that
+cannot start. That is what makes a same-version rehearsal
+(`--node-version <current> --limit-to nrt -y`) exercise the whole path safely.
+
+### Publishing the bootstrap WebRTC addresses (`prod bootstrap webrtc-addresses`)
+
+```bash
+uv run saorsa-deploy prod bootstrap webrtc-addresses
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--inventory-path` | string | `~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json` | Bootstrap inventory JSON |
+| `--out` | string | `deploy/saorsa_deploy/resources/prod_bootstrap_webrtc_multiaddrs.txt` | Where to write the list |
+| `--ssh-key-path` | string | per-host `ssh_key` | Override the inventory's SSH key |
+
+Reads `<root_dir>/webrtc-direct.multiaddr` off each bootstrap (root dir from the live
+unit), validates it, rewrites the `/ip4/<host>` component to the **inventory** IP —
+the two Hetzner hosts carry a second public address on the same interface and only
+the inventory one is in the client's bootstrap list — probes it, and writes one
+multiaddr per line in inventory order.
+
+**All or nothing**: a missing file, a malformed address or a failed probe on any host
+exits non-zero, naming the host, and leaves the existing file untouched. A short list
+published as the production bootstrap set would silently narrow every browser
+client's way in.
+
+#### The ICE reachability probe
+
+`saorsa_deploy/webrtc_probe.py` — `probe(ip, port, timeout, attempts=1)`, standard
+library only so the rollout-watch scripts bundle can import it. It sends a STUN
+Binding Request carrying `USERNAME` = `saorsa+webrtc+v2/<client-pwd>:<client-ufrag>`
+(the V2 credential scheme a WebRTC-Direct listener admits an unsolicited dialler
+under), a short-term `MESSAGE-INTEGRITY` keyed on that server fragment, and a
+`FINGERPRINT`. The listener replies with a connectivity check of its own; any
+well-formed STUN message back from the probed address inside the timeout is a pass.
+DTLS is deliberately not completed — the question is whether packets reach the
+listener and come back, not whether a browser can fetch a chunk.
+
 ### Running continuous downloaders against production (`prod continuous-downloader`)
 
 `prod continuous-downloader deploy` stands up a single client VM running a dedicated `prod_downloader.py` Python service against the canonical Autonomi production network, seeded with a static list of public file addresses. An InfluxDB + Grafana monitoring stack is created as part of the same command, and the existing `deployments record-results` workflow can be used to upsert download aggregates into PostgreSQL.

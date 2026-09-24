@@ -88,6 +88,17 @@ resource "aws_security_group" "production_node" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # WebRTC Direct, for browser-path clients. Pinned by `prod bootstrap upgrade`
+  # via ant-node's --webrtc-direct-port; unpinned the listener would move on
+  # every restart and no security-group rule could follow it.
+  ingress {
+    description = "Autonomi WebRTC Direct"
+    from_port   = 10001
+    to_port     = 10001
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

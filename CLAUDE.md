@@ -843,6 +843,81 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
 See `deploy/README.md` §"Running crash-debug nodes against production" for the
 full argument table.
 
+### Upgrading the production bootstraps ahead of the fleet
+
+The seven production bootstraps (`~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json`
+— a **separate** file from the fleet's `inventory.json`, and one with **no
+`provider_id`**, so `load_node_inventory` needs `require_provider_id=False`)
+are every client's way into the network. `prod bootstrap upgrade --node-version
+<v>` walks them one at a time, ahead of the fleet's own 24h staged rollout, and
+in the same restart pins their WebRTC-Direct listener with
+`--webrtc-direct-port` (default **10001**). Unpinned, ant-node derives that port
+afresh on every start, so a published browser address goes stale on every
+restart. `prod bootstrap webrtc-addresses` then reads each bootstrap's
+`<root_dir>/webrtc-direct.multiaddr` and writes
+`deploy/saorsa_deploy/resources/prod_bootstrap_webrtc_multiaddrs.txt` — the
+published list the prod WASM client kinds consume. Impl: `cmd/prod_bootstrap_upgrade.py`
+(I/O), `prod_bootstrap_upgrade.py` (pure), `webrtc_probe.py` (the probe).
+
+- **The binary path is read from the live unit, never assumed.** The tier
+  predates `cmd/bootstrap_production.py`'s `BINARY_INSTALL_PATH`
+  (`/usr/local/bin/ant-node`); every live host actually runs
+  `/opt/ant-node/ant-node`. Installing over the constant would leave a second,
+  unused binary on disk while the service kept running the old one — an upgrade
+  that reports success and changes nothing. Root dir, log dir and service user
+  come from the same `ExecStart`; a unit missing `--stop-on-upgrade` (the node's
+  own auto-upgrader is then live and would undo the install) or `--root-dir` is
+  refused.
+- **The unit edit is append-only.** One `--webrtc-direct-port` argument line is
+  appended and every other line stays byte-identical, because these seven units
+  carry hand-maintained arguments — stale `--bootstrap` peers among them, fixed
+  under their own issue — that a re-render from `build_systemd_unit` would
+  silently discard. Idempotent, and exactly reversible for the rollback path.
+- **One archive, verified locally, uploaded to all seven.** The release tarball
+  is checksummed against the release's own `SHA256SUMS.txt` and run with
+  `--version` on this machine before anything is touched, so every host
+  demonstrably installs identical bytes rather than each fetching the release and
+  being trusted to have got the same thing.
+- **Firewalls are opened for the whole tier first** (`--skip-firewall` to opt
+  out): Hetzner via `hcloud firewall add-rule` on the firewall attached to the
+  host, AWS via `authorize-security-group-ingress` on the SG of the instance
+  holding that public IP (`InvalidPermission.Duplicate` = success), Vultr not at
+  all — the group exists in Terraform but is attached to nothing live. The
+  matching udp/10001 rule was added to all three `*-production` TF modules so the
+  next `terraform apply` is a no-op against what the CLI added.
+- **Two gates per host, then a 60 s settle.** The health gate reads only what the
+  restart wrote (a log cursor is taken first) and requires `ant-node starting` at
+  the **requested version** — `Restart=always` brings a host back on the *old*
+  binary when the new one will not run, and that writes the same line — plus
+  `ADR-0015 WebRTC Direct listening` on the pinned port and `is-active`. Then an
+  **ICE probe** from the operator's machine. Any failure restores the backup
+  binary and the original unit, prints `RESTORED`, and **stops the run**; hosts
+  after it are untouched.
+- **The probe must be a real ICE connectivity check**, not a STUN binding:
+  `saorsa-transport`'s admission filter returns `Decision::Ignore` on every
+  failure, so an unauthenticated probe cannot tell a firewalled port from a
+  healthy one. `webrtc_probe.probe()` sends `USERNAME` =
+  `saorsa+webrtc+v2/<client-pwd>:<client-ufrag>` with a short-term
+  `MESSAGE-INTEGRITY` keyed on that server fragment plus a `FINGERPRINT`; any
+  well-formed STUN message back is a pass. DTLS is never completed. **Standard
+  library only**, so the rollout-watch scripts bundle can import it.
+- **Below ant-node 0.20.0 the WebRTC half is `not expected`**, not failed: the
+  **unit is left untouched**, the gate passes on the start line alone, the probe
+  is skipped and no address list is collected. The unit exemption is
+  load-bearing — 0.19.0 has no `--webrtc-direct-port` at all (verified on the
+  live tier) and clap exits on an unknown argument, so appending it would leave
+  a bootstrap that cannot start. That is what makes a same-version rehearsal
+  (`--limit-to nrt -y`) exercise the whole path safely.
+- **`webrtc-addresses` is all-or-nothing** and rewrites each address to the
+  **inventory** IP (the two Hetzner hosts carry a second public IPv4 on the same
+  interface; only the inventory one is in the client's `bootstrap_peers.toml`). A
+  missing file, malformed address or failed probe on any host exits non-zero and
+  leaves the existing file in place — a short list published as the production
+  bootstrap set silently narrows every browser client's way in.
+
+See `deploy/README.md` §"Upgrading the production bootstraps ahead of the fleet"
+for the full argument tables.
+
 ### WebRTC-Direct testnets and the WASM client tier
 
 `ant-cli` **cannot** exercise the WebRTC-Direct browser path — it links native
