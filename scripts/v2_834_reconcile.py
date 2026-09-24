@@ -39,6 +39,34 @@ Usage:
 
 Needs the same environment as `saorsa-deploy analysis` (DATABASE_URL and the
 S3 credentials that resolve the run's ES/Influx state). Read-only everywhere.
+
+Against production (`ant-prod-01`, V2-1297's rollout watch) it is three
+commands: two snapshots six hours apart, then the reconcile over that window.
+The snapshots are the *only* part that cannot be re-derived afterwards -- the
+kernel counters are monotonic since boot and nothing stores them -- so take the
+first one before anything else at the checkpoint:
+
+  uv run saorsa-deploy analysis snapshot --name ant-prod-01 \
+      --tag prod-start --out prod-snapshots.jsonl
+
+  # six hours later, appending to the same file
+  uv run saorsa-deploy analysis snapshot --name ant-prod-01 \
+      --tag prod-end --out prod-snapshots.jsonl
+
+  uv run python scripts/v2_834_reconcile.py --name ant-prod-01 \
+      --start <prod-start ts, ISO-8601 UTC> --end <prod-end ts> \
+      --snapshots prod-snapshots.jsonl \
+      --start-tag prod-start --end-tag prod-end \
+      --out prod-reconcile.md --json-out prod-reconcile.json
+
+`--start`/`--end` must bracket the two snapshots: the ES and Influx deltas are
+taken over that window and the kernel deltas over the snapshot pair, so a
+mismatch silently compares different spans. The production hosts run their node
+services in the *host* namespace (no `ant_nat`), so every snapshot record comes
+back with `"nat":0` and the reconcile reads the `host_*` counters -- the same
+code path the plain testnet tier uses. `EsRun("ant-prod-01")` resolves the
+production ES and InfluxDB through `load_elastic_state`/`load_monitoring_state`,
+so no endpoint is passed on the command line.
 """
 
 from __future__ import annotations
