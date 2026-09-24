@@ -137,7 +137,8 @@ def update_service_in_inventory(
     host's systemd units over SSH without otherwise touching this file.
     Keeping ``nodes[]`` and ``services[]`` in lockstep matters because
     different consumers read different arrays: ``load_node_inventory`` only
-    reads ``services``, while ``track-upgrades init`` merges both.
+    reads ``services``, while the provisioners size a host's fleet from
+    ``nodes``.
 
     Raises ``ValueError`` if ``host_name`` isn't found in the inventory.
     """

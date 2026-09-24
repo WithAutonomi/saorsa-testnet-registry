@@ -3566,6 +3566,66 @@ Because `up` is resumable, a re-run after a mid-sequence failure skips the
 already-done ~10-minute debug build. See
 `manifests/profiles/prod-nodes.yaml`.
 
+### Watching a production rollout (`prod rollout-watch`)
+
+`prod rollout-watch` reports a stable rollout out of Elasticsearch alone:
+how much of the fleet is on the new version, what the auto-upgrade machinery
+logged, which services restarted, and — while the fleet is mixed — whether the
+two arms are behaving the same. It is **stateless**. Every run queries ES
+afresh: no SQLite database, no cursor to back-date, no `init` step, nothing to
+seed before the rollout starts.
+
+```bash
+uv run saorsa-deploy prod rollout-watch --to-version 0.20.0
+uv run saorsa-deploy prod rollout-watch --to-version 0.20.0 --window 6h --json-out watch.json
+```
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--to-version` | yes | — | The version being rolled out, matched exactly against `tag.node_version`. |
+| `--name` | no | `ant-prod-01` | Deployment whose elastic state supplies the ES URL, API key and the `telegraf-ant-nodes-<name>-*` index. No other credential path. |
+| `--window` | no | `1h` | The health window ending now (`15m`, `1h`, `6h`, `24h`). Adoption is always measured over the last 15 minutes. |
+| `--json-out` | no | — | Also write the full result as JSON to this path. |
+
+The report is one markdown block on stdout, in five sections.
+
+**1. Adoption.** The denominator is every distinct `(host, service_number)` that
+logged in the last 15 minutes — "running services", including the bootstraps. A
+service's version is the `tag.node_version` on its most recent document. The
+bucket named `unknown` is labelled `unknown (unstamped, pre-<to-version>)`,
+because builds older than ant-node #225 do not stamp a version at all (a missing
+tag means the same thing and lands in the same bucket). That label rule applies
+**only** to the literal `unknown`: on every later rollout the old arm is a real
+version and appears under its own value. Below the table is the checkpoint band
+— `none` / `10–20%` / `20–50%` / `50–99%` / `complete` (≥ 99%).
+
+**2. Upgrade events.** Counts of the auto-upgrade lifecycle messages in the
+window, plus each failure prefix with the `(host/service)` pairs that reported
+it. Every category is printed even at zero, because a zero is a measurement.
+
+**3. Restarts.** Services with more than one `ant-node starting` document. A
+service that upgraded once has exactly two in a window spanning its upgrade, so
+only counts **above** two are flagged `restart-loop`.
+
+**4. Per-arm health.** `new` is every service on the to-version, `old` is every
+other. Service-hours are the 15-minute buckets a service logged in, times 0.25.
+Reported per arm: ERROR and WARN documents per 1,000 service-hours for the top
+15 `tag.target` values, the `Connection attempt failed` rate, and
+`wire_tx_bytes` per service-hour (**not** `udp_tx_bytes` — saorsa-transport #169
+changed what that counts, so it is not comparable across a mixed fleet).
+
+When **either** arm is under 5% of running services the table is omitted and the
+section prints `Per-arm comparison suspended: <new|old> arm is <n> services
+(< 5% of running)`: a handful of services produce rates dominated by whichever
+host happens to be sick, and an arm of zero produces no rate at all. It is the
+new arm that is short before the rollout starts and the old one by the end. The
+four health queries are not issued at all in that case, which is most of the
+report's cost.
+
+**5. Version telemetry.** The distinct `tag.node_commit` values on the new arm
+(expect one) and the number of new-arm documents in the last 15 minutes with no
+`tag.node_version` (expect zero).
+
 ### Simulating a residential connection (`network`)
 
 Client VMs sit on ~gigabit cloud links, which is not how real users reach the

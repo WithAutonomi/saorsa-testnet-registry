@@ -121,8 +121,8 @@ Interpretation, in order:
 
 `deployments record-results` / `print-recorded-results` do **not** handle the `prod-debug-nodes`
 or `prod-nodes` kinds — they fall through to an empty file-ops path and record nothing useful for
-passive storage nodes. So, exactly like the `run-staging-testnet` and `bootstrap-upgrade-check`
-skills, the canary's health is read from:
+passive storage nodes. So, exactly like the `run-staging-testnet` skill, the canary's health is
+read from:
 
 | Signal | Source |
 |---|---|
@@ -289,8 +289,8 @@ per-service RSS from `procstat` (`_field=="memory_rss"`, group by `node_service`
 >   "RC artifacts are debug builds". A *release* build with `panic = "abort"` would die instead.)
 > - **`grep -i oom` false-positives on `tokio::loom`** frames — `loom` contains `oom`.
 
-Probe every service on the VM. Parallelise with a per-host `timeout` (as in
-`bootstrap-upgrade-check`). Canonical per-node probe (loop `i` over `1..N`):
+Probe every service on the VM. Parallelise with a per-host `timeout`. Canonical per-node probe
+(loop `i` over `1..N`):
 
 ```bash
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes \

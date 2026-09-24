@@ -21,6 +21,7 @@ from rich.table import Table
 from saorsa_db.models.derived_metric import WINDOW_FULL_RUN
 from saorsa_db.models.log_event_count import SOURCE_ELASTICSEARCH
 
+from saorsa_deploy.es_client import ESClient, ESCredentials, ESError
 from saorsa_deploy.es_log_counts import (
     build_count_query,
     build_total_query,
@@ -33,7 +34,6 @@ from saorsa_deploy.es_log_counts import (
 from saorsa_deploy.log_patterns import LogPatternError, load_pattern_set
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.state import load_elastic_state
-from saorsa_deploy.upgrade_tracker.es_client import ESClient, ESCredentials, ESError
 
 
 def _parse_iso(value: str | None, flag: str, console: Console) -> datetime | None:

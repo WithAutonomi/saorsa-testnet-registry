@@ -6364,126 +6364,40 @@ def main(argv=None):
         help="Print only failed uploads instead of the default successful ones.",
     )
 
-    # =========================================================================
-    # === track-upgrades (existing group, NO CHANGE) ===
-    # =========================================================================
-    track_upgrades_parser = subparsers.add_parser(
-        "track-upgrades",
-        help=(
-            "Track ant-node auto-upgrade progress by polling Elasticsearch "
-            "and writing per-node state to a local SQLite DB."
-        ),
+    # --- prod rollout-watch (stateless ES report of a stable rollout) ---
+    prod_rw_parser = prod_subparsers.add_parser(
+        "rollout-watch",
+        help="Report a production rollout from Elasticsearch alone: fleet "
+        "adoption by node version, upgrade events, restarts and per-arm "
+        "health. Stateless — no database, no cursor.",
     )
-    track_upgrades_sub = track_upgrades_parser.add_subparsers(
-        dest="track_upgrades_verb", required=True
+    prod_rw_parser.add_argument(
+        "--to-version",
+        type=str,
+        required=True,
+        help="The version being rolled out, matched exactly against "
+        "tag.node_version (e.g. 0.20.0).",
     )
-
-    def _add_common_es_args(p):
-        p.add_argument(
-            "--name",
-            type=str,
-            default=None,
-            help=(
-                "Elasticsearch stack name — if set, credentials are loaded "
-                "from the elastic state (recommended)."
-            ),
-        )
-        p.add_argument("--es-url", type=str, default=None)
-        p.add_argument("--es-username", type=str, default=None)
-        p.add_argument("--es-password", type=str, default=None)
-        p.add_argument("--es-api-key", type=str, default=None)
-        p.add_argument(
-            "--es-index-pattern",
-            type=str,
-            default=None,
-            help=(
-                "ES index pattern to search (default derived from --name "
-                "or testnet_name)."
-            ),
-        )
-        p.add_argument(
-            "--testnet-name",
-            type=str,
-            default=None,
-            help=(
-                "The tag.testnet_name.keyword value that was set on the "
-                "telegraf global_tags at provisioning time. Defaults to "
-                "--name."
-            ),
-        )
-
-    # init
-    ti_init = track_upgrades_sub.add_parser(
-        "init",
-        help="Seed the SQLite DB from an inventory + baseline/target versions",
+    prod_rw_parser.add_argument(
+        "--name",
+        type=str,
+        default="ant-prod-01",
+        help="Deployment name whose elastic state supplies the ES URL, API key "
+        "and index pattern (default: ant-prod-01).",
     )
-    _add_common_es_args(ti_init)
-    ti_init.add_argument(
-        "--inventory-path", type=str, required=True,
-        help="Path to inventory JSON (node_vms[].{name, services/nodes}).",
+    prod_rw_parser.add_argument(
+        "--window",
+        type=str,
+        default="1h",
+        help="Health window ending now, e.g. 15m, 1h, 6h, 24h (default: 1h). "
+        "Adoption is always measured over the last 15 minutes.",
     )
-    ti_init.add_argument(
-        "--from-version", type=str, required=True,
-        help="Baseline version currently running on every node.",
+    prod_rw_parser.add_argument(
+        "--json-out",
+        type=str,
+        default=None,
+        help="Also write the full result as JSON to this path.",
     )
-    ti_init.add_argument(
-        "--to-version", type=str, required=True,
-        help="Target version we expect every node to upgrade to.",
-    )
-    ti_init.add_argument(
-        "--db", type=str, default=None,
-        help=(
-            "Path to the SQLite DB file. Default: "
-            "~/.saorsa-deploy/upgrades/<testnet>.db"
-        ),
-    )
-    ti_init.add_argument(
-        "--since", type=str, default=None,
-        help=(
-            "Ignore ES logs older than this ISO timestamp. Default: now "
-            "(captures only logs emitted after init)."
-        ),
-    )
-
-    # sync
-    ti_sync = track_upgrades_sub.add_parser(
-        "sync",
-        help="Incrementally pull upgrade logs from ES and update the DB.",
-    )
-    ti_sync.add_argument("--db", type=str, required=True)
-    ti_sync.add_argument(
-        "--watch", action="store_true",
-        help="Loop forever, polling every --interval. Ctrl-C to stop.",
-    )
-    ti_sync.add_argument(
-        "--interval", type=str, default="5m",
-        help="Polling interval in watch mode (e.g. 30s, 5m, 1h). Default 5m.",
-    )
-
-    # summary
-    ti_summary = track_upgrades_sub.add_parser(
-        "summary",
-        help="Compact progress dashboard.",
-    )
-    ti_summary.add_argument("--db", type=str, required=True)
-
-    # details
-    ti_details = track_upgrades_sub.add_parser(
-        "details",
-        help="Per-node status table (hostname, service, versions, schedule).",
-    )
-    ti_details.add_argument("--db", type=str, required=True)
-
-    # reconcile
-    ti_reconcile = track_upgrades_sub.add_parser(
-        "reconcile",
-        help=(
-            "Repair stuck rows by re-deriving each non-terminal node's state "
-            "from its complete Elasticsearch history. Cursor-independent — "
-            "recovers events that incremental sync dropped/missed."
-        ),
-    )
-    ti_reconcile.add_argument("--db", type=str, required=True)
 
     # =========================================================================
     # === release-candidates group (new, ls, show) ===
@@ -7378,33 +7292,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_files import cmd_prod_files
 
             cmd_prod_files(args)
-    elif args.command == "track-upgrades":
-        verb = args.track_upgrades_verb
-        if verb == "init":
-            from saorsa_deploy.cmd.track_upgrades.init_cmd import (
-                cmd_track_upgrades_init,
-            )
-            cmd_track_upgrades_init(args)
-        elif verb == "sync":
-            from saorsa_deploy.cmd.track_upgrades.sync_cmd import (
-                cmd_track_upgrades_sync,
-            )
-            cmd_track_upgrades_sync(args)
-        elif verb == "summary":
-            from saorsa_deploy.cmd.track_upgrades.summary_cmd import (
-                cmd_track_upgrades_summary,
-            )
-            cmd_track_upgrades_summary(args)
-        elif verb == "details":
-            from saorsa_deploy.cmd.track_upgrades.details_cmd import (
-                cmd_track_upgrades_details,
-            )
-            cmd_track_upgrades_details(args)
-        elif verb == "reconcile":
-            from saorsa_deploy.cmd.track_upgrades.reconcile_cmd import (
-                cmd_track_upgrades_reconcile,
-            )
-            cmd_track_upgrades_reconcile(args)
+        elif args.prod_subcommand == "rollout-watch":
+            from saorsa_deploy.cmd.prod_rollout_watch import cmd_prod_rollout_watch
+
+            return cmd_prod_rollout_watch(args)
     elif args.command == "releases":
         verb = args.releases_verb
         if verb == "ship":
