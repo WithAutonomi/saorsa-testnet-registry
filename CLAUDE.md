@@ -843,6 +843,52 @@ via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.
 See `deploy/README.md` §"Running crash-debug nodes against production" for the
 full argument table.
 
+### Watching a production rollout (`prod rollout-watch`)
+
+`prod rollout-watch --to-version <v> [--name ant-prod-01] [--window 1h]
+[--json-out FILE]` reports a stable rollout from **Elasticsearch alone** —
+fleet adoption by node version, the auto-upgrade lifecycle messages, restarts,
+per-arm health while the fleet is mixed, and a version-telemetry check. Impl:
+`deploy/saorsa_deploy/cmd/prod_rollout_watch.py`. It replaced the
+SQLite-backed upgrade tracker, which is gone.
+
+- **Stateless, and that is the point.** Every run queries ES afresh: no
+  database, no cursor, no `init`. The tracker needed durable per-node state
+  because it had to *infer* a running version from the sequence of upgrade log
+  messages, and a cursor seeded after the rollout had started blinded it
+  permanently. ant-node **#225** stamps `node_version`/`node_commit` on every
+  JSON log line and V2-1263 promoted both to Telegraf tags on all 73
+  ant-prod-01 hosts (2026-09-23), so a service's version is now just the tag on
+  its most recent document.
+- **The denominator is "logged in the last 15 minutes"**, keyed on distinct
+  `(tag.host.keyword, tag.service_number.keyword)` — which includes the 7
+  bootstraps. Shorter and a quiet service drops out; longer and a service that
+  died an hour ago still counts as running.
+- **The `unknown` label rule.** The bucket is printed as
+  `unknown (unstamped, pre-<to-version>)` because pre-#225 builds do not stamp
+  at all (a missing tag means the same thing and lands in the same bucket). It
+  applies **only** to the literal `unknown`: every future old arm is a real
+  version and appears under its own value, so the note must not follow it.
+- **The 5% suspension rule, applied to whichever arm is short.** Below 5% of
+  running services an arm's rates are dominated by whichever host happens to be
+  sick, and an arm of zero produces no rate at all — so the per-arm table is
+  omitted for `Per-arm comparison suspended: <new|old> arm is <n> services
+  (< 5% of running)`, and the four health queries are **not issued**, which is
+  most of the report's cost. It is the **new** arm that is short before the
+  rollout starts and the **old** one by the end; suspending on the old arm
+  alone would print a table of dashes for every pre-rollout baseline run.
+  Service-hours are the 15-minute buckets a service logged in × 0.25.
+- **`wire_tx_bytes`, never `udp_tx_bytes`**: saorsa-transport #169 changed what
+  the latter counts on the 2026-09-23 train, so across a mixed fleet the two
+  arms would not be measuring the same thing.
+- Aggregations only (`size: 0`), never a document scroll — the prod node index
+  takes ~13.7M documents every two hours. `tag.*` fields are analysed, so every
+  `terms`/`composite`/`prefix` uses the `.keyword` subfield and host values are
+  upper-case.
+
+See `deploy/README.md` §"Watching a production rollout" for the full argument
+table.
+
 ### WebRTC-Direct testnets and the WASM client tier
 
 `ant-cli` **cannot** exercise the WebRTC-Direct browser path — it links native
