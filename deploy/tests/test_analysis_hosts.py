@@ -78,6 +78,43 @@ def test_select_vms_without_ips_uses_the_tier(tmp_path):
     assert len(hosts.select_vms("DEV-01", [], str(inv))) == 2
 
 
+def test_the_production_inventory_shape_loads(tmp_path):
+    """`ant-prod-01`'s inventory is schema 3 and carries no `nat_simulated` key.
+
+    V2-1308 needs `analysis snapshot` to run against production for the V2-834
+    reconcile. The prod hosts run their node services in the host namespace, so
+    every VM must come back `nat=False` — one wrongly flagged NAT'd would make the
+    snapshot read `ant_nat` counters that do not exist there, and the reconcile
+    would then divide the ES numerators by zeros.
+    """
+    inv = tmp_path / "prod.json"
+    inv.write_text(json.dumps({
+        "schema_version": 3, "testnet_id": "ant-prod-01",
+        "node_vms": [
+            {
+                "name": "ant-prod-01-hz-fsn1-1", "provider": "hetzner",
+                "provider_id": "127000688", "region": "fsn1", "ip": "10.1.0.1",
+                "ssh_user": "root", "ssh_key": "~/.ssh/ant_deploy",
+                "nodes": [{"service_name": "ant-node-2"}],
+                "services": ["ant-node-2", "ant-node-3"],
+            },
+            {
+                "name": "ant-prod-01-ovh-waw1-7", "provider": "ovh", "region": "waw1",
+                "ip": "10.1.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/ant_deploy",
+                "services": ["ant-node-1"],
+            },
+        ],
+    }))
+    vms = hosts.node_vms("ant-prod-01", str(inv))
+    assert [v.ip for v in vms] == ["10.1.0.1", "10.1.0.2"]
+    assert not any(v.nat for v in vms)
+    assert vms[0].services == ("ant-node-2", "ant-node-3")
+    assert {v.provider for v in vms} == {"hetzner", "ovh"}
+    # `analysis snapshot` selects the node and bootstrap roles; a prod inventory
+    # has no `bootstrap_vms` key at all, which must not be an error.
+    assert len(hosts.select_vms("ant-prod-01", None, str(inv), roles=("node", "bootstrap"))) == 2
+
+
 def test_ssh_args_expand_the_key_and_pin_batch_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     vm = hosts.select_vms("DEV-01", ["10.0.0.1"], str(_write_inventory(tmp_path)))[0]
