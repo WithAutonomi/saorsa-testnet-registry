@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from saorsa_deploy.cmd.bootstrap_production import (
+    BINARY_INSTALL_DIR,
+    BINARY_INSTALL_PATH,
     PROVIDER_TF_DIRS,
     STATE_KEY_PREFIX,
     _build_terraform_configs,
@@ -330,6 +332,37 @@ class TestBuildSystemdUnit:
     def test_includes_stop_on_upgrade(self):
         unit = build_systemd_unit("/usr/local/bin/ant-node", "/data")
         assert "--stop-on-upgrade" in unit
+
+    def test_a_peer_list_becomes_one_flag_each(self):
+        # V2-1309: a bootstrap handed a single peer has exactly one way back in
+        # if it loses its data directory.
+        unit = build_systemd_unit(
+            "/opt/ant-node/ant-node",
+            "/data",
+            bootstrap_peers=["1.1.1.1:10000", "2.2.2.2:10000"],
+        )
+        assert "--bootstrap 1.1.1.1:10000" in unit
+        assert "--bootstrap 2.2.2.2:10000" in unit
+        assert unit.count("--bootstrap") == 2
+
+    def test_an_empty_peer_list_writes_no_flag(self):
+        unit = build_systemd_unit("/opt/ant-node/ant-node", "/data", bootstrap_peers=[])
+        assert "--bootstrap" not in unit
+
+
+# === Binary install path ===
+
+
+class TestBinaryInstallPath:
+    def test_it_is_where_the_live_tier_runs_from(self):
+        # The constant read /usr/local/bin/ant-node until V2-1309, which no
+        # production bootstrap has ever run: a re-provision would have
+        # installed a second, unused binary and left the service on the old
+        # one.
+        assert BINARY_INSTALL_PATH == "/opt/ant-node/ant-node"
+
+    def test_the_directory_is_the_path_it_installs_into(self):
+        assert BINARY_INSTALL_PATH.startswith(f"{BINARY_INSTALL_DIR}/")
 
 
 # === Provider Terraform directories ===
@@ -824,19 +857,36 @@ class TestCmdBootstrapProductionSuccessPath:
         popen = mocks["popen"]
         assert popen.call_count >= len(self.SAMPLE_NODES)
 
-    def test_provisions_genesis_first_without_peers(self, monkeypatch):
+    def test_provisions_genesis_first_with_the_other_hosts_as_peers(self, monkeypatch):
+        # V2-1309: every host, genesis included, lists the others on the node
+        # port and never itself. The genesis is still provisioned first, so on
+        # a from-scratch deploy it comes up while its peers are unreachable.
         mocks = self._run_success(monkeypatch)
-        provision_calls = mocks["provision"].call_args_list
-        genesis_call = provision_calls[0]
+        genesis_call = mocks["provision"].call_args_list[0]
         assert genesis_call.kwargs["ip"] == "1.2.3.4"
-        assert genesis_call.kwargs["bootstrap_peers"] is None
+        assert genesis_call.kwargs["bootstrap_peers"] == [
+            "5.6.7.8:10000",
+            "9.10.11.12:10000",
+        ]
 
-    def test_provisions_remaining_nodes_with_genesis_peer(self, monkeypatch):
+    def test_provisions_remaining_nodes_with_every_other_host(self, monkeypatch):
+        # The remaining nodes are provisioned through subprocess.Popen, so the
+        # peer list has to be read back out of the script it is handed.
         mocks = self._run_success(monkeypatch)
-        provision_calls = mocks["provision"].call_args_list
-        # First call is genesis, rest are regular nodes
-        for call in provision_calls[1:]:
-            assert call.kwargs["bootstrap_peers"] == "1.2.3.4:10000"
+        scripts = [
+            call.args[0][2]
+            for call in mocks["popen"].call_args_list
+            if "_provision_node" in call.args[0][2]
+        ]
+        assert len(scripts) == len(self.SAMPLE_NODES) - 1
+        for script, peers in zip(
+            scripts,
+            [
+                ["1.2.3.4:10000", "9.10.11.12:10000"],
+                ["1.2.3.4:10000", "5.6.7.8:10000"],
+            ],
+        ):
+            assert f"bootstrap_peers={peers!r}" in script
 
     def test_provisions_correct_number_of_nodes(self, monkeypatch):
         mocks = self._run_success(monkeypatch)

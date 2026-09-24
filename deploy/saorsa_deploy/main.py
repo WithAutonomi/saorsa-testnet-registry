@@ -3741,13 +3741,14 @@ def main(argv=None):
     from saorsa_deploy.prod_bootstrap_upgrade import (
         DEFAULT_MULTIADDR_OUT,
         DEFAULT_WEBRTC_PORT,
+        PEER_PORT,
         PROD_BOOTSTRAP_INVENTORY_PATH,
     )
 
     prod_bootstrap_parser = prod_subparsers.add_parser(
         "bootstrap",
-        help="Production bootstrap network: deploy, destroy, upgrade or "
-        "publish WebRTC addresses.",
+        help="Production bootstrap network: deploy, destroy, upgrade, set "
+        "peers or publish WebRTC addresses.",
     )
     prod_bootstrap_subparsers = prod_bootstrap_parser.add_subparsers(
         dest="prod_bootstrap_action", required=True
@@ -3877,6 +3878,46 @@ def main(argv=None):
         type=str,
         default=None,
         help="Override the SSH key in the inventory (default: per-host ssh_key).",
+    )
+
+    prod_bootstrap_set_peers_parser = prod_bootstrap_subparsers.add_parser(
+        "set-peers",
+        help="Rewrite every production bootstrap's --bootstrap peers to the "
+        "other inventory hosts, restarting one host at a time.",
+    )
+    prod_bootstrap_set_peers_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=PROD_BOOTSTRAP_INVENTORY_PATH,
+        help=f"Path to the bootstrap inventory JSON "
+        f"(default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
+    )
+    prod_bootstrap_set_peers_parser.add_argument(
+        "--peer-port",
+        type=int,
+        default=PEER_PORT,
+        help=f"Port every peer is listed on (default: {PEER_PORT}, the port "
+        "the tier listens on and the client's bootstrap_peers.toml uses).",
+    )
+    prod_bootstrap_set_peers_parser.add_argument(
+        "--limit-to",
+        type=str,
+        default=None,
+        help="Comma-separated host names or regions to rewrite, in that order "
+        "(e.g. nrt,syd). Default: every host, in inventory order. The peer "
+        "list is always computed from the whole inventory.",
+    )
+    prod_bootstrap_set_peers_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key in the inventory (default: per-host ssh_key).",
+    )
+    prod_bootstrap_set_peers_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Proceed without the confirmation prompt.",
     )
 
     prod_bootstrap_destroy_parser = prod_bootstrap_subparsers.add_parser(
@@ -7020,6 +7061,15 @@ def main(argv=None):
             )
 
             cmd_prod_bootstrap_upgrade(args)
+        elif (
+            args.prod_subcommand == "bootstrap"
+            and args.prod_bootstrap_action == "set-peers"
+        ):
+            from saorsa_deploy.cmd.prod_bootstrap_upgrade import (
+                cmd_prod_bootstrap_set_peers,
+            )
+
+            cmd_prod_bootstrap_set_peers(args)
         elif (
             args.prod_subcommand == "bootstrap"
             and args.prod_bootstrap_action == "webrtc-addresses"

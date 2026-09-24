@@ -9,6 +9,7 @@ Applies security hardening to a production bootstrap node:
 - Dedicated ant service user
 """
 
+from collections.abc import Sequence
 from io import StringIO
 
 from pyinfra.api import Config, Inventory, State
@@ -228,11 +229,23 @@ def build_systemd_unit(
     data_dir: str,
     port: int = NODE_PORT,
     service_user: str = SERVICE_USER,
-    bootstrap_peers: str | None = None,
+    bootstrap_peers: str | Sequence[str] | None = None,
     rewards_address: str | None = None,
     evm_network: str | None = None,
 ) -> str:
-    """Build a systemd unit file for a production ant-node service."""
+    """Build a systemd unit file for a production ant-node service.
+
+    ``bootstrap_peers`` takes a whole peer list, one ``--bootstrap`` argument
+    each, because a bootstrap handed a single peer has exactly one way back in
+    if it ever loses its data directory. The caller passes the other inventory
+    hosts (see ``prod_bootstrap_upgrade.peers_for``); a bare string is still
+    accepted for a single peer.
+    """
+    if isinstance(bootstrap_peers, str):
+        peers = [bootstrap_peers]
+    else:
+        peers = list(bootstrap_peers or [])
+
     exec_args = [
         binary_path,
         "--port", str(port),
@@ -240,8 +253,8 @@ def build_systemd_unit(
         "--enable-logging",
         "--stop-on-upgrade",
     ]
-    if bootstrap_peers:
-        exec_args.extend(["--bootstrap", bootstrap_peers])
+    for peer in peers:
+        exec_args.extend(["--bootstrap", peer])
     if rewards_address:
         exec_args.extend(["--rewards-address", rewards_address])
     if evm_network:

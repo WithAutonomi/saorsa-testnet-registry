@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from rich.console import Console
@@ -18,6 +19,7 @@ from saorsa_deploy.binary_source import (
     get_release_url,
 )
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.prod_bootstrap_upgrade import peers_for
 from saorsa_deploy.provisioning.hardening import (
     build_systemd_unit,
 )
@@ -45,7 +47,12 @@ HETZNER_TYPE_FALLBACKS = {
     "hil": [("cpx21", 23), ("cpx31", 24), ("ccx13", 96)],
 }
 NODE_PORT = 10000
-BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
+# Where the live tier actually runs its binary from. The constant read
+# /usr/local/bin/ant-node until V2-1309, which no production bootstrap has ever
+# run: a re-provision would have installed a second, unused binary and left the
+# service on the old one.
+BINARY_INSTALL_DIR = "/opt/ant-node"
+BINARY_INSTALL_PATH = f"{BINARY_INSTALL_DIR}/ant-node"
 SERVICE_NAME = "ant-bootstrap"
 DATA_DIR = f"{MOUNT_POINT}/data/{SERVICE_NAME}"
 UNIT_FILE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
@@ -175,7 +182,7 @@ def _provision_node(
     ssh_key_path: str,
     binary_url: str | None,
     binary_is_archive: bool,
-    bootstrap_peers: str | None,
+    bootstrap_peers: Sequence[str] | None,
     rewards_address: str,
     evm_network: str,
     console: Console,
@@ -271,6 +278,7 @@ def _provision_node(
             name="Create data directory",
             commands=[
                 f"mkdir -p {DATA_DIR}",
+                f"mkdir -p {BINARY_INSTALL_DIR}",
                 f"chown -R {SERVICE_USER}:{SERVICE_USER} {MOUNT_POINT}",
             ],
         )
@@ -679,13 +687,20 @@ def cmd_bootstrap_production(args):
         f"[bold]Provisioning genesis node at {genesis_node['ip']} "
         f"({genesis_node['provider']}/{genesis_node['region']})...[/bold]"
     )
+    # Every host, genesis included, lists the other six on the node port and
+    # never itself -- the same rule `prod bootstrap set-peers` applies to the
+    # live tier. A host that lost its data directory otherwise has one peer to
+    # rejoin through, or (as the live tier had until V2-1309) none that is
+    # still a bootstrap. The genesis is still provisioned first, so on a
+    # from-scratch deploy it comes up while its six peers are unreachable.
+    all_ips = [node["ip"] for node in nodes]
     _provision_node(
         ip=genesis_node["ip"],
         provider=genesis_node["provider"],
         ssh_key_path=ssh_key_path,
         binary_url=binary_url,
         binary_is_archive=binary_is_archive,
-        bootstrap_peers=None,
+        bootstrap_peers=peers_for(genesis_node["ip"], all_ips, NODE_PORT),
         rewards_address=args.rewards_address,
         evm_network=args.evm_network,
         console=console,
@@ -722,7 +737,7 @@ def cmd_bootstrap_production(args):
             f"ssh_key_path='{ssh_key_path}', "
             f"binary_url={repr(binary_url)}, "
             f"binary_is_archive={binary_is_archive}, "
-            f"bootstrap_peers='{genesis_peer}', "
+            f"bootstrap_peers={peers_for(ip, all_ips, NODE_PORT)!r}, "
             f"rewards_address='{args.rewards_address}', "
             f"evm_network='{args.evm_network}', "
             f"console=Console(), "
