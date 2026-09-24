@@ -1,4 +1,4 @@
-"""``prod bootstrap upgrade`` / ``prod bootstrap webrtc-addresses``.
+"""``prod bootstrap upgrade`` / ``webrtc-addresses`` / ``set-peers``.
 
 The production bootstrap tier is seven VMs, one ``ant-bootstrap`` service each,
 that every client on the network enters through. They are upgraded ahead of the
@@ -14,6 +14,11 @@ reaches it from this machine; anything short of that rolls the host back and
 stops the run, leaving the hosts after it untouched. Seven bootstraps restarted
 in parallel onto a bad binary is an outage for everyone, which is the whole
 reason this is not a loop over ``pyinfra``'s host list.
+
+``set-peers`` rewrites the tier's ``--bootstrap`` peer lists to the current
+inventory and is gated the same way, for the same reason: it restarts all seven
+of the hosts every client enters the network through, and it must do so one at
+a time.
 
 Pure logic -- unit parsing and editing, the health-gate parser, version
 ordering -- lives in ``saorsa_deploy/prod_bootstrap_upgrade.py``; the ICE probe
@@ -39,6 +44,7 @@ from saorsa_deploy.inventory import NodeVm, load_node_inventory
 from saorsa_deploy.prod_bootstrap_upgrade import (
     DEFAULT_MULTIADDR_OUT,
     SERVICE_NAME,
+    STARTING_MESSAGE,
     SUMS_ASSET_NAME,
     UNIT_FILE_PATH,
     WEBRTC_PORT_FLAG,
@@ -51,10 +57,14 @@ from saorsa_deploy.prod_bootstrap_upgrade import (
     file_digest,
     parse_log_cursor,
     parse_unit,
+    peers_for,
     release_urls,
     remove_webrtc_port,
     require_version,
+    set_bootstrap_peers,
+    started_after_restart,
     supports_webrtc,
+    unit_peers,
 )
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.webrtc_addresses import (
@@ -860,4 +870,200 @@ def cmd_prod_bootstrap_webrtc_addresses(args) -> None:
         args.ssh_key_path,
         Path(args.out).expanduser(),
         console,
+    )
+
+
+# --------------------------------------------------------------------------
+# set-peers
+# --------------------------------------------------------------------------
+
+
+def _restore_unit(
+    vm: NodeVm, ssh_key: str, original_unit: str, console: Console
+) -> None:
+    """Put back the unit this command found, and restart onto it.
+
+    No binary is involved, so unlike the upgrade's rollback this restores one
+    file -- but for the same reason: the unit that was on the host when the
+    command arrived is the one that should be there when it leaves.
+    """
+    console.print(f"  [yellow]{vm.name}: restoring the previous unit...[/yellow]")
+
+    def attempt(description: str, action) -> None:
+        try:
+            action()
+        except (RuntimeError, ValueError, subprocess.SubprocessError) as e:
+            console.print(f"  [bold red]{vm.name}: {description} failed: {e}[/bold red]")
+
+    attempt("restore unit", lambda: _write_unit(vm, ssh_key, original_unit))
+    attempt(
+        "restart service",
+        lambda: _run(vm, ssh_key, _privileged(vm, f"systemctl restart {SERVICE_NAME}")),
+    )
+
+    deadline = time.monotonic() + HEALTH_TIMEOUT_SECS
+    while True:
+        if _is_active(vm, ssh_key):
+            console.print(f"  [bold]{vm.name}: RESTORED[/bold]")
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_HEALTH_POLL_SECS)
+    console.print(
+        f"  [bold red]{vm.name}: RESTORE INCOMPLETE — {SERVICE_NAME} did not come "
+        "back active. Investigate this host before doing anything else.[/bold red]"
+    )
+
+
+def _restart_gate(
+    vm: NodeVm,
+    ssh_key: str,
+    unit: BootstrapUnit,
+    cursor: tuple[str | None, int],
+    console: Console,
+) -> bool:
+    """Wait for the host to log a start line since ``cursor`` and be active."""
+    if not unit.log_dir:
+        console.print(
+            f"  [yellow]{vm.name}: unit has no --log-dir; falling back to "
+            "systemctl is-active only[/yellow]"
+        )
+        return _is_active(vm, ssh_key)
+
+    cursor_path, offset = cursor
+    deadline = time.monotonic() + HEALTH_TIMEOUT_SECS
+    started = False
+    while True:
+        try:
+            log_text = _run(
+                vm,
+                ssh_key,
+                _privileged(
+                    vm, build_log_tail_command(unit.log_dir, cursor_path, offset)
+                ),
+            )
+        except (RuntimeError, subprocess.SubprocessError):
+            log_text = ""
+        if started_after_restart(log_text):
+            started = True
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_HEALTH_POLL_SECS)
+
+    if not started:
+        console.print(
+            f"  [bold red]{vm.name}: no '{STARTING_MESSAGE}' logged since the "
+            "restart[/bold red]"
+        )
+        return False
+    if not _is_active(vm, ssh_key):
+        console.print(f"  [bold red]{vm.name}: {SERVICE_NAME} is not active[/bold red]")
+        return False
+
+    console.print(f"  {vm.name}: [green]healthy[/green] (restarted, active)")
+    return True
+
+
+def _set_peers_host(
+    vm: NodeVm, ssh_key: str, peers: list[str], console: Console
+) -> str | None:
+    """Rewrite one host's peers. Returns ``None`` on success, else the reason."""
+    console.print(f"[bold]{vm.name}[/bold] ({vm.provider}, {vm.ip})")
+
+    try:
+        original_unit, unit = _read_unit(vm, ssh_key)
+    except (RuntimeError, ValueError, subprocess.SubprocessError) as e:
+        return str(e)
+
+    current = unit_peers(original_unit)
+    edited = set_bootstrap_peers(original_unit, peers)
+    if edited == original_unit:
+        console.print(
+            f"  already lists the {len(peers)} expected peer(s); not restarting"
+        )
+        return None
+
+    console.print(f"  peers: {', '.join(current) or 'none'}")
+    console.print(f"      -> {', '.join(peers)}")
+
+    try:
+        _write_unit(vm, ssh_key, edited)
+        cursor = parse_log_cursor(
+            _run(
+                vm,
+                ssh_key,
+                _privileged(vm, build_log_cursor_command(unit.log_dir or "/dev/null")),
+            )
+        )
+        _run(vm, ssh_key, _privileged(vm, f"systemctl restart {SERVICE_NAME}"))
+    except (RuntimeError, subprocess.SubprocessError) as e:
+        _restore_unit(vm, ssh_key, original_unit, console)
+        return str(e)
+
+    if not _restart_gate(vm, ssh_key, unit, cursor, console):
+        _restore_unit(vm, ssh_key, original_unit, console)
+        return "restart gate failed"
+    return None
+
+
+def _confirm_set_peers(vms: list[NodeVm], port: int, console: Console) -> None:
+    console.print(
+        f"About to rewrite the --bootstrap peers of [bold]{len(vms)}[/bold] "
+        f"production bootstrap(s) and restart each one:"
+    )
+    for vm in vms:
+        console.print(f"  {vm.name} ({vm.provider}, {vm.ip})")
+    console.print(
+        f"Each will list every other inventory host on udp/{port}, and never itself."
+    )
+    if not sys.stdin.isatty():
+        console.print(
+            "[bold red]Error:[/bold red] not a TTY and -y was not passed. "
+            "Re-run with -y to proceed without confirmation."
+        )
+        sys.exit(1)
+    if input("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+        console.print("Aborted.")
+        sys.exit(1)
+
+
+def cmd_prod_bootstrap_set_peers(args) -> None:
+    console = Console()
+
+    # The peer list is always computed from the *whole* inventory, never from
+    # the --limit-to selection: a host's six peers are the other six
+    # bootstraps, whether or not this run is touching them.
+    everything = _load_bootstraps(args.inventory_path, None, console)
+    vms = _load_bootstraps(args.inventory_path, args.limit_to, console)
+    all_ips = [vm.ip for vm in everything]
+
+    if not args.yes:
+        _confirm_set_peers(vms, args.peer_port, console)
+
+    clear_known_hosts([vm.ip for vm in vms], console)
+
+    done: list[str] = []
+    for index, vm in enumerate(vms):
+        ssh_key = _resolve_ssh_key(vm, args.ssh_key_path)
+        peers = peers_for(vm.ip, all_ips, args.peer_port)
+        reason = _set_peers_host(vm, ssh_key, peers, console)
+        if reason is not None:
+            console.print(
+                f"[bold red]Stopping:[/bold red] {vm.name} failed ({reason}). "
+                f"{len(vms) - index - 1} host(s) left untouched."
+            )
+            console.print(
+                f"Rewritten before the failure: "
+                f"{', '.join(done) if done else 'none'}"
+            )
+            sys.exit(1)
+        done.append(vm.name)
+        if index < len(vms) - 1:
+            console.print(f"  settling for {INTER_HOST_WAIT_SECS}s...")
+            time.sleep(INTER_HOST_WAIT_SECS)
+
+    console.print(
+        f"[green]{len(done)} bootstrap(s) now list the other "
+        f"{len(all_ips) - 1} inventory host(s) on udp/{args.peer_port}.[/green]"
     )

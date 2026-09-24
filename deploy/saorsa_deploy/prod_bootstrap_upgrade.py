@@ -1,4 +1,8 @@
-"""Pure logic behind ``prod bootstrap upgrade`` / ``prod bootstrap webrtc-addresses``.
+"""Pure logic behind the ``prod bootstrap`` verbs that touch a live unit.
+
+``upgrade``, ``webrtc-addresses`` and ``set-peers`` all read, and two of them
+edit, the same ``ant-bootstrap.service`` on the same seven hosts, so the unit
+parsing and the editing discipline live here together.
 
 The production bootstrap tier is seven hand-placed VMs that every client reaches
 the network through. They are upgraded *ahead* of the fleet's own 24h staged
@@ -7,16 +11,17 @@ lands, which means this path runs against production with no canary in front of
 it -- hence the decisions encoded here.
 
 **The binary path is read from the live unit, never assumed.** The tier was
-provisioned before ``bootstrap_production.py``'s ``BINARY_INSTALL_PATH``
-(``/usr/local/bin/ant-node``) was what the deploy wrote, and every live host
-actually runs ``/opt/ant-node/ant-node``. Installing over the constant would
-leave a second, unused binary on disk while the service kept running the old
-one -- an upgrade that reports success and changes nothing.
+provisioned before ``bootstrap_production.py``'s ``BINARY_INSTALL_PATH`` said
+``/opt/ant-node/ant-node`` (it said ``/usr/local/bin/ant-node``, which no live
+host has ever run). Installing over a constant rather than over what the unit
+actually executes would leave a second, unused binary on disk while the service
+kept running the old one -- an upgrade that reports success and changes nothing.
 
-**The unit edit is append-only.** These seven units carry hand-maintained state
--- stale ``--bootstrap`` peers among it, fixed under their own issue -- so this
-code adds one argument line and touches nothing else. Rendering a fresh unit
-from ``build_systemd_unit`` would silently discard whatever the live file holds.
+**The unit edits touch only the lines they own.** These seven units carry
+hand-maintained arguments, so ``add_webrtc_port`` appends one line and
+``set_bootstrap_peers`` rewrites only the ``--bootstrap`` lines; every other
+line is left byte for byte as it was. Rendering a fresh unit from
+``build_systemd_unit`` would silently discard whatever the live file holds.
 
 The SSH, download and firewall I/O lives in ``cmd/prod_bootstrap_upgrade.py``.
 """
@@ -24,6 +29,7 @@ The SSH, download and firewall I/O lives in ``cmd/prod_bootstrap_upgrade.py``.
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +61,12 @@ DEFAULT_MULTIADDR_OUT = (
 #: alias; this path uses the canonical spelling.)
 WEBRTC_PORT_FLAG = "--webrtc-direct-port"
 DEFAULT_WEBRTC_PORT = 10001
+
+#: ant-node's flag for the peers it dials on a cold start, and the port the
+#: whole tier listens on -- which is also the port the client's
+#: ``bootstrap_peers.toml`` lists every bootstrap under.
+PEER_FLAG = "--bootstrap"
+PEER_PORT = 10000
 
 #: ant-node writes ``<root_dir>/webrtc-direct.multiaddr`` and logs the listener
 #: from 0.20.0 onward. Below that the WebRTC half of the health gate is not a
@@ -293,6 +305,101 @@ def remove_webrtc_port(text: str) -> str:
     return text
 
 
+def peers_for(ip: str, ips: Sequence[str], port: int = PEER_PORT) -> list[str]:
+    """``<ip>:<port>`` for every inventory host except ``ip``, in inventory order.
+
+    A bootstrap never lists itself: the flag names the peers to dial on a cold
+    start, and a host dialling its own address learns nothing. Every other
+    bootstrap is listed, because the point of the rule is that a host which
+    lost its data directory still has six live peers to rejoin through --
+    before this, the tier carried hand-written lists of two or three addresses,
+    most of which no longer belonged to any bootstrap.
+    """
+    return [f"{other}:{port}" for other in ips if other != ip]
+
+
+def _is_peer_line(line: str) -> bool:
+    return line.strip().startswith(f"{PEER_FLAG} ")
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def unit_peers(text: str) -> list[str]:
+    """The ``--bootstrap`` values the unit's ExecStart currently carries."""
+    lines = text.splitlines()
+    first, last = _exec_start_bounds(lines)
+    tokens = _joined_exec_start(lines, first, last).split()
+    return [
+        tokens[index + 1]
+        for index, token in enumerate(tokens)
+        if token == PEER_FLAG and index + 1 < len(tokens)
+    ]
+
+
+def _set_peers_inline(lines: list[str], index: int, peers: list[str]) -> list[str]:
+    """Rewrite the peers of a single-line ``ExecStart``, tokens and all."""
+    tokens = lines[index].split()
+    at = [i for i, token in enumerate(tokens) if token == PEER_FLAG]
+    insert_at = at[0] if at else len(tokens)
+    for position in reversed(at):
+        del tokens[position : position + 2]
+    replacement: list[str] = []
+    for peer in peers:
+        replacement.extend([PEER_FLAG, peer])
+    tokens[insert_at:insert_at] = replacement
+    lines[index] = " ".join(tokens)
+    return lines
+
+
+def set_bootstrap_peers(text: str, peers: Sequence[str]) -> str:
+    """Rewrite the unit's ``--bootstrap`` arguments to exactly ``peers``.
+
+    Only the ``--bootstrap`` lines are touched; every other line of the file --
+    the hand-maintained rewards address, the log flags, the resource limits --
+    is left byte for byte as it was, because nothing here knows why they are
+    what they are. Idempotent: a unit already listing exactly ``peers``, in
+    that order, is returned unchanged, so a re-run after a failure part way
+    through the tier is a no-op on the hosts already done.
+    """
+    peers = list(peers)
+    lines = text.splitlines()
+    first, last = _exec_start_bounds(lines)
+    if unit_peers(text) == peers:
+        return text
+
+    if first == last:
+        return _rejoin(
+            _set_peers_inline(lines, first, peers), text.endswith("\n")
+        )
+
+    peer_at = [index for index in range(first, last + 1) if _is_peer_line(lines[index])]
+    # A unit with no peers yet gets them appended to the end of the block, the
+    # way add_webrtc_port appends its flag; otherwise they are rewritten where
+    # they already sit, so the argument order the operator sees does not move.
+    if peer_at:
+        indent = _indent(lines[peer_at[0]])
+        insert_at = peer_at[0]
+        ends_the_block = peer_at[-1] == last
+        for index in reversed(peer_at):
+            del lines[index]
+        last -= len(peer_at)
+    else:
+        indent = _indent(lines[first + 1])
+        lines[last] = f"{lines[last].rstrip()} \\"
+        insert_at = last + 1
+        ends_the_block = True
+
+    added = [f"{indent}{PEER_FLAG} {peer} \\" for peer in peers]
+    lines[insert_at:insert_at] = added
+    last += len(added)
+    if ends_the_block:
+        # Whatever is last now was written with a continuation it must not keep.
+        lines[last] = lines[last].rstrip().rstrip("\\").rstrip()
+    return _rejoin(lines, text.endswith("\n"))
+
+
 @dataclass(frozen=True)
 class HealthVerdict:
     """What the post-restart log said."""
@@ -319,6 +426,20 @@ class HealthVerdict:
         return f"started={started} webrtc={webrtc}"
 
 
+def _json_records(log_text: str):
+    """The JSON objects in a slice of ant-node's log, skipping anything else."""
+    for line in log_text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            yield record
+
+
 def evaluate_health(
     log_text: str, version: str, webrtc_port: int, *, expect_webrtc: bool
 ) -> HealthVerdict:
@@ -331,16 +452,7 @@ def evaluate_health(
     """
     started = False
     bind: str | None = None
-    for line in log_text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(record, dict):
-            continue
+    for record in _json_records(log_text):
         message = record.get("message")
         if message == STARTING_MESSAGE and record.get("version") == version:
             started = True
@@ -353,6 +465,20 @@ def evaluate_health(
         started=started,
         webrtc=(bind is not None) if expect_webrtc else None,
         bind=bind,
+    )
+
+
+def started_after_restart(log_text: str) -> bool:
+    """Whether ant-node logged a start line in the slice read since the cursor.
+
+    Unlike :func:`evaluate_health` this does not match on a version, because
+    ``set-peers`` swaps no binary: the host comes back on the same build it
+    went down on, so the only question a start line has to answer is whether
+    it came back at all. The cursor is taken immediately before the restart,
+    so any start line in the slice is this restart's.
+    """
+    return any(
+        record.get("message") == STARTING_MESSAGE for record in _json_records(log_text)
     )
 
 

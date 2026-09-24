@@ -906,19 +906,22 @@ published list the prod WASM client kinds consume. Impl: `cmd/prod_bootstrap_upg
 (I/O), `prod_bootstrap_upgrade.py` (pure), `webrtc_probe.py` (the probe).
 
 - **The binary path is read from the live unit, never assumed.** The tier
-  predates `cmd/bootstrap_production.py`'s `BINARY_INSTALL_PATH`
-  (`/usr/local/bin/ant-node`); every live host actually runs
-  `/opt/ant-node/ant-node`. Installing over the constant would leave a second,
-  unused binary on disk while the service kept running the old one — an upgrade
-  that reports success and changes nothing. Root dir, log dir and service user
+  predates `cmd/bootstrap_production.py`'s `BINARY_INSTALL_PATH`, which read
+  `/usr/local/bin/ant-node` while every live host actually runs
+  `/opt/ant-node/ant-node` (the constant is now the latter — V2-1309 — but the
+  rule stays "read the unit", since a constant cannot know what a host was given
+  by hand). Installing over a constant rather than over what the unit executes
+  would leave a second, unused binary on disk while the service kept running the
+  old one — an upgrade that reports success and changes nothing. Root dir, log dir and service user
   come from the same `ExecStart`; a unit missing `--stop-on-upgrade` (the node's
   own auto-upgrader is then live and would undo the install) or `--root-dir` is
   refused.
 - **The unit edit is append-only.** One `--webrtc-direct-port` argument line is
   appended and every other line stays byte-identical, because these seven units
-  carry hand-maintained arguments — stale `--bootstrap` peers among them, fixed
-  under their own issue — that a re-render from `build_systemd_unit` would
-  silently discard. Idempotent, and exactly reversible for the rollback path.
+  carry hand-maintained arguments that a re-render from `build_systemd_unit`
+  would silently discard. Idempotent, and exactly reversible for the rollback
+  path. The `--bootstrap` peers those units carry are the one thing `upgrade`
+  deliberately leaves alone; `set-peers` (below) owns them.
 - **One archive, verified locally, uploaded to all seven.** The release tarball
   is checksummed against the release's own `SHA256SUMS.txt` and run with
   `--version` on this machine before anything is touched, so every host
@@ -963,6 +966,29 @@ published list the prod WASM client kinds consume. Impl: `cmd/prod_bootstrap_upg
 
 See `deploy/README.md` §"Upgrading the production bootstraps ahead of the fleet"
 for the full argument tables.
+
+**`prod bootstrap set-peers` rewrites the tier's `--bootstrap` peer lists.** Each
+unit named the peers that host dials on a cold start, written by hand and never
+revisited: at 2026-09-24 five hosts listed the same three addresses (one a
+current bootstrap, two answering nothing) and another listed three in no
+inventory at all. Nothing was visibly wrong because every host had a populated
+`routing_snapshot.json` and peer cache — the cost lands only on a host that lost
+its data directory, which then had at most one live peer to rejoin through.
+`set-peers` gives each host **the other six inventory IPs on udp/10000** (the
+port the tier listens on and the one the client's `bootstrap_peers.toml` uses),
+**never itself**, one host at a time: rewrite, `daemon-reload`, `restart`, wait
+for `ant-node starting` in that host's own log plus `is-active`, settle 60 s,
+next. A failure restores the unit the command found and stops the run. Two
+properties make it safe on all seven: **only the `--bootstrap` lines move**
+(every other line byte-identical, for the same reason `upgrade` appends), and it
+is **idempotent** — a host already listing exactly those peers is not restarted,
+so a re-run after a mid-tier failure touches only what is left. No binary is
+swapped, so the gate does not match on a version the way `upgrade`'s does.
+`prod bootstrap deploy` now applies the same rule at provision time (genesis
+included — it is still provisioned first, so a from-scratch deploy brings it up
+while its peers are unreachable), and its `BINARY_INSTALL_PATH` was corrected to
+`/opt/ant-node/ant-node`; a re-provision previously installed a second, unused
+binary at `/usr/local/bin/ant-node` and left the service on the old one.
 
 ### WebRTC-Direct testnets and the WASM client tier
 

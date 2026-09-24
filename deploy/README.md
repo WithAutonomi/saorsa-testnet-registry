@@ -2234,8 +2234,10 @@ Order of operations:
    listener the provider still blocks would fail its probe and roll it straight back.
 3. **Per host, serially, in inventory (or `--limit-to`) order.** The binary path, root
    dir, log dir and service user are read from the live unit's `ExecStart` — **not**
-   from `bootstrap_production.BINARY_INSTALL_PATH`, which is `/usr/local/bin/ant-node`
-   and wrong for the live tier (it runs `/opt/ant-node/ant-node`). A unit that does not
+   from `bootstrap_production.BINARY_INSTALL_PATH` (which read `/usr/local/bin/ant-node`
+   until V2-1309 corrected it to the `/opt/ant-node/ant-node` the tier actually runs;
+   the rule stays "read the unit", because a constant cannot know what a host was
+   given by hand). A unit that does not
    pass `--stop-on-upgrade` or `--root-dir` is refused. The archive is uploaded,
    extracted, `chown`ed to the service user and run with `--version` on the host; the
    old binary is copied to `<binary>.backup` and replaced; the unit gains one appended
@@ -2298,6 +2300,54 @@ under), a short-term `MESSAGE-INTEGRITY` keyed on that server fragment, and a
 well-formed STUN message back from the probed address inside the timeout is a pass.
 DTLS is deliberately not completed — the question is whether packets reach the
 listener and come back, not whether a browser can fetch a chunk.
+
+### Rewriting the bootstrap peer lists (`prod bootstrap set-peers`)
+
+Each of the seven units carries `--bootstrap` arguments naming the peers that host
+dials on a cold start. They were written by hand and never revisited: as of
+2026-09-24 five hosts listed the same three addresses, of which one was a current
+bootstrap and two answered nothing, and another listed three that appear in no
+inventory at all. The tier worked anyway, because every host had a populated
+`routing_snapshot.json` and peer cache — so the defect was invisible right up until
+a host lost its data directory and had at most one live peer to rejoin through.
+
+```bash
+uv run saorsa-deploy prod bootstrap set-peers -y
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--inventory-path` | string | `~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json` | Bootstrap inventory JSON |
+| `--peer-port` | int | `10000` | Port every peer is listed on — the port the tier listens on, and the one the client's `bootstrap_peers.toml` uses |
+| `--limit-to` | string | every host | Comma-separated host names or regions, rewritten in that order (e.g. `nrt,syd`). The peer list is still computed from the **whole** inventory |
+| `--ssh-key-path` | string | per-host `ssh_key` | Override the inventory's SSH key |
+| `-y`, `--yes` | flag | - | Proceed without the confirmation prompt (required on a non-TTY) |
+
+Per host, serially, in inventory (or `--limit-to`) order: read the live unit, rewrite
+its `--bootstrap` arguments to **the other inventory hosts on `--peer-port`, never
+itself**, `daemon-reload`, `restart`, wait for `ant-node starting` in the host's own
+log and `systemctl is-active` = `active`, then settle 60 s before the next host. Any
+failure restores the unit the command found, restarts onto it, prints `RESTORED` and
+**stops the run** — hosts after it are untouched. The AWS host logs in as `ubuntu`
+and wraps its commands in `sudo -n`, like the other verbs here.
+
+Two properties make it safe to run against all seven:
+
+* **Only the `--bootstrap` lines move.** Every other line survives byte for byte —
+  these units carry hand-maintained arguments (the rewards address, the log flags)
+  that nothing in this tool knows the reasons for, and a re-render from
+  `build_systemd_unit` would discard them.
+* **It is idempotent.** A host already listing exactly those peers, in that order, is
+  left alone and **not restarted**, so a re-run after a failure part way through the
+  tier only touches what is left.
+
+Unlike `upgrade` this swaps no binary, so the gate does not match on a version: the
+host comes back on the build it went down on, and the only question a start line has
+to answer is whether it came back at all.
+
+`prod bootstrap deploy` applies the same rule at provision time — every node, genesis
+included, is given the other inventory hosts on the node port — so a redeployed
+bootstrap no longer comes up with the single genesis peer it used to get.
 
 ### Running continuous downloaders against production (`prod continuous-downloader`)
 
