@@ -60,6 +60,16 @@ resource "hcloud_firewall" "production_node" {
     port       = "10000"
     source_ips = ["0.0.0.0/0", "::/0"]
   }
+
+  # WebRTC Direct, for browser-path clients. Pinned by `prod bootstrap upgrade`
+  # via ant-node's --webrtc-direct-port; unpinned the listener would move on
+  # every restart and no firewall rule could follow it.
+  rule {
+    direction  = "in"
+    protocol   = "udp"
+    port       = "10001"
+    source_ips = ["0.0.0.0/0", "::/0"]
+  }
 }
 
 resource "hcloud_firewall_attachment" "production_node" {

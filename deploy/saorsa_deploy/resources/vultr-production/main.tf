@@ -60,6 +60,18 @@ resource "vultr_firewall_rule" "node_tcp" {
   port              = "10000"
 }
 
+# WebRTC Direct, for browser-path clients. Pinned by `prod bootstrap upgrade`
+# via ant-node's --webrtc-direct-port; unpinned the listener would move on
+# every restart and no firewall rule could follow it.
+resource "vultr_firewall_rule" "webrtc_udp" {
+  firewall_group_id = vultr_firewall_group.production_node.id
+  protocol          = "udp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "10001"
+}
+
 resource "vultr_firewall_rule" "ssh_v6" {
   firewall_group_id = vultr_firewall_group.production_node.id
   protocol          = "tcp"
@@ -85,4 +97,13 @@ resource "vultr_firewall_rule" "node_tcp_v6" {
   subnet            = "::"
   subnet_size       = 0
   port              = "10000"
+}
+
+resource "vultr_firewall_rule" "webrtc_udp_v6" {
+  firewall_group_id = vultr_firewall_group.production_node.id
+  protocol          = "udp"
+  ip_type           = "v6"
+  subnet            = "::"
+  subnet_size       = 0
+  port              = "10001"
 }

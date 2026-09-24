@@ -3737,10 +3737,17 @@ def main(argv=None):
         dest="prod_subcommand", required=True
     )
 
-    # --- prod bootstrap (deploy / destroy) — was prod bootstrap deploy / prod bootstrap destroy ---
+    # --- prod bootstrap (deploy / destroy / upgrade / webrtc-addresses) ---
+    from saorsa_deploy.prod_bootstrap_upgrade import (
+        DEFAULT_MULTIADDR_OUT,
+        DEFAULT_WEBRTC_PORT,
+        PROD_BOOTSTRAP_INVENTORY_PATH,
+    )
+
     prod_bootstrap_parser = prod_subparsers.add_parser(
         "bootstrap",
-        help="Production bootstrap network: deploy or destroy.",
+        help="Production bootstrap network: deploy, destroy, upgrade or "
+        "publish WebRTC addresses.",
     )
     prod_bootstrap_subparsers = prod_bootstrap_parser.add_subparsers(
         dest="prod_bootstrap_action", required=True
@@ -3794,6 +3801,82 @@ def main(argv=None):
         "--force",
         action="store_true",
         help="Skip confirmation prompts and force overwrite stale state",
+    )
+
+    prod_bootstrap_upgrade_parser = prod_bootstrap_subparsers.add_parser(
+        "upgrade",
+        help="Upgrade the production bootstrap tier to a released ant-node "
+        "version, one host at a time, pinning the WebRTC-Direct port.",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
+        "--node-version",
+        type=str,
+        required=True,
+        help="Released ant-node version to install (e.g. 0.20.0).",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=PROD_BOOTSTRAP_INVENTORY_PATH,
+        help=f"Path to the bootstrap inventory JSON "
+        f"(default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
+        "--webrtc-port",
+        type=int,
+        default=DEFAULT_WEBRTC_PORT,
+        help=f"UDP port to pin the WebRTC-Direct listener to "
+        f"(default: {DEFAULT_WEBRTC_PORT}). Left unpinned ant-node picks a "
+        "random port per restart, invalidating every published multiaddr.",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
+        "--limit-to",
+        type=str,
+        default=None,
+        help="Comma-separated host names or regions to upgrade, in that order "
+        "(e.g. nrt,syd). Default: every host, in inventory order.",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
+        "--skip-firewall",
+        action="store_true",
+        help="Skip the provider firewall preflight that opens the WebRTC port.",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key in the inventory (default: per-host ssh_key).",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Proceed without the confirmation prompt.",
+    )
+
+    prod_bootstrap_webrtc_parser = prod_bootstrap_subparsers.add_parser(
+        "webrtc-addresses",
+        help="Read every production bootstrap's published WebRTC-Direct "
+        "multiaddr and write the list clients bootstrap a browser path from.",
+    )
+    prod_bootstrap_webrtc_parser.add_argument(
+        "--inventory-path",
+        type=str,
+        default=PROD_BOOTSTRAP_INVENTORY_PATH,
+        help=f"Path to the bootstrap inventory JSON "
+        f"(default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
+    )
+    prod_bootstrap_webrtc_parser.add_argument(
+        "--out",
+        type=str,
+        default=str(DEFAULT_MULTIADDR_OUT),
+        help=f"Where to write the address list (default: {DEFAULT_MULTIADDR_OUT}).",
+    )
+    prod_bootstrap_webrtc_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default=None,
+        help="Override the SSH key in the inventory (default: per-host ssh_key).",
     )
 
     prod_bootstrap_destroy_parser = prod_bootstrap_subparsers.add_parser(
@@ -6928,6 +7011,24 @@ def main(argv=None):
             )
 
             cmd_destroy_bootstrap_production(args)
+        elif (
+            args.prod_subcommand == "bootstrap"
+            and args.prod_bootstrap_action == "upgrade"
+        ):
+            from saorsa_deploy.cmd.prod_bootstrap_upgrade import (
+                cmd_prod_bootstrap_upgrade,
+            )
+
+            cmd_prod_bootstrap_upgrade(args)
+        elif (
+            args.prod_subcommand == "bootstrap"
+            and args.prod_bootstrap_action == "webrtc-addresses"
+        ):
+            from saorsa_deploy.cmd.prod_bootstrap_upgrade import (
+                cmd_prod_bootstrap_webrtc_addresses,
+            )
+
+            cmd_prod_bootstrap_webrtc_addresses(args)
         elif (
             args.prod_subcommand == "continuous-downloader"
             and args.prod_cd_action == "deploy"
