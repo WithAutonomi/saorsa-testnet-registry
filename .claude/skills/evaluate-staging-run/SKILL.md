@@ -137,8 +137,7 @@ comparable.
   `compare --new-baseline` (Step 5), and the decision rests on the native hard floors and the
   observational hard gates.
 
-Baseline chain start: _(not yet established — Step 9 writes it here after the first
-`--new-baseline` verification)_
+Baseline chain start: STG-01 #596 (2026-09-23), first run on staging.yaml
 
 Sanity-check that both have data before comparing:
 
