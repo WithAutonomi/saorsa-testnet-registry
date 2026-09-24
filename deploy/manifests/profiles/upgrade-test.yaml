@@ -4,7 +4,7 @@
 # the `beta` upgrade channel, so once they are up they self-upgrade to the latest
 # beta release (via --stop-on-upgrade). Deploy a starting ant_node version OLDER
 # than the current beta so there is an upgrade to observe, then watch the rollout
-# (e.g. the `track-upgrades` / `bootstrap-upgrade-check` tooling).
+# (e.g. `saorsa-deploy prod rollout-watch --to-version <version>`).
 #
 # Single provider, single region (DO / lon1) — no multi-provider spread needed for
 # an upgrade test. Node math: 100 ant-node services = 20 DO VMs × per_vm 5.
