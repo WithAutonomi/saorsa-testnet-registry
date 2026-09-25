@@ -51,7 +51,13 @@ class TestReadAddresses:
     def test_skips_blank_and_comment_lines(self, service, tmp_path):
         path = tmp_path / "addrs.txt"
         path.write_text("addr1\n\n# this is a comment\naddr2\n  \n\taddr3\n")
-        assert service._read_addresses(str(path)) == ["addr1", "addr2", "addr3"]
+        # Each entry is (address, declared_bytes): a bare line carries no size,
+        # and None rather than 0 keeps "unknown" distinct from "too big".
+        assert service._read_addresses(str(path)) == [
+            ("addr1", None),
+            ("addr2", None),
+            ("addr3", None),
+        ]
 
     def test_empty_file_returns_empty_list(self, service, tmp_path):
         path = tmp_path / "addrs.txt"
@@ -189,11 +195,11 @@ class TestHeaptrackWrap:
 
 
 class TestRunAntRustLogEnv:
-    """_run_ant must not hand ant an EMPTY RUST_LOG (mirrors prod_uploader).
+    """_run_transfer must not hand ant an EMPTY RUST_LOG (mirrors prod_uploader).
 
     An empty RUST_LOG inherited from the systemd EnvironmentFile sets ant's
     tracing EnvFilter to an empty filter, silencing ALL output and overriding
-    -v — which blanked the per-op .stderr download log. _run_ant strips an
+    -v — which blanked the per-op .stderr download log. _run_transfer strips an
     empty RUST_LOG and preserves a non-empty one.
     """
 
@@ -212,12 +218,8 @@ class TestRunAntRustLogEnv:
             return _FakeProc()
 
         monkeypatch.setattr(service.subprocess, "Popen", _fake_popen)
-        service._run_ant(
-            ant_path="/root/.local/bin/ant",
-            bootstrap_args=[],
-            evm_network="arbitrum-one",
-            address="abcd",
-            output_path=tmp_path / "out.bin",
+        service._run_transfer(
+            cmd=["/root/.local/bin/ant", "file", "download", "abcd"],
             stderr_log_path=tmp_path / "op.stderr",
             stdout_log_path=tmp_path / "op.stdout",
         )

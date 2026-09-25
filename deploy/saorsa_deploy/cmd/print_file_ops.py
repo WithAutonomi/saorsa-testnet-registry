@@ -300,21 +300,36 @@ def _print_transport_totals(
         if role is None:
             continue
         tier = "wasm" if is_wasm(role) else "native"
-        slot = tiers.setdefault(tier, [0, 0])
+        slot = tiers.setdefault(tier, [0, 0, 0, 0])
         for op in ops:
+            # A skip is neither a success nor an attempt: the transport refused
+            # the file before the network was involved, so it stays out of the
+            # denominator. It is still reported, beside the rate.
+            if op.get("status") == 2:
+                slot[2] += 1
+                continue
             slot[1] += 1
             if op.get("status") == 0:
                 slot[0] += 1
+            if op.get("error_kind") == "crash":
+                slot[3] += 1
     if len(tiers) < 2:
         return
     console.print(f"[bold]{op_type} success by transport[/bold]")
     for tier in ("native", "wasm"):
         if tier not in tiers:
             continue
-        ok, total = tiers[tier]
+        ok, total, skipped, crashes = tiers[tier]
         rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
         colour = "green" if tier == "native" else "cyan"
-        console.print(f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}")
+        extra = ""
+        if skipped:
+            extra += f", {skipped} skipped (over-cap)"
+        if crashes:
+            extra += f", {crashes} crashed"
+        console.print(
+            f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}{extra}"
+        )
 
 
 def _build_payment_map(name: str) -> dict[str, str]:
@@ -462,6 +477,11 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
     total = len(ops)
     successes = sum(1 for o in ops if o.get("status") == 0)
     failures = sum(1 for o in ops if o.get("status") == 1)
+    skipped = sum(1 for o in ops if o.get("status") == 2)
+    # An OOM kill of the transfer process, which on a client VM is what a
+    # browser-path transfer too large for the box looks like. Counted separately
+    # from a plain failure because the fix is a bigger VM, not the network.
+    crashes = sum(1 for o in ops if o.get("error_kind") == "crash")
 
     success_durations = [
         o["total_ms"] for o in ops
@@ -478,6 +498,8 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
         "total": total,
         "successes": successes,
         "failures": failures,
+        "skipped": skipped,
+        "crashes": crashes,
         "overall_avg_ms": overall_avg_ms,
     }
 
@@ -518,6 +540,10 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
         table.add_row("Total ops", str(summary["total"]))
         table.add_row("Successes", str(summary["successes"]))
         table.add_row("Failures", str(summary["failures"]))
+        if summary["skipped"]:
+            table.add_row("Skipped (over-cap)", str(summary["skipped"]))
+        if summary["crashes"]:
+            table.add_row("Crashes (killed by signal)", str(summary["crashes"]))
         table.add_row("Avg duration", _fmt_duration(summary["overall_avg_ms"]))
         console.print(table)
 
@@ -727,6 +753,11 @@ def _fmt_status(code) -> str:
         return "[green]ok[/green]"
     if code == 1:
         return "[red]fail[/red]"
+    # Yellow, and its own word: the transport refused the file (over ant-core's
+    # browser cap), the network did not. Rendering it as "fail" would report a
+    # transport limitation as a network fault, and as "-" would hide the op.
+    if code == 2:
+        return "[yellow]skip[/yellow]"
     return "-"
 
 

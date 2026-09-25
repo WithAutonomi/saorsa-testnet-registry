@@ -274,33 +274,15 @@ class TestTheServicePassesTheFlagPerDownload:
 
 
 def _built_cmd(service, tmp_path, *, diagnostics_path):
-    """Build the ant argv the service would run, without spawning anything."""
-    captured = {}
-
-    class _FakeProc:
-        def __init__(self, cmd, **kwargs):
-            captured["cmd"] = cmd
-            raise RuntimeError("stop before spawning")
-
-    import subprocess
-
-    real_popen = subprocess.Popen
-    subprocess.Popen = _FakeProc
-    try:
-        with pytest.raises(RuntimeError):
-            service._run_ant(
-                ant_path="/root/.local/bin/ant",
-                bootstrap_args=[],
-                evm_network="arbitrum-one",
-                address="abc",
-                output_path=tmp_path / "out",
-                stderr_log_path=tmp_path / "op.stderr",
-                stdout_log_path=tmp_path / "op.stdout",
-                diagnostics_path=diagnostics_path,
-            )
-    finally:
-        subprocess.Popen = real_popen
-    return captured["cmd"]
+    """The native ant argv the service would run, without spawning anything."""
+    return service._build_native_argv(
+        ant_path="/root/.local/bin/ant",
+        bootstrap_args=[],
+        evm_network="arbitrum-one",
+        address="abc",
+        output_path=tmp_path / "out",
+        diagnostics_path=diagnostics_path,
+    )
 
 
 def test_argparse_rejects_an_unknown_downloader_provider():

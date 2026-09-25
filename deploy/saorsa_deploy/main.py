@@ -4176,6 +4176,49 @@ def main(argv=None):
         ),
     )
 
+    prod_cd_deploy_parser.add_argument(
+        "--client-kind",
+        type=str,
+        default="native",
+        choices=["native", "wasm"],
+        help="Client transport. `native` (default) runs the `ant` binary over "
+        "QUIC; `wasm` runs ant-core compiled to WASM over WebRTC-Direct — the "
+        "browser path — via the `ant-wasm` CLI. One transport per deployment: "
+        "the two are not the same instrument and a blended result describes "
+        "neither. `wasm` requires --wasm-branch-name and refuses "
+        "--no-bootstrap-cache / --memory-profiling / --download-diagnostics.",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--wasm-branch-name",
+        type=str,
+        default=None,
+        help="ant-client branch OR TAG to build the WASM bundle from (e.g. "
+        "ant-cli-v0.3.8-rc.1). Required with --client-kind wasm: no ant-core "
+        "WASM package is published as a release, so there is no version form.",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--wasm-repo-owner",
+        type=str,
+        default=None,
+        help="GitHub owner of the ant-client repo the WASM bundle was built "
+        "from (default: maidsafe).",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--wasm-bootstrap-multiaddrs-file",
+        type=str,
+        default=None,
+        help="Override the committed production bootstrap WebRTC multiaddr "
+        "list (resources/prod_bootstrap_webrtc_multiaddrs.txt). There is no URL "
+        "form — nothing publishes these addresses at a URL.",
+    )
+    prod_cd_deploy_parser.add_argument(
+        "--skip-bootstrap-probe",
+        action="store_true",
+        help="Skip the preflight ICE probe of the bootstrap WebRTC listeners. "
+        "Use after a bootstrap restart: ant-node 0.20.0 opens the listener "
+        "2-15 minutes later, so a just-upgraded tier is legitimately silent.",
+    )
+
     prod_cd_destroy_parser = prod_cd_subparsers.add_parser(
         "destroy",
         help="Destroy a prod continuous-downloader deployment "
@@ -4528,6 +4571,49 @@ def main(argv=None):
         required=True,
         help="Free-text description of what this deployment is for. "
         "Persisted into deploy_args and surfaced by `deployments slack-post`.",
+    )
+
+    prod_dl_deploy_parser.add_argument(
+        "--client-kind",
+        type=str,
+        default="native",
+        choices=["native", "wasm"],
+        help="Client transport. `native` (default) runs the `ant` binary over "
+        "QUIC; `wasm` runs ant-core compiled to WASM over WebRTC-Direct — the "
+        "browser path — via the `ant-wasm` CLI. One transport per deployment: "
+        "the two are not the same instrument and a blended result describes "
+        "neither. `wasm` requires --wasm-branch-name and refuses "
+        "--no-bootstrap-cache / --memory-profiling / --download-diagnostics.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--wasm-branch-name",
+        type=str,
+        default=None,
+        help="ant-client branch OR TAG to build the WASM bundle from (e.g. "
+        "ant-cli-v0.3.8-rc.1). Required with --client-kind wasm: no ant-core "
+        "WASM package is published as a release, so there is no version form.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--wasm-repo-owner",
+        type=str,
+        default=None,
+        help="GitHub owner of the ant-client repo the WASM bundle was built "
+        "from (default: maidsafe).",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--wasm-bootstrap-multiaddrs-file",
+        type=str,
+        default=None,
+        help="Override the committed production bootstrap WebRTC multiaddr "
+        "list (resources/prod_bootstrap_webrtc_multiaddrs.txt). There is no URL "
+        "form — nothing publishes these addresses at a URL.",
+    )
+    prod_dl_deploy_parser.add_argument(
+        "--skip-bootstrap-probe",
+        action="store_true",
+        help="Skip the preflight ICE probe of the bootstrap WebRTC listeners. "
+        "Use after a bootstrap restart: ant-node 0.20.0 opens the listener "
+        "2-15 minutes later, so a just-upgraded tier is legitimately silent.",
     )
 
     prod_dl_destroy_parser = prod_dl_subparsers.add_parser(

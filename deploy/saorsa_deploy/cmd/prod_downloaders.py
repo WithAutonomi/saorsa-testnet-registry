@@ -24,6 +24,13 @@ from rich.console import Console
 from saorsa_db.models import DeploymentStatus
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.cmd.prod_wasm_cli import (
+    apply_wasm_vm_size,
+    check_wasm_flags,
+    is_wasm_kind,
+    resolve_wasm_context,
+    wasm_deploy_args,
+)
 from saorsa_deploy.cmd.provision_clients import (
     _resolve_addresses_file_content,
     _resolve_ant_binary,
@@ -189,6 +196,7 @@ def _provision_prod_downloader(
     args,
     addresses_file: str,
     console: Console,
+    wasm_context=None,
 ) -> None:
     """Install the prod_downloader.py service in one-shot mode."""
     console.print(
@@ -235,13 +243,19 @@ def _provision_prod_downloader(
         sys.exit(1)
     console.print(f"  Using {len(bootstrap_peers)} production peers.")
 
-    binary_args = SimpleNamespace(
-        name=args.name,
-        branch_name=args.branch_name,
-        repo_owner=args.repo_owner,
-        ant_version=args.ant_version,
-    )
-    binary_url, binary_is_archive = _resolve_ant_binary(binary_args, console)
+    # A WASM deployment installs no `ant` binary — nothing on the VM runs it —
+    # so the release/branch resolution is skipped entirely rather than resolved
+    # and ignored.
+    if wasm_context is None:
+        binary_args = SimpleNamespace(
+            name=args.name,
+            branch_name=args.branch_name,
+            repo_owner=args.repo_owner,
+            ant_version=args.ant_version,
+        )
+        binary_url, binary_is_archive = _resolve_ant_binary(binary_args, console)
+    else:
+        binary_url, binary_is_archive = None, True
 
     influx_url = ""
     influx_token = ""
@@ -300,6 +314,11 @@ def _provision_prod_downloader(
         rust_log=getattr(args, "rust_log", None),
         memory_profiling=getattr(args, "memory_profiling", False),
         download_diagnostics=getattr(args, "download_diagnostics", False),
+        client_kind="wasm" if wasm_context else "native",
+        wasm_bundle_url=wasm_context.bundle_url if wasm_context else None,
+        bootstrap_multiaddrs=(
+            wasm_context.bootstrap_multiaddrs if wasm_context else None
+        ),
         console=console,
     )
     provisioner.execute()
@@ -427,6 +446,13 @@ def cmd_prod_downloaders_deploy(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
+    # Everything WASM-specific is resolved and PROVED before any
+    # infrastructure exists: an unreachable bootstrap tier or an under-sized box
+    # would otherwise be a VM that bills from creation and fails every op.
+    check_wasm_flags(args, console)
+    apply_wasm_vm_size(args, console)
+    wasm_context = resolve_wasm_context(args, console)
+
     console.print(f"[bold]prod downloaders deploy: {args.name}[/bold]")
     console.print(f"  Addresses file: {addresses_file}")
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
@@ -435,6 +461,12 @@ def cmd_prod_downloaders_deploy(args):
         f"{getattr(args, 'provider', None) or 'digitalocean'}:{args.spec}"
     )
     console.print("  Mode: one-shot (single pass, then exit)")
+    transport = (
+        "wasm (browser path, WebRTC-Direct)"
+        if is_wasm_kind(args)
+        else "native (ant over QUIC)"
+    )
+    console.print(f"  Transport: {transport}")
     if getattr(args, "download_diagnostics", False):
         console.print("  Download diagnostics: on (per-op .diag.jsonl)")
     console.print()
@@ -462,6 +494,7 @@ def cmd_prod_downloaders_deploy(args):
             args.branch_name, args.repo_owner, args.ant_version,
             debug=getattr(args, "debug", False),
         ),
+        **wasm_deploy_args(wasm_context),
     }
     record_deployment_created(args.name, deploy_args_payload)
     record_event(args.name, "prod_downloaders_deploy_started", deploy_args_payload)
@@ -469,7 +502,7 @@ def cmd_prod_downloaders_deploy(args):
     try:
         _ensure_monitoring(args, console)
         _ensure_client_infra(args, console)
-        _provision_prod_downloader(args, addresses_file, console)
+        _provision_prod_downloader(args, addresses_file, console, wasm_context)
         _start_prod_downloader(args, console)
         from saorsa_deploy.cmd.provision_telegraf_metrics import (
             provision_client_telegraf_best_effort,

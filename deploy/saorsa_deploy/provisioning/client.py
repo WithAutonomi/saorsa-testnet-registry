@@ -42,6 +42,20 @@ from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
 )
+from saorsa_deploy.provisioning.wasm_client import (
+    WASM_CLIENT_DATA_DIR,
+    WASM_CLIENT_DIR,
+    WASM_CLIENT_ENV_PATH,
+    WASM_CLIENT_LOG_DIR,
+    WASM_NODE_MAJOR,
+    WASM_SERVICE_ENTRY,
+    build_bundle_install_command,
+    build_node_install_command,
+    render_env_file,
+)
+from saorsa_deploy.provisioning.wasm_client import (
+    build_systemd_unit as build_wasm_systemd_unit,
+)
 from saorsa_deploy.resources import get_resources_dir
 
 ANT_INSTALL_PATH = "/root/.local/bin/ant"
@@ -121,15 +135,22 @@ WantedBy=multi-user.target
 """
 
 
-#: Where the WASM bundle (wasm-pack output + compiled TS client + node_modules)
-#: is unpacked on a client VM.
-WASM_CLIENT_DIR = "/opt/ant-wasm-client"
-WASM_CLIENT_DATA_DIR = "/var/lib/ant-wasm-client"
-WASM_CLIENT_LOG_DIR = "/var/log/ant-wasm-client"
-WASM_CLIENT_ENV_PATH = "/etc/ant-wasm-client.env"
-#: Node major installed on WASM client VMs. Matches ant-client's own CI, which
-#: builds and tests the WASM package under Node 22.
-WASM_NODE_MAJOR = "22"
+
+
+#: Keys in the testnet WASM env file whose value is double-quoted. Explicit
+#: because the quoting is part of the file's bytes: a multiaddr list, a
+#: presigned URL and a RUST_LOG filter all contain characters a shell would
+#: otherwise split on, while the numeric and identifier values never have.
+WASM_ENV_QUOTED_KEYS = (
+    "BOOTSTRAP_MULTIADDRS",
+    "ADDRESSES_S3_BUCKET",
+    "ADDRESSES_S3_PREFIX",
+    "UPLOAD_PRESIGNED_URL",
+    "SECRET_KEY",
+    "RPC_URL",
+    "PAYMENT_TYPE",
+    "RUST_LOG",
+)
 
 
 def _normalize_secret(k: str) -> str:
@@ -151,26 +172,10 @@ def _build_wasm_unit(role: str) -> str:
     polyfill, bootstrapping from the bootstrap multiaddrs.
     """
     label = "Uploader" if role == "wasm-upload" else "Downloader"
-    return f"""\
-[Unit]
-Description=Ant WASM Client {label}
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile={WASM_CLIENT_ENV_PATH}
-Environment=NODE_ENV=production
-WorkingDirectory={WASM_CLIENT_DIR}
-ExecStart=/usr/bin/node {WASM_CLIENT_DIR}/dist/main.js
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-"""
+    return build_wasm_systemd_unit(
+        f"Ant WASM Client {label}",
+        exec_start=f"/usr/bin/node {WASM_SERVICE_ENTRY}",
+    )
 
 
 class AntClientProvisioner:
@@ -346,11 +351,7 @@ class AntClientProvisioner:
             state,
             server.shell,
             name=f"Install Node.js {WASM_NODE_MAJOR}",
-            commands=[
-                f"command -v node >/dev/null 2>&1 && echo 'NODE:SKIP' || "
-                f"(curl -fsSL https://deb.nodesource.com/setup_{WASM_NODE_MAJOR}.x "
-                f"| bash - && apt-get install -y -qq nodejs && echo 'NODE:INSTALLED')"
-            ],
+            commands=[build_node_install_command()],
             host=wasm_hosts,
         )
         add_op(
@@ -358,18 +359,10 @@ class AntClientProvisioner:
             server.shell,
             name="Install WASM client bundle",
             commands=[
-                # Always re-fetch rather than presence-gating on the directory:
-                # the bundle is namespaced by deployment name and the builder
-                # overwrites it, so a re-provision after a rebuild must pick up
-                # the new one. (The ant binary install is presence-gated, which
-                # is exactly why `deployments upgrade-ant-binary` had to exist.)
-                f"rm -rf {WASM_CLIENT_DIR} && mkdir -p {WASM_CLIENT_DIR} "
-                f"{WASM_CLIENT_DATA_DIR} {WASM_CLIENT_LOG_DIR} && "
-                f"wget -q '{self.wasm_bundle_url}' -O /tmp/ant-wasm-client.tar.gz && "
-                f"tar xzf /tmp/ant-wasm-client.tar.gz -C {WASM_CLIENT_DIR} && "
-                f"rm -f /tmp/ant-wasm-client.tar.gz && "
-                f"test -f {WASM_CLIENT_DIR}/dist/main.js && "
-                f"test -f {WASM_CLIENT_DIR}/pkg/ant_core_bg.wasm"
+                build_bundle_install_command(
+                    self.wasm_bundle_url,
+                    data_dirs=(WASM_CLIENT_DATA_DIR, WASM_CLIENT_LOG_DIR),
+                )
             ],
             host=wasm_hosts,
         )
@@ -377,46 +370,49 @@ class AntClientProvisioner:
         bootstraps = ",".join(self.bootstrap_webrtc_multiaddrs)
         for host in wasm_hosts:
             env = ip_to_env[host.name]
-            lines = [
-                f'ROLE={env["role"]}',
-                f'REGION={env["region"]}',
-                f'CLIENT_INDEX={env["client_index"]}',
-                f'BOOTSTRAP_MULTIADDRS="{bootstraps}"',
-                f'FILE_SIZE_KB={env["file_size_kb"]}',
-                f"WASM_DIR={WASM_CLIENT_DIR}/pkg",
-                f"LOG_DIR={WASM_CLIENT_LOG_DIR}",
-                f"ADDRESSES_FILE={WASM_CLIENT_DATA_DIR}/addresses.txt",
-                f'ADDRESSES_S3_BUCKET="{self.addresses_s3_bucket}"',
-                f'ADDRESSES_S3_PREFIX="{self.addresses_s3_prefix}"',
-                f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}"',
-                f'SECRET_KEY="{env["secret_key"]}"',
-                f'RPC_URL="{self.wasm_rpc_url or ""}"',
+            values = {
+                "ROLE": env["role"],
+                "REGION": env["region"],
+                "CLIENT_INDEX": env["client_index"],
+                "BOOTSTRAP_MULTIADDRS": bootstraps,
+                "FILE_SIZE_KB": env["file_size_kb"],
+                "WASM_DIR": f"{WASM_CLIENT_DIR}/pkg",
+                "LOG_DIR": WASM_CLIENT_LOG_DIR,
+                "ADDRESSES_FILE": f"{WASM_CLIENT_DATA_DIR}/addresses.txt",
+                "ADDRESSES_S3_BUCKET": self.addresses_s3_bucket,
+                "ADDRESSES_S3_PREFIX": self.addresses_s3_prefix,
+                "UPLOAD_PRESIGNED_URL": env["upload_presigned_url"],
+                "SECRET_KEY": env["secret_key"],
+                "RPC_URL": self.wasm_rpc_url or "",
                 # The manifest's `payment:` for this entry ("merkle" /
                 # "no-merkle" / unset). The harness maps it to ant-core's
                 # explicit payment mode; it must never rely on ant-core's
                 # "auto" default, which needs a merkle wallet for big batches.
-                f'PAYMENT_TYPE="{env["payment_type"]}"',
-                f'RUST_LOG="{env["rust_log"]}"',
+                "PAYMENT_TYPE": env["payment_type"],
+                "RUST_LOG": env["rust_log"],
                 # The address pool is shared with the native tier, whose 1000 MB
                 # uploader publishes files ant-core's browser path cannot
                 # download. Address lines carry the size, so the downloader
                 # skips those instead of fetching a data map to be refused.
-                f"MAX_DOWNLOAD_BYTES={WASM_MAX_FILE_BYTES}",
-            ]
+                "MAX_DOWNLOAD_BYTES": WASM_MAX_FILE_BYTES,
+            }
             if self.influx_url and self.influx_token:
-                lines += [
-                    f"INFLUX_URL={self.influx_url}",
-                    f"INFLUX_TOKEN={self.influx_token}",
-                    f"INFLUX_ORG={self.influx_org}",
-                    # WASM file operations go to their own bucket. They are the
-                    # same `upload`/`download` measurements the native clients
-                    # write, so sharing a bucket would let any dashboard panel
-                    # or ad-hoc query average two transports measured ~2-4x
-                    # apart. (Host metrics are unaffected — a WASM client VM's
-                    # telegraf still reports to the shared client bucket.)
-                    f"INFLUX_BUCKET={INFLUXDB_WASM_BUCKET}",
-                ]
-            body = "\n".join(lines) + "\n"
+                values.update(
+                    {
+                        "INFLUX_URL": self.influx_url,
+                        "INFLUX_TOKEN": self.influx_token,
+                        "INFLUX_ORG": self.influx_org,
+                        # WASM file operations go to their own bucket. They are
+                        # the same `upload`/`download` measurements the native
+                        # clients write, so sharing a bucket would let any
+                        # dashboard panel or ad-hoc query average two transports
+                        # measured ~2-4x apart. (Host metrics are unaffected — a
+                        # WASM client VM's telegraf still reports to the shared
+                        # client bucket.)
+                        "INFLUX_BUCKET": INFLUXDB_WASM_BUCKET,
+                    }
+                )
+            body = render_env_file(values, quoted=WASM_ENV_QUOTED_KEYS)
             unit = unit_for_role(env["role"])
             other = unit_for_role(
                 "wasm-download" if env["role"] == "wasm-upload" else "wasm-upload"

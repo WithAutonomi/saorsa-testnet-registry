@@ -156,6 +156,11 @@ def log_level_to_v_flag(level: str) -> str:
     return "-" + ("v" * LOG_LEVEL_VERBOSITY[level])
 
 
+#: Client transport for a production client deployment. `native` runs the `ant`
+#: binary; `wasm` runs ant-core compiled to WASM over WebRTC-Direct.
+ClientKind = Literal["native", "wasm"]
+
+
 class _Base(BaseModel):
     # extra="forbid": a mistyped key is a loud error, not a silent no-op.
     # coerce_numbers_to_str: YAML parses `ant: 1000` / `eth: 0.1` as int/float, but
@@ -689,9 +694,94 @@ class ProdUploadersSpec(_Base):
         return self
 
 
+class WasmBinary(_Base):
+    """The `ant-core` WASM bundle source for a production WASM client.
+
+    Branch form only, and `branch` takes a **branch or a tag** — `build
+    ant-wasm` clones with `git clone --branch <ref>`, which accepts either, so
+    an RC is pinned with `branch: ant-cli-v0.3.8-rc.1`. `version` is refused
+    because no WASM package is published as a release; there is nothing for a
+    version to name.
+    """
+
+    branch: str
+    repo_owner: Optional[str] = None
+    version: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _no_version(self) -> "WasmBinary":
+        if self.version:
+            raise ValueError(
+                "wasm_binary: `version` is not supported — no ant-core WASM "
+                "package is published as a release. Pin a git tag with "
+                "`branch: ant-cli-vX.Y.Z` instead (V2-1337 tracks a released "
+                "version)"
+            )
+        return self
+
+
+def _check_prod_wasm_download(spec, kind: str) -> None:
+    """Validate a download spec's ``client_kind: wasm`` configuration.
+
+    Three options are refused rather than ignored: `bootstrap_cache` selects
+    between ant's peer cache and an explicit `--bootstrap`, and a browser client
+    does neither; `memory_profiling` and `download_diagnostics` both act on the
+    `ant` process, which is not what runs. A silently-ignored option is worse
+    than an error — the operator would read the manifest as describing the run.
+    """
+    if spec.client_kind != "wasm":
+        if spec.wasm_binary is not None:
+            raise ValueError(
+                f"{kind}.wasm_binary is only valid with `client_kind: wasm`"
+            )
+        if spec.wasm_bootstrap_multiaddrs_file is not None:
+            raise ValueError(
+                f"{kind}.wasm_bootstrap_multiaddrs_file is only valid with "
+                "`client_kind: wasm`"
+            )
+        return
+
+    if spec.wasm_binary is None:
+        raise ValueError(
+            f"{kind}.wasm_binary is required when `client_kind: wasm` "
+            "(the bundle is built from source by `build ant-wasm`)"
+        )
+    forbidden = [
+        name
+        for name in ("bootstrap_cache", "memory_profiling", "download_diagnostics")
+        if getattr(spec, name) is not None
+    ]
+    if forbidden:
+        raise ValueError(
+            f"{kind}: {', '.join(forbidden)} cannot be set with "
+            "`client_kind: wasm` — bootstrap_cache has no browser-path meaning, "
+            "and memory_profiling/download_diagnostics act on the `ant` process, "
+            "which a WASM client never runs"
+        )
+
+    from saorsa_deploy.prod_wasm import check_wasm_vm_size
+
+    parts = spec.spec.split(":", 1)
+    vm_size = parts[1] if len(parts) == 2 else None
+    problem = check_wasm_vm_size(vm_size, spec.provider)
+    if problem:
+        raise ValueError(f"{kind}.spec: {problem}")
+
+
 class ProdDownloadersSpec(_Base):
     spec: str  # 'region[:vm_size]' (single client VM)
     binary: Binary
+    # Which transport this deployment's single client VM runs: the native `ant`
+    # binary over QUIC, or ant-core compiled to WASM over WebRTC-Direct. ONE
+    # transport per deployment — the role names the VM and its state, and a
+    # blended result describes neither instrument (the WASM tier measured
+    # ~4.2x slower on download).
+    client_kind: Optional[ClientKind] = None
+    # The WASM bundle source, required under `client_kind: wasm`.
+    wasm_binary: Optional[WasmBinary] = None
+    # Override the committed production bootstrap WebRTC multiaddr list. No URL
+    # form: nothing publishes these addresses at a URL.
+    wasm_bootstrap_multiaddrs_file: Optional[str] = None
     addresses_path: Optional[str] = None
     monitoring_volume_size: Optional[int] = None
     keep_monitoring: Optional[bool] = None
@@ -732,6 +822,12 @@ class ProdDownloadersSpec(_Base):
     monitoring_volume_type: Optional[str] = None
 
 
+    @model_validator(mode="after")
+    def _wasm_options(self) -> "ProdDownloadersSpec":
+        _check_prod_wasm_download(self, "prod_downloaders")
+        return self
+
+
 class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
     sleep_interval_secs: Optional[int] = None
     # InfluxDB bucket retention in days (default 7); 0 = infinite. For a
@@ -740,6 +836,11 @@ class ProdContinuousDownloaderSpec(ProdDownloadersSpec):
     # Per-op download-log retention in days before the daily prune timer
     # (default 7); 0 = keep forever.
     log_retention_days: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _wasm_options_continuous(self) -> "ProdContinuousDownloaderSpec":
+        _check_prod_wasm_download(self, "prod_continuous_downloader")
+        return self
 
 
 class ProdUploadVerifier(_Base):

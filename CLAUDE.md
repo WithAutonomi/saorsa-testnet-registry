@@ -381,9 +381,118 @@ See `deploy/README.md` §"Running continuous downloaders against production" for
 - **`--download-diagnostics`** (default **off**) passes `ant file download --download-diagnostics <PATH>`, writing one JSONL record per chunk-fetch attempt. Default off because the flag exists only on instrumented `ant` builds — a stock binary rejects it and every download fails. The path is **per-operation** (`/var/log/ant-prod-downloader/<op>.diag.jsonl`, beside that op's `.stdout`/`.stderr`) because `ant` opens it with `truncate`: one shared path across a multi-address run would retain only the last address's records. Threaded via a `DOWNLOAD_DIAGNOSTICS` env-file line, mirroring `MEMORY_PROFILING`. Available on both download kinds and as a manifest key.
 - Registers a `Deployment` row with `deploy_args.kind = "prod-downloaders"`.
 - The persisted `deploy_args["addresses"]` (list of resolved addresses, also written for `prod-continuous-downloader`) is rendered inline by `deployments slack-post` instead of the raw `addresses_file` path.
-- **`deployments generate-inventory` covers both download kinds.** They keep no deployment state (they join production), so the inventory is built from S3 client/monitoring state plus the registry row: `node_vms`/`bootstrap_vms` empty and no devnet manifest (that describes a self-hosted network and its wallet key — meaningless here), but `client_vms` gives the VM IP/provider/region/SSH and a **`client_config`** section (schema **5**) gives the address list, the resolved binary, the settings that change how `ant` is invoked (`bootstrap_cache`, `download_diagnostics`, `memory_profiling`, `rust_log`, `clock_skew`, `network`, `sleep_interval_secs`) and the on-VM `paths` for the artefacts. The **`paths` block is the teardown-critical part**: nothing collects the per-op `.stdout`/`.stderr`, the `.diag.jsonl` or the heaptrack traces, and they die with the VM. The address list lives only in the registry, so `client_config` needs `DATABASE_URL`; without it the VM sections are still written and the command warns. `inventory.py`'s `SUPPORTED_SCHEMA_VERSIONS` accepts 3/4/5 — a client inventory has no `node_vms`, so `load_node_inventory` correctly rejects it. **`deployments up` runs the step automatically** for these two kinds (after the deploy, before `slack-post`), mirroring the final step of the testnet sequence; it is **`best_effort`**, so a snapshot failure warns rather than halting a run whose infrastructure is already up and billing. The other prod kinds emit no such step — `generate-inventory` has no path for them yet and would fail at the end of an otherwise-successful deploy.
+- **`deployments generate-inventory` covers both download kinds.** They keep no deployment state (they join production), so the inventory is built from S3 client/monitoring state plus the registry row: `node_vms`/`bootstrap_vms` empty and no devnet manifest (that describes a self-hosted network and its wallet key — meaningless here), but `client_vms` gives the VM IP/provider/region/SSH and a **`client_config`** section (schema **7**) gives the address list, the resolved binary, the settings that change how `ant` is invoked (`bootstrap_cache`, `download_diagnostics`, `memory_profiling`, `rust_log`, `clock_skew`, `network`, `sleep_interval_secs`) and the on-VM `paths` for the artefacts. The **`paths` block is the teardown-critical part**: nothing collects the per-op `.stdout`/`.stderr`, the `.diag.jsonl` or the heaptrack traces, and they die with the VM. The address list lives only in the registry, so `client_config` needs `DATABASE_URL`; without it the VM sections are still written and the command warns. `inventory.py`'s `SUPPORTED_SCHEMA_VERSIONS` accepts 3/4/5/6/7 — a client inventory has no `node_vms`, so `load_node_inventory` correctly rejects it. **`deployments up` runs the step automatically** for these two kinds (after the deploy, before `slack-post`), mirroring the final step of the testnet sequence; it is **`best_effort`**, so a snapshot failure warns rather than halting a run whose infrastructure is already up and billing. The other prod kinds emit no such step — `generate-inventory` has no path for them yet and would fail at the end of an otherwise-successful deploy.
 
 See `deploy/README.md` §"Running one-shot downloaders against production" for the full argument table.
+
+### The browser path on the production download kinds (WASM)
+
+Both remote download kinds take **`client_kind: native|wasm`** (CLI
+`--client-kind`, default native): `wasm` runs the transfers over WebRTC-Direct
+through ant-core compiled to WASM instead of the native `ant` binary, measuring
+what a browser client experiences against the REAL production network — which
+nothing else does, since `ant-cli` links native ant-core and so takes the native
+transport however it is invoked. **One transport per deployment** (a blended
+result describes neither instrument: WASM measured ~4.2x slower on download), so
+it is a property of the deployment, persisted in `deploy_args.client_kind`.
+Example: `deploy/manifests/profiles/prod-wasm-downloaders.yaml`. Impl:
+`prod_wasm.py` + `cmd/prod_wasm_cli.py` (the shared prod-WASM foundation,
+consumed by the upload kinds later), `provisioning/wasm_client.py` (extracted
+from `provisioning/client.py:_add_wasm_ops`, byte-identical), and a new
+`resources/wasm-client/src/cli.ts`.
+
+**`ant-wasm` is a single-operation CLI that is a drop-in for `ant`.** Installed at
+`/usr/local/bin/ant-wasm` from the bundle's new `dist/cli.js` entry point, it
+supports `file upload --public [--merkle|--no-merkle] <path>` and `file download
+<addr> -o <path>`, reads `SECRET_KEY`/`BOOTSTRAP_MULTIADDRS`/`RUST_LOG` from the
+environment (no `--evm-network` — the payment identity comes from a node's
+HELLO), and prints a **final JSON line on stdout in the `ant --json` shape**
+(plus `payment_sent`, `error_kind`, `file_size`) with progress on stderr. A
+`--payment-marker <path>` file is written the instant a payment is submitted, so a
+parent can tell the money went out even if the child is killed before it prints.
+That shape is what leaves the prod Python services, their units, their per-op logs
+and their restart policies **unchanged by the transport** — `prod_downloader.py`
+walks the same list, keeps the same
+`/var/log/ant-prod-downloader/{op:04d}-{addr}.{stdout,stderr}` pair, and only
+spawns a different binary. It also buys crash accounting for free: the WASM
+process is the largest RSS on the VM, so an OOM lands on the **child**, the parent
+sees a signal exit, records `error_kind=crash` and continues — no checkpoint, no
+`inflight.json`, no restart-policy change. The testnet `ROLE` loop (`dist/main.js`)
+is untouched.
+
+**Over-cap is a SKIP, not a failure.** ant-core refuses a browser-path file above
+`WASM_MAX_FILE_BYTES` (1,000,000,000): a property of the transport, not of the
+network, since the content is stored and healthy. Address lines are
+`<address>[ <bytes>]`, so a declared over-cap size is skipped **up front** with
+nothing spawned, and a child's `error_kind=over_cap` is recorded as a skip too. A
+**bare line is never skipped** — unknown is not "too big". `status` is an integer
+Influx field (a string would be a type conflict and the point would be dropped),
+so the wire value is **`2`**, mapped to a new `OpRecordStatus.SKIPPED`. Skipped
+rows are STORED but excluded from every success-rate denominator (the
+`deployment_file_results` aggregates, `deployments compare`, `clients
+estimate-gas`, the Slack reply) — with a six-address list holding two over-cap
+entries, counting them would cap the gate at 66.7% and fail every run.
+
+**Refused, not ignored, under `client_kind: wasm`:** `bootstrap_cache` (selects
+ant's peer cache vs an explicit `--bootstrap`; a browser client does neither),
+`memory_profiling` and `download_diagnostics` (both act on the `ant` process). A
+silently-dropped option leaves the operator reading their own manifest as a
+description of the run. `rust_log`, `network` and `clock_skew` work normally —
+and `network` is now actually threaded through `prod continuous-downloader`'s
+infra step, where it was dropped for native too.
+
+**Bootstraps are ICE-probed before any infrastructure exists.** The committed
+`resources/prod_bootstrap_webrtc_multiaddrs.txt` (7 entries, written by `prod
+bootstrap webrtc-addresses`) is the default source — there is deliberately **no
+URL flag**, because nothing publishes these addresses at a URL —
+overridable with `--wasm-bootstrap-multiaddrs-file`. `webrtc_probe.probe()` is
+used because saorsa-transport's admission filter returns `Decision::Ignore` on
+every failure, so an unauthenticated probe cannot tell a firewalled port from a
+healthy one. **Zero answering refuses** (the alternative is a VM billing from
+creation that fails every op); a **partial** answer warns, names the dead entries
+and proceeds, since ant-core cools a failed endpoint down for 30 minutes and a
+live subset is a working deployment. `--skip-bootstrap-probe` exists because
+ant-node 0.20.0 opens the listener 2–15 min after a restart (V2-1331). Recorded as
+`deploy_args.wasm_bootstrap`.
+
+**VM sizing is validated.** A browser-path download holds ~4x the file in WASM
+memory (900 MB → 3.9 GB RSS, run 587), so a size-less `--spec` defaults to
+`s-4vcpu-8gb` on DigitalOcean and a DO slug below 8 GB is **refused** (its memory
+is encoded in the slug, so it is a fact); other providers' names cannot be read
+here, so those only warn. An under-sized box makes every transfer an OOM kill,
+which reads as a network fault.
+
+**`wasm_binary: {branch, repo_owner}`** names the bundle, and `branch` takes a
+branch **or a tag** (`git clone --branch` accepts either) — that is how an RC is
+pinned. `version:` is refused pointing at the tag form and V2-1337, since no
+ant-core WASM package is published as a release. The orchestrator emits a
+resumable `build ant-wasm` step before the deploy. **`build ant-wasm` now runs
+`npm ci`** against the committed lockfile (`npm install` could resolve a different
+`node-datachannel` — the WebRTC implementation the whole path runs on — for the
+same ant-client ref) and writes a `build-info.json` into the tarball root plus an
+S3 sidecar `builds/<name>/<owner>/<ref>/ant-wasm-client.build-info.json` holding
+the ant-client **commit**, ref, owner, resolved `node-datachannel` version,
+`wasm_pack_version` and `built_at`. Deploy reads the sidecar into
+`deploy_args.wasm_build`; a pre-change bundle warns and records `null`. The commit
+is what identifies the code — a moving branch name does not.
+
+**Results stay separate.** WASM operations land in the `wasm-client-metrics`
+Influx bucket (so nothing can average two transports measured ~4x apart);
+`record-results` reads both buckets and takes `client_kind` from
+**`deploy_args`**, NOT from `_build_client_kind_lookup`'s S3 client state, which
+`clients destroy` deletes — a re-run after teardown would otherwise relabel every
+WASM op as native and push its failures into the native hard floors. A nullable
+**`address`** column on `deployment_download_records` records what each op
+fetched (both transports emit the field now; nothing else maps an operation to its
+target, and no past row can be backfilled because the Influx points never held
+it). `print-downloads`, `print-recorded-results`, `slack-post` and
+`record-results --update-slack` render the per-transport split with skip and crash
+counts; the Slack post names the bundle commit and the probe result.
+`generate-inventory` gains `client_kind`, `wasm_build`, `wasm_bootstrap` and the
+`ant_wasm_*` paths (schema **7**).
+
+See `deploy/README.md` §"The browser path on the production download kinds" for
+the full argument table.
 
 ### Upgrading the `ant` binary in place on a running prod downloader
 

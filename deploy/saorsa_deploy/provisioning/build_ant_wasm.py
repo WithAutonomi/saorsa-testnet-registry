@@ -27,6 +27,7 @@ from rich.console import Console
 
 from saorsa_deploy.binary_source import (
     ANT_WASM_ARCHIVE_NAME,
+    ANT_WASM_BUILD_INFO_NAME,
     BUILDS_BUCKET,
     BUILDS_KEY_PREFIX,
     get_ant_wasm_build_url,
@@ -38,11 +39,13 @@ from saorsa_deploy.provisioning.apt import (
 from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.wasm_build import (  # noqa: F401  (re-exported)
+    BUILD_INFO_NAME,
     NODE_MAJOR,
     NPM_BUILD_ARGV,
     NPM_INSTALL_ARGV,
     WASM_PACK_ARGV,
     WASM_PACK_VERSION,
+    build_info_command,
     bundle_load_check_source,
     clone_argv,
     shell,
@@ -51,6 +54,7 @@ from saorsa_deploy.wasm_build import (  # noqa: F401  (re-exported)
 BUILD_DIR = "/root/ant-client"
 CLIENT_SRC_DIR = "/root/wasm-client"
 STAGE_DIR = "/root/ant-wasm-stage"
+BUILD_INFO_PATH = f"/root/{BUILD_INFO_NAME}"
 
 
 class AntWasmBuilder:
@@ -73,6 +77,10 @@ class AntWasmBuilder:
         self.console = console or Console()
         self.s3_key = (
             f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_ARCHIVE_NAME}"
+        )
+        self.build_info_s3_key = (
+            f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/"
+            f"{ANT_WASM_BUILD_INFO_NAME}"
         )
 
     def execute(self) -> str:
@@ -199,6 +207,20 @@ class AntWasmBuilder:
             add_op(
                 state,
                 server.shell,
+                name="Record build provenance",
+                commands=[
+                    build_info_command(
+                        checkout_dir=BUILD_DIR,
+                        client_src_dir=CLIENT_SRC_DIR,
+                        dest_path=BUILD_INFO_PATH,
+                        ref=self.branch_name,
+                        repo_owner=self.repo_owner,
+                    )
+                ],
+            )
+            add_op(
+                state,
+                server.shell,
                 name="Assemble the bundle",
                 commands=[
                     # node_modules is bundled rather than installed on each client
@@ -210,6 +232,7 @@ class AntWasmBuilder:
                     f"cp -r {CLIENT_SRC_DIR}/dist {STAGE_DIR}/dist && "
                     f"cp -r {CLIENT_SRC_DIR}/node_modules {STAGE_DIR}/node_modules && "
                     f"cp {CLIENT_SRC_DIR}/package.json {STAGE_DIR}/package.json && "
+                    f"cp {BUILD_INFO_PATH} {STAGE_DIR}/{BUILD_INFO_NAME} && "
                     f"cd {STAGE_DIR} && tar czf /root/{ANT_WASM_ARCHIVE_NAME} ."
                 ],
             )
@@ -236,6 +259,20 @@ class AntWasmBuilder:
                     f"s3://{BUILDS_BUCKET}/{self.s3_key}"
                 ],
             )
+            add_op(
+                state,
+                server.shell,
+                name="Upload build provenance to S3",
+                commands=[
+                    # Uploaded separately as well as inside the tarball: the
+                    # deploy commands record the provenance in `deploy_args` and
+                    # never fetch or unpack the bundle themselves.
+                    f"AWS_ACCESS_KEY_ID={aws_access_key} "
+                    f"AWS_SECRET_ACCESS_KEY={aws_secret_key} "
+                    f"aws s3 cp {BUILD_INFO_PATH} "
+                    f"s3://{BUILDS_BUCKET}/{self.build_info_s3_key}"
+                ],
+            )
 
             self.console.print("Running build operations...")
             try:
@@ -259,7 +296,9 @@ class AntWasmBuilder:
             name="Prepare client source directory",
             commands=[f"rm -rf {CLIENT_SRC_DIR} && mkdir -p {CLIENT_SRC_DIR}/src"],
         )
-        for rel in ("package.json", "tsconfig.json"):
+        # package-lock.json is uploaded because the build runs `npm ci`, which
+        # refuses to run without it.
+        for rel in ("package.json", "package-lock.json", "tsconfig.json"):
             add_op(
                 state,
                 files.put,

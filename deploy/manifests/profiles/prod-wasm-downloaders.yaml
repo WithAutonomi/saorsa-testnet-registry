@@ -1,0 +1,81 @@
+# One-shot production downloads over the BROWSER path (WebRTC-Direct).
+#
+# The same deployment as `prod downloaders` in every respect except which binary
+# the service spawns: `ant-wasm` (ant-core compiled to WASM) instead of `ant`.
+# It measures what a browser client actually experiences against the real
+# production network, which nothing else here does — `ant-cli` links native
+# ant-core, so it takes the native transport however it is invoked.
+#
+#   saorsa-deploy deployments plan --config <this file>      # preview the steps
+#   saorsa-deploy deployments up   --config <this file>      # build + deploy
+#   saorsa-deploy deployments down --name PROD-WASM-DL-01    # tear down
+#
+# Copy into the git-ignored manifests/runs/ dir and edit per run.
+
+name: PROD-WASM-DL-01
+kind: prod-downloaders
+purpose: "Browser-path download measurement against production"
+ssh_key_path: ~/.ssh/ant_deploy
+
+prod_downloaders:
+  # 8 GB minimum, and that is validated: a browser-path download holds ~4x the
+  # file in WASM memory (900 MB measured at 3.9 GB RSS on smoke run 587), so a
+  # smaller box turns every transfer into an OOM kill — which reads as a network
+  # fault rather than as an under-sized VM. Omit the size and it defaults to
+  # s-4vcpu-8gb on DigitalOcean.
+  spec: lon1:s-4vcpu-8gb
+  provider: digitalocean
+
+  client_kind: wasm
+
+  # The WASM bundle. Built from source by `build ant-wasm`, which `deployments
+  # up` emits as a resumable step before the deploy — no ant-core WASM package is
+  # published as a release, so `branch:` is the only form. It takes a TAG as
+  # readily as a branch (`git clone --branch` accepts either), which is how an RC
+  # is pinned.
+  wasm_binary:
+    branch: ant-cli-v0.3.8-rc.1
+    repo_owner: WithAutonomi
+
+  # `binary:` still names the native `ant` release for the record, even though a
+  # WASM run installs nothing at that path.
+  binary:
+    version: "0.3.8"
+
+  # Address lines may carry the published size (`<address> <bytes>`). An entry
+  # declaring more than 1,000,000,000 bytes is SKIPPED up front — ant-core
+  # refuses a browser-path file above that cap, and a skip is recorded as its own
+  # status rather than as a download failure, because the content is on the
+  # network and perfectly healthy.
+  addresses_path: ~/prod-wasm-addresses.txt
+
+  # Forward the service's output — including the `ant-wasm` child's stdout and
+  # stderr, which the service tees to the per-op logs — to a dedicated
+  # Elasticsearch stood up by the deploy command.
+  forward_logs: true
+
+  # Override the committed production bootstrap WebRTC multiaddr list if needed.
+  # There is deliberately no URL form: nothing publishes these addresses at one.
+  # Every entry is ICE-probed before any infrastructure is created; if none
+  # answers the deploy refuses, and a partial answer warns and names the dead
+  # ones. Refresh the list with `prod bootstrap webrtc-addresses`.
+  # wasm_bootstrap_multiaddrs_file: ~/prod-bootstraps.txt
+
+  monitoring_provider: digitalocean
+  monitoring_volume_size: 50
+
+  # NOT AVAILABLE on this transport, and refused rather than ignored:
+  #   bootstrap_cache      — selects ant's peer cache vs an explicit --bootstrap;
+  #                          a browser client does neither.
+  #   memory_profiling     — heaptrack wraps the `ant` process, which never runs.
+  #   download_diagnostics — an `ant` flag, likewise.
+  # `rust_log`, `network` and `clock_skew` all work normally.
+
+slack_post: true
+
+# Results: `deployments record-results --name PROD-WASM-DL-01 --monitoring-name
+# PROD-WASM-DL-01` pulls the run's points (WASM operations land in the
+# `wasm-client-metrics` bucket, kept separate so no dashboard can average two
+# transports measured ~4x apart) and records each with client_kind = 'wasm' plus
+# the address it fetched. `print-recorded-results` renders them under a `wasm`
+# transport heading with the skip and crash counts.

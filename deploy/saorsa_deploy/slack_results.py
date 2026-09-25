@@ -87,7 +87,16 @@ def _totals_section(
     With no WASM record at all the two original fields are emitted unchanged.
     """
     wasm_ok = wasm_fail = 0
+    skipped = crashes = 0
     for record in op_records or []:
+        # Counted across both transports: a skip or a crash is worth seeing
+        # whichever tier produced it, and only the browser path produces either
+        # today.
+        if record.get("status") == "skipped":
+            skipped += 1
+            continue
+        if record.get("error_kind") == "crash":
+            crashes += 1
         if record.get("client_kind") != "wasm":
             continue
         if record.get("status") == "success":
@@ -95,11 +104,20 @@ def _totals_section(
         else:
             wasm_fail += 1
 
+    # A skip is neither: the transport refused a file the network holds happily,
+    # so it stays out of both totals and is reported on its own.
+    extra: list[tuple[str, str]] = []
+    if skipped:
+        extra.append(("Skipped (over-cap)", str(skipped)))
+    if crashes:
+        extra.append(("Crashes (killed by signal)", str(crashes)))
+
     if not (wasm_ok or wasm_fail):
         return _fields_section(
             [
                 ("Total successes", str(total_ok)),
                 ("Total failures", str(total_fail)),
+                *extra,
             ]
         )
 
@@ -112,6 +130,7 @@ def _totals_section(
             ("Native failures", str(total_fail - wasm_fail)),
             ("WASM successes", str(wasm_ok)),
             ("WASM failures", str(wasm_fail)),
+            *extra,
         ]
     )
 

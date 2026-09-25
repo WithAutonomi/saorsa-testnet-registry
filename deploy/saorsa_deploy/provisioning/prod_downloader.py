@@ -35,6 +35,7 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
@@ -48,6 +49,7 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
 )
+from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.provisioning.network_profile import (
     build_network_impairment_command,
     format_network_label,
@@ -55,6 +57,14 @@ from saorsa_deploy.provisioning.network_profile import (
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
+)
+from saorsa_deploy.provisioning.wasm_client import (
+    ANT_WASM_CLI_PATH,
+    WASM_CLIENT_DIR,
+    WASM_NODE_MAJOR,
+    build_ant_wasm_cli_command,
+    build_bundle_install_command,
+    build_node_install_command,
 )
 from saorsa_deploy.resources import get_resources_dir
 
@@ -138,6 +148,9 @@ class ProdDownloaderProvisioner:
         download_diagnostics: bool = False,
         exempt_endpoints: list = None,
         log_retention_days: int = 7,
+        client_kind: str = "native",
+        wasm_bundle_url: str | None = None,
+        bootstrap_multiaddrs: list[str] | None = None,
         console: Console | None = None,
     ):
         self.downloaders = downloaders
@@ -159,7 +172,31 @@ class ProdDownloaderProvisioner:
         # Elasticsearch stood up by the deploy command).
         self.exempt_endpoints = exempt_endpoints or []
         self.log_retention_days = log_retention_days
+        # "native" runs the `ant` binary; "wasm" runs ant-core compiled to WASM
+        # over WebRTC-Direct through the `ant-wasm` CLI. One transport per
+        # deployment: the same Python service, the same unit, the same per-op
+        # logs — only the binary it spawns differs.
+        self.client_kind = client_kind
+        self.wasm_bundle_url = wasm_bundle_url
+        self.bootstrap_multiaddrs = bootstrap_multiaddrs or []
         self.console = console or Console()
+        if self.is_wasm and not self.wasm_bundle_url:
+            raise RuntimeError(
+                "client_kind='wasm' needs a WASM bundle URL — run `build "
+                "ant-wasm --name <name> --branch-name <ref> --repo-owner <owner>`"
+            )
+        if self.is_wasm and not self.bootstrap_multiaddrs:
+            # Without one a browser client cannot reach the network at all, and
+            # the failure would surface only as an unexplained connection error
+            # minutes after the VM is up and billing.
+            raise RuntimeError(
+                "client_kind='wasm' needs at least one bootstrap WebRTC "
+                "multiaddr (see `prod bootstrap webrtc-addresses`)"
+            )
+
+    @property
+    def is_wasm(self) -> bool:
+        return self.client_kind == "wasm"
 
     def execute(self) -> None:
         host_ips = [d["ip"] for d in self.downloaders if d.get("ip")]
@@ -210,7 +247,10 @@ class ProdDownloaderProvisioner:
             )
 
             self._add_install_heaptrack_op(state)
-            self._add_install_ant_op(state)
+            if self.is_wasm:
+                self._add_install_wasm_ops(state)
+            else:
+                self._add_install_ant_op(state)
             self._add_deploy_service_script_op(state)
             self._add_env_and_addresses_op(state)
             self._add_systemd_unit_op(state)
@@ -356,6 +396,36 @@ class ProdDownloaderProvisioner:
             ],
         )
 
+    def _add_install_wasm_ops(self, state: State) -> None:
+        """Install Node, the WASM bundle and the ``ant-wasm`` CLI.
+
+        No `ant` binary is installed: nothing on this VM runs it. `require_cli`
+        is set because a bundle built before the CLI existed would install
+        cleanly and then fail every transfer with "cannot find module".
+        """
+        add_op(
+            state,
+            server.shell,
+            name=f"Install Node.js {WASM_NODE_MAJOR}",
+            commands=[build_node_install_command()],
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install WASM client bundle",
+            commands=[
+                build_bundle_install_command(
+                    self.wasm_bundle_url, data_dirs=(), require_cli=True
+                )
+            ],
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install ant-wasm CLI",
+            commands=[build_ant_wasm_cli_command()],
+        )
+
     def _add_install_ant_op(self, state: State) -> None:
         if self.binary_url:
             download_url = self.binary_url
@@ -431,11 +501,30 @@ class ProdDownloaderProvisioner:
 
         influx_lines = ""
         if self.influx_url and self.influx_token:
+            # WASM file operations go to their own bucket. They are the same
+            # `download` measurement the native client writes, so sharing a
+            # bucket would let any dashboard panel or ad-hoc query average two
+            # transports measured ~4x apart. Decided here rather than by the
+            # caller because the provisioner is what knows the transport.
+            bucket = INFLUXDB_WASM_BUCKET if self.is_wasm else self.influx_bucket
             influx_lines = (
                 f"INFLUX_URL={self.influx_url}\n"
                 f"INFLUX_TOKEN={self.influx_token}\n"
                 f"INFLUX_ORG={self.influx_org}\n"
-                f"INFLUX_BUCKET={self.influx_bucket}\n"
+                f"INFLUX_BUCKET={bucket}\n"
+            )
+
+        # Appended only for a WASM deployment, so a native env file renders
+        # byte-identically to before (the service defaults CLIENT_KIND to
+        # "native" when the key is absent).
+        wasm_lines = ""
+        if self.is_wasm:
+            wasm_lines = (
+                "CLIENT_KIND=wasm\n"
+                f"ANT_WASM={ANT_WASM_CLI_PATH}\n"
+                f'BOOTSTRAP_MULTIADDRS="{",".join(self.bootstrap_multiaddrs)}"\n'
+                f"WASM_DIR={WASM_CLIENT_DIR}/pkg\n"
+                f"MAX_DOWNLOAD_BYTES={WASM_MAX_FILE_BYTES}\n"
             )
 
         # The peers file is written unconditionally: ant only reads it when
@@ -470,7 +559,7 @@ RUST_LOG={self.rust_log or ''}
 MEMORY_PROFILING={'true' if self.memory_profiling else 'false'}
 DOWNLOAD_DIAGNOSTICS={'true' if self.download_diagnostics else 'false'}
 HEAPTRACK_DIR={HEAPTRACK_DIR}
-{influx_lines}ENV_EOF"""
+{wasm_lines}{influx_lines}ENV_EOF"""
 
         add_op(
             state,

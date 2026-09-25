@@ -18,6 +18,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AddressSink, AddressSource } from "./addresses.js";
+import { classifyError as classify } from "./classify.js";
 import {
   type AntCore,
   type BrowserNetworkClient,
@@ -61,17 +62,6 @@ function makePayload(sizeBytes: number, seed: number): Uint8Array {
     out[i] = x & 0xff;
   }
   return out;
-}
-
-/** Short, stable classification of a failure, for the `error_kind` field. */
-function classify(error: unknown): string {
-  const msg = String(error);
-  if (/payment|quote|insufficient|funds/i.test(msg)) return "payment";
-  if (/peers|quorum|close group|witness/i.test(msg)) return "quorum";
-  if (/timeout|timed out/i.test(msg)) return "timeout";
-  if (/connect|channel|transport|webrtc|dial/i.test(msg)) return "connection";
-  if (/not found|missing|record/i.test(msg)) return "not_found";
-  return "other";
 }
 
 /**

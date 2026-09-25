@@ -158,6 +158,57 @@ def _uploaders(manifest: Manifest) -> list[Step]:
     return [Step(argv, "Deploy prod uploaders + monitoring")]
 
 
+def _wasm_download_flags(spec) -> list[str]:
+    """`--client-kind` plus the WASM bundle/bootstrap flags, when configured.
+
+    Emitted only under `client_kind: wasm`, so a manifest with no WASM fields
+    produces byte-identical argv to before (the schema refuses the WASM keys
+    without it, so there is nothing else to emit).
+    """
+    if getattr(spec, "client_kind", None) != "wasm":
+        return []
+    argv = ["--client-kind", "wasm"]
+    binary = spec.wasm_binary
+    argv += ["--wasm-branch-name", binary.branch]
+    argv += ["--wasm-repo-owner", binary.repo_owner or "maidsafe"]
+    if spec.wasm_bootstrap_multiaddrs_file is not None:
+        argv += [
+            "--wasm-bootstrap-multiaddrs-file",
+            spec.wasm_bootstrap_multiaddrs_file,
+        ]
+    return argv
+
+
+def _wasm_bundle_build_steps(manifest: Manifest, spec) -> list[Step]:
+    """The `build ant-wasm` step a WASM download kind needs before its deploy.
+
+    The bundle is always built from source — there is no release form — and the
+    deploy step fetches it from the name-scoped S3 key this step populates, so
+    the ordering is not optional. Resumable like every other build step, which
+    matters because it is the ~10-minute part of the run.
+    """
+    if getattr(spec, "client_kind", None) != "wasm":
+        return []
+    binary = spec.wasm_binary
+    return [
+        Step(
+            [
+                "build",
+                "ant-wasm",
+                "--name",
+                manifest.name,
+                "--branch-name",
+                binary.branch,
+                "--repo-owner",
+                binary.repo_owner or "maidsafe",
+                "--ssh-key-path",
+                manifest.ssh_key_path,
+            ],
+            "Build WASM client bundle from branch",
+        )
+    ]
+
+
 def _downloaders(manifest: Manifest) -> list[Step]:
     spec = manifest.prod_downloaders
     argv = [
@@ -191,13 +242,16 @@ def _downloaders(manifest: Manifest) -> list[Step]:
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)
     argv += _download_diagnostics_flag(spec)
+    argv += _wasm_download_flags(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
     argv += ["--ssh-key-path", manifest.ssh_key_path]
-    return [Step(argv, "Deploy prod one-shot downloaders + monitoring")]
+    return _wasm_bundle_build_steps(manifest, spec) + [
+        Step(argv, "Deploy prod one-shot downloaders + monitoring")
+    ]
 
 
 def _format_pool_request_token(pool: dict) -> str:
@@ -319,13 +373,16 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)
     argv += _download_diagnostics_flag(spec)
+    argv += _wasm_download_flags(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
     argv += ["--ssh-key-path", manifest.ssh_key_path]
-    return [Step(argv, "Deploy prod continuous downloader + monitoring")]
+    return _wasm_bundle_build_steps(manifest, spec) + [
+        Step(argv, "Deploy prod continuous downloader + monitoring")
+    ]
 
 
 def _canary(manifest: Manifest) -> list[Step]:

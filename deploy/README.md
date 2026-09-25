@@ -2696,7 +2696,7 @@ Both options are also available on `prod continuous-downloader deploy` and as ma
 uv run saorsa-deploy deployments generate-inventory --name PROD-DL-OS-01 --ssh-key-path ~/.ssh/ant_deploy
 ```
 
-These kinds keep no deployment state of their own — they join production rather than standing up nodes — so the inventory is built from the S3 client/monitoring state plus the registry row. `node_vms` and `bootstrap_vms` are empty (listing production's peers as our VMs would mislead anything that tried to SSH into them) and no devnet manifest is written, but `client_vms` carries the VM's IP, provider, region and SSH details, `observability_vms` carries the InfluxDB/Grafana/Elasticsearch VMs, and a `client_config` section (schema 5) describes the run:
+These kinds keep no deployment state of their own — they join production rather than standing up nodes — so the inventory is built from the S3 client/monitoring state plus the registry row. `node_vms` and `bootstrap_vms` are empty (listing production's peers as our VMs would mislead anything that tried to SSH into them) and no devnet manifest is written, but `client_vms` carries the VM's IP, provider, region and SSH details, `observability_vms` carries the InfluxDB/Grafana/Elasticsearch VMs, and a `client_config` section (schema 7) describes the run:
 
 | Field | Description |
 |-------|-------------|
@@ -2969,6 +2969,143 @@ missing, comparing recorded rows against the deployment's pool claims, which say
 exactly how many files the run took. It **warns rather than blocks**: refusing on
 a non-TTY would strand billable infrastructure when `down` runs unattended.
 `--skip-results-check` silences it.
+
+### The browser path on the production download kinds (`--client-kind wasm`)
+
+Both download kinds can run their transfers over **WebRTC-Direct** — ant-core
+compiled to WASM, the browser path — instead of the native `ant` binary. It
+measures what a browser client actually experiences against the real production
+network, which nothing else here does: `ant-cli` links native ant-core, so it
+takes the native transport however it is invoked.
+
+`--client-kind wasm` (manifest `client_kind: wasm`) is the whole switch. **One
+transport per deployment**: the native and WASM tiers are not the same instrument
+— the WASM tier measured ~4.2x slower on download — so a blended result describes
+neither, and the transport is a property of the deployment rather than of a VM.
+
+```bash
+uv run saorsa-deploy prod downloaders deploy \
+  --name PROD-WASM-DL-01 \
+  --spec lon1:s-4vcpu-8gb \
+  --purpose "Browser-path download measurement" \
+  --client-kind wasm \
+  --wasm-branch-name ant-cli-v0.3.8-rc.1 --wasm-repo-owner WithAutonomi \
+  --addresses-path my-addresses.txt \
+  --forward-logs
+```
+
+The bundle must be built first — `deployments up` emits a resumable
+`build ant-wasm` step ahead of the deploy, and a bare CLI invocation needs
+`saorsa-deploy build ant-wasm --name <name> --branch-name <ref> --repo-owner
+<owner>` run against the same `--name`.
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--client-kind` | `native\|wasm` | `native` | Which transport the client VM runs |
+| `--wasm-branch-name` | string | — | ant-client branch **or tag** the bundle was built from. Required with `wasm` |
+| `--wasm-repo-owner` | string | `maidsafe` | GitHub owner of that ant-client repo |
+| `--wasm-bootstrap-multiaddrs-file` | path | the committed list | Override the production bootstrap WebRTC multiaddrs |
+| `--skip-bootstrap-probe` | flag | off | Skip the preflight ICE probe of those listeners |
+
+Manifest keys: `client_kind`, `wasm_binary: {branch, repo_owner}` and
+`wasm_bootstrap_multiaddrs_file` under `prod_downloaders:` /
+`prod_continuous_downloader:`. Example:
+`deploy/manifests/profiles/prod-wasm-downloaders.yaml`.
+
+**`wasm_binary.branch` takes a branch or a tag, and there is no `version`.** No
+ant-core WASM package is published as a GitHub release, so there is nothing for a
+version to name; `build ant-wasm` clones with `git clone --branch <ref>`, which
+accepts either, and that is how an RC is pinned. A `version:` is refused with a
+message pointing at the tag form.
+
+**The VM needs at least 8 GB of RAM, and that is enforced.** A browser-path
+download holds ~4x the file in WASM memory (900 MB measured at 3.9 GB RSS on
+smoke run 587), so a smaller box makes every transfer an OOM kill — which shows
+up in the results as a network fault rather than as an under-sized VM. A
+DigitalOcean slug encodes its memory, so one below the floor is **refused** and a
+size-less `--spec` **defaults to `s-4vcpu-8gb`**; other providers' names cannot be
+read, so those only warn.
+
+**The bootstraps are probed before any infrastructure is created.** A browser
+client bootstraps from the production WebRTC-Direct listeners and has no other
+way in, so every entry in
+`resources/prod_bootstrap_webrtc_multiaddrs.txt` (refresh it with
+`prod bootstrap webrtc-addresses`) gets a real ICE connectivity check — not a
+STUN binding, because saorsa-transport's admission filter returns
+`Decision::Ignore` on every failure and an unauthenticated probe cannot tell a
+firewalled port from a healthy one. If **nothing** answers the deploy refuses:
+the alternative is a VM that bills from creation and fails every operation. A
+**partial** answer warns and names the dead entries and then proceeds — ant-core
+cools a failed endpoint down for 30 minutes and moves on, so a live subset is a
+working deployment, but the run's results have to be read in that light. Pass
+`--skip-bootstrap-probe` after a bootstrap restart: ant-node 0.20.0 opens the
+listener 2–15 minutes later, so a just-upgraded tier is legitimately silent. The
+outcome is recorded in `deploy_args.wasm_bootstrap` and rendered by
+`deployments slack-post`.
+
+**Three options are refused, not ignored.** `bootstrap_cache` selects between
+ant's peer cache and an explicit `--bootstrap`, and a browser client does
+neither; `memory_profiling` and `download_diagnostics` both act on the `ant`
+process, which never runs. A silently-dropped option would leave the operator
+reading their own manifest as a description of the run. `rust_log`, `network` and
+`clock_skew` all work normally.
+
+**The service, unit, logs and restart policy are the native ones.** The same
+`prod_downloader.py` walks the same address list with the same `ONE_SHOT` /
+`SLEEP_INTERVAL_SECS` behaviour, writes the same per-op
+`/var/log/ant-prod-downloader/{op:04d}-{addr}.{stdout,stderr}` pair, and runs
+under the same `ant-prod-downloader` unit. It spawns
+`ant-wasm file download <addr> -o <path>` instead of `ant` — **no
+`--evm-network`** (a download pays for nothing) and **no `--bootstrap`** (the
+multiaddrs are in the service environment). `ant-wasm` is a single-operation CLI
+installed at `/usr/local/bin/ant-wasm` that prints a final JSON line on stdout in
+the same shape as `ant --json`; human-readable progress goes to stderr, which is
+why `--forward-logs` works unchanged on this path.
+
+Because the transfer is a **child process**, an OOM kill lands on it rather than
+on the Python parent — it is by far the largest RSS on the VM — so the parent
+sees a signal exit, records the operation as `error_kind=crash`, and carries on
+to the next address. That is why this needs no checkpoint file, no restart-policy
+change and no inflight journal.
+
+**Over-cap entries are skipped, not failed.** ant-core refuses a browser-path
+file above 1,000,000,000 bytes. That is a property of the transport, not of the
+network — the content is stored and perfectly healthy — so counting it as a
+download failure would report a transport limitation as a network fault. Address
+lines may be `<address>[ <bytes>]`: when the declared size is over the cap the
+service **skips up front** without spawning anything, and when only the refusal
+reveals it the child's `error_kind=over_cap` is recorded as a skip too. A **bare
+line is never skipped** — unknown is not "too big", so an address list written
+before sizes were published keeps working. Skipped rows are stored (the operator
+needs to see that the list held an uncarriable entry) but excluded from **every**
+success-rate denominator: the aggregates, `deployments compare`, `clients
+estimate-gas` and the Slack reply.
+
+**Results stay separate at every layer.** WASM operations go to the
+`wasm-client-metrics` InfluxDB bucket, so no dashboard panel or ad-hoc query can
+average two transports measured ~4x apart; `record-results` reads both buckets,
+deduplicates, and records each row with `client_kind` taken from
+`deploy_args.client_kind`. It is read from there rather than from the S3 client
+state because that state dies at teardown, and a re-run after `down` would
+otherwise relabel every WASM operation as native — pushing its failures into the
+native hard floors, the one place they must never count. Each download row also
+carries the **`address`** it fetched (both transports emit it now; nothing else
+maps an operation to its target). `print-downloads`,
+`print-recorded-results`, `slack-post` and `record-results --update-slack` render
+the per-transport split with the skip and crash counts, and the Slack post names
+the bundle's commit and the probe result.
+
+**Build provenance.** `build ant-wasm` runs `npm ci` against the committed
+lockfile and writes a `build-info.json` into the tarball root plus an S3 sidecar
+(`builds/<name>/<owner>/<ref>/ant-wasm-client.build-info.json`) holding the
+ant-client commit, the ref, the resolved `node-datachannel` version, the
+`wasm-pack` version and the build timestamp. The deploy reads the sidecar into
+`deploy_args.wasm_build`; a bundle built before it existed warns and records
+`null`. The commit is what identifies the code — `--wasm-branch-name` may name a
+moving branch, so "built from `web-support`" says nothing about what ran.
+
+Out of scope here: the WASM upload side (V2-1334 / V2-1335), a released WASM
+version (V2-1337), `prod canary` (native by design) and the `local-*` kinds.
 
 ### Running uploaders against production (`prod uploaders`)
 

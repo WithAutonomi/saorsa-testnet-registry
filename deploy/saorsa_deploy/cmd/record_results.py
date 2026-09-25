@@ -306,6 +306,7 @@ def _record_file_ops(
     table.add_column("Size (MB)", justify="right")
     table.add_column("OK", justify="right")
     table.add_column("Fail", justify="right")
+    table.add_column("Skip", justify="right")
     table.add_column("Avg ms", justify="right")
     table.add_column("Min ms", justify="right")
     table.add_column("Max ms", justify="right")
@@ -318,6 +319,7 @@ def _record_file_ops(
             f"{agg['file_size_bytes'] / (1024 * 1024):.1f}",
             str(agg["success_count"]),
             str(agg["failure_count"]),
+            str(agg.get("skipped_count", 0)),
             "-" if agg["avg_duration_ms"] is None else str(agg["avg_duration_ms"]),
             "-" if agg["min_duration_ms"] is None else str(agg["min_duration_ms"]),
             "-" if agg["max_duration_ms"] is None else str(agg["max_duration_ms"]),
@@ -437,6 +439,17 @@ def _warn_unclassifiable_wasm_hosts(repo, deployment, console) -> None:
     )
 
 
+#: Kinds whose transport is a property of the DEPLOYMENT, not of a per-VM role.
+#: One transport per deployment, recorded in `deploy_args.client_kind` at deploy
+#: time — so it survives teardown, unlike the S3 client state the testnet lookup
+#: reads. That matters most for exactly these kinds: a re-run of `record-results`
+#: after `down` would otherwise relabel every WASM op as native and push its
+#: failures into the native gates.
+_DEPLOY_ARGS_CLIENT_KIND_KINDS = frozenset(
+    {"prod-downloaders", "prod-continuous-downloader"}
+)
+
+
 def _build_client_kind_lookup(deployment, repo=None, console=None):
     """Return host -> "native" | "wasm", or a constant None.
 
@@ -451,6 +464,11 @@ def _build_client_kind_lookup(deployment, repo=None, console=None):
     WASM clients at all: an unannotated row is right for a native-only run, and
     guessing would be worse than saying nothing.
     """
+    deploy_args = getattr(deployment, "deploy_args", None) or {}
+    if deploy_args.get("kind") in _DEPLOY_ARGS_CLIENT_KIND_KINDS:
+        kind = deploy_args.get("client_kind") or "native"
+        return lambda host: kind
+
     name = getattr(deployment, "name", "") or ""
     if not name:
         return lambda host: None
@@ -504,7 +522,9 @@ def _record_file_op_records(
 
     upload_recorded = 0
     download_recorded = 0
-    skipped = 0
+    # Points that could not be turned into a row at all (a missing key, an
+    # unrecognised status). Distinct from a `skipped` OPERATION, which IS a row.
+    unusable = 0
     op_records: list[dict] = []
     for p in points:
         start_ns = p.get("start_ns")
@@ -514,14 +534,19 @@ def _record_file_op_records(
         if start_ns is None or file_size is None or measurement not in (
             "upload", "download"
         ):
-            skipped += 1
+            unusable += 1
             continue
         if status_code == 0:
             status = OpRecordStatus.SUCCESS
         elif status_code == 1:
             status = OpRecordStatus.FAILURE
+        elif status_code == 2:
+            # A transport refusal (an over-cap file on the browser path), not a
+            # network failure. Stored so the skip is visible, and excluded from
+            # every success-rate denominator downstream.
+            status = OpRecordStatus.SKIPPED
         else:
-            skipped += 1
+            unusable += 1
             continue
 
         started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
@@ -546,7 +571,9 @@ def _record_file_op_records(
             repo.upsert_upload_record(**kwargs)
             upload_recorded += 1
         else:
-            repo.upsert_download_record(**kwargs)
+            # Downloads only: an upload's address is its RESULT and lives in the
+            # prod-upload tables, not in the op record.
+            repo.upsert_download_record(**kwargs, address=p.get("address"))
             download_recorded += 1
 
         # Collected for the optional --update-slack per-operation detail.
@@ -559,13 +586,16 @@ def _record_file_op_records(
                 "duration_ms": duration_ms,
                 "started_at": started_at,
                 "client_kind": client_kind_for_host(p["host"]),
+                "address": p.get("address"),
+                "error_kind": p.get("error_kind"),
             }
         )
 
     console.print(
         f"[bold green]Recorded {upload_recorded} upload record(s) and "
         f"{download_recorded} download record(s) "
-        f"({skipped} skipped) for deployment '{args.name}'.[/bold green]"
+        f"({unusable} unusable point(s)) for deployment '{args.name}'."
+        f"[/bold green]"
     )
 
     return op_records

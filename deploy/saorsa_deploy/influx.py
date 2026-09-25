@@ -65,6 +65,8 @@ PIVOT_FLUX_TEMPLATE = """from(bucket: "{bucket}")
   |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "upload" or r._measurement == "download")
   |> filter(fn: (r) =>
+       r._field == "address" or
+       r._field == "error_kind" or
        r._field == "file_size" or
        r._field == "start_ns" or
        r._field == "status" or
@@ -109,8 +111,9 @@ def fetch_operation_points(
 
     Each dict contains: ``_time`` (datetime, UTC), ``host`` (str),
     ``_measurement`` (str: "upload"|"download"), ``file_size`` (int, bytes),
-    ``start_ns`` (int), ``status`` (int: 0=success, 1=failure), ``total_ms``
-    (int).
+    ``start_ns`` (int), ``status`` (int: 0=success, 1=failure, 2=skipped),
+    ``total_ms`` (int), plus ``address`` and ``error_kind`` (str or None) when
+    the emitting client wrote them.
 
     ``stop`` defaults to :data:`FLUX_FAR_FUTURE` so that clock-skewed client
     VMs — which testnet manifests create deliberately — are not silently
@@ -286,6 +289,11 @@ def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
                     "start_ns": _parse_int(record.get("start_ns", "")),
                     "status": _parse_int(record.get("status", "")),
                     "total_ms": _parse_int(record.get("total_ms", "")),
+                    # String fields, absent on every point written before they
+                    # existed, so None rather than "" — "" would read as an
+                    # address that was recorded and happened to be empty.
+                    "address": record.get("address") or None,
+                    "error_kind": record.get("error_kind") or None,
                 }
             )
         except (KeyError, ValueError):
@@ -306,6 +314,12 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
     (``status == 0``) because a failed op's ``total_ms`` reflects a timeout or
     abort, not a transfer time. Groups with zero successful ops report
     ``None`` for all three duration stats.
+
+    ``status == 2`` (skipped) counts as NEITHER a success nor a failure. A
+    browser-path client cannot carry a file above ant-core's 1 GB cap, which is a
+    property of the transport rather than of the network -- the content is stored
+    and healthy -- so a skip must not enter a success-rate denominator. It is
+    still reported, from the ``skipped_count`` this returns.
     """
     groups: dict[tuple[str, str, int], list[dict]] = {}
     for p in points:
@@ -318,6 +332,7 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
     for (measurement, host, file_size), pts in groups.items():
         success = [p for p in pts if p.get("status") == 0]
         failure = [p for p in pts if p.get("status") == 1]
+        skipped = [p for p in pts if p.get("status") == 2]
         success_durations = [
             p["total_ms"] for p in success if p.get("total_ms") is not None
         ]
@@ -348,6 +363,7 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
                 "last_finished_at": last_finished_at,
                 "success_count": len(success),
                 "failure_count": len(failure),
+                "skipped_count": len(skipped),
                 "avg_duration_ms": avg_ms,
                 "min_duration_ms": min_ms,
                 "max_duration_ms": max_ms,
