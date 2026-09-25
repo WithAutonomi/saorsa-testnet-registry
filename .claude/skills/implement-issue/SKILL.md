@@ -85,9 +85,33 @@ uv run pytest
 
 `uv run pytest` takes several minutes — run it with a timeout of at least 10 minutes
 (600000 ms), or in the background to a log file and wait on the PID. Then run the specific
-tests the issue names, if any, and any manual verification it describes (a CLI invocation, a
-`deployments plan` against a manifest, etc.) — **never anything that creates cloud
-infrastructure or touches a live deployment**.
+tests the issue names, if any, and **every** verification it describes — a CLI invocation, a
+`deployments plan` against a manifest, and **live end-to-end runs that stand up real
+infrastructure** (testnets, production client deployments, builds). Performing the issue's live
+verification is part of the job, not optional: this skill is the authorisation for the
+infrastructure and spend the issue's verification section calls for. Do not stop to ask.
+
+For a live run:
+
+* **Use fresh deployments you create.** Name them as the issue says, or `VERIFY-<issue>-<n>` if it
+  doesn't, and check the name is unused (registry + `saorsa-deploy/` S3 state) before `up`. Never
+  run `up`/`down`/provision/destroy or restart services against a deployment this run did not
+  create (e.g. `ant-prod-*`, `PROD-*`, `STG-*`); read-only queries against them are fine.
+* Build what the issue says to build (`build …` steps run on remote build VMs — never build Rust
+  locally).
+* Long waits: run `up` in the background to a log file and wait on the PID; poll state on a
+  sensible interval rather than sleeping blind. One `up`/`down` per deployment name at a time.
+* Collect everything the issue's pass criteria need **before teardown** (ES/Influx/VM artefacts
+  die with it): `record-results`, `print-recorded-results`, logs, SSH checks.
+* **Tear down every deployment you created, whether the verification passed or failed**, then
+  confirm nothing remains (S3 state gone, `deployments list`/registry status). Only leave one up
+  if the issue says to. A teardown failure goes in the PR body with the exact resources left.
+* Put the results — pass/fail per criterion, row counts, quoted output — in the PR's Test plan
+  and in a comment on the issue.
+
+If a live run fails because the change is wrong, fix it and re-run. If it fails for a reason
+outside the change (provider outage, quota, missing credential), record it and go to Blocked
+with what is still outstanding.
 
 Every failure in a file you touched, or in a test you added, is yours to fix. A failure you did
 not cause — check by running that one test against `origin/main` in a temporary worktree
