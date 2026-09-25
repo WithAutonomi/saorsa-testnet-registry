@@ -31,10 +31,11 @@ Example:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -82,6 +83,13 @@ from saorsa_deploy.webrtc_probe import probe  # noqa: E402
 TO_VERSION = "0.20.0"
 LISTENING_MESSAGE = "ADR-0015 WebRTC Direct listening"
 
+#: How long after `ant-node starting` a missing listening line is still
+#: *pending* rather than a miss. 0.20.0 opens the listener only after the node
+#: has joined: measured 7m10s-11m55s on six fleet services at the 2026-09-24 A2
+#: checkpoint (1m43s-3m29s+ on the bootstraps). Without a grace window, every
+#: service upgraded in the last ten minutes fails the check while healthy.
+LISTEN_GRACE = timedelta(minutes=15)
+
 #: The WARN messages ant-node #220 and saorsa-transport can emit around the
 #: WebRTC-Direct path. Matched as phrases, not exact terms: most interpolate an
 #: error or an endpoint into the tail of the line.
@@ -119,6 +127,7 @@ class Coverage:
     covered: list[str] = field(default_factory=list)
     misses: list[tuple[str, str]] = field(default_factory=list)
     unassessed: list[str] = field(default_factory=list)
+    pending: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def assessed(self) -> int:
@@ -133,6 +142,8 @@ def evaluate_listening_coverage(
     services: list[str],
     starts: dict[str, datetime],
     listens: dict[str, datetime],
+    now: datetime | None = None,
+    grace: timedelta = LISTEN_GRACE,
 ) -> Coverage:
     """Which new-version services logged the listening line since their last start.
 
@@ -140,12 +151,20 @@ def evaluate_listening_coverage(
     *unassessed*, not a miss: the window simply does not cover its start, and
     counting it as a failure would turn every quiet service into a regression
     once the rollout has been done for a while.
+
+    With ``now``, a service that started less than ``grace`` ago and has not
+    listened yet is *pending*, not a miss: the listener opens minutes after
+    start (see ``LISTEN_GRACE``). Past the grace window it is a miss as before.
     """
     result = Coverage()
     for key in sorted(services):
         started, listened = starts.get(key), listens.get(key)
         if listened is not None and (started is None or listened >= started):
             result.covered.append(key)
+        elif started is not None and now is not None and now - started < grace:
+            result.pending.append(
+                (key, f"restarted {iso(started)}, within the {grace} listen grace")
+            )
         elif started is not None:
             reason = (
                 f"restarted {iso(started)}, last listening line {iso(listened)}"
@@ -292,6 +311,34 @@ def select_sample(
     return chosen[:sample]
 
 
+def new_arm_services(vm: hosts.Vm, new_arm: set[str]) -> tuple[str, ...]:
+    """The VM's services that are on the new version, in inventory order.
+
+    Arm keys are ``<HOST>/<n>`` (ES upper-cases the host and tags the service
+    number); inventory services are ``ant-node-<n>``.
+    """
+    host = vm.name.upper()
+    return tuple(
+        service
+        for service in vm.services
+        if f"{host}/{service.rsplit('-', 1)[-1]}" in new_arm
+    )
+
+
+def new_arm_vms(vms: list[hosts.Vm], new_arm: set[str]) -> list[hosts.Vm]:
+    """``vms`` restricted to their new-version services.
+
+    Mid-rollout most services are still on the old version, which never writes
+    ``webrtc-direct.multiaddr``. Sampling a VM's first service regardless of
+    version failed 9/10 healthy samples at the 2026-09-24 A2 checkpoint. VMs with
+    no new-version service end up with no services, which ``select_sample``
+    already skips.
+    """
+    return [
+        dataclasses.replace(vm, services=new_arm_services(vm, new_arm)) for vm in vms
+    ]
+
+
 def multiaddr_path(service: str) -> str:
     return f"{MOUNT_POINT}/data/{service}/{MULTIADDR_FILENAME}"
 
@@ -387,18 +434,23 @@ def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:
 
     starts = collect_latest(es, START_MESSAGE, start, end)
     listens = collect_latest(es, LISTENING_MESSAGE, start, end)
-    coverage = evaluate_listening_coverage(arms.new, starts, listens)
+    coverage = evaluate_listening_coverage(arms.new, starts, listens, now=end)
     if arms.new:
         listening_check = Check(
             name="listening coverage",
             status=PASS if not coverage.misses else FAIL,
             detail=(
                 f"{len(coverage.covered)}/{coverage.assessed} assessed service(s) "
-                f"({coverage.share:.2f}%), {len(coverage.unassessed)} unassessed "
+                f"({coverage.share:.2f}%), {len(coverage.pending)} pending "
+                f"(started < {LISTEN_GRACE} ago), {len(coverage.unassessed)} unassessed "
                 "(no start and no listening line in window)"
             ),
             passed_on_zero=coverage.assessed == 0,
-            data={"misses": coverage.misses, "unassessed": coverage.unassessed},
+            data={
+                "misses": coverage.misses,
+                "pending": coverage.pending,
+                "unassessed": coverage.unassessed,
+            },
         )
     else:
         listening_check = Check(
@@ -415,7 +467,7 @@ def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:
 
     records: list[Advertised] = []
     if args.sample and arms.new:
-        vms = hosts.node_vms(DEPLOYMENT_NAME, args.inventory)
+        vms = new_arm_vms(hosts.node_vms(DEPLOYMENT_NAME, args.inventory), set(arms.new))
         for vm in select_sample(vms, args.sample):
             records.append(read_advertised(vm, vm.services[0]))
     sample_check = evaluate_advertised(records, arms, args.sample)
@@ -434,6 +486,7 @@ def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:
         "coverage": {
             "covered": coverage.covered,
             "misses": coverage.misses,
+            "pending": coverage.pending,
             "unassessed": coverage.unassessed,
         },
         "warn_families": [
@@ -469,6 +522,10 @@ def render_report(result: dict) -> str:
     if coverage["misses"]:
         lines += ["Misses:", ""]
         lines += [f"- `{key}` — {reason}" for key, reason in coverage["misses"]]
+        lines.append("")
+    if coverage["pending"]:
+        lines += ["Pending (inside the listen grace window, not counted):", ""]
+        lines += [f"- `{key}` — {reason}" for key, reason in coverage["pending"]]
         lines.append("")
     families = [f for f in result["_families"] if f.count]
     if families:

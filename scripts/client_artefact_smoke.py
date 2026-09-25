@@ -11,9 +11,12 @@ right, and are the *two distribution channels* the same build?
 3. Both installs download the same public address and produce byte-identical
    files. Identical bytes from two independently obtained binaries is the whole
    point: a channel that ships a different build shows up here and nowhere else.
-4. `ant update` from the npm install refuses, because updating a
+4. `ant update --force` from the npm install refuses, because updating a
    npm-distributed binary in place would leave npm's metadata lying about what
-   is installed (ant-client#192).
+   is installed (ant-client#192). `--force` is required: ant explains the
+   refusal only when an update is waiting or a reinstall was asked for, and the
+   install under test is the latest version, so a plain `ant update` just says
+   "Already up to date".
 
 No wallet and no upload: the promoted binary is the rc head and the rc has
 already run the client production tests. This proves the promoted artefacts and
@@ -120,6 +123,10 @@ def parse_dist_tags(text: str) -> dict[str, str]:
         parsed = json.loads(text or "")
     except json.JSONDecodeError as exc:
         raise ValueError(f"npm did not return JSON dist-tags: {exc}") from exc
+    # npm 12 wraps a single-field `view --json` result in a one-element array
+    # (`[{"latest": "0.3.8"}]`); earlier releases return the bare object.
+    if isinstance(parsed, list) and len(parsed) == 1:
+        parsed = parsed[0]
     if not isinstance(parsed, dict):
         raise ValueError(f"npm dist-tags is not an object: {parsed!r}")
     return {str(k): str(v) for k, v in parsed.items()}
@@ -319,10 +326,17 @@ def download_address(source: Source, address: str, dest: Path) -> None:
 
 
 def check_npm_update_refusal(source: Source) -> tuple[bool, str]:
-    """`ant update` from the npm install must refuse, naming npm."""
+    """`ant update --force` from the npm install must refuse, naming npm.
+
+    Without ``--force`` an up-to-date install prints "Already up to date" and
+    never reaches the refusal, which is the normal case here: the version under
+    test is the one npm just installed (measured on 0.3.8).
+    """
     if not source.command:
         return False, "no npm install to run `ant update` from"
-    result = run([*source.command, "update"], source.env, COMMAND_TIMEOUT_SECS)
+    result = run(
+        [*source.command, "update", "--force"], source.env, COMMAND_TIMEOUT_SECS
+    )
     output = (result.stdout or "") + (result.stderr or "")
     if is_npm_refusal(output):
         return True, "refused, naming npm"
@@ -390,7 +404,7 @@ def run_smoke(version: str, address: str, parent: Path) -> dict:
     refused, detail = check_npm_update_refusal(npm)
     extras.append(
         {
-            "name": "`ant update` refuses on npm install",
+            "name": "`ant update --force` refuses on npm install",
             "verdict": "PASS" if refused else "FAIL",
             "detail": detail,
         }
