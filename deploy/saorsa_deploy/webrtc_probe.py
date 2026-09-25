@@ -46,6 +46,8 @@ BINDING_REQUEST = 0x0001
 ATTR_USERNAME = 0x0006
 ATTR_MESSAGE_INTEGRITY = 0x0008
 ATTR_FINGERPRINT = 0x8028
+ATTR_PRIORITY = 0x0024
+ATTR_ICE_CONTROLLING = 0x802A
 #: RFC 5389 §15.5: the CRC-32 is XORed with this before being sent, so a
 #: fingerprinted message cannot be confused with another protocol's framing.
 FINGERPRINT_XOR = 0x5354554E
@@ -104,7 +106,14 @@ def build_binding_request(
     if len(transaction_id) != 12:
         raise ValueError("transaction id must be 12 bytes")
 
+    # PRIORITY and ICE-CONTROLLING are what a browser's check carries, and they
+    # are not optional here: saorsa-transport's admission filter answers with a
+    # challenge carrying ICE-CONTROLLED + PRIORITY and silently ignores any
+    # request smaller than that challenge (its anti-amplification rule). Without
+    # them the request is 20 bytes short and a healthy listener never replies.
     body = _attribute(ATTR_USERNAME, username.encode())
+    body += _attribute(ATTR_ICE_CONTROLLING, os.urandom(8))
+    body += _attribute(ATTR_PRIORITY, struct.pack("!I", 1))
 
     integrity_header = _header(
         BINDING_REQUEST, len(body) + _MESSAGE_INTEGRITY_LEN, transaction_id

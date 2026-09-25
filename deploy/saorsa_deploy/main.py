@@ -3843,6 +3843,13 @@ def main(argv=None):
         help="Skip the provider firewall preflight that opens the WebRTC port.",
     )
     prod_bootstrap_upgrade_parser.add_argument(
+        "--probe-advisory",
+        action="store_true",
+        help="Do not roll a host back when only the ICE probe fails: keep it on "
+        "the new version (the health gate, including the WebRTC listener line, "
+        "stays binding) and skip collecting the address list.",
+    )
+    prod_bootstrap_upgrade_parser.add_argument(
         "--ssh-key-path",
         type=str,
         default=None,
