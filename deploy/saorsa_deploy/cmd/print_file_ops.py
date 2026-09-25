@@ -24,7 +24,10 @@ from statistics import median
 from rich.console import Console
 from rich.table import Table
 
-from saorsa_deploy.client_roles import is_wasm
+from saorsa_deploy.client_transport import (
+    deployment_scoped_transport,
+    transport_map_from_client_state,
+)
 from saorsa_deploy.influx import (
     fetch_all_operation_points,
     fetch_prod_upload_points,
@@ -229,7 +232,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         _build_payment_map(args.name) if op_type == "upload" else {}
     )
     cache_by_host = _build_bootstrap_cache_map(args.name)
-    role_by_host = _build_role_map(args.name)
+    transport_by_host = _build_transport_map(args.name)
 
     for host in sorted(by_host.keys()):
         ops = sorted(
@@ -245,11 +248,9 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             else f"{len(ops)} op(s)"
         )
         title_parts = [host]
-        role = role_by_host.get(host)
-        if role is not None:
-            title_parts.append(
-                f"transport={'wasm' if is_wasm(role) else 'native'}"
-            )
+        transport = transport_by_host.get(host)
+        if transport is not None:
+            title_parts.append(f"transport={transport}")
         if op_type == "upload":
             payment = payment_by_host.get(host, "default")
             title_parts.append(f"payment={payment}")
@@ -280,11 +281,11 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             )
         console.print(table)
 
-    _print_transport_totals(op_type, by_host, role_by_host, console)
+    _print_transport_totals(op_type, by_host, transport_by_host, console)
 
 
 def _print_transport_totals(
-    op_type: str, by_host: dict, role_by_host: dict, console: Console
+    op_type: str, by_host: dict, transport_by_host: dict, console: Console
 ) -> None:
     """Success counts split by transport.
 
@@ -296,10 +297,9 @@ def _print_transport_totals(
     """
     tiers: dict[str, list[int]] = {}
     for host, ops in by_host.items():
-        role = role_by_host.get(host)
-        if role is None:
+        tier = transport_by_host.get(host)
+        if tier is None:
             continue
-        tier = "wasm" if is_wasm(role) else "native"
         slot = tiers.setdefault(tier, [0, 0, 0, 0])
         for op in ops:
             # A skip is neither a success nor an attempt: the transport refused
@@ -355,27 +355,57 @@ def _build_payment_map(name: str) -> dict[str, str]:
     return out
 
 
-def _build_role_map(name: str) -> dict[str, str]:
-    """Map hostname → client role for every client in the deployment.
+def _build_transport_map(name: str) -> dict[str, str]:
+    """Map hostname → "native" | "wasm" for every client in the deployment.
 
-    Used to label which transport each host's operations came from. Derived
-    from client state rather than by sniffing the hostname, so the canonical
-    role names in `client_roles` stay the single source of truth. Missing
-    client state returns an empty map — the caller omits the label rather than
-    guessing a transport, which would be worse than saying nothing.
+    A production client kind's transport is a property of the DEPLOYMENT, not of
+    the VM: its role is always the native `download`, so reading the role
+    reported every production WASM run as `transport=native` — recorded
+    correctly, printed wrong. `client_transport` holds both rules so the
+    recording and reporting paths cannot drift again.
+
+    An empty map means the caller omits the label rather than guessing a
+    transport, which would be worse than saying nothing.
     """
+    from saorsa_deploy.registry import get_repository
+
+    try:
+        repo = get_repository()
+        if repo is not None:
+            deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+            if deployment is not None:
+                scoped = deployment_scoped_transport(
+                    getattr(deployment, "deploy_args", None)
+                )
+                if scoped is not None:
+                    # One transport for the whole deployment; every host it wrote
+                    # points from ran it.
+                    return _ConstantTransport(scoped)
+    except Exception:
+        # Reporting must never fail because the registry is unreachable; fall
+        # back to the per-VM rule below.
+        pass
+
     try:
         state = load_client_state(name)
     except RuntimeError:
         return {}
-    out: dict[str, str] = {}
-    for c in state.get("clients", []):
-        role = c.get("role")
-        if not role:
-            continue
-        host = f"{name}-ant-client-{role}-{c['region']}-{c['client_index']}"
-        out[host] = role
-    return out
+    return transport_map_from_client_state(name, state)
+
+
+class _ConstantTransport(dict):
+    """A map answering the same transport for every host.
+
+    A dict subclass so the two call sites keep using `.get(host)` unchanged, and
+    so `len(...) < 2` still reports a single-transport run correctly.
+    """
+
+    def __init__(self, transport: str):
+        super().__init__()
+        self._transport = transport
+
+    def get(self, _host, default=None):  # noqa: D102
+        return self._transport
 
 
 def _build_bootstrap_cache_map(name: str) -> dict[str, bool]:

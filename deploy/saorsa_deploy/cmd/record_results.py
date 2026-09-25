@@ -24,6 +24,10 @@ from rich.table import Table
 from saorsa_db.models import FileOpType, OpRecordStatus, ProdUploadStatus
 
 from saorsa_deploy.client_roles import is_wasm
+from saorsa_deploy.client_transport import (
+    deployment_scoped_transport,
+    transport_map_from_client_state,
+)
 from saorsa_deploy.influx import (
     aggregate_file_results,
     fetch_all_operation_points,
@@ -439,17 +443,6 @@ def _warn_unclassifiable_wasm_hosts(repo, deployment, console) -> None:
     )
 
 
-#: Kinds whose transport is a property of the DEPLOYMENT, not of a per-VM role.
-#: One transport per deployment, recorded in `deploy_args.client_kind` at deploy
-#: time — so it survives teardown, unlike the S3 client state the testnet lookup
-#: reads. That matters most for exactly these kinds: a re-run of `record-results`
-#: after `down` would otherwise relabel every WASM op as native and push its
-#: failures into the native gates.
-_DEPLOY_ARGS_CLIENT_KIND_KINDS = frozenset(
-    {"prod-downloaders", "prod-continuous-downloader"}
-)
-
-
 def _build_client_kind_lookup(deployment, repo=None, console=None):
     """Return host -> "native" | "wasm", or a constant None.
 
@@ -464,10 +457,12 @@ def _build_client_kind_lookup(deployment, repo=None, console=None):
     WASM clients at all: an unannotated row is right for a native-only run, and
     guessing would be worse than saying nothing.
     """
-    deploy_args = getattr(deployment, "deploy_args", None) or {}
-    if deploy_args.get("kind") in _DEPLOY_ARGS_CLIENT_KIND_KINDS:
-        kind = deploy_args.get("client_kind") or "native"
-        return lambda host: kind
+    # A production client kind's transport belongs to the DEPLOYMENT, and the
+    # rule lives in `client_transport` so the reporting commands resolve it the
+    # same way. It survives teardown, unlike the S3 client state below.
+    scoped = deployment_scoped_transport(getattr(deployment, "deploy_args", None))
+    if scoped is not None:
+        return lambda host: scoped
 
     name = getattr(deployment, "name", "") or ""
     if not name:
@@ -484,13 +479,7 @@ def _build_client_kind_lookup(deployment, repo=None, console=None):
         # this column existed.
         return lambda host: None
 
-    by_host = {
-        f"{name}-ant-client-{c.get('role', 'upload')}-"
-        f"{c.get('region')}-{c.get('client_index')}": (
-            "wasm" if is_wasm(c.get("role", "upload")) else "native"
-        )
-        for c in clients
-    }
+    by_host = transport_map_from_client_state(name, state)
     return lambda host: by_host.get(host)
 
 

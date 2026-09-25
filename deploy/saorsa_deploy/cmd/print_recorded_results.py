@@ -140,14 +140,19 @@ def cmd_print_recorded_results(args) -> None:
     else:
         rows = repo.list_file_results_for_deployment(deployment.id)
         _print_file_results_section(rows, deployment.name, console)
+        upload_records = repo.list_upload_records_for_deployment(deployment.id)
+        download_records = repo.list_download_records_for_deployment(deployment.id)
         if args.details:
-            upload_records = repo.list_upload_records_for_deployment(deployment.id)
-            download_records = repo.list_download_records_for_deployment(
-                deployment.id
-            )
             _print_op_records_section(
                 upload_records, download_records, deployment.name, console
             )
+        else:
+            # The per-ROW dump stays behind --details, but the counts do not:
+            # `deployment_file_results` has no skipped column, so a group that is
+            # entirely skips renders as "0 OK / 0 Fail" — which reads as though
+            # nothing happened, the opposite of the truth. These are a handful of
+            # counts, and they print nothing at all for a run with no WASM rows.
+            _print_transport_totals(upload_records, download_records, console)
 
 
 def _resolve_kind(deploy_args) -> str:

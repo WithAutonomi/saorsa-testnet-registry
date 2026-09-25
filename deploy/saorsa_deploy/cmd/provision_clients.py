@@ -226,7 +226,14 @@ def _resolve_addresses_file_content(args, console) -> str | None:
             f"[bold red]Error:[/bold red] --addresses-file {path} is empty."
         )
         sys.exit(1)
-    line_count = sum(1 for line in stripped.splitlines() if line.strip())
+    # Comment lines are not addresses. The service skips them and so does
+    # `parse_addresses`; counting them here reported an 11-comment, 6-address
+    # file as holding 17 addresses.
+    line_count = sum(
+        1
+        for line in stripped.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
     console.print(f"  Addresses file: {path} ({line_count} address(es))")
     return stripped + "\n"
 
@@ -235,13 +242,21 @@ _ADDRESS_LEN = 64
 
 
 def parse_addresses(content: str | None) -> list[str]:
-    """Parse the textual addresses-file payload into a list of addresses.
+    """Parse the textual addresses-file payload into a list of address lines.
 
-    Blank lines and ``#`` comment lines are dropped. Every other line must
-    be a single whitespace-separated token that looks like an Autonomi
-    address (64 hex chars). Raises :class:`ValueError` if any line fails —
-    this catches the common mistake of pasting a full ``ant file download
-    <addr> -o <name>`` command into the file instead of bare addresses.
+    Blank lines and ``#`` comment lines are dropped. Every other line is
+    ``<address>[ <bytes>]``: a 64-hex-char Autonomi address, optionally
+    followed by the size the uploader published for it. Raises
+    :class:`ValueError` if any line fails — which still catches the common
+    mistake of pasting a whole ``ant file download <addr> -o <name>`` command
+    into the file, because `-o` is not a number and a command has more tokens
+    than two.
+
+    The declared size is KEPT in the returned line rather than stripped. It is
+    what makes an over-cap entry skippable without a fetch, so the recorded
+    ``deploy_args.addresses`` has to say which entries carried one — otherwise a
+    `skipped` result row has nothing explaining it. A line with no size comes
+    back bare, exactly as before, so every native run records what it always did.
     """
     if not content:
         return []
@@ -252,8 +267,10 @@ def parse_addresses(content: str | None) -> list[str]:
         if not stripped or stripped.startswith("#"):
             continue
         tokens = stripped.split()
-        if len(tokens) != 1:
-            bad.append((lineno, raw, f"expected 1 token, got {len(tokens)}"))
+        if len(tokens) > 2:
+            bad.append(
+                (lineno, raw, f"expected '<address> [bytes]', got {len(tokens)} tokens")
+            )
             continue
         token = tokens[0]
         if len(token) != _ADDRESS_LEN or any(
@@ -262,6 +279,15 @@ def parse_addresses(content: str | None) -> list[str]:
             bad.append(
                 (lineno, raw, f"not a {_ADDRESS_LEN}-char hex address")
             )
+            continue
+        if len(tokens) == 2:
+            size = tokens[1]
+            if not size.isdigit():
+                bad.append(
+                    (lineno, raw, f"size {size!r} is not a whole number of bytes")
+                )
+                continue
+            out.append(f"{token.lower()} {int(size)}")
             continue
         out.append(token.lower())
     if bad:

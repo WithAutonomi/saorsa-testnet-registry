@@ -1146,3 +1146,73 @@ class TestTheNativeWalkStillWorks:
             wasm=False,
         )
         assert "status=0i" in posted[0]
+
+
+class TestTheDeployTimeAddressValidator:
+    """`parse_addresses` gates the deploy, and it had to learn the sized form.
+
+    Found by the live verification, not by a unit test: the SERVICE's parser was
+    covered, but the validator the deploy command runs first still demanded
+    exactly one token per line — so the very address file the feature exists to
+    walk was rejected before any VM was created.
+    """
+
+    ADDR = "e6c97f1d0365fe715b6e4796d3b66a78938dbead94f451fa22154648457d6db2"
+    OTHER = "d91f87e78c6cb98cb7f380acfba4394c0a0644dc21a573a6f3e191571d5a092c"
+
+    def _parse(self, content):
+        from saorsa_deploy.cmd.provision_clients import parse_addresses
+
+        return parse_addresses(content)
+
+    def test_a_bare_line_is_unchanged(self):
+        # Every native run's file looks like this, and must record what it always
+        # did.
+        assert self._parse(f"{self.ADDR}\n") == [self.ADDR]
+
+    def test_a_sized_line_keeps_its_size(self):
+        # Kept rather than stripped: the declared size is what makes an over-cap
+        # entry skippable without a fetch, so `deploy_args.addresses` has to say
+        # which entries carried one — otherwise a `skipped` row has nothing
+        # explaining it.
+        assert self._parse(f"{self.ADDR} 512550\n") == [f"{self.ADDR} 512550"]
+
+    def test_comments_and_blanks_are_dropped(self):
+        content = f"# a note\n\n{self.ADDR}\n   \n{self.OTHER} 42\n"
+        assert self._parse(content) == [self.ADDR, f"{self.OTHER} 42"]
+
+    def test_a_pasted_download_command_is_still_caught(self):
+        # The check exists for this mistake; accepting a second token must not
+        # have opened it up.
+        with pytest.raises(ValueError, match="tokens"):
+            self._parse(f"ant file download {self.ADDR} -o out.bin\n")
+
+    def test_a_non_numeric_second_token_is_refused(self):
+        # `<addr> -o` is two tokens, so only the numeric check catches it.
+        with pytest.raises(ValueError, match="not a whole number of bytes"):
+            self._parse(f"{self.ADDR} -o\n")
+
+    def test_a_bad_address_is_still_refused(self):
+        with pytest.raises(ValueError, match="64-char hex address"):
+            self._parse("deadbeef 100\n")
+
+    def test_the_size_is_normalised(self):
+        # So the recorded list is a function of the addresses, not of how the
+        # operator happened to pad the file.
+        assert self._parse(f"{self.ADDR} 007\n") == [f"{self.ADDR} 7"]
+
+    def test_the_count_ignores_comment_lines(self, tmp_path, capsys):
+        # An 11-comment, 6-address file reported "17 address(es)" before this.
+        from rich.console import Console
+
+        from saorsa_deploy.cmd.provision_clients import (
+            _resolve_addresses_file_content,
+        )
+
+        path = tmp_path / "addrs.txt"
+        path.write_text(f"# one\n# two\n{self.ADDR}\n{self.OTHER} 5\n")
+        # A wide console, so Rich does not wrap the count across two lines.
+        _resolve_addresses_file_content(
+            SimpleNamespace(addresses_file=str(path)), Console(width=200)
+        )
+        assert "2 address(es)" in capsys.readouterr().out

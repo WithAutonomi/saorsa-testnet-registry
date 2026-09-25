@@ -42,11 +42,28 @@ WASM_BUILD_INFO_PATH = f"{WASM_CLIENT_DIR}/build-info.json"
 
 
 def build_node_install_command(node_major: str = WASM_NODE_MAJOR) -> str:
-    """Install Node from NodeSource, skipping when one is already present."""
+    """Install Node from NodeSource unless the required MAJOR is already there.
+
+    Gated on the major version, not on ``command -v node``. Ubuntu 24.04 ships
+    ``nodejs`` 18.19.1, and on an image that already carries it a presence gate
+    skips the install and leaves the bundle running on the wrong major — where
+    ``getrandom``'s Node-ESM path panics inside ant-core's constructor
+    (``could not initialize thread_rng``) and every transfer fails. Measured on
+    two DigitalOcean VMs created minutes apart from the same size and region: one
+    had no node and got 22.23.3, the other had 18.19.1 and was skipped, and only
+    the second failed. The bundles were byte-identical.
+
+    NodeSource's setup script plus ``apt-get install nodejs`` upgrades an existing
+    wrong-major install, so this is also the repair path, and it stays idempotent
+    on a re-provision.
+    """
     return (
-        f"command -v node >/dev/null 2>&1 && echo 'NODE:SKIP' || "
-        f"(curl -fsSL https://deb.nodesource.com/setup_{node_major}.x "
-        f"| bash - && apt-get install -y -qq nodejs && echo 'NODE:INSTALLED')"
+        "FOUND=$(node --version 2>/dev/null | "
+        "sed -n 's/^v\\([0-9][0-9]*\\)\\..*/\\1/p'); "
+        f'if [ "$FOUND" = "{node_major}" ]; then echo \'NODE:SKIP\'; else '
+        f"curl -fsSL https://deb.nodesource.com/setup_{node_major}.x | bash - && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs && "
+        f"echo \"NODE:INSTALLED:$(node --version) (was ${{FOUND:-none}})\"; fi"
     )
 
 

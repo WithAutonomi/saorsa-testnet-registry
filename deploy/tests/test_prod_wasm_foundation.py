@@ -363,3 +363,71 @@ class TestTheAntWasmCliWrapper:
         cmd = build_ant_wasm_cli_command()
         assert 'exec /usr/bin/node /opt/ant-wasm-client/dist/cli.js "$@"' in cmd
         assert "chmod +x /usr/local/bin/ant-wasm" in cmd
+
+
+class TestTheNodeInstallIsVersionGated:
+    """Presence is not enough — it has to be the right MAJOR.
+
+    Found by the live verification. Two DigitalOcean VMs created minutes apart
+    from the same size and region: one had no node and got 22.23.3, the other
+    carried Ubuntu 24.04's preinstalled 18.19.1 and was skipped by a
+    `command -v node` gate. The bundles were byte-identical; only the second
+    failed, panicking inside ant-core's constructor with
+    "could not initialize thread_rng: Node.js ES modules are not directly
+    supported" and failing every transfer.
+    """
+
+    def _run(self, node_version: str | None) -> str:
+        """Run the real generated shell against a fake `node` of that version."""
+        import os
+        import subprocess
+        import tempfile
+
+        from saorsa_deploy.provisioning.wasm_client import (
+            build_node_install_command,
+        )
+
+        # The install branch is replaced by a marker: the point is which branch
+        # is taken, and nothing should touch the network or apt.
+        command = build_node_install_command()
+        head, sep, _ = command.partition("curl -fsSL")
+        assert sep, "the install branch must start with the NodeSource fetch"
+        probe = f"{head}echo INSTALL_BRANCH_TAKEN; fi"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            if node_version is not None:
+                fake = os.path.join(tmp, "node")
+                with open(fake, "w") as handle:
+                    handle.write(f"#!/bin/sh\necho {node_version}\n")
+                os.chmod(fake, 0o755)
+            result = subprocess.run(
+                ["sh", "-c", probe],
+                env={"PATH": f"{tmp}:/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        return result.stdout.strip().splitlines()[-1]
+
+    def test_the_required_major_is_skipped(self):
+        assert self._run("v22.23.3") == "NODE:SKIP"
+
+    def test_a_patch_or_minor_difference_still_skips(self):
+        # Only the major matters; re-installing on every provision would be
+        # pointless churn.
+        assert self._run("v22.0.0") == "NODE:SKIP"
+
+    def test_no_node_installs(self):
+        assert self._run(None) == "INSTALL_BRANCH_TAKEN"
+
+    def test_ubuntus_preinstalled_node_18_installs(self):
+        # The exact version that broke the live run.
+        assert self._run("v18.19.1") == "INSTALL_BRANCH_TAKEN"
+
+    def test_another_wrong_major_installs(self):
+        assert self._run("v20.11.0") == "INSTALL_BRANCH_TAKEN"
+
+    def test_unparseable_output_installs(self):
+        # Erring toward installing: a node whose version cannot be read is not
+        # evidence that the right one is present.
+        assert self._run("weird-build") == "INSTALL_BRANCH_TAKEN"
