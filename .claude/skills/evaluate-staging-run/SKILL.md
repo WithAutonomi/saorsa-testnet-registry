@@ -1,6 +1,6 @@
 ---
 name: evaluate-staging-run
-description: Produce the release train's staging verification by comparing the rc.N staging run against the previous train's accepted staging run (or, for the first run on the staging.yaml profile, establishing a new baseline). Runs the deterministic `saorsa-deploy deployments compare` command for every metric gate, collects the three observational hard gates the tool cannot see (data integrity, crashes, mixed-version chunk storage), emits a fixed-format report, posts it on the "Staging verification — rc.N" sub-issue and closes it. Use when asked to "evaluate the staging run", "verify the staging run", "run the staging comparison", "compare staging against the baseline", "do the staging verification for rc.N", or "close Staging verification".
+description: Produce the release train's staging verification by comparing the rc.N staging run against the previous train's accepted staging run (or, for the first run on the staging.yaml profile, establishing a new baseline). Runs the deterministic `saorsa-deploy deployments compare` command for every metric gate, collects the three observational hard gates the tool cannot see (data integrity, crashes, mixed-version chunk storage) plus the advisory WASM production compat read-out, emits a fixed-format report, posts it on the "Staging verification — rc.N" sub-issue and closes it. Use when asked to "evaluate the staging run", "verify the staging run", "run the staging comparison", "compare staging against the baseline", "do the staging verification for rc.N", or "close Staging verification".
 ---
 
 # evaluate-staging-run
@@ -17,9 +17,11 @@ Rules:
   `saorsa-deploy deployments compare`, which is deterministic: same inputs, identical report. Do
   not recompute a delta by hand, do not round a figure differently, and do not overrule a verdict.
   If a number looks wrong, say so in the report and hand back — do not adjust it.
-- **You supply only the three observational hard gates.** Data integrity, crashes and
-  mixed-version chunk storage are not derivable from anything the registry stores. Those are
-  yours to gather and state, with evidence. Everything else is the tool's.
+- **You supply only the three observational hard gates, plus one advisory read-out.** Data
+  integrity, crashes and mixed-version chunk storage are not derivable from anything the registry
+  stores. Those are yours to gather and state, with evidence. The one-line **WASM production compat**
+  read-out is copied from the client production tests' recorded results and is advisory. Everything
+  else is the tool's.
 - **Canaries are not part of this report.** They are a separate production deployment with their
   own sub-issue, assessed by `evaluate-canary`, and they feed the gate verdict directly. Do not
   report, summarise or re-derive a canary result here, and do not let one change this report's
@@ -400,6 +402,43 @@ upload of 866 failed and every peer the client could not reach was running the *
 a transfer did fail in-phase, still say in the report whether an older-version node was involved;
 that attribution is the difference between a compatibility finding and a coincidence.
 
+### The WASM production compat line
+
+One extra line the comparison cannot produce, because it is not about this testnet at all: the
+train's **browser-path production** tests, `STG-WUL-01` (upload) and `STG-WDL-01` (download), run by
+the `run-client-prod-tests` skill against the real network. It belongs in this report because the
+staging comparison's `[wasm]` rows measure the browser path against a *testnet* fleet whose NAT'd
+nodes it cannot reach, and a reader asking "does the browser path work on this release" needs the
+production answer beside that one.
+
+Read it from the registry — **read-only, and never re-derive or re-run anything**:
+
+```bash
+uv run saorsa-deploy deployments ls | grep -E 'STG-WUL-01|STG-WDL-01'
+uv run saorsa-deploy deployments print-recorded-results --id <the ids from this train>
+```
+
+Report it as **exactly one line** in the hard-gates table, carrying **four numbers** — the two
+transports' upload and download results:
+
+```
+| WASM production compat (advisory — not in verdict) | ADVISORY | upload <ok>/<attempted>, download <ok>/<attempted>, <n> over-cap skips, bundle <commit-short> — STG-WUL-01 #<id> / STG-WDL-01 #<id> |
+```
+
+- **ADVISORY, never PASS or FAIL, and never in the verdict.** There are no calibrated production
+  floors for the browser path yet; those land in `resources/gates/staging-thresholds.yaml` in a
+  follow-up, mirroring `wasm_floor_gates_advisory: true` for the testnet side. A verdict here would be
+  an uncalibrated number deciding whether a release ships.
+- **The download denominator is *attempted*, not the address count.** Over-cap entries are recorded
+  but excluded from every success-rate denominator, which is why the skip count is reported beside the
+  rate rather than folded into it.
+- **If the client production tests have not run yet, the line is `NOT ASSESSED — client production
+  tests not yet run`.** Emit it anyway: a line missing from the report reads as a gate nobody thought
+  about. Do not wait for them, do not run them, and never block this verification on them — they are
+  a separate sub-issue with its own session.
+- Do not reproduce the client tests' failure text, spend or per-file detail here. One line, then the
+  sub-issue link.
+
 ## Step 7 — Write the verification
 
 Post as **exactly one** comment on `Staging verification — rc.N`, in this order. One comment, every
@@ -441,6 +480,7 @@ stated reasoning, and note the stored verdict is unchanged.>
 | Crashes (staging fleet) | … | … |
 | Mixed-version phase | … | native in-phase transfers + chunk storage |
 | Mixed-version WASM transfers (advisory — not in verdict) | … | in-phase WASM up/down + attribution |
+| WASM production compat (advisory — not in verdict) | ADVISORY | upload …/…, download …/…, … over-cap skips, bundle … — STG-WUL-01 #… / STG-WDL-01 #… |
 
 ## Soft gates
 
@@ -490,7 +530,8 @@ hard gate is a hard gate whether the tool derived it or you observed it, and spl
 two tables at opposite ends of the report made a reader reconcile two lists to answer one
 question: did anything blocking fail? So compose a single `Gate | Verdict | Detail` table
 combining the tool's success floors (`[native]` hard, `[wasm]` marked "(advisory — not in
-verdict)") with the three observational gates and the advisory mixed-version WASM row. Carry each floor's
+verdict)") with the three observational gates, the advisory mixed-version WASM row and the advisory
+WASM production compat row. Carry each floor's
 figure and threshold into its Detail cell so nothing is lost in the reshaping. This table is the
 only place hard gates appear.
 
@@ -534,6 +575,11 @@ any other one does — with one more exception: a relative gate NOT ASSESSED wit
 way by design; close on the native hard floors and the observational hard gates.
 
 `[wasm]` floor gates are advisory and never block, whatever their figure.
+
+**The WASM production compat line never blocks either**, including when it reads `NOT ASSESSED —
+client production tests not yet run`. It reports a *different* test, run by a different skill against
+production, on its own sub-issue and its own schedule; this verification is about the staging testnet.
+Holding it open for that would couple two independent sub-issues and stall the train on ordering.
 
 A **soft**-gate FAIL — native or `[wasm]` — does not hold the sub-issue open either. Record it, state the override path,
 and close; the decision is the RM's at the gate verdict. If the RM has already ruled on it, record
