@@ -346,9 +346,21 @@ def _build_write_test_config(deploy_args: dict) -> dict:
     )
     from saorsa_deploy.provisioning.saorsa_db_install import VENV_PYTHON
 
+    client_kind = deploy_args.get("client_kind") or "native"
+    is_wasm = client_kind == "wasm"
+
     return {
         "kind": PROD_UPLOAD_TEST_KIND,
         "one_shot": False,
+        # Which transport the UPLOADER wrote with. The verifiers are native
+        # whatever this says, which is why there is one key rather than two.
+        "client_kind": client_kind,
+        # Provenance of the WASM bundle, and what the preflight bootstrap probe
+        # found. Both only exist for a WASM run, and both are unreconstructable
+        # afterwards — the bundle is overwritten per deployment name and the
+        # probe was a moment in time.
+        "wasm_build": deploy_args.get("wasm_build") if is_wasm else None,
+        "wasm_bootstrap": deploy_args.get("wasm_bootstrap") if is_wasm else None,
         "evm_network": "arbitrum-one",
         "bootstrap_peers_url": deploy_args.get("prod_bootstraps_url"),
         "binary": deploy_args.get("ant_binary"),
@@ -363,9 +375,14 @@ def _build_write_test_config(deploy_args: dict) -> dict:
         "pool_min_size": deploy_args.get("pool_min_size"),
         "pool_max_size": deploy_args.get("pool_max_size"),
         "settings": {
-            "bootstrap_cache": deploy_args.get("bootstrap_cache"),
+            # None on the browser path: the peer cache and the `ant` verbosity
+            # flag are both refused there, so a value would describe a knob that
+            # had no effect on the run.
+            "bootstrap_cache": (
+                None if is_wasm else deploy_args.get("bootstrap_cache")
+            ),
             "payment_type": deploy_args.get("payment_type"),
-            "log_level": deploy_args.get("log_level"),
+            "log_level": None if is_wasm else deploy_args.get("log_level"),
             "rust_log": deploy_args.get("rust_log"),
             "readback_verify": deploy_args.get("readback_verify", True),
             "sleep_interval_secs": deploy_args.get("sleep_interval_secs"),
@@ -409,7 +426,13 @@ def _build_write_test_config(deploy_args: dict) -> dict:
                 "data_dir": VERIFIER_DATA_DIR,
                 "log_dir": VERIFIER_LOG_DIR,
             },
+            # Always given: the verifiers run it whichever transport uploaded,
+            # and on a WASM run the uploader VM has nothing installed there —
+            # the three `ant_wasm_*` entries name what actually wrote.
             "ant_binary": "/root/.local/bin/ant",
+            "ant_wasm_cli": ANT_WASM_CLI_PATH if is_wasm else None,
+            "ant_wasm_bundle_dir": WASM_CLIENT_DIR if is_wasm else None,
+            "ant_wasm_build_info": WASM_BUILD_INFO_PATH if is_wasm else None,
             "registry_client_python": VENV_PYTHON,
         },
     }

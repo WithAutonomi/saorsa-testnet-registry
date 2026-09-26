@@ -2646,7 +2646,81 @@ is a real bandwidth cost on metered or pooled providers.
 | `--influx-retention-days` | `7` | Dashboard data only; results are in Postgres |
 | `--log-retention-days` | `7` | Per-op log prune window; `0` keeps forever |
 | `--payment` | none | `merkle` / `no-merkle` |
+| `--log-level` | `info` | ant verbosity on the uploader; refused with `--client-kind wasm` |
+| `--client-kind` | `native` | Uploader transport: `native` (`ant` over QUIC) or `wasm` (browser path) |
+| `--wasm-branch-name` | none | ant-client branch **or tag** to build the bundle from; required with `--client-kind wasm` |
+| `--wasm-repo-owner` | `maidsafe` | GitHub owner of that ant-client repo |
+| `--wasm-bootstrap-multiaddrs-file` | committed list | Override the production bootstrap WebRTC multiaddrs |
+| `--skip-bootstrap-probe` | off | Skip the preflight ICE probe (a just-restarted tier is silent for 2–15 min) |
 | `--purpose` | required | Free text, persisted to the registry |
+
+#### The browser path on the daily write test (`--client-kind wasm`)
+
+`--client-kind wasm` (manifest `prod_continuous_uploader.client_kind`) makes the
+**uploader** service spawn `ant-wasm` — ant-core compiled to WASM over
+WebRTC-Direct — instead of the `ant` binary, so the daily test answers whether a
+*browser* client can still write to production. Nothing else does: `ant-cli`
+links native ant-core and so takes the native transport however it is invoked.
+Example manifest: `deploy/manifests/profiles/prod-wasm-continuous-uploader.yaml`.
+
+**One transport per deployment.** The browser path measured several times slower,
+so a blended daily series would describe neither instrument. A WASM write test is
+its own deployment with its own daily file quota, alongside the native one.
+
+Everything around the spawn is unchanged — the per-cycle `claim_pool_files`, the
+SHA-256 over the bytes handed to the uploader, the Postgres writes, the
+replacement logic, the unit names and the restart policies. Five things differ:
+
+- **The argv.** Upload is `ant-wasm file upload --public [--merkle|--no-merkle]
+  --payment-marker <path> <file>`; read-back is `ant-wasm file download <addr> -o
+  <path>`. No `--evm-network` and no `--bootstrap`: the bootstraps come from
+  `BOOTSTRAP_MULTIADDRS` in the service env and the payment identity from a
+  node's own HELLO.
+- **The read-back runs over the same transport** — the uploader VM's own view as
+  a browser user. **The independent verifier VMs stay native**, so a
+  `digest_mismatch` remains attributable to the upload rather than to the browser
+  read path (which `prod downloaders --client-kind wasm` covers).
+- **A failed upload is classified by whether a payment went out.** A payment
+  means chunks may be in production, so the file's claim is marked **partial** and
+  a canary must never draw it; no payment means nothing reached the network, so
+  the claim is **released** and the file is untouched. Two signals say a payment
+  went out and either is enough: the result JSON's `payment_sent`, and the
+  `--payment-marker` file — which is the only evidence left when the OOM killer
+  reaches the WASM child (by far the largest RSS on the VM) after the money went
+  out but before it printed anything. A signal exit is recorded as
+  `error_kind=crash`. **The native rule is unchanged**: no result document plus a
+  non-zero exit still means `ant` never started, and releases.
+- **The pool draw is narrowed to ant-core's browser cap** (1,000,000,000 bytes).
+  `large` and `xlarge` are refused at validation — every file in them is over the
+  cap, so every draw would permanently spend an entry that could never be
+  uploaded — and a `medium` request has the cap written into `--pool-max-size`,
+  which `deployments plan` shows.
+- **Results stay separate.** Rows carry `client_kind='wasm'` in
+  `deployment_prod_upload_results` (`print-recorded-results` labels the
+  transport), and the Influx copies go to the `wasm-client-metrics` bucket so no
+  dashboard can average two transports measured several times apart.
+
+The uploader VM defaults to **`s-4vcpu-8gb`** and a DigitalOcean slug below 8 GB
+is **refused**: a browser-path transfer holds ~4x the file in WASM memory, and an
+under-sized box turns every upload into an OOM kill that reads as a network fault.
+Other providers' size names cannot be read, so those only warn. Nothing on a WASM
+uploader runs `ant`, so the binary is not installed there — the verifiers still
+get it.
+
+**Refused rather than ignored**, because a silently-dropped option leaves the
+operator reading their own manifest as a description of the run:
+`--no-bootstrap-cache`/`bootstrap_cache` (it selects ant's peer cache versus an
+explicit `--bootstrap`, and a browser client does neither) and
+`--log-level`/`log_level` (the `ant` verbosity flag; `ant-wasm` has none and
+reads `RUST_LOG` straight from its environment, so use `--rust-log`).
+
+The bundle comes from `build ant-wasm`, which `deployments up` emits as a
+resumable step before the deploy — no ant-core WASM package is published as a
+release, so `branch` is the only form and it takes a tag as readily as a branch.
+Every bootstrap multiaddr is ICE-probed **before any infrastructure is created**;
+none answering refuses the deploy, a partial answer warns and names the dead
+entries. `generate-inventory` records `client_kind`, `wasm_build`,
+`wasm_bootstrap` and the `ant_wasm_*` paths.
 
 `prod continuous-uploader destroy --name X [--keep-monitoring]` stops both
 services first so nothing claims a file mid-teardown, then warns about any

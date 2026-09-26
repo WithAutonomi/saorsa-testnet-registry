@@ -384,6 +384,23 @@ class TestTheSaorsaDbInstall:
         assert "python3-venv ||" in venv_step
         assert "-venv\")" in venv_step or "-venv\"" in venv_step
 
+    def test_both_postgres_drivers_are_installed(self):
+        """Which driver a bare `postgresql://` URL selects depends on SQLAlchemy.
+
+        2.0 picks psycopg2; 2.1 changed the default to psycopg 3. The URL comes
+        from `prod pool client-role` and names no driver, so a VM that resolved
+        SQLAlchemy 2.1 with only psycopg2 installed died at startup with
+        `No module named 'psycopg'` — measured on a fresh uploader VM on
+        2026-09-26.
+        """
+        from saorsa_deploy.provisioning.saorsa_db_install import (
+            build_install_commands,
+        )
+
+        deps_step = build_install_commands("x.whl")[1]
+        assert "psycopg2-binary" in deps_step
+        assert "psycopg[binary]" in deps_step
+
     def test_the_wheel_builds_from_the_working_tree(self, tmp_path):
         """Pinned to the tree, not a published version.
 

@@ -966,6 +966,19 @@ class ProdContinuousUploaderSpec(_Base):
     binary: Binary
     verifiers: list[ProdUploadVerifier] = Field(default_factory=list)
 
+    # Which transport the UPLOADER VM runs: the native `ant` binary over QUIC,
+    # or ant-core compiled to WASM over WebRTC-Direct. One transport per
+    # deployment, as on the download kinds — the browser path measured several
+    # times slower, so a blended daily series would describe neither instrument.
+    # The verifiers stay native whatever this says, so a digest_mismatch remains
+    # attributable to the upload rather than to the read-back.
+    client_kind: Optional[ClientKind] = None
+    # The WASM bundle source, required under `client_kind: wasm`.
+    wasm_binary: Optional[WasmBinary] = None
+    # Override the committed production bootstrap WebRTC multiaddr list. No URL
+    # form: nothing publishes these addresses at a URL.
+    wasm_bootstrap_multiaddrs_file: Optional[str] = None
+
     # What to upload each cycle: a {size_class: count} request against the
     # managed pool. Not fixed at 2 tiny + 1 small — a later run can point this
     # at larger files without a code change.
@@ -1022,7 +1035,64 @@ class ProdContinuousUploaderSpec(_Base):
                 "exited zero."
             )
         _check_upload_disk(self)
+        _check_prod_wasm_upload(self, "prod_continuous_uploader")
         return self
+
+
+def _check_prod_wasm_upload(spec, kind: str) -> None:
+    """Validate the write test's ``client_kind: wasm`` configuration.
+
+    Two options are refused rather than ignored: `bootstrap_cache` selects
+    between ant's peer cache and an explicit `--bootstrap`, and a browser client
+    does neither, while `log_level` sets the `ant` verbosity flag that installs
+    its tracing subscriber — `ant-wasm` takes `RUST_LOG` straight from the
+    environment and has no verbosity flag at all. A silently-ignored option is
+    worse than an error: the operator would read the manifest as a description of
+    the run.
+
+    The pool draw is checked against ant-core's browser cap here rather than on
+    the VM, because a drawn over-cap file is a permanently-spent pool entry that
+    could never have been uploaded.
+    """
+    if spec.client_kind != "wasm":
+        if spec.wasm_binary is not None:
+            raise ValueError(
+                f"{kind}.wasm_binary is only valid with `client_kind: wasm`"
+            )
+        if spec.wasm_bootstrap_multiaddrs_file is not None:
+            raise ValueError(
+                f"{kind}.wasm_bootstrap_multiaddrs_file is only valid with "
+                "`client_kind: wasm`"
+            )
+        return
+
+    if spec.wasm_binary is None:
+        raise ValueError(
+            f"{kind}.wasm_binary is required when `client_kind: wasm` "
+            "(the bundle is built from source by `build ant-wasm`)"
+        )
+    forbidden = [
+        name for name in ("bootstrap_cache", "log_level") if getattr(spec, name) is not None
+    ]
+    if forbidden:
+        raise ValueError(
+            f"{kind}: {', '.join(forbidden)} cannot be set with "
+            "`client_kind: wasm` — bootstrap_cache has no browser-path meaning, "
+            "and log_level sets the `ant` verbosity flag, which a WASM client "
+            "never takes (use rust_log)"
+        )
+
+    from saorsa_deploy.prod_wasm import check_wasm_pool_request, check_wasm_vm_size
+
+    problem = check_wasm_pool_request(spec.pool)
+    if problem:
+        raise ValueError(f"{kind}.pool: {problem}")
+
+    parts = spec.spec.split(":", 1)
+    vm_size = parts[1] if len(parts) == 2 else None
+    problem = check_wasm_vm_size(vm_size, spec.provider)
+    if problem:
+        raise ValueError(f"{kind}.spec: {problem}")
 
 
 def _check_upload_disk(spec: "ProdContinuousUploaderSpec") -> None:

@@ -34,6 +34,12 @@ from saorsa_deploy.cmd.prod_continuous_downloader import (
     _monitoring_stack_exists,
     _resolve_ant_binary,
 )
+from saorsa_deploy.cmd.prod_wasm_cli import (
+    apply_wasm_vm_size,
+    is_wasm_kind,
+    resolve_wasm_context,
+    wasm_deploy_args,
+)
 from saorsa_deploy.prod_bootstraps import (
     PROD_BOOTSTRAPS_URL,
     ProdBootstrapsError,
@@ -121,6 +127,66 @@ def _parse_pool_request(raw: str, console: Console) -> dict:
     except Exception as exc:  # noqa: BLE001
         console.print(f"[bold red]Error:[/bold red] invalid --pool: {exc}")
         sys.exit(1)
+
+
+def _check_wasm_options(args, console: Console) -> None:
+    """Refuse the options that cannot mean anything on the browser path.
+
+    `--no-bootstrap-cache` selects between ant's peer cache and an explicit
+    `--bootstrap`, and a browser client does neither; `--log-level` sets the
+    `ant` verbosity flag that installs its tracing subscriber, and `ant-wasm`
+    takes RUST_LOG straight from the environment with no verbosity flag at all.
+    Refused rather than ignored: a silently-dropped flag leaves the operator
+    reading their own command line as a description of the run.
+    """
+    if not is_wasm_kind(args):
+        return
+    offending = []
+    if getattr(args, "bootstrap_cache", True) is False:
+        offending.append("--no-bootstrap-cache")
+    if getattr(args, "log_level", None):
+        offending.append("--log-level")
+    if not offending:
+        return
+    console.print(
+        f"[bold red]Error:[/bold red] {', '.join(offending)} cannot be used "
+        "with --client-kind wasm. The peer cache has no browser-path meaning, "
+        "and --log-level sets the `ant` verbosity flag, which a WASM client "
+        "never takes — use --rust-log.\n\nNo infrastructure was created."
+    )
+    sys.exit(1)
+
+
+def _apply_wasm_pool_cap(args, request: dict, console: Console) -> None:
+    """Keep the draw inside ant-core's browser file cap.
+
+    A drawn over-cap file is a permanently-spent pool entry that could never
+    have been uploaded, so the classes wholly above the cap are refused outright
+    and `medium` — the one class that straddles it — is narrowed. Applied here as
+    well as at manifest-validate time because this command is also driven
+    directly from the shell.
+    """
+    from saorsa_deploy.prod_wasm import (
+        check_wasm_pool_request,
+        clamp_wasm_pool_max_size,
+        wasm_pool_max_size_is_clamped,
+    )
+
+    if not is_wasm_kind(args):
+        return
+    problem = check_wasm_pool_request(request)
+    if problem:
+        console.print(
+            f"[bold red]Error:[/bold red] --pool: {problem}.\n\n"
+            "No infrastructure was created."
+        )
+        sys.exit(1)
+    if wasm_pool_max_size_is_clamped(request, getattr(args, "pool_max_size", None)):
+        args.pool_max_size = str(clamp_wasm_pool_max_size(None))
+        console.print(
+            f"  Pool draw narrowed to below {args.pool_max_size} bytes — "
+            "ant-core refuses a browser-path file above that."
+        )
 
 
 def _preflight_pool(args, request: dict, console: Console) -> None:
@@ -368,7 +434,13 @@ def _split_clients(name: str, console: Console) -> tuple[list, list]:
     return uploaders, verifiers
 
 
-def _provision(args, deployment_id: int, pool_request: dict, console: Console) -> None:
+def _provision(
+    args,
+    deployment_id: int,
+    pool_request: dict,
+    console: Console,
+    wasm_context=None,
+) -> None:
     console.print("[bold cyan]Step 4/5: provisioning services[/bold cyan]")
     uploaders, verifiers = _split_clients(args.name, console)
 
@@ -425,6 +497,14 @@ def _provision(args, deployment_id: int, pool_request: dict, console: Console) -
         pool_max_size=getattr(args, "pool_max_size", None),
         payment_type=getattr(args, "payment", None),
         readback_verify=getattr(args, "readback_verify", True),
+        # Only the UPLOADER takes the transport. The verifiers stay native
+        # whatever this deployment uploads with, so a digest_mismatch remains
+        # attributable to the upload rather than to the read-back.
+        client_kind="wasm" if wasm_context else "native",
+        wasm_bundle_url=wasm_context.bundle_url if wasm_context else None,
+        bootstrap_multiaddrs=(
+            wasm_context.bootstrap_multiaddrs if wasm_context else None
+        ),
         **shared,
     ).execute()
 
@@ -531,6 +611,9 @@ def _resolve_deployment_row(name: str, deploy_args: dict, console: Console):
 def cmd_prod_continuous_uploader_deploy(args) -> None:
     console = Console()
     pool_request = _parse_pool_request(getattr(args, "pool", ""), console)
+    _check_wasm_options(args, console)
+    _apply_wasm_pool_cap(args, pool_request, console)
+    apply_wasm_vm_size(args, console)
     args.pool_database_url = _resolve_pool_database_url(args, console)
 
     secret_key = getattr(args, "secret_key", None) or os.environ.get(
@@ -545,8 +628,10 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
         sys.exit(1)
     args.secret_key = secret_key
 
-    # Before anything is built or spent.
+    # Before anything is built or spent: the pool has to be able to serve a
+    # cycle, and a browser client has to have a bootstrap that answers.
     _preflight_pool(args, pool_request, console)
+    wasm_context = resolve_wasm_context(args, console)
 
     deploy_args = {
         "kind": "prod-continuous-uploader",
@@ -574,6 +659,11 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
             args.branch_name, args.repo_owner, args.ant_version,
             debug=getattr(args, "debug", False),
         ),
+        # client_kind (always), plus the bundle provenance and what the
+        # bootstrap probe found on a WASM run. Persisted here, not derived from
+        # S3 client state, because `clients destroy` deletes that — and a later
+        # read resolving None would relabel every WASM upload as native.
+        **wasm_deploy_args(wasm_context),
         # Deliberately absent: the database URL and the wallet key.
     }
 
@@ -591,7 +681,7 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
     try:
         _ensure_monitoring(args, console)
         _ensure_client_infra(args, console)
-        _provision(args, deployment_id, pool_request, console)
+        _provision(args, deployment_id, pool_request, console, wasm_context)
         _start(args, console)
     except SystemExit:
         record_event(args.name, "prod_continuous_uploader_deploy_failed")
@@ -617,6 +707,18 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
         f"{getattr(args, 'sleep_interval_secs', 86400)}s; "
         f"{len(args.verifier or [])} verifier region(s) read every address back."
     )
+    if wasm_context:
+        from saorsa_deploy.cmd.prod_uploaders import _paying_address
+
+        # The bracket is escaped for Rich, which would otherwise read `[wasm]`
+        # as a style tag and print the line with the marker silently missing.
+        console.print(
+            "  Uploader transport: \\[wasm] (browser path over WebRTC-Direct); "
+            "verifiers are native."
+        )
+        # Naming the paying address is the only way to check the balance of the
+        # wallet that is about to spend real ETH, day after day.
+        console.print(f"  Paying address: {_paying_address(args)}")
     console.print(
         f"  Results: [bold]saorsa-deploy deployments print-recorded-results "
         f"--name {args.name}[/bold]"

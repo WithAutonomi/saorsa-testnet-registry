@@ -4365,10 +4365,47 @@ def main(argv=None):
     prod_cu_deploy_parser.add_argument(
         "--payment", type=str, default=None, choices=["merkle", "no-merkle"]
     )
+    # Default None, not "info", so `--client-kind wasm` can refuse an EXPLICIT
+    # --log-level rather than silently ignoring it. Every consumer already
+    # resolves None to "info", so the native path is unchanged.
     prod_cu_deploy_parser.add_argument(
-        "--log-level", type=str, default="info", choices=["info", "debug", "trace"]
+        "--log-level", type=str, default=None, choices=["info", "debug", "trace"],
+        help="ant verbosity on the uploader service (default: info). Refused "
+        "with --client-kind wasm, which has no verbosity flag — use --rust-log.",
     )
     prod_cu_deploy_parser.add_argument("--rust-log", type=str, default=None)
+    prod_cu_deploy_parser.add_argument(
+        "--client-kind", type=str, default="native", choices=["native", "wasm"],
+        help="Transport for the UPLOADER VM: `native` (default) runs the `ant` "
+        "binary over QUIC; `wasm` runs ant-core compiled to WASM over "
+        "WebRTC-Direct via the `ant-wasm` CLI, measuring what a browser client "
+        "experiences writing to production. One transport per deployment. The "
+        "verifiers stay native either way. Requires --wasm-branch-name; "
+        "--no-bootstrap-cache and --log-level are refused.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--wasm-branch-name", type=str, default=None,
+        help="ant-client branch OR TAG to build the WASM bundle from (e.g. "
+        "ant-cli-v0.3.8-rc.1). Required with --client-kind wasm: no ant-core "
+        "WASM package is published as a release, so there is no version form.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--wasm-repo-owner", type=str, default=None,
+        help="GitHub owner of the ant-client repo the WASM bundle was built "
+        "from (default: maidsafe).",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--wasm-bootstrap-multiaddrs-file", type=str, default=None,
+        help="Override the committed production bootstrap WebRTC multiaddr "
+        "list (resources/prod_bootstrap_webrtc_multiaddrs.txt). There is no URL "
+        "form — nothing publishes these addresses at a URL.",
+    )
+    prod_cu_deploy_parser.add_argument(
+        "--skip-bootstrap-probe", action="store_true",
+        help="Skip the preflight ICE probe of the bootstrap WebRTC listeners. "
+        "Use after a bootstrap restart: ant-node 0.20.0 opens the listener "
+        "2-15 minutes later, so a just-upgraded tier is legitimately silent.",
+    )
     prod_cu_deploy_parser.add_argument(
         "--ssh-key-path", type=str, default="~/.ssh/id_rsa"
     )

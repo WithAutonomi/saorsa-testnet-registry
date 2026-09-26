@@ -20,11 +20,22 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES
+from saorsa_deploy.evm import ARBITRUM_ONE
 from saorsa_deploy.prod_bootstraps import render_bootstrap_peers_toml
 from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
+from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.provisioning.saorsa_db_install import (
     VENV_PYTHON,
     SaorsaDbInstaller,
+)
+from saorsa_deploy.provisioning.wasm_client import (
+    ANT_WASM_CLI_PATH,
+    WASM_CLIENT_DIR,
+    WASM_NODE_MAJOR,
+    build_ant_wasm_cli_command,
+    build_bundle_install_command,
+    build_node_install_command,
 )
 from saorsa_deploy.resources import get_resources_dir
 
@@ -247,6 +258,7 @@ class _BaseProvisioner:
         )
 
         self._add_install_ant_op(state)
+        self._add_install_wasm_ops(state)
         SaorsaDbInstaller(wheel_path=self.wheel_path, console=self.console).add_ops(
             state
         )
@@ -283,6 +295,14 @@ class _BaseProvisioner:
                 _install_ant_command(download_url, self.binary_is_archive)
             ],
         )
+
+    def _add_install_wasm_ops(self, state: State) -> None:
+        """No-op: only the uploader role can take the browser path.
+
+        The verifiers stay native whatever this deployment uploads with, so
+        nothing on a verifier VM ever runs `ant-wasm` and installing Node on it
+        would slow every deploy for nothing.
+        """
 
     def _add_script_op(self, state: State) -> None:
         script = (get_resources_dir() / "scripts" / self.script_name).read_text()
@@ -391,6 +411,9 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
         pool_max_size: str | None = None,
         payment_type: str | None = None,
         readback_verify: bool = True,
+        client_kind: str = "native",
+        wasm_bundle_url: str | None = None,
+        bootstrap_multiaddrs: list | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -401,6 +424,73 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
         self.pool_max_size = pool_max_size
         self.payment_type = payment_type
         self.readback_verify = readback_verify
+        # "native" runs the `ant` binary; "wasm" runs ant-core compiled to WASM
+        # over WebRTC-Direct through the `ant-wasm` CLI. One transport per
+        # deployment, and on a native one not a single WASM op is added and the
+        # env file renders byte-identically to before this existed.
+        self.client_kind = client_kind
+        self.wasm_bundle_url = wasm_bundle_url
+        self.bootstrap_multiaddrs = list(bootstrap_multiaddrs or [])
+        if self.is_wasm and not self.wasm_bundle_url:
+            raise RuntimeError(
+                "client_kind='wasm' needs a WASM bundle URL — run `build "
+                "ant-wasm --name <name> --branch-name <ref> --repo-owner <owner>`"
+            )
+        if self.is_wasm and not self.bootstrap_multiaddrs:
+            # Without one a browser client cannot reach the network at all, and
+            # the failure would surface only as an unexplained connection error
+            # hours later, on a service that sleeps between cycles.
+            raise RuntimeError(
+                "client_kind='wasm' needs at least one bootstrap WebRTC "
+                "multiaddr (see `prod bootstrap webrtc-addresses`)"
+            )
+
+    @property
+    def is_wasm(self) -> bool:
+        return self.client_kind == "wasm"
+
+    def _add_install_ant_op(self, state: State) -> None:
+        """Nothing on a browser-path uploader runs `ant`, not even the read-back.
+
+        Skipped rather than installed-and-unused because a WASM deployment may
+        have no `ant` build to fetch at all, and an install that fails would fail
+        the whole provision for a binary nothing executes.
+        """
+        if self.is_wasm:
+            return
+        super()._add_install_ant_op(state)
+
+    def _add_install_wasm_ops(self, state: State) -> None:
+        """Install Node, the WASM bundle and the ``ant-wasm`` CLI.
+
+        ``require_cli`` is set because a bundle built before the CLI existed
+        would install cleanly and then fail every upload with "cannot find
+        module".
+        """
+        if not self.is_wasm:
+            return
+        add_op(
+            state,
+            server.shell,
+            name=f"Install Node.js {WASM_NODE_MAJOR}",
+            commands=[build_node_install_command()],
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install WASM client bundle",
+            commands=[
+                build_bundle_install_command(
+                    self.wasm_bundle_url, data_dirs=(), require_cli=True
+                )
+            ],
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install ant-wasm CLI",
+            commands=[build_ant_wasm_cli_command()],
+        )
 
     def _per_host_env(self, host: dict) -> dict:
         secret = self.wallet_secret_key
@@ -419,6 +509,26 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
                 "READBACK_VERIFY": str(self.readback_verify).lower(),
             }
         )
+        if self.is_wasm:
+            env.update(
+                {
+                    "CLIENT_KIND": "wasm",
+                    "ANT_WASM": ANT_WASM_CLI_PATH,
+                    "BOOTSTRAP_MULTIADDRS": ",".join(self.bootstrap_multiaddrs),
+                    "WASM_DIR": f"{WASM_CLIENT_DIR}/pkg",
+                    "MAX_UPLOAD_BYTES": WASM_MAX_FILE_BYTES,
+                    # The browser path's payment callbacks sign with viem against
+                    # a plain JSON-RPC endpoint, so the chain is named by URL
+                    # rather than by `--evm-network`. Arbitrum One: these uploads
+                    # cost real ETH, every day.
+                    "RPC_URL": ARBITRUM_ONE["rpc_url"],
+                    # WASM operations go to their OWN Influx bucket. They write
+                    # the same `prod_upload` measurement the native tier does, so
+                    # one bucket would let any dashboard panel average two
+                    # transports measured several times apart.
+                    "INFLUX_BUCKET": INFLUXDB_WASM_BUCKET,
+                }
+            )
         return env
 
 
