@@ -754,6 +754,61 @@ Example: `deploy/manifests/profiles/prod-continuous-uploader.yaml`.
 See `deploy/README.md` §"The daily production write test" for the full argument
 table.
 
+#### The browser path on the daily write test (WASM)
+
+`client_kind: native|wasm` (CLI `--client-kind`, default native) makes the
+**uploader** service spawn `ant-wasm` instead of `ant`, so the daily test answers
+whether a *browser* client can still write to production — which nothing else
+does, since `ant-cli` links native ant-core. **One transport per deployment**
+(the browser path measured several times slower, so a blended daily series
+describes neither instrument), persisted in `deploy_args.client_kind`; the WASM
+series is its own deployment alongside the native PROD-UL-01. Example:
+`deploy/manifests/profiles/prod-wasm-continuous-uploader.yaml`. Reuses V2-1271's
+shared foundation (`prod_wasm.py`, `cmd/prod_wasm_cli.py`, `wasm_client.py`) and
+V2-1334's `client_kind` column and claim rules.
+
+Everything around the spawn is unchanged — the per-cycle `claim_pool_files`, the
+SHA-256, the Postgres writes, the replacement logic, the unit names and restart
+policies. What differs:
+
+- **The argv**: `ant-wasm file upload --public [--merkle|--no-merkle]
+  --payment-marker <path> <file>` and `ant-wasm file download <addr> -o <path>`,
+  with no `--evm-network`/`--bootstrap`.
+- **The read-back runs over the same transport** (the uploader VM's own view as a
+  browser user); **the independent verifier VMs stay NATIVE**, so a
+  `digest_mismatch` remains attributable to the upload rather than to the browser
+  read path. That path is covered by the read-back and by `prod downloaders
+  --client-kind wasm`.
+- **A failed upload is classified by whether a payment went out** — partial if it
+  did (chunks may be in production, so a canary must never draw the file),
+  released if it did not (nothing reached the network, so burning the entry would
+  be a lie). The result JSON's `payment_sent` OR the `--payment-marker` file
+  decides it, the latter being the only evidence left when an OOM kills the WASM
+  child after the money went out. A signal exit records `error_kind=crash`. **The
+  native "no result document + non-zero exit → release" rule is untouched.** The
+  success check also had to move from `"error" in parsed` to the key's VALUE:
+  `ant-wasm` always emits `error`, set to null on success, where `ant --json`
+  omits it — a presence check reported every healthy browser-path upload as a
+  partial, which SPENDS the file's claim.
+- **The pool draw is narrowed to ant-core's browser cap**: `large`/`xlarge`
+  refused at validation, `medium` clamped to 1,000,000,000 in `--pool-max-size`
+  so `plan` shows it. So an over-cap file is never claimed, and the runtime
+  `over_cap` status the one-shot uploader needs is unreachable here.
+- **Results stay separate**: rows carry `client_kind='wasm'`, Influx points go to
+  `wasm-client-metrics`. `record-results` is still a no-op for this kind (the VMs
+  write Postgres directly); read it with `print-recorded-results`, which labels
+  the transport.
+- **8 GB minimum**, validated exactly on DigitalOcean slugs. Nothing on a WASM
+  uploader runs `ant`, so the binary is not installed there; the verifiers keep it.
+- **Refused, not ignored**: `bootstrap_cache` (a browser client neither uses ant's
+  peer cache nor an explicit `--bootstrap`) and `log_level` (the `ant` verbosity
+  flag — `ant-wasm` has none and reads `RUST_LOG` from its environment, so use
+  `rust_log`). The CLI's `--log-level` default moved from `"info"` to `None` so an
+  explicit one can be told apart; every consumer already resolved None to `info`.
+- The bootstrap ICE probe and the resumable `build ant-wasm` step run **before any
+  infrastructure exists**. `generate-inventory` gains `client_kind`, `wasm_build`,
+  `wasm_bootstrap` and the `ant_wasm_*` paths.
+
 ### Running prod uploaders
 
 `prod uploaders deploy` is the upload-side equivalent of `prod continuous-downloader`: it stands up one or more client VMs that each upload a list of public files to the production Autonomi network with `ant --json file upload --public`, then exit when the list is exhausted. Per-file results (chunks_stored / chunks_failed / address / file size / duration) are emitted to a `prod_upload` Influx measurement on a paired monitoring VM.

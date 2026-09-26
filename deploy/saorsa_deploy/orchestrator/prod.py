@@ -232,8 +232,13 @@ def _wasm_uploader_flags(spec) -> list[str]:
     return argv
 
 
-def _wasm_download_flags(spec) -> list[str]:
+def _wasm_client_kind_flags(spec) -> list[str]:
     """`--client-kind` plus the WASM bundle/bootstrap flags, when configured.
+
+    Shared by every prod kind whose transport is a property of the DEPLOYMENT
+    rather than of an individual VM — both download kinds and the continuous
+    uploader. (`prod uploaders` is the exception: its transport is per-uploader,
+    so it carries no `--client-kind` at all; see :func:`_wasm_uploader_flags`.)
 
     Emitted only under `client_kind: wasm`, so a manifest with no WASM fields
     produces byte-identical argv to before (the schema refuses the WASM keys
@@ -318,7 +323,7 @@ def _downloaders(manifest: Manifest) -> list[Step]:
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)
     argv += _download_diagnostics_flag(spec)
-    argv += _wasm_download_flags(spec)
+    argv += _wasm_client_kind_flags(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)
@@ -371,8 +376,7 @@ def _continuous_uploader(manifest: Manifest) -> list[Step]:
         argv += ["--verifier", token]
     if spec.pool_min_size is not None:
         argv += ["--pool-min-size", str(spec.pool_min_size)]
-    if spec.pool_max_size is not None:
-        argv += ["--pool-max-size", str(spec.pool_max_size)]
+    argv += _pool_max_size_flag(spec)
     if spec.sleep_interval_secs is not None:
         argv += ["--sleep-interval-secs", str(spec.sleep_interval_secs)]
     if spec.verify_interval_secs is not None:
@@ -402,12 +406,39 @@ def _continuous_uploader(manifest: Manifest) -> list[Step]:
     if spec.log_level is not None:
         argv += ["--log-level", spec.log_level]
     argv += _bootstrap_cache_flag(spec)
+    argv += _wasm_client_kind_flags(spec)
     # rust_log last: its value may contain "::".
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)
     argv += ["--ssh-key-path", manifest.ssh_key_path]
-    return [Step(argv, "Deploy prod continuous uploader + verifiers + monitoring")]
+    return _wasm_bundle_build_steps(manifest, spec) + [
+        Step(argv, "Deploy prod continuous uploader + verifiers + monitoring")
+    ]
+
+
+def _pool_max_size_flag(spec) -> list[str]:
+    """`--pool-max-size`, narrowed to the browser cap on the WASM transport.
+
+    Written into the argv rather than applied silently on the VM so
+    `deployments plan` shows it: an operator who asked for `medium` gets a
+    narrower class than they wrote, and that has to be visible before any money
+    is spent. Only a `medium` request straddles the cap — `tiny` and `small` are
+    wholly below it, so adding the bound there would put a redundant token in
+    every argv, and the argv is what the step journal compares.
+    """
+    from saorsa_deploy.prod_wasm import (
+        clamp_wasm_pool_max_size,
+        wasm_pool_max_size_is_clamped,
+    )
+
+    if getattr(spec, "client_kind", None) == "wasm" and wasm_pool_max_size_is_clamped(
+        spec.pool, spec.pool_max_size
+    ):
+        return ["--pool-max-size", str(clamp_wasm_pool_max_size(None))]
+    if spec.pool_max_size is not None:
+        return ["--pool-max-size", str(spec.pool_max_size)]
+    return []
 
 
 def _continuous_downloader(manifest: Manifest) -> list[Step]:
@@ -449,7 +480,7 @@ def _continuous_downloader(manifest: Manifest) -> list[Step]:
     argv += _forward_logs_flag(spec)
     argv += _memory_profiling_flag(spec)
     argv += _download_diagnostics_flag(spec)
-    argv += _wasm_download_flags(spec)
+    argv += _wasm_client_kind_flags(spec)
     argv += _rust_log_flag(spec)
     argv += ant_binary_flags(spec.binary)
     argv += _binary_debug_flag(spec.binary)

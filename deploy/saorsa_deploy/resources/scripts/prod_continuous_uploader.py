@@ -25,6 +25,16 @@ Three things it is careful about:
   computed from ground truth or not at all.
 * **Running out of files is a signal, not a crash.** The service records the
   shortfall and sleeps; topping the pool up heals it with no redeploy.
+
+``CLIENT_KIND=wasm`` swaps the transport for ant-core compiled to WASM over
+WebRTC-Direct, spawned through the ``ant-wasm`` CLI (``ANT_WASM``) instead of the
+``ant`` binary. Everything around the spawn is identical — the claim, the
+SHA-256, the Postgres writes, the replacement logic and the Influx measurements —
+because ``ant-wasm`` prints the same result JSON on stdout. Two things do differ:
+the argv carries no ``--evm-network``/``--bootstrap`` (the bootstraps come from
+``BOOTSTRAP_MULTIADDRS`` and the payment identity from a node's own HELLO), and a
+failure is classified by whether a payment went out (see
+:func:`_wasm_failure_outcome`).
 """
 
 import hashlib
@@ -61,6 +71,21 @@ CYCLE_MEASUREMENT = "prod_upload_cycle"
 STATUS_SUCCESS = 0
 STATUS_PARTIAL_UPLOAD = 1
 STATUS_DOWNLOAD_FAILED = 2
+#: The upload failed BEFORE any payment transaction went out, so nothing reached
+#: the network and the file's claim is RELEASED rather than spent. Only the
+#: browser path can tell this from STATUS_PARTIAL_UPLOAD, where chunks ARE
+#: stored — via the result JSON's `payment_sent` and the payment marker file.
+STATUS_FAILED = 4
+
+#: The child was killed by a signal (``rc < 0``), which on a client VM is almost
+#: always the OOM killer reaching the WASM process — by far the largest RSS
+#: there. Recorded so an OOM is distinguishable from a transfer that failed on
+#: its own.
+ERROR_KIND_CRASH = "crash"
+# NB 3 is `over_cap` in the sibling one-shot `prod_uploader.py`, and is
+# deliberately unreachable here: this kind's pool draw is narrowed to ant-core's
+# browser cap at deploy time, so an over-cap file is never claimed. The value is
+# skipped rather than reused so the two services' wire values stay aligned.
 
 STDERR_TAIL_LINES = 200
 LOG_DIR = "/var/log/ant-prod-continuous-uploader"
@@ -363,6 +388,110 @@ def _parse_ant_json(stdout: str):
     return None
 
 
+def _payment_flags(payment_type: str) -> list:
+    if payment_type == "no-merkle":
+        return ["--no-merkle"]
+    if payment_type == "merkle":
+        return ["--merkle"]
+    return []
+
+
+def _build_native_upload_argv(
+    *, ant_path: str, evm_network: str, log_level: str, payment_type: str,
+    file_path,
+) -> list:
+    """The native `ant` upload argv — unchanged from before the browser path."""
+    return [
+        ant_path, *_resolve_bootstrap_args(), "--evm-network", evm_network,
+        "--json", _verbosity_flag(log_level),
+        "file", "upload", "--public", *_payment_flags(payment_type),
+        str(file_path),
+    ]
+
+
+def _build_wasm_upload_argv(
+    *, ant_wasm_path: str, payment_type: str, file_path, payment_marker_path
+) -> list:
+    """The `ant-wasm` upload argv.
+
+    No `--evm-network` and no `--bootstrap`: the bootstrap multiaddrs come from
+    BOOTSTRAP_MULTIADDRS in the service environment, and the payment identity is
+    read from a node's own HELLO rather than configured locally. No verbosity
+    flag either — the CLI writes progress to stderr unconditionally and takes
+    RUST_LOG straight from the environment.
+
+    `--payment-marker` is the one addition. A paid upload killed after the money
+    went out but before it printed anything is the failure the exit code cannot
+    describe: the ETH is spent and chunks may be stored. The marker lands the
+    instant a transaction is submitted, so it survives a SIGKILL of the child —
+    which is what lets that file's claim be marked partial rather than released
+    back into the pool for a canary to draw.
+    """
+    return [
+        ant_wasm_path,
+        "file", "upload", "--public", *_payment_flags(payment_type),
+        "--payment-marker", str(payment_marker_path),
+        str(file_path),
+    ]
+
+
+def _build_native_download_argv(
+    *, ant_path: str, evm_network: str, log_level: str, address: str, output_path
+) -> list:
+    """The native `ant` read-back argv."""
+    return [
+        ant_path, "--evm-network", evm_network, _verbosity_flag(log_level),
+        "file", "download", address, "-o", str(output_path),
+    ]
+
+
+def _build_wasm_download_argv(*, ant_wasm_path: str, address: str, output_path) -> list:
+    """The `ant-wasm` read-back argv — the uploader's own view as a browser user."""
+    return [ant_wasm_path, "file", "download", address, "-o", str(output_path)]
+
+
+def _upload_succeeded(parsed, rc: int) -> bool:
+    """Whether the result document and exit code say the upload completed.
+
+    Keyed on the VALUE of ``error``, not on the key's presence: `ant --json`
+    omits the key entirely on success, but `ant-wasm` always emits it and sets it
+    to null — so a presence check reported every successful browser-path upload
+    as a partial one, and a partial SPENDS the file's pool claim as though only
+    some of its chunks had been stored.
+    """
+    if parsed is None or rc != 0:
+        return False
+    return not parsed.get("error")
+
+
+def _wasm_failure_outcome(parsed, marker_path) -> int:
+    """Which failure a browser-path upload was: paid, or unpaid.
+
+    The distinction decides what happens to the file's pool claim, so it must be
+    exact. A payment that went out means chunks may be on the network and the
+    file must never reach a canary — so its claim is marked PARTIAL. A failure
+    before any payment means nothing reached the network at all and the file is
+    untouched, so its claim is RELEASED and the file goes back in the pool.
+
+    Two independent signals say a payment went out, and either is enough. The
+    JSON's ``payment_sent`` is the normal one; the marker FILE covers the case
+    the JSON cannot — a child killed (typically by the OOM killer) after the
+    money went out but before it printed anything. Trusting only the JSON would
+    return a paid-for file to the pool.
+    """
+    if (parsed or {}).get("payment_sent"):
+        return STATUS_PARTIAL_UPLOAD
+    try:
+        if marker_path.exists():
+            return STATUS_PARTIAL_UPLOAD
+    except OSError:
+        # Unreadable marker: assume the money went out. Wrongly marking a file
+        # partial costs one pool entry; wrongly releasing a paid-for one puts
+        # already-stored chunks in front of a canary.
+        return STATUS_PARTIAL_UPLOAD
+    return STATUS_FAILED
+
+
 # --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
@@ -402,7 +531,13 @@ def main() -> int:
     region = _require_env("REGION")
     secret_key = _require_env("SECRET_KEY")
 
+    client_kind = os.environ.get("CLIENT_KIND", "native").strip().lower()
+    is_wasm = client_kind == "wasm"
     ant_path = os.environ.get("ANT", "/root/.local/bin/ant")
+    ant_wasm_path = os.environ.get("ANT_WASM", "/usr/local/bin/ant-wasm")
+    # The transport binary, whichever it is. Named once so the read-back and the
+    # per-op log paths do not each have to re-decide.
+    transfer_path = ant_wasm_path if is_wasm else ant_path
     work_dir = Path(os.environ.get("WORK_DIR", "/var/lib/ant-prod-continuous-uploader/files"))
     evm_network = os.environ.get("EVM_NETWORK", "arbitrum-one")
     payment_type = os.environ.get("PAYMENT_TYPE", "").strip()
@@ -448,6 +583,7 @@ def main() -> int:
     _log(
         f"prod continuous uploader starting: deployment={deployment_name} "
         f"({deployment_id}) region={region} host={host} "
+        f"transport={client_kind} "
         f"request={ {k.value: v for k, v in pool_request.items()} } "
         f"cycle={sleep_interval}s"
     )
@@ -592,14 +728,25 @@ def main() -> int:
                     continue
 
                 # ---- upload ----
-                cmd = [ant_path, *_resolve_bootstrap_args(), "--evm-network",
-                       evm_network, "--json", _verbosity_flag(log_level),
-                       "file", "upload", "--public"]
-                if payment_type == "no-merkle":
-                    cmd.append("--no-merkle")
-                elif payment_type == "merkle":
-                    cmd.append("--merkle")
-                cmd.append(str(local_path))
+                # The marker is cleared first so a previous op's file can never
+                # be read as evidence that this one paid.
+                payment_marker_path = Path(f"{log_base}.paid")
+                payment_marker_path.unlink(missing_ok=True)
+                if is_wasm:
+                    cmd = _build_wasm_upload_argv(
+                        ant_wasm_path=ant_wasm_path,
+                        payment_type=payment_type,
+                        file_path=local_path,
+                        payment_marker_path=payment_marker_path,
+                    )
+                else:
+                    cmd = _build_native_upload_argv(
+                        ant_path=ant_path,
+                        evm_network=evm_network,
+                        log_level=log_level,
+                        payment_type=payment_type,
+                        file_path=local_path,
+                    )
 
                 upload_start_ns = time.time_ns()
                 rc, stdout, stderr = _run_ant(cmd, secret_key, log_base, upload_timeout)
@@ -607,8 +754,8 @@ def main() -> int:
                 duration_ms = (time.time_ns() - upload_start_ns) // 1_000_000
 
                 parsed = _parse_ant_json(stdout)
-                # ant emits a JSON result document even when an upload goes
-                # wrong part-way. NO document at all, with a non-zero exit,
+                # A transfer emits a JSON result document even when an upload
+                # goes wrong part-way. NO document at all, with a non-zero exit,
                 # means it died before it could upload anything — a bad config,
                 # bad arguments, a broken binary. Nothing reached the network,
                 # so the file must go back in the pool rather than be spent.
@@ -618,13 +765,30 @@ def main() -> int:
                 # some of its chunks are on the network. A malformed
                 # bootstrap_peers.toml burned three files that way on the first
                 # live run, none of which had been anywhere near production.
-                startup_failure = parsed is None and rc != 0
-                if parsed is None or "error" in parsed or rc != 0:
-                    status = ProdUploadStatus.PARTIAL_UPLOAD
-                    influx_status = STATUS_PARTIAL_UPLOAD
-                else:
+                #
+                # On the browser path that inference is not safe: a child
+                # OOM-killed AFTER paying also exits on a signal and prints
+                # nothing, so the payment marker decides instead.
+                error_kind = ""
+                if _upload_succeeded(parsed, rc):
                     status = ProdUploadStatus.SUCCESS
                     influx_status = STATUS_SUCCESS
+                    startup_failure = False
+                elif is_wasm:
+                    error_kind = str((parsed or {}).get("error_kind") or "")
+                    if rc is not None and rc < 0:
+                        error_kind = ERROR_KIND_CRASH
+                    influx_status = _wasm_failure_outcome(parsed, payment_marker_path)
+                    startup_failure = influx_status == STATUS_FAILED
+                    status = (
+                        ProdUploadStatus.FAILED
+                        if startup_failure
+                        else ProdUploadStatus.PARTIAL_UPLOAD
+                    )
+                else:
+                    startup_failure = parsed is None and rc != 0
+                    status = ProdUploadStatus.PARTIAL_UPLOAD
+                    influx_status = STATUS_PARTIAL_UPLOAD
 
                 parsed = parsed or {}
                 address = parsed.get("address")
@@ -647,7 +811,18 @@ def main() -> int:
                     )
                 else:
                     cycle_stats["partial"] += 1
-                    _log(f"upload PARTIAL for {file_name}: {reason}")
+                    kind_note = f" kind={error_kind}" if error_kind else ""
+                    paid_note = ""
+                    if is_wasm:
+                        paid_note = (
+                            " (no payment sent — nothing stored)"
+                            if status is ProdUploadStatus.FAILED
+                            else " (payment was sent — chunks may be stored)"
+                        )
+                    _log(
+                        f"upload {status.value.upper()} for {file_name}: "
+                        f"{reason}{kind_note}{paid_note}"
+                    )
                     _log(_tail_lines(stderr, STDERR_TAIL_LINES))
 
                 deployment_repo.upsert_prod_upload_result(
@@ -669,8 +844,11 @@ def main() -> int:
                     reason=reason,
                     storage_cost_atto=_decimal_or_none(storage_cost),
                     gas_cost_wei=_decimal_or_none(gas_cost),
-                    # Ground truth: the hash of what was handed to ant.
+                    # Ground truth: the hash of what was handed to the uploader.
                     sha256=source_sha256,
+                    # Which transport wrote it. The two are not the same
+                    # instrument, so a blended series would describe neither.
+                    client_kind=client_kind,
                 )
 
                 # ---- resolve the claim by what actually happened ----
@@ -687,13 +865,17 @@ def main() -> int:
                             note="uploaded by prod continuous-uploader",
                         )
                     elif startup_failure:
-                        # ant never started, so nothing was written. Releasing
-                        # keeps a configuration error from quietly consuming
-                        # the pool — the files are as unused as before.
-                        pool_repo.release_pool_claim(
-                            claim.id,
-                            note=f"ant produced no result document (exit {rc})"[:500],
+                        # Nothing was written, so releasing keeps a configuration
+                        # error from quietly consuming the pool — the files are
+                        # as unused as before. Native: no result document at all.
+                        # Browser path: no payment went out, evidenced by the
+                        # result JSON AND the payment marker's absence.
+                        note = (
+                            f"no payment sent (exit {rc})"
+                            if is_wasm
+                            else f"ant produced no result document (exit {rc})"
                         )
+                        pool_repo.release_pool_claim(claim.id, note=note[:500])
                     else:
                         # Chunks are on the network even though the upload did
                         # not complete, so the file is not available again for
@@ -722,14 +904,18 @@ def main() -> int:
                          "upload_secs": float(upload_secs) if upload_secs else 0.0,
                          "address": address or "", "file_name": file_name,
                          "source_url": locator, "sha256": source_sha256,
-                         "reason": reason or ""},
+                         "reason": reason or "",
+                         # Only the browser path reports one, and _build_line
+                         # drops empty strings, so a native point is unchanged.
+                         "error_kind": error_kind},
                     ),
                 )
 
                 # ---- immediate read-back ----
                 if readback and status is ProdUploadStatus.SUCCESS and address:
                     _verify_once(
-                        ant_path=ant_path,
+                        ant_path=transfer_path,
+                        is_wasm=is_wasm,
                         address=address,
                         file_name=file_name,
                         expected_sha256=source_sha256,
@@ -838,6 +1024,7 @@ def _decimal_or_none(value):
 def _verify_once(
     *,
     ant_path,
+    is_wasm,
     address,
     file_name,
     expected_sha256,
@@ -860,15 +1047,27 @@ def _verify_once(
     Shared in spirit with the verifier service, but kept here rather than
     imported: VM runtime scripts are deployed as standalone files, so a shared
     module would have to be a third thing to install and keep in step.
+
+    The read-back runs over the SAME transport as the upload — the uploader VM's
+    own view as whatever kind of client it is. The independent verifier VMs stay
+    native, so a digest_mismatch there is attributable to the upload rather than
+    to the browser read path.
     """
     output_path = work_dir / f"verify-{address[:16]}"
     started_at = datetime.now(timezone.utc)
     start_ns = time.time_ns()
-    cmd = [
-        ant_path, "--evm-network", os.environ.get("EVM_NETWORK", "arbitrum-one"),
-        "-" + ("v" * _LOG_LEVEL_VERBOSITY.get(log_level, 1)),
-        "file", "download", address, "-o", str(output_path),
-    ]
+    if is_wasm:
+        cmd = _build_wasm_download_argv(
+            ant_wasm_path=ant_path, address=address, output_path=output_path
+        )
+    else:
+        cmd = _build_native_download_argv(
+            ant_path=ant_path,
+            evm_network=os.environ.get("EVM_NETWORK", "arbitrum-one"),
+            log_level=log_level,
+            address=address,
+            output_path=output_path,
+        )
     rc, _stdout, stderr = _run_ant(
         cmd, secret_key, log_base.with_name(log_base.name + "-verify"), timeout
     )

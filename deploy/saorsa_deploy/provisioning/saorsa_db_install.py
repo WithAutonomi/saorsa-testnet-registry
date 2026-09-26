@@ -52,9 +52,19 @@ _PY_VERSION_SHELL = (
 #: dependency of the package but only for generating and applying migrations,
 #: which never happens from a client VM — so it is installed with `--no-deps`
 #: and these are named explicitly instead.
+#:
+#: BOTH Postgres drivers, because which one a bare ``postgresql://`` URL selects
+#: depends on the SQLAlchemy the VM happens to resolve: 2.0 picks psycopg2, and
+#: 2.1 changed the default to psycopg 3. The URL comes from `prod pool
+#: client-role` and names no driver, so with only psycopg2 installed a VM that
+#: resolved SQLAlchemy 2.1 died at startup with `No module named 'psycopg'` —
+#: measured on a fresh uploader VM on 2026-09-26. Pinning SQLAlchemy instead
+#: would freeze the VM behind whatever the repo tests against; carrying both
+#: drivers costs a few megabytes and works either way.
 RUNTIME_DEPS = (
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",
+    "psycopg[binary]>=3.1",
     "python-dotenv>=1.1",
 )
 
