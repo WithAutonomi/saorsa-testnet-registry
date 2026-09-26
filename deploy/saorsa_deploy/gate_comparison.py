@@ -218,20 +218,43 @@ def _status_value(record) -> str:
     return getattr(status, "value", status)
 
 
+#: A `skipped` operation was refused by the TRANSPORT, not by the network: a
+#: browser-path client cannot carry a file above ant-core's 1 GB cap. The content
+#: is stored and healthy, so a skip is neither a success nor a failure and must
+#: not enter a success-rate denominator -- with a six-address list containing two
+#: over-cap entries it would cap the gate at 66.7% and fail every run.
+_EXCLUDED_FROM_RATES = ("skipped",)
+
+
+def assessable_ops(records: list) -> list:
+    """Records that a success rate can legitimately be computed over."""
+    return [r for r in records if _status_value(r) not in _EXCLUDED_FROM_RATES]
+
+
 def success_rate(records: list) -> dict | None:
     """Success percentage over a list of per-op records.
 
     ``None`` for an empty list -- no operations means nothing to assess, which
-    is not the same as a 0% success rate.
+    is not the same as a 0% success rate. Skipped operations are excluded from
+    both halves of the fraction, and the count of them is reported separately so
+    the exclusion is visible rather than silent.
     """
     if not records:
         return None
-    successes = sum(1 for r in records if _status_value(r) == "success")
-    total = len(records)
+    skipped = len(records) - len(assessable_ops(records))
+    assessable = assessable_ops(records)
+    if not assessable:
+        # Every operation was skipped: there is no rate, but there were
+        # certainly operations, so say so rather than returning None (which
+        # reads as "this run did no transfers").
+        return {"percent": None, "successes": 0, "total": 0, "skipped": skipped}
+    successes = sum(1 for r in assessable if _status_value(r) == "success")
+    total = len(assessable)
     return {
         "percent": 100.0 * successes / total,
         "successes": successes,
         "total": total,
+        "skipped": skipped,
     }
 
 
@@ -1173,6 +1196,19 @@ def _iso(value: datetime | None) -> str | None:
     return _as_utc(value).isoformat() if value is not None else None
 
 
+def _rate_detail(rate: dict) -> str:
+    """`N/M succeeded`, naming the skips when there were any.
+
+    Stated rather than left implicit: with an over-cap entry in the address list
+    the denominator is smaller than the number of rows, and a reader comparing
+    the two would otherwise think operations had gone missing.
+    """
+    detail = f"{rate['successes']}/{rate['total']} succeeded"
+    if rate.get("skipped"):
+        detail += f" ({rate['skipped']} skipped by the transport, excluded)"
+    return detail
+
+
 def _hard_success_floors(run: RunMetrics, config: GateConfig) -> list[GateResult]:
     results = []
     for label, records, floor in (
@@ -1184,7 +1220,7 @@ def _hard_success_floors(run: RunMetrics, config: GateConfig) -> list[GateResult
         ),
     ):
         rate = success_rate(records)
-        if rate is None:
+        if rate is None or rate["percent"] is None:
             results.append(
                 GateResult(
                     gate=label,
@@ -1193,7 +1229,10 @@ def _hard_success_floors(run: RunMetrics, config: GateConfig) -> list[GateResult
                     threshold=floor,
                     unit="%",
                     detail=(
-                        "no per-op records for this run. Run `deployments "
+                        "every operation was skipped by the transport; no rate "
+                        "to assess"
+                        if rate is not None
+                        else "no per-op records for this run. Run `deployments "
                         "record-results` while the monitoring stack is still up."
                     ),
                 )
@@ -1207,7 +1246,7 @@ def _hard_success_floors(run: RunMetrics, config: GateConfig) -> list[GateResult
                 candidate=rate["percent"],
                 threshold=floor,
                 unit="%",
-                detail=f"{rate['successes']}/{rate['total']} succeeded",
+                detail=_rate_detail(rate),
             )
         )
     return results
@@ -1226,7 +1265,7 @@ def _soft_success_rates(
     ):
         cand = success_rate(cand_records)
         base = success_rate(base_records)
-        if cand is None or base is None:
+        if cand is None or base is None or cand["percent"] is None or base["percent"] is None:
             results.append(
                 GateResult(
                     gate=label,

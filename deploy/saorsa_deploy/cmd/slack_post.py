@@ -448,13 +448,24 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
     spec = deploy_args.get("spec", "_unknown_")
     fields: list[tuple[str, str]] = [("Downloader spec", spec)]
 
+    # Which transport measured this run. Stated whenever it is WASM, because
+    # every number below means something different then: the browser path
+    # measured ~4x slower on download, and it refuses files over 1 GB.
+    client_kind = deploy_args.get("client_kind") or "native"
+    if client_kind == "wasm":
+        fields.append(("Transport", "wasm (browser path, WebRTC-Direct) 🌐"))
+
     if deploy_args.get("clock_skew"):
         fields.append(("Clock skew", "enabled ⏰"))
     network = deploy_args.get("network")
     if network:
         fields.append(("Network", _format_network_field(network)))
 
-    if "bootstrap_cache" in deploy_args:
+    # Omitted on the browser path: the peer cache selects between ant's cache and
+    # an explicit --bootstrap, and a WASM client does neither. The option is
+    # REFUSED there, so reporting a value for it would describe a knob that had
+    # no effect on the run.
+    if "bootstrap_cache" in deploy_args and client_kind != "wasm":
         fields.append(
             ("Bootstrap cache", "on" if deploy_args["bootstrap_cache"] else "off")
         )
@@ -476,12 +487,19 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
             sleep_label = f"{sleep_interval_secs}s"
         fields.append(("Sleep interval", sleep_label))
 
-    blocks: list[dict] = [
-        _section(
-            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-        ),
-        _fields_section(fields),
-    ]
+    if client_kind == "wasm":
+        blocks: list[dict] = [
+            _section(f"*WASM bundle:* {_format_wasm_build(deploy_args)}"),
+            _section(f"*Bootstraps:* {_format_wasm_bootstrap(deploy_args)}"),
+            _fields_section(fields),
+        ]
+    else:
+        blocks = [
+            _section(
+                f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+            ),
+            _fields_section(fields),
+        ]
 
     addresses = deploy_args.get("addresses") or []
     if addresses:
@@ -493,6 +511,41 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
         blocks.append(_section(f"*Addresses file:* {addresses_file}"))
 
     return blocks
+
+
+def _format_wasm_build(deploy_args: dict) -> str:
+    """The bundle's provenance, or a note that it was not recorded.
+
+    The commit is what identifies the code: `--wasm-branch-name` may name a
+    moving branch, so "built from web-support" does not say what ran.
+    """
+    build = deploy_args.get("wasm_build")
+    if not build:
+        return "_no build provenance recorded_ (bundle predates `build-info.json`)"
+    ref = build.get("ref", "_unknown_")
+    owner = build.get("repo_owner", "_unknown_")
+    commit = (build.get("commit") or "")[:12] or "_unknown_"
+    nd = build.get("node_datachannel_version")
+    extra = f", node-datachannel {nd}" if nd else ""
+    return f"`{owner}/{ref}` @ `{commit}`{extra}"
+
+
+def _format_wasm_bootstrap(deploy_args: dict) -> str:
+    """How many bootstraps answered the preflight probe.
+
+    Load-bearing for reading the run: ant-core cools a failed endpoint down for
+    30 minutes, so a partial answer is a viable but degraded deployment and the
+    results have to be read in that light.
+    """
+    bootstrap = deploy_args.get("wasm_bootstrap")
+    if not bootstrap:
+        return "_not recorded_"
+    total = bootstrap.get("total", 0)
+    if bootstrap.get("probe_skipped"):
+        return f"{total} address(es), probe skipped"
+    answered = bootstrap.get("answered", 0)
+    mark = "✅" if answered == total and total else "⚠️"
+    return f"{answered}/{total} answered an ICE probe {mark}"
 
 
 def _client_line(c: dict) -> str:

@@ -32,6 +32,13 @@ from rich.console import Console
 from saorsa_db.models import DeploymentStatus
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.cmd.prod_wasm_cli import (
+    apply_wasm_vm_size,
+    check_wasm_flags,
+    is_wasm_kind,
+    resolve_wasm_context,
+    wasm_deploy_args,
+)
 from saorsa_deploy.cmd.provision_clients import (
     _resolve_addresses_file_content,
     _resolve_ant_binary,
@@ -184,10 +191,19 @@ def _ensure_client_infra(args, console: Console) -> None:
     cache_token = (
         f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
     )
+    # network likewise, so client_state records the link conditions this VM ran
+    # under rather than leaving the per-VM listing blank on a shaped run. It was
+    # dropped here (the one-shot kind has always passed it), so a shaped
+    # continuous run reported as unshaped everywhere client_state is read.
+    network_token = (
+        f":network={getattr(args, 'network', None)}"
+        if getattr(args, "network", None)
+        else ""
+    )
     infra_args = SimpleNamespace(
         name=args.name,
         uploader=[],
-        downloader=[f"{provider}:{args.spec}:{cache_token}"],
+        downloader=[f"{provider}:{args.spec}:{cache_token}{network_token}"],
         force=False,
     )
     cmd_infra_clients(infra_args)
@@ -197,6 +213,7 @@ def _provision_prod_downloader(
     args,
     addresses_file: str,
     console: Console,
+    wasm_context=None,
 ) -> None:
     """Install the prod_downloader.py service across the deployment's client VMs.
 
@@ -249,13 +266,19 @@ def _provision_prod_downloader(
         sys.exit(1)
     console.print(f"  Using {len(bootstrap_peers)} production peers.")
 
-    binary_args = SimpleNamespace(
-        name=args.name,
-        branch_name=args.branch_name,
-        repo_owner=args.repo_owner,
-        ant_version=args.ant_version,
-    )
-    binary_url, binary_is_archive = _resolve_ant_binary(binary_args, console)
+    # A WASM deployment installs no `ant` binary — nothing on the VM runs it —
+    # so the release/branch resolution is skipped entirely rather than resolved
+    # and ignored.
+    if wasm_context is None:
+        binary_args = SimpleNamespace(
+            name=args.name,
+            branch_name=args.branch_name,
+            repo_owner=args.repo_owner,
+            ant_version=args.ant_version,
+        )
+        binary_url, binary_is_archive = _resolve_ant_binary(binary_args, console)
+    else:
+        binary_url, binary_is_archive = None, True
 
     influx_url = ""
     influx_token = ""
@@ -314,6 +337,11 @@ def _provision_prod_downloader(
         memory_profiling=getattr(args, "memory_profiling", False),
         download_diagnostics=getattr(args, "download_diagnostics", False),
         log_retention_days=getattr(args, "log_retention_days", 7),
+        client_kind="wasm" if wasm_context else "native",
+        wasm_bundle_url=wasm_context.bundle_url if wasm_context else None,
+        bootstrap_multiaddrs=(
+            wasm_context.bootstrap_multiaddrs if wasm_context else None
+        ),
         console=console,
     )
     provisioner.execute()
@@ -454,10 +482,23 @@ def cmd_prod_continuous_downloader_deploy(args):
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
 
+    # Everything WASM-specific is resolved and PROVED before any
+    # infrastructure exists: an unreachable bootstrap tier or an under-sized box
+    # would otherwise be a VM that bills from creation and fails every op.
+    check_wasm_flags(args, console)
+    apply_wasm_vm_size(args, console)
+    wasm_context = resolve_wasm_context(args, console)
+
     console.print(f"[bold]prod continuous-downloader deploy: {args.name}[/bold]")
     console.print(f"  Addresses file: {addresses_file}")
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
     console.print(f"  Downloader spec: {args.spec}")
+    transport = (
+        "wasm (browser path, WebRTC-Direct)"
+        if is_wasm_kind(args)
+        else "native (ant over QUIC)"
+    )
+    console.print(f"  Transport: {transport}")
     sleep_label = (
         "disabled — back-to-back cycling"
         if args.sleep_interval_secs == 0
@@ -492,6 +533,7 @@ def cmd_prod_continuous_downloader_deploy(args):
             args.branch_name, args.repo_owner, args.ant_version,
             debug=getattr(args, "debug", False),
         ),
+        **wasm_deploy_args(wasm_context),
     }
     record_deployment_created(args.name, deploy_args_payload)
     record_event(args.name, "prod_downloader_deploy_started", deploy_args_payload)
@@ -499,7 +541,7 @@ def cmd_prod_continuous_downloader_deploy(args):
     try:
         _ensure_monitoring(args, console)
         _ensure_client_infra(args, console)
-        _provision_prod_downloader(args, addresses_file, console)
+        _provision_prod_downloader(args, addresses_file, console, wasm_context)
         _start_prod_downloader(args, console)
         from saorsa_deploy.cmd.provision_telegraf_metrics import (
             provision_client_telegraf_best_effort,

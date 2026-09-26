@@ -140,14 +140,19 @@ def cmd_print_recorded_results(args) -> None:
     else:
         rows = repo.list_file_results_for_deployment(deployment.id)
         _print_file_results_section(rows, deployment.name, console)
+        upload_records = repo.list_upload_records_for_deployment(deployment.id)
+        download_records = repo.list_download_records_for_deployment(deployment.id)
         if args.details:
-            upload_records = repo.list_upload_records_for_deployment(deployment.id)
-            download_records = repo.list_download_records_for_deployment(
-                deployment.id
-            )
             _print_op_records_section(
                 upload_records, download_records, deployment.name, console
             )
+        else:
+            # The per-ROW dump stays behind --details, but the counts do not:
+            # `deployment_file_results` has no skipped column, so a group that is
+            # entirely skips renders as "0 OK / 0 Fail" — which reads as though
+            # nothing happened, the opposite of the truth. These are a handful of
+            # counts, and they print nothing at all for a run with no WASM rows.
+            _print_transport_totals(upload_records, download_records, console)
 
 
 def _resolve_kind(deploy_args) -> str:
@@ -494,6 +499,10 @@ def _print_file_results_section(
 _OP_STATUS_LABELS = {
     OpRecordStatus.SUCCESS: "[green]ok[/green]",
     OpRecordStatus.FAILURE: "[red]fail[/red]",
+    # The transport refused the file (over ant-core's browser cap), the network
+    # did not. Its own word and its own colour, because rendering it as a
+    # failure reports a transport limitation as a network fault.
+    OpRecordStatus.SKIPPED: "[yellow]skip[/yellow]",
 }
 
 
@@ -520,6 +529,49 @@ def _print_op_records_section(
         _print_op_records_for_kind("upload", uploads, name, console)
     if downloads:
         _print_op_records_for_kind("download", downloads, name, console)
+    _print_transport_totals(uploads, downloads, console)
+
+
+def _print_transport_totals(uploads: list, downloads: list, console: Console) -> None:
+    """Per-transport success counts, with skips excluded and stated.
+
+    The native and WASM tiers are not the same instrument — the WASM tier
+    measured ~4.2x slower on download — so a blended total describes neither.
+    Rendered whenever a run carries WASM rows; a native-only run prints exactly
+    what it did before. NULL counts as native, as it does everywhere else in
+    this pipeline.
+    """
+    rows = [("upload", uploads), ("download", downloads)]
+    if not any(
+        (r.client_kind or "native") == "wasm" for _, group in rows for r in group
+    ):
+        return
+    for op_label, group in rows:
+        if not group:
+            continue
+        console.print()
+        console.print(f"[bold]{op_label} totals by transport[/bold]")
+        for transport in ("native", "wasm"):
+            subset = [
+                r for r in group if (r.client_kind or "native") == transport
+            ]
+            if not subset:
+                continue
+            # A skip never enters the denominator: the content is on the network
+            # and healthy, and this transport simply will not carry it.
+            skipped = sum(1 for r in subset if r.status == OpRecordStatus.SKIPPED)
+            attempted = [
+                r for r in subset if r.status != OpRecordStatus.SKIPPED
+            ]
+            ok = sum(1 for r in attempted if r.status == OpRecordStatus.SUCCESS)
+            total = len(attempted)
+            rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
+            colour = "green" if transport == "native" else "cyan"
+            extra = f", {skipped} skipped (over-cap)" if skipped else ""
+            console.print(
+                f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = "
+                f"{rate}{extra}"
+            )
 
 
 def _print_op_records_for_kind(
@@ -541,8 +593,14 @@ def _print_op_records_for_kind(
             title_style="bold",
             show_lines=False,
         )
+        # Only downloads carry an address, and only rows recorded since the
+        # column existed. Omitted entirely when nothing has one, so a historical
+        # run renders as it did rather than gaining a column of dashes.
+        show_address = any(getattr(r, "address", None) for r in host_rows)
         table.add_column("#", justify="right")
         table.add_column("Region")
+        if show_address:
+            table.add_column("Address")
         table.add_column("Size (MB)", justify="right")
         table.add_column("Status")
         table.add_column("Duration", justify="right")
@@ -554,15 +612,18 @@ def _print_op_records_for_kind(
                 if row.file_size_bytes is not None
                 else "-"
             )
-            table.add_row(
-                str(i),
-                row.region or "-",
+            cells = [str(i), row.region or "-"]
+            if show_address:
+                address = getattr(row, "address", None) or "-"
+                cells.append(address if len(address) <= 20 else f"{address[:17]}...")
+            cells += [
                 size_mb,
                 _OP_STATUS_LABELS.get(row.status, "-"),
                 _fmt_duration(row.duration_ms),
                 _fmt_dt(row.started_at),
                 _fmt_dt(row.finished_at),
-            )
+            ]
+            table.add_row(*cells)
         console.print(table)
 
 

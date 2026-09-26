@@ -24,7 +24,10 @@ from statistics import median
 from rich.console import Console
 from rich.table import Table
 
-from saorsa_deploy.client_roles import is_wasm
+from saorsa_deploy.client_transport import (
+    deployment_scoped_transport,
+    transport_map_from_client_state,
+)
 from saorsa_deploy.influx import (
     fetch_all_operation_points,
     fetch_prod_upload_points,
@@ -229,7 +232,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         _build_payment_map(args.name) if op_type == "upload" else {}
     )
     cache_by_host = _build_bootstrap_cache_map(args.name)
-    role_by_host = _build_role_map(args.name)
+    transport_by_host = _build_transport_map(args.name)
 
     for host in sorted(by_host.keys()):
         ops = sorted(
@@ -245,16 +248,17 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             else f"{len(ops)} op(s)"
         )
         title_parts = [host]
-        role = role_by_host.get(host)
-        if role is not None:
-            title_parts.append(
-                f"transport={'wasm' if is_wasm(role) else 'native'}"
-            )
+        transport = transport_by_host.get(host)
+        if transport is not None:
+            title_parts.append(f"transport={transport}")
         if op_type == "upload":
             payment = payment_by_host.get(host, "default")
             title_parts.append(f"payment={payment}")
+        # Not shown for a WASM host: the peer cache has no browser-path meaning
+        # and the option is refused there, so a value would describe a knob that
+        # had no effect.
         cache = cache_by_host.get(host)
-        if cache is not None:
+        if cache is not None and transport != "wasm":
             title_parts.append(f"bootstrap-cache={'on' if cache else 'off'}")
         if skew_label:
             title_parts.append(f"clock skew {skew_label}")
@@ -280,11 +284,11 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             )
         console.print(table)
 
-    _print_transport_totals(op_type, by_host, role_by_host, console)
+    _print_transport_totals(op_type, by_host, transport_by_host, console)
 
 
 def _print_transport_totals(
-    op_type: str, by_host: dict, role_by_host: dict, console: Console
+    op_type: str, by_host: dict, transport_by_host: dict, console: Console
 ) -> None:
     """Success counts split by transport.
 
@@ -296,25 +300,39 @@ def _print_transport_totals(
     """
     tiers: dict[str, list[int]] = {}
     for host, ops in by_host.items():
-        role = role_by_host.get(host)
-        if role is None:
+        tier = transport_by_host.get(host)
+        if tier is None:
             continue
-        tier = "wasm" if is_wasm(role) else "native"
-        slot = tiers.setdefault(tier, [0, 0])
+        slot = tiers.setdefault(tier, [0, 0, 0, 0])
         for op in ops:
+            # A skip is neither a success nor an attempt: the transport refused
+            # the file before the network was involved, so it stays out of the
+            # denominator. It is still reported, beside the rate.
+            if op.get("status") == 2:
+                slot[2] += 1
+                continue
             slot[1] += 1
             if op.get("status") == 0:
                 slot[0] += 1
+            if op.get("error_kind") == "crash":
+                slot[3] += 1
     if len(tiers) < 2:
         return
     console.print(f"[bold]{op_type} success by transport[/bold]")
     for tier in ("native", "wasm"):
         if tier not in tiers:
             continue
-        ok, total = tiers[tier]
+        ok, total, skipped, crashes = tiers[tier]
         rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
         colour = "green" if tier == "native" else "cyan"
-        console.print(f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}")
+        extra = ""
+        if skipped:
+            extra += f", {skipped} skipped (over-cap)"
+        if crashes:
+            extra += f", {crashes} crashed"
+        console.print(
+            f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}{extra}"
+        )
 
 
 def _build_payment_map(name: str) -> dict[str, str]:
@@ -340,27 +358,57 @@ def _build_payment_map(name: str) -> dict[str, str]:
     return out
 
 
-def _build_role_map(name: str) -> dict[str, str]:
-    """Map hostname → client role for every client in the deployment.
+def _build_transport_map(name: str) -> dict[str, str]:
+    """Map hostname → "native" | "wasm" for every client in the deployment.
 
-    Used to label which transport each host's operations came from. Derived
-    from client state rather than by sniffing the hostname, so the canonical
-    role names in `client_roles` stay the single source of truth. Missing
-    client state returns an empty map — the caller omits the label rather than
-    guessing a transport, which would be worse than saying nothing.
+    A production client kind's transport is a property of the DEPLOYMENT, not of
+    the VM: its role is always the native `download`, so reading the role
+    reported every production WASM run as `transport=native` — recorded
+    correctly, printed wrong. `client_transport` holds both rules so the
+    recording and reporting paths cannot drift again.
+
+    An empty map means the caller omits the label rather than guessing a
+    transport, which would be worse than saying nothing.
     """
+    from saorsa_deploy.registry import get_repository
+
+    try:
+        repo = get_repository()
+        if repo is not None:
+            deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+            if deployment is not None:
+                scoped = deployment_scoped_transport(
+                    getattr(deployment, "deploy_args", None)
+                )
+                if scoped is not None:
+                    # One transport for the whole deployment; every host it wrote
+                    # points from ran it.
+                    return _ConstantTransport(scoped)
+    except Exception:
+        # Reporting must never fail because the registry is unreachable; fall
+        # back to the per-VM rule below.
+        pass
+
     try:
         state = load_client_state(name)
     except RuntimeError:
         return {}
-    out: dict[str, str] = {}
-    for c in state.get("clients", []):
-        role = c.get("role")
-        if not role:
-            continue
-        host = f"{name}-ant-client-{role}-{c['region']}-{c['client_index']}"
-        out[host] = role
-    return out
+    return transport_map_from_client_state(name, state)
+
+
+class _ConstantTransport(dict):
+    """A map answering the same transport for every host.
+
+    A dict subclass so the two call sites keep using `.get(host)` unchanged, and
+    so `len(...) < 2` still reports a single-transport run correctly.
+    """
+
+    def __init__(self, transport: str):
+        super().__init__()
+        self._transport = transport
+
+    def get(self, _host, default=None):  # noqa: D102
+        return self._transport
 
 
 def _build_bootstrap_cache_map(name: str) -> dict[str, bool]:
@@ -462,6 +510,11 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
     total = len(ops)
     successes = sum(1 for o in ops if o.get("status") == 0)
     failures = sum(1 for o in ops if o.get("status") == 1)
+    skipped = sum(1 for o in ops if o.get("status") == 2)
+    # An OOM kill of the transfer process, which on a client VM is what a
+    # browser-path transfer too large for the box looks like. Counted separately
+    # from a plain failure because the fix is a bigger VM, not the network.
+    crashes = sum(1 for o in ops if o.get("error_kind") == "crash")
 
     success_durations = [
         o["total_ms"] for o in ops
@@ -478,6 +531,8 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
         "total": total,
         "successes": successes,
         "failures": failures,
+        "skipped": skipped,
+        "crashes": crashes,
         "overall_avg_ms": overall_avg_ms,
     }
 
@@ -518,6 +573,10 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
         table.add_row("Total ops", str(summary["total"]))
         table.add_row("Successes", str(summary["successes"]))
         table.add_row("Failures", str(summary["failures"]))
+        if summary["skipped"]:
+            table.add_row("Skipped (over-cap)", str(summary["skipped"]))
+        if summary["crashes"]:
+            table.add_row("Crashes (killed by signal)", str(summary["crashes"]))
         table.add_row("Avg duration", _fmt_duration(summary["overall_avg_ms"]))
         console.print(table)
 
@@ -727,6 +786,11 @@ def _fmt_status(code) -> str:
         return "[green]ok[/green]"
     if code == 1:
         return "[red]fail[/red]"
+    # Yellow, and its own word: the transport refused the file (over ant-core's
+    # browser cap), the network did not. Rendering it as "fail" would report a
+    # transport limitation as a network fault, and as "-" would hide the op.
+    if code == 2:
+        return "[yellow]skip[/yellow]"
     return "-"
 
 

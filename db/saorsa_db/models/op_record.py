@@ -18,6 +18,13 @@ from saorsa_db.db import Base
 class OpRecordStatus(enum.Enum):
     SUCCESS = "success"
     FAILURE = "failure"
+    # The operation was deliberately not attempted, or was refused by the
+    # transport rather than by the network: a WASM (browser-path) client cannot
+    # carry a file above ant-core's 1 GB cap, so an over-cap entry in the address
+    # list is skipped. NOT a failure — the content is on the network and healthy
+    # — so every success-rate denominator excludes these rows. Counting them as
+    # failures would report a transport limitation as a network fault.
+    SKIPPED = "skipped"
 
 
 class _BaseOpRecord:
@@ -115,6 +122,16 @@ class DeploymentDownloadRecord(_BaseOpRecord, Base):
         ),
     )
 
+    # The public address this operation fetched. NULL on every row predating the
+    # column, because the `download` Influx measurement carried no address at
+    # all: an op could be seen to have failed but not what it had tried to
+    # fetch, so a per-address failure was uninvestigable. Downloads only — an
+    # upload's address is its RESULT and lives in the prod-upload tables.
+    address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     deployment: Mapped["Deployment"] = relationship(  # noqa: F821
         back_populates="download_records"
     )
+
+    def to_dict(self):
+        return {**super().to_dict(), "address": self.address}

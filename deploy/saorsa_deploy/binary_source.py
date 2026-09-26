@@ -245,6 +245,47 @@ def get_ant_wasm_build_url(name: str, repo_owner: str, branch_name: str) -> str:
     return f"https://{BUILDS_BUCKET}.s3.{BUILDS_REGION}.amazonaws.com/{key}"
 
 
+#: Provenance sidecar uploaded next to the bundle by `build ant-wasm`, holding
+#: the ant-client commit, the resolved `node-datachannel` version and the build
+#: timestamp. A sidecar rather than only the copy inside the tarball: the deploy
+#: commands record it in `deploy_args` and never unpack the bundle themselves.
+ANT_WASM_BUILD_INFO_NAME = "ant-wasm-client.build-info.json"
+
+
+def get_ant_wasm_build_info_url(name: str, repo_owner: str, branch_name: str) -> str:
+    """Return the S3 URL of a built bundle's provenance sidecar."""
+    key = (
+        f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/"
+        f"{ANT_WASM_BUILD_INFO_NAME}"
+    )
+    return f"https://{BUILDS_BUCKET}.s3.{BUILDS_REGION}.amazonaws.com/{key}"
+
+
+def fetch_ant_wasm_build_info(
+    name: str, repo_owner: str, branch_name: str, timeout: int = 15
+) -> dict | None:
+    """Read a built bundle's provenance sidecar, or None when there isn't one.
+
+    Fetched over plain HTTPS, the same route the client VMs use for the bundle
+    itself, so it needs no credentials. Returns None for a bundle built before
+    the sidecar existed (and for any transport or parse failure) — the caller
+    warns and records null rather than failing a deploy over provenance.
+    """
+    import requests
+
+    try:
+        resp = requests.get(
+            get_ant_wasm_build_info_url(name, repo_owner, branch_name),
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return None
+        info = resp.json()
+    except Exception:
+        return None
+    return info if isinstance(info, dict) else None
+
+
 def check_ant_wasm_build_exists(name: str, repo_owner: str, branch_name: str) -> bool:
     """Check whether a built WASM client bundle exists in S3."""
     key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_ARCHIVE_NAME}"

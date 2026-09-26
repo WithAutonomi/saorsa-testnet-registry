@@ -25,6 +25,7 @@ ordering -- lives in ``saorsa_deploy/prod_bootstrap_upgrade.py``; the ICE probe
 lives in ``saorsa_deploy/webrtc_probe.py``.
 """
 
+import ipaddress
 import json
 import shlex
 import subprocess
@@ -69,6 +70,7 @@ from saorsa_deploy.prod_bootstrap_upgrade import (
 from saorsa_deploy.ssh import clear_known_hosts
 from saorsa_deploy.webrtc_addresses import (
     MULTIADDR_FILENAME,
+    address_host,
     parse_multiaddr,
     rewrite_host,
 )
@@ -81,7 +83,12 @@ _SSH_OPTS = [
 
 #: How long a restarted bootstrap has to report itself healthy. It rejoins the
 #: network on start, so this is not instant even when everything is right.
-HEALTH_TIMEOUT_SECS = 180
+#: ant-node 0.20.0 opens the WebRTC listener only after that join: measured on
+#: the production tier at 1m43s and 2m36s (nrt) and over 3m29s (syd), so the
+#: original 180s rolled back a healthy host. After the 2026-09-25 set-peers
+#: restart it took 14m26s (fsn1) and 13m35s (ash), which 600s would also have
+#: failed; fleet nodes measured up to 11m55s.
+HEALTH_TIMEOUT_SECS = 1200
 _HEALTH_POLL_SECS = 5
 
 #: One ICE check's deadline, and how many are tried before a host is failed.
@@ -284,9 +291,11 @@ def _hetzner_open_port(vm: NodeVm, port: int, console: Console) -> bool:
         )
         return False
     try:
-        firewall_ids = [
-            str(f["id"]) for f in (json.loads(server.stdout).get("firewalls") or [])
-        ]
+        # hcloud nests the attached firewalls under public_net; there is no
+        # top-level key, and reading one reported "no firewall attached" for
+        # both production Hetzner bootstraps while theirs dropped udp/10001.
+        public_net = json.loads(server.stdout).get("public_net") or {}
+        firewall_ids = [str(f["id"]) for f in (public_net.get("firewalls") or [])]
     except (ValueError, KeyError, TypeError) as e:
         console.print(f"  [bold red]{vm.name}[/bold red]: unreadable describe: {e}")
         return False
@@ -605,8 +614,15 @@ def _upgrade_host(
     *,
     expect_webrtc: bool,
     console: Console,
+    probe_advisory: bool = False,
+    probe_failures: list[str] | None = None,
 ) -> str | None:
-    """Upgrade one host. Returns ``None`` on success, else the failure reason."""
+    """Upgrade one host. Returns ``None`` on success, else the failure reason.
+
+    With ``probe_advisory`` a failed ICE probe keeps the host on the new binary
+    and is recorded in ``probe_failures`` instead of rolling it back. The health
+    gate stays binding either way.
+    """
     console.print(f"[bold]{vm.name}[/bold] ({vm.provider}, {vm.ip})")
 
     try:
@@ -678,17 +694,28 @@ def _upgrade_host(
         console.print(f"  ICE probe: [yellow]not expected[/yellow] (ant-node {version})")
         return None
 
-    if not webrtc_probe.probe(
-        vm.ip, webrtc_port, PROBE_TIMEOUT_SECS, attempts=PROBE_ATTEMPTS
-    ):
+    try:
+        advertised = address_host(_read_multiaddr(vm, ssh_key))
+    except (RuntimeError, ValueError, subprocess.SubprocessError):
+        advertised = None
+    host = _answering_host(vm, advertised, webrtc_port)
+    if host is None:
         console.print(
             f"  [bold red]{vm.name}: ICE probe to {vm.ip}:{webrtc_port} got no "
             "reply[/bold red]"
         )
+        if probe_advisory:
+            console.print(
+                f"  [yellow]{vm.name}: --probe-advisory, keeping ant-node "
+                f"{version} (health gate passed)[/yellow]"
+            )
+            if probe_failures is not None:
+                probe_failures.append(vm.name)
+            return None
         _rollback(vm, ssh_key, unit, original_unit, console)
         return "ICE probe failed"
 
-    console.print(f"  ICE probe {vm.ip}:{webrtc_port}: [green]reachable[/green]")
+    console.print(f"  ICE probe {host}:{webrtc_port}: [green]reachable[/green]")
     return None
 
 
@@ -738,6 +765,7 @@ def cmd_prod_bootstrap_upgrade(args) -> None:
         clear_known_hosts([vm.ip for vm in vms], console)
 
         upgraded: list[str] = []
+        probe_failures: list[str] = []
         for index, vm in enumerate(vms):
             ssh_key = _resolve_ssh_key(vm, args.ssh_key_path)
             reason = _upgrade_host(
@@ -748,6 +776,8 @@ def cmd_prod_bootstrap_upgrade(args) -> None:
                 webrtc_port,
                 expect_webrtc=expect_webrtc,
                 console=console,
+                probe_advisory=args.probe_advisory,
+                probe_failures=probe_failures,
             )
             if reason is not None:
                 console.print(
@@ -774,6 +804,19 @@ def cmd_prod_bootstrap_upgrade(args) -> None:
         )
         return
 
+    if probe_failures:
+        # The published list is every browser client's way in, and its own
+        # probe would fail the same way; collecting it is left to
+        # webrtc-addresses once the probe is understood.
+        console.print(
+            f"[bold yellow]ICE probe got no reply from: "
+            f"{', '.join(probe_failures)}. Those hosts were kept on {version} "
+            "(--probe-advisory). The WebRTC address list was NOT collected; run "
+            "`prod bootstrap webrtc-addresses` once the probe is resolved."
+            "[/bold yellow]"
+        )
+        return
+
     console.print()
     _collect_multiaddrs(
         vms, args.inventory_path, args.ssh_key_path, DEFAULT_MULTIADDR_OUT, console
@@ -786,18 +829,43 @@ def cmd_prod_bootstrap_upgrade(args) -> None:
 
 
 def _read_multiaddr(vm: NodeVm, ssh_key: str) -> str:
-    """The browser address one bootstrap published, corrected to its inventory IP.
+    """The browser address one bootstrap published, exactly as ant-node wrote it.
 
     Raises ``RuntimeError`` or ``ValueError`` if the host has nothing usable.
-    The inventory IP wins over whatever ant-node observed: the two Hetzner
-    hosts carry a second public address on the same interface, and only the
-    inventory one is what clients hold.
     """
     _, unit = _read_unit(vm, ssh_key)
     raw = _run(
         vm, ssh_key, _privileged(vm, f"cat {unit.root_dir}/{MULTIADDR_FILENAME}")
     )
-    return rewrite_host(parse_multiaddr(raw), vm.ip)
+    return parse_multiaddr(raw)
+
+
+def _is_public_ip(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return False
+
+
+def _answering_host(vm: NodeVm, advertised: str | None, port: int) -> str | None:
+    """The address a browser can actually reach this bootstrap's listener on.
+
+    The inventory IP is tried first, since it is the address clients already
+    hold. It is not always the right one: the two Hetzner bootstraps' inventory
+    IPs are floating IPs, and the WebRTC listener (bound to 0.0.0.0) answers a
+    check sent there from the server's primary IP. The probe discards that
+    reply, and so does a browser, because ICE requires the answer to come from
+    the address it dialled. ant-node advertises the primary IP, which works, so
+    that is tried next, provided it is public. Measured on ant-bootstrap-fsn1
+    and -ash, 2026-09-24.
+    """
+    candidates = [vm.ip]
+    if advertised and advertised != vm.ip and _is_public_ip(advertised):
+        candidates.append(advertised)
+    for host in candidates:
+        if webrtc_probe.probe(host, port, PROBE_TIMEOUT_SECS, attempts=PROBE_ATTEMPTS):
+            return host
+    return None
 
 
 def _collect_multiaddrs(
@@ -831,18 +899,25 @@ def _collect_multiaddrs(
             continue
 
         port = int(multiaddr.split("/")[4])
-        if not webrtc_probe.probe(
-            vm.ip, port, PROBE_TIMEOUT_SECS, attempts=PROBE_ATTEMPTS
-        ):
+        advertised = address_host(multiaddr)
+        host = _answering_host(vm, advertised, port)
+        if host is None:
+            tried = vm.ip if advertised == vm.ip else f"{vm.ip} and {advertised}"
             failures.append(
-                HostFailure(vm.name, f"ICE probe to {vm.ip}:{port} got no reply")
+                HostFailure(vm.name, f"ICE probe to {tried}:{port} got no reply")
             )
             console.print(
-                f"  [bold red]{vm.name}: ICE probe to {vm.ip}:{port} got no "
+                f"  [bold red]{vm.name}: ICE probe to {tried}:{port} got no "
                 "reply[/bold red]"
             )
             continue
 
+        multiaddr = rewrite_host(multiaddr, host)
+        if host != vm.ip:
+            console.print(
+                f"  [yellow]{vm.name}: {vm.ip} does not answer; publishing the "
+                f"advertised {host}[/yellow]"
+            )
         addresses.append(multiaddr)
         console.print(f"  {vm.name}: [green]{multiaddr}[/green]")
 

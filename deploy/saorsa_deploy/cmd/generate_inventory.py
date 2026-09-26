@@ -30,6 +30,11 @@ from saorsa_deploy.provisioning.prod_downloader import (
     SERVICE_NAME as PROD_DOWNLOADER_SERVICE_NAME,
 )
 from saorsa_deploy.provisioning.volume import MOUNT_POINT
+from saorsa_deploy.provisioning.wasm_client import (
+    ANT_WASM_CLI_PATH,
+    WASM_BUILD_INFO_PATH,
+    WASM_CLIENT_DIR,
+)
 from saorsa_deploy.state import (
     load_client_state,
     load_deployment_state,
@@ -37,7 +42,12 @@ from saorsa_deploy.state import (
     load_monitoring_state,
 )
 
-INVENTORY_SCHEMA_VERSION = 6
+#: 7 adds `client_kind`, `wasm_build` and `wasm_bootstrap` to the download
+#: kinds' `client_config`, plus the `ant_wasm_*` paths. A bump rather than a
+#: quiet addition because a consumer that reads `client_config.binary` to find
+#: out what ran would be wrong on a WASM deployment — nothing is installed at
+#: the `ant` path there.
+INVENTORY_SCHEMA_VERSION = 7
 DEFAULT_SSH_USER = "root"
 DEFAULT_SSH_KEY = "~/.ssh/id_rsa"
 DEFAULT_OUTPUT_TEMPLATE = "~/.autonomi/testnets/{name}/inventory.json"
@@ -423,10 +433,22 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
     kind = deploy_args.get("kind")
     addresses = deploy_args.get("addresses") or []
     diagnostics = bool(deploy_args.get("download_diagnostics", False))
+    client_kind = deploy_args.get("client_kind") or "native"
+    is_wasm = client_kind == "wasm"
 
     config = {
         "kind": kind,
         "one_shot": kind == "prod-downloaders",
+        # Which transport measured this run. Everything else here means
+        # something different depending on it: the browser path runs `ant-wasm`
+        # rather than `ant`, and refuses a file over 1 GB.
+        "client_kind": client_kind,
+        # Provenance of the WASM bundle, and what the preflight bootstrap probe
+        # found. Both only exist for a WASM run, and both are unreconstructable
+        # afterwards — the bundle is overwritten per deployment name and the
+        # probe was a moment in time.
+        "wasm_build": deploy_args.get("wasm_build") if is_wasm else None,
+        "wasm_bootstrap": deploy_args.get("wasm_bootstrap") if is_wasm else None,
         "evm_network": "arbitrum-one",
         "bootstrap_peers_url": deploy_args.get("prod_bootstraps_url"),
         "addresses_file": deploy_args.get("addresses_file"),
@@ -438,7 +460,13 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
         "monitoring_provider": deploy_args.get("monitoring_provider"),
         "monitoring_name": deploy_args.get("monitoring_name"),
         "settings": {
-            "bootstrap_cache": deploy_args.get("bootstrap_cache"),
+            # None on the browser path: the peer cache, heaptrack and
+            # --download-diagnostics are all refused there (they act on `ant`,
+            # which never runs), so a value would describe a knob that had no
+            # effect on the run.
+            "bootstrap_cache": (
+                None if is_wasm else deploy_args.get("bootstrap_cache")
+            ),
             "download_diagnostics": diagnostics,
             "memory_profiling": bool(deploy_args.get("memory_profiling", False)),
             "forward_logs": bool(deploy_args.get("forward_logs", False)),
@@ -454,7 +482,14 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
         # automatically, so a consumer needs these paths to scp them off first.
         "paths": {
             "service_name": PROD_DOWNLOADER_SERVICE_NAME,
+            # The native binary path is always given: the service, unit and log
+            # layout are the native ones whichever transport runs. On a WASM run
+            # nothing is installed there, and the two `ant_wasm_*` entries below
+            # name what actually ran.
             "ant_binary": PROD_DOWNLOADER_ANT_INSTALL_PATH,
+            "ant_wasm_cli": ANT_WASM_CLI_PATH if is_wasm else None,
+            "ant_wasm_bundle_dir": WASM_CLIENT_DIR if is_wasm else None,
+            "ant_wasm_build_info": WASM_BUILD_INFO_PATH if is_wasm else None,
             "env_file": PROD_DOWNLOADER_ENV_PATH,
             "addresses_file": PROD_DOWNLOADER_ADDRESSES_PATH,
             "download_dir": PROD_DOWNLOADER_DOWNLOAD_DIR,

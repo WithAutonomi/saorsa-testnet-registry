@@ -223,6 +223,7 @@ class DeploymentRepository(ABC):
         duration_ms: int | None,
         network_profile: str | None = None,
         client_kind: str | None = None,
+        address: str | None = None,
     ) -> DeploymentDownloadRecord:
         ...
 
@@ -845,6 +846,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         duration_ms: int | None,
         network_profile: str | None = None,
         client_kind: str | None = None,
+        address: str | None = None,
     ):
         existing = (
             self.session.query(model_cls)
@@ -869,6 +871,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 duration_ms=duration_ms,
                 network_profile=network_profile,
                 client_kind=client_kind,
+                **({"address": address} if address is not None else {}),
             )
             self.session.add(existing)
         else:
@@ -889,6 +892,11 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # known transport; a known one still updates.
             if client_kind is not None:
                 existing.client_kind = client_kind
+            # Same COALESCE reasoning: the address comes from the Influx point,
+            # and a point written before the field existed has none. Writing
+            # None over a recorded address would lose it on the next re-run.
+            if address is not None:
+                existing.address = address
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -938,6 +946,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         duration_ms: int | None,
         network_profile: str | None = None,
         client_kind: str | None = None,
+        address: str | None = None,
     ) -> DeploymentDownloadRecord:
         return self._upsert_op_record(
             DeploymentDownloadRecord,
@@ -953,6 +962,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             duration_ms=duration_ms,
             network_profile=network_profile,
             client_kind=client_kind,
+            address=address,
         )
 
     def list_upload_records_for_deployment(

@@ -143,7 +143,8 @@ def _stage_client_sources(dest: Path) -> None:
     """
     src = get_resources_dir() / "wasm-client"
     dest.mkdir(parents=True, exist_ok=True)
-    for rel in ("package.json", "tsconfig.json"):
+    # package-lock.json too: the build runs `npm ci`, which refuses without it.
+    for rel in ("package.json", "package-lock.json", "tsconfig.json"):
         shutil.copy2(src / rel, dest / rel)
     (dest / "src").mkdir(exist_ok=True)
     for path in sorted((src / "src").glob("*.ts")):

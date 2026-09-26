@@ -236,6 +236,50 @@ def test_a_window_covering_neither_event_is_unassessed_not_a_miss():
     assert coverage.assessed == 0
 
 
+def test_a_restart_inside_the_grace_window_is_pending_not_a_miss():
+    """0.20.0 opens the listener 7-12 min after start; that is not a failure."""
+    coverage = webrtc_coverage.evaluate_listening_coverage(
+        ["HOST-A/1"], {"HOST-A/1": NOW - timedelta(minutes=11)}, {}, now=NOW
+    )
+    assert coverage.misses == [] and coverage.covered == []
+    assert [k for k, _ in coverage.pending] == ["HOST-A/1"]
+    assert coverage.assessed == 0
+
+
+def test_a_restart_past_the_grace_window_with_no_listening_line_is_a_miss():
+    coverage = webrtc_coverage.evaluate_listening_coverage(
+        ["HOST-A/1"],
+        {"HOST-A/1": NOW - webrtc_coverage.LISTEN_GRACE - timedelta(seconds=1)},
+        {},
+        now=NOW,
+    )
+    assert [k for k, _ in coverage.misses] == ["HOST-A/1"]
+    assert coverage.pending == []
+
+
+def test_the_sample_only_draws_new_arm_services():
+    """Old-version services never write webrtc-direct.multiaddr."""
+    vms = [
+        _vm("ant-prod-01-hz-fsn1-1", "10.0.1.1", "hetzner", ("ant-node-1", "ant-node-2")),
+        _vm("ant-prod-01-ovh-BHS5-1", "10.0.2.1", "ovh", ("ant-node-1", "ant-node-2")),
+    ]
+    new_arm = {"ANT-PROD-01-HZ-FSN1-1/2"}
+    restricted = webrtc_coverage.new_arm_vms(vms, new_arm)
+    assert restricted[0].services == ("ant-node-2",)
+    assert restricted[1].services == ()
+    chosen = webrtc_coverage.select_sample(restricted, sample=10)
+    assert [(vm.name, vm.services[0]) for vm in chosen] == [
+        ("ant-prod-01-hz-fsn1-1", "ant-node-2")
+    ]
+
+
+def test_new_arm_matching_does_not_confuse_service_1_with_service_12():
+    vm = _vm("ant-prod-01-ovh-GRA9-7", "10.0.2.7", "ovh", ("ant-node-1", "ant-node-12"))
+    assert webrtc_coverage.new_arm_services(vm, {"ANT-PROD-01-OVH-GRA9-7/12"}) == (
+        "ant-node-12",
+    )
+
+
 def test_warn_family_threshold_is_five_percent_of_the_new_arm():
     arms = arms_of([(f"HOST-{i}", "1", "0.20.0") for i in range(20)])
     assert len(arms.new) == 20
@@ -611,6 +655,15 @@ def test_dist_tags_parsing():
     }
     with pytest.raises(ValueError, match="did not return JSON"):
         artefact_smoke.parse_dist_tags("npm ERR! code E404")
+
+
+def test_dist_tags_parsing_accepts_npm_12_array_output():
+    # npm 12.0.1, measured at the 0.3.8 publish: `[{"latest": "0.3.8"}]`.
+    assert artefact_smoke.parse_dist_tags('[\n  {\n    "latest": "0.3.8"\n  }\n]') == {
+        "latest": "0.3.8"
+    }
+    with pytest.raises(ValueError, match="not an object"):
+        artefact_smoke.parse_dist_tags('[{"latest": "0.3.8"}, {"latest": "0.3.7"}]')
 
 
 def test_byte_comparison_of_two_downloads(tmp_path):

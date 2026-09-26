@@ -75,10 +75,7 @@ WantedBy=multi-user.target
 BINARY_PATH = "/opt/ant-node/ant-node"
 ROOT_DIR = "/mnt/ant-node-storage/data/ant-bootstrap"
 LOG_DIR = "/mnt/ant-node-storage/logs/ant-bootstrap"
-MULTIADDR = (
-    "/ip4/10.0.0.7/udp/10001/webrtc-direct/certhash/uEiDabc_123"
-    "/p2p/" + "a" * 64
-)
+MULTIADDR = "/ip4/10.0.0.7/udp/10001/webrtc-direct/certhash/uEiDabc_123/p2p/" + "a" * 64
 
 
 def _starting_line(version: str) -> str:
@@ -152,8 +149,7 @@ class TestReleasePreflight:
     def test_release_urls_point_at_the_tag(self):
         archive, sums = release_urls("0.20.0")
         assert archive.endswith(
-            "/WithAutonomi/ant-node/releases/download/v0.20.0/"
-            "ant-node-cli-linux-x64.tar.gz"
+            "/WithAutonomi/ant-node/releases/download/v0.20.0/ant-node-cli-linux-x64.tar.gz"
         )
         assert sums.endswith("/v0.20.0/SHA256SUMS.txt")
 
@@ -279,15 +275,11 @@ class TestHealthGate:
         assert verdict.webrtc is False
 
     def test_missing_listener_line_does_not_pass(self):
-        verdict = evaluate_health(
-            _starting_line("0.20.0"), "0.20.0", 10001, expect_webrtc=True
-        )
+        verdict = evaluate_health(_starting_line("0.20.0"), "0.20.0", 10001, expect_webrtc=True)
         assert not verdict.ok
 
     def test_below_0_20_0_the_start_line_alone_passes(self):
-        verdict = evaluate_health(
-            _starting_line("0.19.0"), "0.19.0", 10001, expect_webrtc=False
-        )
+        verdict = evaluate_health(_starting_line("0.19.0"), "0.19.0", 10001, expect_webrtc=False)
         assert verdict.ok
         assert verdict.webrtc is None
         assert "not expected" in verdict.describe()
@@ -375,12 +367,9 @@ class TestWebrtcProbe:
         # declaring the fingerprint's own 8 bytes.
         body = request[:-8]
         header = (
-            struct.pack("!HH", webrtc_probe.BINDING_REQUEST, len(body) - 20 + 8)
-            + request[4:20]
+            struct.pack("!HH", webrtc_probe.BINDING_REQUEST, len(body) - 20 + 8) + request[4:20]
         )
-        expected = (
-            zlib.crc32(header + body[20:]) & 0xFFFFFFFF
-        ) ^ webrtc_probe.FINGERPRINT_XOR
+        expected = (zlib.crc32(header + body[20:]) & 0xFFFFFFFF) ^ webrtc_probe.FINGERPRINT_XOR
         assert struct.unpack("!I", request[-4:])[0] == expected
 
     def test_message_integrity_recomputes(self):
@@ -389,10 +378,7 @@ class TestWebrtcProbe:
         # header length declaring MESSAGE-INTEGRITY's own 24 bytes.
         integrity_at = len(request) - 8 - 24
         body = request[20:integrity_at]
-        header = (
-            struct.pack("!HH", webrtc_probe.BINDING_REQUEST, len(body) + 24)
-            + request[4:20]
-        )
+        header = struct.pack("!HH", webrtc_probe.BINDING_REQUEST, len(body) + 24) + request[4:20]
         expected = hmac.new(ufrag.encode(), header + body, hashlib.sha1).digest()
         assert request[integrity_at + 4 : integrity_at + 24] == expected
 
@@ -401,9 +387,24 @@ class TestWebrtcProbe:
         types = [t for t, _ in webrtc_probe.parse_stun_message(request).attributes]
         assert types == [
             webrtc_probe.ATTR_USERNAME,
+            webrtc_probe.ATTR_ICE_CONTROLLING,
+            webrtc_probe.ATTR_PRIORITY,
             webrtc_probe.ATTR_MESSAGE_INTEGRITY,
             webrtc_probe.ATTR_FINGERPRINT,
         ]
+
+    def test_request_is_no_smaller_than_the_listeners_challenge(self):
+        # saorsa-transport's admission filter ignores any request smaller than
+        # the challenge it would send back (header, the swapped USERNAME,
+        # ICE-CONTROLLED 12, PRIORITY 8, MESSAGE-INTEGRITY 24, FINGERPRINT 8).
+        # The probe without PRIORITY/ICE-CONTROLLING was 20 bytes short and got
+        # no reply from any production 0.20.0 bootstrap.
+        request, _, _ = self._request()
+        attrs = dict(webrtc_probe.parse_stun_message(request).attributes)
+        username = attrs[webrtc_probe.ATTR_USERNAME]
+        padded = 4 + len(username) + (-len(username)) % 4
+        challenge_len = 20 + padded + 12 + 8 + 24 + 8
+        assert len(request) >= challenge_len
 
     def test_ice_strings_are_fresh_and_well_formed(self):
         first, second = (
@@ -506,9 +507,7 @@ class TestWebrtcProbe:
             listener.close()
 
     def test_a_declared_length_that_does_not_match_is_refused(self):
-        message = (
-            struct.pack("!HHI", 0x0001, 8, webrtc_probe.MAGIC_COOKIE) + b"\x00" * 12
-        )
+        message = struct.pack("!HHI", 0x0001, 8, webrtc_probe.MAGIC_COOKIE) + b"\x00" * 12
         with pytest.raises(ValueError, match="declared length"):
             webrtc_probe.parse_stun_message(message)
 
@@ -591,6 +590,7 @@ def _upgrade_args(**overrides):
         "webrtc_port": 10001,
         "limit_to": None,
         "skip_firewall": True,
+        "probe_advisory": False,
         "ssh_key_path": None,
         "yes": True,
     }
@@ -664,9 +664,7 @@ class TestUpgradeFailurePath:
     def test_a_pre_0_20_0_version_collects_no_addresses(self, monkeypatch):
         monkeypatch.setattr(cmd, "HEALTH_TIMEOUT_SECS", 1)
         collected = []
-        monkeypatch.setattr(
-            cmd, "_collect_multiaddrs", lambda *a, **k: collected.append(a)
-        )
+        monkeypatch.setattr(cmd, "_collect_multiaddrs", lambda *a, **k: collected.append(a))
         for vm in self.vms:
             self.hosts[vm.name] = _FakeHost(log=_starting_line("0.19.0"))
         cmd.cmd_prod_bootstrap_upgrade(_upgrade_args(node_version="0.19.0"))
@@ -678,6 +676,31 @@ class TestUpgradeFailurePath:
         assert self._run_upgrade(monkeypatch, log, timeout=1) == 1
         assert self.hosts["ant-bootstrap-ash"].commands == []
         assert self.hosts["ant-bootstrap-fsn1"].written_units[-1] == LIVE_UNIT
+
+    def test_an_advisory_probe_failure_keeps_every_host_upgraded(self, monkeypatch):
+        # A probe that cannot talk to a healthy listener must not strand the
+        # tier on a version the fleet is already leaving.
+        monkeypatch.setattr(cmd.webrtc_probe, "probe", lambda *a, **k: False)
+        collected = []
+        monkeypatch.setattr(cmd, "_collect_multiaddrs", lambda *a, **k: collected.append(a))
+        monkeypatch.setattr(cmd, "HEALTH_TIMEOUT_SECS", 1)
+        log = "\n".join([_starting_line("0.20.0"), _webrtc_line("0.0.0.0:10001")])
+        for vm in self.vms:
+            self.hosts[vm.name] = _FakeHost(log=log)
+        cmd.cmd_prod_bootstrap_upgrade(_upgrade_args(probe_advisory=True))
+        for vm in self.vms:
+            assert WEBRTC_PORT_FLAG in self.hosts[vm.name].written_units[-1]
+            assert f"mv {BINARY_PATH}.backup {BINARY_PATH}" not in (self.hosts[vm.name].commands)
+        assert collected == []
+
+    def test_an_advisory_run_still_rolls_back_a_failed_health_gate(self, monkeypatch):
+        monkeypatch.setattr(cmd, "HEALTH_TIMEOUT_SECS", 0)
+        for vm in self.vms:
+            self.hosts[vm.name] = _FakeHost(log="")
+        with pytest.raises(SystemExit):
+            cmd.cmd_prod_bootstrap_upgrade(_upgrade_args(probe_advisory=True))
+        assert self.hosts["ant-bootstrap-fsn1"].written_units[-1] == LIVE_UNIT
+        assert self.hosts["ant-bootstrap-ash"].commands == []
 
 
 class TestWebrtcAddresses:
@@ -745,6 +768,41 @@ class TestWebrtcAddresses:
     def test_a_failed_probe_refuses(self, monkeypatch):
         monkeypatch.setattr(cmd.webrtc_probe, "probe", lambda *a, **k: False)
         self._populate()
+        with pytest.raises(SystemExit):
+            cmd.cmd_prod_bootstrap_webrtc_addresses(self._args())
+        assert not self.out.exists()
+
+    def _hetzner_floating_ip(self, monkeypatch, advertised):
+        # fsn1's inventory IP is a floating IP the listener cannot answer on;
+        # ant-node advertises the server's primary IP, which it can.
+        answering = {"207.148.94.42", "167.235.239.18"}
+        monkeypatch.setattr(cmd.webrtc_probe, "probe", lambda host, *a, **k: host in answering)
+        self._populate(
+            **{
+                "ant-bootstrap-fsn1": {
+                    "multiaddr": MULTIADDR.replace(MULTIADDR.split("/")[2], advertised, 1)
+                }
+            }
+        )
+
+    def test_an_unanswering_inventory_ip_falls_back_to_the_advertised_one(self, monkeypatch):
+        self._hetzner_floating_ip(monkeypatch, "167.235.239.18")
+        cmd.cmd_prod_bootstrap_webrtc_addresses(self._args())
+        lines = self.out.read_text().splitlines()
+        assert lines[0].startswith("/ip4/207.148.94.42/")
+        assert lines[1].startswith("/ip4/167.235.239.18/udp/10001/webrtc-direct/")
+
+    def test_a_private_advertised_address_is_never_published(self, monkeypatch):
+        monkeypatch.setattr(
+            cmd.webrtc_probe, "probe", lambda host, *a, **k: host != "49.12.119.240"
+        )
+        self._populate(
+            **{
+                "ant-bootstrap-fsn1": {
+                    "multiaddr": MULTIADDR.replace(MULTIADDR.split("/")[2], "10.0.0.5", 1)
+                }
+            }
+        )
         with pytest.raises(SystemExit):
             cmd.cmd_prod_bootstrap_webrtc_addresses(self._args())
         assert not self.out.exists()
@@ -882,16 +940,16 @@ class TestFirewallPreflight:
     def test_hetzner_adds_the_missing_rule(self, cli):
         cli.side_effect = [
             SimpleNamespace(
-                returncode=0, stdout=json.dumps({"firewalls": [{"id": 42}]}), stderr=""
+                returncode=0,
+                stdout=json.dumps({"public_net": {"firewalls": [{"id": 42}]}}),
+                stderr="",
             ),
             SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps(
                     {
                         "name": "ant-bootstrap-fsn1",
-                        "rules": [
-                            {"direction": "in", "protocol": "udp", "port": "10000"}
-                        ],
+                        "rules": [{"direction": "in", "protocol": "udp", "port": "10000"}],
                     }
                 ),
                 stderr="",
@@ -907,16 +965,16 @@ class TestFirewallPreflight:
     def test_hetzner_skips_an_existing_rule(self, cli):
         cli.side_effect = [
             SimpleNamespace(
-                returncode=0, stdout=json.dumps({"firewalls": [{"id": 42}]}), stderr=""
+                returncode=0,
+                stdout=json.dumps({"public_net": {"firewalls": [{"id": 42}]}}),
+                stderr="",
             ),
             SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps(
                     {
                         "name": "ant-bootstrap-fsn1",
-                        "rules": [
-                            {"direction": "in", "protocol": "udp", "port": "10001"}
-                        ],
+                        "rules": [{"direction": "in", "protocol": "udp", "port": "10001"}],
                     }
                 ),
                 stderr="",
