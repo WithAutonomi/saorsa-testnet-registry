@@ -14,8 +14,10 @@ from rich.console import Console
 from saorsa_deploy.client_roles import (
     ALL_CLIENT_ROLES,
     ROLE_DOWNLOAD,  # noqa: F401  (re-exported; used by callers and tests)
+    ROLE_LABELS,
     ROLE_UPLOAD,
     is_upload,
+    unit_for_role,
 )
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.providers import CLIENT_PROVIDERS
@@ -267,21 +269,31 @@ def _stop_uploader_services(
     ssh_key_path: str,
     console: Console,
 ) -> None:
-    """Best-effort: stop ``ant-uploader`` on each uploader VM before draining.
+    """Best-effort: stop each wallet-holding VM's service before draining.
 
-    The uploader runs ``while true`` and pays for every upload from its own
-    per-uploader wallet, so draining while it's live races a spender that keeps
-    bumping the wallet's nonce ("nonce too low"). Stopping it first gives the
-    drain a stable nonce and a final balance to sweep. VMs that can't be reached
-    (e.g. already torn down on a retry) are skipped — the drain still works
-    against on-chain state without them.
+    Every upload-type role pays from its own per-VM wallet in a loop, so draining
+    while it's live races a spender that keeps bumping the wallet's nonce ("nonce
+    too low"). Stopping it first gives the drain a stable nonce and a final
+    balance to sweep. VMs that can't be reached (e.g. already torn down on a
+    retry) are skipped — the drain still works against on-chain state without
+    them.
+
+    The unit comes from each VM's OWN role. This stopped only ``ant-uploader``,
+    so a WASM uploader or a pointer client was drained while it was still
+    spending — precisely the race the stop exists to avoid.
     """
-    host_ips = [u["ip"] for u in uploaders if u.get("ip")]
+    with_units = [
+        (u["ip"], unit_for_role(u.get("role", ROLE_UPLOAD)))
+        for u in uploaders
+        if u.get("ip")
+    ]
+    host_ips = [ip for ip, _ in with_units]
     if not host_ips:
         return
+    units = sorted({unit for _, unit in with_units})
     console.print(
-        f"[bold]Stopping ant-uploader on {len(host_ips)} uploader VM(s) "
-        "before draining...[/bold]"
+        f"[bold]Stopping {', '.join(units)} on {len(host_ips)} wallet-holding "
+        "VM(s) before draining...[/bold]"
     )
     clear_known_hosts(host_ips, console)
     hosts_data = [
@@ -290,15 +302,21 @@ def _stop_uploader_services(
     state = State(inventory=Inventory((hosts_data, {})), config=Config())
     try:
         connect_all(state)
-        add_op(
-            state,
-            server.shell,
-            name="Stop ant-uploader service",
-            commands=[
-                "systemctl stop ant-uploader 2>/dev/null || true; "
-                "systemctl disable ant-uploader 2>/dev/null || true"
-            ],
-        )
+        unit_by_ip = dict(with_units)
+        for host in state.inventory.get_active_hosts():
+            unit = unit_by_ip.get(host.name)
+            if unit is None:
+                continue
+            add_op(
+                state,
+                server.shell,
+                name=f"Stop {unit} service",
+                commands=[
+                    f"systemctl stop {unit} 2>/dev/null || true; "
+                    f"systemctl disable {unit} 2>/dev/null || true"
+                ],
+                host=[host],
+            )
         run_ops(state)
     except Exception as e:  # noqa: BLE001 — stopping is best-effort
         console.print(
@@ -319,6 +337,12 @@ def _stop_uploader_services(
         )
     # Let any in-flight payment tx land before we read pending nonces.
     time.sleep(5)
+
+
+def _wallet_label(client: dict) -> str:
+    """`<Role> #<index>` for a wallet-holding client. See the note at its use."""
+    role = client.get("role", ROLE_UPLOAD)
+    return f"{ROLE_LABELS.get(role, role)} #{client['client_index']}"
 
 
 def _drain_uploader_wallets(
@@ -349,8 +373,12 @@ def _drain_uploader_wallets(
         try:
             ant_units = get_token_balance(w3, token_address, addr)
             eth_wei = get_eth_balance(w3, addr)
+            # The role, not a literal "Uploader": `client_index` restarts at 1
+            # per role, so a native uploader and a pointer client in the same
+            # region both read "#1" against two different wallets. This is the
+            # audit trail for money coming back, so it has to name the VM.
             console.print(
-                f"  Uploader #{client['client_index']} {addr}: "
+                f"  {_wallet_label(client)} {addr}: "
                 f"{ant_units} ANT-units / {eth_wei} wei"
             )
             if ant_units == 0 and eth_wei == 0:
@@ -362,7 +390,7 @@ def _drain_uploader_wallets(
         except Exception as e:
             console.print(f"    [red]drain failed: {e}[/red]")
             failures.append(
-                (client["client_index"], addr, str(e), ant_units, eth_wei)
+                (_wallet_label(client), addr, str(e), ant_units, eth_wei)
             )
     if failures:
         if skip_failures:
@@ -372,9 +400,9 @@ def _drain_uploader_wallets(
                 f"[bold yellow]Drain failed for {len(failures)} uploader(s); "
                 f"continuing because --skip-drain-failures is set.[/bold yellow]"
             )
-            for idx, addr, err, ant_units, eth_wei in failures:
+            for label, addr, err, ant_units, eth_wei in failures:
                 console.print(
-                    f"  [yellow]abandoned[/yellow] Uploader #{idx} {addr}: "
+                    f"  [yellow]abandoned[/yellow] {label} {addr}: "
                     f"{ant_units} ANT-units / {eth_wei} wei  ({err})"
                 )
             console.print(

@@ -12,8 +12,10 @@ from pyinfra.operations import server
 from rich.console import Console
 
 from saorsa_deploy.client_roles import (
+    ROLE_POINTER,
     ROLE_UPLOAD,
     WASM_MAX_FILE_BYTES,
+    is_pointer,
     is_upload,
     is_wasm,
     unit_for_role,
@@ -61,6 +63,11 @@ from saorsa_deploy.resources import get_resources_dir
 ANT_INSTALL_PATH = "/root/.local/bin/ant"
 CLIENT_DATA_DIR = "/var/lib/ant-client"
 SCRIPTS_DIR = "/root/ant-client"
+#: Owner keys and the pointer ledger. Separate from CLIENT_DATA_DIR because the
+#: contents are not disposable: a pointer's owner can never change, so a lost
+#: key is a pointer that can never be updated again.
+POINTER_DATA_DIR = "/var/lib/ant-pointer"
+POINTER_UNIT = unit_for_role(ROLE_POINTER)
 
 
 def _build_env_file(
@@ -135,6 +142,32 @@ WantedBy=multi-user.target
 """
 
 
+
+
+def _build_pointer_unit() -> str:
+    """systemd unit for the ant-pointer service.
+
+    ``Restart=always``, unlike the transfer clients' ``on-failure``: the service
+    is meant to run for the whole testnet, and its durable ledger means a
+    restart resumes rather than starts over. A ledger-less restart would abandon
+    pointers it had already paid for.
+    """
+    return f"""\
+[Unit]
+Description=Ant Pointer Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/ant-client.env
+ExecStart=/usr/bin/python3 {SCRIPTS_DIR}/pointer_client.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+"""
 
 
 #: Keys in the testnet WASM env file whose value is double-quoted. Explicit
@@ -216,6 +249,8 @@ class AntClientProvisioner:
         wasm_bundle_url: str | None = None,
         bootstrap_webrtc_multiaddrs: list[str] | None = None,
         wasm_rpc_url: str | None = None,
+        evm_network: str = "arbitrum-sepolia",
+        rpc_url: str = "",
     ):
         self.clients = clients
         self.deployment_name = deployment_name
@@ -246,6 +281,12 @@ class AntClientProvisioner:
         self.wasm_bundle_url = wasm_bundle_url
         self.bootstrap_webrtc_multiaddrs = list(bootstrap_webrtc_multiaddrs or [])
         self.wasm_rpc_url = wasm_rpc_url
+        # The chain the pointer client pays on, and the RPC it reads its own
+        # native balance from. Every pointer write is a paid transaction and
+        # `ant pointer create --json` reports no cost, so a balance delta either
+        # side of the write is the only way to know what one actually cost.
+        self.evm_network = evm_network
+        self.rpc_url = rpc_url
 
     def _build_ip_to_env(self, fallback_secret: str) -> dict:
         """Per-VM service environment, keyed by IP.
@@ -284,7 +325,10 @@ class AntClientProvisioner:
                 per_uploader_key = _normalize_secret(c.get("wallet_secret_key", ""))
                 ip_to_env[c["ip"]] = {
                     "role": role,
-                    "file_size_kb": c["file_size_mb"] * 1024,
+                    # 0 for a pointer client: a pointer record is a fixed ~5 KB
+                    # and there is no file to generate. The key is still present
+                    # because every shared path reads it.
+                    "file_size_kb": (c.get("file_size_mb") or 0) * 1024,
                     "region": c["region"],
                     "client_index": c["client_index"],
                     "payment_type": c.get("payment_type") or "",
@@ -296,6 +340,7 @@ class AntClientProvisioner:
                     "upload_presigned_url": self._presigned_put_url(
                         role, c["region"], c["client_index"]
                     ),
+                    **(self._pointer_env(c) if is_pointer(role) else {}),
                 }
             else:
                 ip_to_env[c["ip"]] = {
@@ -312,6 +357,22 @@ class AntClientProvisioner:
                     "upload_presigned_url": "",
                 }
         return ip_to_env
+
+    @staticmethod
+    def _pointer_env(client: dict) -> dict:
+        """The workload rates one pointer client runs at.
+
+        Read from the client's own spec, not from a shared default, because the
+        rates are what the run's cost and its Arbitrum Sepolia transaction rate
+        are: two pointer clients in one deployment may legitimately differ.
+        """
+        return {
+            "create_interval_secs": client.get("create_interval_secs", 60),
+            "update_interval_secs": client.get("update_interval_secs", 30),
+            "sweep_interval_secs": client.get("sweep_interval_secs", 600),
+            "chain_fraction": client.get("chain_fraction", 0.10),
+            "pointer_max": client.get("pointer_max", 0),
+        }
 
     def _add_wasm_ops(self, state, ip_to_env: dict) -> None:
         """Provision the WASM client on every host running a wasm-* role.
@@ -455,6 +516,17 @@ class AntClientProvisioner:
                 "/var/log/ant-client-forward/downloader.stderr.log",
             ],
             "downloader",
+        ),
+        # The pointer service tees its own stdout/stderr into these, the same
+        # way uploader.sh appends its per-op captures. Omitting the role here is
+        # how the WASM roles silently forwarded nothing: the loop only visits
+        # the roles named in this map.
+        "pointer": (
+            [
+                "/var/log/ant-client-forward/pointer.stdout.log",
+                "/var/log/ant-client-forward/pointer.stderr.log",
+            ],
+            "pointer",
         ),
     }
 
@@ -738,6 +810,7 @@ class AntClientProvisioner:
             scripts_dir = get_resources_dir() / "scripts"
             uploader_script = (scripts_dir / "uploader.sh").read_text()
             downloader_script = (scripts_dir / "downloader.sh").read_text()
+            pointer_script = (scripts_dir / "pointer_client.py").read_text()
 
             add_op(
                 state,
@@ -752,6 +825,31 @@ class AntClientProvisioner:
                     f"chmod +x {SCRIPTS_DIR}/downloader.sh",
                 ],
             )
+
+            # The pointer workload, targeted at the pointer VMs only: it is a
+            # few hundred lines of Python that a transfer client has no use for.
+            pointer_ips = {
+                c["ip"]
+                for c in self.clients
+                if c.get("ip") and is_pointer(c.get("role", ""))
+            }
+            pointer_hosts = [
+                h for h in state.inventory.get_active_hosts() if h.name in pointer_ips
+            ]
+            if pointer_hosts:
+                add_op(
+                    state,
+                    server.shell,
+                    name="Deploy pointer client script",
+                    commands=[
+                        f"mkdir -p {POINTER_DATA_DIR}/keys && "
+                        f"chmod 700 {POINTER_DATA_DIR}",
+                        f"cat > {SCRIPTS_DIR}/pointer_client.py << 'SCRIPT_EOF'\n"
+                        f"{pointer_script}SCRIPT_EOF",
+                        f"chmod +x {SCRIPTS_DIR}/pointer_client.py",
+                    ],
+                    host=pointer_hosts,
+                )
 
             if self.heaptrack_targets:
                 add_op(
@@ -807,6 +905,11 @@ class AntClientProvisioner:
                     f'BOOTSTRAP_CACHE={env["bootstrap_cache"]}; '
                     f'FORWARD_LOGS={env["forward_logs"]}; '
                     f'RUST_LOG="{env["rust_log"]}"; '
+                    f'CREATE_INTERVAL_SECS={env.get("create_interval_secs", 0)}; '
+                    f'UPDATE_INTERVAL_SECS={env.get("update_interval_secs", 0)}; '
+                    f'SWEEP_INTERVAL_SECS={env.get("sweep_interval_secs", 0)}; '
+                    f'CHAIN_FRACTION={env.get("chain_fraction", 0)}; '
+                    f'POINTER_MAX={env.get("pointer_max", 0)}; '
                     f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}" ;;'
                 )
             case_block = "\n".join(case_entries)
@@ -833,7 +936,8 @@ case "$MY_IP" in
 {case_block}
     *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
 PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true; \
-FORWARD_LOGS=false; RUST_LOG=""; UPLOAD_PRESIGNED_URL="" ;;
+FORWARD_LOGS=false; RUST_LOG=""; CREATE_INTERVAL_SECS=0; UPDATE_INTERVAL_SECS=0; \
+SWEEP_INTERVAL_SECS=0; CHAIN_FRACTION=0; POINTER_MAX=0; UPLOAD_PRESIGNED_URL="" ;;
 esac
 cat > /etc/ant-client.env << ENV_EOF
 HOME=/root
@@ -860,7 +964,15 @@ ADDRESSES_S3_PREFIX={self.addresses_s3_prefix}
 UPLOAD_PRESIGNED_URL=$UPLOAD_PRESIGNED_URL
 ADDRESSES_TAIL_SIZE=10000
 S3_FLUSH_INTERVAL_SECS=30
-S3_FLUSH_EVERY_N=50"""
+S3_FLUSH_EVERY_N=50
+POINTER_DATA_DIR={POINTER_DATA_DIR}
+CREATE_INTERVAL_SECS=$CREATE_INTERVAL_SECS
+UPDATE_INTERVAL_SECS=$UPDATE_INTERVAL_SECS
+SWEEP_INTERVAL_SECS=$SWEEP_INTERVAL_SECS
+CHAIN_FRACTION=$CHAIN_FRACTION
+POINTER_MAX=$POINTER_MAX
+EVM_NETWORK={self.evm_network}
+RPC_URL={self.rpc_url}"""
 
             if self.influx_url and self.influx_token:
                 env_script += f"""
@@ -890,6 +1002,7 @@ ENV_EOF"""
             # flips role during reprovisioning.
             uploader_unit = _build_uploader_unit()
             downloader_unit = _build_downloader_unit()
+            pointer_unit = _build_pointer_unit()
 
             # Native roles only: a WASM host's unit is written by
             # _add_wasm_ops, and must not be overwritten here.
@@ -908,17 +1021,25 @@ case "$MY_IP" in
 {unit_case_block}
     # No default. This op runs on every client host including the WASM ones,
     # whose units are written elsewhere; silently falling through to the
-    # uploader unit would install a native ant service on a WASM VM.
+    # uploader unit would install a native ant service on a WASM VM. The
+    # pointer role needs its own arm for the same reason in reverse: without
+    # one it falls into the `else` and a pointer VM gets an ant-downloader unit
+    # that `clients start` then cannot find (it maps the real role to its
+    # unit).
     *) exit 0 ;;
 esac
 if [ "$ROLE" = "upload" ]; then
     cat > /etc/systemd/system/ant-uploader.service << 'UNIT_EOF'
 {uploader_unit}UNIT_EOF
-    rm -f /etc/systemd/system/ant-downloader.service
+    rm -f /etc/systemd/system/ant-downloader.service /etc/systemd/system/{POINTER_UNIT}.service
+elif [ "$ROLE" = "{ROLE_POINTER}" ]; then
+    cat > /etc/systemd/system/{POINTER_UNIT}.service << 'UNIT_EOF'
+{pointer_unit}UNIT_EOF
+    rm -f /etc/systemd/system/ant-uploader.service /etc/systemd/system/ant-downloader.service
 else
     cat > /etc/systemd/system/ant-downloader.service << 'UNIT_EOF'
 {downloader_unit}UNIT_EOF
-    rm -f /etc/systemd/system/ant-uploader.service
+    rm -f /etc/systemd/system/ant-uploader.service /etc/systemd/system/{POINTER_UNIT}.service
 fi
 systemctl daemon-reload"""
 

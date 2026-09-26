@@ -3,7 +3,7 @@ import sys
 from rich.console import Console
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
-from saorsa_deploy.client_roles import is_upload, is_wasm
+from saorsa_deploy.client_roles import ROLE_LABELS, ROLE_UPLOAD, is_upload, is_wasm
 from saorsa_deploy.evm import ARBITRUM_SEPOLIA
 from saorsa_deploy.prod_bootstraps import ProdBootstrapsError, fetch_prod_bootstraps
 from saorsa_deploy.provisioning.client import AntClientProvisioner
@@ -301,6 +301,18 @@ def parse_addresses(content: str | None) -> list[str]:
     return out
 
 
+def _wallet_label(client: dict) -> str:
+    """`<Role> #<index>` for a wallet-holding client.
+
+    The role, not a literal "Uploader". `client_index` restarts at 1 per ROLE,
+    so a native uploader and a pointer client in the same region both print
+    "#1" — two identical lines against two different wallet addresses, in the
+    one place an operator reads to see which wallet belongs to which VM.
+    """
+    role = client.get("role", ROLE_UPLOAD)
+    return f"{ROLE_LABELS.get(role, role)} #{client['client_index']}"
+
+
 def _ensure_uploader_wallets(
     name: str, clients: list[dict], funding_secret_key: str, console
 ) -> list[dict]:
@@ -345,8 +357,13 @@ def _ensure_uploader_wallets(
         )
         for client in needs_wallet:
             wallet_obj = create_wallet()
+            # The role, not a literal "Uploader". `client_index` restarts at 1
+            # per ROLE, so a native uploader and a pointer client in the same
+            # region both print "#1" — two identical lines against two different
+            # wallet addresses, in the one place an operator reads to see which
+            # wallet belongs to which VM.
             console.print(
-                f"    Uploader #{client['client_index']} ({client['region']}): "
+                f"    {_wallet_label(client)} ({client['region']}): "
                 f"{wallet_obj.address}"
             )
             update_client_wallet(
@@ -379,13 +396,12 @@ def _ensure_uploader_wallets(
 
         if deficit_ant == 0 and deficit_eth == 0:
             console.print(
-                f"    Uploader #{client['client_index']} ({addr}): "
-                f"already funded, skipping"
+                f"    {_wallet_label(client)} ({addr}): already funded, skipping"
             )
             continue
 
         console.print(
-            f"    Uploader #{client['client_index']} ({addr}): "
+            f"    {_wallet_label(client)} ({addr}): "
             f"sending {deficit_ant} ANT-units + {deficit_eth} wei ETH"
         )
         # ETH first so the new wallet has gas. Skip whichever leg already has
@@ -655,6 +671,12 @@ def cmd_provision_clients(args):
         wasm_bundle_url=wasm_bundle_url,
         bootstrap_webrtc_multiaddrs=bootstrap_webrtc_multiaddrs,
         wasm_rpc_url=ARBITRUM_SEPOLIA["rpc_url"],
+        # The pointer client reads its own native balance straight from this
+        # RPC, so a pointer write's gas cost is the delta it actually paid. It
+        # is the same RPC `ant` itself pays through — the one the uploaders use
+        # — deliberately: a second endpoint would mean two views of the chain.
+        evm_network="arbitrum-sepolia",
+        rpc_url=ARBITRUM_SEPOLIA["rpc_url"],
     )
 
     try:

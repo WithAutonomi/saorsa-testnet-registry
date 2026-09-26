@@ -11,6 +11,14 @@ Elasticsearch is still up**. There is no backfill and there never can be.
 The measurement is deliberately node-tier only. Client logs go to a separate
 index with a different document shape, and whether they exist at all depends on
 whether the run enabled client log forwarding.
+
+Two structured events are counted alongside the phrases: ant-node's
+``pointer_put_rpc`` and ``pointer_get_rpc`` (V2-1339), per outcome and with
+latency percentiles. They are the node's own view of the pointer tier, so the
+runner can tell "the client saw a stale state" apart from "a node answered
+stale" -- a distinction the client-side records cannot make alone. Recorded into
+the same table, keyed ``<event>:<outcome>``, so no migration and no second
+command.
 """
 import sys
 from datetime import datetime, timezone
@@ -23,11 +31,15 @@ from saorsa_db.models.log_event_count import SOURCE_ELASTICSEARCH
 
 from saorsa_deploy.es_client import ESClient, ESCredentials, ESError
 from saorsa_deploy.es_log_counts import (
+    POINTER_RPC_EVENTS,
+    RPC_LATENCY_PERCENTILES,
     build_count_query,
+    build_rpc_latency_query,
     build_total_query,
     collapse_index_date_suffix,
     node_index_pattern,
     parse_count_response,
+    parse_rpc_latency_response,
     rate_per_hour,
     summarise_counts,
 )
@@ -143,6 +155,121 @@ def _fmt_share(count: int, total) -> str:
     if not total:
         return "-"
     return f"{100.0 * count / total:.3f}%"
+
+
+def _fmt_ms(value) -> str:
+    if value is None:
+        return "-"
+    if value >= 1000:
+        return f"{value / 1000:.2f}s"
+    return f"{value:.0f}ms"
+
+
+def _record_pointer_rpc_events(
+    repo, client, deployment, index_pattern, pattern_set, args,
+    window_start, window_end, total_documents, console,
+) -> dict:
+    """Count ant-node's pointer RPC latency events, per outcome, and store them.
+
+    Best-effort by design, unlike the phrase counts: a run with no pointer
+    clients emits none of these events, and a node build predating pointers has
+    no such target at all. Neither is a failure of the recording -- so a query
+    error warns and the phrase counts, which are the gated measurement, still
+    land.
+
+    Rows go into ``deployment_log_event_counts`` keyed ``<event>:<outcome>``,
+    with the event as the group. That needs no migration and puts the node-side
+    pointer signal exactly where the runner already looks for counts; the
+    latency percentiles ride in ``details``, which is a JSON column.
+    """
+    out: dict = {}
+    for event in POINTER_RPC_EVENTS:
+        try:
+            response = client.search(
+                index_pattern, build_rpc_latency_query(event, window_start, window_end)
+            )
+        except ESError as exc:
+            console.print(
+                f"[yellow]Warning: could not count '{event}': {exc}. The phrase "
+                f"counts above are unaffected.[/yellow]"
+            )
+            continue
+        parsed = parse_rpc_latency_response(response, event)
+        if parsed["count"] == 0:
+            # Nothing to store. A zero here is not a finding the way a zero
+            # phrase count is: it is what a run with no pointer clients looks
+            # like, and storing zeros would read on the next comparison as a
+            # pointer tier that stopped working.
+            continue
+        out[event] = parsed
+        for outcome, values in parsed["by_outcome"].items():
+            repo.upsert_log_event_count(
+                deployment_id=deployment.id,
+                event_key=f"{event}:{outcome}",
+                event_group=event,
+                pattern=f"{event} outcome={outcome}",
+                pattern_set=pattern_set.name,
+                pattern_version=pattern_set.version,
+                window_label=args.label,
+                count=values["count"],
+                hosts=parsed["hosts"],
+                total_documents=total_documents,
+                observed_start=parsed["first_seen"],
+                observed_end=parsed["last_seen"],
+                source=SOURCE_ELASTICSEARCH,
+                details={
+                    "index_pattern": index_pattern,
+                    "event": event,
+                    "outcome": outcome,
+                    "event_total": parsed["count"],
+                    "latency_ms": {
+                        str(p): values["latency"].get(p)
+                        for p in RPC_LATENCY_PERCENTILES
+                    },
+                    "event_latency_ms": {
+                        str(p): parsed["latency"].get(p)
+                        for p in RPC_LATENCY_PERCENTILES
+                    },
+                    "scope_start": window_start.isoformat() if window_start else None,
+                    "scope_end": window_end.isoformat() if window_end else None,
+                },
+            )
+    return out
+
+
+def _print_rpc_table(rpc_results: dict, total_documents, console: Console) -> None:
+    table = Table(title="Pointer RPC events (node-side, ant_node::storage::rpc_latency)")
+    table.add_column("Event")
+    table.add_column("Outcome")
+    table.add_column("Count", justify="right")
+    table.add_column("Share of event", justify="right")
+    table.add_column("p50", justify="right")
+    table.add_column("p95", justify="right")
+    for event, parsed in rpc_results.items():
+        for outcome, values in parsed["by_outcome"].items():
+            table.add_row(
+                event,
+                outcome,
+                _fmt_int(values["count"]),
+                _fmt_share(values["count"], parsed["count"]),
+                _fmt_ms(values["latency"].get(50.0)),
+                _fmt_ms(values["latency"].get(95.0)),
+            )
+        table.add_row(
+            event,
+            "[bold]all[/bold]",
+            _fmt_int(parsed["count"]),
+            _fmt_share(parsed["count"], total_documents),
+            _fmt_ms(parsed["latency"].get(50.0)),
+            _fmt_ms(parsed["latency"].get(95.0)),
+        )
+    console.print(table)
+    console.print(
+        "[dim]These are the NODE's view. `outcome=error` as a fraction of the "
+        "event total is the one to read; `stale` here is a node refusing a write "
+        "that lost the merge, which is not the same event as a client being "
+        "served a stale state (that is `deployments print-pointers`).[/dim]"
+    )
 
 
 def cmd_record_log_counts(args) -> None:
@@ -293,6 +420,13 @@ def cmd_record_log_counts(args) -> None:
             levels or "-",
         )
     console.print(table)
+
+    rpc_results = _record_pointer_rpc_events(
+        repo, client, deployment, index_pattern, pattern_set, args,
+        window_start, window_end, total_documents, console,
+    )
+    if rpc_results:
+        _print_rpc_table(rpc_results, total_documents, console)
 
     summary = summarise_counts(results, pattern_set)
     console.print(

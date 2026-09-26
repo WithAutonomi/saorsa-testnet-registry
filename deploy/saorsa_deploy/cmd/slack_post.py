@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 from rich.console import Console
 
-from saorsa_deploy.client_roles import is_upload, is_wasm
+from saorsa_deploy.client_roles import is_pointer, is_upload, is_wasm
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.slack_api import SlackApiError, post_message
 from saorsa_deploy.state import (
@@ -597,6 +597,25 @@ def _client_line(c: dict) -> str:
     cache_str = "" if is_wasm(role) else _bootstrap_cache_marker(c.get("bootstrap_cache"))
     fwd_str = _forward_logs_marker(c.get("forward_logs"))
     rust_str = _rust_log_marker(c.get("rust_log"))
+    if is_pointer(role):
+        # Tested BEFORE is_upload: a pointer client IS an upload-type role (it
+        # holds a funded wallet), but it uploads no files, so the uploader line
+        # would report a payment mode and a file size that mean nothing here.
+        # What matters is the workload rates, since they are what the run costs.
+        create = c.get("create_interval_secs")
+        update = c.get("update_interval_secs")
+        sweep = c.get("sweep_interval_secs")
+        rates = (
+            f", create/{create}s update/{update}s sweep/{sweep}s"
+            if create and update and sweep
+            else ""
+        )
+        chain = c.get("chain_fraction")
+        chain_str = f", chain {chain:.0%}" if chain else ""
+        return (
+            f"• pointer — {region} ({vm_size}{rates}{chain_str})"
+            f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
+        )
     if is_upload(role):
         file_size = c.get("file_size_mb")
         # file_size_mb is 0 for prod uploaders (real files of arbitrary
@@ -626,18 +645,28 @@ def _clients_block(clients: list[dict]) -> dict:
     The headings appear ONLY when the deployment actually has WASM clients, so
     every existing testnet's post is unchanged.
     """
-    native = [c for c in clients if not is_wasm(c.get("role", "upload"))]
+    pointers = [c for c in clients if is_pointer(c.get("role", "upload"))]
     wasm = [c for c in clients if is_wasm(c.get("role", "upload"))]
+    native = [c for c in clients if c not in pointers and c not in wasm]
 
-    if not wasm:
+    if not (wasm or pointers):
         return _section("*Clients:*\n" + "\n".join(_client_line(c) for c in native))
 
     lines: list[str] = []
     if native:
+        # Only headed when there is something to tell it apart from. A run with
+        # native clients and nothing else renders exactly as it always did.
         lines.append("_Native (QUIC):_")
         lines.extend(_client_line(c) for c in native)
-    lines.append("_WASM (WebRTC-Direct):_")
-    lines.extend(_client_line(c) for c in wasm)
+    if wasm:
+        lines.append("_WASM (WebRTC-Direct):_")
+        lines.extend(_client_line(c) for c in wasm)
+    if pointers:
+        # Its own heading because a pointer client measures something else
+        # entirely: whether a paid mutable reference can be read back, not
+        # whether a file transfers.
+        lines.append("_Pointers (paid mutable references):_")
+        lines.extend(_client_line(c) for c in pointers)
     return _section("*Clients:*\n" + "\n".join(lines))
 
 

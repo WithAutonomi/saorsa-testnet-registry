@@ -28,6 +28,11 @@ from saorsa_db.models.op_record import (
     DeploymentUploadRecord,
     OpRecordStatus,
 )
+from saorsa_db.models.pointer_record import (
+    DeploymentPointerRecord,
+    PointerOp,
+    PointerOutcome,
+)
 from saorsa_db.models.migration import (
     Migration,
     MigrationStatus,
@@ -237,6 +242,41 @@ class DeploymentRepository(ABC):
     def list_download_records_for_deployment(
         self, deployment_id: int
     ) -> list[DeploymentDownloadRecord]:
+        ...
+
+    @abstractmethod
+    def upsert_pointer_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str | None,
+        op: PointerOp,
+        outcome: PointerOutcome,
+        start_ns: int,
+        influx_time: datetime,
+        started_at: datetime,
+        finished_at: datetime | None,
+        duration_ms: int | None,
+        pointer_address: str | None = None,
+        owned: bool = True,
+        counter_expected: int | None = None,
+        counter_observed: int | None = None,
+        target_kind: str | None = None,
+        age_secs: int | None = None,
+        read_back: str | None = None,
+        attempts: int | None = None,
+        paid_attempts: int | None = None,
+        ant_spend_atto: int | None = None,
+        gas_spend_wei: int | None = None,
+        error: str | None = None,
+        network_profile: str | None = None,
+    ) -> DeploymentPointerRecord:
+        ...
+
+    @abstractmethod
+    def list_pointer_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentPointerRecord]:
         ...
 
     @abstractmethod
@@ -988,6 +1028,96 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .order_by(
                 DeploymentDownloadRecord.client_hostname,
                 DeploymentDownloadRecord.start_ns,
+            )
+            .all()
+        )
+
+    def upsert_pointer_record(
+        self,
+        deployment_id: int,
+        client_hostname: str,
+        region: str | None,
+        op: PointerOp,
+        outcome: PointerOutcome,
+        start_ns: int,
+        influx_time: datetime,
+        started_at: datetime,
+        finished_at: datetime | None,
+        duration_ms: int | None,
+        pointer_address: str | None = None,
+        owned: bool = True,
+        counter_expected: int | None = None,
+        counter_observed: int | None = None,
+        target_kind: str | None = None,
+        age_secs: int | None = None,
+        read_back: str | None = None,
+        attempts: int | None = None,
+        paid_attempts: int | None = None,
+        ant_spend_atto: int | None = None,
+        gas_spend_wei: int | None = None,
+        error: str | None = None,
+        network_profile: str | None = None,
+    ) -> DeploymentPointerRecord:
+        """Record one pointer operation, keyed on (deployment, host, start_ns).
+
+        Idempotent like the file-op upserts, so `record-results` can be re-run
+        against the same Influx range and revise rather than duplicate.
+        """
+        values = dict(
+            region=region,
+            op=op,
+            outcome=outcome,
+            influx_time=influx_time,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            pointer_address=pointer_address,
+            owned=owned,
+            counter_expected=counter_expected,
+            counter_observed=counter_observed,
+            target_kind=target_kind,
+            age_secs=age_secs,
+            read_back=read_back,
+            attempts=attempts,
+            paid_attempts=paid_attempts,
+            ant_spend_atto=ant_spend_atto,
+            gas_spend_wei=gas_spend_wei,
+            error=error,
+            network_profile=network_profile,
+        )
+        existing = (
+            self.session.query(DeploymentPointerRecord)
+            .filter(
+                DeploymentPointerRecord.deployment_id == deployment_id,
+                DeploymentPointerRecord.client_hostname == client_hostname,
+                DeploymentPointerRecord.start_ns == start_ns,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            existing = DeploymentPointerRecord(
+                deployment_id=deployment_id,
+                client_hostname=client_hostname,
+                start_ns=start_ns,
+                **values,
+            )
+            self.session.add(existing)
+        else:
+            for key, value in values.items():
+                setattr(existing, key, value)
+            existing.recorded_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return existing
+
+    def list_pointer_records_for_deployment(
+        self, deployment_id: int
+    ) -> list[DeploymentPointerRecord]:
+        return (
+            self.session.query(DeploymentPointerRecord)
+            .filter(DeploymentPointerRecord.deployment_id == deployment_id)
+            .order_by(
+                DeploymentPointerRecord.client_hostname,
+                DeploymentPointerRecord.start_ns,
             )
             .all()
         )

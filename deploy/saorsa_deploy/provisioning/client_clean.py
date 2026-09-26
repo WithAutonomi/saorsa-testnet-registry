@@ -1,5 +1,4 @@
-"""Pyinfra-based teardown of the ant-uploader / ant-downloader services on
-client VMs.
+"""Pyinfra-based teardown of the client services on client VMs.
 
 Idempotent: safe to re-run on hosts where services have already been removed or
 were never provisioned. Removes the uploader/downloader units, scripts dir,
@@ -14,15 +13,22 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.client_roles import ALL_CLIENT_ROLES, unit_for_role
 from saorsa_deploy.provisioning.client import (
     ANT_INSTALL_PATH,
     CLIENT_DATA_DIR,
+    POINTER_DATA_DIR,
     SCRIPTS_DIR,
 )
 
 ENV_FILE = "/etc/ant-client.env"
 UPLOADER_UNIT = "/etc/systemd/system/ant-uploader.service"
 DOWNLOADER_UNIT = "/etc/systemd/system/ant-downloader.service"
+#: Every client role's unit, so a role added later cannot be left behind on a
+#: cleaned VM. This command is given IPs, never roles -- it cannot know which
+#: unit a host runs -- so it stops and removes all of them. The WASM roles were
+#: missed for exactly this reason: the two constants above were the whole list.
+ALL_CLIENT_UNITS = tuple(unit_for_role(role) for role in ALL_CLIENT_ROLES)
 
 
 class ClientCleanProvisioner:
@@ -59,12 +65,11 @@ class ClientCleanProvisioner:
             add_op(
                 state,
                 server.shell,
-                name="Stop and disable ant-uploader and ant-downloader",
+                name="Stop and disable every client service",
                 commands=[
-                    "systemctl stop ant-uploader 2>/dev/null || true",
-                    "systemctl stop ant-downloader 2>/dev/null || true",
-                    "systemctl disable ant-uploader 2>/dev/null || true",
-                    "systemctl disable ant-downloader 2>/dev/null || true",
+                    f"systemctl {action} {unit} 2>/dev/null || true"
+                    for action in ("stop", "disable")
+                    for unit in ALL_CLIENT_UNITS
                 ],
             )
 
@@ -73,12 +78,20 @@ class ClientCleanProvisioner:
                 server.shell,
                 name="Remove client unit, script, env, data and binary files",
                 commands=[
-                    f"rm -f {UPLOADER_UNIT}",
-                    f"rm -f {DOWNLOADER_UNIT}",
+                    *(
+                        f"rm -f /etc/systemd/system/{unit}.service"
+                        for unit in ALL_CLIENT_UNITS
+                    ),
                     "systemctl daemon-reload",
                     f"rm -rf {SCRIPTS_DIR}",
                     f"rm -f {ENV_FILE}",
                     f"rm -rf {CLIENT_DATA_DIR}",
+                    # Owner keys and the pointer ledger. Removed because the
+                    # point of `clean` is that a subsequent `clients provision`
+                    # starts from nothing: a surviving ledger would have this
+                    # client sweeping pointers whose keys are gone, reporting
+                    # every one of them as a failure.
+                    f"rm -rf {POINTER_DATA_DIR}",
                     f"rm -f {ANT_INSTALL_PATH}",
                 ],
             )

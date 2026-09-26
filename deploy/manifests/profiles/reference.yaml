@@ -116,6 +116,35 @@ testnet:
       - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.1 }
     wasm_downloaders:        # one --wasm-downloader per entry: provider:region[:vm_size][:clock_skew][:forward_logs][:network][:rust_log]
       - { provider: digital_ocean, region: lon1 }
+    # Pointer clients: paid, owner-signed mutable references (V2-1339). Independent
+    # of both transfer tiers — a pointer client neither publishes file addresses nor
+    # consumes them, so the one-of-each pairing rule does not apply and a single entry
+    # is legal. It DOES read the shared upload-address pool for realistic `chunk`
+    # targets, falling back to random 32-byte addresses when nobody has published any,
+    # so it never depends on the uploaders. Requires binaries.ant (it drives the native
+    # `ant pointer` subcommands). No WASM variant.
+    #
+    # Carries a funded wallet like an uploader, because every write — create AND update
+    # — is one paid single-node quote. At the default rates that is 180 paid writes an
+    # hour per client: `clients estimate-gas --config <manifest>` sizes `eth:` from them
+    # directly, with no baseline needed (the rates are deterministic).
+    #
+    # Deploy at least two, in regions far apart: each sweeps its own pointers AND every
+    # other pointer client's published ones, and a read answered by a quorum of the close
+    # group is not something one vantage point can judge.
+    pointers:                # one --pointer per entry: provider:region[:vm_size][:ant][:eth][:clock_skew][:bootstrap_cache][:forward_logs][:network][:create_interval_secs][:update_interval_secs][:sweep_interval_secs][:chain_fraction][:pointer_max][:rust_log]
+      - { provider: digital_ocean, region: lon1, ant: 200, eth: 0.5 }   # all defaults: create/60s, update/30s, sweep/600s, chain 10%
+      - provider: digital_ocean
+        region: syd1
+        ant: 200
+        eth: 0.5
+        create_interval_secs: 120   # a brand-new pointer this often; creation runs for the WHOLE run so decay with age is observable
+        update_interval_secs: 60    # update a uniformly-random owned pointer this often, then read it back
+        sweep_interval_secs: 900    # MINIMUM gap between sweeps of every known pointer; a big pool makes a sweep take longer, it does not drop pointers
+        chain_fraction: 0.2         # fraction of updates re-pointed at another OWNED pointer (kind `pointer`) and then `resolve`d. 0 disables chaining
+        pointer_max: 500            # safety cap on how many pointers this client will own. 0 (the default) = uncapped, which is the intent
+        forward_logs: true          # forward this client's operation log to ES (needs elastic.enabled)
+        network: home-fttc          # same shaping as the transfer clients; see the note above
 
   elastic:                   # optional log-forwarding stack. Remove the block (or set enabled: false) to skip.
     enabled: true

@@ -120,6 +120,31 @@ testnet:
     wasm_downloaders:
       - { provider: digital_ocean, region: tor1, vm_size: s-4vcpu-8gb, forward_logs: true, rust_log: info }
 
+    # Pointer tier (V2-1339): paid, owner-signed mutable references. Two entries
+    # on DigitalOcean, lon1 and syd1 — geographically separated on purpose, so
+    # every pointer is read from a nearby AND a distant vantage point. A pointer
+    # read is answered by a quorum of its close group; whether that quorum agrees
+    # is not something one client can observe alone. A second PROVIDER is
+    # supported and deliberately not used: distance is what matters here, and two
+    # providers would add a variable that is not being measured.
+    #
+    # THE RC MUST CARRY POINTERS (V2-1277). A pre-pointer ant-node answers a
+    # protocol error to every pointer message, so on a train whose RC predates
+    # them the run operator strips these two entries for that train.
+    #
+    # Rates left at their defaults: 180 paid writes per client per hour, one
+    # Arbitrum Sepolia transaction every 20s. `clients estimate-gas` sizes the
+    # `eth:` below straight from them — no baseline needed, they are
+    # deterministic.
+    #
+    # NO forward_logs here, unlike every entry above. The pointer service logs a
+    # line per operation and performs thousands over a run; the client-log volume
+    # measurement those flags exist for was taken on the transfer tier, and
+    # adding an unmeasured source to it would spoil the comparison.
+    pointers:
+      - { provider: digital_ocean, region: lon1, vm_size: s-2vcpu-4gb, ant: 200, eth: 0.5 }
+      - { provider: digital_ocean, region: syd1, vm_size: s-2vcpu-4gb, ant: 200, eth: 0.5 }
+
   elastic:
     enabled: true
     droplet_size: s-8vcpu-16gb

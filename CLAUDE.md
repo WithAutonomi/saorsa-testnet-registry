@@ -166,6 +166,10 @@ add `grafana: true` under `monitoring:` (CLI: `monitoring infra --grafana`) to
 also stand up a Grafana VM; without it only InfluxDB is created (metrics stay
 queryable via InfluxDB/Flux).
 
+A testnet may also carry a **pointer client tier** (`clients.pointers[]`) that
+creates, updates and reads paid mutable references for the life of the run — see
+"The pointer client tier" below.
+
 Testnet node VMs can be placed on **DigitalOcean, Hetzner, Vultr, or OVH**
 (`nodes.providers.<name>` in a manifest; `--<provider>-vm-count` etc. on
 `nodes infra`). OVH (regions like `GRA9`/`UK1`/`DE1`, default flavor `b3-16`,
@@ -1426,6 +1430,137 @@ Two facts for whoever composes a run manifest:
   fleet fails every upload with "Witnessed close group returned only N/7".
 
 See `deploy/README.md` §"WASM client VMs (the browser path)".
+
+### The pointer client tier (`clients.pointers[]`)
+
+A **pointer** is a paid, owner-signed mutable reference (ADR-0016 in `ant-node`,
+V2-1277): one ML-DSA-65 owner key owns exactly one pointer at
+`BLAKE3::derive_key(owner)` forever, and every write — create AND update — is one
+paid single-node quote. The pointer client tier (V2-1339) exercises them for the
+life of a testnet, so the behaviour is measured before it reaches production, the
+way the WASM tier did for WebRTC. Impl: `client_roles.py` (role `pointer`, unit
+`ant-pointer`), `resources/scripts/pointer_client.py` (the workload),
+`pointer_results.py` (the pure arithmetic), `cmd/print_pointers.py`,
+`db/saorsa_db/models/pointer_record.py`. Example:
+`deploy/manifests/profiles/pointers.yaml`.
+
+**A role of its own, and an upload-type role.** Its own because the role names the
+VM, its Terraform workspace and its S3 state key; upload-type because it carries a
+funded per-VM wallet, is topped up from the funding wallet and drained on destroy
+exactly as an uploader is. `is_upload(ROLE_POINTER)` is therefore **True** —
+callers that mean "uploads files" must test the role, since a pointer client has
+no `file_size_mb` (it is persisted as 0, which is what lets every shared wallet
+path treat it as an uploader without special-casing). The sites that dispatch on
+role and silently skip an unknown one are guarded by
+`test_pointer_client_plumbing.py`: `clients clean` (now stops EVERY role's unit,
+derived from `ALL_CLIENT_ROLES`), the destroy-time service stop (hard-coded
+`ant-uploader`, so a pointer client was drained while still spending — the exact
+nonce race that stop exists to prevent), `_FORWARD_ROLE_FILES`, the `clients infra`
+summary label (a ternary that spelled every non-native VM "Downloader"), and the
+`role` validation list in all four `*-client/variables.tf`.
+
+**The workload is one serial scheduler, not three threads.** Create every
+`create_interval_secs` (60), update a random owned pointer every
+`update_interval_secs` (30) and read it back, sweep every known pointer — own AND
+every other client's published ones — no more often than every
+`sweep_interval_secs` (600). All three share one wallet and every write is an
+on-chain payment, so two concurrent writes would race the same nonce. Defaults are
+**180 paid writes per client per hour**, one Arbitrum Sepolia transaction every
+20s. Creation runs for the WHOLE run rather than seeding a pool up front, because
+decay with age needs pointers of every age present at every moment;
+`pointer_max` (0) is a safety cap, not the design.
+
+**The ledger is durable and load-bearing.** `/var/lib/ant-pointer/` holds the
+owner keys and a JSON ledger of the expected `(counter, target)` per owned pointer
+plus the last-seen counter per foreign one. `Restart=always`, and **ownership is
+immutable** — a lost key is a pointer that can never be updated again — so a
+restart that forgot the keys would abandon everything it had paid for. The key is
+written to the ledger BEFORE the create that pays for it. `clients clean` removes
+the directory deliberately: a surviving ledger would have the client sweeping
+pointers whose keys are gone and reporting every one as a failure.
+
+**Seven outcome classes, because four of the six failures are ordinary events.**
+`ok`; `stale` (a state older than the one written, or a foreign counter going
+backwards) — **EXPECTED at a non-zero rate**, since ADR-0016 says an eclipsed
+reader can be served an older validly-signed state and cannot tell; `lost_write`
+(refused as "moved while in flight", or fell short of its quorum — paid for, not
+landed); `not_found` (the close group agreed there is nothing there — an ANSWER,
+which is why `ant pointer get`'s exit-1-on-absent maps here and NOT to `error`);
+`read_shortfall` (too few answered, or no state had two peers behind it);
+`anomaly` (a counter ABOVE the one written, which only a foreign write to an owned
+pointer could cause); `error` (the only class that indicates a fault).
+Classification is by matching strings `ant` prints, read off the branch — note
+`Error::CloseGroupShortfall` renders as "close-group **PUT** shortfall" for READS
+too, so matching on the word PUT would put every read shortfall in the write
+bucket.
+
+**Cost is measured as PAID, never as quoted.** `ant pointer create --json` prints
+only `{"address": ...}` — there is no cost in its output. So ANT comes from `ant
+wallet balance` and native gas from a plain `eth_getBalance` against the same RPC
+the payment settles on, read either side of each write. That is also the only way
+to see the ADR's warning that a write which times out and is retried **pays
+twice**: `paid_attempts > 1` is a double payment, and a write that spent and did
+not land is reported separately as "paid but not stored".
+
+**Targets and publishing.** `chunk` targets are drawn from the shared upload
+address pool so `resolve` checks end to end against a real data map, with a random
+32-byte fallback so the role never depends on the uploader tier (a node stores 33
+opaque bytes and never reads the target). A `chain_fraction` (0.10) of updates
+re-point at another OWNED pointer and are followed with `resolve`; chain
+resolution, its depth cap of 16 and its cycle check are entirely client-side. Each
+client publishes its addresses to `pointer-{region}-{index}.txt` under the
+deployment's shared prefix via the presigned PUT the uploaders use. `downloader.sh`
+filters the listing to `^upload-` and is unaffected; **the WASM downloader lists
+the whole prefix and had to be taught to skip `pointer-` objects**
+(`isNonFileKey` in `resources/wasm-client/src/addresses.ts`) or it would fetch
+pointer addresses as files and the failures would land in the download success
+rate as lost content.
+
+**Results.** Influx measurement `pointer` in `testnet-metrics` (tags `host`,
+`region`, `op`; no client-supplied timestamp, for the usual clock-skew reason);
+`record-results` records every op into **`deployment_pointer_records`** in the SAME
+pass as the file ops, because a pointer client rides an ordinary testnet and a
+command an operator has to remember separately does not get run. Its own table,
+not a third `deployment_*_records` sibling: there is no file, so `file_size_bytes`
+is meaningless, and folding `stale` into `OpRecordStatus.FAILURE` would put the
+expected stale-read rate into the upload/download hard floors.
+`deployments print-pointers --name` reads Influx (live, the only view during a
+run), `--id` reads Postgres (post-run, the only view that survives teardown), both
+through `pointer_results.py` so they cannot disagree; `--by-age` buckets **sweep**
+outcomes by age at read (a `get` is the confirming read, always ~0 age), own and
+foreign separately. `slack-post` and `record-results --update-slack` render the
+tier only when it exists.
+
+**Node-side signal.** `record-log-counts` gains a `pointer` group in the log
+catalogue (version **3**; the connection groups are untouched, so v2 and v3 counts
+of them stay comparable) covering nine node WARN/INFO lines, and additionally
+counts `pointer_put_rpc` / `pointer_get_rpc` per outcome with latency p50/p95 into
+the same table keyed `<event>:<outcome>` (no migration). Those two are the only
+quantitative node-side pointer signal that is not DEBUG — stale refusals, quorum
+shortfalls and unpaid offers are all DEBUG and the node forwarder drops DEBUG at
+`log_level: info`, which is what staging runs at, so they are deliberately NOT
+catalogued (they would read zero for a reason unrelated to pointers). Promoting
+them is a request on V2-1277.
+
+**Gates.** Eight `[pointer]` gates in `deployments compare`: a write and a read
+success floor (absolute, single-run, and therefore surviving `--new-baseline`),
+plus stale-read rate, lost-write rate, write/read latency p50/p95 and cost per
+write, all relative. **NOT ASSESSED, never omitted** when the baseline has no
+pointer records — which is every baseline on the first pointer-carrying train.
+**No pointer gate reaches the exit code**; every one is soft, so the worst is a
+`SOFT FAIL`. The two floors are additionally advisory
+(`pointer_floor_gates_advisory: true`) because no run has measured a pointer tier
+and the ADR does not say how large the expected stale rate is — a floor set today
+is a guess. `clients estimate-gas` sizes a pointer client from the **manifest
+rates** (no baseline needed — they are deterministic) against a new
+`fixed_eth_per_pointer_write`, seeded from the per-upload fixed cost and awaiting
+recalibration from the first run's measured spend.
+
+`staging.yaml` carries **two** pointer entries, DigitalOcean `lon1` and `syd1` —
+geographically separated so cross-client sweeps span a real distance. **The train's
+RC must carry pointers**; if it predates them the run operator strips the two
+entries for that train. Not in scope: a `wasm-pointer` role (V2-1340) and pointers
+against production.
 
 ### Simulating residential connections on client VMs (`network`)
 

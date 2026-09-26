@@ -1,0 +1,113 @@
+# A short testnet for validating pointers (V2-1277, V2-1339).
+#
+# Pointers are paid, owner-signed mutable references. This profile stands up an
+# ordinary small testnet and adds two pointer clients in geographically separate
+# regions, so that every pointer one client owns is also read from the other side
+# of the world. Cross-client reads are the point of the second VM: a pointer read
+# is answered by a quorum of its close group, and whether that quorum agrees is
+# not a property one client alone can observe.
+#
+# Run it:
+#   saorsa-deploy deployments plan --config deploy/manifests/profiles/pointers.yaml
+#   saorsa-deploy deployments up   --config deploy/manifests/profiles/pointers.yaml
+#
+# Read the results:
+#   saorsa-deploy deployments print-pointers --name PTR-01            # live, Influx
+#   saorsa-deploy deployments print-pointers --name PTR-01 --by-age   # decay with age
+#   saorsa-deploy deployments record-results --name PTR-01            # → Postgres
+#   saorsa-deploy deployments record-log-counts --name PTR-01         # node-side, ES
+#   saorsa-deploy deployments print-pointers --id <id>                # post-run
+#
+# ---------------------------------------------------------------------------
+# READ BEFORE RUNNING
+#
+#   * The binaries must carry pointers. Both `ant` and `ant-node` are built from
+#     WithAutonomi branch `feat/pointers-immutable-owner`; the client branch pins
+#     the protocol and node crates by git rev, so the pair is coherent only when
+#     BOTH come from it. A pre-pointer node answers a protocol error to every
+#     pointer message, and every operation fails.
+#
+#   * Money. At the defaults each pointer client performs 180 PAID writes an
+#     hour — one Arbitrum Sepolia transaction every 20 seconds. Size the `eth:`
+#     below with `clients estimate-gas --config <this file>`, which reads the
+#     rates straight out of this manifest. A client that runs dry fails every
+#     subsequent write in a way indistinguishable from a network fault.
+#
+#   * A non-zero stale-read rate is EXPECTED (ADR-0016). Only its trend against
+#     a previous run is a signal, which is why the pointer gates in
+#     `deployments compare` are relative and why the floors are advisory.
+# ---------------------------------------------------------------------------
+
+name: PTR-01
+kind: testnet
+purpose: "Pointer validation — create/update/read paid mutable references"
+ssh_key_path: ~/.ssh/ant_deploy
+
+testnet:
+  mode: true
+
+  binaries:
+    ant_node:
+      branch: feat/pointers-immutable-owner
+      repo_owner: WithAutonomi
+    # Required by the pointer clients as much as by the transfer clients: a
+    # pointer client drives the native `ant pointer` subcommands.
+    ant:
+      branch: feat/pointers-immutable-owner
+      repo_owner: WithAutonomi
+
+  bootstraps:
+    count: 3
+    port: 10000
+    attached_volume_size: 50
+
+  nodes:
+    per_vm: 10
+    # A pointer read needs a quorum of the close group to answer and two peers
+    # to name the same state, so the fleet has to be wide enough to HAVE a close
+    # group. Ten VMs x 10 services is 100 nodes, comfortably above the default
+    # close-group width.
+    providers:
+      digital_ocean:
+        vm_count: 10
+        regions_list: [lon1, nyc1, ams3]
+        size: s-4vcpu-8gb
+        attached_volume_size: 50
+
+  clients:
+    # The transfer tier. Not required by the pointer clients — they fall back to
+    # random 32-byte targets when no addresses have been published — but with it
+    # the pointers aim at REAL data maps, which is what makes `resolve` an
+    # end-to-end check rather than a walk to a made-up address.
+    uploaders:
+      - { provider: digital_ocean, region: lon1, file_size_mb: 10, ant: 200, eth: 0.1 }
+    downloaders:
+      - { provider: digital_ocean, region: lon1 }
+
+    # The pointer tier. Two entries, far apart: lon1 and syd1. Each sweeps its
+    # OWN pointers and the other's published ones, so every pointer is read from
+    # both a nearby and a distant vantage point.
+    #
+    # Rates are left at their defaults (create/60s, update/30s, sweep/600s,
+    # chain 10%), which is 180 paid writes per client per hour.
+    pointers:
+      - provider: digital_ocean
+        region: lon1
+        eth: 0.5
+        ant: 200
+      - provider: digital_ocean
+        region: syd1
+        eth: 0.5
+        ant: 200
+
+  monitoring:
+    enabled: true
+
+  elastic:
+    # The node-side pointer signal — the WARN/INFO lines `record-log-counts`
+    # counts, and the `pointer_put_rpc` / `pointer_get_rpc` latency events — is
+    # only in Elasticsearch. Without this the client's view is the only view,
+    # and "the client was served a stale state" cannot be told apart from "a node
+    # answered stale".
+    enabled: true
+    retention_days: 7

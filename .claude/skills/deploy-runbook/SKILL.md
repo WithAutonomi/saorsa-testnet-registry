@@ -64,12 +64,37 @@ to a manifest field — see the schema in `deploy/README.md` §"Declarative mani
    - uploader: `{ provider, region, file_size_mb, vm_size?, payment?(merkle|no-merkle), ant?, eth? }`
    - downloader: `{ provider, region, vm_size? }`
    Requires `ANT_DEPLOY_SECRET_KEY` + `ANT_CLIENT_AWS_*` in the env at `up` time.
+7b. **Pointer clients** — `testnet.clients.pointers`. Ask only if the run is about
+   pointers (paid mutable references); omit the key otherwise. It is INDEPENDENT of
+   the uploader/downloader pairing rule — a pointer tier on its own is legal.
+   - entry: `{ provider, region, vm_size?, ant?, eth?, create_interval_secs?,
+     update_interval_secs?, sweep_interval_secs?, chain_fraction?, pointer_max? }`
+   - **Propose two entries in regions far apart** (e.g. DO `lon1` + `syd1`). Each
+     client sweeps its own pointers AND every other client's published ones, and a
+     read answered by a quorum of the close group is not something one vantage
+     point can judge. One client is legal but measures half the question.
+   - **Requires `binaries.ant`, and the binaries must CARRY pointers.** A
+     pre-pointer `ant-node` answers a protocol error to every pointer message and
+     every operation fails. Confirm the branch/version with the user.
+   - **Money.** The defaults are 180 PAID writes per client per hour — one
+     Arbitrum Sepolia transaction every 20 seconds. Tell the user to run
+     `clients estimate-gas --config <file>` before deploying: it sizes `eth:`
+     straight from the manifest rates (no baseline needed — they are
+     deterministic). A client that runs dry fails every subsequent write in a way
+     indistinguishable from a network fault.
+   - Leave the rates at their defaults unless the user asks; a changed rate
+     changes what the run costs.
 8. **Elasticsearch** — `testnet.elastic`. `{ enabled: true, droplet_size, volume_size,
    shards, retention_days, drop_log_levels, buffer_limit }`. **Large-testnet warning:**
    if total nodes ≥ 500, tell the user the defaults (`s-4vcpu-8gb` / 100 GB / 4 shards)
    will silently drop logs at scale, and recommend `s-8vcpu-16gb` / 500–1000 GB / 8
    shards. Only set fields that differ from defaults.
-9. **Monitoring** — `testnet.monitoring.enabled: true|false`.
+9. **Monitoring** — `testnet.monitoring.enabled: true|false`. Required for a
+   pointer tier to be measurable at all: its results go to InfluxDB. If the run has
+   pointer clients, also recommend `elastic.enabled: true` — the node's own view of
+   the pointer tier (`pointer_put_rpc` / `pointer_get_rpc` and the pointer WARN
+   lines) exists only in Elasticsearch, and without it "the client was served a
+   stale state" cannot be told apart from "a node answered stale".
 10. **SSH key** — `ssh_key_path:` (absolute path or `~/...`; public half registered with
     every provider in use).
 

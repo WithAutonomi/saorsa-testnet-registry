@@ -54,6 +54,13 @@ from saorsa_db.models.migration import (
     MigrationVm,
     MigrationVmStatus,
 )
+from saorsa_db.models.pointer_record import (
+    POINTER_SUCCESS_OUTCOMES,
+    POINTER_WRITE_OPS,
+    DeploymentPointerRecord,
+    PointerOp,
+    PointerOutcome,
+)
 from saorsa_db.models.prod_canary import (
     DeploymentProdCanaryChunk,
     DeploymentProdCanaryLoss,
@@ -110,6 +117,11 @@ from saorsa_db.models.release_candidate import (
 
 __all__ = [
     "BLOCKING_STATUSES",
+    "POINTER_SUCCESS_OUTCOMES",
+    "POINTER_WRITE_OPS",
+    "DeploymentPointerRecord",
+    "PointerOp",
+    "PointerOutcome",
     "COMPONENT_METRICS",
     "DEFAULT_PATTERN_SET",
     "SOURCE_ELASTICSEARCH",

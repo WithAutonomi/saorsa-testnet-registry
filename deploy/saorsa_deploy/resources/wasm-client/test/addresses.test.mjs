@@ -9,6 +9,7 @@ import {
   AddressSource,
   eligibleAddresses,
   formatAddressLine,
+  isNonFileKey,
   parseAddressLine,
 } from "../dist/addresses.js";
 
@@ -93,4 +94,15 @@ test("a pool with only over-cap entries yields nothing rather than a doomed pick
   await writeFile(file, `big ${OVER}\n`);
   const source = new AddressSource("", "", 60, file, CAP);
   assert.equal(await source.pick(), undefined);
+});
+
+test("a pointer client's published list is never read as file addresses", () => {
+  // The pointer tier publishes under the SAME deployment prefix, and this
+  // downloader lists the whole prefix (that is how it draws native uploads).
+  // A pointer address is not a data map, so fetching one fails every time and
+  // the failure lands in the download success rate as lost content.
+  assert.equal(isNonFileKey("saorsa-deploy/addresses/DEV-01/pointer-lon1-1.txt"), true);
+  assert.equal(isNonFileKey("pointer-syd1-2.txt"), true);
+  assert.equal(isNonFileKey("saorsa-deploy/addresses/DEV-01/upload-lon1-1.txt"), false);
+  assert.equal(isNonFileKey("saorsa-deploy/addresses/DEV-01/wasm-upload-lon1-1.txt"), false);
 });

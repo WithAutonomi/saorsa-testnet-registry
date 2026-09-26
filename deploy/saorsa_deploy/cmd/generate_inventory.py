@@ -6,8 +6,9 @@ from pathlib import Path
 
 from rich.console import Console
 
-from saorsa_deploy.client_roles import unit_for_role
+from saorsa_deploy.client_roles import is_pointer, unit_for_role
 from saorsa_deploy.evm import get_evm_network_info
+from saorsa_deploy.provisioning.client import POINTER_DATA_DIR
 from saorsa_deploy.provisioning.prod_downloader import (
     ADDRESSES_PATH as PROD_DOWNLOADER_ADDRESSES_PATH,
 )
@@ -183,6 +184,30 @@ def _build_client_vms_field(
         # what the InfluxDB `host` tag carries.
         role = client.get("role", "upload")
         service = unit_for_role(role)
+        # A pointer client's workload rates, and where its owner keys and ledger
+        # live. The paths are the teardown-critical part, as they are for the
+        # prod download kinds: the owner keys are what make a pointer updatable
+        # AT ALL, ownership is immutable, and nothing collects them -- they die
+        # with the VM, and with them every pointer the client created.
+        pointer_fields = (
+            {
+                "create_interval_secs": client.get("create_interval_secs"),
+                "update_interval_secs": client.get("update_interval_secs"),
+                "sweep_interval_secs": client.get("sweep_interval_secs"),
+                "chain_fraction": client.get("chain_fraction"),
+                "pointer_max": client.get("pointer_max"),
+                "paths": {
+                    "owner_keys": f"{POINTER_DATA_DIR}/keys",
+                    "ledger": f"{POINTER_DATA_DIR}/ledger.json",
+                    "published_addresses": (
+                        f"{POINTER_DATA_DIR}/pointer-"
+                        f"{region}-{index}.txt"
+                    ),
+                },
+            }
+            if is_pointer(role)
+            else {}
+        )
         entries.append(
             {
                 "name": f"{name}-ant-client-{role}-{region}-{index}",
@@ -203,6 +228,7 @@ def _build_client_vms_field(
                 # unit is never installed on it.
                 "nodes": [{"service_name": service}],
                 "services": [service],
+                **({"pointer_config": pointer_fields} if pointer_fields else {}),
             }
         )
     return entries
