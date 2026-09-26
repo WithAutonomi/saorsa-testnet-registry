@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from saorsa_deploy import webrtc_probe
+from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES
 from saorsa_deploy.resources import get_resources_dir
 
 #: The published production bootstrap list, written by
@@ -238,3 +239,81 @@ def wasm_vm_size_warning(vm_size: str | None, provider: str | None) -> str | Non
         f"transfer holds ~4x the file in WASM memory, so make sure it has at "
         f"least {MIN_WASM_VM_RAM_MB // 1024} GB of RAM"
     )
+
+
+#: Size classes a browser-path uploader can never draw from. `large` is
+#: [1 GiB, 5 GiB) and `xlarge` is >= 5 GiB, both entirely above ant-core's
+#: browser cap — so every file drawn would be refused before touching the
+#: network. Refused at validation rather than skipped at run time: a deployment
+#: that can only fail is not a deployment.
+WASM_REFUSED_POOL_CLASSES = ("large", "xlarge")
+
+#: The one class that straddles the cap: `medium` is [100 MiB, 1 GiB) and the cap
+#: is 1,000,000,000 bytes, so part of the class is drawable and part is not.
+WASM_CLAMPED_POOL_CLASS = "medium"
+
+
+def _pool_class_names(pool: dict) -> set[str]:
+    """The class names a pool request asks for, whatever its keys are.
+
+    The manifest schema holds plain strings while the CLI spec parser holds
+    ``SizeClass`` members, and both reach the checks below. Normalising here
+    rather than at each call site is what stopped `pool=large:1` from being
+    accepted on the command line while the identical manifest was refused.
+    """
+    return {
+        str(getattr(key, "value", key))
+        for key, count in pool.items()
+        if count
+    }
+
+
+def check_wasm_pool_request(pool: dict | None) -> str | None:
+    """Return a problem description for an undrawable pool request, else None.
+
+    ``pool`` is the ``{size_class: count}`` request. Only the classes that lie
+    wholly above the cap are refused; ``medium`` is clamped instead (see
+    :func:`clamp_wasm_pool_max_size`), because most of it is drawable.
+    """
+    if not pool:
+        return None
+    requested = _pool_class_names(pool)
+    refused = [name for name in WASM_REFUSED_POOL_CLASSES if name in requested]
+    if not refused:
+        return None
+    return (
+        f"pool class(es) {', '.join(refused)} cannot be uploaded over the "
+        f"browser path — ant-core refuses a file above "
+        f"{WASM_MAX_FILE_BYTES:,} bytes, and every file in those classes is "
+        f"larger. Request tiny/small/medium instead"
+    )
+
+
+def clamp_wasm_pool_max_size(max_size_bytes: int | None) -> int:
+    """The effective ``pool_max_size`` for a WASM uploader, in bytes.
+
+    The cap is ant-core's own, read from :data:`client_roles.WASM_MAX_FILE_BYTES`
+    rather than copied, so the two can never drift. Exclusive, matching how
+    ``pool_max_size`` is defined everywhere else — a file of exactly the cap is
+    refused by ant-core, so it must not be drawn.
+    """
+    if max_size_bytes is None:
+        return WASM_MAX_FILE_BYTES
+    return min(int(max_size_bytes), WASM_MAX_FILE_BYTES)
+
+
+def wasm_pool_max_size_is_clamped(pool: dict | None, max_size) -> bool:
+    """Whether a WASM pool request needs the cap written into its bounds.
+
+    True only for a ``medium`` request whose own bound (if any) sits above the
+    cap. `tiny`/`small` are wholly below it, so adding the bound there would put
+    a redundant token in every argv — and the argv is what the step journal
+    compares, so noise there is not free.
+    """
+    if not pool or WASM_CLAMPED_POOL_CLASS not in _pool_class_names(pool):
+        return False
+    if max_size is None:
+        return True
+    from saorsa_db.size_class import parse_size
+
+    return parse_size(max_size) > WASM_MAX_FILE_BYTES

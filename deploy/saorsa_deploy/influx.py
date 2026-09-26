@@ -425,6 +425,56 @@ def fetch_prod_upload_points(
     return _parse_prod_upload_csv(iter_response_lines(resp))
 
 
+def fetch_all_prod_upload_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    wasm_bucket: str,
+    start: str = "0",
+    stop: str = FLUX_FAR_FUTURE,
+    timeout: int = 30,
+) -> list[dict]:
+    """Prod-upload points from every bucket an uploader tier may write to.
+
+    A browser-path uploader emits the same ``prod_upload`` measurement into a
+    bucket of its own — sharing one would let any dashboard panel or ad-hoc query
+    average two transports measured several times apart — so a single-bucket
+    query silently returns only the native tier's uploads. A WASM tier that
+    failed every upload would then look identical to one that was never
+    configured, which is the opposite of what running both is for.
+
+    A missing WASM bucket is not an error: every deployment made before the tier
+    existed has none, so it is tolerated and simply contributes nothing.
+    """
+    points = fetch_prod_upload_points(
+        url=url, token=token, org=org, bucket=bucket,
+        start=start, stop=stop, timeout=timeout,
+    )
+    if bucket == wasm_bucket:
+        return points
+    try:
+        points += fetch_prod_upload_points(
+            url=url, token=token, org=org, bucket=wasm_bucket,
+            start=start, stop=stop, timeout=timeout,
+        )
+    except Exception:
+        pass
+
+    # Deduplicate on the upload's identity. Reading two buckets should never
+    # return the same point twice, but a double-count here would inflate the
+    # recorded row count and every cost total with nothing looking wrong.
+    seen = set()
+    unique = []
+    for point in points:
+        key = (point.get("host"), point.get("start_ns"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(point)
+    return unique
+
+
 def _parse_float(value: str) -> float | None:
     if value is None or value == "":
         return None
@@ -472,6 +522,9 @@ def _parse_prod_upload_csv(body: "str | Iterable[str]") -> list[dict]:
                     "reason": record.get("reason", "") or "",
                     "storage_cost_atto": record.get("storage_cost_atto", "") or "",
                     "gas_cost_wei": record.get("gas_cost_wei", "") or "",
+                    # Browser path only (`crash` / `over_cap`); absent on every
+                    # native point, which pivots to an empty string.
+                    "error_kind": record.get("error_kind", "") or "",
                 }
             )
         except (KeyError, ValueError):

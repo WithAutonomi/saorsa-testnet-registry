@@ -53,6 +53,9 @@ class TestParseSpec:
         assert spec == {
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
+            # Every parsed spec names its transport, so the deploy command,
+            # the provisioner and the recorded uploader list read one shape.
+            "client_kind": "native",
             "urls_file": str(urls_file),
             # None for a urls= spec: the file list is the hand-written one, not
             # a draw from the managed pool.

@@ -28,6 +28,8 @@ from rich.console import Console
 from saorsa_db.models import DeploymentStatus
 
 from saorsa_deploy.binary_descriptor import build_binary_descriptor
+from saorsa_deploy.client_roles import ROLE_UPLOAD, ROLE_WASM_UPLOAD
+from saorsa_deploy.cmd.prod_wasm_cli import resolve_wasm_context, wasm_deploy_args
 from saorsa_deploy.config.models import VALID_LOG_LEVELS
 from saorsa_deploy.prod_bootstraps import (
     PROD_BOOTSTRAPS_URL,
@@ -74,6 +76,17 @@ _KNOWN_SPEC_KEYS = (
     "rust_log",
 )
 _VALID_PAYMENT_VALUES = ("merkle", "no-merkle")
+
+# The tokens a browser-path uploader accepts, and the three it refuses. Refused
+# rather than ignored: `bootstrap_cache` selects between ant's peer cache and an
+# explicit `--bootstrap` and a WASM client does neither, while `memory_profiling`
+# and `log_level` act on the `ant` process, which never runs. A silently-dropped
+# token would leave the operator reading their own spec as a description of the
+# run. They stay in the tokeniser's key set so the message can name them.
+_FORBIDDEN_WASM_SPEC_KEYS = ("bootstrap_cache", "memory_profiling", "log_level")
+_KNOWN_WASM_SPEC_KEYS = tuple(
+    key for key in _KNOWN_SPEC_KEYS if key not in _FORBIDDEN_WASM_SPEC_KEYS
+)
 
 
 def _parse_bootstrap_cache_token(spec: str, value: str) -> bool:
@@ -144,6 +157,103 @@ def _parse_clock_skew_token(spec: str, value: str) -> int:
         raise ValueError(f"Invalid uploader spec '{spec}': {e}")
 
 
+def _parse_spec_options(
+    spec: str, parts: list[str], known_keys: tuple, label: str
+) -> dict[str, str]:
+    """Parse the ``key=value`` tail of an uploader spec into a dict.
+
+    Tokens are rejoined with ':' so a path (or a ``pool=small:2`` request, or a
+    ``rust_log`` filter containing ``::``) is preserved verbatim; a ':' starts a
+    new token only when what follows is a KNOWN key. Shared by the native and
+    browser-path parsers so the two can never disagree about tokenisation — they
+    differ only in which keys they accept.
+    """
+    tail_tokens: list[str] = []
+    buf = parts[0]
+    for next_part in parts[1:]:
+        if "=" in next_part and next_part.split("=", 1)[0] in known_keys:
+            tail_tokens.append(buf)
+            buf = next_part
+        else:
+            buf = f"{buf}:{next_part}"
+    tail_tokens.append(buf)
+
+    options: dict[str, str] = {}
+    for token in tail_tokens:
+        if "=" not in token:
+            raise ValueError(
+                f"Invalid {label} spec '{spec}': '{token}' is not key=value."
+            )
+        key, value = token.split("=", 1)
+        if key not in known_keys:
+            raise ValueError(
+                f"Invalid {label} spec '{spec}': unknown key '{key}'."
+            )
+        if key in options:
+            raise ValueError(
+                f"Invalid {label} spec '{spec}': duplicate key '{key}'."
+            )
+        options[key] = value
+    return options
+
+
+def _parse_file_source(spec: str, options: dict, label: str) -> dict:
+    """Resolve the ``urls=``/``pool=`` half of an uploader spec.
+
+    Exactly one source. ``pool=`` draws from the managed file pool, which cannot
+    return a file that has ever been handed out; ``urls=`` is the legacy
+    hand-written list, where that guarantee comes only from the name-based
+    duplicate preflight.
+    """
+    has_urls = bool(options.get("urls"))
+    has_pool = bool(options.get("pool"))
+    if has_urls and has_pool:
+        raise ValueError(
+            f"Invalid {label} spec '{spec}': set either urls=PATH or "
+            "pool=CLASS:COUNT, not both."
+        )
+    if not has_urls and not has_pool:
+        raise ValueError(
+            f"Invalid {label} spec '{spec}'. One of urls=PATH or "
+            "pool=CLASS:COUNT (e.g. pool=small:3,medium:2) is required."
+        )
+
+    pool_request = None
+    pool_min_size_bytes = None
+    pool_max_size_bytes = None
+    if has_pool:
+        from saorsa_deploy.pool_selection import (
+            PoolSelectionError,
+            parse_request_token,
+            parse_size_bounds,
+            validate_bounds,
+        )
+
+        try:
+            pool_request = parse_request_token(options["pool"])
+            pool_min_size_bytes, pool_max_size_bytes = parse_size_bounds(
+                options.get("pool_min_size"), options.get("pool_max_size")
+            )
+            validate_bounds(pool_request, pool_min_size_bytes, pool_max_size_bytes)
+        except (PoolSelectionError, ValueError) as exc:
+            raise ValueError(f"Invalid {label} spec '{spec}': {exc}") from exc
+    elif options.get("pool_min_size") or options.get("pool_max_size"):
+        # Silently ignoring them would leave the operator believing a size
+        # restriction is in force over a hand-written URL list, which the pool
+        # is not selecting from at all.
+        raise ValueError(
+            f"Invalid {label} spec '{spec}': pool_min_size/pool_max_size only "
+            "apply to pool=… selection, not to urls=…"
+        )
+
+    return {
+        "urls_file": options.get("urls") or None,
+        "pool_request": pool_request,
+        "pool_min_size_bytes": pool_min_size_bytes,
+        "pool_max_size_bytes": pool_max_size_bytes,
+    }
+
+
 def parse_prod_uploader_spec(spec: str) -> dict:
     """Parse a ``--uploader`` spec.
 
@@ -174,81 +284,9 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     if not vm_size:
         raise ValueError(f"Invalid uploader spec '{spec}': vm_size cannot be empty.")
 
-    # The remaining tail consists of key=value tokens; rejoin with ':' so a
-    # path containing colons (rare but legal) is preserved verbatim once we
-    # split on the first '=' per token.
-    tail_tokens: list[str] = []
-    buf = parts[2]
-    for next_part in parts[3:]:
-        if "=" in next_part and next_part.split("=", 1)[0] in _KNOWN_SPEC_KEYS:
-            tail_tokens.append(buf)
-            buf = next_part
-        else:
-            buf = f"{buf}:{next_part}"
-    tail_tokens.append(buf)
+    options = _parse_spec_options(spec, parts[2:], _KNOWN_SPEC_KEYS, "uploader")
 
-    options: dict[str, str] = {}
-    for token in tail_tokens:
-        if "=" not in token:
-            raise ValueError(
-                f"Invalid uploader spec '{spec}': '{token}' is not key=value."
-            )
-        key, value = token.split("=", 1)
-        if key not in _KNOWN_SPEC_KEYS:
-            raise ValueError(
-                f"Invalid uploader spec '{spec}': unknown key '{key}'."
-            )
-        if key in options:
-            raise ValueError(
-                f"Invalid uploader spec '{spec}': duplicate key '{key}'."
-            )
-        options[key] = value
-
-    # Exactly one source of files. `pool=` draws from the managed pool, which
-    # guarantees the files have never been uploaded; `urls=` is the legacy
-    # hand-written list, where that guarantee comes only from the name-based
-    # duplicate preflight.
-    has_urls = bool(options.get("urls"))
-    has_pool = bool(options.get("pool"))
-    if has_urls and has_pool:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}': set either urls=PATH or "
-            "pool=CLASS:COUNT, not both."
-        )
-    if not has_urls and not has_pool:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}'. One of urls=PATH or "
-            "pool=CLASS:COUNT (e.g. pool=small:3,medium:2) is required."
-        )
-
-    urls_file = options.get("urls") or None
-    pool_request = None
-    pool_min_size_bytes = None
-    pool_max_size_bytes = None
-    if has_pool:
-        from saorsa_deploy.pool_selection import (
-            PoolSelectionError,
-            parse_request_token,
-            parse_size_bounds,
-            validate_bounds,
-        )
-
-        try:
-            pool_request = parse_request_token(options["pool"])
-            pool_min_size_bytes, pool_max_size_bytes = parse_size_bounds(
-                options.get("pool_min_size"), options.get("pool_max_size")
-            )
-            validate_bounds(pool_request, pool_min_size_bytes, pool_max_size_bytes)
-        except (PoolSelectionError, ValueError) as exc:
-            raise ValueError(f"Invalid uploader spec '{spec}': {exc}") from exc
-    elif options.get("pool_min_size") or options.get("pool_max_size"):
-        # Silently ignoring them would leave the operator believing a size
-        # restriction is in force over a hand-written URL list, which the pool
-        # is not selecting from at all.
-        raise ValueError(
-            f"Invalid uploader spec '{spec}': pool_min_size/pool_max_size only "
-            "apply to pool=… selection, not to urls=…"
-        )
+    source = _parse_file_source(spec, options, "uploader")
 
     payment_type: str | None = options.get("payment")
     if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
@@ -294,10 +332,8 @@ def parse_prod_uploader_spec(spec: str) -> dict:
     return {
         "region": region,
         "vm_size": vm_size,
-        "urls_file": urls_file,
-        "pool_request": pool_request,
-        "pool_min_size_bytes": pool_min_size_bytes,
-        "pool_max_size_bytes": pool_max_size_bytes,
+        "client_kind": "native",
+        **source,
         "exclude_partial": exclude_partial,
         "payment_type": payment_type,
         "log_level": log_level,
@@ -308,6 +344,196 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         "memory_profiling": memory_profiling,
         "rust_log": rust_log,
     }
+
+
+def parse_prod_wasm_uploader_spec(spec: str) -> dict:
+    """Parse a ``--wasm-uploader`` spec.
+
+    Format: ``REGION[:VM_SIZE]:<tokens>``. ``VM_SIZE`` is optional — a
+    browser-path transfer holds ~4x the file in WASM memory, so an omitted size
+    takes the WASM default rather than the native tier's box. The accepted tokens
+    are the native ones minus ``bootstrap_cache``/``memory_profiling``/
+    ``log_level``, which are refused by name.
+
+    Returns the same dict shape as :func:`parse_prod_uploader_spec` with
+    ``client_kind="wasm"``, so everything downstream — selection, provisioning,
+    the recorded ``file_names`` — handles one kind of entry.
+    """
+    from saorsa_deploy.prod_wasm import (
+        check_wasm_pool_request,
+        check_wasm_vm_size,
+        clamp_wasm_pool_max_size,
+        default_wasm_vm_size,
+        wasm_pool_max_size_is_clamped,
+    )
+
+    parts = spec.split(":")
+    region = parts[0]
+    if not region:
+        raise ValueError(
+            f"Invalid wasm uploader spec '{spec}': region cannot be empty."
+        )
+    if len(parts) < 2:
+        raise ValueError(
+            f"Invalid wasm uploader spec '{spec}'. Expected format: "
+            f"region[:vm_size]:urls=PATH or region[:vm_size]:pool=CLASS:COUNT"
+        )
+    # VM_SIZE is optional, so the second field is a size only when it is not
+    # already the first key=value token.
+    second = parts[1]
+    if "=" in second and second.split("=", 1)[0] in _KNOWN_WASM_SPEC_KEYS:
+        vm_size = None
+        tail = parts[1:]
+    else:
+        vm_size = second or None
+        tail = parts[2:]
+    if not tail:
+        raise ValueError(
+            f"Invalid wasm uploader spec '{spec}'. One of urls=PATH or "
+            "pool=CLASS:COUNT is required."
+        )
+
+    options = _parse_spec_options(
+        spec,
+        tail,
+        # The forbidden keys are tokenised so they can be rejected by name; an
+        # unknown-key error would not say why the token cannot be used here.
+        _KNOWN_WASM_SPEC_KEYS + _FORBIDDEN_WASM_SPEC_KEYS,
+        "wasm uploader",
+    )
+    offending = [key for key in _FORBIDDEN_WASM_SPEC_KEYS if key in options]
+    if offending:
+        raise ValueError(
+            f"Invalid wasm uploader spec '{spec}': "
+            f"{', '.join(offending)} cannot be used on a WASM uploader. The "
+            "peer cache has no browser-path meaning, and heaptrack/log_level "
+            "act on the `ant` process, which a WASM client never runs."
+        )
+
+    source = _parse_file_source(spec, options, "wasm uploader")
+    problem = check_wasm_pool_request(source["pool_request"])
+    if problem:
+        raise ValueError(f"Invalid wasm uploader spec '{spec}': {problem}")
+    if wasm_pool_max_size_is_clamped(
+        source["pool_request"], source["pool_max_size_bytes"]
+    ):
+        # ant-core refuses a file above the browser cap before touching the
+        # network, so a drawn over-cap file is a permanently-spent pool entry
+        # that could never be uploaded. Narrow the draw instead. Only `medium`
+        # straddles the cap, so only `medium` gains a bound — writing one onto a
+        # tiny/small request would put a value in the persisted draw that
+        # narrowed nothing.
+        source["pool_max_size_bytes"] = clamp_wasm_pool_max_size(
+            source["pool_max_size_bytes"]
+        )
+
+    if vm_size is None:
+        vm_size = default_wasm_vm_size("digitalocean")
+    else:
+        size_problem = check_wasm_vm_size(vm_size, "digitalocean")
+        if size_problem:
+            raise ValueError(f"Invalid wasm uploader spec '{spec}': {size_problem}.")
+
+    payment_type: str | None = options.get("payment")
+    if payment_type is not None and payment_type not in _VALID_PAYMENT_VALUES:
+        raise ValueError(
+            f"Invalid wasm uploader spec '{spec}': payment must be one of "
+            f"{', '.join(_VALID_PAYMENT_VALUES)}."
+        )
+
+    return {
+        "region": region,
+        "vm_size": vm_size,
+        "client_kind": "wasm",
+        **source,
+        "exclude_partial": (
+            _parse_forward_logs_token(spec, options["exclude_partial"])
+            if "exclude_partial" in options
+            else False
+        ),
+        "payment_type": payment_type,
+        # Absent by construction on the browser path; kept in the dict so every
+        # consumer reads one shape.
+        "log_level": None,
+        "clock_skew": (
+            _parse_clock_skew_token(spec, options["clock_skew"])
+            if "clock_skew" in options
+            else None
+        ),
+        "network": (
+            _parse_network_token(spec, options["network"])
+            if "network" in options
+            else None
+        ),
+        "bootstrap_cache": None,
+        "forward_logs": (
+            _parse_forward_logs_token(spec, options["forward_logs"])
+            if "forward_logs" in options
+            else None
+        ),
+        "memory_profiling": None,
+        "rust_log": options.get("rust_log") or None,
+    }
+
+
+def _role_index(parsed_specs: list[dict], spec: dict) -> int:
+    """The 1-based index `clients infra` will give this uploader's VM.
+
+    Each ROLE is indexed from 1 independently, so a mixed deployment's native
+    uploader #1 and WASM uploader #1 are different VMs with different hostnames.
+    """
+    peers = (
+        _wasm_specs(parsed_specs)
+        if spec.get("client_kind") == "wasm"
+        else _native_specs(parsed_specs)
+    )
+    for index, candidate in enumerate(peers, start=1):
+        if candidate is spec:
+            return index
+    raise ValueError("spec is not one of parsed_specs")
+
+
+def _paying_address(args) -> str:
+    """The address the shared wallet key signs from, or a note saying it is unknown.
+
+    Every uploader — native and browser-path alike — signs with this one key, so
+    naming the address is the only way for an operator to check the balance of
+    the wallet that is about to spend real ETH. Best-effort and silent about
+    failure: :func:`_resolve_secret_key` already refuses a missing key with a
+    proper message, and a malformed one fails loudly at the first upload.
+    """
+    from eth_account import Account
+
+    key = getattr(args, "secret_key", None) or os.environ.get(
+        "ARBITRUM_ONE_SECRET_KEY"
+    )
+    if not key:
+        return "unknown (no wallet key resolved yet)"
+    try:
+        return Account.from_key(key if key.startswith("0x") else f"0x{key}").address
+    except Exception:
+        return "unknown (could not derive from the wallet key)"
+
+
+def _native_specs(parsed_specs: list[dict]) -> list[dict]:
+    return [s for s in parsed_specs if s.get("client_kind") != "wasm"]
+
+
+def _wasm_specs(parsed_specs: list[dict]) -> list[dict]:
+    return [s for s in parsed_specs if s.get("client_kind") == "wasm"]
+
+
+def _uploader_hostname(name: str, spec: dict, client_index: int) -> str:
+    """The Influx ``host`` tag an uploader VM will report under.
+
+    Built from the deployment name, the role and the per-role index exactly as
+    the client Terraform modules build it. Derived here so the transport of each
+    recorded operation can be resolved from the registry row alone: `clients
+    destroy` deletes the S3 client state, and a `record-results` re-run after
+    teardown must not relabel a WASM upload as native.
+    """
+    role = ROLE_WASM_UPLOAD if spec.get("client_kind") == "wasm" else ROLE_UPLOAD
+    return f"{name}-ant-client-{role}-{spec['region']}-{client_index}"
 
 
 def _read_urls_file(path: str) -> str:
@@ -570,70 +796,124 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
         f"digital_ocean:{s['region']}:0:{s['vm_size']}"
         f":bootstrap_cache={str(s.get('bootstrap_cache', True)).lower()}"
         + (f":network={s['network']}" if s.get("network") else "")
-        for s in parsed_specs
+        for s in _native_specs(parsed_specs)
+    ]
+    # A browser-path uploader gets the `wasm-upload` ROLE, not a flag on an
+    # `upload` VM: the role names the VM, its Terraform workspace and its S3
+    # state key, and telling the two tiers apart in all three is the point of
+    # running both. `bootstrap_cache` is absent from the WASM spec form because
+    # the role has no such option.
+    synth_wasm_specs = [
+        f"digital_ocean:{s['region']}:0:{s['vm_size']}"
+        + (f":network={s['network']}" if s.get("network") else "")
+        for s in _wasm_specs(parsed_specs)
     ]
     console.print(
-        f"[bold cyan]Step 3/5: creating {len(synth_uploader_specs)} "
+        f"[bold cyan]Step 3/5: creating "
+        f"{len(synth_uploader_specs) + len(synth_wasm_specs)} "
         f"uploader VM(s)[/bold cyan]"
     )
     cmd_infra_clients(SimpleNamespace(
         name=args.name,
         uploader=synth_uploader_specs,
         downloader=[],
+        wasm_uploader=synth_wasm_specs,
+        wasm_downloader=[],
         force=False,
     ))
+
+
+def _pair_specs_with_vms(
+    name: str, parsed_specs: list[dict], console: Console
+) -> list[dict]:
+    """Match each uploader spec to the VM `clients infra` created for it.
+
+    Pairing is per ROLE by ascending ``client_index``: `clients infra` indexes
+    each role from 1 independently, so a mixed deployment's native uploader #1
+    and WASM uploader #1 are different VMs. Zipping one flat list against the
+    other would hand a native URL list to a browser-path VM.
+    """
+    state = load_client_state(name)
+    clients = state.get("clients", [])
+
+    out: list[dict] = []
+    for role, specs in (
+        (ROLE_UPLOAD, _native_specs(parsed_specs)),
+        (ROLE_WASM_UPLOAD, _wasm_specs(parsed_specs)),
+    ):
+        if not specs:
+            continue
+        vms = sorted(
+            (c for c in clients if c.get("role", ROLE_UPLOAD) == role),
+            key=lambda c: c["client_index"],
+        )
+        if len(vms) != len(specs):
+            console.print(
+                f"[bold red]Error:[/bold red] expected {len(specs)} {role} "
+                f"VM(s) in client state but found {len(vms)}."
+            )
+            sys.exit(1)
+        for spec, client in zip(specs, vms):
+            if not client.get("ip"):
+                console.print(
+                    f"[bold red]Error:[/bold red] {role} "
+                    f"#{client['client_index']} ({client['region']}) has no IP "
+                    "— VM creation failed."
+                )
+                sys.exit(1)
+            out.append({
+                "ip": client["ip"],
+                "region": spec["region"],
+                "client_index": client["client_index"],
+                "client_kind": spec.get("client_kind") or "native",
+                "urls_file_content": spec["_urls_file_content"],
+                "payment_type": spec.get("payment_type"),
+                "log_level": spec.get("log_level"),
+                "clock_skew": spec.get("clock_skew", False),
+                "network": resolve_network(spec.get("network")),
+                "bootstrap_cache": spec.get("bootstrap_cache", True),
+                "forward_logs": spec.get("forward_logs"),
+                "memory_profiling": spec.get("memory_profiling"),
+                "rust_log": spec.get("rust_log"),
+            })
+    return out
+
+
+def _upload_role_clients(name: str) -> list[dict]:
+    """Every uploader VM of this deployment, native and browser-path.
+
+    Both tiers run the same ``ant-prod-uploader`` unit — the transport changes
+    which binary the service spawns, not what the service is — so start, stop and
+    the log-forwarder install all address them together.
+    """
+    state = load_client_state(name)
+    return [
+        c
+        for c in state.get("clients", [])
+        if c.get("ip") and c.get("role", ROLE_UPLOAD) in (ROLE_UPLOAD, ROLE_WASM_UPLOAD)
+    ]
 
 
 def _provision_uploaders(
     args,
     parsed_specs: list[dict],
     console: Console,
+    wasm_context=None,
 ) -> None:
     from saorsa_deploy.state import load_monitoring_state as _load_mon
 
-    state = load_client_state(args.name)
-    clients = state.get("clients", [])
-
-    upload_clients = [
-        c for c in clients if c.get("role", "upload") == "upload"
-    ]
-    if len(upload_clients) != len(parsed_specs):
-        console.print(
-            f"[bold red]Error:[/bold red] expected {len(parsed_specs)} uploader "
-            f"VMs in client state but found {len(upload_clients)}."
-        )
-        sys.exit(1)
-
-    # Pair by ascending client_index — clients infra assigns 1..N in the
-    # order specs were supplied.
-    upload_clients_sorted = sorted(
-        upload_clients, key=lambda c: c["client_index"]
+    uploaders_for_provisioner = _pair_specs_with_vms(
+        args.name, parsed_specs, console
     )
-    uploaders_for_provisioner: list[dict] = []
-    for spec, client in zip(parsed_specs, upload_clients_sorted):
-        if not client.get("ip"):
-            console.print(
-                f"[bold red]Error:[/bold red] uploader #{client['client_index']} "
-                f"({client['region']}) has no IP — VM creation failed."
-            )
-            sys.exit(1)
-        uploaders_for_provisioner.append({
-            "ip": client["ip"],
-            "region": spec["region"],
-            "client_index": client["client_index"],
-            "urls_file_content": spec["_urls_file_content"],
-            "payment_type": spec.get("payment_type"),
-            "log_level": spec.get("log_level"),
-            "clock_skew": spec.get("clock_skew", False),
-            "network": resolve_network(spec.get("network")),
-            "bootstrap_cache": spec.get("bootstrap_cache", True),
-            "forward_logs": spec.get("forward_logs"),
-            "memory_profiling": spec.get("memory_profiling"),
-            "rust_log": spec.get("rust_log"),
-        })
 
     secret_key = _resolve_secret_key(args, console)
-    binary_url, binary_is_archive = _resolve_ant_binary(args, console)
+    if _native_specs(parsed_specs):
+        binary_url, binary_is_archive = _resolve_ant_binary(args, console)
+    else:
+        # Nothing on a WASM-only deployment runs `ant`, so resolving (and
+        # installing) it would fetch a binary for no reason — and would fail a
+        # deploy whose only `--branch-name` build is the WASM bundle.
+        binary_url, binary_is_archive = None, True
 
     console.print(
         "[bold cyan]Step 4a/5: fetching production bootstrap peers[/bold cyan]"
@@ -683,17 +963,17 @@ def _provision_uploaders(
         influx_token=influx_token,
         influx_org=influx_org,
         influx_bucket=influx_bucket,
+        wasm_bundle_url=wasm_context.bundle_url if wasm_context else None,
+        bootstrap_multiaddrs=(
+            wasm_context.bootstrap_multiaddrs if wasm_context else None
+        ),
         console=console,
     )
     provisioner.execute()
 
 
 def _start_uploaders(args, console: Console) -> None:
-    state = load_client_state(args.name)
-    clients = [
-        c for c in state.get("clients", [])
-        if c.get("ip") and c.get("role", "upload") == "upload"
-    ]
+    clients = _upload_role_clients(args.name)
     if not clients:
         console.print("[bold red]Error:[/bold red] No uploader VMs found in state.")
         sys.exit(1)
@@ -733,22 +1013,48 @@ def cmd_prod_uploaders_deploy(args):
     """Deploy a prod uploaders testbed against the Autonomi production network."""
     console = Console()
 
-    if not args.uploader:
+    wasm_raw = getattr(args, "wasm_uploader", None) or []
+    if not args.uploader and not wasm_raw:
         console.print(
-            "[bold red]Error:[/bold red] At least one --uploader spec is required."
+            "[bold red]Error:[/bold red] At least one --uploader or "
+            "--wasm-uploader spec is required."
         )
         sys.exit(1)
 
+    # Native first, then browser-path. The order fixes each entry's pool
+    # selection slot, so adding a WASM uploader to an existing manifest cannot
+    # move a native uploader's slot and make it redraw files it already holds.
     parsed_specs: list[dict] = []
-    for raw in args.uploader:
+    for raw, parser in (
+        *((raw, parse_prod_uploader_spec) for raw in args.uploader),
+        *((raw, parse_prod_wasm_uploader_spec) for raw in wasm_raw),
+    ):
         try:
-            spec = parse_prod_uploader_spec(raw)
+            spec = parser(raw)
             if spec.get("urls_file"):
                 spec["_urls_file_content"] = _read_urls_file(spec["urls_file"])
         except ValueError as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
         parsed_specs.append(spec)
+
+    # Everything a browser-path uploader needs is resolved and PROVED before any
+    # infrastructure exists — the bundle is in S3, and the production bootstraps
+    # answer an ICE probe. A VM created without either bills from creation and
+    # fails every upload.
+    wasm_context = resolve_wasm_context(
+        SimpleNamespace(
+            name=args.name,
+            client_kind="wasm" if wasm_raw else "native",
+            wasm_branch_name=getattr(args, "wasm_branch_name", None),
+            wasm_repo_owner=getattr(args, "wasm_repo_owner", None),
+            wasm_bootstrap_multiaddrs_file=getattr(
+                args, "wasm_bootstrap_multiaddrs_file", None
+            ),
+            skip_bootstrap_probe=getattr(args, "skip_bootstrap_probe", False),
+        ),
+        console,
+    )
 
     # Draw from the pool before any infrastructure exists. A shortfall found
     # after Terraform has stood up VMs against a funded mainnet wallet costs
@@ -776,10 +1082,18 @@ def cmd_prod_uploaders_deploy(args):
             if line.strip() and not line.strip().startswith("#")
         )
         source = "pool" if spec.get("pool_request") else "urls"
+        # The bracket is escaped for Rich, which would otherwise read `[wasm]`
+        # as a style tag and print the line with the marker silently missing.
+        transport = " \\[wasm]" if spec.get("client_kind") == "wasm" else ""
         console.print(
-            f"  Uploader #{i}: {spec['region']} ({spec['vm_size']}, "
+            f"  Uploader #{i}{transport}: {spec['region']} ({spec['vm_size']}, "
             f"{source}={url_count})"
         )
+    if wasm_context:
+        # Every WASM uploader signs with the same shared wallet as the native
+        # tier; naming the paying address is the only way to check its balance
+        # before a run spends real ETH.
+        console.print(f"  Paying address: {_paying_address(args)}")
     console.print()
 
     deploy_args_payload = {
@@ -790,6 +1104,14 @@ def cmd_prod_uploaders_deploy(args):
             {
                 "region": s["region"],
                 "vm_size": s["vm_size"],
+                # Per-ROW, not per-deployment: a mixed run has both, and the
+                # recording path reads this list to label each operation's
+                # transport. It has to survive teardown, which the S3 client
+                # state does not.
+                "client_kind": s.get("client_kind") or "native",
+                "hostname": _uploader_hostname(
+                    args.name, s, _role_index(parsed_specs, s)
+                ),
                 "urls_file": s["urls_file"],
                 "pool_request": (
                     {k.value: v for k, v in s["pool_request"].items()}
@@ -823,6 +1145,17 @@ def cmd_prod_uploaders_deploy(args):
             debug=getattr(args, "debug", False),
         ),
     }
+    if wasm_context:
+        # `client_kind` is per-uploader here, so only the bundle provenance and
+        # the probe result are deployment-wide. Dropping the top-level
+        # `client_kind` key keeps a mixed run from claiming one transport.
+        deploy_args_payload.update(
+            {
+                key: value
+                for key, value in wasm_deploy_args(wasm_context).items()
+                if key != "client_kind"
+            }
+        )
     deployment_id = record_deployment_created(args.name, deploy_args_payload)
     # Claims were taken before this row existed — selection has to run before
     # any infrastructure, and record_deployment_created always inserts a fresh
@@ -833,7 +1166,7 @@ def cmd_prod_uploaders_deploy(args):
     try:
         _ensure_monitoring(args, console)
         _ensure_client_infra(args, parsed_specs, console)
-        _provision_uploaders(args, parsed_specs, console)
+        _provision_uploaders(args, parsed_specs, console, wasm_context)
         _start_uploaders(args, console)
         from saorsa_deploy.cmd.provision_telegraf_metrics import (
             provision_client_telegraf_best_effort,
@@ -853,20 +1186,14 @@ def cmd_prod_uploaders_deploy(args):
             es_creds = ensure_client_elastic(
                 args.name, args.ssh_key_path, console
             )
-            up_state = load_client_state(args.name)
-            up_clients = sorted(
-                (
-                    c
-                    for c in up_state.get("clients", [])
-                    if c.get("ip") and c.get("role", "upload") == "upload"
-                ),
-                key=lambda c: c["client_index"],
-            )
             # forward_logs is per-uploader; only install on the opted-in VMs.
-            # parsed_specs and up_clients are both client_index-ordered 1..N.
+            # Paired per role, since each role is indexed from 1 independently.
             up_ips = [
-                c["ip"]
-                for spec, c in zip(parsed_specs, up_clients)
+                entry["ip"]
+                for entry, spec in zip(
+                    _pair_specs_with_vms(args.name, parsed_specs, console),
+                    _native_specs(parsed_specs) + _wasm_specs(parsed_specs),
+                )
                 if spec.get("forward_logs")
             ]
             install_client_forwarder(
@@ -1004,11 +1331,7 @@ def cmd_prod_uploaders_destroy(args):
 
 
 def _stop_uploaders(args, console: Console) -> None:
-    state = load_client_state(args.name)
-    clients = [
-        c for c in state.get("clients", [])
-        if c.get("ip") and c.get("role", "upload") == "upload"
-    ]
+    clients = _upload_role_clients(args.name)
     if not clients:
         return
 

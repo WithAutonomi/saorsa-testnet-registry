@@ -40,6 +40,18 @@ Optional env:
                        `false`). Profiles are written to HEAPTRACK_DIR.
     HEAPTRACK_DIR      Output dir for heaptrack profiles (default
                        /var/log/ant-heaptrack); only used when MEMORY_PROFILING.
+    CLIENT_KIND        `native` (default) runs the `ant` binary; `wasm` runs
+                       ant-core compiled to WASM over WebRTC-Direct via the
+                       `ant-wasm` CLI. Everything else about the service — the
+                       URL walk, the per-op logs, the unit, the Influx
+                       measurement — is identical; only the spawned binary
+                       differs.
+    ANT_WASM           /path/to/ant-wasm (default /usr/local/bin/ant-wasm).
+                       Only used when CLIENT_KIND=wasm.
+    MAX_UPLOAD_BYTES   Largest file to attempt, 0 = unbounded. Under
+                       CLIENT_KIND=wasm this is ant-core's browser cap: a fetched
+                       file above it is recorded as over_cap and never uploaded.
+                       Ignored on the native path, which has no such limit.
 """
 from __future__ import annotations
 
@@ -60,6 +72,21 @@ MEASUREMENT = "prod_upload"
 STATUS_SUCCESS = 0
 STATUS_PARTIAL_UPLOAD = 1
 STATUS_DOWNLOAD_FAILED = 2
+# The file is larger than this transport will carry (ant-core refuses a
+# browser-path file above MAX_UPLOAD_BYTES). Nothing is spawned and nothing is
+# paid for: a property of the transport, not of the network.
+STATUS_OVER_CAP = 3
+# The upload failed BEFORE any payment transaction went out, so nothing reached
+# the network. Distinct from STATUS_PARTIAL_UPLOAD, where chunks ARE stored: the
+# pool claim for this file is released rather than spent. Only the browser path
+# can tell the two apart, via `payment_sent` and the payment marker file.
+STATUS_FAILED = 4
+
+# The child was killed by a signal (`rc < 0`), which on a client VM is almost
+# always the OOM killer reaching the WASM process — by far the largest RSS there.
+# Recorded so an OOM is distinguishable from a transfer that failed on its own.
+ERROR_KIND_CRASH = "crash"
+ERROR_KIND_OVER_CAP = "over_cap"
 
 # Cap the stderr block we forward to journald per failure. ant -v can emit
 # tens of thousands of lines per upload; dumping the whole thing trips
@@ -170,6 +197,7 @@ def _build_line(
     reason: str,
     storage_cost_atto: str = "",
     gas_cost_wei: str = "",
+    error_kind: str = "",
 ) -> str:
     tag_set = f"host={_escape_tag(host)},region={_escape_tag(region)}"
     field_set = (
@@ -202,6 +230,10 @@ def _build_line(
         field_set += f',storage_cost_atto="{_escape_field_string(storage_cost_atto)}"'
     if gas_cost_wei:
         field_set += f',gas_cost_wei="{_escape_field_string(gas_cost_wei)}"'
+    # Only the browser path reports one, so the field is absent on every native
+    # point and the schema stays exactly as it was.
+    if error_kind:
+        field_set += f',error_kind="{_escape_field_string(error_kind)}"'
     # No explicit line-protocol timestamp: InfluxDB stamps each point with its
     # own (correct) server-receive time. This is essential for clock-skewed
     # clients — their wall clock can be hours off, and an explicit client
@@ -276,43 +308,98 @@ def _maybe_wrap_heaptrack(
     return ["heaptrack", "-o", output_base, *cmd]
 
 
+def _build_native_argv(
+    *, ant_path: str, bootstrap_args: list[str], evm_network: str,
+    file_path: Path, payment_type: str | None, log_level: str,
+) -> list[str]:
+    """The native `ant` upload argv."""
+    # The verbosity flag is what installs ant's tracing subscriber (no -v = no
+    # logs). RUST_LOG (when set on the unit, inherited via `env`) is read by
+    # that subscriber's EnvFilter and overrides the -v level — so ALWAYS pass
+    # the verbosity flag.
+    return [
+        ant_path,
+        *bootstrap_args,
+        "--evm-network", evm_network,
+        "--json",
+        _verbosity_flag(log_level),
+        "file", "upload", "--public", *_payment_flag(payment_type),
+        str(file_path),
+    ]
+
+
+def _build_wasm_argv(
+    *, ant_wasm_path: str, file_path: Path, payment_type: str | None,
+    payment_marker_path: Path,
+) -> list[str]:
+    """The `ant-wasm` upload argv.
+
+    No `--evm-network` and no `--bootstrap`: the bootstrap multiaddrs come from
+    BOOTSTRAP_MULTIADDRS in the service environment, and the payment identity is
+    read from a node's own HELLO rather than configured locally. No verbosity
+    flag either — the CLI writes progress to stderr unconditionally and takes
+    RUST_LOG straight from the environment.
+
+    `--payment-marker` is the one addition. A paid upload killed after the money
+    went out but before it printed anything is the failure the exit code cannot
+    describe: the ETH is spent and chunks may be stored. The marker lands the
+    instant a transaction is submitted, so it survives a SIGKILL of the child —
+    which is what lets the claim for that file be marked partial rather than
+    released back into the pool for a canary to draw.
+    """
+    return [
+        ant_wasm_path,
+        "file", "upload", "--public", *_payment_flag(payment_type),
+        "--payment-marker", str(payment_marker_path),
+        str(file_path),
+    ]
+
+
 def _run_ant(
     *, ant_path: str, bootstrap_args: list[str], evm_network: str,
     secret_key: str, file_path: Path, payment_type: str | None,
     log_level: str, stderr_log_path: Path, stdout_log_path: Path,
     memory_profiling: bool = False, heaptrack_output_base: str | None = None,
 ) -> tuple[int, str, str]:
-    """Run ant and tee its streams to plain-text log files in real time.
-
-    ``--json`` makes the result a single JSON record on stdout.
-    The verbosity flag (``-v`` info / ``-vv`` debug / ``-vvv`` trace, from
-    ``LOG_LEVEL``) turns on tracing on stderr — kept separate from the JSON
-    stream so it never breaks parsing. Both streams are written line-by-line
-    to per-upload log files so a slow run is observable on the VM via
-    ``tail -f`` and so the diagnostic survives even if systemd kills the
-    service mid-upload. Returns ``(exit_code, stdout, stderr)``; the captured
-    stderr is also kept in memory so the failure branch can forward a tail to
-    the journal without re-reading from disk.
-    """
-    # The verbosity flag is what installs ant's tracing subscriber (no -v = no
-    # logs). RUST_LOG (when set on the unit, inherited via `env`) is read by
-    # that subscriber's EnvFilter and overrides the -v level — so ALWAYS pass
-    # the verbosity flag.
-    verbosity = [_verbosity_flag(log_level)]
-    cmd = [
-        ant_path,
-        *bootstrap_args,
-        "--evm-network", evm_network,
-        "--json",
-        *verbosity,
-        "file", "upload", "--public", *_payment_flag(payment_type),
-        str(file_path),
-    ]
+    """Build the native argv and run it. See :func:`_run_transfer`."""
     cmd = _maybe_wrap_heaptrack(
-        cmd,
+        _build_native_argv(
+            ant_path=ant_path,
+            bootstrap_args=bootstrap_args,
+            evm_network=evm_network,
+            file_path=file_path,
+            payment_type=payment_type,
+            log_level=log_level,
+        ),
         memory_profiling=memory_profiling,
         output_base=heaptrack_output_base,
     )
+    return _run_transfer(
+        cmd=cmd,
+        secret_key=secret_key,
+        stderr_log_path=stderr_log_path,
+        stdout_log_path=stdout_log_path,
+    )
+
+
+def _run_transfer(
+    *, cmd: list[str], secret_key: str, stderr_log_path: Path,
+    stdout_log_path: Path,
+) -> tuple[int, str, str]:
+    """Run a transfer binary and tee its streams to log files in real time.
+
+    Both transports print a single JSON result record as the last line of
+    stdout, and both write their diagnostics to stderr — kept separate so the
+    logging never breaks the result parse. Both streams are written
+    line-by-line to per-upload log files so a slow run is observable on the VM
+    via ``tail -f`` and so the diagnostic survives even if systemd kills the
+    service mid-upload. Returns ``(exit_code, stdout, stderr)``; the captured
+    stderr is also kept in memory so the failure branch can forward a tail to
+    the journal without re-reading from disk.
+
+    A negative exit code is a signal — on a client VM almost always the OOM
+    killer, which reaches the transfer process long before this parent.
+    """
     env = dict(os.environ)
     env["SECRET_KEY"] = secret_key
     # The systemd EnvironmentFile always defines RUST_LOG (empty when no
@@ -398,11 +485,49 @@ def _parse_ant_json(stdout: str) -> dict | None:
 
 
 def _classify(parsed: dict | None) -> int:
+    """Success or failure, from the result JSON alone.
+
+    Keyed on the VALUE of ``error``, not on the key's presence: `ant --json`
+    omits the key entirely on success, but `ant-wasm` always emits it and sets it
+    to null — so a presence check reported every successful browser-path upload
+    as a partial one, and (because a partial spends the file's pool claim) would
+    have marked four healthy uploads as only partly stored.
+    """
     if parsed is None:
         return STATUS_PARTIAL_UPLOAD
-    if "error" in parsed:
+    if parsed.get("error"):
         return STATUS_PARTIAL_UPLOAD
     return STATUS_SUCCESS
+
+
+def _wasm_failure_status(parsed: dict | None, marker_path: Path) -> int:
+    """Which failure a browser-path upload was: over-cap, paid, or unpaid.
+
+    The distinction decides what happens to the file's pool claim, so it must be
+    exact. A payment that went out means chunks may be on the network and the
+    file must never reach a canary — so its claim is marked PARTIAL. A failure
+    before any payment means nothing reached the network at all and the file is
+    untouched, so its claim is RELEASED and the file goes back in the pool.
+
+    Two independent signals say a payment went out, and either is enough. The
+    JSON's ``payment_sent`` is the normal one; the marker FILE covers the case
+    the JSON cannot — a child killed (typically by the OOM killer) after the
+    money went out but before it printed anything. Trusting only the JSON would
+    return a paid-for file to the pool.
+    """
+    if (parsed or {}).get("error_kind") == ERROR_KIND_OVER_CAP:
+        return STATUS_OVER_CAP
+    if (parsed or {}).get("payment_sent"):
+        return STATUS_PARTIAL_UPLOAD
+    try:
+        if marker_path.exists():
+            return STATUS_PARTIAL_UPLOAD
+    except OSError:
+        # Unreadable marker: assume the money went out. Wrongly marking a file
+        # partial costs one pool entry; wrongly releasing a paid-for one puts
+        # already-stored chunks in front of a canary.
+        return STATUS_PARTIAL_UPLOAD
+    return STATUS_FAILED
 
 
 def _tail_lines(text: str, n: int) -> str:
@@ -454,6 +579,19 @@ def main() -> int:
     log_level = os.environ.get("LOG_LEVEL") or "info"
     memory_profiling = os.environ.get("MEMORY_PROFILING", "false").lower() == "true"
     heaptrack_dir = Path(os.environ.get("HEAPTRACK_DIR", "/var/log/ant-heaptrack"))
+    client_kind = os.environ.get("CLIENT_KIND", "native").strip().lower()
+    is_wasm = client_kind == "wasm"
+    ant_wasm_path = os.environ.get("ANT_WASM", "/usr/local/bin/ant-wasm")
+    try:
+        max_upload_bytes = int(os.environ.get("MAX_UPLOAD_BYTES", "0"))
+    except ValueError:
+        max_upload_bytes = 0
+    # The cap is ant-core's BROWSER cap, so it applies to the WASM transport
+    # only. The native client has no such limit, and nothing should be able to
+    # make it skip a file it can upload perfectly well — so the value is gated on
+    # the transport here rather than trusted to be absent from the env file.
+    if not is_wasm:
+        max_upload_bytes = 0
 
     if not secret_key.startswith("0x"):
         secret_key = "0x" + secret_key
@@ -472,7 +610,7 @@ def main() -> int:
 
     print(
         f"prod uploader starting: host={host} region={region} "
-        f"index={client_index} urls={len(urls)}",
+        f"index={client_index} transport={client_kind} urls={len(urls)}",
         flush=True,
     )
 
@@ -518,6 +656,42 @@ def main() -> int:
             continue
 
         download_ms = (time.time_ns() - download_start_ns) // 1_000_000
+
+        # The file is bigger than this transport will carry, so there is nothing
+        # to learn from spawning a child that would refuse it before touching the
+        # network. Recorded as its own status rather than as a failure: the
+        # network was never asked, nothing was paid for, and the pool claim goes
+        # back rather than being spent.
+        if max_upload_bytes and file_size > max_upload_bytes:
+            print(
+                f"  over cap: {file_size} bytes exceeds the "
+                f"{max_upload_bytes}-byte limit for this transport; not uploaded",
+                flush=True,
+            )
+            if influx_enabled:
+                line = _build_line(
+                    host=host, region=region,
+                    status=STATUS_OVER_CAP,
+                    total_ms=0, upload_secs=0.0,
+                    file_size=file_size, start_ns=download_start_ns,
+                    chunks_stored=0, chunks_failed=0, total_chunks=0,
+                    chunk_attempts_total=0,
+                    retries_round_0=0, retries_round_1=0,
+                    retries_round_2=0, retries_round_3=0,
+                    store_duration_p50_ms=0,
+                    store_duration_p95_ms=0,
+                    store_duration_max_ms=0,
+                    address="", file_name=file_name, source_url=url,
+                    reason=ERROR_KIND_OVER_CAP,
+                    error_kind=ERROR_KIND_OVER_CAP,
+                )
+                _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
+            try:
+                local_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+
         print(
             f"  downloaded {file_size} bytes in {download_ms}ms; uploading...",
             flush=True,
@@ -536,19 +710,37 @@ def main() -> int:
             if memory_profiling
             else None
         )
-        exit_code, stdout, stderr_text = _run_ant(
-            ant_path=ant_path,
-            bootstrap_args=bootstrap_args,
-            evm_network=evm_network,
-            secret_key=secret_key,
-            file_path=local_path,
-            payment_type=payment_type,
-            log_level=log_level,
-            stderr_log_path=stderr_log_path,
-            stdout_log_path=stdout_log_path,
-            memory_profiling=memory_profiling,
-            heaptrack_output_base=heaptrack_output_base,
-        )
+        payment_marker_path = log_dir / f"{log_basename}.paid"
+        try:
+            payment_marker_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if is_wasm:
+            exit_code, stdout, stderr_text = _run_transfer(
+                cmd=_build_wasm_argv(
+                    ant_wasm_path=ant_wasm_path,
+                    file_path=local_path,
+                    payment_type=payment_type,
+                    payment_marker_path=payment_marker_path,
+                ),
+                secret_key=secret_key,
+                stderr_log_path=stderr_log_path,
+                stdout_log_path=stdout_log_path,
+            )
+        else:
+            exit_code, stdout, stderr_text = _run_ant(
+                ant_path=ant_path,
+                bootstrap_args=bootstrap_args,
+                evm_network=evm_network,
+                secret_key=secret_key,
+                file_path=local_path,
+                payment_type=payment_type,
+                log_level=log_level,
+                stderr_log_path=stderr_log_path,
+                stdout_log_path=stdout_log_path,
+                memory_profiling=memory_profiling,
+                heaptrack_output_base=heaptrack_output_base,
+            )
         end_ns = time.time_ns()
         total_ms = (end_ns - upload_start_ns) // 1_000_000
 
@@ -558,6 +750,17 @@ def main() -> int:
         # partial_upload too (we have nothing better to call it).
         if exit_code != 0 and status == STATUS_SUCCESS:
             status = STATUS_PARTIAL_UPLOAD
+
+        error_kind = ""
+        if is_wasm:
+            error_kind = str((parsed or {}).get("error_kind") or "")
+            # A negative return code is a signal: on a client VM that is almost
+            # always the OOM killer, which reaches the WASM process (by far the
+            # largest RSS there) long before this parent. The walk continues.
+            if exit_code < 0:
+                error_kind = ERROR_KIND_CRASH
+            if status != STATUS_SUCCESS:
+                status = _wasm_failure_status(parsed, payment_marker_path)
 
         chunks_stored = int((parsed or {}).get("chunks_stored") or 0)
         chunks_failed = int((parsed or {}).get("chunks_failed") or 0)
@@ -589,13 +792,28 @@ def main() -> int:
                 f"total={total_ms}ms log={stderr_log_path}",
                 flush=True,
             )
+        elif status == STATUS_OVER_CAP:
+            # The child resolved the file and this transport refused it. Not a
+            # network failure: nothing was attempted and nothing was paid for.
+            print(
+                f"  over cap: this transport refuses the file "
+                f"(log={stderr_log_path})",
+                flush=True,
+            )
         else:
             failures += 1
             reason_str = f" reason={reason!r}" if reason else ""
+            kind_str = f" kind={error_kind}" if error_kind else ""
+            paid_str = ""
+            if status == STATUS_FAILED:
+                paid_str = " (no payment sent — nothing stored)"
+            elif is_wasm:
+                paid_str = " (payment was sent — chunks may be stored)"
             print(
                 f"  FAILED: chunks={chunks_stored}/{total_chunks} "
-                f"failed={chunks_failed} exit={exit_code} "
-                f"total={total_ms}ms{reason_str} stderr_log={stderr_log_path}",
+                f"failed={chunks_failed} exit={exit_code}{kind_str} "
+                f"total={total_ms}ms{reason_str}{paid_str} "
+                f"stderr_log={stderr_log_path}",
                 flush=True,
             )
             # Tail the trace to the journal: enough context to diagnose
@@ -633,6 +851,7 @@ def main() -> int:
                 reason=reason,
                 storage_cost_atto=storage_cost_atto,
                 gas_cost_wei=gas_cost_wei,
+                error_kind=error_kind,
             )
             _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
 

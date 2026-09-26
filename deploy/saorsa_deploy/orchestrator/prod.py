@@ -88,6 +88,50 @@ def _prod_uploader_spec(u) -> str:
     return spec
 
 
+def _prod_wasm_uploader_spec(u) -> str:
+    """Render one `--wasm-uploader` spec token.
+
+    Same shape as :func:`_prod_uploader_spec` minus the tokens the browser path
+    has no meaning for, plus the browser file cap written into `pool_max_size`
+    for a `medium` request. The cap is written here rather than applied silently
+    on the VM so `deployments plan` shows it: an operator who asked for `medium`
+    gets a narrower class than they wrote, and that must be visible before any
+    money is spent.
+    """
+    from saorsa_deploy.prod_wasm import (
+        clamp_wasm_pool_max_size,
+        wasm_pool_max_size_is_clamped,
+    )
+
+    spec = u.region
+    if u.vm_size:
+        spec += f":{u.vm_size}"
+    if u.pool:
+        spec += f":pool={_format_pool_request(u.pool)}"
+        if u.pool_min_size is not None:
+            spec += f":pool_min_size={u.pool_min_size}"
+        if wasm_pool_max_size_is_clamped(u.pool, u.pool_max_size):
+            spec += f":pool_max_size={clamp_wasm_pool_max_size(None)}"
+        elif u.pool_max_size is not None:
+            spec += f":pool_max_size={u.pool_max_size}"
+        if u.exclude_partial:
+            spec += ":exclude_partial=true"
+    else:
+        spec += f":urls={u.urls}"
+    if u.payment:
+        spec += f":payment={u.payment}"
+    if u.clock_skew:
+        spec += f":clock_skew={u.clock_skew}"
+    if u.forward_logs is not None:
+        spec += f":forward_logs={str(u.forward_logs).lower()}"
+    if u.network is not None:
+        spec += f":network={format_network_token(u.network)}"
+    # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
+    if u.rust_log is not None:
+        spec += f":rust_log={u.rust_log}"
+    return spec
+
+
 def _bootstrap_cache_flag(spec) -> list[str]:
     """argparse BooleanOptionalAction flag for spec-level bootstrap_cache."""
     if spec.bootstrap_cache is None:
@@ -148,6 +192,9 @@ def _uploaders(manifest: Manifest) -> list[Step]:
     argv = ["prod", "uploaders", "deploy", "--name", manifest.name, "--purpose", manifest.purpose]
     for u in spec.uploaders:
         argv += ["--uploader", _prod_uploader_spec(u)]
+    for u in spec.wasm_uploaders:
+        argv += ["--wasm-uploader", _prod_wasm_uploader_spec(u)]
+    argv += _wasm_uploader_flags(spec)
     if spec.allow_duplicate_files:
         argv += ["--allow-duplicate-files"]
     argv += ant_binary_flags(spec.binary)
@@ -155,7 +202,34 @@ def _uploaders(manifest: Manifest) -> list[Step]:
     if spec.monitoring_volume_size is not None:
         argv += ["--monitoring-volume-size", str(spec.monitoring_volume_size)]
     argv += ["--ssh-key-path", manifest.ssh_key_path]
-    return [Step(argv, "Deploy prod uploaders + monitoring")]
+    return _wasm_bundle_build_steps(manifest, spec) + [
+        Step(argv, "Deploy prod uploaders + monitoring")
+    ]
+
+
+def _wasm_uploader_flags(spec) -> list[str]:
+    """The bundle/bootstrap flags a mixed-transport uploaders deploy needs.
+
+    No `--client-kind`: unlike the download kinds, the transport here is
+    per-uploader rather than per-deployment, so it is carried by which spec flag
+    each entry arrived on. Emitted only when a WASM uploader exists, so a
+    native-only manifest produces byte-identical argv to before.
+    """
+    if not spec.wasm_uploaders:
+        return []
+    binary = spec.wasm_binary
+    argv = [
+        "--wasm-branch-name",
+        binary.branch,
+        "--wasm-repo-owner",
+        binary.repo_owner or "maidsafe",
+    ]
+    if spec.wasm_bootstrap_multiaddrs_file is not None:
+        argv += [
+            "--wasm-bootstrap-multiaddrs-file",
+            spec.wasm_bootstrap_multiaddrs_file,
+        ]
+    return argv
 
 
 def _wasm_download_flags(spec) -> list[str]:
@@ -180,14 +254,16 @@ def _wasm_download_flags(spec) -> list[str]:
 
 
 def _wasm_bundle_build_steps(manifest: Manifest, spec) -> list[Step]:
-    """The `build ant-wasm` step a WASM download kind needs before its deploy.
+    """The `build ant-wasm` step a WASM prod kind needs before its deploy.
 
     The bundle is always built from source — there is no release form — and the
     deploy step fetches it from the name-scoped S3 key this step populates, so
     the ordering is not optional. Resumable like every other build step, which
     matters because it is the ~10-minute part of the run.
     """
-    if getattr(spec, "client_kind", None) != "wasm":
+    if getattr(spec, "client_kind", None) != "wasm" and not getattr(
+        spec, "wasm_uploaders", None
+    ):
         return []
     binary = spec.wasm_binary
     return [

@@ -793,7 +793,11 @@ class TestTheUploadTableShowsWhenItHappened:
 
         console = Console(record=True, width=200)
         module._prod_print_table(
-            {"host-1": ops}, {"host-1": "default"}, {"host-1": True}, console
+            {"host-1": ops},
+            {"host-1": "default"},
+            {"host-1": True},
+            {},
+            console,
         )
         return console.export_text()
 

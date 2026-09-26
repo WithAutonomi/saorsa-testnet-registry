@@ -69,7 +69,7 @@ def _run_cmd(repo, points, args=None):
             return_value=repo,
         ),
         patch(
-            "saorsa_deploy.cmd.record_results.fetch_prod_upload_points",
+            "saorsa_deploy.cmd.record_results.fetch_all_prod_upload_points",
             return_value=points,
         ),
     ):

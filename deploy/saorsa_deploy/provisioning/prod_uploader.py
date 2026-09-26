@@ -29,6 +29,8 @@ from pyinfra.api.operations import run_ops
 from pyinfra.operations import server
 from rich.console import Console
 
+from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES
+from saorsa_deploy.evm import ARBITRUM_ONE
 from saorsa_deploy.prod_bootstraps import (
     REMOTE_BOOTSTRAP_PEERS_TOML_PATH,
     render_bootstrap_peers_toml,
@@ -42,6 +44,7 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
 )
+from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.provisioning.network_profile import (
     build_network_impairment_command,
     format_network_label,
@@ -49,6 +52,14 @@ from saorsa_deploy.provisioning.network_profile import (
 from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
+)
+from saorsa_deploy.provisioning.wasm_client import (
+    ANT_WASM_CLI_PATH,
+    WASM_CLIENT_DIR,
+    WASM_NODE_MAJOR,
+    build_ant_wasm_cli_command,
+    build_bundle_install_command,
+    build_node_install_command,
 )
 from saorsa_deploy.resources import get_resources_dir
 
@@ -112,6 +123,8 @@ class ProdUploaderProvisioner:
         influx_org: str = "ant",
         influx_bucket: str = "testnet-metrics",
         evm_network: str = "arbitrum-one",
+        wasm_bundle_url: str | None = None,
+        bootstrap_multiaddrs: list[str] | None = None,
         console: Console | None = None,
     ):
         self.uploaders = uploaders
@@ -125,7 +138,35 @@ class ProdUploaderProvisioner:
         self.influx_org = influx_org
         self.influx_bucket = influx_bucket
         self.evm_network = evm_network
+        # Browser-path uploaders. Both empty on a native-only deployment, in
+        # which case not one of the WASM ops is added and every env file renders
+        # byte-identically to before this existed.
+        self.wasm_bundle_url = wasm_bundle_url
+        self.bootstrap_multiaddrs = list(bootstrap_multiaddrs or [])
         self.console = console or Console()
+        if self._wasm_uploaders() and not self.wasm_bundle_url:
+            raise RuntimeError(
+                "a WASM uploader needs a WASM bundle URL — run `build ant-wasm "
+                "--name <name> --branch-name <ref> --repo-owner <owner>`"
+            )
+        if self._wasm_uploaders() and not self.bootstrap_multiaddrs:
+            # Without one a browser client cannot reach the network at all, and
+            # the failure would surface only as an unexplained connection error
+            # minutes after the VM is up and billing.
+            raise RuntimeError(
+                "a WASM uploader needs at least one bootstrap WebRTC multiaddr "
+                "(see `prod bootstrap webrtc-addresses`)"
+            )
+
+    def _wasm_uploaders(self) -> list[dict]:
+        return [u for u in self.uploaders if u.get("client_kind") == "wasm"]
+
+    def _native_uploaders(self) -> list[dict]:
+        return [u for u in self.uploaders if u.get("client_kind") != "wasm"]
+
+    @property
+    def any_wasm(self) -> bool:
+        return bool(self._wasm_uploaders())
 
     def execute(self) -> None:
         host_ips = [u["ip"] for u in self.uploaders if u.get("ip")]
@@ -177,6 +218,7 @@ class ProdUploaderProvisioner:
 
             self._add_install_heaptrack_op(state)
             self._add_install_ant_op(state)
+            self._add_install_wasm_ops(state)
             self._add_deploy_service_script_op(state)
             self._add_env_and_urls_op(state)
             self._add_systemd_unit_op(state)
@@ -292,7 +334,25 @@ class ProdUploaderProvisioner:
             ],
         )
 
+    def _hosts_for(self, state: State, uploaders: list[dict]) -> list:
+        """The pyinfra hosts matching the given uploader entries.
+
+        Targeting is by IP because that is what the inventory is keyed on. Used
+        so a native VM never installs the WASM bundle and a browser-path VM never
+        installs `ant`: nothing on either runs the other's binary, and on a
+        WASM-only deployment there may be no `ant` build to fetch at all.
+        """
+        wanted = {u["ip"] for u in uploaders if u.get("ip")}
+        return [h for h in state.inventory.get_active_hosts() if h.name in wanted]
+
     def _add_install_ant_op(self, state: State) -> None:
+        native_hosts = (
+            self._hosts_for(state, self._native_uploaders())
+            if self.any_wasm
+            else None
+        )
+        if self.any_wasm and not native_hosts:
+            return
         if self.binary_url:
             download_url = self.binary_url
             self.console.print(f"Using binary URL: {download_url}")
@@ -323,11 +383,52 @@ class ProdUploaderProvisioner:
                 f"echo 'ANT_BINARY:INSTALLED')"
             )
 
+        # `host=None` (a native-only deployment) means the whole inventory, which
+        # is what it has always meant here — so the op renders unchanged.
         add_op(
             state,
             server.shell,
             name="Download and install ant binary",
             commands=[install_cmd],
+            **({"host": native_hosts} if native_hosts is not None else {}),
+        )
+
+    def _add_install_wasm_ops(self, state: State) -> None:
+        """Install Node, the WASM bundle and the ``ant-wasm`` CLI on WASM hosts.
+
+        Targeted per host rather than across the inventory: a native uploader
+        never runs any of it, and installing Node on it would slow every deploy
+        for nothing. ``require_cli`` is set because a bundle built before the CLI
+        existed would install cleanly and then fail every upload with "cannot
+        find module".
+        """
+        wasm_hosts = self._hosts_for(state, self._wasm_uploaders())
+        if not wasm_hosts:
+            return
+        add_op(
+            state,
+            server.shell,
+            name=f"Install Node.js {WASM_NODE_MAJOR}",
+            commands=[build_node_install_command()],
+            host=wasm_hosts,
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install WASM client bundle",
+            commands=[
+                build_bundle_install_command(
+                    self.wasm_bundle_url, data_dirs=(), require_cli=True
+                )
+            ],
+            host=wasm_hosts,
+        )
+        add_op(
+            state,
+            server.shell,
+            name="Install ant-wasm CLI",
+            commands=[build_ant_wasm_cli_command()],
+            host=wasm_hosts,
         )
 
     def _add_deploy_service_script_op(self, state: State) -> None:
@@ -367,7 +468,7 @@ class ProdUploaderProvisioner:
             bootstrap_cache = "true" if u.get("bootstrap_cache", True) else "false"
             rust_log = u.get("rust_log") or ""
             memory_profiling = "true" if u.get("memory_profiling") else "false"
-            case_entries.append(
+            entry = (
                 f'    "{u["ip"]}") '
                 f'REGION={u["region"]}; '
                 f'CLIENT_INDEX={u["client_index"]}; '
@@ -376,17 +477,57 @@ class ProdUploaderProvisioner:
                 f'LOG_LEVEL="{log_level}"; '
                 f'RUST_LOG="{rust_log}"; '
                 f"MEMORY_PROFILING={memory_profiling}; "
-                f"BOOTSTRAP_CACHE={bootstrap_cache} ;;"
+                f"BOOTSTRAP_CACHE={bootstrap_cache}"
             )
+            if self.any_wasm:
+                # Per-host, because a mixed deployment's two tiers are the same
+                # unit reading the same env file template: the transport and the
+                # bucket differ per VM. Added only when a WASM uploader exists so
+                # a native-only deployment's env file is byte-identical.
+                #
+                # WASM operations go to their OWN Influx bucket. They are the
+                # same `prod_upload` measurement the native tier writes, so one
+                # bucket would let any dashboard panel or ad-hoc query average
+                # two transports measured several times apart.
+                is_wasm = u.get("client_kind") == "wasm"
+                bucket = INFLUXDB_WASM_BUCKET if is_wasm else self.influx_bucket
+                entry += (
+                    f'; CLIENT_KIND="{"wasm" if is_wasm else "native"}"'
+                    f'; HOST_INFLUX_BUCKET="{bucket}"'
+                )
+            case_entries.append(f"{entry} ;;")
         case_block = "\n".join(case_entries)
 
         influx_lines = ""
         if self.influx_url and self.influx_token:
+            bucket_value = (
+                "$HOST_INFLUX_BUCKET" if self.any_wasm else self.influx_bucket
+            )
             influx_lines = (
                 f"INFLUX_URL={self.influx_url}\n"
                 f"INFLUX_TOKEN={self.influx_token}\n"
                 f"INFLUX_ORG={self.influx_org}\n"
-                f"INFLUX_BUCKET={self.influx_bucket}\n"
+                f"INFLUX_BUCKET={bucket_value}\n"
+            )
+
+        # Appended only for a deployment with a WASM uploader, so a native env
+        # file renders byte-identically (the service defaults CLIENT_KIND to
+        # "native" when the key is absent). Inert on a native host: the service
+        # zeroes MAX_UPLOAD_BYTES unless the transport is WASM, and nothing else
+        # here is read by the `ant` path.
+        wasm_lines = ""
+        if self.any_wasm:
+            wasm_lines = (
+                "CLIENT_KIND=$CLIENT_KIND\n"
+                f"ANT_WASM={ANT_WASM_CLI_PATH}\n"
+                f'BOOTSTRAP_MULTIADDRS="{",".join(self.bootstrap_multiaddrs)}"\n'
+                f"WASM_DIR={WASM_CLIENT_DIR}/pkg\n"
+                f"MAX_UPLOAD_BYTES={WASM_MAX_FILE_BYTES}\n"
+                # The browser path's payment callbacks sign with viem against a
+                # plain JSON-RPC endpoint, so the chain is named by URL rather
+                # than by `--evm-network`. Arbitrum One: prod uploads cost real
+                # ETH.
+                f"RPC_URL={ARBITRUM_ONE['rpc_url']}\n"
             )
 
         # The peers file is written unconditionally: ant only reads it when
@@ -395,12 +536,21 @@ class ProdUploaderProvisioner:
         peers_toml = render_bootstrap_peers_toml(self.bootstrap_peers)
         peers_dir = PurePosixPath(REMOTE_BOOTSTRAP_PEERS_TOML_PATH).parent
 
+        # The fallback arm has to define every variable the body expands, or an
+        # unmatched IP would write an env file with an empty bucket name.
+        default_wasm_arm = (
+            f'; CLIENT_KIND="native"; HOST_INFLUX_BUCKET="{self.influx_bucket}"'
+            if self.any_wasm
+            else ""
+        )
+
         env_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
 case "$MY_IP" in
 {case_block}
     *) REGION=unknown; CLIENT_INDEX=0; URLS_B64=""; PAYMENT_TYPE=""; \
-LOG_LEVEL="info"; RUST_LOG=""; MEMORY_PROFILING=false; BOOTSTRAP_CACHE=true ;;
+LOG_LEVEL="info"; RUST_LOG=""; MEMORY_PROFILING=false; BOOTSTRAP_CACHE=true\
+{default_wasm_arm} ;;
 esac
 mkdir -p {DATA_DIR}
 echo "$URLS_B64" | base64 -d > {URLS_PATH}
@@ -423,7 +573,7 @@ LOG_LEVEL=$LOG_LEVEL
 RUST_LOG=$RUST_LOG
 MEMORY_PROFILING=$MEMORY_PROFILING
 HEAPTRACK_DIR={HEAPTRACK_DIR}
-{influx_lines}ENV_EOF"""
+{wasm_lines}{influx_lines}ENV_EOF"""
 
         add_op(
             state,

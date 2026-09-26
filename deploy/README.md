@@ -3175,6 +3175,55 @@ uv run saorsa-deploy prod uploaders destroy --name PROD-UP-01
 
 The deployment registers a row in the `deployments` table with `deploy_args.kind = "prod-uploaders"`.
 
+#### The browser path on `prod uploaders` (`--wasm-uploader`)
+
+A `prod-uploaders` deployment can run a **browser-path** uploader alongside (or instead of) the native ones: `--wasm-uploader` stands up a VM whose `ant-prod-uploader` service spawns `ant-wasm` — `ant-core` compiled to WASM, reaching the network over WebRTC-Direct — instead of the `ant` binary. It measures what a browser client actually experiences uploading to the real production network, which nothing else does: `ant-cli` links native `ant-core`, so it takes the native transport however it is invoked.
+
+Unlike the download kinds, the transport here is **per uploader, not per deployment**. A native uploader and a browser-path uploader in one run share the wallet, the monitoring stack and the prod bootstrap list, so the two transports are measured against the same network at the same time — and their results stay separate at every layer.
+
+```bash
+uv run saorsa-deploy prod uploaders deploy \
+  --name PROD-WASM-UL-01 \
+  --purpose "Browser-path upload measurement, with a native control" \
+  --uploader      lon1:s-2vcpu-4gb:pool=tiny:2:pool_min_size=5MB \
+  --wasm-uploader lon1:pool=tiny:2:pool_min_size=5MB \
+  --wasm-branch-name ant-cli-v0.3.8-rc.1 --wasm-repo-owner WithAutonomi
+```
+
+Everything WASM-specific is resolved and **proved before any infrastructure exists**: the bundle must be in S3 (built by `build ant-wasm`, which `deployments up` emits as a resumable step), and every production bootstrap WebRTC multiaddr is ICE-probed. Zero answering refuses the deploy — the alternative is a VM that bills from creation and fails every upload; a partial answer warns and names the dead entries.
+
+Per-uploader differences from the native tier:
+
+* **argv:** `ant-wasm file upload --public [--merkle|--no-merkle] --payment-marker <op>.paid <path>`. No `--evm-network` (the payment identity comes from a node's own HELLO) and no `--bootstrap` (`BOOTSTRAP_MULTIADDRS` is in the env file). Everything else about the service is identical — the same unit, the same fetch → upload → delete loop, the same per-op `.stdout`/`.stderr` under `/var/log/ant-prod-uploader/`.
+* **The browser file cap.** ant-core refuses a file above **1,000,000,000 bytes**, so the `large` and `xlarge` pool classes are **refused at validation** (every file in them is over the cap, and a drawn one would be a permanently-spent pool entry that could never be uploaded) and a `medium` request is implicitly narrowed with `pool_max_size=1000000000`, which `deployments plan` shows. A fetched file over the cap is recorded as `over_cap` and never uploaded.
+* **Results go to the `wasm-client-metrics` Influx bucket**, so no dashboard panel or ad-hoc query can average two transports measured several times apart. `record-results` reads **both** buckets and labels each row's `client_kind`; `print-uploads`, `print-recorded-results` and the `--update-slack` reply all split their totals per transport.
+* **Refused, not ignored:** `bootstrap_cache` (selects ant's peer cache vs an explicit `--bootstrap`; a browser client does neither), `memory_profiling` and `log_level` (both act on the `ant` process, which never runs). `payment`, `forward_logs`, `rust_log`, `network` and `clock_skew` all work normally.
+* **VM size** defaults to `s-4vcpu-8gb` and a DigitalOcean slug below 8 GB is **refused**: a browser-path transfer holds ~4x the file in WASM memory, so an under-sized box turns every upload into an OOM kill, which reads as a network fault.
+
+**Pool claims resolve by outcome**, and the distinction is what keeps the pool honest:
+
+| Result | Row status | Claim |
+|--------|-----------|-------|
+| success | `success` | `uploaded` — the entry is spent |
+| failure **after** a payment was submitted | `partial_upload` | `partial` — chunks ARE in production, so uploaders may complete it but a canary must never draw it |
+| failure **before** any payment | `failed` | released — nothing reached the network, so the file is untouched |
+| file over the browser cap | `over_cap` | released — nothing was attempted |
+| source fetch failed | `download_failed` | released |
+
+"After payment" means the result JSON says `payment_sent: true` **or** the `--payment-marker` file exists. The marker covers the case the JSON cannot: a child killed (typically by the OOM killer, which reaches the WASM process long before the Python parent) after the money went out but before it printed anything. Trusting only the JSON would return a paid-for file to the pool.
+
+Extra arguments on `prod uploaders deploy`:
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--wasm-uploader` | repeatable | — | Browser-path uploader spec `REGION[:VM_SIZE]:urls=PATH\|pool=CLASS:COUNT[:pool_min_size=SIZE][:pool_max_size=SIZE][:exclude_partial=BOOL][:payment=MODE][:clock_skew=DURATION][:network=PROFILE][:forward_logs=BOOL][:rust_log=SPEC]`. `VM_SIZE` is optional (defaults to `s-4vcpu-8gb`). `bootstrap_cache`, `memory_profiling` and `log_level` are refused by name. `rust_log` must be the **last** token. |
+| `--wasm-branch-name` | string | — | ant-client branch **or tag** to build the bundle from. Required with `--wasm-uploader`: no ant-core WASM package is published as a release. |
+| `--wasm-repo-owner` | string | `maidsafe` | GitHub owner of the ant-client repo |
+| `--wasm-bootstrap-multiaddrs-file` | string | committed list | Override `resources/prod_bootstrap_webrtc_multiaddrs.txt`. No URL form — nothing publishes these addresses at one. |
+| `--skip-bootstrap-probe` | flag | off | Skip the preflight ICE probe. Use after a bootstrap restart: ant-node 0.20.0 opens the listener 2–15 minutes later. |
+
+Manifest form (`kind: prod-uploaders`): `prod_uploaders.wasm_uploaders[]` plus `prod_uploaders.wasm_binary: {branch, repo_owner}` and the optional `wasm_bootstrap_multiaddrs_file`. `uploaders` may be empty for a WASM-only run. Example: `manifests/profiles/prod-wasm-uploaders.yaml`.
+
 ### Running uploads from the local machine (`prod local-uploads`)
 
 `prod local-uploads` is the local-machine variant of `prod uploaders deploy`. It runs `ant --json file upload --public` sequentially against the production Autonomi network from whichever host the command is invoked on, instead of provisioning remote uploader VMs. Per-file results are written directly into the `deployment_prod_upload_results` Postgres table — there is no Influx or monitoring VM, and no infrastructure to tear down. The intended use case is testing prod uploads from a real home internet connection.

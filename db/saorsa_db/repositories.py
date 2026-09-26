@@ -435,6 +435,7 @@ class DeploymentRepository(ABC):
         gas_cost_wei: Optional[Decimal] = None,
         network_profile: str | None = None,
         sha256: str | None = None,
+        client_kind: str | None = None,
     ) -> DeploymentProdUploadResult:
         ...
 
@@ -1724,6 +1725,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         gas_cost_wei: Optional[Decimal] = None,
         network_profile: str | None = None,
         sha256: str | None = None,
+        client_kind: str | None = None,
     ) -> DeploymentProdUploadResult:
         existing = (
             self.session.query(DeploymentProdUploadResult)
@@ -1756,6 +1758,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 gas_cost_wei=gas_cost_wei,
                 network_profile=network_profile,
                 sha256=sha256,
+                client_kind=client_kind,
             )
             self.session.add(existing)
         else:
@@ -1786,6 +1789,13 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # address it covers as permanently unverifiable.
             if sha256 is not None:
                 existing.sha256 = sha256
+            # A NULL never overwrites a known transport. The transport is
+            # resolved from the deployment's persisted uploader list, so a row
+            # recorded by a run whose deploy_args predate the WASM tier resolves
+            # None -- and an unconditional write would relabel every WASM upload
+            # as native, pushing its failures into the native figures.
+            if client_kind is not None:
+                existing.client_kind = client_kind
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing

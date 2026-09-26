@@ -769,6 +769,75 @@ table.
 
 See `deploy/README.md` §"Running uploaders against production" for the full argument table and sequencing.
 
+#### The browser path on `prod uploaders` (`--wasm-uploader`)
+
+`prod-uploaders` also runs **browser-path** uploaders — `--wasm-uploader` /
+manifest `prod_uploaders.wasm_uploaders[]` (+ `wasm_binary: {branch,
+repo_owner}`) — whose `ant-prod-uploader` service spawns `ant-wasm` instead of
+`ant`. Unlike the download kinds the transport is **per uploader, not per
+deployment**: a native and a browser-path uploader in one run share the wallet,
+the monitoring stack and the prod bootstrap list, so both transports are
+measured against the same network at the same time. `uploaders` may be empty for
+a WASM-only run. Example:
+`deploy/manifests/profiles/prod-wasm-uploaders.yaml`.
+
+Each WASM entry gets the `wasm-upload` **role** from `clients infra` — the role
+names the VM, its Terraform workspace and its S3 state key, and telling the
+tiers apart in all three is the point of running both — and the same shared
+`ARBITRUM_ONE_SECRET_KEY` as native (deploy prints the paying address). The
+V2-1271 foundation is reused unchanged: the bundle must exist in S3, the prod
+bootstraps are ICE-probed before any infrastructure, and an under-8 GB
+DigitalOcean slug is refused (default `s-4vcpu-8gb`).
+
+**The browser file cap shapes the pool draw.** ant-core refuses a file above
+`WASM_MAX_FILE_BYTES` (1,000,000,000), so `large`/`xlarge` are **refused at
+validation** — every file in them is over the cap, and a drawn one is a
+permanently-spent entry that could never be uploaded — while a `medium` request
+is implicitly narrowed to `pool_max_size=1000000000`, which `plan` SHOWS (an
+operator who wrote `medium` gets a narrower class than they asked for).
+`tiny`/`small` gain no bound, because a token that narrows nothing is not free:
+the argv is what the step journal compares. Logic in `prod_wasm.py`
+(`check_wasm_pool_request` / `clamp_wasm_pool_max_size` /
+`wasm_pool_max_size_is_clamped`), applied by both the manifest validator and the
+`--wasm-uploader` parser.
+
+**Claim outcomes are the load-bearing part**, and two new `ProdUploadStatus`
+values exist to carry them: success → `uploaded`; a failure **after** a payment
+was submitted → `partial_upload` → `partial` (chunks ARE in production, so
+uploaders may complete the file but a canary must never draw it); a failure
+**before** any payment → the new `failed` → **released** (nothing reached the
+network, so burning the entry would be a lie); an over-cap file → the new
+`over_cap` → released; a source-fetch failure → released too (it was previously
+left open, which read as "the run never touched this file" while withholding it
+forever). "After payment" means the result JSON says `payment_sent: true` **or**
+the `--payment-marker` file exists — the marker covers a child killed (an OOM
+reaches the WASM process long before the Python parent) after the money went out
+but before it printed anything, and trusting only the JSON would return a
+paid-for file to the pool.
+
+**Results stay separate.** WASM uploads land in the `wasm-client-metrics` bucket
+(`fetch_all_prod_upload_points` reads both and dedupes on `(host, start_ns)`),
+and a nullable **`client_kind`** column on `deployment_prod_upload_results`
+labels each row. It is resolved per host from the **`deploy_args`-persisted
+uploader list** (each entry now records its `client_kind` and the `hostname` its
+VM reports under), NOT from S3 client state, which `clients destroy` deletes — a
+re-run after teardown would otherwise relabel every WASM upload as native; the
+upsert also COALESCEs so a NULL never overwrites a known transport.
+`print-uploads`, `print-recorded-results`, `slack-post` (two headings, the WASM
+one only when WASM entries exist) and `record-results --update-slack` all split
+per transport, with over-cap files excluded from every denominator. The
+duplicate-file preflight and the `prod uploaders destroy` results guard cover
+WASM entries exactly as they do native ones. `generate-inventory` still has no
+`prod-uploaders` path (out of scope).
+
+**Refused, not ignored, on a WASM uploader:** `bootstrap_cache`,
+`memory_profiling` and `log_level`. The manifest has no such fields (so
+`extra="forbid"` names them) and the spec parser rejects the tokens by name.
+
+See `deploy/README.md` §"The browser path on `prod uploaders`" for the full
+argument table.
+
+
 ### Running prod uploads from the local machine
 
 `prod local-uploads` is the local-machine variant of `prod uploaders deploy`: it runs `ant --json file upload --public` sequentially against the production Autonomi network from the host the command is invoked on, instead of provisioning remote VMs. Per-file results are written directly into the `deployment_prod_upload_results` Postgres table — there is no Influx, no monitoring VM, and no destroy command. The intended use case is testing uploads from a real home internet connection.

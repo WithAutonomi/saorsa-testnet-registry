@@ -24,6 +24,19 @@ class ProdUploadStatus(enum.Enum):
     SUCCESS = "success"
     PARTIAL_UPLOAD = "partial_upload"
     DOWNLOAD_FAILED = "download_failed"
+    # The upload failed before any payment transaction went out, so nothing
+    # reached the network. Distinct from PARTIAL_UPLOAD, which means chunks ARE
+    # stored: the pool claim for a FAILED file is RELEASED (the file is
+    # untouched and a canary may still draw it) where a partial one is spent.
+    # Only the browser path can tell the two apart -- the `ant-wasm` CLI reports
+    # `payment_sent` and writes a marker file the instant a transaction is
+    # submitted -- so the native uploader never records this.
+    FAILED = "failed"
+    # The file is larger than the transport will carry (ant-core refuses a
+    # browser-path file above `WASM_MAX_FILE_BYTES`). A property of the
+    # transport, not of the network: nothing was attempted, nothing was paid for,
+    # and the claim is released.
+    OVER_CAP = "over_cap"
 
 
 class DeploymentProdUploadResult(Base):
@@ -59,6 +72,14 @@ class DeploymentProdUploadResult(Base):
         nullable=False,
     )
     address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Which transport performed this upload: "native" (the `ant` binary over
+    # QUIC) or "wasm" (ant-core compiled to WASM over WebRTC-Direct). NULL on
+    # every row predating the browser path, and NULL reads as native rather than
+    # unknown. A prod-uploaders deployment may run both tiers side by side, so
+    # this is per-ROW, not per-deployment -- and it is resolved from the
+    # deployment's persisted uploader list rather than its S3 client state,
+    # which `clients destroy` deletes.
+    client_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     # SHA-256 of the exact bytes handed to `ant`, computed by the uploader
     # itself (V2-837). This is what an independent verifier compares its
     # download against, so read-back verification does not depend on the pool
