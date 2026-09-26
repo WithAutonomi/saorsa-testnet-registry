@@ -1,0 +1,108 @@
+# Permanent daily production DOWNLOAD test over the BROWSER path (WebRTC-Direct).
+#
+# The same deployment as `prod-continuous-downloader` in every respect except
+# which binary the service spawns: `ant-wasm` (ant-core compiled to WASM) instead
+# of `ant`. It answers, every day, what a browser client experiences fetching
+# production content — which nothing else does, since `ant-cli` links native
+# ant-core and so takes the native transport however it is invoked.
+#
+# ONE transport per deployment: the browser path measured several times slower, so
+# a blended daily series would describe neither instrument. This is a SEPARATE
+# deployment from the native PROD-DL-01, walking the same address list on the same
+# cycle so the two transports fetch the same content; the native one is untouched.
+#
+#   saorsa-deploy deployments plan --config <this file>    # preview the steps
+#   saorsa-deploy deployments up   --config <this file>    # build + deploy
+#   saorsa-deploy deployments down --name PROD-WDL-01      # tear down
+#
+# Copy into the git-ignored manifests/runs/ dir and edit per run.
+
+name: PROD-WDL-01
+kind: prod-continuous-downloader
+purpose: "Daily production download test over the browser path (WebRTC-Direct)"
+ssh_key_path: ~/.ssh/ant_deploy
+
+prod_continuous_downloader:
+  client_kind: wasm
+
+  # ---- the client VM ---------------------------------------------------
+  # 8 GB minimum, and that is validated on DigitalOcean (the slug encodes its
+  # memory): a browser-path download holds ~4x the file in WASM linear memory
+  # (900 MB measured at 3.9 GB RSS on smoke run 587), so a smaller box turns
+  # every transfer into an OOM kill — which reads as a network fault rather than
+  # as an under-sized VM. Size it for the largest IN-CAP file on the address
+  # list; over-cap entries never reach WASM memory at all. Omit the size and it
+  # defaults to s-4vcpu-8gb.
+  spec: lon1:s-4vcpu-8gb
+  provider: digitalocean
+
+  # ---- the WASM bundle -------------------------------------------------
+  # Built from source by `build ant-wasm`, which `deployments up` emits as a
+  # resumable step before the deploy — no ant-core WASM package is published as a
+  # release, so `branch:` is the only form. It takes a TAG as readily as a branch
+  # (`git clone --branch` accepts either), which is how a released client is
+  # pinned. A permanent monitor should change when we decide it changes, so pin a
+  # tag and bump it deliberately rather than tracking a moving branch.
+  wasm_binary:
+    branch: ant-cli-v0.3.8
+    repo_owner: WithAutonomi
+
+  # Override the committed production bootstrap WebRTC multiaddr list if needed.
+  # There is deliberately no URL form: nothing publishes these addresses at one.
+  # Every entry is ICE-probed before any infrastructure is created; if none
+  # answers the deploy refuses, and a partial answer warns and names the dead
+  # ones. Refresh the list with `prod bootstrap webrtc-addresses`.
+  # wasm_bootstrap_multiaddrs_file: ~/prod-bootstraps.txt
+
+  # ---- what it walks each cycle ---------------------------------------
+  # Point this at the SAME file the native daily downloader uses, so the two
+  # transports fetch the same content. ant-core refuses a browser-path file above
+  # 1,000,000,000 bytes: such an entry is recorded as a SKIP, not a failure — the
+  # content is on the network and perfectly healthy, the cap is a property of the
+  # transport. A line carrying its published size (`<address> <bytes>`) is skipped
+  # up front with nothing spawned; a bare line is resolved first and then refused,
+  # which costs a data-map lookup and no money. A bare line is never skipped
+  # blind — unknown is not "too big".
+  addresses_path: ~/prod-addresses.txt
+
+  # Once a day, at the end of each full pass through the list.
+  sleep_interval_secs: 86400
+
+  # ---- binary ----------------------------------------------------------
+  # The native `ant` release, named for the record. A WASM run installs nothing
+  # at that path.
+  binary:
+    version: "0.3.8"
+
+  # ---- monitoring (mandatory) ------------------------------------------
+  # Grafana is off by default on this kind and there is no key to turn it on:
+  # the authoritative results are in Postgres and read with
+  # `print-recorded-results`, and Influx here is dashboards only.
+  monitoring_provider: digitalocean
+  monitoring_volume_size: 50
+
+  influx_retention_days: 7   # 0 = infinite
+  log_retention_days: 7      # per-op stdout/stderr prune; 0 = keep forever
+
+  # NOT AVAILABLE on this transport, and refused rather than ignored:
+  #   bootstrap_cache      — selects ant's peer cache vs an explicit --bootstrap;
+  #                          a browser client does neither.
+  #   memory_profiling     — heaptrack wraps the `ant` process, which never runs.
+  #   download_diagnostics — an `ant` flag, likewise.
+  # `rust_log`, `network` and `clock_skew` all work normally.
+
+slack_post: true
+
+# Results: WASM operations land in the `wasm-client-metrics` Influx bucket, kept
+# separate so no dashboard can average two transports measured ~4x apart. Influx
+# retention is bounded, so copy each cycle into Postgres before it expires:
+#
+#   saorsa-deploy deployments archive --name PROD-WDL-01
+#
+# `deployment_download_records` then holds one row per operation with
+# `client_kind='wasm'` and the address it fetched; `print-downloads --name` and
+# `print-recorded-results --id` (that one takes the registry ID, not the name,
+# because a reused name is not unique across recreated deployments) render them
+# under a `wasm` transport heading with the skip and crash counts. Treat
+# `error_kind=crash` as an OOM kill and count it — the WASM child is the largest
+# RSS on the VM, so the kill lands there.
