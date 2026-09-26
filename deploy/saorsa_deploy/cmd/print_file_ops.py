@@ -254,8 +254,11 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         if op_type == "upload":
             payment = payment_by_host.get(host, "default")
             title_parts.append(f"payment={payment}")
+        # Not shown for a WASM host: the peer cache has no browser-path meaning
+        # and the option is refused there, so a value would describe a knob that
+        # had no effect.
         cache = cache_by_host.get(host)
-        if cache is not None:
+        if cache is not None and transport != "wasm":
             title_parts.append(f"bootstrap-cache={'on' if cache else 'off'}")
         if skew_label:
             title_parts.append(f"clock skew {skew_label}")

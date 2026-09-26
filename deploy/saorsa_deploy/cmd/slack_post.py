@@ -461,7 +461,11 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
     if network:
         fields.append(("Network", _format_network_field(network)))
 
-    if "bootstrap_cache" in deploy_args:
+    # Omitted on the browser path: the peer cache selects between ant's cache and
+    # an explicit --bootstrap, and a WASM client does neither. The option is
+    # REFUSED there, so reporting a value for it would describe a knob that had
+    # no effect on the run.
+    if "bootstrap_cache" in deploy_args and client_kind != "wasm":
         fields.append(
             ("Bootstrap cache", "on" if deploy_args["bootstrap_cache"] else "off")
         )

@@ -460,7 +460,13 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
         "monitoring_provider": deploy_args.get("monitoring_provider"),
         "monitoring_name": deploy_args.get("monitoring_name"),
         "settings": {
-            "bootstrap_cache": deploy_args.get("bootstrap_cache"),
+            # None on the browser path: the peer cache, heaptrack and
+            # --download-diagnostics are all refused there (they act on `ant`,
+            # which never runs), so a value would describe a knob that had no
+            # effect on the run.
+            "bootstrap_cache": (
+                None if is_wasm else deploy_args.get("bootstrap_cache")
+            ),
             "download_diagnostics": diagnostics,
             "memory_profiling": bool(deploy_args.get("memory_profiling", False)),
             "forward_logs": bool(deploy_args.get("forward_logs", False)),
