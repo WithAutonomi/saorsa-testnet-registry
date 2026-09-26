@@ -629,7 +629,9 @@ prod_uploaders:
     # refused for the right reason: the manifest parsed, we just decline to
     # size a mainnet-funded kind against a Sepolia-calibrated model.
     assert "invalid manifest" not in out
-    assert "no wallets to fund" in out
+    # Rich wraps the message, so the assertion is on a phrase short enough to
+    # survive any wrap point.
+    assert "no wallets" in out
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@
 # it whenever a number below changes, so two reports can never disagree without
 # the difference being visible. Comparing verdicts produced under different
 # threshold versions is meaningless -- the version is what tells you that.
-version: 3
+version: 4
 
 # ---------------------------------------------------------------------------
 # Hard gates the command can evaluate from stored metrics.
@@ -29,6 +29,30 @@ hard_gates:
   # catches a slow slide that never quite breaches the floor.
   upload_success_floor_percent: 99.0
   download_success_floor_percent: 99.5
+
+# ---------------------------------------------------------------------------
+# Pointer floors (V2-1339).
+#
+# Absolute, like the hard gates above, but in a section of their own because they
+# are NOT hard: a `[pointer]` FAIL is reported and folded into the overall
+# verdict, and never into the exit code. `pointer_floor_gates_advisory` at the
+# foot of this file decides whether they count towards the verdict at all.
+#
+# Both numbers are UNCALIBRATED. No run has ever measured a pointer tier, so
+# there is no history behind either -- and ADR-0016 says outright that a non-zero
+# stale-read rate is expected without saying how large, which is exactly what the
+# read floor would need to be set properly. They are placed to catch a tier that
+# is plainly broken, not to mark a known-good level, which is why they are
+# advisory by default. Recalibrate at the quarterly review once a few
+# pointer-carrying trains exist; the relative gates below do the real work until
+# then.
+#
+# The read floor is the LOWER of the two on purpose. A write either lands on its
+# quorum or it does not, while a read has to find a state two of seven peers
+# agree on -- and a read taken seconds after a write is exactly when it will not.
+pointer_floor_gates:
+  pointer_write_success_floor_percent: 95.0
+  pointer_read_success_floor_percent: 90.0
 
 # ---------------------------------------------------------------------------
 # Soft gates: candidate vs baseline, subject to the noise rule.
@@ -93,6 +117,37 @@ soft_gates:
   # near the threshold should be read against the per-hour rate carried in the
   # gate's detail before it is treated as a regression.
   connection_error_increase_percent: 10.0
+
+  # Pointer soft gates (V2-1339), all relative to the baseline. These are the
+  # gates that do the work: they ask only whether this release made the pointer
+  # tier worse than the last one did, which needs no absolute calibration.
+  #
+  # The stale-read rate is compared and never floored. ADR-0016: an eclipsed
+  # reader can be handed an older, validly signed state and cannot tell, so a
+  # non-zero rate IS the steady state and only a rise is a finding.
+  #
+  # 25% on the two rates rather than the 10% used elsewhere: both are rates of a
+  # rare event, so a small absolute change is a large relative one, and a tighter
+  # threshold would fire on ordinary run-to-run variation. Like every number in
+  # this file on its first train, it is a starting point with no history behind
+  # it -- revisit at the quarterly review.
+  pointer_stale_read_rate_increase_percent: 25.0
+  pointer_lost_write_rate_increase_percent: 25.0
+
+  # Latency. A pointer write is one on-chain payment plus a quorum write, so it
+  # is seconds and dominated by settlement; a read is a single round of the close
+  # group. They are gated separately because a change in one says nothing about
+  # the other.
+  pointer_write_latency_p50_increase_percent: 20.0
+  pointer_write_latency_p95_increase_percent: 30.0
+  pointer_read_latency_p50_increase_percent: 20.0
+  pointer_read_latency_p95_increase_percent: 30.0
+
+  # Cost per write, over the writes that actually PAID. A pointer write is one
+  # single-node quote, so its price moves with the node fleet's quote price --
+  # which pointer records themselves raise, since they charge against the chunk
+  # store's capacity and the commitment key count exactly as chunks do.
+  pointer_cost_per_write_increase_percent: 20.0
 
 # ---------------------------------------------------------------------------
 # Memory leak check.
@@ -251,3 +306,15 @@ wasm_floor_gates_advisory: true
 # regression is a SOFT fail, like its native twin. It is never hard, and no WASM
 # gate ever reaches the exit code; that is reserved for the native hard floors.
 wasm_relative_gates_advisory: false
+
+# Pointer client gates (V2-1339). Advisory by default, for a different reason
+# from the WASM floors: those are miscalibrated for a known cause (NAT), while
+# these have never been calibrated at all. ADR-0016 says a non-zero stale-read
+# rate is expected and does not say how large, and no run has measured one, so a
+# floor set today is a guess. Gating a ship on a guess is worse than reporting it.
+#
+# Set to false once a few pointer-carrying trains have run and the floors have
+# been moved to numbers with history behind them. The RELATIVE pointer gates
+# already count -- they need no calibration -- and no pointer gate, advisory or
+# not, ever reaches the exit code.
+pointer_floor_gates_advisory: true

@@ -8,7 +8,7 @@
 # `version` is echoed into every estimate. An estimate produced under one
 # version is only comparable to another if the model did not change in
 # between -- the version is what tells you to check.
-version: 2
+version: 3
 
 # ---------------------------------------------------------------------------
 # WHY THIS EXISTS
@@ -50,6 +50,21 @@ model:
   fixed_eth_per_upload: 5.0888e-05
   eth_per_gb: 1.2833e-03
   reference_base_fee_gwei: 0.145
+
+  # eth_per_pointer_write = fixed_eth_per_pointer_write, evaluated at
+  # reference_base_fee_gwei and scaled by the same ratio. No per-GB term: a
+  # pointer record is a fixed ~5 KB wire payload (V2-1339).
+  #
+  # SEEDED, not measured. A pointer write is one paid single-node quote, which
+  # is the same shape of transaction as an upload's payment, so it starts at
+  # `fixed_eth_per_upload`'s value. No pointer-carrying run has happened yet;
+  # recalibrate from the first one's measured `gas_spend_wei` per write, which
+  # `deployments print-pointers` reports as "mean cost per write".
+  #
+  # At the default rates a pointer client performs 180 writes an hour, so a 4h
+  # run is ~720 writes against an uploader's few hundred -- the funding figure
+  # this produces is of the same order, not a rounding error.
+  fixed_eth_per_pointer_write: 5.0888e-05
 
 # Multiplier applied to the modelled requirement.
 #

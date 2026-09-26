@@ -14,7 +14,13 @@
 # fields that had been transposed. Counts for the four surviving patterns are
 # unaffected: no phrase changed, so v1 and v2 counts of them ARE comparable.
 # The two retired keys simply stop being recorded.
-version: 2
+#
+# v3 (2026-09-26, V2-1339): ADDED the pointer groups. Nothing existing changed,
+# so v2 and v3 counts of the connection groups ARE comparable. Every run
+# recorded before v3 has no pointer counts at all, which the comparison reports
+# as NOT ASSESSED rather than as zero -- a zero against a run that had no
+# pointer clients would read as a perfect result.
+version: 3
 
 # ---------------------------------------------------------------------------
 # Verification.
@@ -77,6 +83,67 @@ groups:
     label: Identity announce failures
     aggregate: sum
 
+  # -------------------------------------------------------------------------
+  # Pointer groups (V2-1339). Every phrase below was read off ant-node branch
+  # `feat/pointers-immutable-owner` and confirmed to be a reachable WARN or INFO
+  # emit on 2026-09-26. They are NODE-side counts: what the client saw is in
+  # `deployment_pointer_records`, and the two are deliberately separate -- "the
+  # client was served a stale state" and "a node refused to store one" are
+  # different facts, and telling them apart is the point.
+  #
+  # Nothing here counts the ordinary stale refusal or the quorum shortfall: on
+  # this branch both are DEBUG, and the node-tier forwarder drops DEBUG at
+  # `log_level: info`, which is what staging runs at. They would read zero for a
+  # reason that has nothing to do with pointers. Promoting them is a request on
+  # V2-1277.
+  - key: pointer_store_failure
+    label: Pointer store failures (node)
+    aggregate: sum
+    # Distinct events, not one thing logged twice: a replicated pointer and a
+    # freshly-paid one arrive by different paths, and a commit failure is the
+    # write not reaching disk. Summing them gives "stores that did not happen".
+    note: >-
+      Replication stores, fresh paid stores and commits are separate failures
+      that all mean a pointer a node should hold, it does not.
+
+  - key: pointer_address_collision
+    label: Pointer/chunk address collisions (node)
+    aggregate: sum
+    # An address cannot hold both kinds, so these two are the same rule refusing
+    # in either direction -- but they are genuinely different events (one refuses
+    # a pointer, the other a chunk) and both are interesting, so they sum.
+    note: >-
+      A pointer refused because a chunk holds its address, or a chunk refused
+      because a pointer does. Expected to be zero: an address is derived from
+      the owner key, so a collision is a hash collision or a bug.
+
+  - key: pointer_replication_shortfall
+    label: Pointer replication shortfalls (node)
+    aggregate: sum
+    note: >-
+      A peer that was offered a pointer and does not hold it, or a prune that
+      failed. The offer side is the one to watch during a mixed-version run: a
+      pre-pointer node cannot decode the message at all.
+
+  - key: pointer_audit_failure
+    label: Pointer subtree-audit failures (node)
+    aggregate: sum
+    note: >-
+      A pointer this node committed to holding that the audit cannot read back.
+      The subtree-audit protocol id bumps to v2 for pointers, so old and new
+      nodes stop auditing each other during a rollout.
+
+  - key: pointer_prune
+    label: Pointer records pruned (node)
+    aggregate: sum
+    # INFO, and not a failure: a node that is no longer responsible for a
+    # pointer is supposed to drop it. Counted because a run where this figure
+    # explodes is a run where responsibility is churning, and the pointer read
+    # rates would fall for that reason rather than for a pointer-specific one.
+    note: >-
+      Not a fault -- dropping a pointer a node is no longer responsible for is
+      correct. Counted so churn can be told apart from a pointer regression.
+
 # ---------------------------------------------------------------------------
 # Patterns.
 #
@@ -131,6 +198,64 @@ patterns:
     group: identity_announce_failure
     phrase: "Failed to send identity announce"
     module: saorsa_core::transport_handle
+
+  # --- pointers (V2-1339) --------------------------------------------------
+  # Stable substrings only. Every one of these emits interpolates a hex address
+  # and most also an error, so a phrase spanning them would match nothing.
+  - key: pointer_replicated_store_failed
+    group: pointer_store_failure
+    phrase: "Could not store replicated pointer"
+    module: ant_node::replication::pointer
+
+  - key: pointer_fresh_store_failed
+    group: pointer_store_failure
+    phrase: "Could not store fresh pointer"
+    module: ant_node::replication::pointer
+
+  - key: pointer_commit_failed
+    group: pointer_store_failure
+    phrase: "Pointer commit failed"
+    module: ant_node::pointer::service
+
+  - key: pointer_refused_chunk_holds_address
+    group: pointer_address_collision
+    # "Refusing pointer at {}: a chunk already occupies that address" -- the
+    # address sits between the two halves, so only the tail is usable.
+    phrase: "a chunk already occupies that address"
+    module: ant_node::pointer::service
+
+  - key: chunk_refused_pointer_holds_address
+    group: pointer_address_collision
+    phrase: "a pointer already occupies that address"
+    module: ant_node::storage::handler
+
+  - key: pointer_offer_not_held
+    group: pointer_replication_shortfall
+    # "Peer {peer} does not hold pointer {} it was offered".
+    phrase: "does not hold pointer"
+    module: ant_node::replication::pointer
+
+  - key: pointer_prune_failed
+    group: pointer_replication_shortfall
+    phrase: "Could not prune pointer"
+    module: ant_node::replication::pointer
+
+  - key: pointer_audit_not_held
+    group: pointer_audit_failure
+    phrase: "committed pointer"
+    # Matches both "Subtree audit: committed pointer {key} is not held" and
+    # "Subtree audit: read error for committed pointer {key}", which is
+    # deliberate: both mean the audit could not confirm a pointer this node
+    # committed to. A phrase spanning the "is not held" tail would miss the
+    # read-error case entirely, and the two are the same finding.
+    module: ant_node::replication::storage_commitment_audit
+
+  - key: pointer_records_pruned
+    group: pointer_prune
+    # "Pruned {deleted} pointer records this node is no longer responsible for"
+    # -- the count is interpolated, so the phrase starts after it.
+    phrase: "pointer records this node is no longer responsible for"
+    module: ant_node::replication::pointer
 
 # ---------------------------------------------------------------------------
 # Retired patterns.

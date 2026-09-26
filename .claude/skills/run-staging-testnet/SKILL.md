@@ -497,6 +497,42 @@ uv run saorsa-deploy deployments record-analysis   --name STG-01 \
 uv run saorsa-deploy deployments record-log-counts --name STG-01
 ```
 
+`record-results` picks the **pointer** operations up in the same pass when the run
+carried pointer clients — they ride an ordinary testnet, so there is no separate
+command to remember. Check what landed before moving on:
+
+```bash
+uv run saorsa-deploy deployments print-pointers --id <id>
+uv run saorsa-deploy deployments print-pointers --id <id> --by-age
+```
+
+A **non-zero stale-read rate is EXPECTED** (ADR-0016: an eclipsed reader can be
+served an older, validly signed state and cannot tell). Report the figure; do not
+report it as a fault. The `--by-age` table is the one to read for decay: a stale
+or not-found rate that climbs with pointer age is the finding this tier exists to
+produce.
+
+### The mixed-version phase is recorded under its own label
+
+Run this as part of the same extraction, once the mixed-version hour has ended:
+
+```bash
+uv run saorsa-deploy deployments derive-metrics --id <id> \
+  --window-start <mixed start> --window-end <mixed end> --label mixed-version
+uv run saorsa-deploy deployments record-log-counts --id <id> \
+  --window-start <mixed start> --window-end <mixed end> --label mixed-version
+uv run saorsa-deploy deployments print-pointers --id <id> \
+  --window-start <mixed start> --window-end <mixed end>
+```
+
+The mixed-version hour is where a **pre-pointer node answers a protocol error to
+every pointer message**, so pointer operations against it are expected to degrade.
+Recording the phase under its own label is what makes that degradation a MEASURED
+figure rather than something averaged into the steady-state window and discarded.
+It is a third label alongside `full-run` and `steady-state`, not a replacement for
+either — the comparison looks every stored measurement up under the label it is
+comparing on.
+
 STG-01 only. STG-02 has no clients of its own — the transfers all run from STG-01,
 so there is nothing to record for it.
 
@@ -528,6 +564,13 @@ Read the table it prints before moving on:
   conclusion.
 - The **Hosts** column matters as much as the count. A large count spread over
   two hosts of seventy is usually a service restart, not a fleet-wide change.
+
+It also counts ant-node's `pointer_put_rpc` / `pointer_get_rpc` events per
+outcome with latency p50/p95 whenever the run had pointer clients, and stores them
+in the same table keyed `<event>:<outcome>`. Read `outcome=error` as a fraction of
+the event total. That table is the NODE's view: `stale` there is a node refusing a
+write that lost the merge, which is a different event from a client being served a
+stale state — that one is in `deployments print-pointers`.
 
 **Record BOTH labels. This is two invocations, not one.** The bare command lands
 its counts under `full-run`, which is everything the index holds. Then record the

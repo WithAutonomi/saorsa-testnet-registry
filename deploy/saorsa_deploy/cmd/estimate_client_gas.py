@@ -29,6 +29,7 @@ from rich.table import Table
 from saorsa_deploy.evm import get_evm_network_info
 from saorsa_deploy.gas_model import (
     NATIVE,
+    POINTER,
     WASM,
     ClientRun,
     GasModelError,
@@ -106,11 +107,17 @@ def _resolve_uploaders(manifest):
         clients = getattr(spec, "clients", None) if spec else None
         if not clients:
             continue
-        entries = [
-            (up, NATIVE) for up in (getattr(clients, "uploaders", None) or [])
-        ] + [
-            (up, WASM) for up in (getattr(clients, "wasm_uploaders", None) or [])
-        ]
+        entries = (
+            [(up, NATIVE) for up in (getattr(clients, "uploaders", None) or [])]
+            + [(up, WASM) for up in (getattr(clients, "wasm_uploaders", None) or [])]
+            # Pointer clients hold their own funded wallet and pay for every
+            # write, so leaving them out understates the fleet total by however
+            # many the profile runs -- and the funder check compares against that
+            # total. Sized from the manifest's own rates rather than from a
+            # baseline: the rates are deterministic, so a baseline would add
+            # nothing but a dependency.
+            + [(pc, POINTER) for pc in (getattr(clients, "pointers", None) or [])]
+        )
         if entries:
             return entries, f"{label}.clients"
     return [], "testnet.clients"
@@ -187,8 +194,8 @@ def cmd_estimate_client_gas(args) -> None:
     if not entries:
         console.print(
             "[bold red]Error:[/bold red] this manifest declares no "
-            "testnet.clients.uploaders or extension.clients.uploaders, so "
-            "there are no wallets to fund."
+            "testnet.clients.uploaders, testnet.clients.pointers or their "
+            "extension equivalents, so there are no wallets to fund."
         )
         sys.exit(1)
 
@@ -267,6 +274,28 @@ def cmd_estimate_client_gas(args) -> None:
     plans = []
     unmatched = []
     for up, transport in entries:
+        if transport == POINTER:
+            # Rates come from the manifest, so there is nothing to project and a
+            # missing baseline is not a reason to leave this client unsized.
+            # `--uploads-per-hour` deliberately does NOT override them: it means
+            # "uploads", and a pointer client performs none.
+            rate = up.writes_per_hour
+            plans.append(
+                UploaderPlan(
+                    name=f"{getattr(up, 'region', '?')}/pointer [{POINTER}]",
+                    size_gb=0.0,
+                    expected_uploads=int(math.ceil(rate * duration)),
+                    current_eth=(
+                        float(up.eth) if getattr(up, "eth", None) is not None else None
+                    ),
+                    transport=POINTER,
+                    basis=(
+                        f"manifest rates: create/{up.create_interval_secs}s + "
+                        f"update/{up.update_interval_secs}s = {rate:.0f} writes/h"
+                    ),
+                )
+            )
+            continue
         size_gb = (getattr(up, "file_size_mb", 0) or 0) / 1000.0
         basis = ""
         if flat_rate is not None:
@@ -327,7 +356,7 @@ def cmd_estimate_client_gas(args) -> None:
     )
     table.add_column("Uploader")
     table.add_column("Size", justify="right")
-    table.add_column("Uploads", justify="right")
+    table.add_column("Ops", justify="right")
     table.add_column("Modelled", justify="right")
     table.add_column("Recommend", justify="right")
     table.add_column("Current", justify="right")
@@ -345,7 +374,10 @@ def cmd_estimate_client_gas(args) -> None:
             # Escaped: the transport suffix is literally "[wasm]", which Rich
             # would otherwise swallow as a (nonexistent) style tag.
             escape(u.plan.name),
-            f"{u.plan.size_gb*1000:.0f} MB",
+            # A pointer record is a fixed ~5 KB with no payload term in the
+            # model, so printing "0 MB" would invite the reader to think the
+            # size was lost rather than that it does not apply.
+            "n/a" if u.plan.transport == POINTER else f"{u.plan.size_gb*1000:.0f} MB",
             str(u.plan.expected_uploads),
             f"{u.modelled_eth:.3f}",
             f"{u.recommended_eth:g}",

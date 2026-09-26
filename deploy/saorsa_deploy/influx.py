@@ -301,6 +301,133 @@ def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
     return points
 
 
+#: Fields on the `pointer` measurement. Named explicitly rather than pivoting
+#: everything, for the reason the operation query does: a pivot over `_field ==
+#: *` picks up any field a future client version adds and silently widens every
+#: row, and the parse below would then not know what to do with it.
+POINTER_FLUX_TEMPLATE = """from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) => r._measurement == "pointer")
+  |> filter(fn: (r) =>
+       r._field == "outcome" or
+       r._field == "ok" or
+       r._field == "owned" or
+       r._field == "address" or
+       r._field == "counter_expected" or
+       r._field == "counter_observed" or
+       r._field == "target_kind" or
+       r._field == "age_secs" or
+       r._field == "read_back" or
+       r._field == "attempts" or
+       r._field == "paid_attempts" or
+       r._field == "wallet_spend_atto" or
+       r._field == "gas_spend_wei" or
+       r._field == "duration_ms" or
+       r._field == "start_ns" or
+       r._field == "error")
+  |> pivot(rowKey: ["_time", "host", "op"], columnKey: ["_field"], valueColumn: "_value")
+"""
+
+
+def fetch_pointer_points(
+    url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    start: str = "-30d",
+    stop: str = FLUX_FAR_FUTURE,
+    timeout: int = 30,
+) -> list[dict]:
+    """One dict per `pointer` operation point.
+
+    Pointer operations go to the deployment's ordinary `testnet-metrics` bucket,
+    NOT the WASM bucket: there is one pointer transport (the native `ant`), so
+    there is nothing to keep apart the way the two file transports are.
+
+    ``stop`` defaults to :data:`FLUX_FAR_FUTURE` for the same reason every other
+    query here does -- a forward-skewed client's points are hours in the future
+    and Flux's default ``stop: now()`` would silently discard them.
+    """
+    flux = POINTER_FLUX_TEMPLATE.format(bucket=bucket, start=start, stop=stop)
+    resp = requests.post(
+        f"{url.rstrip('/')}/api/v2/query",
+        params={"org": org},
+        headers={
+            "Authorization": f"Token {token}",
+            "Content-Type": "application/vnd.flux",
+            "Accept": "application/csv",
+        },
+        data=flux,
+        timeout=timeout,
+        stream=True,
+    )
+    resp.raise_for_status()
+    return parse_pointer_csv(iter_response_lines(resp))
+
+
+def parse_pointer_csv(body: "str | Iterable[str]") -> list[dict]:
+    """Parse the pivoted `pointer` CSV.
+
+    ``op`` is a TAG, so it arrives as its own column and is part of the row key.
+    ``outcome`` is a string FIELD rather than a tag deliberately: seven values
+    times five ops times a growing pointer population would multiply the series
+    cardinality for a value nothing groups by in Influx -- the grouping happens
+    in Postgres, after `record-results`.
+    """
+    points: list[dict] = []
+    reader = csv.reader(_csv_lines(body))
+    header: list[str] | None = None
+    for row in reader:
+        if not row or not any(row):
+            header = None
+            continue
+        if row[0].startswith("#"):
+            continue
+        if header is None:
+            header = row
+            continue
+        record = dict(zip(header, row))
+        if record.get("_measurement") != "pointer":
+            continue
+        if record.get("host") in (None, "") or record.get("op") in (None, ""):
+            continue
+        try:
+            points.append(
+                {
+                    "_time": _parse_ts(record["_time"]),
+                    "host": record["host"],
+                    "region": record.get("region", "") or None,
+                    "op": record["op"],
+                    "outcome": record.get("outcome") or "",
+                    # `owned` is emitted as 0/1; a point without it predates
+                    # nothing (the field has always been written) but a missing
+                    # value must not read as "foreign", which would move an
+                    # own-pointer read into the population whose expected state
+                    # is unknown. Default to owned.
+                    "owned": _parse_int(record.get("owned", "")) != 0,
+                    "address": record.get("address") or None,
+                    "counter_expected": _parse_int(record.get("counter_expected", "")),
+                    "counter_observed": _parse_int(record.get("counter_observed", "")),
+                    "target_kind": record.get("target_kind") or None,
+                    "age_secs": _parse_int(record.get("age_secs", "")),
+                    "read_back": record.get("read_back") or None,
+                    "attempts": _parse_int(record.get("attempts", "")),
+                    "paid_attempts": _parse_int(record.get("paid_attempts", "")),
+                    # Spend travels as an i64 delta (one write's worth always
+                    # fits); the absolute balances are strings and are not read
+                    # back here.
+                    "ant_spend_atto": _parse_int(record.get("wallet_spend_atto", "")),
+                    "gas_spend_wei": _parse_int(record.get("gas_spend_wei", "")),
+                    "duration_ms": _parse_int(record.get("duration_ms", "")),
+                    "start_ns": _parse_int(record.get("start_ns", "")),
+                    "error": record.get("error") or None,
+                }
+            )
+        except (KeyError, ValueError):
+            continue
+    return points
+
+
 def aggregate_file_results(points: list[dict]) -> list[dict]:
     """Group operation points by (measurement, host, file_size) and compute stats.
 

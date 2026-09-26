@@ -120,6 +120,25 @@ export function eligibleAddresses(
  * `downloader.sh`: the VM signs nothing, so a skewed clock cannot get its
  * requests rejected.
  */
+/**
+ * Object keys under the shared prefix that are NOT published file addresses.
+ *
+ * The pointer client tier publishes its pointer addresses under the same
+ * deployment prefix (`pointer-<region>-<index>.txt`). They are pointer
+ * addresses, not data maps: fetching one as a file fails every time, and the
+ * failures land in the download success rate as though the network had lost
+ * the content. The native `downloader.sh` is unaffected because it filters the
+ * listing to `^upload-`; this downloader deliberately lists the WHOLE prefix so
+ * it draws native uploads too, so it has to exclude them by name.
+ *
+ * Exclusion is by KNOWN non-file prefix rather than by an `upload-` allowlist,
+ * so a future uploader role publishing under a new name is still consumed.
+ */
+export function isNonFileKey(key: string): boolean {
+  const name = key.slice(key.lastIndexOf("/") + 1);
+  return name.startsWith("pointer-");
+}
+
 export class AddressSource {
   private cache: PublishedAddress[] = [];
   private lastRefresh = 0;
@@ -143,7 +162,9 @@ export class AddressSource {
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`S3 list returned ${res.status}`);
     const xml = await res.text();
-    return [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map((m) => m[1]);
+    return [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)]
+      .map((m) => m[1])
+      .filter((key) => !isNonFileKey(key));
   }
 
   async refresh(): Promise<void> {

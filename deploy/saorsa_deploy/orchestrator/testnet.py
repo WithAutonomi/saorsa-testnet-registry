@@ -21,6 +21,10 @@ invariants that previously lived as prose in the ``deploy-runbook`` skill:
 from __future__ import annotations
 
 from saorsa_deploy.config.models import (
+    POINTER_CHAIN_FRACTION,
+    POINTER_CREATE_INTERVAL_SECS,
+    POINTER_SWEEP_INTERVAL_SECS,
+    POINTER_UPDATE_INTERVAL_SECS,
     Clients,
     Elastic,
     ExtensionSpec,
@@ -139,6 +143,45 @@ def _wasm_downloader_spec(d) -> str:
     return ":".join(parts)
 
 
+def _pointer_spec(p) -> str:
+    """Token string for a pointer client.
+
+    The workload knobs ride the same ``key=value`` grammar as the funding and
+    skew options, and only when they differ from the CLI default -- so a
+    manifest that takes the defaults emits the short spec, and the step journal
+    of a run that changed one shows exactly which one changed.
+    """
+    parts = [p.provider, p.region]
+    if p.vm_size:
+        parts.append(p.vm_size)
+    if p.ant is not None:
+        parts.append(f"ant={p.ant}")
+    if p.eth is not None:
+        parts.append(f"eth={p.eth}")
+    if p.clock_skew:
+        parts.append(f"clock_skew={p.clock_skew}")
+    if p.bootstrap_cache is not None:
+        parts.append(f"bootstrap_cache={str(p.bootstrap_cache).lower()}")
+    if p.forward_logs is not None:
+        parts.append(f"forward_logs={str(p.forward_logs).lower()}")
+    if p.network is not None:
+        parts.append(f"network={format_network_token(p.network)}")
+    if p.create_interval_secs != POINTER_CREATE_INTERVAL_SECS:
+        parts.append(f"create_interval_secs={p.create_interval_secs}")
+    if p.update_interval_secs != POINTER_UPDATE_INTERVAL_SECS:
+        parts.append(f"update_interval_secs={p.update_interval_secs}")
+    if p.sweep_interval_secs != POINTER_SWEEP_INTERVAL_SECS:
+        parts.append(f"sweep_interval_secs={p.sweep_interval_secs}")
+    if p.chain_fraction != POINTER_CHAIN_FRACTION:
+        parts.append(f"chain_fraction={p.chain_fraction}")
+    if p.pointer_max:
+        parts.append(f"pointer_max={p.pointer_max}")
+    # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).
+    if p.rust_log is not None:
+        parts.append(f"rust_log={p.rust_log}")
+    return ":".join(parts)
+
+
 def _nodes_infra_argv(name: str, nodes: Nodes) -> list[str]:
     argv = ["nodes", "infra", "--name", name]
     for provider in _PROVIDER_ORDER:
@@ -233,6 +276,8 @@ def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
         argv += ["--wasm-uploader", _wasm_uploader_spec(u)]
     for d in clients.wasm_downloaders:
         argv += ["--wasm-downloader", _wasm_downloader_spec(d)]
+    for c in clients.pointers:
+        argv += ["--pointer", _pointer_spec(c)]
     return argv
 
 

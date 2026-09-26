@@ -64,6 +64,9 @@ class GateConfig:
     upload_success_floor_percent: float
     download_success_floor_percent: float
 
+    pointer_write_success_floor_percent: float
+    pointer_read_success_floor_percent: float
+
     success_rate_drop_pp: float
     transfer_duration_p50_increase_percent: float
     transfer_duration_p95_increase_percent: float
@@ -72,6 +75,13 @@ class GateConfig:
     outbound_bytes_per_gb_increase_percent: float
     disk_bytes_per_gb_increase_percent: float
     connection_error_increase_percent: float
+    pointer_stale_read_rate_increase_percent: float
+    pointer_lost_write_rate_increase_percent: float
+    pointer_write_latency_p50_increase_percent: float
+    pointer_write_latency_p95_increase_percent: float
+    pointer_read_latency_p50_increase_percent: float
+    pointer_read_latency_p95_increase_percent: float
+    pointer_cost_per_write_increase_percent: float
 
     memory_leak: MemoryLeakConfig
     noise_rule: NoiseRuleConfig
@@ -101,11 +111,30 @@ class GateConfig:
     # floors.
     wasm_floor_gates_advisory: bool = True
     wasm_relative_gates_advisory: bool = False
+    # Pointer client gates (V2-1339). The two FLOORS are absolute numbers on a
+    # tier whose expected stale-read rate is not known from any run yet -- the
+    # ADR says a non-zero rate is normal but not how large -- so gating a ship on
+    # them would be gating on a guess. Advisory by default, and promotion is a
+    # decision for after a few trains. The RELATIVE gates count as soft gates
+    # like every other, because "did this release make the pointer tier worse
+    # than the last one did" needs no calibration.
+    #
+    # NO pointer gate ever reaches the exit code, advisory or not: that is
+    # reserved for the native file-op hard floors.
+    pointer_floor_gates_advisory: bool = True
 
 
 _HARD_GATE_KEYS = (
     "upload_success_floor_percent",
     "download_success_floor_percent",
+)
+
+#: Pointer floors. In their own section rather than `hard_gates`, because they
+#: are absolute but are never hard: a `[pointer]` FAIL is reported and folded
+#: into the overall verdict, and never into the exit code.
+_POINTER_FLOOR_KEYS = (
+    "pointer_write_success_floor_percent",
+    "pointer_read_success_floor_percent",
 )
 
 _SOFT_GATE_KEYS = (
@@ -117,6 +146,14 @@ _SOFT_GATE_KEYS = (
     "outbound_bytes_per_gb_increase_percent",
     "disk_bytes_per_gb_increase_percent",
     "connection_error_increase_percent",
+    # Pointer soft gates, all relative to the baseline.
+    "pointer_stale_read_rate_increase_percent",
+    "pointer_lost_write_rate_increase_percent",
+    "pointer_write_latency_p50_increase_percent",
+    "pointer_write_latency_p95_increase_percent",
+    "pointer_read_latency_p50_increase_percent",
+    "pointer_read_latency_p95_increase_percent",
+    "pointer_cost_per_write_increase_percent",
 )
 
 # The three ratio metrics `record-analysis` / `derive-metrics` can write. Only
@@ -195,6 +232,7 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
         )
 
     hard = _require_section(data, "hard_gates", path)
+    pointer_floors = _require_section(data, "pointer_floor_gates", path)
     soft = _require_section(data, "soft_gates", path)
     leak = _require_section(data, "memory_leak", path)
     noise = _require_section(data, "noise_rule", path)
@@ -207,6 +245,17 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
             raise GateConfigError(
                 f"{path}: 'hard_gates.{key}' is {value}, but a success floor is a "
                 "percentage and cannot exceed 100."
+            )
+
+    pointer_floor_values = {
+        key: _require_number(pointer_floors, key, path, "pointer_floor_gates")
+        for key in _POINTER_FLOOR_KEYS
+    }
+    for key, value in pointer_floor_values.items():
+        if value > 100:
+            raise GateConfigError(
+                f"{path}: 'pointer_floor_gates.{key}' is {value}, but a success "
+                "floor is a percentage and cannot exceed 100."
             )
 
     soft_values = {
@@ -296,6 +345,7 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
         version=version,
         source_path=str(source_path),
         **hard_values,
+        **pointer_floor_values,
         **soft_values,
         memory_leak=MemoryLeakConfig(
             window_hours=_require_number(leak, "window_hours", path, "memory_leak"),
@@ -324,6 +374,9 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
         ),
         wasm_relative_gates_advisory=_require_bool(
             data, "wasm_relative_gates_advisory", path
+        ),
+        pointer_floor_gates_advisory=_require_bool(
+            data, "pointer_floor_gates_advisory", path
         ),
     )
 

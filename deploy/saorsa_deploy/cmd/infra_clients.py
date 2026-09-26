@@ -9,11 +9,13 @@ from saorsa_deploy.client_roles import (  # noqa: F401  (re-exported for callers
     ROLE_DOWNLOAD,
     ROLE_LABELS,
     ROLE_ORDER,
+    ROLE_POINTER,
     ROLE_UPLOAD,
     ROLE_WASM_DOWNLOAD,
     ROLE_WASM_UPLOAD,
     UPLOAD_ROLES,
     WASM_ROLES,
+    is_pointer,
 )
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.providers import CLIENT_PROVIDERS, resolve_client_provider
@@ -52,11 +54,36 @@ _VALID_DOWNLOADER_KEYS = ("clock_skew", "bootstrap_cache", "forward_logs", "netw
 # discovers the rest of the network over authenticated find_node.
 _VALID_WASM_UPLOADER_KEYS = ("payment", "ant", "eth", "clock_skew", "forward_logs", "network")
 _VALID_WASM_DOWNLOADER_KEYS = ("clock_skew", "forward_logs", "network")
+# A pointer client carries a wallet (every write is a paid quote) and the
+# workload rates, which are what the run's cost and its Arbitrum Sepolia
+# transaction rate are derived from.
+_VALID_POINTER_KEYS = (
+    "ant",
+    "eth",
+    "clock_skew",
+    "bootstrap_cache",
+    "forward_logs",
+    "network",
+    "create_interval_secs",
+    "update_interval_secs",
+    "sweep_interval_secs",
+    "chain_fraction",
+    "pointer_max",
+)
 DEFAULT_ANT_FUNDING = "100"
 DEFAULT_ETH_FUNDING = "0.5"
 # ant peer cache default: invoke ant WITHOUT --bootstrap, shipping a
 # bootstrap_peers.toml instead. bootstrap_cache=false restores --bootstrap.
 DEFAULT_BOOTSTRAP_CACHE = True
+# Pointer workload defaults. Mirror config/models.py's POINTER_* constants —
+# duplicated rather than imported so the CLI does not depend on the manifest
+# schema, exactly as DEFAULT_ANT_FUNDING does. `test_pointer_clients.py` asserts
+# the two agree.
+DEFAULT_POINTER_CREATE_INTERVAL_SECS = 60
+DEFAULT_POINTER_UPDATE_INTERVAL_SECS = 30
+DEFAULT_POINTER_SWEEP_INTERVAL_SECS = 600
+DEFAULT_POINTER_CHAIN_FRACTION = 0.10
+DEFAULT_POINTER_MAX = 0
 
 
 def _parse_clock_skew(spec: str, value: str) -> int:
@@ -349,6 +376,106 @@ def parse_wasm_downloader_spec(spec: str) -> dict:
     )
 
 
+def _parse_positive_int(spec: str, key: str, value: str) -> int:
+    """Validate an integer spec option that must be strictly positive."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise ValueError(
+            f"Invalid pointer spec '{spec}': '{key}' must be an integer, got '{value}'."
+        )
+    if parsed <= 0:
+        raise ValueError(
+            f"Invalid pointer spec '{spec}': '{key}' must be > 0, got {parsed}. A "
+            "zero interval is a busy loop against a paid operation, not a "
+            "disabled one."
+        )
+    return parsed
+
+
+def parse_pointer_spec(spec: str) -> dict:
+    """Parse a pointer-client spec.
+
+    Format:
+    ``provider:region[:vm_size][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:network=PROFILE][:create_interval_secs=N][:update_interval_secs=N][:sweep_interval_secs=N][:chain_fraction=F][:pointer_max=N][:rust_log=VALUE]``
+
+    Positionals match ``--downloader`` (there is no file size — a pointer record
+    is a fixed ~5 KB), but the role carries an uploader's wallet options because
+    every pointer write is a paid single-node quote. ``rust_log``, if present,
+    MUST be the final token (its value may contain ``:``).
+    """
+    parsed = _parse_downloader_like(
+        spec, _VALID_POINTER_KEYS, ROLE_POINTER, "pointer"
+    )
+    _, options, _ = _split_spec(spec, _VALID_POINTER_KEYS, "pointer")
+
+    # A pointer client has no file to upload, but it IS an upload-type role: it
+    # mints a per-VM wallet, is topped up from the funding wallet and is drained
+    # on destroy. `file_size_mb: 0` is what lets every one of those shared paths
+    # treat it as one without special-casing (the same value the prod uploaders
+    # carry, where the files are real and of arbitrary size).
+    parsed["file_size_mb"] = 0
+    parsed["payment_type"] = None
+    parsed["ant_funding"] = (
+        _parse_positive_decimal(spec, "ant", options["ant"])
+        if "ant" in options
+        else DEFAULT_ANT_FUNDING
+    )
+    parsed["eth_funding"] = (
+        _parse_positive_decimal(spec, "eth", options["eth"])
+        if "eth" in options
+        else DEFAULT_ETH_FUNDING
+    )
+    parsed["create_interval_secs"] = (
+        _parse_positive_int(spec, "create_interval_secs", options["create_interval_secs"])
+        if "create_interval_secs" in options
+        else DEFAULT_POINTER_CREATE_INTERVAL_SECS
+    )
+    parsed["update_interval_secs"] = (
+        _parse_positive_int(spec, "update_interval_secs", options["update_interval_secs"])
+        if "update_interval_secs" in options
+        else DEFAULT_POINTER_UPDATE_INTERVAL_SECS
+    )
+    parsed["sweep_interval_secs"] = (
+        _parse_positive_int(spec, "sweep_interval_secs", options["sweep_interval_secs"])
+        if "sweep_interval_secs" in options
+        else DEFAULT_POINTER_SWEEP_INTERVAL_SECS
+    )
+    if "chain_fraction" in options:
+        try:
+            fraction = float(options["chain_fraction"])
+        except ValueError:
+            raise ValueError(
+                f"Invalid pointer spec '{spec}': chain_fraction must be a number "
+                f"between 0 and 1, got '{options['chain_fraction']}'."
+            )
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError(
+                f"Invalid pointer spec '{spec}': chain_fraction must be between 0 "
+                f"and 1, got {fraction}."
+            )
+        parsed["chain_fraction"] = fraction
+    else:
+        parsed["chain_fraction"] = DEFAULT_POINTER_CHAIN_FRACTION
+    if "pointer_max" in options:
+        try:
+            cap = int(options["pointer_max"])
+        except ValueError:
+            raise ValueError(
+                f"Invalid pointer spec '{spec}': pointer_max must be an integer, "
+                f"got '{options['pointer_max']}'."
+            )
+        if cap < 0:
+            raise ValueError(
+                f"Invalid pointer spec '{spec}': pointer_max must be >= 0 "
+                f"(0 = uncapped), got {cap}."
+            )
+        parsed["pointer_max"] = cap
+    else:
+        parsed["pointer_max"] = DEFAULT_POINTER_MAX
+    return parsed
+
+
 def _spec_signature(spec: dict) -> tuple:
     """Identity tuple for matching requested vs. recorded client specs."""
     return (
@@ -366,6 +493,16 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("forward_logs"),
         spec.get("rust_log"),
         spec.get("network"),
+        # Pointer workload rates. Part of the identity so that changing a rate
+        # in the manifest is a spec MISMATCH rather than a silent reuse of VMs
+        # still running the old rates — the same reason every other spec field
+        # is here. `None` on every non-pointer role, so their signature is
+        # unchanged and existing client state still matches.
+        spec.get("create_interval_secs"),
+        spec.get("update_interval_secs"),
+        spec.get("sweep_interval_secs"),
+        spec.get("chain_fraction"),
+        spec.get("pointer_max"),
     )
 
 
@@ -421,12 +558,13 @@ def cmd_infra_clients(args):
         (args.downloader or [], parse_downloader_spec),
         (getattr(args, "wasm_uploader", None) or [], parse_wasm_uploader_spec),
         (getattr(args, "wasm_downloader", None) or [], parse_wasm_downloader_spec),
+        (getattr(args, "pointer", None) or [], parse_pointer_spec),
     ]
 
     if not any(raw for raw, _ in role_inputs):
         console.print(
             "[bold red]Error:[/bold red] At least one --uploader, --downloader, "
-            "--wasm-uploader or --wasm-downloader spec is required."
+            "--wasm-uploader, --wasm-downloader or --pointer spec is required."
         )
         sys.exit(1)
 
@@ -449,7 +587,19 @@ def cmd_infra_clients(args):
             else ""
         )
         label = ROLE_LABELS.get(spec["role"], spec["role"])
-        if spec["role"] in UPLOAD_ROLES:
+        if is_pointer(spec["role"]):
+            ant = spec.get("ant_funding", DEFAULT_ANT_FUNDING)
+            eth = spec.get("eth_funding", DEFAULT_ETH_FUNDING)
+            console.print(
+                f"  {label} #{spec['client_index']}: {spec['provider']}:"
+                f"{spec['region']} ({spec['vm_size']}, "
+                f"create/{spec['create_interval_secs']}s "
+                f"update/{spec['update_interval_secs']}s "
+                f"sweep/{spec['sweep_interval_secs']}s, "
+                f"chain {spec['chain_fraction']:.0%}, "
+                f"fund {ant} ANT + {eth} ETH{skew_str})"
+            )
+        elif spec["role"] in UPLOAD_ROLES:
             payment = spec.get("payment_type")
             payment_str = f", payment={payment}" if payment else ""
             ant = spec.get("ant_funding", DEFAULT_ANT_FUNDING)
@@ -630,7 +780,10 @@ def cmd_infra_clients(args):
         f"[bold green]All {len(results)} client VM(s) provisioned successfully.[/bold green]"
     )
     for spec in client_specs:
-        label = "Uploader" if spec["role"] == ROLE_UPLOAD else "Downloader"
+        # ROLE_LABELS, not an upload/download ternary: that spelled every WASM
+        # and pointer VM "Downloader" in the one place an operator reads to
+        # check what was actually created.
+        label = ROLE_LABELS.get(spec["role"], spec["role"])
         console.print(
             f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
             f"({spec['region']}, {spec['vm_size']})"

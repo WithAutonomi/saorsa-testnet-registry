@@ -66,6 +66,18 @@ def patterns():
 # ---------------------------------------------------------------------------
 
 
+#: The connection groups V2-842 defined. Named so the assertion below can be
+#: scoped to them: the catalogue is shared and has since grown a pointer section
+#: (V2-1339), so an equality against every key in the file would fail whenever an
+#: unrelated group is added — which says nothing about whether the connection
+#: strings are still right.
+_CONNECTION_GROUPS = (
+    "connection_failure",
+    "dial_failure",
+    "identity_announce_failure",
+)
+
+
 def test_shipped_catalogue_covers_every_string_from_the_issue(patterns):
     """The strings V2-842 named that can still fire, under stable phrases.
 
@@ -73,7 +85,10 @@ def test_shipped_catalogue_covers_every_string_from_the_issue(patterns):
     see the test below.
     """
     by_key = {p.key: p for p in patterns.patterns}
-    assert set(by_key) == {
+    connection_keys = {
+        p.key for p in patterns.patterns if p.group in _CONNECTION_GROUPS
+    }
+    assert connection_keys == {
         "connection_attempt_failed",
         "happy_eyeballs_failed",
         "dial_failed_all_candidates",

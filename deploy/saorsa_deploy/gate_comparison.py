@@ -578,6 +578,12 @@ class GateResult:
     # upload / 94.9% download against 99% / 99.5% on the first measured run) --
     # so every run would hard-fail on a tier that is not yet what ships.
     advisory: bool = False
+    #: Judged against an absolute number on this run alone, with no baseline.
+    #: The hard floors are the archetype; the `[pointer]` floors are the same
+    #: shape but must never reach the exit code, so they are soft AND single-run.
+    #: `--new-baseline` blanks every gate that needs a baseline, and this is what
+    #: keeps a gate that does not need one from being blanked with them.
+    single_run: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -593,6 +599,7 @@ class GateResult:
             "detail": self.detail,
             "noise": self.noise,
             "advisory": self.advisory,
+            "single_run": self.single_run,
         }
 
 
@@ -620,6 +627,11 @@ class RunMetrics:
     # A list rather than a dict because the gate evaluates GROUPS, and the
     # grouping is a property of the pattern catalogue, not of the rows.
     log_event_counts: list[dict] = field(default_factory=list)
+    #: Pointer operations, in the dict shape `pointer_results` consumes (the CLI
+    #: normalises `deployment_pointer_records` rows into it). A list of dicts
+    #: rather than ORM rows for the same reason every other field here is plain
+    #: data: the engine stays a pure function and the tests need no database.
+    pointer_records: list[dict] = field(default_factory=list)
 
     def window_seconds(self) -> float | None:
         if self.window_start is None or self.window_end is None:
@@ -1044,6 +1056,7 @@ def compare_runs(
     results: list[GateResult] = []
 
     results.extend(_client_gates(candidate, baseline, config, history))
+    results.extend(_pointer_gates(candidate, baseline, config, history))
     results.extend(_soft_host_metrics(candidate, baseline, config, history))
     results.append(_soft_memory_leak(candidate, config))
     results.extend(_soft_derived_ratios(candidate, baseline, config, history))
@@ -1055,10 +1068,12 @@ def compare_runs(
         # Every soft gate in this module is relative to the baseline (the leak
         # check is absolute, but the spec groups it with the rest, and a single
         # run's slope has nothing to be judged against here either). The hard
-        # floors are the only single-run gates, and they stand.
+        # floors stand, and so does anything else marked `single_run` -- the
+        # `[pointer]` floors, which are absolute but must never reach the exit
+        # code and so are soft rather than hard.
         results = [
             r
-            if r.kind == "hard"
+            if r.kind == "hard" or r.single_run
             else replace(
                 r,
                 verdict=NOT_ASSESSED,
@@ -1531,6 +1546,193 @@ def _soft_memory_leak(run: RunMetrics, config: GateConfig) -> GateResult:
 # ---------------------------------------------------------------------------
 # Connection-error log-string counts (V2-842)
 # ---------------------------------------------------------------------------
+
+
+#: Suffix on every gate computed from pointer operations. A pointer client is a
+#: different instrument from a transfer client -- its success rate is over paid
+#: writes and corroborated reads, not over file transfers -- so its gates are
+#: named apart and can never be mistaken for the file-op ones.
+POINTER = "pointer"
+
+
+def _pointer_summary(run: RunMetrics):
+    """The run's pointer summary, or None when it ran no pointer clients."""
+    if not run.pointer_records:
+        return None
+    from saorsa_deploy.pointer_results import summarise
+
+    return summarise(run.pointer_records)
+
+
+def _pointer_gates(
+    candidate: RunMetrics,
+    baseline: RunMetrics,
+    config: GateConfig,
+    history: dict,
+) -> list[GateResult]:
+    """The `[pointer]` gates: two floors plus six relative comparisons.
+
+    Emitted whenever the CANDIDATE has pointer records, and NOT ASSESSED --
+    never omitted -- when the baseline has none. A baseline recorded before this
+    tier existed has none by construction, which is every baseline on the first
+    pointer-carrying train; a gate that vanished from the report would read as
+    one nobody thought about.
+
+    Nothing here reaches the exit code, which stays the native file-op hard
+    floors'. The two FLOORS are additionally advisory by default
+    (`pointer_floor_gates_advisory`), for the same reason the WASM floors are:
+    they are uncalibrated numbers on a tier whose expected stale-read rate is
+    not yet known from any run, so gating a ship on them would be gating on a
+    guess. Promotion is a decision for after a few trains.
+    """
+    cand = _pointer_summary(candidate)
+    if cand is None:
+        return []
+    base = _pointer_summary(baseline)
+    advisory_floor = config.pointer_floor_gates_advisory
+    results: list[GateResult] = []
+
+    for label, rate, floor, detail in (
+        (
+            f"Pointer write success floor [{POINTER}]",
+            cand.write_success_rate,
+            config.pointer_write_success_floor_percent,
+            f"{cand.write_ok}/{cand.write_attempts} writes stored",
+        ),
+        (
+            f"Pointer read success floor [{POINTER}]",
+            cand.read_success_rate,
+            config.pointer_read_success_floor_percent,
+            f"{cand.read_ok}/{cand.read_attempts} reads returned the expected state",
+        ),
+    ):
+        if rate is None:
+            results.append(
+                GateResult(
+                    gate=label,
+                    kind="soft",
+                    verdict=NOT_ASSESSED,
+                    threshold=floor,
+                    unit="%",
+                    advisory=advisory_floor,
+                    single_run=True,
+                    detail="no pointer operations of this kind on the candidate",
+                )
+            )
+            continue
+        results.append(
+            GateResult(
+                gate=label,
+                kind="soft",
+                verdict=PASS if rate >= floor else FAIL,
+                candidate=rate,
+                threshold=floor,
+                unit="%",
+                advisory=advisory_floor,
+                single_run=True,
+                detail=(
+                    f"{detail} — advisory, not blocking" if advisory_floor else detail
+                ),
+            )
+        )
+
+    # Relative gates. Every one is a "higher is worse" comparison, which is what
+    # `_compare_scalar` applies the noise rule to.
+    #
+    # The stale-read rate is compared, never floored: ADR-0016 says an eclipsed
+    # reader can be handed an older validly-signed state and cannot tell, so a
+    # non-zero rate is the expected steady state and only a RISE is a finding.
+    relative = (
+        (
+            f"Pointer stale-read rate [{POINTER}]",
+            cand.stale_read_rate,
+            base.stale_read_rate if base else None,
+            config.pointer_stale_read_rate_increase_percent,
+            "%",
+            f"{cand.stale_reads}/{cand.read_attempts} reads served a stale state",
+        ),
+        (
+            f"Pointer lost-write rate [{POINTER}]",
+            cand.lost_write_rate,
+            base.lost_write_rate if base else None,
+            config.pointer_lost_write_rate_increase_percent,
+            "%",
+            f"{cand.lost_writes}/{cand.write_attempts} writes did not land",
+        ),
+        (
+            f"Pointer write latency p50 [{POINTER}]",
+            cand.write_latency(0.50),
+            base.write_latency(0.50) if base else None,
+            config.pointer_write_latency_p50_increase_percent,
+            "ms",
+            "",
+        ),
+        (
+            f"Pointer write latency p95 [{POINTER}]",
+            cand.write_latency(0.95),
+            base.write_latency(0.95) if base else None,
+            config.pointer_write_latency_p95_increase_percent,
+            "ms",
+            "",
+        ),
+        (
+            f"Pointer read latency p50 [{POINTER}]",
+            cand.read_latency(0.50),
+            base.read_latency(0.50) if base else None,
+            config.pointer_read_latency_p50_increase_percent,
+            "ms",
+            "",
+        ),
+        (
+            f"Pointer read latency p95 [{POINTER}]",
+            cand.read_latency(0.95),
+            base.read_latency(0.95) if base else None,
+            config.pointer_read_latency_p95_increase_percent,
+            "ms",
+            "",
+        ),
+        (
+            f"Pointer ANT cost per write [{POINTER}]",
+            # In atto. A relative comparison, so the unit cancels; converting to
+            # whole ANT first would only lose precision.
+            float(cand.mean_ant_atto_per_write)
+            if cand.mean_ant_atto_per_write is not None
+            else None,
+            float(base.mean_ant_atto_per_write)
+            if base and base.mean_ant_atto_per_write is not None
+            else None,
+            config.pointer_cost_per_write_increase_percent,
+            "atto",
+            f"over {cand.paid_write_count} paid write(s)",
+        ),
+    )
+    for label, cand_value, base_value, threshold, unit, detail in relative:
+        result = _compare_scalar(
+            gate=label,
+            candidate=cand_value,
+            baseline=base_value,
+            threshold=threshold,
+            config=config,
+            unit=unit,
+            history=history.get(label),
+            missing_detail=(
+                POINTER_NO_BASELINE_REASON
+                if base is None
+                else "no measurement on one or both runs"
+            ),
+        )
+        if detail and result.verdict != NOT_ASSESSED:
+            result = replace(
+                result, detail=f"{result.detail} {detail}".strip()
+            )
+        results.append(result)
+    return results
+
+
+#: The NOT ASSESSED reason a pointer relative gate carries when the baseline ran
+#: no pointer clients. A fixed string, like NEW_BASELINE_REASON, because the
+#: skills match on it.
+POINTER_NO_BASELINE_REASON = "baseline has no pointer records"
 
 
 def _group_definitions(

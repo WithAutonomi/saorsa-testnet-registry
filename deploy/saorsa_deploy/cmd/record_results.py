@@ -12,6 +12,12 @@ The CLI entry point ``cmd_record_results`` resolves the deployment's
 * ``prod-local-uploads`` / ``prod-local-downloads`` → rejected. Local
   uploads/downloads write directly to Postgres at run time; there is
   nothing to record.
+
+A ``testnet`` run carrying pointer clients ALSO records the ``pointer``
+measurement into ``deployment_pointer_records``, in the same pass. It is not a
+kind of its own: a pointer client rides an ordinary testnet alongside the
+transfer clients, so its results have to be picked up by the same command
+rather than by one an operator has to remember separately.
 """
 import logging
 import os
@@ -21,7 +27,13 @@ from decimal import Decimal, InvalidOperation
 
 from rich.console import Console
 from rich.table import Table
-from saorsa_db.models import FileOpType, OpRecordStatus, ProdUploadStatus
+from saorsa_db.models import (
+    FileOpType,
+    OpRecordStatus,
+    PointerOp,
+    PointerOutcome,
+    ProdUploadStatus,
+)
 
 from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.client_transport import (
@@ -33,12 +45,14 @@ from saorsa_deploy.influx import (
     aggregate_file_results,
     fetch_all_operation_points,
     fetch_all_prod_upload_points,
+    fetch_pointer_points,
 )
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.registry import get_repository
 from saorsa_deploy.slack_api import SlackApiError, post_reply
 from saorsa_deploy.slack_results import (
     file_ops_result_blocks,
+    pointer_result_blocks,
     prod_upload_result_blocks,
 )
 from saorsa_deploy.state import load_client_state, load_monitoring_state
@@ -117,6 +131,15 @@ def cmd_record_results(args):
             repo, deployment, args, console,
             influx_url, influx_token, influx_org, influx_bucket,
         )
+        # Pointer clients ride an ordinary testnet, so their records are picked
+        # up in the same pass rather than by a command of their own. A run with
+        # none finds no points and says nothing.
+        pointer_blocks = _record_pointer_ops(
+            repo, deployment, args, console,
+            influx_url, influx_token, influx_org, influx_bucket,
+        )
+        if pointer_blocks:
+            results_blocks = (results_blocks or []) + pointer_blocks
 
     # Close the pool claims this deployment took. Only reached for the remote
     # kinds: prod-local-uploads resolves its claims inline as it uploads, and
@@ -343,6 +366,100 @@ def _record_file_ops(
     )
 
     return file_ops_result_blocks(aggregates, op_records=op_records)
+
+
+def _record_pointer_ops(
+    repo, deployment, args, console,
+    influx_url, influx_token, influx_org, influx_bucket,
+) -> list[dict] | None:
+    """Persist every `ant pointer` operation into ``deployment_pointer_records``.
+
+    Always queried from epoch (``start="0"``), like the per-op file records:
+    ``--window`` narrows the file-op AGGREGATE, but the per-op tables are the
+    windowable ones and a re-run is expected to backfill the full history.
+
+    An unrecognised op or outcome is counted as unusable rather than coerced.
+    Coercing would put a value this build does not understand into a column the
+    gates read, and reading `error` where the client wrote something else is
+    worse than a gap that announces itself.
+    """
+    network_profile_for_host = _build_network_profile_lookup(deployment)
+    try:
+        points = fetch_pointer_points(
+            influx_url, influx_token, influx_org, influx_bucket, "0"
+        )
+    except Exception as e:
+        console.print(
+            f"[yellow]Warning: pointer query failed, no pointer records "
+            f"written: {e}[/yellow]"
+        )
+        return None
+    if not points:
+        return None
+
+    recorded = 0
+    unusable = 0
+    records: list[dict] = []
+    for point in points:
+        start_ns = point.get("start_ns")
+        if start_ns is None:
+            unusable += 1
+            continue
+        try:
+            op = PointerOp(point["op"])
+            outcome = PointerOutcome(point["outcome"])
+        except ValueError:
+            unusable += 1
+            continue
+        started_at = datetime.fromtimestamp(
+            start_ns / 1_000_000_000, tz=timezone.utc
+        )
+        repo.upsert_pointer_record(
+            deployment_id=deployment.id,
+            client_hostname=point["host"],
+            region=point.get("region"),
+            op=op,
+            outcome=outcome,
+            start_ns=start_ns,
+            influx_time=point["_time"],
+            started_at=started_at,
+            finished_at=point["_time"],
+            duration_ms=point.get("duration_ms"),
+            pointer_address=point.get("address"),
+            owned=point.get("owned", True),
+            counter_expected=point.get("counter_expected"),
+            counter_observed=point.get("counter_observed"),
+            target_kind=point.get("target_kind"),
+            age_secs=point.get("age_secs"),
+            read_back=point.get("read_back"),
+            attempts=point.get("attempts"),
+            paid_attempts=point.get("paid_attempts"),
+            ant_spend_atto=point.get("ant_spend_atto"),
+            gas_spend_wei=point.get("gas_spend_wei"),
+            error=point.get("error"),
+            network_profile=network_profile_for_host(point["host"]),
+        )
+        recorded += 1
+        records.append(
+            {
+                "client_hostname": point["host"],
+                "op": op.value,
+                "outcome": outcome.value,
+                "owned": point.get("owned", True),
+                "read_back": point.get("read_back"),
+                "paid_attempts": point.get("paid_attempts"),
+                "ant_spend_atto": point.get("ant_spend_atto"),
+                "gas_spend_wei": point.get("gas_spend_wei"),
+                "duration_ms": point.get("duration_ms"),
+            }
+        )
+
+    console.print(
+        f"[bold green]Recorded {recorded} pointer operation(s) "
+        f"({unusable} unusable point(s)) for deployment '{args.name}'."
+        f"[/bold green]"
+    )
+    return pointer_result_blocks(records)
 
 
 def _build_network_profile_lookup(deployment):

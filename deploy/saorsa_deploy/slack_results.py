@@ -214,6 +214,90 @@ def _op_detail_line(record: dict) -> str:
     )
 
 
+def pointer_result_blocks(records: list[dict]) -> list[dict]:
+    """Pointer results for the `record-results --update-slack` threaded reply.
+
+    Reports the stale rate BESIDE the success rate rather than folding it in.
+    ADR-0016 expects a non-zero stale rate, so a single "N ok / M fail" line
+    would read as a network in trouble on a run that was healthy -- and would
+    hide the one figure whose trend is the actual signal.
+
+    Empty when a run had no pointer clients, so the reply of every existing
+    testnet is unchanged.
+    """
+    from saorsa_deploy.pointer_results import OPS, summarise, summarise_by_host
+
+    if not records:
+        return []
+    pooled = summarise(records)
+    blocks: list[dict] = [_section("*Pointer results:*")]
+    blocks.append(
+        _fields_section(
+            [
+                (
+                    "Writes",
+                    f"{pooled.write_ok}/{pooled.write_attempts} ok"
+                    + (
+                        f" ({pooled.write_success_rate:.2f}%)"
+                        if pooled.write_success_rate is not None
+                        else ""
+                    ),
+                ),
+                (
+                    "Reads",
+                    f"{pooled.read_ok}/{pooled.read_attempts} ok"
+                    + (
+                        f" ({pooled.read_success_rate:.2f}%)"
+                        if pooled.read_success_rate is not None
+                        else ""
+                    ),
+                ),
+                (
+                    "Stale reads",
+                    f"{pooled.stale_reads}"
+                    + (
+                        f" ({pooled.stale_read_rate:.2f}%) — expected non-zero"
+                        if pooled.stale_read_rate is not None
+                        else ""
+                    ),
+                ),
+                (
+                    "Lost writes",
+                    f"{pooled.lost_writes}"
+                    + (
+                        f" ({pooled.lost_write_rate:.2f}%)"
+                        if pooled.lost_write_rate is not None
+                        else ""
+                    ),
+                ),
+                (
+                    "Read-your-writes",
+                    f"{pooled.read_your_writes_ok}/{pooled.read_your_writes_total}",
+                ),
+                ("RPC-error writes", str(pooled.rpc_error_writes)),
+                ("Double payments", str(pooled.double_payments)),
+                ("Paid but not stored", str(pooled.paid_but_failed_writes)),
+                (
+                    "Mean cost per write",
+                    f"{_fmt_token(pooled.mean_ant_atto_per_write, 'ANT')}"
+                    f" + {_fmt_token(pooled.mean_gas_wei_per_write, 'ETH')}",
+                ),
+            ]
+        )
+    )
+
+    host_lines = []
+    for host, summary in summarise_by_host(records).items():
+        per_op = " ".join(
+            f"{op}:{summary.by_op[op].ok}/{summary.by_op[op].attempts}"
+            for op in OPS
+            if summary.by_op[op].attempts
+        )
+        host_lines.append(f"• *{host}* — {per_op or 'no operations'}")
+    blocks.extend(_chunked_sections("*Per-host pointer ops (ok/attempts):*", host_lines))
+    return blocks
+
+
 def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
     """Per-host summary, grand totals, and per-file detail for prod-uploaders.
 

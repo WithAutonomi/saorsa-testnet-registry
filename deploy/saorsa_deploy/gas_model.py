@@ -52,6 +52,11 @@ class GasModelError(ValueError):
 #: client tier, which was necessarily native, so NULL reads as native.
 NATIVE = "native"
 WASM = "wasm"
+#: A pointer client. Not a transport -- it drives the same native `ant` -- but it
+#: sits in the same field because what the field selects is which per-operation
+#: fixed cost applies, and a pointer write's is its own: one single-node quote
+#: for a ~5 KB record, with no per-GB component at all.
+POINTER = "pointer"
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,12 @@ class GasModel:
     round_up_to_eth: float
     minimum_eth_per_uploader: float
     wasm_fixed_cost_multiplier: float = 1.0
+    #: Fixed ETH for one pointer write at the reference base fee. A pointer write
+    #: -- create and update alike -- is one paid single-node quote, so it is
+    #: seeded from `fixed_eth_per_upload`, which is the same shape of cost. It is
+    #: a key of its own rather than a reuse because the two will diverge as soon
+    #: as either is recalibrated, and a pointer write has no per-GB term at all.
+    fixed_eth_per_pointer_write: float = 0.0
 
     def eth_per_upload(
         self, size_gb: float, base_fee_gwei: float, transport: str = NATIVE
@@ -86,6 +97,13 @@ class GasModel:
             raise GasModelError(
                 f"base_fee_gwei must be > 0, got {base_fee_gwei}"
             )
+        if transport == POINTER:
+            # A pointer record is a fixed ~5 KB, so there is no payload term:
+            # `size_gb` is 0 for every pointer plan and multiplying it by
+            # `eth_per_gb` would be a no-op that only invited a caller to pass a
+            # size that means something else.
+            at_reference = self.fixed_eth_per_pointer_write
+            return at_reference * (base_fee_gwei / self.reference_base_fee_gwei)
         fixed = self.fixed_eth_per_upload
         if transport == WASM:
             fixed *= self.wasm_fixed_cost_multiplier
@@ -145,6 +163,9 @@ def load_gas_model(path: Optional[Path] = None) -> GasModel:
         ),
         wasm_fixed_cost_multiplier=_require(
             raw, "wasm_fixed_cost_multiplier", path
+        ),
+        fixed_eth_per_pointer_write=_require(
+            model, "fixed_eth_per_pointer_write", path
         ),
     )
 

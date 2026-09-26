@@ -37,6 +37,12 @@ from saorsa_deploy.gate_comparison import (
 from saorsa_deploy.gate_config import GateConfigError, load_gate_config
 from saorsa_deploy.gate_report import render_report
 from saorsa_deploy.log_patterns import LogPatternError, load_pattern_set
+from saorsa_deploy.pointer_results import (
+    filter_to_window as filter_pointer_records_to_window,
+)
+from saorsa_deploy.pointer_results import (
+    normalise_records as normalise_pointer_records,
+)
 from saorsa_deploy.registry import get_repository
 
 _VERDICT_STYLE = {
@@ -146,9 +152,19 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
 
     uploads = repo.list_upload_records_for_deployment(deployment_id)
     downloads = repo.list_download_records_for_deployment(deployment_id)
+    # Normalised to plain dicts here, not in the engine: `pointer_results` is
+    # the one place that knows how to read a pointer row, and both this and
+    # `print-pointers` go through it so a gate and the table an operator reads
+    # cannot disagree about a rate.
+    pointers = normalise_pointer_records(
+        repo.list_pointer_records_for_deployment(deployment_id)
+    )
     if window_label != WINDOW_FULL_RUN and window_start and window_end:
         uploads = filter_ops_to_window(uploads, window_start, window_end)
         downloads = filter_ops_to_window(downloads, window_start, window_end)
+        pointers = filter_pointer_records_to_window(
+            pointers, window_start, window_end
+        )
 
     return RunMetrics(
         deployment_id=deployment.id,
@@ -162,6 +178,7 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
         rss_buckets=rss_buckets,
         derived=derived,
         log_event_counts=log_event_counts,
+        pointer_records=pointers,
     )
 
 

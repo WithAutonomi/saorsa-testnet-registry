@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         DeploymentDownloadRecord,
         DeploymentUploadRecord,
     )
+    from saorsa_db.models.pointer_record import DeploymentPointerRecord
     from saorsa_db.models.prod_canary import DeploymentProdCanaryUpload
     from saorsa_db.models.prod_download_result import DeploymentProdDownloadResult
     from saorsa_db.models.prod_upload_result import DeploymentProdUploadResult
@@ -84,6 +85,12 @@ class Deployment(Base):
     download_records: Mapped[list["DeploymentDownloadRecord"]] = relationship(
         back_populates="deployment",
         order_by="DeploymentDownloadRecord.start_ns",
+        cascade="all, delete-orphan",
+    )
+
+    pointer_records: Mapped[list["DeploymentPointerRecord"]] = relationship(
+        back_populates="deployment",
+        order_by="DeploymentPointerRecord.start_ns",
         cascade="all, delete-orphan",
     )
 

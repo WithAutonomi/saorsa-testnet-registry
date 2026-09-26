@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from saorsa_deploy.cmd.record_log_counts import cmd_record_log_counts
+from saorsa_deploy.log_patterns import load_pattern_set
 
 
 def _args(**overrides):
@@ -64,9 +65,22 @@ def _es_response(count: int) -> dict:
     }
 
 
+#: Patterns in the shipped catalogue. Derived, not hard-coded: the catalogue is
+#: config and grows (the pointer groups were added at v3), and a test that has to
+#: be edited every time one does would eventually be edited without being read.
+_PATTERN_COUNT = len(load_pattern_set().patterns)
+
+
 def _run(args, repo, responses):
-    """Drive the command with a scripted sequence of Elasticsearch responses."""
-    calls = iter(responses)
+    """Drive the command with a scripted sequence of Elasticsearch responses.
+
+    Responses past the end of the list repeat the last one. The command issues
+    one query per pattern plus one per pointer RPC event, and a test that cares
+    about the first few must not have to enumerate the rest -- that coupling is
+    what broke every test here when the catalogue gained a group.
+    """
+    calls = list(responses)
+    index = {"n": 0}
 
     class FakeClient:
         def __init__(self, *_, **__):
@@ -74,7 +88,9 @@ def _run(args, repo, responses):
 
         def search(self, index_pattern, body):
             self.last_index = index_pattern
-            return next(calls)
+            position = min(index["n"], len(calls) - 1)
+            index["n"] += 1
+            return calls[position]
 
     with patch("saorsa_deploy.cmd.record_log_counts.get_repository", return_value=repo):
         with patch("saorsa_deploy.cmd.record_log_counts.ESClient", FakeClient):
@@ -86,7 +102,9 @@ def test_records_one_row_per_pattern():
     # First response is the total-documents query, then one per pattern.
     _run(_args(), repo, [_es_response(1_000_000)] + [_es_response(500)] * 4)
 
-    assert len(repo.rows) == 4
+    # One row per catalogue pattern, plus one per pointer RPC event outcome —
+    # those are recorded in the same table, keyed `<event>:<outcome>`.
+    assert len(repo.rows) >= _PATTERN_COUNT
     keys = {row["event_key"] for row in repo.rows}
     assert "connection_attempt_failed" in keys
     assert "dial_failed_all_candidates" in keys
@@ -144,7 +162,7 @@ def test_a_zero_count_against_a_populated_index_is_still_recorded():
     }
     repo = FakeRepo()
     _run(_args(), repo, [_es_response(1_000_000)] + [empty] * 4)
-    assert len(repo.rows) == 4
+    assert len(repo.rows) == _PATTERN_COUNT
     assert all(row["count"] == 0 for row in repo.rows)
     assert all(row["observed_start"] is None for row in repo.rows)
     assert all(row["total_documents"] == 1_000_000 for row in repo.rows)

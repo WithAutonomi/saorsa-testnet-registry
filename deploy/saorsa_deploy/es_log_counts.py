@@ -190,6 +190,146 @@ def parse_count_response(response: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Pointer RPC latency events (V2-1339)
+# ---------------------------------------------------------------------------
+#
+# ant-node emits one INFO event per pointer PUT and GET on a dedicated tracing
+# target, carrying the outcome and the duration. They are the only quantitative
+# node-side pointer signal that is not DEBUG, and they answer a question the
+# client-side records cannot: whether "the client saw a stale state" is the same
+# event as "a node answered stale".
+#
+# Telegraf's tail input captures every non-numeric JSON field, so the event name
+# lands in `tail.message` and the structured fields beside it as `tail.outcome`
+# and `tail.duration_ms`. `tail.*` is dynamically mapped, which gives a string a
+# `.keyword` subfield -- so the outcome is aggregatable and the duration is a
+# number.
+
+#: Tracing target both events are emitted on. Filtered on as well as the message
+#: so a future log line that happens to mention `pointer_put_rpc` in prose
+#: cannot be counted as one.
+RPC_LATENCY_TARGET = "ant_node::storage::rpc_latency"
+TARGET_FIELD = "tag.target.keyword"
+OUTCOME_FIELD = "tail.outcome.keyword"
+DURATION_FIELD = "tail.duration_ms"
+
+#: The two events, and the outcomes each can report. Listed so an outcome that
+#: never occurred is still printed as zero -- a column that vanishes makes two
+#: runs' tables incomparable by eye, and "no `stale` answers" is a finding.
+POINTER_RPC_EVENTS = {
+    "pointer_put_rpc": ("success", "unchanged", "stale", "payment_required", "error"),
+    "pointer_get_rpc": ("success", "not_found", "error"),
+}
+
+#: Percentiles taken on the event's own `duration_ms`, matching what the client
+#: side reports so the two latencies can be put beside each other.
+RPC_LATENCY_PERCENTILES = (50.0, 95.0)
+
+
+def build_rpc_latency_query(
+    event: str,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict:
+    """Count one `rpc_latency` event, broken down by outcome, with latencies.
+
+    ``size: 0`` and ``track_total_hits`` for the same reasons the phrase query
+    uses them. The percentiles are taken INSIDE the outcome terms aggregation as
+    well as overall: a rise in the overall p95 driven entirely by the `error`
+    outcome is a different finding from one spread across successes.
+    """
+    return {
+        "size": 0,
+        "track_total_hits": True,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {TARGET_FIELD: RPC_LATENCY_TARGET}},
+                    {"match_phrase": {MESSAGE_FIELD: event}},
+                    *_range_filter(start, end),
+                ]
+            }
+        },
+        "aggs": {
+            "host_count": {"cardinality": {"field": HOST_FIELD}},
+            "first_seen": {"min": {"field": TIMESTAMP_FIELD}},
+            "last_seen": {"max": {"field": TIMESTAMP_FIELD}},
+            "latency": {
+                "percentiles": {
+                    "field": DURATION_FIELD,
+                    "percents": list(RPC_LATENCY_PERCENTILES),
+                }
+            },
+            "outcomes": {
+                "terms": {"field": OUTCOME_FIELD, "size": 20},
+                "aggs": {
+                    "latency": {
+                        "percentiles": {
+                            "field": DURATION_FIELD,
+                            "percents": list(RPC_LATENCY_PERCENTILES),
+                        }
+                    }
+                },
+            },
+        },
+    }
+
+
+def _percentile_values(agg: dict | None) -> dict:
+    """Read a `percentiles` aggregation into {50.0: ms, 95.0: ms}.
+
+    Elasticsearch returns the keys as strings ("50.0"), and a percentile over no
+    documents comes back as null -- which stays None rather than becoming zero. A
+    zero latency for an event that never occurred would read as instantaneous.
+    """
+    values = (agg or {}).get("values") or {}
+    out = {}
+    for percent in RPC_LATENCY_PERCENTILES:
+        raw = values.get(str(percent), values.get(percent))
+        out[percent] = float(raw) if isinstance(raw, (int, float)) else None
+    return out
+
+
+def parse_rpc_latency_response(response: dict, event: str) -> dict:
+    """Read an `rpc_latency` query's response into the stored per-outcome shape.
+
+    Every outcome the event can report appears, at zero if it did not occur.
+    """
+    aggs = response.get("aggregations") or {}
+    total = (response.get("hits") or {}).get("total") or {}
+    count = total.get("value") if isinstance(total, dict) else total
+    buckets = {
+        bucket["key"]: bucket
+        for bucket in ((aggs.get("outcomes") or {}).get("buckets") or [])
+    }
+    by_outcome = {}
+    for outcome in POINTER_RPC_EVENTS.get(event, tuple(buckets)):
+        bucket = buckets.pop(outcome, None)
+        by_outcome[outcome] = {
+            "count": int((bucket or {}).get("doc_count") or 0),
+            "latency": _percentile_values((bucket or {}).get("latency")),
+        }
+    # An outcome this build does not know about is kept rather than dropped: it
+    # means ant-node grew one, and silently discarding it would leave the
+    # per-outcome counts not summing to the total.
+    for outcome, bucket in buckets.items():
+        by_outcome[outcome] = {
+            "count": int(bucket.get("doc_count") or 0),
+            "latency": _percentile_values(bucket.get("latency")),
+        }
+    host_count = (aggs.get("host_count") or {}).get("value")
+    return {
+        "event": event,
+        "count": int(count or 0),
+        "hosts": int(host_count) if host_count is not None else None,
+        "first_seen": _parse_timestamp(aggs.get("first_seen")),
+        "last_seen": _parse_timestamp(aggs.get("last_seen")),
+        "latency": _percentile_values(aggs.get("latency")),
+        "by_outcome": by_outcome,
+    }
+
+
 def rate_per_hour(count: int, start: datetime | None, end: datetime | None) -> float | None:
     """Occurrences per hour across the span the matches actually cover.
 

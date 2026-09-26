@@ -780,6 +780,25 @@ def main(argv=None):
         "[:network=PROFILE][:rust_log=VALUE]'. See --wasm-uploader.",
     )
     clients_infra_parser.add_argument(
+        "--pointer",
+        type=str,
+        action="append",
+        default=[],
+        help="Pointer client VM spec: "
+        "'provider:region[:vm_size][:ant=N][:eth=N][:clock_skew=DURATION]"
+        "[:bootstrap_cache=BOOL][:forward_logs=BOOL][:network=PROFILE]"
+        "[:create_interval_secs=N][:update_interval_secs=N]"
+        "[:sweep_interval_secs=N][:chain_fraction=F][:pointer_max=N]"
+        "[:rust_log=VALUE]'. Runs `ant pointer create|update|get|resolve` in a "
+        "loop for the life of the run, so paid mutable references are exercised "
+        "on a testnet. No file size: a pointer record is a fixed ~5 KB. Carries "
+        "a funded wallet like an uploader because every write (create AND "
+        "update) is one paid single-node quote — at the defaults that is 180 "
+        "writes/hour, one transaction every 20s. rust_log, if given, must be "
+        "last. Example: --pointer 'digital_ocean:lon1' "
+        "--pointer 'digital_ocean:syd1:s-2vcpu-4gb:eth=1'",
+    )
+    clients_infra_parser.add_argument(
         "--force",
         action="store_true",
         help="Delete stale Terraform state files and proceed",
@@ -1421,6 +1440,92 @@ def main(argv=None):
             "deployment_upload_records and deployment_download_records "
             "after the per-host aggregate table."
         ),
+    )
+
+    # deployments print-pointers
+    deployments_print_pointers_parser = deployments_subparsers.add_parser(
+        "print-pointers",
+        help=(
+            "Print pointer-client results: attempts and outcome counts per op, "
+            "the read-your-writes match count, RPC-error writes, double "
+            "payments and the mean cost per write. --name reads the live "
+            "InfluxDB feed; --id reads the recorded Postgres table."
+        ),
+    )
+    pointer_source = deployments_print_pointers_parser.add_mutually_exclusive_group(
+        required=True
+    )
+    pointer_source.add_argument(
+        "--name",
+        type=str,
+        help=(
+            "Deployment name. Reads the run's InfluxDB — the LIVE view, "
+            "available while the run is going on and the only source before "
+            "`record-results` has run."
+        ),
+    )
+    pointer_source.add_argument(
+        "--id",
+        type=int,
+        help=(
+            "Deployment id. Reads deployment_pointer_records in Postgres — the "
+            "post-run view, which survives teardown. Names are reused across "
+            "runs, so an id is what points at one run."
+        ),
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--window-start",
+        type=str,
+        default=None,
+        help=(
+            "Only count operations that FINISHED at or after this ISO-8601 "
+            "timestamp (e.g. 2026-09-26T20:00:00)."
+        ),
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--window-end",
+        type=str,
+        default=None,
+        help="Only count operations that finished before this ISO-8601 timestamp.",
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--by-age",
+        action="store_true",
+        help=(
+            "Also print sweep outcomes bucketed by the pointer's age at read, "
+            "own and foreign pointers separately — so a rising stale or "
+            "not-found rate with age is a table rather than a judgement."
+        ),
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--age-bucket-secs",
+        type=int,
+        default=None,
+        help="Width of an --by-age bucket in seconds (default 1800).",
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--monitoring-name",
+        type=str,
+        default=None,
+        help=(
+            "Monitoring stack name to load Influx credentials from "
+            "(defaults to --name)."
+        ),
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--influx-url", type=str, default=None,
+        help="InfluxDB URL (overrides the monitoring state lookup)",
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--influx-token", type=str, default=None,
+        help="InfluxDB API token (overrides the monitoring state lookup)",
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--influx-org", type=str, default=None, help="InfluxDB org (default ant)"
+    )
+    deployments_print_pointers_parser.add_argument(
+        "--influx-bucket", type=str, default=None,
+        help="InfluxDB bucket (default testnet-metrics)",
     )
 
     # deployments print-uploads
@@ -7023,6 +7128,10 @@ def main(argv=None):
             from saorsa_deploy.cmd.print_file_ops import cmd_print_downloads
 
             cmd_print_downloads(args)
+        elif args.deployments_subcommand == "print-pointers":
+            from saorsa_deploy.cmd.print_pointers import cmd_print_pointers
+
+            cmd_print_pointers(args)
         elif args.deployments_subcommand == "print-recorded-results":
             from saorsa_deploy.cmd.print_recorded_results import (
                 cmd_print_recorded_results,

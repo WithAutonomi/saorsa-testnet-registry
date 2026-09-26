@@ -441,6 +441,101 @@ class WasmDownloader(_Base):
     rust_log: Optional[str] = None
 
 
+#: Default workload rates for a pointer client. Together they are 60 creates and
+#: 120 updates an hour -- 180 paid writes, one every 20 seconds. That is the
+#: figure the run issues size wallet funding and Arbitrum Sepolia RPC load
+#: against, so changing a default here changes what a run costs.
+POINTER_CREATE_INTERVAL_SECS = 60
+POINTER_UPDATE_INTERVAL_SECS = 30
+POINTER_SWEEP_INTERVAL_SECS = 600
+POINTER_CHAIN_FRACTION = 0.10
+
+
+class PointerClient(_Base):
+    """A client exercising pointers -- paid, owner-signed mutable references.
+
+    Deliberately a role of its own rather than an option on `Uploader`, for the
+    reason the WASM roles are: the role names the VM, its Terraform workspace and
+    its S3 state key. It is also a different instrument. An uploader measures a
+    transfer; this measures whether a reference that was written can be read back
+    and whether it goes stale -- which the ADR says it sometimes will, since an
+    eclipsed reader can be handed an older, validly signed state and cannot tell.
+
+    It carries a funded wallet like an uploader because every write -- create and
+    update alike -- is one paid single-node quote.
+    """
+
+    provider: str
+    region: str
+    vm_size: Optional[str] = None
+    ant: Optional[str] = None  # wallet funding (ANT tokens)
+    eth: Optional[str] = None  # wallet funding (ETH)
+    clock_skew: Optional[ClockSkew] = None  # signed duration skew (e.g. "2h", "-2h")
+    # Simulated residential link conditions on this VM — see Uploader.network.
+    network: Optional[Network] = None
+    # ant peer cache: True (default) invokes ant WITHOUT --bootstrap and ships a
+    # bootstrap_peers.toml instead; False keeps the legacy --bootstrap invocation.
+    bootstrap_cache: Optional[bool] = None
+    # Forward this client's ant stdout+stderr to the deployment's Elasticsearch
+    # instance (index telegraf-ant-clients-{name}). Requires elastic.enabled.
+    forward_logs: Optional[bool] = None
+    # RUST_LOG for the `ant pointer` invocations this client makes.
+    rust_log: Optional[str] = None
+
+    # --- workload ---------------------------------------------------------
+    # Create a brand-new pointer this often. Creation runs for the WHOLE run
+    # rather than seeding a fixed pool up front, because the question is whether
+    # a pointer decays with age, and that needs pointers of every age present at
+    # every moment.
+    create_interval_secs: int = POINTER_CREATE_INTERVAL_SECS
+    # Update a uniformly-random owned pointer this often, then read it back.
+    update_interval_secs: int = POINTER_UPDATE_INTERVAL_SECS
+    # Minimum gap between sweeps of every known pointer (own and foreign). A
+    # sweep that takes longer than this simply starts the next one immediately;
+    # a large pool makes a sweep take longer, it does not drop pointers from it.
+    sweep_interval_secs: int = POINTER_SWEEP_INTERVAL_SECS
+    # Fraction of updates that re-point at another OWNED pointer (target kind
+    # `pointer`) instead of a chunk, and are then followed with `resolve`. 0
+    # disables chaining.
+    chain_fraction: float = POINTER_CHAIN_FRACTION
+    # Safety cap on how many pointers one client will own. 0 (the default) means
+    # no cap: the pool is meant to be unbounded so decay with age is observable.
+    pointer_max: int = 0
+
+    @model_validator(mode="after")
+    def _workload_is_runnable(self) -> "PointerClient":
+        for field in ("create_interval_secs", "update_interval_secs", "sweep_interval_secs"):
+            value = getattr(self, field)
+            if value <= 0:
+                raise ValueError(
+                    f"clients.pointers: {field} must be > 0, got {value}. A zero "
+                    "interval is a busy loop against a paid operation, not a "
+                    "disabled one."
+                )
+        if not 0.0 <= self.chain_fraction <= 1.0:
+            raise ValueError(
+                f"clients.pointers: chain_fraction must be between 0 and 1, got "
+                f"{self.chain_fraction}."
+            )
+        if self.pointer_max < 0:
+            raise ValueError(
+                f"clients.pointers: pointer_max must be >= 0 (0 = uncapped), got "
+                f"{self.pointer_max}."
+            )
+        return self
+
+    @property
+    def writes_per_hour(self) -> float:
+        """Paid writes this client's configuration performs per hour.
+
+        Creates plus updates: both are one paid single-node quote, at the same
+        price, so the sum is what sizes the wallet. Reads are free. Rates are
+        deterministic, which is why sizing a pointer client needs no baseline
+        throughput the way an uploader does.
+        """
+        return 3600.0 / self.create_interval_secs + 3600.0 / self.update_interval_secs
+
+
 class Clients(_Base):
     uploaders: list[Uploader] = []
     downloaders: list[Downloader] = []
@@ -448,6 +543,12 @@ class Clients(_Base):
     # testnet may run either, or both side by side for a comparison.
     wasm_uploaders: list[WasmUploader] = []
     wasm_downloaders: list[WasmDownloader] = []
+    # Pointer clients. Independent of both transfer tiers: a pointer client
+    # neither publishes file addresses nor consumes them, so it is not subject to
+    # the uploader/downloader pairing rule below. It does READ the shared upload
+    # address pool for realistic `chunk` targets, and falls back to random
+    # 32-byte addresses when the pool is empty, so it never depends on uploaders.
+    pointers: list[PointerClient] = []
 
     @model_validator(mode="after")
     def _both_roles(self) -> "Clients":
@@ -481,11 +582,16 @@ class Clients(_Base):
             *self.downloaders,
             *self.wasm_uploaders,
             *self.wasm_downloaders,
+            *self.pointers,
         ]
 
     @property
     def has_wasm(self) -> bool:
         return bool(self.wasm_uploaders or self.wasm_downloaders)
+
+    @property
+    def has_pointers(self) -> bool:
+        return bool(self.pointers)
 
 
 def _require_client_binaries(clients, binaries, kind: str) -> None:
@@ -498,7 +604,11 @@ def _require_client_binaries(clients, binaries, kind: str) -> None:
     """
     if clients is None:
         return
-    if (clients.uploaders or clients.downloaders) and binaries.ant is None:
+    if (
+        clients.uploaders or clients.downloaders or clients.pointers
+    ) and binaries.ant is None:
+        # Pointer clients drive the native `ant pointer` subcommands, so they
+        # need `ant` for the same reason the native transfer clients do.
         raise ValueError(f"{kind}.binaries.ant is required when clients are configured")
     if clients.has_wasm:
         if binaries.ant_wasm is None:

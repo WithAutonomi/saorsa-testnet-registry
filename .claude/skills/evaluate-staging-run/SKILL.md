@@ -51,6 +51,8 @@ Rules:
 | soft | Outbound bytes per GB of traffic | `deployment_derived_metrics` |
 | soft | Disk bytes per GB stored | `deployment_derived_metrics` |
 | soft | Connection errors, one gate per group | `deployment_log_event_counts` |
+| advisory | Pointer write / read success floors `[pointer]` — rendered `… (advisory)`, never in the verdict | `deployment_pointer_records` |
+| soft | Pointer stale-read rate, lost-write rate, write/read latency p50/p95, ANT cost per write — all `[pointer]`, all vs baseline | `deployment_pointer_records` |
 
 Gate names carry a `[native]` or `[wasm]` suffix whenever either run has WASM records. The WASM
 (browser-path, WebRTC-Direct) client is a test instrument, but its results are not optional: every
@@ -60,6 +62,23 @@ Gate names carry a `[native]` or `[wasm]` suffix whenever either run has WASM re
   relayed WebRTC exists, so a WASM floor breach is expected and never fails a train. Report the
   figures; never let them change the verdict.
 - **`[wasm]` relative gates are ordinary soft gates** and count exactly like native ones.
+
+`[pointer]` gates appear only when the run carried pointer clients (V2-1339). They are the pointer
+tier: paid, owner-signed mutable references.
+
+- **`[pointer]` floor gates are advisory.** No run has ever measured a pointer tier, and ADR-0016
+  says a non-zero stale-read rate is expected without saying how large — so the floors are a guess
+  until a few trains have moved them to numbers with history. Report the figures; never let them
+  change the verdict.
+- **`[pointer]` relative gates count** as ordinary soft gates: they ask only whether this release
+  made the tier worse than the baseline did, which needs no calibration.
+- **A non-zero stale-read rate is EXPECTED.** Report it as a figure with its trend, never as a
+  fault. The gate is on the RISE against the baseline, not on the level.
+- **On the first pointer-carrying train every relative `[pointer]` gate reads NOT ASSESSED**, with
+  the reason `baseline has no pointer records`. That is correct and is not a rebaseline: the file
+  and node-tier gates compare against the previous train as normal, since a few hundred 5 KB writes
+  an hour is below run-to-run noise. Say so in the report rather than reaching for `--new-baseline`.
+- **No `[pointer]` gate reaches the exit code**, advisory or not.
 
 With `--new-baseline` in place of `--baseline-id`, every relative (soft) gate reads NOT ASSESSED
 with the reason `new baseline`; only the floors and the observational hard gates are assessed. The
@@ -179,6 +198,27 @@ uv run saorsa-deploy deployments derive-metrics --id 470 \
 
 `--name` resolves to the most recent run bearing it, so it cannot address a baseline of a reused
 name. Take each run's T0 and phase boundaries from its `Staging run — rc.N` sub-issue.
+
+### The mixed-version phase has its own label
+
+The run session records `mixed-version` alongside `steady-state` (see
+`run-staging-testnet` Step 7). Compare on **`steady-state`** as normal — that is
+the measurement phase and the phase the baseline is comparable on.
+
+Then read the mixed-version window SEPARATELY, and report it as an observation
+rather than folding it into the verdict:
+
+```bash
+uv run saorsa-deploy deployments print-pointers --id <candidate> \
+  --window-start <mixed start> --window-end <mixed end>
+```
+
+A **pre-pointer ant-node answers a protocol error to every pointer message**, so
+the pointer tier is expected to degrade during the mixed-version hour. That is why
+the phase gets its own label: the degradation is MEASURED and stated, rather than
+averaged into steady-state and lost. Do not compare the mixed-version window
+against a baseline's steady-state one — different phases are not comparable, and
+the command refuses on a label mismatch anyway.
 
 Two rules the command enforces and you should not try to work around:
 

@@ -715,13 +715,18 @@ requires.
 
 Client VMs run the ant binary as long-running upload-or-download workers against a testnet. Each VM runs *either* an uploader *or* a downloader — not both — and the downloader VMs pull addresses produced by uploaders through a per-testnet S3 folder.
 
+Two further client roles exist and are documented separately: the WASM
+(browser-path) pair below, and the **pointer** role (`--pointer` /
+`clients.pointers[]`), which exercises paid mutable references rather than file
+transfers — see "Pointer client VMs".
+
 Commands:
 
 - `clients infra --name <testnet> --uploader provider:region:file_size_mb[:vm_size][:payment=MODE][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=SPEC] [--uploader ...] --downloader provider:region[:vm_size][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:rust_log=SPEC] [--downloader ...]` — create the VMs. The optional `forward_logs=true` key forwards that VM's `ant` stdout+stderr to the deployment's Elasticsearch (index `telegraf-ant-clients-<name>`; needs `elastic provision`); `rust_log=SPEC` sets `RUST_LOG` on the service (overriding `-v`) and **must be the last token** in the spec (its value may contain `:`). Each flag is repeatable; at least one of either is required. `provider` is **mandatory** and must be one of `digital_ocean`, `vultr`, `hetzner`, `ovh` — different uploaders/downloaders may target different providers (e.g. cheap-egress providers for the upload-heavy VMs). **Region names and VM sizes vary per provider and are passed through verbatim** — supply valid strings for the chosen provider (DO `s-2vcpu-4gb` / Vultr `vc2-2c-4gb` / Hetzner `cpx22` / OVH `b3-8`, regions like DO `lon1` / Vultr `lhr` / Hetzner `fsn1` / OVH `GRA9`); there is no per-provider validation. The optional `ant=` / `eth=` keys set per-uploader funding amounts (defaults: 100 ANT, 0.5 ETH). The optional `payment=` key sets the storage-payment mode (`merkle` or `no-merkle`). The optional `clock_skew=DURATION` key makes `clients provision` disable time sync and shift that VM's clock by a **signed Go-style duration** (e.g. `2h`, `-2h`, `30m`; a leading `-` runs the clock slow) — for testing the network's clock-independence; idempotent via a `/etc/ant-clock-skew-applied` marker. The optional `bootstrap_cache=true|false` key (default **true**) controls the ant peer cache per VM: when true the service invokes `ant` **without** `--bootstrap` (the cache is enabled; peers come from a `bootstrap_peers.toml` written to `/root/.config/ant/` by `clients provision`, containing the testnet's bootstrap addresses), and `bootstrap_cache=false` restores the legacy explicit `--bootstrap` invocation, which disables the cache. OVH requires `OVH_CLOUD_PROJECT_SERVICE` (the Public Cloud project ID) plus the `OVH_APPLICATION_KEY` / `OVH_APPLICATION_SECRET` / `OVH_CONSUMER_KEY` env vars; Vultr requires `VULTR_API_KEY`; Hetzner requires `HCLOUD_TOKEN`; DigitalOcean requires `DO_TOKEN`.
 - `clients provision` — install the ant binary, `awscli`, and the relevant role's systemd unit (only one of `ant-uploader` / `ant-downloader` per VM). For each uploader, generates a fresh Arbitrum Sepolia EOA wallet, transfers the configured ANT + ETH from the funding wallet (`--wallet-secret-key` / `ANT_DEPLOY_SECRET_KEY`), persists wallet info in S3 client state, and writes the per-uploader secret key into `/etc/ant-client.env`. Idempotent: re-runs reuse wallets already recorded in client state. Skipped under `--prod`.
 - `clients start` / `clients stop` — start or stop the appropriate service per-VM based on role.
 - `clients destroy` — drains every per-uploader wallet (ANT + ETH back to the funding wallet on Arbitrum Sepolia, less a small ETH gas reserve), then tears down VMs and wipes the per-testnet addresses folder at `s3://saorsa-testnet-addresses/saorsa-deploy/addresses/<testnet>/`. Drain failures abort the destroy so VMs and state remain available for retry — pass `--wallet-secret-key` (or set `ANT_DEPLOY_SECRET_KEY`) so funds know where to return.
-- `clients clean` — remove services + artefacts without destroying the VMs; idempotent and role-tolerant.
+- `clients clean` — remove services + artefacts without destroying the VMs. It is handed IPs, never roles, so it stops and removes **every** role's unit (`ant-uploader`, `ant-downloader`, `ant-wasm-uploader`, `ant-wasm-downloader`, `ant-pointer`) — a role missing from that list leaves its service running on a "cleaned" VM.
 
 Uploader flow (`uploader.sh`): uploads a random file via `ant`, appends the returned address to a local tail buffer capped at `ADDRESSES_TAIL_SIZE` (default 10k), and flushes the buffer to `upload-<region>-<client_index>.txt` under the testnet's addresses prefix every `S3_FLUSH_EVERY_N` addresses or `S3_FLUSH_INTERVAL_SECS` seconds, whichever comes first. The flush goes through a **presigned PUT URL** minted by `clients provision` (SigV4 max expiry: 7 days — re-provision to refresh on longer-lived testnets), so it keeps working on clock-skewed VMs whose own SigV4-signed requests S3 rejects (~15min tolerance); when no URL is provisioned it falls back to the signed `aws s3 cp` path.
 
@@ -946,6 +951,194 @@ the WASM client, which was necessarily native.
 - **Fleet size.** A WASM upload needs at least **7 initial PUT peers** before it
   will pay, so a small node fleet fails every upload with
   `Witnessed close group returned only N/7 initial PUT peers before payment`.
+
+### Pointer client VMs
+
+A **pointer** is a paid, owner-signed mutable reference: one owner key owns
+exactly one pointer, forever, and every write — create and update alike — is one
+paid single-node quote (ADR-0016 in `ant-node`). The pointer client tier
+exercises them for the life of a testnet, so the behaviour is measured before it
+reaches production.
+
+It is a role of its own beside `upload` / `download` / `wasm-upload` /
+`wasm-download`, for the reason the WASM roles are: the role names the VM, its
+Terraform workspace and its S3 state key. It is also a different instrument. An
+uploader measures a transfer; a pointer client measures whether a reference that
+was written can be read back, and whether it decays with age — which ADR-0016
+says it sometimes will, since an eclipsed reader can be handed an older, validly
+signed state and cannot tell.
+
+**Requires an `ant` binary that carries pointers.** A pre-pointer `ant-node`
+answers a protocol error to every pointer message, so both binaries must come
+from a build that has them.
+
+#### Deploying
+
+Manifest (`clients.pointers[]` on the `testnet` and `testnet-extension` kinds):
+
+```yaml
+  clients:
+    pointers:
+      - { provider: digital_ocean, region: lon1, ant: 200, eth: 0.5 }
+      - { provider: digital_ocean, region: syd1, ant: 200, eth: 0.5 }
+```
+
+CLI (`clients infra --pointer`, repeatable):
+
+```
+provider:region[:vm_size][:ant=N][:eth=N][:clock_skew=DURATION]
+  [:bootstrap_cache=BOOL][:forward_logs=BOOL][:network=PROFILE]
+  [:create_interval_secs=N][:update_interval_secs=N][:sweep_interval_secs=N]
+  [:chain_fraction=F][:pointer_max=N][:rust_log=SPEC]
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `provider` | — | **Required.** `digital_ocean`, `vultr`, `hetzner` or `ovh`. |
+| `region` | — | **Required.** Passed through verbatim; no per-provider validation. |
+| `vm_size` | `s-2vcpu-4gb` | Passed through verbatim. |
+| `ant` / `eth` | `100` / `0.5` | Per-VM wallet funding. Every write is paid, so this role carries a wallet exactly as an uploader does. |
+| `clock_skew` | unset | Signed Go-style duration (`2h`, `-2h`, `30m`). |
+| `network` | unset | Residential-link shaping; see "Simulating a residential connection". |
+| `bootstrap_cache` | `true` | ant's peer cache, as for the native transfer clients. |
+| `forward_logs` | unset | Forward this client's operation log to the deployment's Elasticsearch. Requires `elastic.enabled`. |
+| `rust_log` | unset | `RUST_LOG` for the `ant pointer` invocations. **Must be the last token** in a CLI spec (its value may contain `:`). |
+| `create_interval_secs` | `60` | Create a brand-new pointer this often. Creation runs for the WHOLE run, not as an up-front seed, so pointers of every age exist at every moment. |
+| `update_interval_secs` | `30` | Update a uniformly-random owned pointer this often, then read it back. |
+| `sweep_interval_secs` | `600` | MINIMUM gap between sweeps of every known pointer (own and foreign). A large pool makes a sweep take longer; it never drops pointers from one. |
+| `chain_fraction` | `0.10` | Fraction of updates re-pointed at another OWNED pointer (target kind `pointer`) and then followed with `resolve`. `0` disables chaining. |
+| `pointer_max` | `0` | Safety cap on how many pointers one client will own. `0` = uncapped, which is the intent. |
+
+**The defaults are 180 paid writes per client per hour** — one Arbitrum Sepolia
+transaction every 20 seconds. `clients estimate-gas --config <manifest>` sizes
+the `eth:` figures straight from these rates, with no baseline needed: they are
+deterministic, unlike an uploader's throughput.
+
+**Deploy at least two, in regions far apart.** Each client sweeps its own
+pointers AND every other pointer client's published ones, so every pointer is
+read from a nearby and a distant vantage point. A pointer read is answered by a
+quorum of its close group; whether that quorum agrees is not something one
+vantage point can judge.
+
+#### The workload
+
+`ant-pointer` is a Python service (`resources/scripts/pointer_client.py`,
+`Restart=always`) driving the native `ant pointer` subcommands over `--json`.
+Three loops on one scheduler, strictly serial — they share a wallet, and two
+concurrent writes would race the same nonce:
+
+- **create** — `keygen` to a per-pointer seed file under
+  `/var/lib/ant-pointer/keys/`, `create`, then `get` to confirm.
+- **update** — update a random owned pointer, then `get` it back.
+- **sweep** — read every owned pointer plus every other client's published ones,
+  recording each pointer's age at read.
+
+A durable ledger (`/var/lib/ant-pointer/ledger.json`) holds the expected
+`(counter, target)` per owned pointer and the last-seen counter per foreign one,
+so a restart resumes rather than abandoning pointers it has already paid for.
+Owner keys live beside it, and **ownership is immutable** — a lost key is a
+pointer that can never be updated again.
+
+Targets are drawn from the shared upload address pool (the `upload-*` objects
+the uploaders publish), so `resolve` checks end to end against a real data map;
+with an empty pool it falls back to a random 32-byte address, so the role never
+depends on the uploader tier. Each client publishes its own pointer addresses to
+`pointer-<region>-<index>.txt` under the deployment's address prefix, through the
+same presigned PUT the uploaders use.
+
+Cost is measured as **paid, never as quoted**: `ant pointer create --json` prints
+only the address, so ANT comes from `ant wallet balance` and native gas from an
+`eth_getBalance` against the RPC the payment settles on, read either side of each
+write. That is also the only way to see the ADR's warning that a write which
+times out and is retried pays twice.
+
+#### Outcome classes
+
+Every operation lands in exactly one, and they are the vocabulary the reports and
+the gates are written in:
+
+| Outcome | Meaning |
+|---|---|
+| `ok` | The operation returned the expected state. |
+| `stale` | A state older than the one written (or a foreign counter moving backwards). **EXPECTED at a non-zero rate** — only the trend is a signal. |
+| `lost_write` | An update refused because the pointer moved in flight, or a write that fell short of its quorum. Paid for, not landed. |
+| `not_found` | The close group agreed there is no pointer there. An ANSWER — `ant pointer get` exits 1 on an absent address and that maps here, not to `error`. |
+| `read_shortfall` | Too few of the close group answered, or no state had enough peers behind it. The network declined to say. |
+| `anomaly` | A counter ABOVE the one written. Only a write by something else to a pointer this client owns could cause it. |
+| `error` | A protocol or RPC failure — the only class that indicates a fault. |
+
+#### Reading the results
+
+```bash
+# Live, from the run's InfluxDB. The only view before record-results has run.
+saorsa-deploy deployments print-pointers --name PTR-01
+
+# Decay with age: sweep outcomes bucketed by the pointer's age at read,
+# own and foreign pointers separately.
+saorsa-deploy deployments print-pointers --name PTR-01 --by-age
+
+# Extract to Postgres (deployment_pointer_records) — same pass as the file ops.
+saorsa-deploy deployments record-results --name PTR-01
+
+# Post-run, from Postgres. Survives teardown; Influx does not.
+saorsa-deploy deployments print-pointers --id 612
+saorsa-deploy deployments print-pointers --id 612 --window-start 2026-09-26T11:00:00 \
+                                                  --window-end   2026-09-26T14:00:00
+```
+
+| Flag | Meaning |
+|---|---|
+| `--name <n>` | Read the deployment's **InfluxDB**. Live. Mutually exclusive with `--id`. |
+| `--id <id>` | Read **Postgres**. Post-run. An id, not a name: staging names are reused every train. |
+| `--window-start` / `--window-end` | ISO-8601. Narrows on **`finished_at`** — a write can take tens of seconds, so an op straddling a phase boundary belongs to the phase it completed in. |
+| `--by-age` | The age table. Sweeps only (a `get` is the read that immediately confirms a write, so its age is always ~0). |
+| `--age-bucket-secs` | Width of an `--by-age` bucket. Default 1800. |
+| `--monitoring-name`, `--influx-url/-token/-org/-bucket` | Override the monitoring-state lookup on the `--name` path. |
+
+The headline table carries, per host and combined: attempts and outcome counts
+for each op; the read-your-writes match count; RPC-error writes; double payments;
+writes that paid and did not land; write and read latency p50/p95; and the mean
+cost per write in ANT and ETH.
+
+#### The node's own view
+
+`deployments record-log-counts` additionally counts ant-node's
+`pointer_put_rpc` / `pointer_get_rpc` events per outcome with latency p50/p95,
+and stores them beside the phrase counts in `deployment_log_event_counts` (keyed
+`<event>:<outcome>`). They are what lets "the client was served a stale state" be
+told apart from "a node answered stale". The catalogue also gains a `pointer`
+group of node WARN/INFO lines — store failures, address collisions, replication
+shortfalls, audit failures and prunes — which the existing log-count gate then
+covers.
+
+Everything about stale refusals, quorum shortfalls and unpaid offers is logged at
+DEBUG, and the node-tier forwarder drops DEBUG at `log_level: info` (what staging
+runs at), so those are deliberately **not** in the catalogue: they would read
+zero for a reason that has nothing to do with pointers.
+
+#### Gates
+
+`deployments compare` emits eight `[pointer]`-suffixed gates: a write and a read
+success floor, plus the stale-read rate, the lost-write rate, write and read
+latency p50/p95, and the cost per write — all relative to the baseline. They are
+emitted as **NOT ASSESSED, never omitted**, when the baseline has no pointer
+records, which is every baseline on the first pointer-carrying train.
+
+**No pointer gate ever reaches the exit code** — that stays the native file-op
+hard floors'. The two FLOORS are additionally advisory by default
+(`pointer_floor_gates_advisory` in `resources/gates/staging-thresholds.yaml`):
+they are uncalibrated numbers on a tier no run has measured, and ADR-0016 says a
+non-zero stale-read rate is expected without saying how large. The relative gates
+count as ordinary soft gates — they ask only whether this release made the tier
+worse than the last one did, which needs no calibration.
+
+#### Profiles
+
+- `deploy/manifests/profiles/pointers.yaml` — a short dev run (100 nodes, two
+  pointer clients).
+- `deploy/manifests/profiles/staging.yaml` — carries two pointer entries
+  (DigitalOcean `lon1` and `syd1`). **The train's RC must carry pointers**; if it
+  predates them the run operator strips the two entries for that train.
 
 ### `build ant-node` command
 
@@ -1181,6 +1374,34 @@ whole wallet per WASM uploader, against a check that compares the full total.
   'native'`). Without that filter, once WASM is in every staging baseline a native
   uploader would silently be sized from whichever tier happened to be faster at its
   size — a change to how the native tier has always been sized, made invisibly.
+
+### Pointer clients
+
+A pointer client holds its own funded wallet too, and every pointer write —
+create and update alike — is one paid single-node quote. It is sized here,
+labelled `[pointer]` and included in the funder total.
+
+- **Sized from the manifest, not from a baseline.** The rates are a manifest
+  setting (`create_interval_secs` + `update_interval_secs`), so the expected write
+  count is arithmetic: `(3600/create + 3600/update) x duration`. There is nothing
+  to project and no baseline to need — which also means a pointer client is sized
+  correctly on the very first pointer-carrying run. `--uploads-per-hour`
+  deliberately does NOT override it: it means uploads, and a pointer client
+  performs none.
+- **Its own fixed cost, and no per-GB term.** A pointer record is a fixed ~5 KB
+  wire payload, so `eth_per_gb` does not apply at all; the cost is
+  `fixed_eth_per_pointer_write`, scaled on base fee like everything else. The
+  `Size` column reads `n/a` rather than `0 MB`, so it cannot be misread as a lost
+  value.
+- **SEEDED, not measured.** `fixed_eth_per_pointer_write` starts at
+  `fixed_eth_per_upload`'s value, because a pointer write is the same shape of
+  transaction as an upload's payment. Recalibrate it from the first
+  pointer-carrying run's measured spend, which `deployments print-pointers`
+  reports as "mean cost per write".
+
+At the default rates a pointer client performs 180 writes an hour, so a 4h run is
+~720 paid writes — the same order as an uploader's few hundred, not a rounding
+error.
 
 The model and its calibration live in
 `deploy/saorsa_deploy/resources/gas/client-gas-model.yaml` — versioned config, not
@@ -1609,6 +1830,18 @@ uv run saorsa-deploy deployments record-log-counts --id 474 \
 
 **Run it before teardown.** The deployment's Elasticsearch is per-run scratch and is destroyed with the testnet; there is no backfill and there never can be. This is the same constraint `record-analysis` has against InfluxDB.
 
+It also counts **ant-node's pointer RPC latency events** — `pointer_put_rpc` and
+`pointer_get_rpc` on the `ant_node::storage::rpc_latency` target — per outcome,
+with latency p50/p95, and stores them in the same table keyed `<event>:<outcome>`.
+They are the node's own view of the pointer tier, so `outcome=error` as a fraction
+of the event total can be read directly, and "the client was served a stale state"
+can be told apart from "a node answered stale". Best-effort, unlike the phrase
+counts: a run with no pointer clients emits none of these events and a node build
+predating pointers has no such target, so a query failure warns and leaves the
+gated phrase counts alone. An event with no documents records nothing rather than
+zeros — zeros would read on the next comparison as a pointer tier that stopped
+working.
+
 #### Arguments
 
 | Argument | Type | Required | Default | Description |
@@ -1724,6 +1957,9 @@ Two hard gates (upload success floor < 99%, download success floor < 99.5%) and 
 
 Transfer-duration percentiles are exact — they come from the per-op `deployment_upload_records` / `deployment_download_records`, which carry each operation's own `duration_ms` and timestamps. `deployment_file_results` is not used: it is an aggregate with no per-op timestamps and therefore cannot be windowed.
 
+A run carrying pointer clients adds eight `[pointer]` gates — see "Pointer gates"
+below.
+
 #### Per-transport gates, and the two advisory settings
 
 When a run carries WASM (browser-path) client records, every client gate is
@@ -1748,6 +1984,38 @@ silently ignored.
 **No WASM gate ever reaches the exit code.** A counted `[wasm]` relative FAIL makes
 the overall verdict `SOFT FAIL` — a judgment call, reported in full — while exit `2`
 stays reserved for the native hard floors.
+
+#### Pointer gates
+
+A run with pointer records gains eight `[pointer]`-suffixed gates: a **write** and
+a **read** success floor (absolute, judged on the candidate alone), and the
+**stale-read rate**, **lost-write rate**, **write latency p50/p95**, **read latency
+p50/p95** and **ANT cost per write**, all relative to the baseline.
+
+Reads and writes are never pooled. A pointer client performs far more reads than
+writes, so one rate over both would let the sweeps bury a write failure entirely.
+
+The stale-read rate is **compared and never floored**. ADR-0016 is explicit that
+an eclipsed reader can be handed an older, validly signed state and cannot tell,
+so a non-zero rate IS the steady state — only a rise against the baseline is a
+finding. `stale` still counts as a failure for the success rate, because it is not
+the state the client wrote; the two figures are reported side by side and neither
+is readable without the other.
+
+When the baseline has no pointer records — which is every baseline on the first
+pointer-carrying train — the relative gates are emitted as **NOT ASSESSED** with
+the reason `baseline has no pointer records`. Emitted, not omitted: a gate that
+vanishes from the report reads as one nobody thought about. The two floors are
+still evaluated, and they survive `--new-baseline` for the same reason the native
+hard floors do — they need no baseline.
+
+| Key | Shipped | Covers | Why |
+|---|---|---|---|
+| `pointer_floor_gates_advisory` | `true` | `Pointer write/read success floor [pointer]` | Uncalibrated. No run has ever measured a pointer tier, and ADR-0016 says a non-zero stale-read rate is expected without saying how large — so a floor set today is a guess, and gating a ship on a guess is worse than reporting it. Set to `false` once a few pointer-carrying trains have moved the floors to numbers with history behind them. |
+
+**No pointer gate ever reaches the exit code** — advisory or not. Every one is
+`soft`, so the worst a pointer regression produces is `SOFT FAIL`; exit `2` stays
+reserved for the native hard floors.
 
 #### What it deliberately does NOT cover
 
