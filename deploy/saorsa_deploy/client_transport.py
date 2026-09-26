@@ -47,6 +47,34 @@ def deployment_scoped_transport(deploy_args: dict | None) -> str | None:
     return deploy_args.get("client_kind") or NATIVE
 
 
+def transport_map_from_deploy_args(deploy_args: dict | None) -> dict[str, str]:
+    """Map hostname -> transport from a `prod-uploaders` deployment's deploy_args.
+
+    `prod-uploaders` is the one production kind that runs both transports at
+    once — a native uploader and a browser-path uploader side by side is the
+    point of it — so the transport is per-VM here, not per-deployment. It still
+    must not come from the S3 client state: `clients destroy` deletes that, and a
+    `record-results` re-run after teardown would then resolve None for every host
+    and relabel every WASM upload as native.
+
+    The persisted uploader list carries the hostname each entry's VM reports
+    under, so nothing here has to rebuild it. An entry written before the browser
+    path existed has neither key and contributes nothing, which leaves its rows
+    NULL — and NULL reads as native everywhere else too.
+    """
+    if not deploy_args:
+        return {}
+    out: dict[str, str] = {}
+    for entry in deploy_args.get("uploaders") or []:
+        if not isinstance(entry, dict):
+            continue
+        hostname = entry.get("hostname")
+        transport = entry.get("client_kind")
+        if hostname and transport:
+            out[hostname] = transport
+    return out
+
+
 def transport_for_role(role: str | None) -> str | None:
     """The transport a client role implies, or None for an unknown role."""
     if not role:

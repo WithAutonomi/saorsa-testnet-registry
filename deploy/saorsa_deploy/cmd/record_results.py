@@ -27,11 +27,12 @@ from saorsa_deploy.client_roles import is_wasm
 from saorsa_deploy.client_transport import (
     deployment_scoped_transport,
     transport_map_from_client_state,
+    transport_map_from_deploy_args,
 )
 from saorsa_deploy.influx import (
     aggregate_file_results,
     fetch_all_operation_points,
-    fetch_prod_upload_points,
+    fetch_all_prod_upload_points,
 )
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.registry import get_repository
@@ -602,6 +603,14 @@ def _status_from_int(code) -> ProdUploadStatus | None:
         return ProdUploadStatus.PARTIAL_UPLOAD
     if code == 2:
         return ProdUploadStatus.DOWNLOAD_FAILED
+    # 3 and 4 are browser-path only. OVER_CAP means the transport refused the
+    # file and nothing was attempted; FAILED means the upload failed before any
+    # payment went out, so nothing reached the network. Both release the pool
+    # claim, where PARTIAL_UPLOAD spends it.
+    if code == 3:
+        return ProdUploadStatus.OVER_CAP
+    if code == 4:
+        return ProdUploadStatus.FAILED
     return None
 
 
@@ -632,13 +641,23 @@ def _record_prod_upload(
     influx_url, influx_token, influx_org, influx_bucket,
 ) -> list[dict] | None:
     network_profile_for_host = _build_network_profile_lookup(deployment)
-    console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
+    # Per-host rather than per-deployment: a prod-uploaders run may carry both
+    # transports, and it is read from the registry row (not the S3 client state
+    # `clients destroy` deletes) so a re-run after teardown still labels them.
+    transport_by_host = transport_map_from_deploy_args(
+        getattr(deployment, "deploy_args", None)
+    )
+    console.print(
+        f"[bold]Querying {influx_url} (buckets={influx_bucket}, "
+        f"{INFLUXDB_WASM_BUCKET})...[/bold]"
+    )
     try:
-        points = fetch_prod_upload_points(
+        points = fetch_all_prod_upload_points(
             url=influx_url,
             token=influx_token,
             org=influx_org,
             bucket=influx_bucket,
+            wasm_bucket=INFLUXDB_WASM_BUCKET,
         )
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
@@ -662,6 +681,9 @@ def _record_prod_upload(
         if not source_url:
             skipped += 1
             continue
+        # Annotated onto the point as well as the row, so the Slack reply built
+        # from these points can split its totals per transport.
+        p["client_kind"] = transport_by_host.get(p["host"])
         repo.upsert_prod_upload_result(
             deployment_id=deployment.id,
             client_hostname=p["host"],
@@ -682,6 +704,7 @@ def _record_prod_upload(
             reason=p.get("reason") or None,
             storage_cost_atto=_cost_to_decimal(p.get("storage_cost_atto")),
             gas_cost_wei=_cost_to_decimal(p.get("gas_cost_wei")),
+            client_kind=p["client_kind"],
         )
         recorded += 1
 
@@ -763,27 +786,52 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
     by_locator: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
 
+    # Precedence when the same file has several result rows: anything that put
+    # chunks on the network outranks anything that did not, and a success
+    # outranks a partial. A file uploaded successfully on one attempt and
+    # partially (or not at all) on another IS on the network.
+    _OUTCOME_RANK = {None: 0, False: 1, True: 2}
+
     def _index(locator: str | None, name: str | None, payload: dict) -> None:
         for table, key in ((by_locator, locator), (by_name, name)):
             if not key:
                 continue
             existing = table.get(key)
-            if existing is not None and existing["complete"] and not payload["complete"]:
-                # A file uploaded successfully on one attempt and partially on
-                # another is on the network: the success wins.
+            if existing is not None and _OUTCOME_RANK[existing["complete"]] > (
+                _OUTCOME_RANK[payload["complete"]]
+            ):
                 continue
             table[key] = payload
 
     if kind == "prod-uploaders":
         for row in repo.list_prod_upload_results_for_deployment(deployment.id):
-            # Partials matter as much as successes. A part-uploaded file put
-            # real chunks in production; leaving its claim open would report it
-            # as "no matching upload result", which reads as "the run never
-            # touched this file" — the opposite of what happened.
+            # Three outcomes, and the difference between them is what the file's
+            # claim becomes:
+            #
+            #   SUCCESS                -> uploaded (the entry is spent)
+            #   PARTIAL_UPLOAD         -> partial  (chunks ARE in production, so
+            #                             the file goes back to uploaders but is
+            #                             excluded from canary selection)
+            #   FAILED / OVER_CAP /
+            #   DOWNLOAD_FAILED        -> released (nothing reached the network:
+            #                             no payment went out, or nothing was
+            #                             attempted at all, so the file is
+            #                             untouched and must not be spent)
+            #
+            # Leaving that last group's claims open — which is what happened
+            # before the pre-payment statuses existed — reported them as "no
+            # matching upload result", i.e. as though the run had never touched
+            # the file, while permanently withholding it from the pool.
             if row.status is ProdUploadStatus.SUCCESS:
                 complete = True
             elif row.status is ProdUploadStatus.PARTIAL_UPLOAD:
                 complete = False
+            elif row.status in (
+                ProdUploadStatus.FAILED,
+                ProdUploadStatus.OVER_CAP,
+                ProdUploadStatus.DOWNLOAD_FAILED,
+            ):
+                complete = None
             else:
                 continue
             _index(
@@ -820,6 +868,7 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
     newly_resolved = 0
     refreshed = 0
     partial = 0
+    released = 0
     still_open = 0
     for claim in claims:
         pool_file = pool_repo.get_pool_file(claim.file_id)
@@ -841,6 +890,18 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
             continue
         complete = payload.pop("complete")
         was_open = claim.is_open
+        if complete is None:
+            # Nothing reached the network, so the file is untouched and the entry
+            # must go back. Only an OPEN claim is released: one already resolved
+            # to uploaded or partial records a real upload from an earlier pass,
+            # and a later failed retry must never undo it.
+            if was_open:
+                pool_repo.release_pool_claim(
+                    claim.id,
+                    note="upload failed before any payment — file returned to the pool",
+                )
+                released += 1
+            continue
         if not complete:
             payload.pop("storage_cost_atto", None)
             payload.pop("gas_cost_wei", None)
@@ -866,6 +927,12 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
         console.print(
             f"[dim]Refreshed {refreshed} already-resolved file-pool "
             "claim(s).[/dim]"
+        )
+    if released:
+        console.print(
+            f"[dim]Released {released} file-pool claim(s): the upload failed "
+            "before any payment, so nothing reached the network and the "
+            "file(s) are fully available again.[/dim]"
         )
     if partial:
         # Said plainly: these files are back in the pool, but they are NOT

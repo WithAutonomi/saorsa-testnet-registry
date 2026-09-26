@@ -677,23 +677,6 @@ class ProdUploader(_Base):
         return self
 
 
-class ProdUploadersSpec(_Base):
-    binary: Binary
-    secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
-    monitoring_volume_size: Optional[int] = None
-    keep_monitoring: Optional[bool] = None  # destroy: --keep-monitoring when True
-    keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
-    # deploy: --allow-duplicate-files — upload files already in the prod list
-    allow_duplicate_files: bool = False
-    uploaders: list[ProdUploader]
-
-    @model_validator(mode="after")
-    def _at_least_one(self) -> "ProdUploadersSpec":
-        if not self.uploaders:
-            raise ValueError("prod_uploaders.uploaders: at least one is required")
-        return self
-
-
 class WasmBinary(_Base):
     """The `ant-core` WASM bundle source for a production WASM client.
 
@@ -716,6 +699,116 @@ class WasmBinary(_Base):
                 "package is published as a release. Pin a git tag with "
                 "`branch: ant-cli-vX.Y.Z` instead (V2-1337 tracks a released "
                 "version)"
+            )
+        return self
+
+
+class ProdWasmUploader(_Base):
+    """One browser-path uploader VM on a `prod-uploaders` deployment.
+
+    Deliberately NOT a flag on :class:`ProdUploader`: the transport decides the
+    VM's role, its Terraform workspace and its S3 state key, so telling the two
+    tiers apart in all three is the point of running both. It also decides which
+    options exist at all — `bootstrap_cache` selects between ant's peer cache and
+    an explicit `--bootstrap` and a browser client does neither, while
+    `memory_profiling` and `log_level` act on the `ant` process, which never
+    runs. Those three are absent rather than ignored, so `extra="forbid"` refuses
+    them by name.
+    """
+
+    region: str
+    # Optional, unlike the native uploader's: a browser-path transfer holds ~4x
+    # the file in WASM memory, so an omitted size defaults to the WASM floor
+    # rather than to whatever the native tier happens to use.
+    vm_size: Optional[str] = None
+    urls: Optional[str] = None
+    pool: Optional[dict[str, int]] = None
+    pool_min_size: Optional[PoolSize] = None
+    pool_max_size: Optional[PoolSize] = None
+    exclude_partial: bool = False
+    payment: Optional[Payment] = None
+    clock_skew: Optional[ClockSkew] = None
+    forward_logs: Optional[bool] = None
+    rust_log: Optional[str] = None
+    network: Optional[Network] = None
+
+    @model_validator(mode="after")
+    def _one_file_source(self) -> "ProdWasmUploader":
+        if bool(self.urls) == bool(self.pool):
+            raise ValueError(
+                "prod_uploaders.wasm_uploaders[]: set exactly one of `urls` or "
+                "`pool`"
+            )
+        _check_pool_bounds(self, "prod_uploaders.wasm_uploaders[]")
+        return self
+
+    @model_validator(mode="after")
+    def _pool_within_the_browser_cap(self) -> "ProdWasmUploader":
+        from saorsa_deploy.prod_wasm import check_wasm_pool_request
+
+        problem = check_wasm_pool_request(self.pool)
+        if problem:
+            raise ValueError(f"prod_uploaders.wasm_uploaders[]: {problem}")
+        return self
+
+    @model_validator(mode="after")
+    def _vm_is_big_enough(self) -> "ProdWasmUploader":
+        from saorsa_deploy.prod_wasm import check_wasm_vm_size
+
+        # prod uploaders are DigitalOcean-only (the spec carries no provider
+        # field), so the slug's encoded memory makes this an exact check.
+        problem = check_wasm_vm_size(self.vm_size, "digitalocean")
+        if problem:
+            raise ValueError(f"prod_uploaders.wasm_uploaders[].vm_size: {problem}")
+        return self
+
+
+class ProdUploadersSpec(_Base):
+    binary: Binary
+    secret_key_env: str = "ARBITRUM_ONE_SECRET_KEY"
+    monitoring_volume_size: Optional[int] = None
+    keep_monitoring: Optional[bool] = None  # destroy: --keep-monitoring when True
+    keep_elastic: Optional[bool] = None  # destroy: --keep-elastic when True
+    # deploy: --allow-duplicate-files — upload files already in the prod list
+    allow_duplicate_files: bool = False
+    uploaders: list[ProdUploader] = []
+    # Browser-path uploaders, alongside (or instead of) the native ones. The two
+    # tiers share the deployment's monitoring stack and wallet but nothing else.
+    wasm_uploaders: list[ProdWasmUploader] = []
+    # The WASM bundle source, required when any wasm_uploader is configured.
+    wasm_binary: Optional[WasmBinary] = None
+    # Override the committed production bootstrap WebRTC multiaddr list. No URL
+    # form: nothing publishes these addresses at a URL.
+    wasm_bootstrap_multiaddrs_file: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> "ProdUploadersSpec":
+        if not self.uploaders and not self.wasm_uploaders:
+            raise ValueError(
+                "prod_uploaders: at least one uploader is required (uploaders "
+                "and/or wasm_uploaders)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _wasm_options(self) -> "ProdUploadersSpec":
+        if not self.wasm_uploaders:
+            if self.wasm_binary is not None:
+                raise ValueError(
+                    "prod_uploaders.wasm_binary is only valid with "
+                    "prod_uploaders.wasm_uploaders"
+                )
+            if self.wasm_bootstrap_multiaddrs_file is not None:
+                raise ValueError(
+                    "prod_uploaders.wasm_bootstrap_multiaddrs_file is only "
+                    "valid with prod_uploaders.wasm_uploaders"
+                )
+            return self
+        if self.wasm_binary is None:
+            raise ValueError(
+                "prod_uploaders.wasm_binary is required when wasm_uploaders "
+                "are configured (the bundle is built from source by `build "
+                "ant-wasm`)"
             )
         return self
 

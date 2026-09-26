@@ -17,7 +17,10 @@ from sqlalchemy.orm import Session
 
 from saorsa_deploy import pool_selection
 from saorsa_deploy.cmd import prod_canary, prod_local_uploads
-from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
+from saorsa_deploy.cmd.prod_uploaders import (
+    parse_prod_uploader_spec,
+    parse_prod_wasm_uploader_spec,
+)
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator import build_deploy_steps
 
@@ -260,6 +263,41 @@ class TestManifest:
         # otherwise fail only against real infrastructure.
         assert parse_prod_uploader_spec(spec)["pool_min_size_bytes"] == 200 * MIB
 
+    def test_wasm_uploader_bounds_become_spec_tokens(self):
+        """The browser-path uploader is a pool consumer too.
+
+        Its `pool_max_size` additionally carries ant-core's browser cap for a
+        `medium` request, which is why the round-trip through the parser matters
+        here: a clamp the orchestrator writes but the parser rejects would only
+        fail against real infrastructure.
+        """
+        m = Manifest.model_validate(
+            {
+                "name": "PROD-WASM-UL-01",
+                "kind": "prod-uploaders",
+                "purpose": "browser path",
+                "ssh_key_path": "/ssh/key",
+                "prod_uploaders": {
+                    "binary": {"version": "0.3.8"},
+                    "wasm_binary": {"branch": "ant-cli-v0.3.8-rc.1"},
+                    "wasm_uploaders": [
+                        {
+                            "region": "lon1",
+                            "pool": {"medium": 2},
+                            "pool_min_size": "200MB",
+                        }
+                    ],
+                },
+            }
+        )
+        argv = build_deploy_steps(m)[-1].argv
+        spec = argv[argv.index("--wasm-uploader") + 1]
+        assert "pool_min_size=200MB" in spec
+        assert "pool_max_size=1000000000" in spec
+        parsed = parse_prod_wasm_uploader_spec(spec)
+        assert parsed["pool_min_size_bytes"] == 200 * MIB
+        assert parsed["pool_max_size_bytes"] == 1_000_000_000
+
     def test_continuous_uploader_bounds_become_cli_flags(self):
         """The daily write test is a pool consumer too, so it belongs here.
 
@@ -398,6 +436,37 @@ class TestTheCliAcceptsWhatTheOrchestratorEmits:
         )
         assert args["from_pool"] == "tiny:10"
         assert args["pool_min_size"] == "5MB"
+
+    def test_wasm_uploaders(self, monkeypatch):
+        from saorsa_deploy.cmd import prod_uploaders as module
+
+        m = Manifest.model_validate(
+            {
+                "name": "PROD-WASM-UL-01",
+                "kind": "prod-uploaders",
+                "purpose": "browser path",
+                "ssh_key_path": "/ssh/key",
+                "prod_uploaders": {
+                    "binary": {"version": "0.3.8"},
+                    "wasm_binary": {"branch": "ant-cli-v0.3.8-rc.1"},
+                    "wasm_uploaders": [
+                        {
+                            "region": "lon1",
+                            "pool": {"medium": 2},
+                            "pool_min_size": "200MB",
+                        }
+                    ],
+                },
+            }
+        )
+        args = self._run(
+            monkeypatch,
+            module,
+            "cmd_prod_uploaders_deploy",
+            build_deploy_steps(m)[-1].argv,
+        )
+        assert "pool_min_size=200MB" in args["wasm_uploader"][0]
+        assert "pool_max_size=1000000000" in args["wasm_uploader"][0]
 
     def test_uploaders(self, monkeypatch):
         from saorsa_deploy.cmd import prod_uploaders as module

@@ -261,16 +261,45 @@ def _memory_profiling_marker(value) -> str:
 
 
 def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
-    blocks: list[dict] = [
-        _section(
-            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-        ),
-    ]
     uploaders = deploy_args.get("uploaders") or []
+    native = [u for u in uploaders if (u.get("client_kind") or "native") != "wasm"]
+    wasm = [u for u in uploaders if u.get("client_kind") == "wasm"]
+
+    blocks: list[dict] = []
+    # A WASM-only deployment installs no `ant` at all, so naming a client binary
+    # would describe something that never ran.
+    if native or not wasm:
+        blocks.append(
+            _section(
+                f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
+            )
+        )
+    if wasm:
+        # The bundle commit is what identifies the browser-path code: the ref may
+        # be a moving branch, so "built from web-support" does not say what ran.
+        blocks.append(_section(f"*WASM bundle:* {_format_wasm_build(deploy_args)}"))
+        blocks.append(
+            _section(f"*Bootstraps:* {_format_wasm_bootstrap(deploy_args)}")
+        )
+
     if not uploaders:
         blocks.append(_section("*Uploaders:* _(none recorded)_"))
         return blocks
-    lines = []
+
+    # Two headings rather than one mixed list, and the WASM one only when the
+    # run has browser-path uploaders — a native-only post is byte-identical to
+    # what it was before.
+    for heading, group in (("Uploaders", native), ("WASM uploaders", wasm)):
+        if not group:
+            continue
+        blocks.append(_section(f"*{heading}:*\n" + "\n".join(
+            _prod_uploader_lines(group)
+        )))
+    return blocks
+
+
+def _prod_uploader_lines(uploaders: list[dict]) -> list[str]:
+    lines: list[str] = []
     for u in uploaders:
         region = u.get("region", "?")
         vm_size = u.get("vm_size", "?")
@@ -278,7 +307,15 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
         file_names = u.get("file_names") or []
         skew_str = " — ⏰ clock-skew" if u.get("clock_skew") else ""
         net_str = _network_suffix(u)
-        cache_str = _bootstrap_cache_marker(u.get("bootstrap_cache"))
+        # Omitted on the browser path: the peer cache selects between ant's cache
+        # and an explicit --bootstrap, and a WASM client does neither. The option
+        # is REFUSED there, so reporting a value would describe a knob that had no
+        # effect on the run.
+        cache_str = (
+            ""
+            if u.get("client_kind") == "wasm"
+            else _bootstrap_cache_marker(u.get("bootstrap_cache"))
+        )
         fwd_str = _forward_logs_marker(u.get("forward_logs"))
         rust_str = _rust_log_marker(u.get("rust_log"))
         prof_str = _memory_profiling_marker(u.get("memory_profiling"))
@@ -289,8 +326,7 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
         if file_names:
             for name in file_names:
                 lines.append(f"    • `{name}`")
-    blocks.append(_section("*Uploaders:*\n" + "\n".join(lines)))
-    return blocks
+    return lines
 
 
 def _format_size(num_bytes: int | None) -> str:

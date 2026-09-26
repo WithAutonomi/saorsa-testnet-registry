@@ -1,0 +1,95 @@
+# One-shot production uploads over the BROWSER path (WebRTC-Direct), alongside a
+# native control.
+#
+# The same deployment as `prod uploaders` in every respect except which binary
+# each VM's service spawns: `ant-wasm` (ant-core compiled to WASM) instead of
+# `ant`. It measures what a browser client actually experiences uploading to the
+# real production network, which nothing else here does — `ant-cli` links native
+# ant-core, so it takes the native transport however it is invoked.
+#
+# Unlike the download kinds, the transport here is PER UPLOADER, not per
+# deployment: a native uploader and a browser-path uploader in one run share the
+# wallet and the monitoring stack, so the two transports are measured against the
+# same network at the same time. Their results stay separate at every layer.
+#
+#   saorsa-deploy deployments plan --config <this file>      # preview the steps
+#   saorsa-deploy deployments up   --config <this file>      # build + deploy
+#   saorsa-deploy deployments down --name PROD-WASM-UL-01    # tear down
+#
+# Copy into the git-ignored manifests/runs/ dir and edit per run.
+
+name: PROD-WASM-UL-01
+kind: prod-uploaders
+purpose: "Browser-path upload measurement against production, with a native control"
+ssh_key_path: ~/.ssh/ant_deploy
+
+prod_uploaders:
+  # The native `ant` release both the control uploader runs and the record names.
+  binary:
+    version: "0.3.8"
+
+  # The WASM bundle. Built from source by `build ant-wasm`, which `deployments
+  # up` emits as a resumable step before the deploy — no ant-core WASM package is
+  # published as a release, so `branch:` is the only form. It takes a TAG as
+  # readily as a branch (`git clone --branch` accepts either), which is how an RC
+  # is pinned.
+  wasm_binary:
+    branch: ant-cli-v0.3.8-rc.1
+    repo_owner: WithAutonomi
+
+  # Override the committed production bootstrap WebRTC multiaddr list if needed.
+  # There is deliberately no URL form: nothing publishes these addresses at one.
+  # Every entry is ICE-probed before any infrastructure is created; if none
+  # answers the deploy refuses, and a partial answer warns and names the dead
+  # ones. Refresh the list with `prod bootstrap webrtc-addresses`.
+  # wasm_bootstrap_multiaddrs_file: ~/prod-bootstraps.txt
+
+  # The native control. Same region and the same pool request as the WASM
+  # uploader below, so the two figures are comparable.
+  uploaders:
+    - region: lon1
+      vm_size: s-2vcpu-4gb
+      pool: { tiny: 2 }
+      pool_min_size: 5MB
+
+  wasm_uploaders:
+    # 8 GB minimum, and that is validated: a browser-path transfer holds ~4x the
+    # file in WASM memory, so a smaller box turns every upload into an OOM kill —
+    # which reads as a network fault rather than as an under-sized VM. Omit
+    # `vm_size` entirely and it defaults to s-4vcpu-8gb.
+    - region: lon1
+      vm_size: s-4vcpu-8gb
+      # ant-core refuses a browser-path file above 1,000,000,000 bytes, so the
+      # `large` and `xlarge` pool classes are REFUSED at validation (every file
+      # in them is over the cap) and a `medium` request is implicitly narrowed to
+      # it — `plan` shows the narrowed bound, because an operator who wrote
+      # `medium` gets a smaller class than they asked for.
+      pool: { tiny: 2 }
+      pool_min_size: 5MB
+      # Forward this VM's output — including the `ant-wasm` child's stdout and
+      # stderr, which the service tees to the per-op logs — to a dedicated
+      # Elasticsearch stood up by the deploy command.
+      forward_logs: true
+
+      # NOT AVAILABLE on this transport, and refused rather than ignored:
+      #   bootstrap_cache  — selects ant's peer cache vs an explicit
+      #                      --bootstrap; a browser client does neither.
+      #   memory_profiling — heaptrack wraps the `ant` process, which never runs.
+      #   log_level        — an `ant` verbosity flag, likewise.
+      # `rust_log`, `network` and `clock_skew` all work normally.
+
+  monitoring_volume_size: 50
+
+slack_post: true
+
+# Results: `deployments record-results --name PROD-WASM-UL-01 --monitoring-name
+# PROD-WASM-UL-01` reads BOTH Influx buckets (WASM uploads land in
+# `wasm-client-metrics`, kept separate so no dashboard can average two transports
+# measured several times apart) and records each row with its own client_kind.
+# `print-uploads`, `print-recorded-results` and the Slack reply all split their
+# totals per transport.
+#
+# Pool claims resolve by outcome: a success spends the file, a failure AFTER the
+# payment went out marks it partial (chunks are in production, so a canary must
+# never draw it), and a failure BEFORE any payment — or an over-cap file — puts it
+# back in the pool untouched.

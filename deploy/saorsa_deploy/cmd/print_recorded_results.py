@@ -63,16 +63,25 @@ _PROD_DOWNLOAD_KINDS = {"prod-local-downloads"}
 # failed" — i.e. as a production fault — when it is the opposite: a
 # problem fetching our own test material, saying nothing about the
 # network.
+# `failed` and `over-cap` are browser-path only. `failed` is deliberately NOT
+# spelled "partial": it means no payment went out, so nothing is stored — the
+# opposite of a partial upload, and the difference decides whether the file's
+# pool entry is spent. `over-cap` is not a failure at all: the transport refuses
+# the file and never asks the network.
 _PROD_STATUS_LABELS = {
     ProdUploadStatus.SUCCESS: "[green]ok[/green]",
     ProdUploadStatus.PARTIAL_UPLOAD: "[red]partial[/red]",
     ProdUploadStatus.DOWNLOAD_FAILED: "[yellow]src-fail[/yellow]",
+    ProdUploadStatus.FAILED: "[red]failed[/red]",
+    ProdUploadStatus.OVER_CAP: "[yellow]over-cap[/yellow]",
 }
 
 _PROD_STATUS_TEXT = {
     ProdUploadStatus.SUCCESS: "ok",
     ProdUploadStatus.PARTIAL_UPLOAD: "partial",
     ProdUploadStatus.DOWNLOAD_FAILED: "src-fail",
+    ProdUploadStatus.FAILED: "failed",
+    ProdUploadStatus.OVER_CAP: "over-cap",
 }
 
 _PROD_DOWNLOAD_STATUS_LABELS = {
@@ -656,18 +665,73 @@ def _print_prod_upload_section(
         _print_prod_upload_details(by_host, console)
     else:
         _print_prod_upload_tables(by_host, console)
+    _print_prod_upload_transport_totals(rows, console)
+
+
+def _prod_upload_transport(row) -> str:
+    """The transport that performed an upload; NULL reads as native.
+
+    NULL is every row predating the browser path, and it is what NULL means
+    everywhere else in this pipeline.
+    """
+    return getattr(row, "client_kind", None) or "native"
+
+
+def _prod_upload_transport_label(rows: list, row) -> str:
+    """`` — [wasm]`` for a browser-path host, nothing when the run had none.
+
+    The bracket is escaped for Rich, which would otherwise read ``[wasm]`` as a
+    style tag and render the label as nothing at all.
+    """
+    if not any(_prod_upload_transport(r) == "wasm" for r in rows):
+        return ""
+    return f" — \\[{_prod_upload_transport(row)}]"
+
+
+def _print_prod_upload_transport_totals(rows: list, console: Console) -> None:
+    """Per-transport success counts, with over-cap files excluded and stated.
+
+    The native and browser paths are not the same instrument, so one blended
+    success rate describes neither. Printed only when the run carries WASM rows;
+    a native-only run prints exactly what it did before. An over-cap file never
+    enters the denominator — the transport refused it and the network was never
+    asked.
+    """
+    if not any(_prod_upload_transport(r) == "wasm" for r in rows):
+        return
+    console.print()
+    console.print("[bold]Upload totals by transport[/bold]")
+    for transport in ("native", "wasm"):
+        subset = [r for r in rows if _prod_upload_transport(r) == transport]
+        if not subset:
+            continue
+        over_cap = sum(1 for r in subset if r.status is ProdUploadStatus.OVER_CAP)
+        attempted = [r for r in subset if r.status is not ProdUploadStatus.OVER_CAP]
+        ok = sum(1 for r in attempted if r.status is ProdUploadStatus.SUCCESS)
+        total = len(attempted)
+        rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
+        colour = "green" if transport == "native" else "cyan"
+        extra = f", {over_cap} over-cap (not uploaded)" if over_cap else ""
+        console.print(
+            f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = {rate}{extra}"
+        )
 
 
 def _print_prod_upload_tables(
     by_host: dict[str, list[DeploymentProdUploadResult]],
     console: Console,
 ) -> None:
+    all_rows = [row for group in by_host.values() for row in group]
     grand_ant = Decimal(0)
     grand_gas = Decimal(0)
     for host in sorted(by_host.keys()):
         rows = sorted(by_host[host], key=lambda r: r.started_at)
         table = Table(
-            title=f"prod_upload — {host} ({len(rows)} record(s))",
+            title=(
+                f"prod_upload — {host}"
+                f"{_prod_upload_transport_label(all_rows, rows[0])} "
+                f"({len(rows)} record(s))"
+            ),
             title_style="bold",
             show_lines=True,
         )
@@ -719,9 +783,13 @@ def _print_prod_upload_details(
     by_host: dict[str, list[DeploymentProdUploadResult]],
     console: Console,
 ) -> None:
+    all_rows = [row for group in by_host.values() for row in group]
     for host in sorted(by_host.keys()):
         rows = sorted(by_host[host], key=lambda r: r.started_at)
-        console.rule(f"[bold]{host} — {len(rows)} record(s)[/bold]")
+        console.rule(
+            f"[bold]{host}{_prod_upload_transport_label(all_rows, rows[0])} — "
+            f"{len(rows)} record(s)[/bold]"
+        )
         for i, row in enumerate(rows, start=1):
             console.print(f"[bold]#{i}[/bold]")
             console.print(f"  Started (UTC):     {_fmt_dt(row.started_at)}")

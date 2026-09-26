@@ -23,7 +23,17 @@ from saorsa_deploy.cmd.slack_post import (
     _section,
 )
 
-_PROD_UPLOAD_STATUS_LABEL = {0: "ok", 1: "partial", 2: "dl-failed"}
+# 3 and 4 are browser-path only: `over-cap` means the transport refused the file
+# (nothing attempted, nothing paid for) and `failed` means the upload failed
+# before any payment went out, so nothing is stored — the opposite of a partial.
+_PROD_UPLOAD_STATUS_LABEL = {
+    0: "ok",
+    1: "partial",
+    2: "dl-failed",
+    3: "over-cap",
+    4: "failed",
+}
+_PROD_UPLOAD_STATUSES = tuple(_PROD_UPLOAD_STATUS_LABEL)
 
 _ATTO_PER_UNIT = Decimal(10) ** 18
 
@@ -205,26 +215,44 @@ def _op_detail_line(record: dict) -> str:
 
 
 def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
-    """Per-host summary, grand totals, and per-file detail for prod-uploaders."""
-    usable = [p for p in points if p.get("status") in (0, 1, 2)]
+    """Per-host summary, grand totals, and per-file detail for prod-uploaders.
+
+    Each point may carry a ``client_kind`` (``native``/``wasm``/absent). When a
+    run has a browser-path uploader the headline counts are split per transport,
+    because the two are not the same instrument and one blended figure describes
+    neither. Absent reads as native, as it does everywhere else in this pipeline.
+    """
+    usable = [p for p in points if p.get("status") in _PROD_UPLOAD_STATUSES]
     if not usable:
         return [_section("*Results:* _no prod_upload points found._")]
 
+    def _bucket(status: int) -> str:
+        # An over-cap file is neither a success nor a failure: the transport
+        # refused it, so it stays out of both totals and is reported on its own.
+        return {0: "ok", 1: "partial", 2: "failed", 3: "over_cap", 4: "failed"}[
+            status
+        ]
+
     per_host: dict[str, dict] = defaultdict(
         lambda: {
-            "ok": 0, "partial": 0, "failed": 0, "stored": 0, "cfailed": 0,
+            "ok": 0, "partial": 0, "failed": 0, "over_cap": 0,
+            "stored": 0, "cfailed": 0,
             "ant": Decimal(0), "gas": Decimal(0),
         }
     )
-    totals = {"ok": 0, "partial": 0, "failed": 0}
+    totals = {"ok": 0, "partial": 0, "failed": 0, "over_cap": 0}
+    per_transport: dict[str, dict] = defaultdict(
+        lambda: {"ok": 0, "partial": 0, "failed": 0, "over_cap": 0}
+    )
     grand_ant = Decimal(0)
     grand_gas = Decimal(0)
     for p in usable:
         status = p["status"]
         host = p.get("host") or "?"
-        bucket = {0: "ok", 1: "partial", 2: "failed"}[status]
+        bucket = _bucket(status)
         per_host[host][bucket] += 1
         totals[bucket] += 1
+        per_transport[p.get("client_kind") or "native"][bucket] += 1
         per_host[host]["stored"] += p.get("chunks_stored") or 0
         per_host[host]["cfailed"] += p.get("chunks_failed") or 0
         ant = _cost_decimal(p.get("storage_cost_atto"))
@@ -236,21 +264,40 @@ def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
             per_host[host]["gas"] += gas
             grand_gas += gas
 
-    blocks: list[dict] = [
-        _fields_section(
-            [
-                ("Uploads OK", str(totals["ok"])),
-                ("Partial", str(totals["partial"])),
-                ("Failed", str(totals["failed"])),
-                ("Storage cost", _fmt_token(grand_ant, "ANT")),
-                ("Gas cost", _fmt_token(grand_gas, "ETH")),
+    headline: list[tuple[str, str]]
+    if per_transport.get("wasm"):
+        # Split rather than blended: the browser path measured several times
+        # slower and is judged against its own expectations, so a single
+        # "Uploads OK" moves with whatever VM mix the run happened to use.
+        headline = []
+        for transport in ("native", "wasm"):
+            counts = per_transport.get(transport)
+            if not counts:
+                continue
+            label = transport.capitalize() if transport == "native" else "WASM"
+            headline += [
+                (f"{label} OK", str(counts["ok"])),
+                (f"{label} partial", str(counts["partial"])),
+                (f"{label} failed", str(counts["failed"])),
             ]
-        )
+            if counts["over_cap"]:
+                headline.append((f"{label} over-cap", str(counts["over_cap"])))
+    else:
+        headline = [
+            ("Uploads OK", str(totals["ok"])),
+            ("Partial", str(totals["partial"])),
+            ("Failed", str(totals["failed"])),
+        ]
+    headline += [
+        ("Storage cost", _fmt_token(grand_ant, "ANT")),
+        ("Gas cost", _fmt_token(grand_gas, "ETH")),
     ]
+    blocks: list[dict] = [_fields_section(headline)]
 
     host_lines = [
-        f"• *{host}*: {d['ok']} ok / {d['partial']} partial / {d['failed']} failed "
-        f"— chunks {d['stored']} stored / {d['cfailed']} failed "
+        f"• *{host}*: {d['ok']} ok / {d['partial']} partial / {d['failed']} failed"
+        + (f" / {d['over_cap']} over-cap" if d["over_cap"] else "")
+        + f" — chunks {d['stored']} stored / {d['cfailed']} failed "
         f"— {_fmt_token(d['ant'], 'ANT')} / {_fmt_token(d['gas'], 'ETH')}"
         for host, d in sorted(per_host.items())
     ]

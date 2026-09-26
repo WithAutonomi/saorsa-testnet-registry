@@ -30,7 +30,7 @@ from saorsa_deploy.client_transport import (
 )
 from saorsa_deploy.influx import (
     fetch_all_operation_points,
-    fetch_prod_upload_points,
+    fetch_all_prod_upload_points,
 )
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.registry import get_repository
@@ -593,16 +593,25 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
 # failed" — i.e. as a production fault — when it is the opposite: a
 # problem fetching our own test material, saying nothing about the
 # network.
+# `failed` and `over-cap` are browser-path only. `failed` is deliberately NOT
+# spelled "partial": it means no payment went out, so nothing is stored — the
+# opposite of a partial upload, and the difference decides whether the file's
+# pool entry is spent. `over-cap` is not a failure at all: the transport refuses
+# the file and never asks the network.
 _PROD_STATUS_LABELS = {
     0: "[green]ok[/green]",
     1: "[red]partial[/red]",
     2: "[yellow]src-fail[/yellow]",
+    3: "[yellow]over-cap[/yellow]",
+    4: "[red]failed[/red]",
 }
 
 _PROD_STATUS_TEXT = {
     0: "ok",
     1: "partial",
     2: "src-fail",
+    3: "over-cap",
+    4: "failed",
 }
 
 
@@ -615,11 +624,15 @@ def _run_prod_uploads(args, console: Console) -> None:
     console.print(
         f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]"
     )
-    points = fetch_prod_upload_points(
+    # Both buckets: a browser-path uploader writes the same `prod_upload`
+    # measurement into its own, so a single-bucket read would make a WASM tier
+    # that failed every upload look like one that was never configured.
+    points = fetch_all_prod_upload_points(
         url=influx_url,
         token=influx_token,
         org=influx_org,
         bucket=influx_bucket,
+        wasm_bucket=INFLUXDB_WASM_BUCKET,
     )
     if not points:
         console.print(
@@ -633,11 +646,85 @@ def _run_prod_uploads(args, console: Console) -> None:
 
     payment_by_host = _build_prod_payment_map(args.name)
     cache_by_host = _build_bootstrap_cache_map(args.name)
+    transport_by_host = _build_prod_upload_transport_map(args.name)
 
     if getattr(args, "details", False):
-        _prod_print_details(by_host, payment_by_host, cache_by_host, console)
+        _prod_print_details(
+            by_host, payment_by_host, cache_by_host, transport_by_host, console
+        )
     else:
-        _prod_print_table(by_host, payment_by_host, cache_by_host, console)
+        _prod_print_table(
+            by_host, payment_by_host, cache_by_host, transport_by_host, console
+        )
+    _prod_print_transport_totals(by_host, transport_by_host, console)
+
+
+def _build_prod_upload_transport_map(name: str) -> dict[str, str]:
+    """Map hostname -> transport for a prod-uploaders deployment.
+
+    Read from the registry row's persisted uploader list, not the S3 client
+    state: the state is deleted by `clients destroy`, and this command is most
+    useful right up to (and after) teardown.
+    """
+    repo = get_repository()
+    if repo is None:
+        return {}
+    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+    if deployment is None:
+        return {}
+    from saorsa_deploy.client_transport import transport_map_from_deploy_args
+
+    return transport_map_from_deploy_args(deployment.deploy_args or {})
+
+
+def _transport_segment(transport_by_host: dict[str, str], host: str) -> str:
+    """`` — [wasm]`` for a browser-path host, nothing for a native one.
+
+    Absent rather than ``[native]`` when the deployment has no WASM uploader, so
+    a native-only run's output is exactly what it was before. The bracket is
+    escaped for Rich, which would otherwise read ``[wasm]`` as a style tag and
+    render the label as nothing at all.
+    """
+    if not any(kind == "wasm" for kind in transport_by_host.values()):
+        return ""
+    return f" — \\[{transport_by_host.get(host) or 'native'}]"
+
+
+def _prod_print_transport_totals(
+    by_host: dict[str, list[dict]],
+    transport_by_host: dict[str, str],
+    console: Console,
+) -> None:
+    """Per-transport success counts, with over-cap files excluded and stated.
+
+    The native and browser paths are not the same instrument, so one blended
+    success rate describes neither. Printed only when the run carries a WASM
+    uploader. An over-cap file never enters the denominator: the transport
+    refused it, and the network was never asked.
+    """
+    if not any(kind == "wasm" for kind in transport_by_host.values()):
+        return
+    console.print()
+    console.print("[bold]Upload totals by transport[/bold]")
+    for transport in ("native", "wasm"):
+        ops = [
+            op
+            for host, host_ops in by_host.items()
+            if (transport_by_host.get(host) or "native") == transport
+            for op in host_ops
+        ]
+        if not ops:
+            continue
+        over_cap = sum(1 for op in ops if op.get("status") == 3)
+        attempted = [op for op in ops if op.get("status") != 3]
+        ok = sum(1 for op in attempted if op.get("status") == 0)
+        total = len(attempted)
+        rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
+        colour = "green" if transport == "native" else "cyan"
+        extra = f", {over_cap} over-cap (not uploaded)" if over_cap else ""
+        console.print(
+            f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = {rate}{extra}"
+        )
 
 
 def _bootstrap_cache_segment(cache_by_host: dict[str, bool], host: str) -> str:
@@ -651,6 +738,7 @@ def _prod_print_table(
     by_host: dict[str, list[dict]],
     payment_by_host: dict[str, str],
     cache_by_host: dict[str, bool],
+    transport_by_host: dict[str, str],
     console: Console,
 ) -> None:
     for host in sorted(by_host.keys()):
@@ -659,10 +747,11 @@ def _prod_print_table(
         cache_seg = _bootstrap_cache_segment(cache_by_host, host)
         skew_label = _clock_skew_label(ops)
         skew_seg = f" — clock skew {skew_label}" if skew_label else ""
+        transport_seg = _transport_segment(transport_by_host, host)
         table = Table(
             title=(
-                f"prod_upload — {host} — payment={payment}{cache_seg}"
-                f"{skew_seg} ({len(ops)} record(s))"
+                f"prod_upload — {host}{transport_seg} — payment={payment}"
+                f"{cache_seg}{skew_seg} ({len(ops)} record(s))"
             ),
             title_style="bold",
             show_lines=True,
@@ -702,6 +791,7 @@ def _prod_print_details(
     by_host: dict[str, list[dict]],
     payment_by_host: dict[str, str],
     cache_by_host: dict[str, bool],
+    transport_by_host: dict[str, str],
     console: Console,
 ) -> None:
     for host in sorted(by_host.keys()):
@@ -710,9 +800,10 @@ def _prod_print_details(
         cache_seg = _bootstrap_cache_segment(cache_by_host, host)
         skew_label = _clock_skew_label(ops)
         skew_seg = f" — clock skew {skew_label}" if skew_label else ""
+        transport_seg = _transport_segment(transport_by_host, host)
         console.rule(
-            f"[bold]{host} — payment={payment}{cache_seg}{skew_seg} — "
-            f"{len(ops)} record(s)[/bold]"
+            f"[bold]{host}{transport_seg} — payment={payment}{cache_seg}"
+            f"{skew_seg} — {len(ops)} record(s)[/bold]"
         )
         for i, op in enumerate(ops, start=1):
             console.print(f"[bold]#{i}[/bold]")
