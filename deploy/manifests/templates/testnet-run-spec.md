@@ -127,7 +127,7 @@ testnet:
 * `gh api repos/WithAutonomi/ant-node/releases/latest --jq .tag_name` = **<vX.Y.Z>**.
 * `DATABASE_URL`, <`DO_TOKEN` / `VULTR_API_KEY` / `HCLOUD_TOKEN` / the four `OVH_*`>,
   `AWS_*`, `ANT_DEPLOY_SECRET_KEY` present. Note the highest existing `<NAME>` registry id.
-* **No `<NAME>` state in S3**: `saorsa-deploy/<NAME>.json`, `elastic/<NAME>.json`,
+* **No `<NAME>` state in S3**: `saorsa-deploy/deployments/<NAME>.json`, `clients/<NAME>.json`, `elastic/<NAME>.json`,
   `monitoring/<NAME>.json`, `journals/<NAME>.json` all absent. Any present → the run fails
   here, naming the key. **Do not destroy it.**
 * No other `deployments up` / `down` process alive for `<NAME>`.
@@ -213,7 +213,7 @@ uv run saorsa-deploy nodes destroy      --name <NAME> --force
 uv run saorsa-deploy bootstraps destroy --name <NAME> --force
 ```
 
-Verify: `saorsa-deploy/<NAME>.json` gone from S3; no <provider> VMs or volumes named
+Verify: `saorsa-deploy/deployments/<NAME>.json` gone from S3; no <provider> VMs or volumes named
 `<NAME>-*`. Record the time.
 
 ### Phase 3b — extraction (against the retained ES/Influx)

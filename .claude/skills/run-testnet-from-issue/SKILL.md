@@ -86,7 +86,9 @@ Stop and say which item failed if any of these is not met:
 * No other `up` or `down` is running for the deployment name
   (`ps -eo pid,args | grep 'deployments \(up\|down\)' | grep -v grep`). They share S3 and
   Terraform state and will race.
-* **No state exists for the deployment name.** Check all four S3 keys: `saorsa-deploy/<name>.json`,
+* **No state exists for the deployment name.** Check all five S3 keys:
+  `saorsa-deploy/deployments/<name>.json` (NOT `saorsa-deploy/<name>.json` — that key never
+  exists, so checking it tests nothing), `saorsa-deploy/clients/<name>.json`,
   `saorsa-deploy/elastic/<name>.json`, `saorsa-deploy/monitoring/<name>.json`,
   `saorsa-deploy/journals/<name>.json`. Any of them present means something went wrong on a
   previous run — `monitoring infra` / `elastic infra` silently **reuse** same-name stacks. Do not
@@ -138,10 +140,35 @@ it. Immediately arm the schedule (Step 4).
 There are two classes of failure and they are handled differently.
 
 **Infrastructure creation** (`bootstraps infra`, `nodes infra`, `clients infra`,
-`monitoring infra`, `elastic infra` — anything creating VMs or volumes at a cloud provider). Do
-**not** retry. These failures are usually provider-side maintenance or capacity problems and last a
-while. Abandon the run: `deployments down --name <deployment-name>`, verify (Step 6), report which
-provider and step failed and the error.
+`monitoring infra`, `elastic infra` — anything creating VMs or volumes at a cloud provider). Read
+the failing lane's error and classify it before deciding; the class, not the step, decides.
+
+* **Terminal — the provider refused.** Capacity or "not available" / "out of stock", a quota or
+  limit exceeded, a plan or size not offered in that region, 401/403/"invalid token", billing, or
+  the OVH ~60-minute silent hang in `nodes infra` (the per-region 40-vCPU quota). These last a
+  while. Do **not** retry. Abandon the run: `deployments down --name <deployment-name>`, verify
+  (Step 6), report which provider and step failed and the error.
+* **Transient — the provider's API misbehaved on a call that normally works.** A 5xx, a 429, a
+  timeout or connection reset, a TLS error, or a 404 / "Invalid instance-id" on the **read-back**
+  of a resource that was just created (Vultr does this; it ended DEV-01 run 613 for nothing).
+  Wait 3 minutes, confirm no other `up` or `down` is alive for the name, then retry:
+
+  ```bash
+  uv run saorsa-deploy deployments up --config <manifest-path> --resume
+  ```
+
+  The journal records a parallel group only when every lane succeeded, so the resume re-runs the
+  **whole** infrastructure group. That is safe: `bootstraps infra` reuses the bootstrap VMs already
+  in state, `nodes infra` persists its regions before `terraform apply` so a re-apply reconciles
+  the half-created region rather than duplicating it, `elastic infra` / `monitoring infra` reuse a
+  same-name stack, and `clients infra` matches its specs. The builds are their own journaled group
+  and are not repeated. Up to **three** resume attempts for the infrastructure group in total; a
+  fourth failure is terminal, and so is the same lane failing with a different error class →
+  abandon as above.
+* **Never pass `--force`** to `up` or to any `infra` command: it wipes state and leaves orphans. If
+  a resume attempt itself errors with "Terraform state exists … orphaned … Use --force", that is
+  not retryable: abandon.
+* Record every attempt — time, lane, error, wait — as a deviation in the results comment.
 
 **Provisioning** (`nodes provision`, `provision-genesis`, `bootstraps provision`,
 `clients provision`, `monitoring provision` — anything installing software over SSH). These are
