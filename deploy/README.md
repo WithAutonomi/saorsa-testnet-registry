@@ -3083,8 +3083,11 @@ The bundle must be built first — `deployments up` emits a resumable
 
 Manifest keys: `client_kind`, `wasm_binary: {branch, repo_owner}` and
 `wasm_bootstrap_multiaddrs_file` under `prod_downloaders:` /
-`prod_continuous_downloader:`. Example:
-`deploy/manifests/profiles/prod-wasm-downloaders.yaml`.
+`prod_continuous_downloader:`. Examples:
+`deploy/manifests/profiles/prod-wasm-downloaders.yaml` (one-shot) and
+`deploy/manifests/profiles/prod-wasm-continuous-downloader.yaml` (the permanent
+daily test — the browser-path sibling of the native daily downloader, walking the
+same address list on the same cycle so the two transports fetch the same content).
 
 **`wasm_binary.branch` takes a branch or a tag, and there is no `version`.** No
 ant-core WASM package is published as a GitHub release, so there is nothing for a
