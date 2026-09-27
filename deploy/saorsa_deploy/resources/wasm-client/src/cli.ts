@@ -299,7 +299,9 @@ async function runUpload(
 
   const paymentNetwork = (await fetchPaymentNetwork(
     core,
+    client,
     bootstraps[0],
+    progress,
   )) as unknown as PaymentNetwork;
   progress(
     `payment network from HELLO: chain_id=${paymentNetwork.chain_id} ` +

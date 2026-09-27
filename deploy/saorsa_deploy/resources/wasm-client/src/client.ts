@@ -17,7 +17,11 @@ import { pathToFileURL } from "node:url";
 
 export interface AntCore {
   BrowserNetworkClient: new (endpoints: unknown) => BrowserNetworkClient;
-  BrowserNodeClient: new (endpoint: unknown) => BrowserNodeClient;
+  /**
+   * Optional: ant-client removed the standalone node client on `main`
+   * (PR #206, commit 1c57042). Present at `ant-cli-v0.3.8` and earlier only.
+   */
+  BrowserNodeClient?: new (endpoint: unknown) => BrowserNodeClient;
   contentAddress(content: Uint8Array): string;
   default(init: { module_or_path: Uint8Array }): Promise<unknown>;
 }
@@ -66,6 +70,13 @@ export interface BrowserNetworkClient {
     concurrency: number,
     onProgress?: ((msg: string) => void) | null,
   ): Promise<DownloadResult>;
+  /**
+   * Optional: added on ant-client `main` (PR #206, commit b2cd4eb) as the
+   * replacement for the removed `BrowserNodeClient`. Authenticates against the
+   * first reachable seed and returns its HELLO, leaving the session in the
+   * client's pool for the upload that follows. Absent at `ant-cli-v0.3.8`.
+   */
+  connect?(expectedPayment?: unknown): Promise<Record<string, unknown>>;
   close(): void;
 }
 
@@ -116,19 +127,47 @@ export async function initAntCore(wasmDir: string): Promise<AntCore> {
  * Preferred over configuring chain id and contract addresses locally: ant-core
  * checks the payment network against every node it selects, so taking it from
  * the network itself makes a mismatch impossible by construction.
+ *
+ * Two ant-core shapes are supported, chosen at runtime by what the loaded
+ * package exposes, because the harness has to keep working against both a
+ * released tag and `main`:
+ *
+ * - `BrowserNetworkClient.connect()` (ant-client `main` onward). Called on the
+ *   client the operation already holds, and deliberately NOT closed afterwards:
+ *   the authenticated session stays in that client's pool and the upload reuses
+ *   it. `expectedPayment` is left unset — the payment network still comes from
+ *   the node, which is the whole point of reading it here.
+ * - `new BrowserNodeClient(endpoint)` (`ant-cli-v0.3.8` and earlier), a throwaway
+ *   connector closed and freed once the HELLO has been read.
+ *
+ * `connect()` is preferred when both are present, so a bundle carrying the new
+ * API never takes the legacy path.
  */
 export async function fetchPaymentNetwork(
   core: AntCore,
+  client: BrowserNetworkClient,
   endpoint: string,
+  log: (message: string) => void = (message) => process.stderr.write(`${message}\n`),
 ): Promise<Record<string, unknown>> {
+  if (typeof client.connect === "function") {
+    log("payment network via BrowserNetworkClient.connect()");
+    const hello = (await client.connect()) as Record<string, unknown>;
+    return readPaymentNetwork(hello);
+  }
+  if (typeof core.BrowserNodeClient !== "function") {
+    throw new Error(
+      "ant-core exposes neither BrowserNetworkClient.connect() (ant-client main " +
+        "onward) nor BrowserNodeClient (ant-cli-v0.3.8 and earlier); cannot read " +
+        "the payment network from a node HELLO",
+    );
+  }
+  log("payment network via BrowserNodeClient (legacy)");
   const node = new core.BrowserNodeClient(endpoint);
   let session: BrowserNodeSession | undefined;
   try {
     session = await node.connect();
     const hello = (await session.hello()) as Record<string, unknown>;
-    const payment = (hello.payment ?? hello.payment_network) as Record<string, unknown> | undefined;
-    if (!payment) throw new Error("node HELLO carried no payment network");
-    return payment;
+    return readPaymentNetwork(hello);
   } finally {
     try {
       session?.close();
@@ -138,4 +177,10 @@ export async function fetchPaymentNetwork(
       /* already closed */
     }
   }
+}
+
+function readPaymentNetwork(hello: Record<string, unknown>): Record<string, unknown> {
+  const payment = (hello.payment ?? hello.payment_network) as Record<string, unknown> | undefined;
+  if (!payment) throw new Error("node HELLO carried no payment network");
+  return payment;
 }

@@ -81,7 +81,9 @@ async function runUploader(
 ): Promise<void> {
   const paymentNetwork = (await fetchPaymentNetwork(
     core,
+    client,
     cfg.bootstrapMultiaddrs[0],
+    (message) => console.error(message),
   )) as unknown as PaymentNetwork;
   console.log(
     `payment network from HELLO: chain_id=${paymentNetwork.chain_id} ` +
