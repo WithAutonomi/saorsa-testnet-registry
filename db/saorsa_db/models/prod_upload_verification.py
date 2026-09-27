@@ -112,6 +112,12 @@ class DeploymentProdUploadVerification(Base):
     expected_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     actual_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
+    # The ant-client commit the WASM bundle that performed this check was built
+    # from. The independent verifier VMs are NATIVE and so always write NULL;
+    # this is populated by the uploader VM's own read-back, which runs over
+    # whichever transport the upload used.
+    client_build: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     bytes_downloaded: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     duration_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -164,6 +170,7 @@ class DeploymentProdUploadVerification(Base):
             "status": self.status.value,
             "expected_sha256": self.expected_sha256,
             "actual_sha256": self.actual_sha256,
+            "client_build": self.client_build,
             "bytes_downloaded": self.bytes_downloaded,
             "duration_ms": self.duration_ms,
             "reason": self.reason,

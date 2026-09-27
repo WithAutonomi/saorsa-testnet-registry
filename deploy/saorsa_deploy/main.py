@@ -2287,6 +2287,56 @@ def main(argv=None):
         ),
     )
 
+    # deployments upgrade-wasm-client
+    deployments_upgrade_wasm_client_parser = deployments_subparsers.add_parser(
+        "upgrade-wasm-client",
+        help=(
+            "Replace the WASM (browser-path) client bundle in place on running "
+            "prod-continuous-uploader / prod-continuous-downloader deployments "
+            "and restart their services. One build is installed on every named "
+            "deployment; no infrastructure is touched and no registry row is "
+            "created."
+        ),
+    )
+    deployments_upgrade_wasm_client_parser.add_argument(
+        "--name",
+        type=str,
+        action="append",
+        required=True,
+        help=(
+            "Deployment to upgrade. Repeatable — every named deployment gets "
+            "the SAME bundle from ONE build, which is what keeps their results "
+            "comparable afterwards."
+        ),
+    )
+    deployments_upgrade_wasm_client_parser.add_argument(
+        "--branch-name",
+        type=str,
+        required=True,
+        help=(
+            "ant-client git ref to build the bundle from — a branch OR a tag "
+            "(e.g. main, ant-cli-v0.3.8)."
+        ),
+    )
+    deployments_upgrade_wasm_client_parser.add_argument(
+        "--repo-owner",
+        type=str,
+        default="WithAutonomi",
+        help="GitHub repository owner (default: WithAutonomi).",
+    )
+    deployments_upgrade_wasm_client_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+    deployments_upgrade_wasm_client_parser.add_argument(
+        "--build-vm-size",
+        type=str,
+        default=None,
+        help="DigitalOcean droplet size for the build VM (default: c-32).",
+    )
+
     # deployments up
     deployments_up_parser = deployments_subparsers.add_parser(
         "up",
@@ -7186,6 +7236,12 @@ def main(argv=None):
             from saorsa_deploy.cmd.upgrade_ant_binary import cmd_upgrade_ant_binary
 
             cmd_upgrade_ant_binary(args)
+        elif args.deployments_subcommand == "upgrade-wasm-client":
+            from saorsa_deploy.cmd.upgrade_wasm_client import (
+                cmd_upgrade_wasm_client,
+            )
+
+            cmd_upgrade_wasm_client(args)
         elif args.deployments_subcommand == "up":
             from saorsa_deploy.cmd.deploy_cmds import cmd_up
 

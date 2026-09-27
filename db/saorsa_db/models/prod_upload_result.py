@@ -80,6 +80,12 @@ class DeploymentProdUploadResult(Base):
     # deployment's persisted uploader list rather than its S3 client state,
     # which `clients destroy` deletes.
     client_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # The ant-client commit the WASM bundle that performed this upload was built
+    # from, as `ant-wasm` itself reported it. NULL for native rows, and for a
+    # browser-path row whose bundle predates build provenance. Per-ROW because
+    # `deployments upgrade-wasm-client` replaces the bundle under a running
+    # service, and `deploy_args.wasm_build` records only the current one.
+    client_build: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # SHA-256 of the exact bytes handed to `ant`, computed by the uploader
     # itself (V2-837). This is what an independent verifier compares its
     # download against, so read-back verification does not depend on the pool
@@ -130,6 +136,8 @@ class DeploymentProdUploadResult(Base):
             "file_size_bytes": self.file_size_bytes,
             "status": self.status.value,
             "address": self.address,
+            "client_kind": self.client_kind,
+            "client_build": self.client_build,
             "sha256": self.sha256,
             "chunks_stored": self.chunks_stored,
             "chunks_failed": self.chunks_failed,

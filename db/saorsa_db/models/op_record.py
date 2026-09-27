@@ -129,9 +129,25 @@ class DeploymentDownloadRecord(_BaseOpRecord, Base):
     # upload's address is its RESULT and lives in the prod-upload tables.
     address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # The ant-client commit the WASM bundle that performed this download was
+    # built from, as `ant-wasm` itself reported it. NULL for every native row —
+    # the `ant` binary is recorded per deployment, not per op — and for any
+    # browser-path row whose bundle predates build provenance.
+    #
+    # Per-ROW rather than on the deployment because `deployments
+    # upgrade-wasm-client` replaces the bundle under a running service, which is
+    # the whole point of that command: `deploy_args.wasm_build` holds only the
+    # CURRENT build and is overwritten, so without this the transfers either
+    # side of an upgrade could not be compared.
+    client_build: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     deployment: Mapped["Deployment"] = relationship(  # noqa: F821
         back_populates="download_records"
     )
 
     def to_dict(self):
-        return {**super().to_dict(), "address": self.address}
+        return {
+            **super().to_dict(),
+            "address": self.address,
+            "client_build": self.client_build,
+        }
