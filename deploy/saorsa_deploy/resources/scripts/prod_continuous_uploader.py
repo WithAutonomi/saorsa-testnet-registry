@@ -791,6 +791,11 @@ def main() -> int:
                     influx_status = STATUS_PARTIAL_UPLOAD
 
                 parsed = parsed or {}
+                # The ant-client commit the transferring binary reported. Only
+                # `ant-wasm` emits it, and only on a bundle carrying build
+                # provenance — so a native row, and a pre-provenance browser
+                # row, both stay NULL.
+                client_build = str(parsed.get("client_build") or "")
                 address = parsed.get("address")
                 chunks_stored = int(parsed.get("chunks_stored") or 0)
                 chunks_failed = int(parsed.get("chunks_failed") or 0)
@@ -849,6 +854,10 @@ def main() -> int:
                     # Which transport wrote it. The two are not the same
                     # instrument, so a blended series would describe neither.
                     client_kind=client_kind,
+                    # And which build of that transport: the bundle is replaced
+                    # in place by `deployments upgrade-wasm-client`, so without
+                    # this the rows either side of an upgrade cannot be split.
+                    client_build=client_build or None,
                 )
 
                 # ---- resolve the claim by what actually happened ----
@@ -905,9 +914,11 @@ def main() -> int:
                          "address": address or "", "file_name": file_name,
                          "source_url": locator, "sha256": source_sha256,
                          "reason": reason or "",
-                         # Only the browser path reports one, and _build_line
-                         # drops empty strings, so a native point is unchanged.
-                         "error_kind": error_kind},
+                         # Only the browser path reports these, and
+                         # _build_line drops empty strings, so a native point is
+                         # unchanged.
+                         "error_kind": error_kind,
+                         "client_build": client_build},
                     ),
                 )
 
@@ -1068,9 +1079,13 @@ def _verify_once(
             address=address,
             output_path=output_path,
         )
-    rc, _stdout, stderr = _run_ant(
+    rc, stdout, stderr = _run_ant(
         cmd, secret_key, log_base.with_name(log_base.name + "-verify"), timeout
     )
+    # The read-back runs over the SAME transport as the upload, so its row
+    # carries the same build stamp — and it is read off the child's own result
+    # rather than assumed, for the same reason the upload's is.
+    client_build = str((_parse_ant_json(stdout) or {}).get("client_build") or "")
     finished_at = datetime.now(timezone.utc)
     duration_ms = (time.time_ns() - start_ns) // 1_000_000
 
@@ -1118,6 +1133,7 @@ def _verify_once(
             duration_ms=duration_ms,
             reason=reason,
             age_at_check_secs=age,
+            client_build=client_build or None,
         )
     except Exception as exc:  # noqa: BLE001
         _log(f"WARNING: could not record the read-back result: {exc}")
@@ -1132,7 +1148,8 @@ def _verify_once(
              "duration_ms": duration_ms,
              "bytes_downloaded": bytes_downloaded or 0,
              "age_secs": age or 0, "address": address,
-             "file_name": file_name, "reason": reason or ""},
+             "file_name": file_name, "reason": reason or "",
+             "client_build": client_build},
         ),
     )
     output_path.unlink(missing_ok=True)

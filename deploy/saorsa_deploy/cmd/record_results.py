@@ -679,8 +679,14 @@ def _record_file_op_records(
             upload_recorded += 1
         else:
             # Downloads only: an upload's address is its RESULT and lives in the
-            # prod-upload tables, not in the op record.
-            repo.upsert_download_record(**kwargs, address=p.get("address"))
+            # prod-upload tables, not in the op record. `client_build` rides
+            # with it — the WASM bundle is replaced in place by `deployments
+            # upgrade-wasm-client`, so which build ran is per-OP, not per-run.
+            repo.upsert_download_record(
+                **kwargs,
+                address=p.get("address"),
+                client_build=p.get("client_build"),
+            )
             download_recorded += 1
 
         # Collected for the optional --update-slack per-operation detail.
@@ -694,6 +700,7 @@ def _record_file_op_records(
                 "started_at": started_at,
                 "client_kind": client_kind_for_host(p["host"]),
                 "address": p.get("address"),
+                "client_build": p.get("client_build"),
                 "error_kind": p.get("error_kind"),
             }
         )

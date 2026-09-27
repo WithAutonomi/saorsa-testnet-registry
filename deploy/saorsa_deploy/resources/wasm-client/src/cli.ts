@@ -31,6 +31,7 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 import { classifyError, type ErrorKind } from "./classify.js";
 import {
@@ -87,6 +88,39 @@ export interface OpResult {
   error: string | null;
   reason: string | null;
   error_kind: ErrorKind | null;
+  /** ant-client commit this bundle was built from, or null if unrecorded. */
+  client_build: string | null;
+}
+
+/**
+ * Build provenance written into the bundle root by `build ant-wasm`.
+ *
+ * Relative to this module rather than to `WASM_DIR` or a constant: the CLI runs
+ * from `<bundle>/dist/cli.js`, so its own location is the one thing that always
+ * names the bundle it was unpacked with — including after `deployments
+ * upgrade-wasm-client` has replaced that bundle underneath a running service.
+ */
+export const DEFAULT_BUILD_INFO_PATH = fileURLToPath(
+  new URL("../build-info.json", import.meta.url),
+);
+
+/**
+ * The ant-client commit this bundle was built from, or null.
+ *
+ * Every failure is null rather than an error: a bundle built before provenance
+ * was recorded has no file at all, and an unreadable one must not cost a
+ * transfer. Null is what the recording side stores, and it reads as "unknown
+ * build", which is exactly what it is.
+ */
+export async function readClientBuild(
+  path: string = DEFAULT_BUILD_INFO_PATH,
+): Promise<string | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as { commit?: unknown };
+    return typeof parsed?.commit === "string" && parsed.commit ? parsed.commit : null;
+  } catch {
+    return null;
+  }
 }
 
 const USAGE = [
@@ -183,6 +217,7 @@ export function successResult(fields: Partial<OpResult> & { elapsed_secs: number
     error: null,
     reason: null,
     error_kind: null,
+    client_build: null,
     ...fields,
   };
 }
@@ -372,11 +407,15 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 
   const startedAt = Date.now();
+  // Read once, up front: every line this process emits carries it, including
+  // the ones written before a client exists. It is what lets results recorded
+  // either side of an in-place bundle upgrade be told apart.
+  const clientBuild = await readClientBuild();
   let bootstraps: string[];
   try {
     bootstraps = parseBootstraps(process.env.BOOTSTRAP_MULTIADDRS);
   } catch (e) {
-    emit(failureResult(e, { elapsed_secs: 0 }));
+    emit({ ...failureResult(e, { elapsed_secs: 0 }), client_build: clientBuild });
     return 1;
   }
 
@@ -398,6 +437,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       /* already closed */
     }
   }
+  result.client_build = clientBuild;
   emit(result);
   return exitCodeFor(result);
 }
@@ -408,8 +448,16 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 if (process.argv[1] && process.argv[1].endsWith("cli.js")) {
   main()
     .then((code) => process.exit(code))
-    .catch((e) => {
-      emit(failureResult(e, { elapsed_secs: 0 }));
+    .catch(async (e) => {
+      // Stamped here too, not just inside `main`. Anything that throws before
+      // the transfer begins — resolving the payment network from a node's
+      // HELLO, constructing the client — lands here, and those are exactly the
+      // failures an operator reads as "did the bundle we just installed break
+      // it?". An unstamped row cannot answer that. Measured on the live
+      // verification of V2-1346: an ant-client API drift threw out of
+      // `fetchPaymentNetwork` and every resulting row said `client_build:
+      // null`.
+      emit({ ...failureResult(e, { elapsed_secs: 0 }), client_build: await readClientBuild() });
       process.exit(1);
     });
 }

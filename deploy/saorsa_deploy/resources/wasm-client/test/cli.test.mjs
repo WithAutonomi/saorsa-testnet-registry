@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { classifyError } from "../dist/classify.js";
 import {
+  DEFAULT_BUILD_INFO_PATH,
   emit,
   exitCodeFor,
   failureResult,
   markPaymentSubmitted,
   parseArgs,
   parseBootstraps,
+  readClientBuild,
   successResult,
   UsageError,
 } from "../dist/cli.js";
@@ -32,6 +37,7 @@ const CONTRACT_KEYS = [
   "error",
   "reason",
   "error_kind",
+  "client_build",
 ];
 
 test("download argv parses into an address and an output path", () => {
@@ -180,4 +186,73 @@ test("an over-cap refusal still exits non-zero", () => {
   });
   assert.equal(r.error_kind, "over_cap");
   assert.equal(exitCodeFor(r), 1);
+});
+
+test("the client build is read from the bundle's build-info.json", async () => {
+  // The commit is what identifies the code a transfer ran: a moving branch name
+  // does not, and `deployments upgrade-wasm-client` replaces the bundle under a
+  // running service, so the transfers either side of it must be separable.
+  const dir = await mkdtemp(join(tmpdir(), "ant-wasm-build-"));
+  const path = join(dir, "build-info.json");
+  await writeFile(
+    path,
+    JSON.stringify({ commit: "9112d683abcdef", ref: "ant-cli-v0.3.8" }),
+  );
+  assert.equal(await readClientBuild(path), "9112d683abcdef");
+});
+
+test("a missing or unusable build-info.json reads as null", async () => {
+  // A bundle built before provenance was recorded has no file at all, and an
+  // unreadable one must never cost a transfer: null means "unknown build".
+  const dir = await mkdtemp(join(tmpdir(), "ant-wasm-build-"));
+  assert.equal(await readClientBuild(join(dir, "absent.json")), null);
+
+  const malformed = join(dir, "malformed.json");
+  await writeFile(malformed, "not json");
+  assert.equal(await readClientBuild(malformed), null);
+
+  const empty = join(dir, "empty.json");
+  await writeFile(empty, JSON.stringify({ commit: "" }));
+  assert.equal(await readClientBuild(empty), null);
+});
+
+test("the default build-info path is the bundle root, beside dist/", () => {
+  // The CLI runs from `<bundle>/dist/cli.js`, and the tarball puts
+  // build-info.json at the bundle root — its own location is the only thing
+  // that names the bundle it was actually unpacked with.
+  assert.ok(DEFAULT_BUILD_INFO_PATH.endsWith("/build-info.json"));
+  assert.ok(!DEFAULT_BUILD_INFO_PATH.includes("/dist/"));
+});
+
+const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+test("a failure thrown before the transfer starts still carries the build", async () => {
+  // Anything that throws before `main`'s own try — resolving the payment
+  // network from a node's HELLO, constructing the client — reaches the
+  // top-level handler, and those are exactly the failures an operator reads as
+  // "did the bundle we just installed break it?". Found on the live
+  // verification of V2-1346: an ant-client API drift threw out of
+  // fetchPaymentNetwork and every resulting row said client_build: null.
+  const buildInfo = join(PACKAGE_ROOT, "build-info.json");
+  await writeFile(buildInfo, JSON.stringify({ commit: "a04b9fc7c4df8db52170" }));
+  try {
+    // A WASM_DIR that does not exist makes ant-core's own module load throw,
+    // which is the same escape route the real API drift took.
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [join(PACKAGE_ROOT, "dist/cli.js"), "file", "download", "abc", "-o", "/dev/null"],
+      {
+        env: {
+          ...process.env,
+          BOOTSTRAP_MULTIADDRS: "/ip4/1.2.3.4/udp/1/webrtc-direct",
+          WASM_DIR: "/nonexistent-pkg",
+        },
+      },
+    ).catch((e) => e);
+    const result = JSON.parse(stdout.trim().split("\n").pop());
+    assert.equal(result.client_build, "a04b9fc7c4df8db52170");
+    assert.ok(result.error);
+  } finally {
+    await rm(buildInfo, { force: true });
+  }
 });

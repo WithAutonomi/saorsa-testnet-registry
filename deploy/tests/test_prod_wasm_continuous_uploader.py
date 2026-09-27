@@ -606,6 +606,7 @@ class TestOneCycle:
         write_marker=False,
         wasm=True,
         readback=None,
+        readback_stdout="",
     ):
         import json as _json
 
@@ -645,7 +646,11 @@ class TestOneCycle:
             if "download" in cmd:
                 out = cmd[cmd.index("-o") + 1]
                 Path(out).write_bytes(b"x" * (5 * MIB))
-                return readback if readback is not None else 0, "", ""
+                return (
+                    readback if readback is not None else 0,
+                    readback_stdout,
+                    "",
+                )
             if write_marker:
                 Path(cmd[cmd.index("--payment-marker") + 1]).write_text("paid\n")
             stdout = _json.dumps(result) if result is not None else ""
@@ -834,6 +839,47 @@ class TestOneCycle:
         )
         assert out.claim.status is ClaimStatus.PARTIAL
         assert "error_kind" not in out.posted[0][1]
+
+    def test_the_build_that_ran_reaches_both_tables_and_both_points(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        # V2-1346: `deployments upgrade-wasm-client` replaces the bundle under
+        # this very service, and `deploy_args.wasm_build` records only the
+        # CURRENT build — so which build performed a given cycle has to travel
+        # with the row, not with the deployment.
+        import json as _json
+
+        commit = "aaaa1111bbbb2222cccc3333"
+        out = self._run(
+            service,
+            registry,
+            monkeypatch,
+            tmp_path,
+            result={**self._SUCCESS, "client_build": commit},
+            readback_stdout=_json.dumps({"client_build": commit}),
+        )
+        assert out.rows[0].client_build == commit
+        assert out.verifications[0].client_build == commit
+        # The two transfer measurements carry it; the per-cycle heartbeat does
+        # not, because it describes a cycle rather than an operation.
+        transfers = [
+            line for _, line in out.posted
+            if line.startswith(("prod_upload,", "prod_upload_verify,"))
+        ]
+        assert len(transfers) == 2
+        assert all(f'client_build="{commit}"' in line for line in transfers)
+
+    def test_a_native_cycle_records_no_build(
+        self, service, registry, monkeypatch, tmp_path
+    ):
+        # The native `ant` reports none, so the rows stay NULL and the points
+        # keep exactly the field set they had.
+        out = self._run(
+            service, registry, monkeypatch, tmp_path, result=self._SUCCESS, wasm=False
+        )
+        assert out.rows[0].client_build is None
+        assert out.verifications[0].client_build is None
+        assert all("client_build" not in line for _, line in out.posted)
 
 
 # ---------------------------------------------------------------------------

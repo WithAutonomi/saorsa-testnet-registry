@@ -3085,6 +3085,48 @@ Only `prod-downloaders` and `prod-continuous-downloader` deployments are support
 
 **`--no-restart` note**: the `prod_downloader.py` service has no checkpoint/resume state — every start walks its full address list from the beginning. For `prod-continuous-downloader` this is harmless (it loops forever anyway), but restarting a `prod-downloaders` (one-shot) deployment that has already completed its single pass re-runs the entire address list, duplicating Influx points and any already-recorded results. Pass `--no-restart` for a completed one-shot deployment and restart the service manually only when you actually want another full pass.
 
+### Upgrading the WASM client in place (`deployments upgrade-wasm-client`)
+
+`deployments upgrade-wasm-client` replaces the WASM (browser-path) client bundle on an already-running `prod-continuous-uploader` or `prod-continuous-downloader` VM over SSH and restarts its service — no Terraform infrastructure is touched and no registry row is created.
+
+It exists because PROD-WUL-01 and PROD-WDL-01 run permanently against production and the point of them is a *series*: what the browser client can do against production today, next to what it could do last week. Iterating on the client means changing the binary under that series without breaking it, and neither existing route does that — `deployments upgrade-ant-binary` covers only the native `ant` binary, and re-running `deployments up` calls `record_deployment_created` again, risking a fresh registry row (a new series rather than a continuation of the old one).
+
+```bash
+# one build, installed on both deployments
+uv run saorsa-deploy deployments upgrade-wasm-client \
+  --name PROD-WDL-01 --name PROD-WUL-01 \
+  --branch-name main --repo-owner WithAutonomi
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--name` | string (repeatable) | required | Deployment to upgrade. Every named deployment gets the SAME bundle from ONE build |
+| `--branch-name` | string | required | ant-client git ref to build from — a branch OR a tag (`main`, `ant-cli-v0.3.8`) |
+| `--repo-owner` | string | `WithAutonomi` | GitHub repository owner |
+| `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key used to reach the client VM(s) |
+| `--build-vm-size` | string | `c-32` | DigitalOcean droplet size for the build VM |
+
+**Scope.** Only `prod-continuous-uploader` and `prod-continuous-downloader` deployments whose `deploy_args.client_kind` is `wasm`. Anything else — another kind, a native deployment, a name the registry does not know — is refused **before anything is built**, with every problem in the invocation listed at once. The one-shot kinds (`prod-downloaders`, `prod-uploaders`) are rebuilt by every `up` and need no in-place upgrade; a testnet's WASM tier is torn down with its testnet. `DATABASE_URL` is required: the kind, the transport and the old build all come from the registry, and the upgrade is recorded there.
+
+**One build for all named deployments.** The bundle is built once, under the first named deployment's name, and that same bundle URL is installed everywhere. That is the point of passing several names: installing identical bytes is what keeps the deployments comparable afterwards, where a build per deployment could give each one a different commit of a branch that moved in between.
+
+**On each target VM**, in order: fetch and unpack the bundle (`require_cli`, so a bundle with no `dist/cli.js` is rejected on the VM rather than failing every subsequent transfer), reinstall the `/usr/local/bin/ant-wasm` wrapper, then `systemctl restart` that kind's unit — `ant-prod-downloader` or `ant-prod-continuous-uploader`. The continuous uploader's **verifier VMs are deliberately not touched**: they are native by design, so that a digest mismatch they report stays attributable to the upload rather than to a browser read path.
+
+**Timing is the operator's.** Run it outside the daily window. A restart that triggers a same-day cycle is acceptable — the uploader claims fresh files, the downloader re-walks its list — but it is a cycle and it costs what a cycle costs. A failure on one deployment is reported and the command carries on with the rest (the alternative is a set left on two builds with nothing recording which is which), exiting non-zero at the end.
+
+**Recording.** On success, `deploy_args.wasm_build` is replaced with the new bundle's `build-info.json` and a `wasm_client_upgraded` event records `{old_commit, new_commit, ref, repo_owner, upgraded_at}`; the output prints old → new per deployment. A failure records `wasm_client_upgrade_failed` and leaves `deploy_args` alone, so the registry never claims a build that a VM did not take. If the deployment's run manifest under `deploy/manifests/runs/` still pins a different `wasm_binary.branch`, the command warns that the next `deployments up` would roll the upgrade back.
+
+#### Which build performed each transfer (`client_build`)
+
+`deploy_args.wasm_build` holds only the **current** build and is overwritten, so on its own it cannot separate a deployment's results before an upgrade from its results after — which is the only reason to upgrade in place. The build therefore travels with each operation:
+
+* **`ant-wasm`** reads `build-info.json` from its own bundle and adds `client_build` (the ant-client commit) to the final JSON line it prints. A bundle built before provenance existed reports `null`.
+* **The services** (`prod_downloader.py`, `prod_continuous_uploader.py`) put it on their Influx points — `download`, `prod_upload` and `prod_upload_verify`. A native service reports none and its points are byte-identical to before.
+* **Postgres** carries a nullable `client_build` column on `deployment_download_records`, `deployment_prod_upload_results` and `deployment_prod_upload_verifications`, written by `record-results` (download kinds) and by the continuous uploader's own direct writes. NULL means "unknown build": every native row, every native verifier row, and every row predating the column. Like `client_kind`, the upsert COALESCEs — a source with no build never erases one already recorded.
+* **`deployments print-recorded-results`** splits its tables and its totals footers by `client_build` whenever more than one build appears for a deployment. With a single build, or none, the output is exactly what it was.
+
+No past row can be backfilled: the Influx points never held the field.
+
 ### Managing the production file pool (`prod pool`)
 
 Production uploads must use **real files**, and a file must **never be uploaded

@@ -515,6 +515,51 @@ _OP_STATUS_LABELS = {
 }
 
 
+def _client_builds(rows: list) -> list:
+    """The distinct client builds in the rows, in first-seen order.
+
+    ``None`` is a build like any other here: it is what a native row carries,
+    and what a browser-path row carries when its bundle predates build
+    provenance. Collapsing it into one of the real builds would put transfers
+    from an unknown binary into a bucket labelled with a commit.
+    """
+    seen: list = []
+    for row in rows:
+        build = getattr(row, "client_build", None)
+        if build not in seen:
+            seen.append(build)
+    return seen
+
+
+def _split_by_build(rows: list) -> list[tuple[str | None, list]]:
+    """Group rows by the client build that performed them.
+
+    Returns a single group labelled ``None`` — meaning "do not split" — when a
+    deployment carries only one build or none, so every native run and every
+    run that has never been upgraded renders exactly as it did before.
+
+    The split exists for `deployments upgrade-wasm-client`, which replaces the
+    WASM bundle underneath a permanently-running deployment. The whole reason
+    to upgrade in place is to compare what the deployment did before with what
+    it does after; one blended table answers that with an average of the two.
+    """
+    builds = _client_builds(rows)
+    if len(builds) <= 1:
+        return [(None, list(rows))]
+    return [
+        (
+            _build_label(build),
+            [r for r in rows if getattr(r, "client_build", None) == build],
+        )
+        for build in builds
+    ]
+
+
+def _build_label(build: str | None) -> str:
+    """How a build is named in a heading. The commit, truncated, or unknown."""
+    return f"build {build[:12]}" if build else "build unknown"
+
+
 def _print_op_records_section(
     uploads: list[DeploymentUploadRecord],
     downloads: list[DeploymentDownloadRecord],
@@ -566,21 +611,34 @@ def _print_transport_totals(uploads: list, downloads: list, console: Console) ->
             ]
             if not subset:
                 continue
-            # A skip never enters the denominator: the content is on the network
-            # and healthy, and this transport simply will not carry it.
-            skipped = sum(1 for r in subset if r.status == OpRecordStatus.SKIPPED)
-            attempted = [
-                r for r in subset if r.status != OpRecordStatus.SKIPPED
-            ]
-            ok = sum(1 for r in attempted if r.status == OpRecordStatus.SUCCESS)
-            total = len(attempted)
-            rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
             colour = "green" if transport == "native" else "cyan"
-            extra = f", {skipped} skipped (over-cap)" if skipped else ""
-            console.print(
-                f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = "
-                f"{rate}{extra}"
-            )
+            # Split again by build when the deployment has been upgraded in
+            # place: the transport says which instrument ran, the build says
+            # which version of it, and an upgrade is done precisely to see
+            # whether the second reads differently from the first.
+            for build_label, build_rows in _split_by_build(subset):
+                # A skip never enters the denominator: the content is on the
+                # network and healthy, and this transport simply will not carry
+                # it.
+                skipped = sum(
+                    1 for r in build_rows if r.status == OpRecordStatus.SKIPPED
+                )
+                attempted = [
+                    r for r in build_rows if r.status != OpRecordStatus.SKIPPED
+                ]
+                ok = sum(
+                    1 for r in attempted if r.status == OpRecordStatus.SUCCESS
+                )
+                total = len(attempted)
+                rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
+                extra = f", {skipped} skipped (over-cap)" if skipped else ""
+                # Escaped: Rich reads a bare `[...]` as a style tag and would
+                # render the label as nothing at all.
+                build_note = f" \\[{build_label}]" if build_label else ""
+                console.print(
+                    f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = "
+                    f"{rate}{extra}{build_note}"
+                )
 
 
 def _print_op_records_for_kind(
@@ -589,15 +647,28 @@ def _print_op_records_for_kind(
     name: str,
     console: Console,
 ) -> None:
+    for build_label, group in _split_by_build(rows):
+        _print_op_records_tables(op_label, group, name, console, build_label)
+
+
+def _print_op_records_tables(
+    op_label: str,
+    rows: list,
+    name: str,
+    console: Console,
+    build_label: str | None = None,
+) -> None:
     by_host: dict[str, list] = {}
     for row in rows:
         by_host.setdefault(row.client_hostname, []).append(row)
 
     for host in sorted(by_host.keys()):
         host_rows = sorted(by_host[host], key=lambda r: r.start_ns)
+        build_note = f" — {build_label}" if build_label else ""
         table = Table(
             title=(
-                f"{op_label} — {host} ({len(host_rows)} record(s)) — '{name}'"
+                f"{op_label} — {host}{build_note} "
+                f"({len(host_rows)} record(s)) — '{name}'"
             ),
             title_style="bold",
             show_lines=False,
@@ -657,14 +728,20 @@ def _print_prod_upload_section(
         )
         return
 
-    by_host: dict[str, list[DeploymentProdUploadResult]] = {}
-    for row in rows:
-        by_host.setdefault(row.client_hostname, []).append(row)
+    for build_label, group in _split_by_build(rows):
+        if build_label:
+            # Only ever printed for a deployment whose bundle was replaced in
+            # place; a single-build run renders exactly as it did before.
+            console.print()
+            console.print(f"[bold]{build_label}[/bold]")
+        by_host: dict[str, list[DeploymentProdUploadResult]] = {}
+        for row in group:
+            by_host.setdefault(row.client_hostname, []).append(row)
 
-    if details:
-        _print_prod_upload_details(by_host, console)
-    else:
-        _print_prod_upload_tables(by_host, console)
+        if details:
+            _print_prod_upload_details(by_host, console)
+        else:
+            _print_prod_upload_tables(by_host, console)
     _print_prod_upload_transport_totals(rows, console)
 
 
@@ -705,16 +782,26 @@ def _print_prod_upload_transport_totals(rows: list, console: Console) -> None:
         subset = [r for r in rows if _prod_upload_transport(r) == transport]
         if not subset:
             continue
-        over_cap = sum(1 for r in subset if r.status is ProdUploadStatus.OVER_CAP)
-        attempted = [r for r in subset if r.status is not ProdUploadStatus.OVER_CAP]
-        ok = sum(1 for r in attempted if r.status is ProdUploadStatus.SUCCESS)
-        total = len(attempted)
-        rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
         colour = "green" if transport == "native" else "cyan"
-        extra = f", {over_cap} over-cap (not uploaded)" if over_cap else ""
-        console.print(
-            f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = {rate}{extra}"
-        )
+        # And by build within the transport: an in-place upgrade is done to see
+        # whether the new bundle reads differently, which one pooled rate hides.
+        for build_label, build_rows in _split_by_build(subset):
+            over_cap = sum(
+                1 for r in build_rows if r.status is ProdUploadStatus.OVER_CAP
+            )
+            attempted = [
+                r for r in build_rows if r.status is not ProdUploadStatus.OVER_CAP
+            ]
+            ok = sum(1 for r in attempted if r.status is ProdUploadStatus.SUCCESS)
+            total = len(attempted)
+            rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
+            extra = f", {over_cap} over-cap (not uploaded)" if over_cap else ""
+            # Escaped for Rich, which would otherwise read it as a style tag.
+            build_note = f" \\[{build_label}]" if build_label else ""
+            console.print(
+                f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = "
+                f"{rate}{extra}{build_note}"
+            )
 
 
 def _print_prod_upload_tables(
@@ -1035,10 +1122,6 @@ def _print_verification_section(rows, name: str, details: bool, console) -> None
     and not another is the single most interesting thing this test can find,
     and a pooled total would hide it.
     """
-    from collections import defaultdict
-
-    from saorsa_db.models import ProdUploadVerifyStatus
-
     console.print()
     console.print("[bold]Read-back verification (per region)[/bold]")
     if not rows:
@@ -1048,6 +1131,22 @@ def _print_verification_section(rows, name: str, details: bool, console) -> None
             "until the first one completes.[/yellow]"
         )
         return
+
+    for build_label, group in _split_by_build(rows):
+        if build_label:
+            # The independent verifier VMs are native and carry no build, so a
+            # deployment whose uploader was upgraded in place shows its own
+            # read-backs split by bundle and the verifiers under "unknown".
+            console.print()
+            console.print(f"[bold]{build_label}[/bold]")
+        _print_verification_table(group, details, console)
+
+
+def _print_verification_table(rows, details: bool, console) -> None:
+    """One per-region table, for one client build (or for all of them)."""
+    from collections import defaultdict
+
+    from saorsa_db.models import ProdUploadVerifyStatus
 
     by_host = defaultdict(list)
     for row in rows:

@@ -517,6 +517,64 @@ metrics. Impl: `deploy/saorsa_deploy/cmd/upgrade_ant_binary.py`,
 
 See `deploy/README.md` §"Upgrading the `ant` binary in place" for the full argument table.
 
+### Upgrading the WASM client in place, and `client_build`
+
+`deployments upgrade-wasm-client --name <n> [--name <n>...] --branch-name <ref>`
+replaces the WASM bundle on a running **`prod-continuous-uploader`** or
+**`prod-continuous-downloader`** VM over SSH and restarts its unit. PROD-WUL-01
+and PROD-WDL-01 run permanently against production and the point of them is a
+*series*; iterating on the browser client means changing the binary under that
+series without breaking it. `upgrade-ant-binary` covers only native `ant`, and
+re-running `up` calls `record_deployment_created` again — a fresh registry row
+would end the series rather than continue it. Impl:
+`cmd/upgrade_wasm_client.py`.
+
+- **Refused before anything is built**: another kind, `client_kind: native`, an
+  unknown name, or no client state — all problems in one invocation reported at
+  once, because a build is ~10 minutes on a VM that bills. `DATABASE_URL` is
+  required (the kind, the transport and the old commit all come from the
+  registry). The one-shot kinds are rebuilt by every `up`; a testnet's WASM tier
+  dies with its testnet.
+- **One build, all names.** Built once under the FIRST named deployment and the
+  same bundle URL installed everywhere — installing identical bytes is what
+  keeps the deployments comparable, where a build per deployment could give each
+  a different commit of a branch that moved in between.
+- Per VM: `build_bundle_install_command(..., require_cli=True)` →
+  `build_ant_wasm_cli_command()` → `systemctl restart` that kind's unit. The
+  continuous uploader's **verifier VMs are deliberately untouched** — they are
+  native so that a `digest_mismatch` stays attributable to the upload rather
+  than to a browser read path. Timing is the operator's (run it outside the
+  daily window); a failure on one deployment is reported and the rest still
+  upgrade, exiting non-zero at the end.
+- On success `deploy_args.wasm_build` is replaced and a `wasm_client_upgraded`
+  event records `{old_commit, new_commit, ref, repo_owner, upgraded_at}`; a
+  failure records `wasm_client_upgrade_failed` and leaves `deploy_args` alone,
+  so the registry never claims a build a VM did not take. A run manifest under
+  `deploy/manifests/runs/` still pinning a different `wasm_binary.branch` is
+  warned about — the next `up` would roll the upgrade back.
+
+**`client_build` — which build performed each transfer.** `deploy_args.wasm_build`
+holds only the CURRENT build and is overwritten, so on its own it cannot separate
+a deployment's results before an upgrade from its results after, which is the only
+reason to upgrade in place. So the commit travels with the operation: `ant-wasm`
+reads `build-info.json` from its own bundle (resolved from the CLI's own location,
+not `WASM_DIR`, so it names the bundle it was actually unpacked with) and adds
+`client_build` to its final JSON line; `prod_downloader.py` and
+`prod_continuous_uploader.py` put it on the `download` / `prod_upload` /
+`prod_upload_verify` Influx points; a nullable `client_build` column on
+`deployment_download_records`, `deployment_prod_upload_results` and
+`deployment_prod_upload_verifications` receives it from `record-results` and from
+the continuous uploader's direct writes. **NULL means unknown build** — every
+native row, every native verifier row, every pre-column row — and the upsert
+**COALESCEs** exactly as `client_kind` does, so a re-record from a source without
+a build never erases one. `print-recorded-results` splits its tables and totals
+footers by it whenever a deployment shows more than one build; with one (or none)
+the output is unchanged. No past row can be backfilled: the Influx points never
+held the field.
+
+See `deploy/README.md` §"Upgrading the WASM client in place" for the full
+argument table.
+
 ### The production upload file pool (`prod pool`)
 
 Production uploads must use **real files**, and a file must **never be uploaded

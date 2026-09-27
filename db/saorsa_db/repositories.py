@@ -229,6 +229,7 @@ class DeploymentRepository(ABC):
         network_profile: str | None = None,
         client_kind: str | None = None,
         address: str | None = None,
+        client_build: str | None = None,
     ) -> DeploymentDownloadRecord:
         ...
 
@@ -476,6 +477,7 @@ class DeploymentRepository(ABC):
         network_profile: str | None = None,
         sha256: str | None = None,
         client_kind: str | None = None,
+        client_build: str | None = None,
     ) -> DeploymentProdUploadResult:
         ...
 
@@ -509,6 +511,7 @@ class DeploymentRepository(ABC):
         duration_ms: int | None = None,
         reason: str | None = None,
         age_at_check_secs: int | None = None,
+        client_build: str | None = None,
     ) -> DeploymentProdUploadVerification:
         ...
 
@@ -888,6 +891,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         network_profile: str | None = None,
         client_kind: str | None = None,
         address: str | None = None,
+        client_build: str | None = None,
     ):
         existing = (
             self.session.query(model_cls)
@@ -913,6 +917,11 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 network_profile=network_profile,
                 client_kind=client_kind,
                 **({"address": address} if address is not None else {}),
+                **(
+                    {"client_build": client_build}
+                    if client_build is not None
+                    else {}
+                ),
             )
             self.session.add(existing)
         else:
@@ -938,6 +947,13 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # None over a recorded address would lose it on the next re-run.
             if address is not None:
                 existing.address = address
+            # And again: the build stamp comes from the transferring binary's
+            # own result document, so a point written by a pre-provenance
+            # bundle has none. Writing None over a recorded build would lose
+            # the one thing that separates transfers across an in-place
+            # `upgrade-wasm-client`.
+            if client_build is not None:
+                existing.client_build = client_build
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -988,6 +1004,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         network_profile: str | None = None,
         client_kind: str | None = None,
         address: str | None = None,
+        client_build: str | None = None,
     ) -> DeploymentDownloadRecord:
         return self._upsert_op_record(
             DeploymentDownloadRecord,
@@ -1004,6 +1021,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             network_profile=network_profile,
             client_kind=client_kind,
             address=address,
+            client_build=client_build,
         )
 
     def list_upload_records_for_deployment(
@@ -1856,6 +1874,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         network_profile: str | None = None,
         sha256: str | None = None,
         client_kind: str | None = None,
+        client_build: str | None = None,
     ) -> DeploymentProdUploadResult:
         existing = (
             self.session.query(DeploymentProdUploadResult)
@@ -1889,6 +1908,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 network_profile=network_profile,
                 sha256=sha256,
                 client_kind=client_kind,
+                client_build=client_build,
             )
             self.session.add(existing)
         else:
@@ -1926,6 +1946,11 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # as native, pushing its failures into the native figures.
             if client_kind is not None:
                 existing.client_kind = client_kind
+            # Same COALESCE: only `ant-wasm` reports a build, and only from a
+            # bundle carrying provenance, so a re-record from a source without
+            # one must not erase it.
+            if client_build is not None:
+                existing.client_build = client_build
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -1977,6 +2002,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         duration_ms: int | None = None,
         reason: str | None = None,
         age_at_check_secs: int | None = None,
+        client_build: str | None = None,
     ) -> DeploymentProdUploadVerification:
         existing = (
             self.session.query(DeploymentProdUploadVerification)
@@ -2002,6 +2028,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 duration_ms=duration_ms,
                 reason=reason,
                 age_at_check_secs=age_at_check_secs,
+                client_build=client_build,
                 started_at=started_at,
                 finished_at=finished_at,
                 attempts=1,
@@ -2037,6 +2064,11 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             existing.duration_ms = duration_ms
             existing.reason = reason
             existing.age_at_check_secs = age_at_check_secs
+            # COALESCE, as everywhere else this column is written: a native
+            # verifier reports no build, and it must not erase the stamp the
+            # uploader VM's own browser-path read-back left.
+            if client_build is not None:
+                existing.client_build = client_build
             existing.started_at = started_at
             existing.finished_at = finished_at
             # A retry replaces the verdict, so the count and the time it first

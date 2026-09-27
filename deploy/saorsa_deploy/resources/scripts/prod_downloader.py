@@ -210,6 +210,7 @@ def _build_line(
     start_ns: int,
     address: str = "",
     error_kind: str = "",
+    client_build: str = "",
 ) -> str:
     """Build a `download`-measurement Influx line.
 
@@ -235,6 +236,13 @@ def _build_line(
         fields.append(f"address={_escape_field_string(address)}")
     if error_kind:
         fields.append(f"error_kind={_escape_field_string(error_kind)}")
+    # The ant-client commit the transferring binary was built from, as the
+    # binary itself reported it. Present on the browser path only, and only
+    # where a child actually ran and printed a result: `deployments
+    # upgrade-wasm-client` swaps the bundle under a running service, so without
+    # this the transfers either side of an upgrade are indistinguishable.
+    if client_build:
+        fields.append(f"client_build={_escape_field_string(client_build)}")
     field_set = ",".join(fields)
     # No explicit line-protocol timestamp: InfluxDB stamps each point with its
     # own (correct) server-receive time. This is essential for clock-skewed
@@ -625,10 +633,12 @@ def main() -> int:
                     file_size = 0
 
             error_kind = ""
+            client_build = ""
             if is_wasm:
                 result = _parse_wasm_result(stdout)
                 download_secs = float(result.get("elapsed_secs") or 0.0)
                 error_kind = str(result.get("error_kind") or "")
+                client_build = str(result.get("client_build") or "")
                 if not file_size:
                     file_size = int(result.get("file_size") or 0)
             else:
@@ -688,6 +698,7 @@ def main() -> int:
                     start_ns=start_ns,
                     address=address,
                     error_kind=error_kind,
+                    client_build=client_build,
                 )
                 _post_influx(
                     influx_url, influx_token, influx_org, influx_bucket, line,

@@ -66,6 +66,7 @@ PIVOT_FLUX_TEMPLATE = """from(bucket: "{bucket}")
   |> filter(fn: (r) => r._measurement == "upload" or r._measurement == "download")
   |> filter(fn: (r) =>
        r._field == "address" or
+       r._field == "client_build" or
        r._field == "error_kind" or
        r._field == "file_size" or
        r._field == "start_ns" or
@@ -112,8 +113,8 @@ def fetch_operation_points(
     Each dict contains: ``_time`` (datetime, UTC), ``host`` (str),
     ``_measurement`` (str: "upload"|"download"), ``file_size`` (int, bytes),
     ``start_ns`` (int), ``status`` (int: 0=success, 1=failure, 2=skipped),
-    ``total_ms`` (int), plus ``address`` and ``error_kind`` (str or None) when
-    the emitting client wrote them.
+    ``total_ms`` (int), plus ``address``, ``error_kind`` and ``client_build``
+    (str or None) when the emitting client wrote them.
 
     ``stop`` defaults to :data:`FLUX_FAR_FUTURE` so that clock-skewed client
     VMs — which testnet manifests create deliberately — are not silently
@@ -294,6 +295,10 @@ def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
                     # address that was recorded and happened to be empty.
                     "address": record.get("address") or None,
                     "error_kind": record.get("error_kind") or None,
+                    # The ant-client commit the transferring binary was built
+                    # from. Browser path only, and only from a bundle carrying
+                    # build provenance.
+                    "client_build": record.get("client_build") or None,
                 }
             )
         except (KeyError, ValueError):
