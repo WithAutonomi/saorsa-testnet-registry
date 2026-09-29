@@ -4243,8 +4243,44 @@ version and appears under its own value. Below the table is the checkpoint band
 — `none` / `10–20%` / `20–50%` / `50–99%` / `complete` (≥ 99%).
 
 **2. Upgrade events.** Counts of the auto-upgrade lifecycle messages in the
-window, plus each failure prefix with the `(host/service)` pairs that reported
-it. Every category is printed even at zero, because a zero is a measurement.
+window, then two tables. Every category is printed even at zero, because a zero
+is a measurement.
+
+Each row matches a message ant-node logs **exactly once per event**, so a
+document count is an event count and nothing has to be deduplicated. That
+matters because the obvious matchers do not have the property: a start logs two
+lines back to back (`Starting auto-apply upgrade...` from `node.rs` and
+`Starting auto-apply upgrade from {cur} to {new}` from `upgrade/apply.rs`), so
+only the second is counted — their common prefix counts every attempt twice.
+A success logs `Upgrade to {} successful, initiating graceful shutdown` once
+per upgraded service on every path; the one service per host that actually
+replaces the shared binary additionally logs `Successfully upgraded to version
+{}! Restarting...` and every other service on that host logs `Binary already
+upgraded to ...` instead. Those two are therefore **details** of a success, not
+successes, and are printed under it as `— of which binary replaced` and `— of
+which shared binary reused`, followed by the arithmetic check `replaced +
+reused = succeeded`. `retry backoff` counts `Upgrade rollout delay elapsed but
+previous apply did not succeed`: a non-zero count against an empty failures
+table is a failure the matchers missed, which is the only reason the row is
+there.
+
+Every node.rs line above logs under `tag.target = ant_node::node`, so the query
+matches that target as well as `ant_node` and the `ant_node::upgrade` prefix.
+
+**Failures** lists each failure prefix with the `(host/service)` pairs that
+reported it, and is the only §2 table that breaches the rollout gate.
+`Error during upgrade process:` is emitted from three sites, so it is split by
+the text after the prefix: the check-phase variants (the GitHub release check
+and the release-cache lock — `TRANSIENT_ERROR_MARKERS`) attempted nothing and
+go to a separate informational **transient check errors** table, annotated
+`all recovered` when every service that reported one is on the to-version at
+report time. Everything else, including a variant a future ant-node adds, is a
+failure: downgrading one is an explicit addition to that list. A failure whose
+detail contains `Failed to spawn new binary` is annotated *"binary already
+replaced on disk; old version still running"* — the one case that leaves a host
+half-upgraded. A rolled-back apply logs both its specific failure line and the
+generic one, so it produces two failure rows; that is deliberate and the
+verdict is the same either way.
 
 **3. Restarts.** Services with more than one `ant-node starting` document. A
 service that upgraded once has exactly two in a window spanning its upgrade, so

@@ -13,8 +13,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from saorsa_deploy.cmd.prod_rollout_watch import (
+    ATTEMPT_PREFIX,
+    BACKOFF_PREFIX,
+    REPLACED_PREFIX,
+    REUSED_PREFIX,
+    SUCCESS_PREFIX,
     build_report,
+    build_upgrade_events_query,
     checkpoint_band,
+    classify_message,
     parse_window,
     render_report,
     summarise_adoption,
@@ -256,28 +263,179 @@ def test_adoption_pages_through_a_composite_aggregation():
 
 
 # -- upgrade events --------------------------------------------------------
+# Verbatim lines from the production 0.19.0 -> 0.20.0 rollout (2026-09-24/25),
+# so what the matchers are pinned against is what the fleet actually logs.
+BARE_START = "Starting auto-apply upgrade..."
+APPLY_START = "Starting auto-apply upgrade from 0.19.0 to 0.20.0"
+SUCCESS_LINE = "Upgrade to 0.20.0 successful, initiating graceful shutdown"
+REPLACED_LINE = "Successfully upgraded to version 0.20.0! Restarting..."
+REUSED_LINE = "Binary already upgraded to 0.20.0 by another service, skipping replacement"
+BACKOFF_LINE = (
+    "Upgrade rollout delay elapsed but previous apply did not succeed; backing off, "
+    "next check scheduled for 2026-09-24T14:18:51.302923193+00:00"
+)
+TRANSIENT_GITHUB = (
+    "Error during upgrade process: network error: GitHub API request failed: error sending "
+    "request for url (https://api.github.com/repos/WithAutonomi/ant-node/releases)"
+)
+TRANSIENT_STATUS = (
+    "Error during upgrade process: network error: GitHub API returned status: 502 Bad Gateway"
+)
+
+
+def _events_response(buckets):
+    return {"aggregations": {"messages": {"buckets": buckets}}}
+
+
+def _event_counts(summary):
+    return {e["message"]: e["count"] for e in summary["events"]}
+
+
+def test_the_two_start_lines_of_one_attempt_count_one_attempt():
+    # node.rs and apply.rs both log a start, back to back. Matching their
+    # common prefix counted every attempt on the fleet twice.
+    summary = summarise_upgrade_events(
+        _events_response(
+            [
+                _message_bucket(BARE_START, [("PROD-A", "1")], 767),
+                _message_bucket(APPLY_START, [("PROD-A", "1")], 767),
+            ]
+        )
+    )
+    assert _event_counts(summary)[ATTEMPT_PREFIX] == 767
+
+
+def test_one_service_upgrading_counts_one_success_and_one_replaced_detail():
+    # The host's first upgrader logs both the canonical success and the
+    # binary-replacement line; only the first is a success.
+    summary = summarise_upgrade_events(
+        _events_response(
+            [
+                _message_bucket(SUCCESS_LINE, [("PROD-A", "1")], 1),
+                _message_bucket(REPLACED_LINE, [("PROD-A", "1")], 1),
+            ]
+        )
+    )
+    counts = _event_counts(summary)
+    assert counts[SUCCESS_PREFIX] == 1
+    assert counts[REPLACED_PREFIX] == 1
+    assert counts[REUSED_PREFIX] == 0
+
+
+def test_the_skip_line_counts_as_reused_and_the_details_add_up():
+    summary = summarise_upgrade_events(
+        _events_response(
+            [
+                _message_bucket(SUCCESS_LINE, [("PROD-A", "1")], 767),
+                _message_bucket(REPLACED_LINE, [("PROD-A", "1")], 66),
+                _message_bucket(REUSED_LINE, [("PROD-A", "2")], 701),
+            ]
+        )
+    )
+    counts = _event_counts(summary)
+    assert counts[REUSED_PREFIX] == 701
+    assert counts[REPLACED_PREFIX] + counts[REUSED_PREFIX] == counts[SUCCESS_PREFIX] == 767
+
+
+def test_the_backoff_line_is_counted():
+    # A non-zero backoff against no failures is a failure the matchers missed.
+    summary = summarise_upgrade_events(
+        _events_response([_message_bucket(BACKOFF_LINE, [("PROD-A", "1")], 1)])
+    )
+    assert _event_counts(summary)[BACKOFF_PREFIX] == 1
+
+
+@pytest.mark.parametrize(
+    "message,kind,label",
+    [
+        # Check phase: nothing was attempted.
+        (TRANSIENT_GITHUB, "transient", "network error: GitHub API request failed:"),
+        (TRANSIENT_STATUS, "transient", "network error: GitHub API returned status:"),
+        # A rolled-back apply, and an apply that returned Err.
+        (
+            "Error during upgrade process: upgrade error: Binary replacement failed: EACCES",
+            "failure",
+            "Error during upgrade process:",
+        ),
+        (
+            "Error during upgrade process: I/O error: Backup failed: No space left on device",
+            "failure",
+            "Error during upgrade process:",
+        ),
+    ],
+)
+def test_the_three_upgrade_error_sites_are_classified(message, kind, label):
+    assert classify_message(message)[:2] == (kind, label)
+
+
+def test_an_unknown_upgrade_error_variant_is_a_failure():
+    # Fail loud: a variant a future ant-node adds must not be silently
+    # downgraded to informational.
+    kind, label, note = classify_message(
+        "Error during upgrade process: quantum error: the future happened"
+    )
+    assert (kind, label, note) == ("failure", "Error during upgrade process:", None)
+
+
+def test_a_spawn_failure_carries_its_annotation():
+    summary = summarise_upgrade_events(
+        _events_response(
+            [
+                _message_bucket(
+                    "Error during upgrade process: upgrade error: Failed to spawn new binary: "
+                    "No such file or directory",
+                    [("PROD-A", "1")],
+                    1,
+                )
+            ]
+        )
+    )
+    failure = summary["failures"][0]
+    assert failure["message"] == "Error during upgrade process:"
+    assert failure["notes"] == ["binary already replaced on disk; old version still running"]
+
+
+def test_transient_errors_are_annotated_recovered_from_the_new_arm():
+    summary = summarise_upgrade_events(
+        _events_response(
+            [_message_bucket(TRANSIENT_GITHUB, [("PROD-A", "1"), ("PROD-B", "2")], 15)]
+        ),
+        {"PROD-A/1": "new", "PROD-B/2": "old"},
+    )
+    # Nothing was attempted, so a service now on the new arm went on to
+    # upgrade; the one still on the old arm needs a human.
+    entry = summary["transient"][0]
+    assert entry["message"] == "network error: GitHub API request failed:"
+    assert entry["count"] == 15
+    assert entry["recovered"] == ["PROD-A/1"]
+    assert entry["follow_up"] == ["PROD-B/2"]
+    # Transient errors never reach the gate-feeding table.
+    assert summary["failures"] == []
+
+
+def test_transient_errors_are_not_recovered_without_arm_information():
+    summary = summarise_upgrade_events(
+        _events_response([_message_bucket(TRANSIENT_STATUS, [("PROD-A", "1")], 1)])
+    )
+    entry = summary["transient"][0]
+    assert entry["recovered"] == []
+    assert entry["follow_up"] == ["PROD-A/1"]
+
+
 def test_failures_are_grouped_by_prefix_with_their_host_service_pairs():
-    response = {
-        "aggregations": {
-            "messages": {
-                "buckets": [
-                    _message_bucket(
-                        "Download failed: connection reset",
-                        [("PROD-A", "1"), ("PROD-B", "4")],
-                        2,
-                    ),
-                    _message_bucket("Download failed: 404 not found", [("PROD-A", "1")], 1),
-                    _message_bucket("Signature download failed: timeout", [("PROD-C", "2")], 5),
-                    _message_bucket(
-                        "Successfully upgraded to version 0.20.0",
-                        [("PROD-A", "1")],
-                        40,
-                    ),
-                    _message_bucket("some unrelated ant_node line", [("PROD-A", "1")], 9),
-                ]
-            }
-        }
-    }
+    response = _events_response(
+        [
+            _message_bucket(
+                "Download failed: connection reset",
+                [("PROD-A", "1"), ("PROD-B", "4")],
+                2,
+            ),
+            _message_bucket("Download failed: 404 not found", [("PROD-A", "1")], 1),
+            _message_bucket("Signature download failed: timeout", [("PROD-C", "2")], 5),
+            _message_bucket(REPLACED_LINE, [("PROD-A", "1")], 40),
+            _message_bucket("some unrelated ant_node line", [("PROD-A", "1")], 9),
+        ]
+    )
     summary = summarise_upgrade_events(response)
 
     download, signature = summary["failures"]
@@ -289,11 +447,54 @@ def test_failures_are_grouped_by_prefix_with_their_host_service_pairs():
     assert signature["message"] == "Signature download failed:"
     assert signature["services"] == ["PROD-C/2"]
 
-    counts = {e["message"]: e["count"] for e in summary["events"]}
-    assert counts["Successfully upgraded to version"] == 40
+    counts = _event_counts(summary)
+    assert counts[REPLACED_PREFIX] == 40
     # Every category is reported, at zero when nothing was seen.
     assert counts["Staged rollout delay elapsed, ready to upgrade"] == 0
     assert "some unrelated ant_node line" not in counts
+
+
+def test_the_upgrade_query_reaches_the_node_module_target():
+    # Every node.rs line — the canonical success and the check-phase error —
+    # logs under `ant_node::node`, which the original filter did not match, so
+    # they were dropped from the query entirely.
+    query = build_upgrade_events_query(NOW - timedelta(hours=1), NOW)
+    target_filter = next(
+        f
+        for f in query["query"]["bool"]["filter"]
+        if "should" in f.get("bool", {})
+        and any("tag.target.keyword" in str(s) for s in f["bool"]["should"])
+    )
+    assert {"term": {"tag.target.keyword": "ant_node::node"}} in target_filter["bool"]["should"]
+
+
+def test_the_report_renders_both_tables_and_the_detail_arithmetic():
+    fake = FakeEs(
+        adoption=_one_sided_fleet(old_services=1, new_services=99),
+        upgrade_events=_events_response(
+            [
+                _message_bucket(BARE_START, [("PROD-N0", "1")], 767),
+                _message_bucket(APPLY_START, [("PROD-N0", "1")], 767),
+                _message_bucket(SUCCESS_LINE, [("PROD-N0", "1")], 767),
+                _message_bucket(REPLACED_LINE, [("PROD-N0", "1")], 66),
+                _message_bucket(REUSED_LINE, [("PROD-N0", "1")], 701),
+                _message_bucket(TRANSIENT_GITHUB, [("PROD-N0", "1")], 3),
+            ]
+        ),
+    )
+    report = render_report(
+        build_report(
+            fake, name="ant-prod-01", to_version="0.20.0", window=timedelta(hours=168), now=NOW
+        )
+    )
+    assert "| upgrade attempts | 767 |" in report
+    assert "| upgrades succeeded | 767 |" in report
+    assert "| — of which binary replaced | 66 |" in report
+    assert "| — of which shared binary reused | 701 |" in report
+    assert "| retry backoff | 0 |" in report
+    assert "Detail check: 66 replaced + 701 reused = 767, against 767 succeeded." in report
+    assert "Failures: none." in report
+    assert "network error: GitHub API request failed: | 3 | PROD-N0/1 | all recovered |" in report
 
 
 # -- restarts --------------------------------------------------------------
