@@ -1,16 +1,28 @@
-# Rollout-watch verification scripts — 2026-09-23 train
+# Rollout-watch verification scripts
 
-The train-specific checks V2-1297 (stable rollout watch, ant-node 0.20.0 /
-ant 0.3.8) runs at its fixed checkpoints. Each script prints one markdown block
-to stdout, exits `0` when every expectation held and `1` when any did not, and
-takes `--window` (default `1h`) and `--json-out`. Nothing here writes to the
-fleet: every query is read-only, and the one SSH path reads a file and sends a
-UDP packet.
+Checks a stable rollout watch runs at its checkpoints, written for the
+2026-09-23 train (V2-1297, ant-node 0.20.0 / ant 0.3.8). Each script prints one
+markdown block to stdout, exits `0` when every expectation held and `1` when any
+did not, and takes `--window` (default `1h`), `--to-version` and `--json-out`.
+Nothing here writes to the fleet: every query is read-only, and the one SSH path
+reads a file and sends a UDP packet.
 
-They are throwaway by design — one train's worth of questions about one
-release. What is expected to outlive them lives in the package (`prod
-rollout-watch` for adoption and per-arm health, `saorsa_deploy.webrtc_probe`
-for the ICE probe).
+**Always pass `--to-version`.** Its default is `0.20.0`, the release these were
+written for; on any later rollout the default measures the wrong arm.
+
+The scripts have two different lifetimes:
+
+- **`webrtc_coverage.py` is standing.** Every stable rollout watch runs it at
+  A2, A3 and A4, and gate 1 breaches on its listening coverage (the watch body
+  written by the `train-manifest` skill in the `releases` repo). Keep it working
+  across releases.
+- **`traffic_targets.py` and `migration_signal.py` are per-train.** They answer
+  one release's questions (V2-834's counters, saorsa-core #163) and are not
+  expected to outlive it. A later train's Phase B adds its own scripts here.
+
+What is expected to outlive every train lives in the package (`prod
+rollout-watch` for adoption and per-arm health, `saorsa_deploy.webrtc_probe` for
+the ICE probe).
 
 ## Environment
 
