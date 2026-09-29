@@ -32,6 +32,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from saorsa_db.models import (
+    VERIFY_MISMATCH,
+    VERIFY_OK,
+    VERIFY_UNAVAILABLE,
     DeploymentDownloadRecord,
     DeploymentFileResult,
     DeploymentHostResult,
@@ -514,6 +517,16 @@ _OP_STATUS_LABELS = {
     OpRecordStatus.SKIPPED: "[yellow]skip[/yellow]",
 }
 
+#: Content verification (V2-757). NULL renders as `-` and covers three
+#: different absences -- a failed download, a line carrying no published hash,
+#: and a row predating verification -- because none of them is a finding. A
+#: MISMATCH is, and is the loudest thing in the table.
+_VERIFY_LABELS = {
+    VERIFY_OK: "[green]ok[/green]",
+    VERIFY_MISMATCH: "[bold red]MISMATCH[/bold red]",
+    VERIFY_UNAVAILABLE: "[yellow]n/a[/yellow]",
+}
+
 
 def _client_builds(rows: list) -> list:
     """The distinct client builds in the rows, in first-seen order.
@@ -677,12 +690,20 @@ def _print_op_records_tables(
         # column existed. Omitted entirely when nothing has one, so a historical
         # run renders as it did rather than gaining a column of dashes.
         show_address = any(getattr(r, "address", None) for r in host_rows)
+        # Uploads have no verification verdict at all, and a download only has
+        # one when its uploader published a hash. Omitted when nothing in the
+        # table carries one, so a historical run renders as it did.
+        show_verify = any(
+            getattr(r, "verify_status", None) for r in host_rows
+        )
         table.add_column("#", justify="right")
         table.add_column("Region")
         if show_address:
             table.add_column("Address")
         table.add_column("Size (MB)", justify="right")
         table.add_column("Status")
+        if show_verify:
+            table.add_column("Verify")
         table.add_column("Duration", justify="right")
         table.add_column("Started (UTC)")
         table.add_column("Finished (UTC)")
@@ -699,6 +720,12 @@ def _print_op_records_tables(
             cells += [
                 size_mb,
                 _OP_STATUS_LABELS.get(row.status, "-"),
+            ]
+            if show_verify:
+                cells.append(
+                    _VERIFY_LABELS.get(getattr(row, "verify_status", None), "-")
+                )
+            cells += [
                 _fmt_duration(row.duration_ms),
                 _fmt_dt(row.started_at),
                 _fmt_dt(row.finished_at),

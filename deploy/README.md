@@ -2017,9 +2017,29 @@ hard floors do — they need no baseline.
 `soft`, so the worst a pointer regression produces is `SOFT FAIL`; exit `2` stays
 reserved for the native hard floors.
 
+#### Data integrity (download content verification)
+
+A **hard** gate, `Data integrity (download content verification)`, counting downloads whose content did not match the SHA-256 their uploader published. Its threshold is `hard_gates.download_verify_mismatch_max`, shipped at **`0`** — the one number in the config that is legitimately zero, because there is no fraction of corrupt content a release may ship, and it is a COUNT rather than a percentage for the same reason.
+
+Candidate-only, like the success floors: a mismatch is wrong in absolute terms rather than relative to what the last release managed, so a baseline contributes nothing and the gate **survives `--new-baseline`** intact.
+
+**A mismatch never touches the availability floors.** A download that fails is an availability problem; one that returns different bytes is a correctness problem. Folding the second into the first would let a run with corrupt content pass on a high enough success rate — the same line the production upload verifier draws.
+
+Three verdicts:
+
+| Verdict | When |
+|---|---|
+| `PASS` | At least one download was verified and none mismatched |
+| `FAIL` | Any download mismatched |
+| `NOT ASSESSED` | Nothing was verified at all — reason `no verified downloads recorded` |
+
+The detail line reports `<ok> ok / <mismatch> mismatch / <unavailable> unavailable` plus **coverage**: verified downloads ÷ successful downloads. Only `ok` + `mismatch` are in the denominator. An `unavailable` download was never checked against anything (its address line carried no hash) and a NULL was never checkable at all (the download failed, or the row predates verification), so counting either as a pass would report an unverified run as a verified one.
+
+**Native testnet clients only.** `uploader.sh` hashes each generated file before invoking `ant` and publishes `<address> <bytes> <sha256>`; `downloader.sh` carries that hash through selection, hashes the output before deleting it, and emits `verify_status` on the `download` Influx point (`0` ok, `1` mismatch, `2` unavailable, omitted entirely on a failed download), with `expected_sha256`/`actual_sha256` on a mismatch only. `record-results` lands them in `deployment_download_records.verify_status` and the uploader's hash in `deployment_upload_records.sha256`. The browser (WASM) tier publishes no hash and verifies nothing (V2-1360), and neither do the production client kinds (V2-1361) — their rows carry NULL and contribute nothing, which is what the coverage figure is for. Two- and one-field address lines still parse, so a mixed run keeps working.
+
 #### What it deliberately does NOT cover
 
-Four hard gates from the release process are **not derivable from anything the registry stores**: **data integrity** (no content verification exists anywhere in the system), **crashes** (panics reach stderr/journald, not the JSON logs Telegraf forwards, and Elasticsearch dies at teardown), **mixed-version chunk storage** (an SSH check on `chunks.mdb` growth), and **production canaries** (a separate deployment with its own assessment). Those are gathered observationally and recorded by the `evaluate-staging-run` skill, alongside this report.
+Three hard gates from the release process are **not derivable from anything the registry stores**: **crashes** (panics reach stderr/journald, not the JSON logs Telegraf forwards, and Elasticsearch dies at teardown), **mixed-version chunk storage** (an SSH check on `chunks.mdb` growth), and **production canaries** (a separate deployment with its own assessment). Those are gathered observationally and recorded by the `evaluate-staging-run` skill, alongside this report.
 
 #### Comparability guards
 

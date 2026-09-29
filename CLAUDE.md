@@ -2201,18 +2201,48 @@ reused every train. There is deliberately **no run-identity plumbing**: no
 "last shipped release" resolution. The baseline is the operator's judgment,
 supplied as an id.
 
-**Covers**: 2 hard gates (upload floor 99%, download floor 99.5%) + 8 soft gates
-(success rate, transfer p50/p95 **per file-size bucket**, node CPU, node RSS,
-leak slope, outbound bytes/GB, disk bytes/GB). Transfer percentiles are exact —
-from the per-op `deployment_{upload,download}_records`. **`deployment_file_results`
-is unusable**: an aggregate with no per-op timestamps, so it cannot be windowed.
+**Covers**: 3 hard gates (upload floor 99%, download floor 99.5%, data
+integrity) + 8 soft gates (success rate, transfer p50/p95 **per file-size
+bucket**, node CPU, node RSS, leak slope, outbound bytes/GB, disk bytes/GB).
+Transfer percentiles are exact — from the per-op
+`deployment_{upload,download}_records`. **`deployment_file_results` is
+unusable**: an aggregate with no per-op timestamps, so it cannot be windowed.
 
-**Deliberately does NOT cover** four hard gates — the report is silent on them
-entirely: data integrity (no content verification exists
-anywhere), crashes (panics → stderr/journald, not the JSON logs telegraf tails;
+**Deliberately does NOT cover** three hard gates — the report is silent on them
+entirely: crashes (panics → stderr/journald, not the JSON logs telegraf tails;
 ES dies at teardown), mixed-version chunk storage (SSH `chunks.mdb` check), and
 canaries (separate deployment). The **`evaluate-staging-run`** skill supplies
 those observationally and assembles the release-issue report.
+
+**Data integrity (V2-757).** The fourth used to be on that list, because nothing
+anywhere verified downloaded content: a transfer that "succeeded" while silently
+returning corrupt bytes passed every check the system made. Now `uploader.sh`
+hashes each generated file before invoking `ant` and publishes
+`<address> <bytes> <sha256>`; `downloader.sh` carries the hash through
+`eligible_addresses` (an address alone cannot say what was uploaded under it),
+hashes the output **before** the existing `rm`, and emits an integer
+`verify_status` on the `download` point — `0` ok, `1` mismatch, `2` unavailable
+— **omitted entirely on a failed download**, with `expected_sha256`/
+`actual_sha256` on a mismatch only. One- and two-field lines still parse and
+verify as `unavailable`, so a WASM uploader publishing into the same shared pool
+keeps working. Columns: `deployment_upload_records.sha256`,
+`deployment_download_records.{verify_status,expected_sha256,actual_sha256}`, all
+nullable — **NULL is "not applicable", never a failure**, and no past run can be
+backfilled. The `compare` gate is **hard, candidate-only** (so it survives
+`--new-baseline`), fails above `hard_gates.download_verify_mismatch_max: 0`
+(thresholds config **v5**; a COUNT, and the one legitimately-zero threshold in
+that file), and reads NOT ASSESSED with the reason `no verified downloads
+recorded` when nothing was checked. Its denominator is **ok + mismatch only** —
+`unavailable` was never checked and NULL was never checkable, so counting either
+would report an unverified run as a verified one; the reported **coverage**
+(verified ÷ successful downloads) is what says how much of the run was covered.
+**A mismatch never touches the availability floors**: a download that fails is an
+availability problem, one that returns different bytes is a correctness problem.
+Native testnet tier only — the WASM tier is V2-1360, the prod client kinds
+V2-1361. Ride-along: both scripts emitted `status=$exit_code` raw, which
+`record-results` reads as an enum and DROPS above 2, so an `ant` exit of 3 was
+silently discarded rather than recorded as a failure; every non-zero exit is now
+clamped to 1 at the emit site.
 
 **Prefer a labelled phase window over `full-run`.** A full-run window is the span
 of observed *metrics*, not the run's shape: the −3h node clock skew drags a host's

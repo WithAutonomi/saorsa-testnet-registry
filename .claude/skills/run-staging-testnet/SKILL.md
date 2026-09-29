@@ -761,7 +761,10 @@ State these in the final report rather than working around them:
   criterion needs an SSH check. The chunk store is LMDB, so what is actually
   measured is `chunks.mdb` byte growth, not a record count — a node storing a few
   large chunks and one storing many small ones are indistinguishable.
-- No content verification on downloads. The process lists data integrity as a hard
-  gate, but there is nothing to check it with, so the run does not cover it.
+- Content verification covers the NATIVE client tier only. Its uploaders publish each
+  file's SHA-256 on the address line and its downloaders check what they got back, so
+  `deployments compare` can assess the data-integrity hard gate from the recorded run
+  (V2-757). The WASM tier publishes no hash (V2-1360), so its downloads carry no
+  verdict and the gate's coverage figure is what says how much of the run was checked.
 - Phase clocks are wall-clock and driven by you. Nothing in `saorsa-deploy` enforces
   the 1h/3h/1h structure or stamps the boundaries.

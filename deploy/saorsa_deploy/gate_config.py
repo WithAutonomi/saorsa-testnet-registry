@@ -63,6 +63,10 @@ class GateConfig:
 
     upload_success_floor_percent: float
     download_success_floor_percent: float
+    #: Downloads whose content did not match the hash their uploader published.
+    #: Zero: there is no fraction of corrupt content a release may ship, which
+    #: is why this is a count and not a percentage.
+    download_verify_mismatch_max: float
 
     pointer_write_success_floor_percent: float
     pointer_read_success_floor_percent: float
@@ -124,7 +128,10 @@ class GateConfig:
     pointer_floor_gates_advisory: bool = True
 
 
-_HARD_GATE_KEYS = (
+#: Hard gates expressed as a success-rate floor. Validated as percentages, so
+#: `download_verify_mismatch_max` -- a COUNT, and legitimately zero -- is not
+#: among them.
+_HARD_FLOOR_KEYS = (
     "upload_success_floor_percent",
     "download_success_floor_percent",
 )
@@ -238,7 +245,7 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
     noise = _require_section(data, "noise_rule", path)
 
     hard_values = {
-        key: _require_number(hard, key, path, "hard_gates") for key in _HARD_GATE_KEYS
+        key: _require_number(hard, key, path, "hard_gates") for key in _HARD_FLOOR_KEYS
     }
     for key, value in hard_values.items():
         if value > 100:
@@ -257,6 +264,20 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
                 f"{path}: 'pointer_floor_gates.{key}' is {value}, but a success "
                 "floor is a percentage and cannot exceed 100."
             )
+
+    # A COUNT of mismatched downloads, not a percentage: zero is the intended
+    # value and the only defensible one, so `positive=False`. Required like
+    # every other threshold -- a missing key must fail loudly rather than
+    # default the integrity gate into a rubber stamp.
+    hard_values["download_verify_mismatch_max"] = _require_number(
+        hard, "download_verify_mismatch_max", path, "hard_gates", positive=False
+    )
+    if hard_values["download_verify_mismatch_max"] < 0:
+        raise GateConfigError(
+            f"{path}: 'hard_gates.download_verify_mismatch_max' is "
+            f"{hard_values['download_verify_mismatch_max']}, but it is a count "
+            "of mismatched downloads and cannot be negative."
+        )
 
     soft_values = {
         key: _require_number(soft, key, path, "soft_gates") for key in _SOFT_GATE_KEYS

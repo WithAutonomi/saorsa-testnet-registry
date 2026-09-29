@@ -10,25 +10,40 @@
 # it whenever a number below changes, so two reports can never disagree without
 # the difference being visible. Comparing verdicts produced under different
 # threshold versions is meaningless -- the version is what tells you that.
-version: 4
+version: 5
 
 # ---------------------------------------------------------------------------
 # Hard gates the command can evaluate from stored metrics.
 #
-# The other four hard gates in the process spec -- data integrity, crashes,
-# mixed-version chunk storage, and production canaries -- are NOT here and are
-# NOT evaluated by this command. Nothing in Postgres records them: content
-# verification does not exist anywhere in the system, node panics go to
-# stderr/journald rather than the JSON logs Telegraf tails (and Elasticsearch is
-# destroyed with the testnet), and the canary is a separate deployment assessed
-# by its own skill. They are supplied by the operator/agent via the accompanying
-# skill and merged into the release-issue report there.
+# The other three hard gates in the process spec -- crashes, mixed-version chunk
+# storage, and production canaries -- are NOT here and are NOT evaluated by this
+# command. Nothing in Postgres records them: node panics go to stderr/journald
+# rather than the JSON logs Telegraf tails (and Elasticsearch is destroyed with
+# the testnet), and the canary is a separate deployment assessed by its own
+# skill. They are supplied by the operator/agent via the accompanying skill and
+# merged into the release-issue report there.
+#
+# Data integrity used to be in that list. It is now evaluated here, from the
+# per-download content verification the native client tier records (V2-757).
 hard_gates:
   # Absolute floors, not comparisons against the baseline. A run that meets the
   # floor still faces the `success_rate_drop_pp` soft gate below, which is what
   # catches a slow slide that never quite breaches the floor.
   upload_success_floor_percent: 99.0
   download_success_floor_percent: 99.5
+
+  # Downloads whose content did not match the SHA-256 their uploader published.
+  #
+  # ZERO, and not a rate: a single file coming back as different bytes is a
+  # correctness failure, and there is no fraction of corrupt content a release
+  # may ship. That makes it the one threshold in this file with nothing to
+  # calibrate, and the one that is legitimately zero -- every other gate here is
+  # a percentage where zero would mean "always fails" or "never fires".
+  #
+  # A mismatch deliberately does NOT count against the two floors above:
+  # availability and integrity are different concerns, and a download that
+  # returns the wrong bytes did not fail to download.
+  download_verify_mismatch_max: 0
 
 # ---------------------------------------------------------------------------
 # Pointer floors (V2-1339).

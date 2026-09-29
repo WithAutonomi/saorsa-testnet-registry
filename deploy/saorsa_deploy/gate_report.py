@@ -43,6 +43,8 @@ def _fmt(value: float | None, unit: str) -> str:
         # Whole occurrences, thousands-separated: a log-string tally runs to
         # six figures and "71309.000" is harder to read than "71,309".
         return f"{value:,.0f}"
+    if unit == "mismatches":
+        return f"{value:,.0f}"
     return f"{value:.3f}"
 
 
@@ -56,6 +58,10 @@ def _fmt_delta(value: float | None, unit: str) -> str:
 def _fmt_threshold(value: float | None, unit: str) -> str:
     if value is None:
         return "-"
+    if unit == "mismatches":
+        # An absolute count, not an increase over a baseline, so no suffix:
+        # "> 0 %" would read as a percentage of something.
+        return f"> {value:g}"
     suffix = "pp" if unit == "pp" else "%"
     return f"> {value:g} {suffix}"
 

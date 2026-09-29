@@ -242,6 +242,8 @@ State these in the report rather than working around them:
 - No single extraction command — `record-results` covers per-host file-op
   aggregates, `record-analysis` covers per-host CPU/mem/net/disk-IO aggregates, and
   neither stores the binary versions or profile version as a column.
-- No content verification on downloads, so data integrity is not checked.
+- Content verification covers the NATIVE client tier only: its downloads are checked
+  against the SHA-256 their uploader published and the verdict is recorded per op
+  (V2-757). The WASM tier publishes no hash (V2-1360), so its downloads carry none.
 - Phase clocks are wall-clock and driven by you. Nothing in `saorsa-deploy` enforces
   the 1h/3h structure or stamps the boundaries.

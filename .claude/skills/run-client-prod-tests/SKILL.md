@@ -866,7 +866,8 @@ State these in the report rather than working around them:
 
 - **No content verification on downloads.** A download counts as a success if `ant` exits 0; the
   bytes are never compared against the source. The data-integrity gate is therefore not actually
-  covered by this test. Tracked as V2-757.
+  covered by this test. The native testnet client tier does verify (V2-757); extending it to the
+  production client kinds is tracked as V2-1361.
 - **No completion signal.** Neither service reports "finished" anywhere the CLI can read. Completion
   is inferred by counting records against the input-file length, so a service that dies after
   emitting its last record is indistinguishable from one that finished cleanly. The systemd state
