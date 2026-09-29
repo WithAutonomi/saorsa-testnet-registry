@@ -149,9 +149,32 @@ class TestPickRandomAddressWithBound:
 # --------------------------------------------------------------------------- #
 class TestUploaderPublishesSize:
     def test_address_line_carries_file_bytes(self):
+        # The line is written by publish_address now that it also carries the
+        # content hash (V2-757), so the size is checked through that function
+        # rather than against a literal echo.
         text = (SCRIPTS_DIR / "uploader.sh").read_text()
-        assert 'echo "$address $file_bytes" >> "$ADDRESSES_FILE"' in text
+        assert 'publish_address "$address" "$file_bytes" "$file_hash"' in text
         assert 'echo "$address" >> "$ADDRESSES_FILE"' not in text
+
+    def test_published_line_still_has_the_size_as_the_second_field(self, tmp_path):
+        # The WASM downloader's over-cap skip reads $2, so the size must stay
+        # in that position whatever follows it.
+        addresses = tmp_path / "addresses.txt"
+        script = (SCRIPTS_DIR / "uploader.sh").read_text()
+        start = script.index("publish_address() {")
+        body = script[start : script.index("\n}", start) + 2]
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'ADDRESSES_FILE="{addresses}"\n{body}\n'
+                'publish_address addr123 10485760 abcdef',
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert addresses.read_text().split() == ["addr123", "10485760", "abcdef"]
 
 
 # --------------------------------------------------------------------------- #

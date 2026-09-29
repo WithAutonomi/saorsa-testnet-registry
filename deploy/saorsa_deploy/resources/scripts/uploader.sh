@@ -161,6 +161,30 @@ flush_to_s3() {
     fi
 }
 
+# SHA-256 of a generated upload. Published on the address line and emitted on
+# the Influx point so a downloader can check the bytes it gets back against the
+# bytes that went in -- without it a transfer that "succeeded" while returning
+# corrupt content passes every check the system makes. Empty when the file is
+# unreadable, which is never fatal: a download with no expected hash is reported
+# as `unavailable`, never as a mismatch.
+file_sha256() {
+    [ -f "$1" ] || { echo ""; return 0; }
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+}
+
+publish_address() {
+    # `<address> <bytes> <sha256>`. The size lets a capped downloader (the WASM
+    # tier's browser limit) skip an entry without fetching it; the hash lets any
+    # downloader verify what it got back. Trailing fields are optional to a
+    # reader -- the WASM uploaders publish two-field lines into this same shared
+    # pool -- so an empty hash is omitted rather than written as a blank field.
+    local line="$1 $2"
+    if [ -n "$3" ]; then
+        line="$line $3"
+    fi
+    printf '%s\n' "$line" >> "$ADDRESSES_FILE"
+}
+
 mkdir -p "$UPLOAD_DIR"
 touch "$ADDRESSES_FILE"
 
@@ -181,6 +205,8 @@ while true; do
     # Generate random file
     dd if=/dev/urandom of="$file_path" bs=1024 count="$FILE_SIZE_KB" 2>/dev/null
     file_bytes=$((FILE_SIZE_KB * 1024))
+    # Taken before ant runs, over the bytes ant is about to be handed.
+    file_hash=$(file_sha256 "$file_path")
 
     echo "[$(date -u +%H:%M:%S)] Upload #${seq_num}: generating ${FILE_SIZE_KB}KB file, starting ant..."
 
@@ -321,9 +347,7 @@ PY
     wallet_spend_display="${wallet_before:-?}->${wallet_after:-?}"
 
     if [ "$exit_code" -eq 0 ] && [ -n "$address" ]; then
-        # `<address> <bytes>`: the size lets a capped downloader (the WASM
-        # tier's browser limit) skip this entry without fetching it.
-        echo "$address $file_bytes" >> "$ADDRESSES_FILE"
+        publish_address "$address" "$file_bytes" "$file_hash"
         addresses_since_flush=$((addresses_since_flush + 1))
         echo "[$(date -u +%H:%M:%S)] Upload #${seq_num} OK: address=${address} total=${total_ms}ms upload_time=${upload_secs}s cost_atto=${storage_cost_atto} wallet=${wallet_spend_display} refusal_seen=${refusal_seen}"
     else
@@ -356,7 +380,17 @@ PY
     # refused / refusal_seen / error_kind / storage_cost_atto / gas_cost_wei /
     # wallet_*_atto are the ADR-0013 settlement-gate fields: `refused=1` with
     # `wallet_spend_atto=0` is an upload turned away before it paid anything.
-    line="upload,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,chunks_stored=${chunks_stored}i,chunks_failed=${chunks_failed}i,total_chunks=${total_chunks}i,chunk_attempts_total=${chunk_attempts_total}i,retries_round_0=${retries_round_0}i,retries_round_1=${retries_round_1}i,retries_round_2=${retries_round_2}i,retries_round_3=${retries_round_3}i,store_duration_p50_ms=${store_duration_p50_ms}i,store_duration_p95_ms=${store_duration_p95_ms}i,store_duration_max_ms=${store_duration_max_ms}i,refused=${refused}i,refusal_seen=${refusal_seen}i,error_kind=\"${error_kind}\""
+    #
+    # `status` is NOT ant's exit code. `record-results` reads it as an enum --
+    # 0 success, 1 failure, 2 skipped-by-the-transport -- and DROPS anything
+    # else as an unusable point, so an `ant` exit of 3 would be discarded
+    # rather than recorded as the failure it is. This script has no skip path,
+    # so every non-zero exit is clamped to 1 here, at the emit site.
+    op_status=0
+    if [ "$exit_code" -ne 0 ]; then
+        op_status=1
+    fi
+    line="upload,host=${CLIENT_HOST},region=${REGION} status=${op_status}i,total_ms=${total_ms}i,upload_secs=${upload_secs},file_size=${file_bytes}i,start_ns=${start_ns}i,chunks_stored=${chunks_stored}i,chunks_failed=${chunks_failed}i,total_chunks=${total_chunks}i,chunk_attempts_total=${chunk_attempts_total}i,retries_round_0=${retries_round_0}i,retries_round_1=${retries_round_1}i,retries_round_2=${retries_round_2}i,retries_round_3=${retries_round_3}i,store_duration_p50_ms=${store_duration_p50_ms}i,store_duration_p95_ms=${store_duration_p95_ms}i,store_duration_max_ms=${store_duration_max_ms}i,refused=${refused}i,refusal_seen=${refusal_seen}i,error_kind=\"${error_kind}\",sha256=\"${file_hash}\""
     if [ -n "$spend_fields" ]; then
         line="${line},${spend_fields}"
     fi

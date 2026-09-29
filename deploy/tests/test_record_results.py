@@ -294,3 +294,146 @@ def test_record_file_op_records_persists_each_op(repo, monkeypatch):
     assert len(downloads) == 1
     assert downloads[0].status == OpRecordStatus.FAILURE
     assert downloads[0].file_size_bytes == 2048
+
+
+# ---------------------------------------------------------------------------
+# Content verification (V2-757)
+# ---------------------------------------------------------------------------
+
+
+def _verify_points():
+    """One download point per verification outcome, plus a pre-feature one."""
+    base = {
+        "_time": datetime.fromisoformat("2026-04-19T10:00:01+00:00"),
+        "host": "hostA",
+        "region": "lon1",
+        "_measurement": "download",
+        "file_size": 1024,
+        "total_ms": 1000,
+        "status": 0,
+    }
+    return [
+        {**base, "start_ns": 1, "verify_status": 0},
+        {
+            **base,
+            "start_ns": 2,
+            "verify_status": 1,
+            "expected_sha256": "a" * 64,
+            "actual_sha256": "b" * 64,
+        },
+        {**base, "start_ns": 3, "verify_status": 2},
+        # A point written before verification existed: no field at all.
+        {**base, "start_ns": 4},
+        # A failed download carries no verify_status, because there were no
+        # bytes to check -- which is not the same as having checked.
+        {**base, "start_ns": 5, "status": 1},
+    ]
+
+
+def _run_record(repo_tuple, points, monkeypatch):
+    from rich.console import Console
+
+    import saorsa_deploy.influx as _influx
+    from saorsa_deploy.cmd import record_results as rr
+
+    r, _ = repo_tuple
+    d = r.create(name="DEV-TEST", deploy_args={})
+    monkeypatch.setattr(_influx, "fetch_operation_points", lambda **kw: points)
+
+    class _Args:
+        name = "DEV-TEST"
+
+    rr._record_file_op_records(
+        r, d, _Args(), Console(), "http://influx", "tok", "ant", "testnet-metrics"
+    )
+    return r, d
+
+
+def test_download_verify_status_codes_map_to_the_string_enum(repo, monkeypatch):
+    r, d = _run_record(repo, _verify_points(), monkeypatch)
+    by_start = {row.start_ns: row for row in r.list_download_records_for_deployment(d.id)}
+    assert by_start[1].verify_status == "ok"
+    assert by_start[2].verify_status == "mismatch"
+    assert by_start[3].verify_status == "unavailable"
+    # NULL means "not applicable", never a failure: a pre-feature point and a
+    # failed download both record nothing rather than a verdict.
+    assert by_start[4].verify_status is None
+    assert by_start[5].verify_status is None
+
+
+def test_the_two_hashes_are_recorded_on_a_mismatch_only(repo, monkeypatch):
+    r, d = _run_record(repo, _verify_points(), monkeypatch)
+    by_start = {row.start_ns: row for row in r.list_download_records_for_deployment(d.id)}
+    assert by_start[2].expected_sha256 == "a" * 64
+    assert by_start[2].actual_sha256 == "b" * 64
+    assert by_start[1].expected_sha256 is None
+    assert by_start[1].actual_sha256 is None
+
+
+def test_upload_sha256_is_recorded_and_absent_stays_null(repo, monkeypatch):
+    base = {
+        "_time": datetime.fromisoformat("2026-04-19T10:00:01+00:00"),
+        "host": "hostA",
+        "region": "lon1",
+        "_measurement": "upload",
+        "file_size": 1024,
+        "total_ms": 1000,
+        "status": 0,
+    }
+    points = [
+        {**base, "start_ns": 1, "sha256": "c" * 64},
+        {**base, "start_ns": 2},
+    ]
+    r, d = _run_record(repo, points, monkeypatch)
+    by_start = {row.start_ns: row for row in r.list_upload_records_for_deployment(d.id)}
+    assert by_start[1].sha256 == "c" * 64
+    assert by_start[2].sha256 is None
+
+
+def test_a_rerecord_without_the_fields_never_erases_a_recorded_verdict(repo):
+    # The same COALESCE rule `client_kind` and `address` follow. A re-run
+    # against a source that has lost the fields must not turn a recorded
+    # mismatch into an unverified row -- that would silently retract the only
+    # evidence the integrity gate has.
+    r, _ = repo
+    d = r.create(name="DEV-TEST", deploy_args={})
+    r.upsert_download_record(
+        **_upload_kwargs(d.id, start_ns=7),
+        verify_status="mismatch",
+        expected_sha256="a" * 64,
+        actual_sha256="b" * 64,
+    )
+    r.upsert_download_record(**_upload_kwargs(d.id, start_ns=7))
+    row = r.list_download_records_for_deployment(d.id)[0]
+    assert row.verify_status == "mismatch"
+    assert row.expected_sha256 == "a" * 64
+    assert row.actual_sha256 == "b" * 64
+
+
+def test_pivoted_csv_parses_the_verification_fields():
+    from saorsa_deploy.influx import _parse_pivoted_csv
+
+    csv_body = (
+        ",result,table,_time,_measurement,host,region,file_size,start_ns,status,"
+        "total_ms,verify_status,expected_sha256,actual_sha256\n"
+        ",_result,0,2026-04-19T10:00:01Z,download,hostA,lon1,1024,5,0,900,1,"
+        f"{'a' * 64},{'b' * 64}\n"
+    )
+    point = _parse_pivoted_csv(csv_body)[0]
+    assert point["verify_status"] == 1
+    assert point["expected_sha256"] == "a" * 64
+    assert point["actual_sha256"] == "b" * 64
+
+
+def test_pivoted_csv_leaves_verification_absent_when_unwritten():
+    from saorsa_deploy.influx import _parse_pivoted_csv
+
+    csv_body = (
+        ",result,table,_time,_measurement,host,region,file_size,start_ns,status,"
+        "total_ms\n"
+        ",_result,0,2026-04-19T10:00:01Z,download,hostA,lon1,1024,5,0,900\n"
+    )
+    point = _parse_pivoted_csv(csv_body)[0]
+    assert point["verify_status"] is None
+    assert point["sha256"] is None
+

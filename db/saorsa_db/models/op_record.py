@@ -27,6 +27,29 @@ class OpRecordStatus(enum.Enum):
     SKIPPED = "skipped"
 
 
+#: The three values `DeploymentDownloadRecord.verify_status` takes. A plain
+#: string column rather than an Enum: the set is written by a bash client and
+#: read by a gate, and a new value (a future tier's own verdict) must not need a
+#: database migration before a run can record it.
+VERIFY_OK = "ok"
+VERIFY_MISMATCH = "mismatch"
+#: The download succeeded but carried no published hash, so there was nothing to
+#: check it against. NOT a failure and NOT a mismatch -- the content may be
+#: perfectly healthy. Excluded from the integrity gate's verdict and reported
+#: alongside it as coverage.
+VERIFY_UNAVAILABLE = "unavailable"
+
+#: What the `download` Influx point's integer `verify_status` field maps to.
+#: The client emits an integer because Influx would otherwise take the field as
+#: a string and a later integer write to the same field would be a type conflict
+#: that silently drops the point -- the same reason the WASM skip status is `2`.
+VERIFY_STATUS_BY_CODE = {
+    0: VERIFY_OK,
+    1: VERIFY_MISMATCH,
+    2: VERIFY_UNAVAILABLE,
+}
+
+
 class _BaseOpRecord:
     id: Mapped[int] = mapped_column(primary_key=True)
     deployment_id: Mapped[int] = mapped_column(
@@ -106,9 +129,22 @@ class DeploymentUploadRecord(_BaseOpRecord, Base):
         ),
     )
 
+    # SHA-256 of the bytes this operation uploaded, taken by the client before
+    # `ant` was invoked. It is what a downloader checks its result against, so
+    # it is stored beside the upload and not only published on the address
+    # line: the S3 address objects are deleted with the deployment, while this
+    # row is the permanent record of what the run put on the network.
+    #
+    # NULL on every row predating content verification, and on any tier that
+    # does not compute it (the browser path is V2-1360).
+    sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     deployment: Mapped["Deployment"] = relationship(  # noqa: F821
         back_populates="upload_records"
     )
+
+    def to_dict(self):
+        return {**super().to_dict(), "sha256": self.sha256}
 
 
 class DeploymentDownloadRecord(_BaseOpRecord, Base):
@@ -141,6 +177,26 @@ class DeploymentDownloadRecord(_BaseOpRecord, Base):
     # side of an upgrade could not be compared.
     client_build: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
+    # Content verification of what this download returned, against the SHA-256
+    # its uploader published: "ok", "mismatch", or "unavailable" (the address
+    # line carried no hash, so there was nothing to check against).
+    #
+    # NULL means NOT APPLICABLE, never a failure: the download failed, so there
+    # were no bytes to check, or the row predates verification entirely. That
+    # distinction is the whole point of the column -- an unverified download
+    # must never be mistaken for a verified one.
+    #
+    # A mismatch is deliberately NOT folded into `status`. A download that
+    # fails is an availability problem; one that returns different bytes is a
+    # correctness problem, and the two are gated separately.
+    verify_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # Populated on a mismatch only. On a match the two are equal and the
+    # uploader's hash is already recorded; on an unverifiable download there is
+    # nothing to record.
+    expected_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    actual_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     deployment: Mapped["Deployment"] = relationship(  # noqa: F821
         back_populates="download_records"
     )
@@ -150,4 +206,7 @@ class DeploymentDownloadRecord(_BaseOpRecord, Base):
             **super().to_dict(),
             "address": self.address,
             "client_build": self.client_build,
+            "verify_status": self.verify_status,
+            "expected_sha256": self.expected_sha256,
+            "actual_sha256": self.actual_sha256,
         }

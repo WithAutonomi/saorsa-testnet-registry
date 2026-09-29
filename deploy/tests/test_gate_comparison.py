@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from saorsa_deploy.gate_comparison import (
+    DATA_INTEGRITY_GATE,
     FAIL,
     GRAY,
     NOT_ASSESSED,
@@ -30,6 +31,7 @@ from saorsa_deploy.gate_comparison import (
     rss_leak_slopes,
     stdev,
     success_rate,
+    verification_counts,
 )
 from saorsa_deploy.gate_config import load_gate_config
 from saorsa_deploy.gate_report import render_report
@@ -52,14 +54,18 @@ class FakeOp:
     file_size_bytes: int
     duration_ms: int | None
     finished_at: datetime | None = None
+    #: Content verification (V2-757). None on an upload row, on a failed
+    #: download, and on every row recorded before verification existed.
+    verify_status: str | None = None
 
 
-def op(status="success", size_mb=100, duration_ms=1000, minutes=0):
+def op(status="success", size_mb=100, duration_ms=1000, minutes=0, verify_status=None):
     return FakeOp(
         status=status,
         file_size_bytes=size_mb * MB,
         duration_ms=duration_ms,
         finished_at=T0 + timedelta(minutes=minutes),
+        verify_status=verify_status,
     )
 
 
@@ -754,3 +760,165 @@ def test_report_flags_a_mean_standing_in_for_a_median(config):
         )
     )
     assert "[mean]" in report
+
+
+# ---------------------------------------------------------------------------
+# Data integrity (V2-757)
+# ---------------------------------------------------------------------------
+
+
+def _integrity_gate(verdict):
+    return next(g for g in verdict["gates"] if g["gate"] == DATA_INTEGRITY_GATE)
+
+
+def _run_with_verifications(deployment_id, name, verify_statuses, failures=0):
+    records = [
+        op(minutes=i, verify_status=v) for i, v in enumerate(verify_statuses)
+    ] + [
+        op(status="failure", minutes=len(verify_statuses) + i)
+        for i in range(failures)
+    ]
+    return RunMetrics(
+        deployment_id=deployment_id,
+        name=name,
+        window_label="full-run",
+        window_start=T0,
+        window_end=T0 + timedelta(hours=4),
+        upload_records=[op(minutes=i) for i in range(len(verify_statuses))],
+        download_records=records,
+    )
+
+
+def test_verification_counts_denominator_excludes_unverified():
+    # Only ok + mismatch. An `unavailable` download was never checked against
+    # anything and a NULL was never checkable at all -- counting either as a
+    # pass would report an unverified run as a verified one.
+    counts = verification_counts(
+        [
+            op(verify_status="ok"),
+            op(verify_status="ok"),
+            op(verify_status="mismatch"),
+            op(verify_status="unavailable"),
+            op(),
+            op(status="failure"),
+        ]
+    )
+    assert counts["ok"] == 2
+    assert counts["mismatch"] == 1
+    assert counts["unavailable"] == 1
+    assert counts["verified"] == 3
+    # Coverage is over SUCCESSFUL downloads: five succeeded, three were checked.
+    assert counts["successful_downloads"] == 5
+    assert counts["coverage"] == pytest.approx(3 / 5)
+
+
+def test_verification_coverage_of_a_run_with_no_downloads_is_none():
+    assert verification_counts([])["coverage"] is None
+
+
+def test_data_integrity_passes_on_clean_verifications(config):
+    verdict = compare_runs(
+        _run_with_verifications(1, "STG-01", ["ok"] * 10),
+        _run_with_verifications(2, "STG-00", ["ok"] * 10),
+        config,
+    )
+    gate = _integrity_gate(verdict)
+    assert gate["kind"] == "hard"
+    assert gate["verdict"] == PASS
+    assert gate["candidate"] == 0
+    assert "10 ok / 0 mismatch / 0 unavailable" in gate["detail"]
+
+
+def test_a_single_mismatch_hard_fails(config):
+    # Zero tolerance, and hard: there is no fraction of corrupt content a
+    # release may ship.
+    verdict = compare_runs(
+        _run_with_verifications(1, "STG-01", ["ok"] * 99 + ["mismatch"]),
+        _run_with_verifications(2, "STG-00", ["ok"] * 100),
+        config,
+    )
+    assert _integrity_gate(verdict)["verdict"] == FAIL
+    assert verdict["overall"] == "HARD FAIL"
+
+
+def test_a_mismatch_does_not_touch_the_availability_floors(config):
+    # Availability and integrity are separate concerns: a download that
+    # returns the wrong bytes did not fail to download. Folding the two would
+    # let a run with corrupt content pass on a high enough success rate.
+    verdict = compare_runs(
+        _run_with_verifications(1, "STG-01", ["ok"] * 99 + ["mismatch"]),
+        _run_with_verifications(2, "STG-00", ["ok"] * 100),
+        config,
+    )
+    floor = next(
+        g for g in verdict["gates"] if g["gate"].startswith("Download success floor")
+    )
+    assert floor["verdict"] == PASS
+    assert floor["candidate"] == 100.0
+
+
+def test_no_verified_downloads_is_not_assessed_never_a_pass(config):
+    # A run whose uploaders predate content verification publishes no hashes,
+    # so every download reads `unavailable`. That is an absence of evidence,
+    # and must never read as evidence of absence.
+    verdict = compare_runs(
+        _run_with_verifications(1, "STG-01", ["unavailable"] * 10),
+        _run_with_verifications(2, "STG-00", ["unavailable"] * 10),
+        config,
+    )
+    gate = _integrity_gate(verdict)
+    assert gate["verdict"] == NOT_ASSESSED
+    assert "no verified downloads recorded" in gate["detail"]
+    assert verdict["overall"] == PASS
+
+
+def test_a_run_with_no_downloads_at_all_is_not_assessed(config):
+    verdict = compare_runs(
+        _run_with_verifications(1, "STG-01", []),
+        _run_with_verifications(2, "STG-00", []),
+        config,
+    )
+    assert _integrity_gate(verdict)["verdict"] == NOT_ASSESSED
+
+
+def test_failed_downloads_are_excluded_from_coverage_but_not_hidden(config):
+    verdict = compare_runs(
+        _run_with_verifications(1, "STG-01", ["ok"] * 8, failures=2),
+        _run_with_verifications(2, "STG-00", ["ok"] * 8, failures=2),
+        config,
+    )
+    # Eight successful downloads, all eight verified: the two failures had no
+    # bytes to check and are not in the denominator.
+    assert "coverage 100.0% of 8 successful download(s)" in _integrity_gate(verdict)[
+        "detail"
+    ]
+
+
+def test_data_integrity_survives_new_baseline(config):
+    # Candidate-only, like the success floors: a mismatch is wrong in absolute
+    # terms, so there is nothing a baseline would contribute.
+    verdict = compare_runs(
+        _run_with_verifications(1, "STG-01", ["ok"] * 9 + ["mismatch"]),
+        None,
+        config,
+        new_baseline=True,
+    )
+    gate = _integrity_gate(verdict)
+    assert gate["verdict"] == FAIL
+    assert gate["single_run"] is True
+    assert verdict["overall"] == "HARD FAIL"
+
+
+def test_the_integrity_gate_is_rendered_in_the_hard_gate_table(config):
+    report = render_report(
+        compare_runs(
+            _run_with_verifications(1, "STG-01", ["ok"] * 9 + ["mismatch"]),
+            _run_with_verifications(2, "STG-00", ["ok"] * 10),
+            config,
+        )
+    )
+    assert DATA_INTEGRITY_GATE in report
+    # A count, so no percent suffix: "> 0 %" would read as a percentage of
+    # something.
+    assert "> 0 |" in report
+

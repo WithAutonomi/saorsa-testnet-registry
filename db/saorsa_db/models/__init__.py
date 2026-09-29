@@ -44,6 +44,10 @@ from saorsa_db.models.log_event_count import (
     DeploymentLogEventCount,
 )
 from saorsa_db.models.op_record import (
+    VERIFY_MISMATCH,
+    VERIFY_OK,
+    VERIFY_STATUS_BY_CODE,
+    VERIFY_UNAVAILABLE,
     DeploymentDownloadRecord,
     DeploymentUploadRecord,
     OpRecordStatus,
@@ -187,6 +191,10 @@ __all__ = [
     "MigrationVm",
     "MigrationVmStatus",
     "OpRecordStatus",
+    "VERIFY_MISMATCH",
+    "VERIFY_OK",
+    "VERIFY_STATUS_BY_CODE",
+    "VERIFY_UNAVAILABLE",
     "ProdCanaryChunkRole",
     "ProdCanaryInitialVerifyStatus",
     "ProdCanaryProbeStatus",

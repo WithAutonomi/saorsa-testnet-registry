@@ -258,6 +258,41 @@ def success_rate(records: list) -> dict | None:
     }
 
 
+def verification_counts(records: list) -> dict:
+    """Content-verification tallies over a list of download records.
+
+    ``verified`` is the denominator the integrity gate is assessed on: only
+    ``ok`` + ``mismatch``, because an ``unavailable`` download was never
+    checked against anything and a NULL was never checkable at all (the
+    download failed, or the client predates verification). Counting either as a
+    pass would report an unverified run as a verified one, which is exactly the
+    mistake this gate exists to stop.
+
+    ``coverage`` is verified over SUCCESSFUL downloads -- what fraction of the
+    content this run fetched was actually checked. ``None`` when the run
+    downloaded nothing.
+    """
+    ok = mismatch = unavailable = 0
+    for record in records:
+        value = getattr(record, "verify_status", None)
+        if value == "ok":
+            ok += 1
+        elif value == "mismatch":
+            mismatch += 1
+        elif value == "unavailable":
+            unavailable += 1
+    successes = sum(1 for r in records if _status_value(r) == "success")
+    verified = ok + mismatch
+    return {
+        "ok": ok,
+        "mismatch": mismatch,
+        "unavailable": unavailable,
+        "verified": verified,
+        "successful_downloads": successes,
+        "coverage": (verified / successes) if successes else None,
+    }
+
+
 def duration_percentiles_by_bucket(
     records: list, edges_mb: tuple[float, ...]
 ) -> dict[str, dict]:
@@ -1056,6 +1091,7 @@ def compare_runs(
     results: list[GateResult] = []
 
     results.extend(_client_gates(candidate, baseline, config, history))
+    results.append(_hard_data_integrity(candidate, config))
     results.extend(_pointer_gates(candidate, baseline, config, history))
     results.extend(_soft_host_metrics(candidate, baseline, config, history))
     results.append(_soft_memory_leak(candidate, config))
@@ -1265,6 +1301,73 @@ def _hard_success_floors(run: RunMetrics, config: GateConfig) -> list[GateResult
             )
         )
     return results
+
+
+#: The integrity gate's NOT ASSESSED reason. A fixed string, not prose: the
+#: staging skill matches on it to tell "nothing verified" apart from "verified
+#: and clean", which are the two readings a bare absence would conflate.
+NO_VERIFIED_DOWNLOADS_REASON = "no verified downloads recorded"
+
+DATA_INTEGRITY_GATE = "Data integrity (download content verification)"
+
+
+def _hard_data_integrity(run: RunMetrics, config: GateConfig) -> GateResult:
+    """Did any download return content that was not what was uploaded?
+
+    Candidate-only, like the success floors and for the same reason: a
+    mismatch is wrong in absolute terms, not relative to what the last release
+    managed, so there is nothing a baseline would contribute. It therefore
+    survives ``--new-baseline`` intact.
+
+    Deliberately separate from the download success floor. A download that
+    fails is an availability problem; one that returns different bytes is a
+    correctness problem, and folding the second into the first would let a
+    run with corrupt content pass on a high enough success rate -- the same
+    line the production upload verifier draws.
+
+    Not split per transport: the browser tier publishes no hash and verifies
+    nothing yet (V2-1360), so its rows carry NULL and simply do not
+    contribute. A `[wasm]` row reading NOT ASSESSED on every run would say
+    only that the feature is not built there.
+    """
+    counts = verification_counts(run.download_records)
+    threshold = config.download_verify_mismatch_max
+    coverage = counts["coverage"]
+    coverage_text = (
+        f", coverage {100 * coverage:.1f}% of "
+        f"{counts['successful_downloads']} successful download(s)"
+        if coverage is not None
+        else ""
+    )
+    detail = (
+        f"{counts['ok']} ok / {counts['mismatch']} mismatch / "
+        f"{counts['unavailable']} unavailable{coverage_text}"
+    )
+    if counts["verified"] == 0:
+        return GateResult(
+            gate=DATA_INTEGRITY_GATE,
+            kind="hard",
+            verdict=NOT_ASSESSED,
+            threshold=threshold,
+            unit="mismatches",
+            single_run=True,
+            detail=(
+                f"{NO_VERIFIED_DOWNLOADS_REASON}. {detail}. Content "
+                "verification needs an uploader that publishes the file's "
+                "SHA-256 on its address line; a run whose uploads predate "
+                "that, or whose downloads all failed, has nothing to check."
+            ),
+        )
+    return GateResult(
+        gate=DATA_INTEGRITY_GATE,
+        kind="hard",
+        verdict=PASS if counts["mismatch"] <= threshold else FAIL,
+        candidate=float(counts["mismatch"]),
+        threshold=threshold,
+        unit="mismatches",
+        single_run=True,
+        detail=detail,
+    )
 
 
 def _soft_success_rates(

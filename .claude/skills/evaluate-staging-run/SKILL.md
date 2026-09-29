@@ -1,6 +1,6 @@
 ---
 name: evaluate-staging-run
-description: Produce the release train's staging verification by comparing the rc.N staging run against the previous train's accepted staging run (or, for the first run on the staging.yaml profile, establishing a new baseline). Runs the deterministic `saorsa-deploy deployments compare` command for every metric gate, collects the three observational hard gates the tool cannot see (data integrity, crashes, mixed-version chunk storage) plus the advisory WASM production compat read-out, emits a fixed-format report, posts it on the "Staging verification — rc.N" sub-issue and closes it. Use when asked to "evaluate the staging run", "verify the staging run", "run the staging comparison", "compare staging against the baseline", "do the staging verification for rc.N", or "close Staging verification".
+description: Produce the release train's staging verification by comparing the rc.N staging run against the previous train's accepted staging run (or, for the first run on the staging.yaml profile, establishing a new baseline). Runs the deterministic `saorsa-deploy deployments compare` command for every metric gate, collects the two observational hard gates the tool cannot see (crashes, mixed-version chunk storage) plus the advisory WASM production compat read-out, emits a fixed-format report, posts it on the "Staging verification — rc.N" sub-issue and closes it. Use when asked to "evaluate the staging run", "verify the staging run", "run the staging comparison", "compare staging against the baseline", "do the staging verification for rc.N", or "close Staging verification".
 ---
 
 # evaluate-staging-run
@@ -88,9 +88,6 @@ It does **not** cover the following. The command's report says nothing about the
 **your** report's Observational hard gates table (Step 7) that must account for each one — silence
 there would read as a pass:
 
-- **Data integrity** — no content verification exists anywhere in the system. There is nothing to
-  query. Unless the run did something bespoke, this is NOT ASSESSED and should be stated as a
-  known gap, not as a pass.
 - **Crashes / panics / OOM / unexplained restarts** — panics reach stderr and journald, not the
   JSON logs Telegraf forwards, and the run's Elasticsearch is destroyed at teardown. If the
   staging run session did not capture this while the testnet was up, it cannot be recovered.
@@ -414,14 +411,20 @@ Read the output for:
   forwarder drops" are indistinguishable from Elasticsearch alone. If a group fell to zero,
   either confirm the literal is still in the pinned source or report it as unconfirmed.
 
-## Step 6 — Gather the three observational hard gates
+## Step 6 — Gather the two observational hard gates
 
 For each, state PASS / FAIL / NOT ASSESSED **with its evidence or with the reason no evidence
 exists**. Do not infer a pass from the absence of a report.
 
+Data integrity is **no longer one of them**: `compare` emits a
+`Data integrity (download content verification)` hard gate from the per-download SHA-256 checks the
+native client tier records (V2-757). Take that row from the command's own report like any other
+hard gate. It reads NOT ASSESSED with the reason `no verified downloads recorded` only when the
+run's uploads predate content verification (or every download failed) — which is a real absence of
+evidence, not the permanent structural gap it used to be.
+
 | Gate | Where it comes from |
 |---|---|
-| Data integrity | Nothing verifies downloaded content. Expect NOT ASSESSED and say why. |
 | Crashes | The `Staging run — rc.N` sub-issue's steady-state observations. If the run session did not check `systemctl --state=failed` while the testnet was up, it cannot be recovered — ES died at teardown. NOT ASSESSED, not PASS. |
 | Mixed-version phase | The run sub-issue records both criteria: in-phase **native** transfers meeting the success floors (>99% upload, >99.5% download), and previous-version nodes storing chunks (`chunks.mdb` growth over SSH). |
 | Mixed-version WASM transfers (advisory) | The run sub-issue's mixed-phase WASM row. Reported, never in the verdict. |
@@ -516,7 +519,7 @@ stated reasoning, and note the stored verdict is unchanged.>
 | Download success floor [native] | PASS | 100.000% (429/429), floor >99.5% |
 | Upload success floor [wasm] (advisory — not in verdict) | … | …, floor >99% |
 | Download success floor [wasm] (advisory — not in verdict) | … | …, floor >99.5% |
-| Data integrity | NOT ASSESSED | No content verification exists in the system. |
+| Data integrity (download content verification) | … | … ok / … mismatch / … unavailable, coverage …% — fails at > 0 |
 | Crashes (staging fleet) | … | … |
 | Mixed-version phase | … | native in-phase transfers + chunk storage |
 | Mixed-version WASM transfers (advisory — not in verdict) | … | in-phase WASM up/down + attribution |
@@ -606,13 +609,15 @@ decision plainly and note that the stored verdict is unchanged.
   checked for crashes, say) → leave it **In Progress**, post the report, and hand back to the RM
   naming exactly what is unresolved.
 
-**Data integrity being NOT ASSESSED does not hold the sub-issue open.** Nothing in the system can
-verify downloaded content, so that gate is NOT ASSESSED on every run and always will be; treating
-it as unresolved would mean no staging verification could ever close. Report it as the permanent
-structural gap it is and close on the rest. This is the one NOT ASSESSED that does not block —
-any other one does — with one more exception: a relative gate NOT ASSESSED with the reason
-`new baseline` does **not** block either. On the new-baseline run every relative gate reads that
-way by design; close on the native hard floors and the observational hard gates.
+**A data-integrity NOT ASSESSED DOES hold the sub-issue open**, unlike every other structural gap
+here. The gate is measured now, so `no verified downloads recorded` means the run produced no
+evidence either way — an uploader tier that predates content verification, or a run where every
+download failed — and that is a fixable problem with the run, not a permanent property of the
+system. Name which of the two it was before closing.
+
+The one NOT ASSESSED that does **not** block is a relative gate carrying the reason
+`new baseline`. On the new-baseline run every relative gate reads that way by design; close on the
+native hard floors and the observational hard gates.
 
 `[wasm]` floor gates are advisory and never block, whatever their figure.
 
@@ -645,7 +650,10 @@ skip this step.
 
 State these in the final report rather than working around them:
 
-- **No content verification** anywhere in the system, so data integrity has no mechanism.
+- **Content verification covers the NATIVE client tier only.** The browser (WASM) tier publishes no
+  hash and verifies nothing (V2-1360), and the production client kinds do not either (V2-1361), so
+  their downloads carry no verdict and contribute nothing to the data-integrity gate. Its coverage
+  figure is what says how much of the run was actually checked.
 - **Panics never reach Elasticsearch** — they go to stderr and journald, and ES dies at teardown.
   A crash check must happen during the run or not at all.
 - **Percentiles cannot be backfilled.** Any run recorded before percentile capture landed compares

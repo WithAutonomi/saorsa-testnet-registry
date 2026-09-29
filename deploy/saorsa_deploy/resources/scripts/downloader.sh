@@ -121,12 +121,40 @@ preserve_failure_logs() {
 }
 
 eligible_addresses() {
-    # stdin: address lines, `<address>` or `<address> <bytes>`. stdout: the
-    # bare addresses whose size is unknown or within MAX_DOWNLOAD_BYTES.
+    # stdin: address lines, `<address>`, `<address> <bytes>` or
+    # `<address> <bytes> <sha256>`. stdout: `<address>` or `<address> <sha256>`
+    # for each entry whose size is unknown or within MAX_DOWNLOAD_BYTES.
+    #
+    # The hash is carried through selection rather than looked up afterwards:
+    # by the time an address has been picked the line it came from is gone, and
+    # an address alone cannot say what bytes were uploaded under it. A line with
+    # no third field stays eligible -- the WASM uploaders publish two-field
+    # lines into this same shared pool -- and its download verifies as
+    # `unavailable`, never as a mismatch.
     awk -v max="${MAX_DOWNLOAD_BYTES:-0}" '
         NF == 0 { next }
         max > 0 && NF >= 2 && ($2 + 0) > max { next }
+        NF >= 3 { print $1, $3; next }
         { print $1 }'
+}
+
+verify_download() {
+    # Compare a downloaded file against the SHA-256 its uploader published.
+    # Echoes `<code> <actual>`: 0 = ok, 1 = mismatch, 2 = unavailable (the line
+    # carried no hash, or the output is not readable). Unavailable is NOT a
+    # failure -- the content may be perfectly healthy, we simply have nothing
+    # to check it against -- so it is its own code rather than a mismatch.
+    local expected="$1" path="$2" actual=""
+    if [ -n "$expected" ] && [ -f "$path" ]; then
+        actual=$(sha256sum "$path" 2>/dev/null | awk '{print $1}')
+    fi
+    if [ -z "$expected" ] || [ -z "$actual" ]; then
+        echo "2"
+    elif [ "$actual" = "$expected" ]; then
+        echo "0 $actual"
+    else
+        echo "1 $actual"
+    fi
 }
 
 pick_random_address() {
@@ -140,6 +168,9 @@ pick_random_address() {
     # over-cap entry is skipped rather than fetched and rejected. One
     # uploader's whole list may be over the cap (every entry it publishes is
     # the same size), so the S3 path tries a few keys before giving up.
+    #
+    # Prints the selected entry as `<address>` or `<address> <sha256>`, the
+    # shape eligible_addresses emits.
     local listing key address attempt
     if [ -s "$ADDRESSES_FILE" ]; then
         eligible_addresses < "$ADDRESSES_FILE" | shuf -n 1 || true
@@ -178,7 +209,12 @@ else
 fi
 
 while true; do
-    address=$(pick_random_address)
+    selection=$(pick_random_address)
+    address=""
+    expected_sha256=""
+    if [ -n "$selection" ]; then
+        read -r address expected_sha256 <<< "$selection"
+    fi
     if [ -z "$address" ]; then
         if [ -s "$ADDRESSES_FILE" ]; then
             source_desc="file:${ADDRESSES_FILE}"
@@ -235,8 +271,19 @@ while true; do
     append_forward_log "$stdout_file" "downloader.stdout.log"
     append_forward_log "$stderr_file" "downloader.stderr.log"
 
+    # Content verification runs here, while the output file is still on disk:
+    # the cleanup at the foot of the loop removes it. Only a SUCCESSFUL
+    # download is verified -- one that failed is an availability problem and
+    # has no bytes to check.
+    verify_status=""
+    actual_sha256=""
     if [ "$exit_code" -eq 0 ]; then
-        echo "[$(date -u +%H:%M:%S)] Download OK: ${address} total=${total_ms}ms download_time=${download_secs}s size=${file_bytes}"
+        read -r verify_status actual_sha256 <<< "$(verify_download "$expected_sha256" "$output_path")"
+        actual_sha256="${actual_sha256:-}"
+        echo "[$(date -u +%H:%M:%S)] Download OK: ${address} total=${total_ms}ms download_time=${download_secs}s size=${file_bytes} verify=${verify_status}"
+        if [ "$verify_status" = "1" ]; then
+            echo "[$(date -u +%H:%M:%S)] CONTENT MISMATCH: ${address} expected=${expected_sha256} actual=${actual_sha256}"
+        fi
     else
         kept_stem=$(preserve_failure_logs "$dl_seq" "$address" "$stdout_file" "$stderr_file")
         echo "[$(date -u +%H:%M:%S)] Download FAILED: ${address} exit_code=${exit_code} total=${total_ms}ms logs=${kept_stem}.{stdout,stderr}"
@@ -249,7 +296,29 @@ while true; do
     # timestamp would land the point in the future, hiding it behind the
     # implicit `stop: now()` of every read query. The client's perceived
     # download-start time is still preserved in the `start_ns` field.
-    line="download,host=${CLIENT_HOST},region=${REGION} status=${exit_code}i,total_ms=${total_ms}i,download_secs=${download_secs},file_size=${file_bytes}i,start_ns=${start_ns}i"
+    #
+    # `status` is NOT ant's exit code. `record-results` reads it as an enum --
+    # 0 success, 1 failure, 2 skipped-by-the-transport -- and DROPS anything
+    # else as an unusable point, so an `ant` exit of 3 would be discarded
+    # rather than recorded as the failure it is. This script has no skip path,
+    # so every non-zero exit is clamped to 1 here, at the emit site.
+    #
+    # `verify_status` is omitted entirely on a failed download: there were no
+    # bytes to check, which is not the same as having checked and found
+    # nothing wrong. The two hashes ride along on a MISMATCH only -- on a match
+    # they are the same value, already published, and on an unverifiable
+    # download there is nothing to record.
+    op_status=0
+    if [ "$exit_code" -ne 0 ]; then
+        op_status=1
+    fi
+    line="download,host=${CLIENT_HOST},region=${REGION} status=${op_status}i,total_ms=${total_ms}i,download_secs=${download_secs},file_size=${file_bytes}i,start_ns=${start_ns}i"
+    if [ -n "$verify_status" ]; then
+        line="${line},verify_status=${verify_status}i"
+        if [ "$verify_status" = "1" ]; then
+            line="${line},expected_sha256=\"${expected_sha256}\",actual_sha256=\"${actual_sha256}\""
+        fi
+    fi
     submit_metric "$line"
     if [ -n "$INFLUX_URL" ]; then
         echo "[$(date -u +%H:%M:%S)] Metric submitted to InfluxDB"

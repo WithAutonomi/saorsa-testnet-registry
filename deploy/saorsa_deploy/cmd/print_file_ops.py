@@ -267,21 +267,31 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
             title=title,
             title_style="bold",
         )
+        # Only downloads verify content, and only against an uploader that
+        # publishes a hash. Omitted entirely when nothing in the table has one,
+        # so an upload table -- and a run predating verification -- renders as
+        # it did rather than gaining a column of dashes.
+        show_verify = any(op.get("verify_status") is not None for op in ops)
         table.add_column("#", justify="right")
         table.add_column("Started (UTC)")
         table.add_column("Completed (UTC)")
         table.add_column("Size", justify="right")
         table.add_column("Status")
+        if show_verify:
+            table.add_column("Verify")
         table.add_column("Duration", justify="right")
         for i, op in enumerate(ops, start=1):
-            table.add_row(
+            cells = [
                 str(i),
                 _fmt_started(op),
                 _fmt_time(op.get("_time")),
                 _fmt_size(op.get("file_size")),
                 _fmt_status(op.get("status")),
-                _fmt_duration(op.get("total_ms")),
-            )
+            ]
+            if show_verify:
+                cells.append(_fmt_verify(op.get("verify_status")))
+            cells.append(_fmt_duration(op.get("total_ms")))
+            table.add_row(*cells)
         console.print(table)
 
     _print_transport_totals(op_type, by_host, transport_by_host, console)
@@ -882,6 +892,22 @@ def _fmt_status(code) -> str:
     # transport limitation as a network fault, and as "-" would hide the op.
     if code == 2:
         return "[yellow]skip[/yellow]"
+    return "-"
+
+
+def _fmt_verify(code) -> str:
+    """Render a download's content-verification result.
+
+    `-` covers three different absences -- a failed download, a line carrying
+    no published hash, and a client that does not verify at all -- because none
+    of them is a finding. A MISMATCH is, and is the loudest thing in the table.
+    """
+    if code == 0:
+        return "[green]ok[/green]"
+    if code == 1:
+        return "[bold red]MISMATCH[/bold red]"
+    if code == 2:
+        return "[yellow]n/a[/yellow]"
     return "-"
 
 

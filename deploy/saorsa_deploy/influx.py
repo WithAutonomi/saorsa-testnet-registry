@@ -65,13 +65,17 @@ PIVOT_FLUX_TEMPLATE = """from(bucket: "{bucket}")
   |> range(start: {start}, stop: {stop})
   |> filter(fn: (r) => r._measurement == "upload" or r._measurement == "download")
   |> filter(fn: (r) =>
+       r._field == "actual_sha256" or
        r._field == "address" or
        r._field == "client_build" or
        r._field == "error_kind" or
+       r._field == "expected_sha256" or
        r._field == "file_size" or
+       r._field == "sha256" or
        r._field == "start_ns" or
        r._field == "status" or
-       r._field == "total_ms")
+       r._field == "total_ms" or
+       r._field == "verify_status")
   |> pivot(rowKey: ["_time", "host"], columnKey: ["_field"], valueColumn: "_value")
 """
 
@@ -113,8 +117,9 @@ def fetch_operation_points(
     Each dict contains: ``_time`` (datetime, UTC), ``host`` (str),
     ``_measurement`` (str: "upload"|"download"), ``file_size`` (int, bytes),
     ``start_ns`` (int), ``status`` (int: 0=success, 1=failure, 2=skipped),
-    ``total_ms`` (int), plus ``address``, ``error_kind`` and ``client_build``
-    (str or None) when the emitting client wrote them.
+    ``total_ms`` (int), plus ``address``, ``error_kind``, ``client_build``,
+    ``sha256``, ``expected_sha256`` and ``actual_sha256`` (str or None) and
+    ``verify_status`` (int or None) when the emitting client wrote them.
 
     ``stop`` defaults to :data:`FLUX_FAR_FUTURE` so that clock-skewed client
     VMs — which testnet manifests create deliberately — are not silently
@@ -299,6 +304,17 @@ def _parse_pivoted_csv(body: "str | Iterable[str]") -> list[dict]:
                     # from. Browser path only, and only from a bundle carrying
                     # build provenance.
                     "client_build": record.get("client_build") or None,
+                    # Content verification (V2-757). `sha256` rides the upload
+                    # point (the hash of what went in); `verify_status` rides
+                    # the download point as an INTEGER -- 0 ok, 1 mismatch,
+                    # 2 unavailable -- and is absent entirely on a failed
+                    # download, which is not the same as having checked and
+                    # found nothing wrong. The two hashes are present on a
+                    # mismatch only.
+                    "sha256": record.get("sha256") or None,
+                    "verify_status": _parse_int(record.get("verify_status", "")),
+                    "expected_sha256": record.get("expected_sha256") or None,
+                    "actual_sha256": record.get("actual_sha256") or None,
                 }
             )
         except (KeyError, ValueError):

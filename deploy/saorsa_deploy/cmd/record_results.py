@@ -28,6 +28,8 @@ from decimal import Decimal, InvalidOperation
 from rich.console import Console
 from rich.table import Table
 from saorsa_db.models import (
+    VERIFY_MISMATCH,
+    VERIFY_STATUS_BY_CODE,
     FileOpType,
     OpRecordStatus,
     PointerOp,
@@ -675,17 +677,36 @@ def _record_file_op_records(
             client_kind=client_kind_for_host(p["host"]),
         )
         if measurement == "upload":
-            repo.upsert_upload_record(**kwargs)
+            # The hash of the bytes this operation uploaded, which is what a
+            # downloader checks its result against.
+            repo.upsert_upload_record(**kwargs, sha256=p.get("sha256"))
             upload_recorded += 1
         else:
             # Downloads only: an upload's address is its RESULT and lives in the
             # prod-upload tables, not in the op record. `client_build` rides
             # with it — the WASM bundle is replaced in place by `deployments
             # upgrade-wasm-client`, so which build ran is per-OP, not per-run.
+            # Content verification (V2-757). An unrecognised code records
+            # NULL rather than guessing: NULL means "not applicable" -- a
+            # failed download, or a client that does not verify -- and is
+            # never read as a failure. The two hashes are written only
+            # alongside a mismatch, which is the only verdict they describe.
+            verify_status = VERIFY_STATUS_BY_CODE.get(p.get("verify_status"))
             repo.upsert_download_record(
                 **kwargs,
                 address=p.get("address"),
                 client_build=p.get("client_build"),
+                verify_status=verify_status,
+                expected_sha256=(
+                    p.get("expected_sha256")
+                    if verify_status == VERIFY_MISMATCH
+                    else None
+                ),
+                actual_sha256=(
+                    p.get("actual_sha256")
+                    if verify_status == VERIFY_MISMATCH
+                    else None
+                ),
             )
             download_recorded += 1
 

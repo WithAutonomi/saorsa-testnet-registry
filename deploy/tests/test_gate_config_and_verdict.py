@@ -57,6 +57,9 @@ def test_shipped_config_loads_and_matches_the_process_spec():
     assert config.node_rss_increase_percent == 15.0
     assert config.outbound_bytes_per_gb_increase_percent == 10.0
     assert config.disk_bytes_per_gb_increase_percent == 10.0
+    # Zero, and a COUNT rather than a percentage: there is no fraction of
+    # corrupt content a release may ship.
+    assert config.download_verify_mismatch_max == 0
     assert config.noise_rule.min_history_runs == 5
     assert config.noise_rule.sigma_multiplier == 2.0
     assert config.memory_leak.window_hours == 2.0
@@ -99,6 +102,31 @@ def test_zero_threshold_is_rejected(raw):
     data = copy.deepcopy(raw)
     data["soft_gates"]["node_cpu_increase_percent"] = 0
     with pytest.raises(GateConfigError, match="greater than zero"):
+        parse_gate_config(data, "test.yaml")
+
+
+def test_missing_verify_mismatch_max_is_rejected_not_defaulted(raw):
+    # The one gate in this file whose intended value IS zero. A key that
+    # quietly defaulted would look identical to the configured threshold while
+    # meaning "nobody set this", which is the whole reason validation is loud.
+    data = copy.deepcopy(raw)
+    del data["hard_gates"]["download_verify_mismatch_max"]
+    with pytest.raises(GateConfigError, match="download_verify_mismatch_max"):
+        parse_gate_config(data, "test.yaml")
+
+
+def test_zero_verify_mismatch_max_is_accepted(raw):
+    # Unlike every percentage threshold here, zero is the correct value: the
+    # gate is a count of mismatched downloads, and one is too many.
+    data = copy.deepcopy(raw)
+    data["hard_gates"]["download_verify_mismatch_max"] = 0
+    assert parse_gate_config(data, "test.yaml").download_verify_mismatch_max == 0
+
+
+def test_negative_verify_mismatch_max_is_rejected(raw):
+    data = copy.deepcopy(raw)
+    data["hard_gates"]["download_verify_mismatch_max"] = -1
+    with pytest.raises(GateConfigError, match="cannot be negative"):
         parse_gate_config(data, "test.yaml")
 
 

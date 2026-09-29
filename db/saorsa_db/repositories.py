@@ -210,6 +210,7 @@ class DeploymentRepository(ABC):
         duration_ms: int | None,
         network_profile: str | None = None,
         client_kind: str | None = None,
+        sha256: str | None = None,
     ) -> DeploymentUploadRecord:
         ...
 
@@ -230,6 +231,9 @@ class DeploymentRepository(ABC):
         client_kind: str | None = None,
         address: str | None = None,
         client_build: str | None = None,
+        verify_status: str | None = None,
+        expected_sha256: str | None = None,
+        actual_sha256: str | None = None,
     ) -> DeploymentDownloadRecord:
         ...
 
@@ -892,7 +896,19 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         client_kind: str | None = None,
         address: str | None = None,
         client_build: str | None = None,
+        sha256: str | None = None,
+        verify_status: str | None = None,
+        expected_sha256: str | None = None,
+        actual_sha256: str | None = None,
     ):
+        optional = {
+            "address": address,
+            "client_build": client_build,
+            "sha256": sha256,
+            "verify_status": verify_status,
+            "expected_sha256": expected_sha256,
+            "actual_sha256": actual_sha256,
+        }
         existing = (
             self.session.query(model_cls)
             .filter(
@@ -916,12 +932,15 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
                 duration_ms=duration_ms,
                 network_profile=network_profile,
                 client_kind=client_kind,
-                **({"address": address} if address is not None else {}),
-                **(
-                    {"client_build": client_build}
-                    if client_build is not None
-                    else {}
-                ),
+                # Only the keys this model actually has, and only the ones with
+                # a value: `sha256` is an upload column and the verification
+                # trio are download columns, so the two models are handed
+                # different subsets of the same call.
+                **{
+                    key: value
+                    for key, value in optional.items()
+                    if value is not None and hasattr(model_cls, key)
+                },
             )
             self.session.add(existing)
         else:
@@ -942,18 +961,16 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             # known transport; a known one still updates.
             if client_kind is not None:
                 existing.client_kind = client_kind
-            # Same COALESCE reasoning: the address comes from the Influx point,
-            # and a point written before the field existed has none. Writing
-            # None over a recorded address would lose it on the next re-run.
-            if address is not None:
-                existing.address = address
-            # And again: the build stamp comes from the transferring binary's
-            # own result document, so a point written by a pre-provenance
-            # bundle has none. Writing None over a recorded build would lose
-            # the one thing that separates transfers across an in-place
-            # `upgrade-wasm-client`.
-            if client_build is not None:
-                existing.client_build = client_build
+            # Same COALESCE reasoning for every optional column: each comes
+            # from the Influx point, and a point written before its field
+            # existed has none. The address makes an op investigable; the build
+            # stamp is the one thing that separates transfers across an
+            # in-place `upgrade-wasm-client`; the verification fields come from
+            # a client that may predate content verification altogether.
+            # Writing None over any of them would lose it on the next re-run.
+            for key, value in optional.items():
+                if value is not None and hasattr(model_cls, key):
+                    setattr(existing, key, value)
             existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
         return existing
@@ -972,6 +989,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         duration_ms: int | None,
         network_profile: str | None = None,
         client_kind: str | None = None,
+        sha256: str | None = None,
     ) -> DeploymentUploadRecord:
         return self._upsert_op_record(
             DeploymentUploadRecord,
@@ -987,6 +1005,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             duration_ms=duration_ms,
             network_profile=network_profile,
             client_kind=client_kind,
+            sha256=sha256,
         )
 
     def upsert_download_record(
@@ -1005,6 +1024,9 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         client_kind: str | None = None,
         address: str | None = None,
         client_build: str | None = None,
+        verify_status: str | None = None,
+        expected_sha256: str | None = None,
+        actual_sha256: str | None = None,
     ) -> DeploymentDownloadRecord:
         return self._upsert_op_record(
             DeploymentDownloadRecord,
@@ -1022,6 +1044,9 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             client_kind=client_kind,
             address=address,
             client_build=client_build,
+            verify_status=verify_status,
+            expected_sha256=expected_sha256,
+            actual_sha256=actual_sha256,
         )
 
     def list_upload_records_for_deployment(
