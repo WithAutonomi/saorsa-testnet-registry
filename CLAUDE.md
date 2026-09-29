@@ -1176,6 +1176,30 @@ SQLite-backed upgrade tracker, which is gone.
 - **`wire_tx_bytes`, never `udp_tx_bytes`**: saorsa-transport #169 changed what
   the latter counts on the 2026-09-23 train, so across a mixed fleet the two
   arms would not be measuring the same thing.
+- **§2 counts single-fire messages, so a document count IS an event count** and
+  no dedup is needed — but the obvious matchers do not have that property. A
+  start logs two lines back to back (`node.rs` + `upgrade/apply.rs`), so only
+  `Starting auto-apply upgrade from` is matched; their common prefix counted
+  every attempt twice. A success is `Upgrade to {} successful, initiating
+  graceful shutdown`, once per upgraded service on every path; `Successfully
+  upgraded to version {}! Restarting...` (the one service per host that
+  replaces the shared binary) and `Binary already upgraded to ...` (every other
+  service) are printed as **details** of it, with `replaced + reused =
+  succeeded` rendered as a visible check. All those lines log under
+  `tag.target = ant_node::node`, which the target filter did not match — the
+  root cause of the 0.20.0 rollout's under-counted successes, fixed by adding
+  that term.
+- **`Error during upgrade process:` is split transient vs failure.** It has
+  three log sites; the check-phase one (the GitHub release check and the
+  release-cache lock — `TRANSIENT_ERROR_MARKERS`) attempted nothing, so it goes
+  to an informational table annotated `all recovered` when every reporting
+  service is on the to-version at report time, and **only the failures table
+  breaches the rollout gate**. Everything else, including a variant a future
+  ant-node adds, is a failure — fail loud; downgrading one is an explicit list
+  addition. `Failed to spawn new binary` carries the annotation "binary already
+  replaced on disk; old version still running", the one case leaving a host
+  half-upgraded. A `retry backoff` count against an empty failures table is a
+  failure the matchers missed, which is the only reason that row exists.
 - Aggregations only (`size: 0`), never a document scroll — the prod node index
   takes ~13.7M documents every two hours. `tag.*` fields are analysed, so every
   `terms`/`composite`/`prefix` uses the `.keyword` subfield and host values are

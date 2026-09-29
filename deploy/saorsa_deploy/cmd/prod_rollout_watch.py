@@ -77,19 +77,54 @@ WIRE_TRAFFIC_MESSAGE = "wire traffic summary (cumulative)"
 HEALTH_LEVELS = ("ERROR", "WARN")
 
 TARGET_NODE = "ant_node"
+# ant-node's `node.rs` logs the canonical success line and the check-phase
+# error under `ant_node::node`, which matches neither of the other two values —
+# so until this was added those documents were filtered out of the query
+# entirely and every rollout under-counted its own successes.
+TARGET_NODE_MODULE = "ant_node::node"
 TARGET_UPGRADE_PREFIX = "ant_node::upgrade"
 
-# The upgrade-lifecycle messages, exactly as the state machine `track-upgrades`
-# used matched them. The first two are whole messages; the rest are prefixes
-# because the node interpolates versions and error detail into the tail.
+# The upgrade-lifecycle messages. The first two are whole messages; the rest
+# are prefixes because the node interpolates versions and error detail into the
+# tail. Each matcher is a message that fires exactly once per event, so a
+# document count IS an event count and no per-service dedup is needed.
+#
+# A start logs two lines back to back — `Starting auto-apply upgrade...`
+# (`node.rs`) and `Starting auto-apply upgrade from {cur} to {new}`
+# (`upgrade/apply.rs`) — so only the second is matched; the common prefix would
+# count every attempt twice. A success logs `Upgrade to {} successful,
+# initiating graceful shutdown` (`node.rs`) exactly once per upgraded service
+# on every path. The one service per host that actually replaces the shared
+# binary additionally logs `Successfully upgraded to version {}! Restarting...`
+# and every other service on that host logs `Binary already upgraded to ...`
+# instead, so those two are details of a success rather than successes of their
+# own — replaced + reused = succeeded.
 EVENT_MESSAGES = (
     "New version detected, staged rollout delay calculated",
     "Staged rollout delay elapsed, ready to upgrade",
 )
+ATTEMPT_PREFIX = "Starting auto-apply upgrade from"
+SUCCESS_PREFIX = "Upgrade to "
+SUCCESS_MARKER = "successful, initiating graceful shutdown"
+REPLACED_PREFIX = "Successfully upgraded to version"
+REUSED_PREFIX = "Binary already upgraded to"
+# A non-zero backoff count against an empty failures table means a failure the
+# matchers missed; that is the only reason this row exists.
+BACKOFF_PREFIX = "Upgrade rollout delay elapsed but previous apply did not succeed"
 EVENT_PREFIXES = (
-    "Starting auto-apply upgrade",
-    "Successfully upgraded to version",
+    ATTEMPT_PREFIX,
+    SUCCESS_PREFIX,
+    REPLACED_PREFIX,
+    REUSED_PREFIX,
+    BACKOFF_PREFIX,
 )
+EVENT_LABELS = {
+    ATTEMPT_PREFIX: "upgrade attempts",
+    SUCCESS_PREFIX: "upgrades succeeded",
+    REPLACED_PREFIX: "— of which binary replaced",
+    REUSED_PREFIX: "— of which shared binary reused",
+    BACKOFF_PREFIX: "retry backoff",
+}
 FAILURE_PREFIXES = (
     "Download failed:",
     "Signature download failed:",
@@ -99,6 +134,25 @@ FAILURE_PREFIXES = (
     "Failed to copy from cache",
     "CRITICAL: Replacement failed",
 )
+
+UPGRADE_ERROR_PREFIX = "Error during upgrade process:"
+# The check-phase sources of `Error during upgrade process:` — ant-node
+# `src/upgrade/monitor.rs` (the GitHub release check) and
+# `src/upgrade/release_cache.rs` (the release cache lock). Nothing was
+# attempted when one of these is logged, so they are informational and never
+# feed the gate. Everything else, including a variant a future ant-node adds,
+# is a failure: downgrading one is an explicit addition to this list.
+TRANSIENT_ERROR_MARKERS = (
+    "network error: GitHub API request failed:",
+    "network error: GitHub API returned status:",
+    "network error: Failed to parse releases:",
+    "network error: Failed to read releases:",
+    "upgrade error: Cache lock task failed:",
+    "upgrade error: Failed to create release cache lock:",
+    "upgrade error: Failed to acquire release cache lock:",
+)
+SPAWN_FAILURE_MARKER = "Failed to spawn new binary"
+SPAWN_FAILURE_NOTE = "binary already replaced on disk; old version still running"
 
 _WINDOW_RE = re.compile(r"^(\d+)(m|h)$")
 
@@ -157,6 +211,7 @@ def _upgrade_target_filter() -> dict:
         "bool": {
             "should": [
                 {"term": {TARGET_FIELD: TARGET_NODE}},
+                {"term": {TARGET_FIELD: TARGET_NODE_MODULE}},
                 {"prefix": {TARGET_FIELD: TARGET_UPGRADE_PREFIX}},
             ],
             "minimum_should_match": 1,
@@ -212,7 +267,10 @@ def build_upgrade_events_query(start: datetime, end: datetime) -> dict:
     volume.
     """
     should: list[dict] = [{"term": {MESSAGE_KEYWORD_FIELD: m}} for m in EVENT_MESSAGES]
-    should += [{"prefix": {MESSAGE_KEYWORD_FIELD: p}} for p in EVENT_PREFIXES + FAILURE_PREFIXES]
+    should += [
+        {"prefix": {MESSAGE_KEYWORD_FIELD: p}}
+        for p in EVENT_PREFIXES + FAILURE_PREFIXES + (UPGRADE_ERROR_PREFIX,)
+    ]
     return {
         "size": 0,
         "track_total_hits": True,
@@ -460,46 +518,85 @@ def summarise_adoption(pages: list[dict], to_version: str) -> dict:
     }
 
 
-def classify_message(message: str) -> tuple[str | None, str | None]:
-    """Fold one message into the lifecycle category it reports."""
+def classify_message(message: str) -> tuple[str | None, str | None, str | None]:
+    """Fold one message into the lifecycle category it reports.
+
+    Returns the kind (`event`, `failure`, `transient` or None), the label the
+    kind is grouped under, and an annotation for the rows that need one.
+    """
     for prefix in FAILURE_PREFIXES:
         if message.startswith(prefix):
-            return "failure", prefix
+            return "failure", prefix, None
+    # Ahead of the event prefixes: the generic error line is emitted from three
+    # sites and only the check-phase one is harmless.
+    if message.startswith(UPGRADE_ERROR_PREFIX):
+        detail = message[len(UPGRADE_ERROR_PREFIX) :].strip()
+        for marker in TRANSIENT_ERROR_MARKERS:
+            if detail.startswith(marker):
+                return "transient", marker, None
+        note = SPAWN_FAILURE_NOTE if SPAWN_FAILURE_MARKER in detail else None
+        return "failure", UPGRADE_ERROR_PREFIX, note
     for exact in EVENT_MESSAGES:
         if message == exact:
-            return "event", exact
+            return "event", exact, None
+    if message.startswith(SUCCESS_PREFIX):
+        # Only the graceful-shutdown form is the canonical per-service success;
+        # any other `Upgrade to ...` line is deliberately left uncounted rather
+        # than inflating the success total.
+        if SUCCESS_MARKER in message:
+            return "event", SUCCESS_PREFIX, None
+        return None, None, None
     for prefix in EVENT_PREFIXES:
         if message.startswith(prefix):
-            return "event", prefix
-    return None, None
+            return "event", prefix, None
+    return None, None, None
 
 
-def summarise_upgrade_events(response: dict) -> dict:
+def summarise_upgrade_events(response: dict, arms: dict[str, str] | None = None) -> dict:
+    """The §2 tables. `arms` marks a transient error's service as recovered."""
+    arms = arms or {}
     events: dict[str, int] = {}
     failures: dict[str, dict] = {}
+    transient: dict[str, dict] = {}
     for bucket in response["aggregations"]["messages"]["buckets"]:
-        kind, label = classify_message(str(bucket["key"]))
+        kind, label, note = classify_message(str(bucket["key"]))
         if kind is None or label is None:
             continue
         if kind == "event":
             events[label] = events.get(label, 0) + bucket["doc_count"]
             continue
-        entry = failures.setdefault(label, {"message": label, "count": 0, "services": []})
+        table = failures if kind == "failure" else transient
+        entry = table.setdefault(label, {"message": label, "count": 0, "services": [], "notes": []})
         entry["count"] += bucket["doc_count"]
         for pair in _service_pairs(bucket):
             if pair not in entry["services"]:
                 entry["services"].append(pair)
+        if note and note not in entry["notes"]:
+            entry["notes"].append(note)
 
     for entry in failures.values():
         entry["services"].sort()
+    for entry in transient.values():
+        entry["services"].sort()
+        # The check phase attempted nothing, so a service that is on the new
+        # arm now went on to upgrade; anything else needs a human to look.
+        entry["recovered"] = [p for p in entry["services"] if arms.get(p) == "new"]
+        entry["follow_up"] = [p for p in entry["services"] if arms.get(p) != "new"]
     return {
         # Every category is listed even at zero: a zero here is a measurement
         # ("no node reported this"), not an absence of information.
         "events": [
-            {"message": message, "count": events.get(message, 0)}
+            {
+                "message": message,
+                "label": EVENT_LABELS.get(message, message),
+                "count": events.get(message, 0),
+            }
             for message in EVENT_MESSAGES + EVENT_PREFIXES
         ],
-        "failures": [failures[p] for p in FAILURE_PREFIXES if p in failures],
+        "failures": [
+            failures[p] for p in FAILURE_PREFIXES + (UPGRADE_ERROR_PREFIX,) if p in failures
+        ],
+        "transient": [transient[m] for m in TRANSIENT_ERROR_MARKERS if m in transient],
     }
 
 
@@ -720,7 +817,7 @@ def build_report(search, *, name: str, to_version: str, window: timedelta, now: 
     services = adoption.pop("services")
     arms = arms_for(services, to_version)
 
-    upgrade_events = summarise_upgrade_events(search(build_upgrade_events_query(start, end)))
+    upgrade_events = summarise_upgrade_events(search(build_upgrade_events_query(start, end)), arms)
     restarts = summarise_restarts(
         _composite_pages(search, lambda after: build_restarts_query(start, end, after))
     )
@@ -821,25 +918,61 @@ def render_report(result: dict) -> str:
         "",
         "## 2. Upgrade events in the window",
         "",
-        "| message | count |",
+        "| event | count |",
         "| -- | -- |",
     ]
+    counts: dict[str, int] = {}
     for event in result["upgrade_events"]["events"]:
-        lines.append(f"| {event['message']} | {event['count']} |")
-    lines.append("")
+        counts[event["message"]] = event["count"]
+        lines.append(f"| {event['label']} | {event['count']} |")
+    replaced = counts.get(REPLACED_PREFIX, 0)
+    reused = counts.get(REUSED_PREFIX, 0)
+    succeeded = counts.get(SUCCESS_PREFIX, 0)
+    # Every success is either the one service per host that replaced the shared
+    # binary or one that reused it, so the two details must add up to it.
+    mismatch = "" if replaced + reused == succeeded else " — **does not add up**"
+    lines += [
+        "",
+        f"Detail check: {replaced} replaced + {reused} reused = {replaced + reused}, "
+        f"against {succeeded} succeeded{mismatch}.",
+        "",
+    ]
     failures = result["upgrade_events"]["failures"]
     if not failures:
         lines.append("Failures: none.")
     else:
         lines += [
-            "Failures:",
+            "Failures (the only §2 table that breaches the rollout gate):",
             "",
-            "| failure | count | services |",
-            "| -- | -- | -- |",
+            "| failure | count | services | note |",
+            "| -- | -- | -- | -- |",
         ]
         for failure in failures:
             lines.append(
-                f"| {failure['message']} | {failure['count']} | {', '.join(failure['services'])} |"
+                f"| {failure['message']} | {failure['count']} | "
+                f"{', '.join(failure['services'])} | {', '.join(failure['notes']) or '—'} |"
+            )
+    lines.append("")
+    transient = result["upgrade_events"]["transient"]
+    if not transient:
+        lines.append("Transient check errors: none.")
+    else:
+        lines += [
+            "Transient check errors (the check phase failed, nothing was attempted; "
+            "informational, not a gate breach):",
+            "",
+            "| error | count | services | status |",
+            "| -- | -- | -- | -- |",
+        ]
+        for entry in transient:
+            status = (
+                "all recovered"
+                if not entry["follow_up"]
+                else f"follow up: {', '.join(entry['follow_up'])}"
+            )
+            lines.append(
+                f"| {entry['message']} | {entry['count']} | "
+                f"{', '.join(entry['services'])} | {status} |"
             )
     lines += ["", "## 3. Restarts in the window", ""]
     if not result["restarts"]:
