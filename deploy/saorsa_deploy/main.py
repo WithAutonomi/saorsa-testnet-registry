@@ -6775,6 +6775,13 @@ def main(argv=None):
         default=None,
         help="Also write the full result as JSON to this path.",
     )
+    prod_rw_parser.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Render the report as terminal tables instead of markdown. "
+        "Presentation only — the same numbers, nicer to read in a shell; "
+        "the markdown is what you paste into an issue.",
+    )
 
     # =========================================================================
     # === release-candidates group (new, ls, show) ===

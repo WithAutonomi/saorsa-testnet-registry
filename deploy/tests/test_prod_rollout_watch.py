@@ -8,9 +8,11 @@ per-arm comparison is worth making at all, and when repeated starts stop being
 an upgrade and become a loop.
 """
 
+import io
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from rich.console import Console
 
 from saorsa_deploy.cmd.prod_rollout_watch import (
     ATTEMPT_PREFIX,
@@ -24,6 +26,7 @@ from saorsa_deploy.cmd.prod_rollout_watch import (
     classify_message,
     parse_window,
     render_report,
+    render_report_pretty,
     summarise_adoption,
     summarise_restarts,
     summarise_upgrade_events,
@@ -718,3 +721,248 @@ def test_prod_rollout_watch_is_parsed():
     with pytest.raises(SystemExit) as exc:
         main(["prod", "rollout-watch", "--help"])
     assert exc.value.code == 0
+
+
+# -- pretty rendering ------------------------------------------------------
+def _health_fixture():
+    """The four health responses for a 90-new / 10-old fleet.
+
+    One service on each arm is noisy, which is all the per-arm table needs to
+    produce a rate on both sides.
+    """
+    services = [(f"PROD-N{i}", "1") for i in range(90)] + [(f"PROD-O{i}", "1") for i in range(10)]
+    return {
+        "service_hours": {
+            "aggregations": {
+                "services": {
+                    "buckets": [
+                        {
+                            "key": {"host": host, "service": service},
+                            "doc_count": 10,
+                            # 4 buckets of 15 minutes is one service-hour.
+                            "active": {"buckets": [{}, {}, {}, {}]},
+                        }
+                        for host, service in services
+                    ]
+                }
+            }
+        },
+        "targets": {
+            "aggregations": {
+                "targets": {
+                    "buckets": [
+                        {
+                            "key": "ant_node::replication",
+                            "doc_count": 100,
+                            "hosts": {
+                                "buckets": [
+                                    {
+                                        "key": host,
+                                        "doc_count": count,
+                                        "services": {
+                                            "buckets": [
+                                                {
+                                                    "key": "1",
+                                                    "doc_count": count,
+                                                    "levels": {
+                                                        "buckets": [
+                                                            {"key": "ERROR", "doc_count": count}
+                                                        ]
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                    }
+                                    for host, count in (("PROD-N0", 90), ("PROD-O0", 10))
+                                ]
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+        "phrase": _host_service_response({("PROD-N0", "1"): 9, ("PROD-O0", "1"): 1}),
+        "wire_tx": {
+            "aggregations": {
+                "hosts": {
+                    "buckets": [
+                        {
+                            "key": "PROD-N0",
+                            "doc_count": 2,
+                            "services": {
+                                "buckets": [
+                                    {
+                                        "key": "1",
+                                        "doc_count": 2,
+                                        "lo": {"value": 100.0},
+                                        "hi": {"value": 1100.0},
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+
+def _pretty(result) -> str:
+    """Render to a fixed-width, colourless console so the text is assertable."""
+    console = Console(file=io.StringIO(), width=200, no_color=True, legacy_windows=False)
+    render_report_pretty(result, console)
+    return console.file.getvalue()
+
+
+def _full_report():
+    fake = FakeEs(
+        adoption=_one_sided_fleet(old_services=10, new_services=90),
+        upgrade_events=_events_response(
+            [
+                _message_bucket(BARE_START, [("PROD-N0", "1")], 90),
+                _message_bucket(APPLY_START, [("PROD-N0", "1")], 90),
+                _message_bucket(SUCCESS_LINE, [("PROD-N0", "1")], 88),
+                _message_bucket(REPLACED_LINE, [("PROD-N0", "1")], 11),
+                _message_bucket(REUSED_LINE, [("PROD-N0", "1")], 77),
+                _message_bucket(TRANSIENT_GITHUB, [("PROD-N0", "1")], 3),
+                _message_bucket(
+                    "Error during upgrade process: failed to spawn new process: boom",
+                    [("PROD-N0", "1")],
+                    2,
+                ),
+            ]
+        ),
+        restarts=[_restart_page([("PROD-O0", "1", 5, ["0.20.0"])])],
+        health=_health_fixture(),
+    )
+    return build_report(
+        fake, name="ant-prod-01", to_version="0.20.0", window=timedelta(hours=1), now=NOW
+    )
+
+
+def test_pretty_renders_every_section_of_a_populated_report():
+    text = _pretty(_full_report())
+
+    for heading in (
+        "1. Adoption",
+        "2. Upgrade events in the window",
+        "3. Restarts in the window",
+        "4. Per-arm health",
+        "5. Version telemetry",
+    ):
+        assert heading in text
+    # The numbers are the same numbers: the pretty renderer reads the result
+    # dict the markdown renderer reads, it does not recompute anything.
+    assert "ant-prod-01" in text and "0.20.0" in text
+    assert "Running services: 100 across 100 hosts" in text
+    assert "upgrade attempts" in text and "90" in text
+    assert "Error during upgrade process:" in text
+    assert "network error: GitHub API request failed:" in text
+    assert "restart-loop" in text
+    assert "ant_node::replication ERROR/1k service-hours" in text
+    assert "node_commit values on the new arm: 1" in text
+
+
+def test_pretty_flags_the_detail_arithmetic_when_it_does_not_add_up():
+    # 11 replaced + 77 reused = 88 against 88 succeeded, so this one adds up.
+    assert "DOES NOT ADD UP" not in _pretty(_full_report())
+
+    fake = FakeEs(
+        adoption=_one_sided_fleet(old_services=10, new_services=90),
+        upgrade_events=_events_response(
+            [
+                _message_bucket(SUCCESS_LINE, [("PROD-N0", "1")], 88),
+                _message_bucket(REPLACED_LINE, [("PROD-N0", "1")], 10),
+                _message_bucket(REUSED_LINE, [("PROD-N0", "1")], 77),
+            ]
+        ),
+        health=_health_fixture(),
+    )
+    result = build_report(
+        fake, name="ant-prod-01", to_version="0.20.0", window=timedelta(hours=1), now=NOW
+    )
+    assert "DOES NOT ADD UP" in _pretty(result)
+
+
+def test_pretty_renders_the_empty_and_suspended_shapes():
+    fake = FakeEs(adoption=_one_sided_fleet(old_services=1, new_services=99))
+    text = _pretty(
+        build_report(
+            fake, name="ant-prod-01", to_version="0.20.0", window=timedelta(hours=1), now=NOW
+        )
+    )
+    assert "Failures: none." in text
+    assert "Transient check errors: none." in text
+    assert "No service started more than once." in text
+    assert "Per-arm comparison suspended: old arm is 1 services" in text
+
+
+def test_pretty_keeps_the_numbers_visible_on_a_narrow_terminal():
+    """A long metric name must not squeeze the measurements out of the table.
+
+    The §4 metric names run to 74 characters, so pinning that column at its
+    full width leaves an 80-column terminal nothing for the three number
+    columns — they render one character wide and the numbers, which are the
+    whole point of the table, disappear.
+    """
+    result = _full_report()
+    result["per_arm"]["rows"] = [
+        {
+            "metric": "webrtc::peer_connection::peer_connection_internal ERROR/1k service-hours",
+            "new": 12.5,
+            "old": 3.0,
+            "ratio": 4.1667,
+        },
+        {"metric": "wire_tx_bytes/service-hour", "new": 1234567.0, "old": None, "ratio": None},
+    ]
+    console = Console(file=io.StringIO(), width=80, no_color=True, legacy_windows=False)
+    render_report_pretty(result, console)
+    text = console.file.getvalue()
+
+    assert "12.50" in text
+    assert "3.00" in text
+    assert "4.17" in text
+    assert "1,234,567" in text
+
+
+def test_pretty_does_not_read_an_es_value_as_rich_markup():
+    """Square brackets in an ES-derived value must survive the table.
+
+    Rich reads `[...]` as a style tag and raises on one it cannot resolve, so
+    an odd `tag.node_version` or `tag.target` — both arbitrary strings as far
+    as this command is concerned — would take the whole report down rather
+    than printing the value that needed looking at.
+    """
+    # 1 of 21 services is under 5% of running, so the per-arm comparison is
+    # suspended and the health queries are never issued — this test is about
+    # the rendering, and the per-arm rows are supplied directly below.
+    fake = FakeEs(
+        adoption=[
+            _adoption_page(
+                [(f"PROD-N{i}", "1", "0.20.0", "WAN_NODE") for i in range(20)]
+                + [("PROD-B", "1", "[patched]", "WAN_NODE")]
+            )
+        ]
+    )
+    result = build_report(
+        fake, name="ant-prod-01", to_version="0.20.0", window=timedelta(hours=1), now=NOW
+    )
+    result["per_arm"] = {
+        "suspended": False,
+        "service_counts": {"new": 1, "old": 1},
+        "service_hours": {"new": 1.0, "old": 1.0},
+        "rows": [{"metric": "weird[target] ERROR/1k", "new": 1.0, "old": 1.0, "ratio": 1.0}],
+    }
+    text = _pretty(result)
+
+    assert "[patched]" in text
+    assert "weird[target] ERROR/1k" in text
+
+
+def test_pretty_is_a_flag_on_the_command_and_markdown_stays_the_default(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["prod", "rollout-watch", "--help"])
+    assert exc.value.code == 0
+    assert "--pretty" in capsys.readouterr().out
+    # Nothing about the markdown changes when the flag is absent.
+    assert render_report(_full_report()).startswith("# Rollout watch — ant-prod-01 → 0.20.0")
