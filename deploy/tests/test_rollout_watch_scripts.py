@@ -698,3 +698,326 @@ def test_first_address_skips_comments_and_blank_lines(tmp_path):
 def test_the_shipped_address_list_has_a_usable_first_entry():
     address = artefact_smoke.first_address(artefact_smoke.DEFAULT_ADDRESSES_PATH)
     assert len(address) == 64 and all(c in "0123456789abcdef" for c in address)
+
+
+# ==========================================================================
+# The 2026-09-29 train's scripts (V2-1364 Phase B).
+#
+# Three decisions here are the reason these are scripts and not ad-hoc
+# queries, and each one is a bug that was actually hit while writing them:
+#
+# * `tail.group` does NOT identify a summary. Group 4 on
+#   `ant_node::replication::traffic` carries BOTH "audit outcome summary"
+#   and "replication responder admission summary", emitted at the same
+#   millisecond, and only the first has the `subtree_audit_*` fields. A
+#   first/last delta that lands on the wrong one reads a service's whole
+#   lifetime as one window's activity.
+# * a counter reset is decided PER FIELD, never per service, so one field
+#   going backwards cannot make the other seven fall back to their absolute
+#   totals.
+# * `subtree_audit_fail_digest_mismatch` is NOT zero-tolerance -- a
+#   pointer-free fleet already runs a chunk-mismatch background -- while
+#   `subtree_audit_fail_key_absent` is.
+# ==========================================================================
+audit_v2 = _load(ROLLOUT_DIR / "audit_protocol_v2.py", "rw_audit_protocol_v2")
+pointer_signals = _load(ROLLOUT_DIR / "pointer_signals.py", "rw_pointer_signals")
+sctp_errors = _load(
+    ROLLOUT_DIR / "sctp_association_errors.py", "rw_sctp_association_errors"
+)
+
+
+def audit_page(entries, after=None):
+    """`entries` are (host, service, first_values, last_values).
+
+    A `None` values dict stands for a document that is NOT an audit summary --
+    the admission-summary doc that shares its timestamp.
+    """
+    buckets = []
+    for host, service, first, last in entries:
+        def hit(values):
+            if values is None:
+                return {"_source": {}}
+            return {"_source": {"tail": dict(values)}}
+
+        buckets.append(
+            {
+                "key": {"host": host, "service": service},
+                "first": {"hits": {"hits": [hit(first)]}},
+                "last": {"hits": {"hits": [hit(last)]}},
+            }
+        )
+    agg = {"buckets": buckets}
+    if after:
+        agg["after_key"] = after
+    return {"aggregations": {"services": agg}}
+
+
+def _arms(new=(), old=()):
+    versions = {k: "0.21.0" for k in new}
+    versions.update({k: "0.20.0" for k in old})
+    arms = {k: ("new" if k in new else "old") for k in versions}
+    return common.Arms(to_version="0.21.0", versions=versions, arms=arms)
+
+
+def test_group_4_admission_summary_is_not_mistaken_for_an_audit_summary():
+    """The bug that read a service's lifetime total as one window's delta."""
+    arms = _arms(new=("h/1",))
+    pages = [
+        audit_page(
+            [("h", "1", None, {"subtree_audit_pass": 5000, "subtree_audit_fail_timeout": 90})]
+        )
+    ]
+    summaries = audit_v2.summarise(pages, arms)
+    # The `first` document carried no audit fields, so the pair is unusable and
+    # the service is skipped rather than contributing 5000 passes.
+    assert summaries["new"].measured == 0
+    assert summaries["new"].totals["subtree_audit_pass"] == 0
+
+
+def test_delta_is_last_minus_first():
+    arms = _arms(new=("h/1",))
+    pages = [
+        audit_page(
+            [
+                (
+                    "h",
+                    "1",
+                    {"subtree_audit_pass": 100, "subtree_audit_fail_timeout": 10},
+                    {"subtree_audit_pass": 140, "subtree_audit_fail_timeout": 14},
+                )
+            ]
+        )
+    ]
+    summaries = audit_v2.summarise(pages, arms)
+    assert summaries["new"].measured == 1
+    assert summaries["new"].totals["subtree_audit_pass"] == 40
+    assert summaries["new"].totals["subtree_audit_fail_timeout"] == 4
+    assert summaries["new"].resets == 0
+
+
+def test_a_counter_reset_is_decided_per_field_not_per_service():
+    """One field going backwards must not inflate the other seven."""
+    arms = _arms(new=("h/1",))
+    pages = [
+        audit_page(
+            [
+                (
+                    "h",
+                    "1",
+                    # `pass` grows normally; `timeout` goes backwards.
+                    {"subtree_audit_pass": 1000, "subtree_audit_fail_timeout": 50},
+                    {"subtree_audit_pass": 1010, "subtree_audit_fail_timeout": 3},
+                )
+            ]
+        )
+    ]
+    summaries = audit_v2.summarise(pages, arms)
+    # `pass` keeps its true delta of 10 rather than falling back to 1010...
+    assert summaries["new"].totals["subtree_audit_pass"] == 10
+    # ...and only the field that actually reset uses its absolute value.
+    assert summaries["new"].totals["subtree_audit_fail_timeout"] == 3
+    assert summaries["new"].resets == 1
+
+
+def test_key_absent_is_zero_tolerance():
+    arms = _arms(new=("h/1",))
+    summaries = audit_v2.summarise(
+        [audit_page([("h", "1", {"subtree_audit_pass": 1}, {"subtree_audit_pass": 9, "subtree_audit_fail_key_absent": 2})])],
+        arms,
+    )
+    check = audit_v2.evaluate_key_absent(summaries, arms)
+    assert check.status == common.FAIL
+    assert "could not produce" in check.detail
+
+
+def test_key_absent_zero_passes_but_rests_on_a_zero():
+    arms = _arms(new=("h/1",))
+    summaries = audit_v2.summarise(
+        [audit_page([("h", "1", {"subtree_audit_pass": 1}, {"subtree_audit_pass": 9})])],
+        arms,
+    )
+    check = audit_v2.evaluate_key_absent(summaries, arms)
+    assert check.status == common.PASS
+    assert check.passed_on_zero is True
+
+
+def test_digest_mismatch_is_a_ratio_against_the_old_arm_not_zero_tolerance():
+    """A pointer-free fleet already mismatches, so a non-zero new arm can pass."""
+    new = tuple(f"n/{i}" for i in range(10))
+    old = tuple(f"o/{i}" for i in range(10))
+    arms = _arms(new=new, old=old)
+    entries = []
+    for key in new:
+        host, service = key.split("/")
+        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1}))
+    for key in old:
+        host, service = key.split("/")
+        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1}))
+    summaries = audit_v2.summarise([audit_page(entries)], arms)
+    check = audit_v2.evaluate_digest_mismatch(summaries, arms, hours=1.0, baseline_rate=None)
+    # Same rate on both arms -> ratio 1.0 -> pass, despite being non-zero.
+    assert check.status == common.PASS
+    assert check.data["ratio"] == pytest.approx(1.0)
+
+
+def test_digest_mismatch_fails_above_the_ratio_limit():
+    new = tuple(f"n/{i}" for i in range(10))
+    old = tuple(f"o/{i}" for i in range(10))
+    arms = _arms(new=new, old=old)
+    entries = []
+    for key in new:
+        host, service = key.split("/")
+        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 5}))
+    for key in old:
+        host, service = key.split("/")
+        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1}))
+    summaries = audit_v2.summarise([audit_page(entries)], arms)
+    check = audit_v2.evaluate_digest_mismatch(summaries, arms, hours=1.0, baseline_rate=None)
+    assert check.status == common.FAIL
+    assert check.data["ratio"] == pytest.approx(5.0)
+
+
+def test_digest_mismatch_falls_back_to_the_baseline_once_the_old_arm_drains():
+    new = tuple(f"n/{i}" for i in range(20))
+    arms = _arms(new=new)
+    entries = [
+        (key.split("/")[0], key.split("/")[1], {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1})
+        for key in new
+    ]
+    summaries = audit_v2.summarise([audit_page(entries)], arms)
+    # 1 mismatch per service per hour against a 0.5 baseline is 2x -> FAIL.
+    check = audit_v2.evaluate_digest_mismatch(summaries, arms, hours=1.0, baseline_rate=0.5)
+    assert check.status == common.FAIL
+    # Without a baseline there is nothing to compare against, and that is not a pass.
+    check = audit_v2.evaluate_digest_mismatch(summaries, arms, hours=1.0, baseline_rate=None)
+    assert check.status == common.NOT_APPLICABLE
+
+
+def test_audit_recovery_claims_nothing_while_the_fleet_is_mixed():
+    new = tuple(f"n/{i}" for i in range(10))
+    old = tuple(f"o/{i}" for i in range(10))
+    arms = _arms(new=new, old=old)
+    entries = [
+        (k.split("/")[0], k.split("/")[1], {"subtree_audit_pass": 5}, {"subtree_audit_pass": 5})
+        for k in new + old
+    ]
+    summaries = audit_v2.summarise([audit_page(entries)], arms)
+    check = audit_v2.evaluate_recovery(summaries, arms)
+    # Zero passes on the new arm is EXPECTED mid-rollout: the two protocol ids
+    # cannot audit each other. It must not be reported as a failure.
+    assert check.status == common.NOT_APPLICABLE
+
+
+def test_audit_recovery_fails_once_uniform_and_still_silent():
+    new = tuple(f"n/{i}" for i in range(20))
+    arms = _arms(new=new)
+    entries = [
+        (k.split("/")[0], k.split("/")[1], {"subtree_audit_pass": 5}, {"subtree_audit_pass": 5})
+        for k in new
+    ]
+    summaries = audit_v2.summarise([audit_page(entries)], arms)
+    check = audit_v2.evaluate_recovery(summaries, arms)
+    assert check.status == common.FAIL
+    assert "should have resumed" in check.detail
+
+
+# -- SCTP ------------------------------------------------------------------
+def test_sctp_rate_is_per_1k_service_hours():
+    rate = sctp_errors.ArmRate(arm="new", services=100, errors=50, hosts=7, hours=2.0)
+    # 50 errors / (100 services * 2h) * 1000 = 250
+    assert rate.per_1k_service_hours == pytest.approx(250.0)
+
+
+def test_sctp_ratio_suspended_until_both_arms_are_large_enough():
+    new = tuple(f"n/{i}" for i in range(1))
+    old = tuple(f"o/{i}" for i in range(99))
+    arms = _arms(new=new, old=old)
+    rates = {
+        "new": sctp_errors.ArmRate("new", 1, 100, 1, 1.0),
+        "old": sctp_errors.ArmRate("old", 99, 99, 50, 1.0),
+    }
+    check = sctp_errors.evaluate(rates, arms, baseline_rate=None)
+    assert check.status == common.NOT_APPLICABLE
+
+
+def test_sctp_ratio_compares_arms_when_both_are_large_enough():
+    new = tuple(f"n/{i}" for i in range(50))
+    old = tuple(f"o/{i}" for i in range(50))
+    arms = _arms(new=new, old=old)
+    rates = {
+        "new": sctp_errors.ArmRate("new", 50, 200, 30, 1.0),
+        "old": sctp_errors.ArmRate("old", 50, 100, 30, 1.0),
+    }
+    check = sctp_errors.evaluate(rates, arms, baseline_rate=None)
+    assert check.status == common.FAIL  # 2.0x against a 1.5x limit
+    assert check.data["ratio"] == pytest.approx(2.0)
+
+    rates["new"] = sctp_errors.ArmRate("new", 50, 140, 30, 1.0)
+    check = sctp_errors.evaluate(rates, arms, baseline_rate=None)
+    assert check.status == common.PASS  # 1.4x
+
+
+# -- listener delay (V2-1331) ---------------------------------------------
+def test_listen_delay_excludes_a_listening_line_older_than_the_start():
+    """A previous run's listening line would otherwise be a negative delay."""
+    base = NOW
+    starts = {"h/1": base, "h/2": base}
+    listens = {
+        "h/1": base + timedelta(minutes=9),
+        "h/2": base - timedelta(minutes=30),  # from the run before this one
+    }
+    out = webrtc_coverage.summarise_listen_delays(["h/1", "h/2"], starts, listens)
+    assert out["measured"] == 1
+    assert out["stale_pairs"] == 1
+    assert out["median_secs"] == pytest.approx(540.0)
+
+
+def test_listen_delay_reports_services_that_never_logged_a_listener():
+    base = NOW
+    starts = {"h/1": base, "h/2": base}
+    listens = {"h/1": base + timedelta(minutes=2)}
+    out = webrtc_coverage.summarise_listen_delays(["h/1", "h/2"], starts, listens)
+    assert out["no_listen_line"] == ["h/2"]
+    assert out["measured"] == 1
+
+
+def test_listen_delay_percentiles_over_a_known_spread():
+    base = NOW
+    keys = [f"h/{i}" for i in range(11)]
+    starts = {k: base for k in keys}
+    # 0,60,120,...,600 seconds
+    listens = {k: base + timedelta(seconds=60 * i) for i, k in enumerate(keys)}
+    out = webrtc_coverage.summarise_listen_delays(keys, starts, listens)
+    assert out["min_secs"] == pytest.approx(0.0)
+    assert out["median_secs"] == pytest.approx(300.0)
+    assert out["p90_secs"] == pytest.approx(540.0)
+    assert out["max_secs"] == pytest.approx(600.0)
+
+
+def test_listen_delay_is_empty_without_pairs_rather_than_raising():
+    out = webrtc_coverage.summarise_listen_delays(["h/1"], {}, {})
+    assert out["measured"] == 0
+    assert out["median_secs"] is None
+    assert "no delay could be measured" in webrtc_coverage.render_listen_delays(out)
+
+
+# -- pointer signals -------------------------------------------------------
+def test_pointer_rpc_errors_are_not_applicable_when_no_pointer_rpc_happened():
+    """Production has no pointer client, so an empty result must not read as a pass."""
+    check = pointer_signals.evaluate_rpc_errors({"total": 0, "events": {}})
+    assert check.status == common.NOT_APPLICABLE
+
+
+def test_pointer_rpc_errors_fail_on_an_error_outcome():
+    rpc = {
+        "total": 10,
+        "events": {"pointer_put_rpc": {"success": 9, "error": 1}},
+    }
+    check = pointer_signals.evaluate_rpc_errors(rpc)
+    assert check.status == common.FAIL
+
+
+def test_pointer_rpc_not_found_is_an_answer_not_an_error():
+    rpc = {"total": 5, "events": {"pointer_get_rpc": {"not_found": 5}}}
+    check = pointer_signals.evaluate_rpc_errors(rpc)
+    assert check.status == common.PASS

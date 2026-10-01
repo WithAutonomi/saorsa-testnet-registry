@@ -422,6 +422,97 @@ def render_sample(records: list[Advertised]) -> str:
 
 
 # -- report ----------------------------------------------------------------
+# -- listener delay (V2-1331, record-only) ---------------------------------
+#: ant-node 0.20.0 was measured opening its WebRTC listener 1m43s to 14m26s
+#: after start (V2-1331), which leaves a node unreachable from browsers for
+#: that whole time -- and browsers only enter the network through the
+#: bootstraps. Nothing on the 2026-09-29 train attempts a fix, so this section
+#: exists to accumulate a second rollout's worth of evidence.
+#:
+#: It is deliberately RECORD-ONLY and contributes NO check: a listener that
+#: never opens is already a `listening coverage` miss, which gate 1 breaches on.
+#: Adding a pass rule here would double-count that and give gate 1 a second,
+#: differently-calibrated trigger.
+def summarise_listen_delays(
+    new_arm: list[str],
+    starts: dict[str, datetime],
+    listens: dict[str, datetime],
+) -> dict:
+    """Seconds from `ant-node starting` to the listening line, per new-arm service.
+
+    Only pairs where the listening line is at or after the start are counted: a
+    listening line from a *previous* run of the service (the window caught the
+    old listen but not the old start) would otherwise read as a negative delay
+    and quietly drag the median down.
+    """
+    delays: list[tuple[str, float]] = []
+    stale = 0
+    for key in new_arm:
+        began, listening = starts.get(key), listens.get(key)
+        if began is None or listening is None:
+            continue
+        seconds = (listening - began).total_seconds()
+        if seconds < 0:
+            stale += 1
+            continue
+        delays.append((key, seconds))
+    delays.sort(key=lambda kv: kv[1])
+    values = [seconds for _, seconds in delays]
+    return {
+        "measured": len(values),
+        "stale_pairs": stale,
+        "min_secs": round(values[0], 1) if values else None,
+        "median_secs": round(_percentile(values, 0.50), 1) if values else None,
+        "p90_secs": round(_percentile(values, 0.90), 1) if values else None,
+        "max_secs": round(values[-1], 1) if values else None,
+        "slowest": [[key, round(seconds, 1)] for key, seconds in delays[-10:][::-1]],
+        "no_listen_line": sorted(
+            key for key in new_arm if key in starts and key not in listens
+        ),
+    }
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    """Linear-interpolated percentile over a pre-sorted list."""
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return values[0]
+    position = fraction * (len(values) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    weight = position - lower
+    return values[lower] * (1 - weight) + values[upper] * weight
+
+
+def render_listen_delays(delays: dict) -> str:
+    if not delays["measured"]:
+        return (
+            "_No new-arm service had both a start and a listening line in the "
+            "window, so no delay could be measured._"
+        )
+    rows = [
+        [
+            f"{delays['measured']}",
+            _fmt_secs(delays["min_secs"]),
+            _fmt_secs(delays["median_secs"]),
+            _fmt_secs(delays["p90_secs"]),
+            _fmt_secs(delays["max_secs"]),
+        ]
+    ]
+    return markdown_table(
+        ["services", "min", "median", "p90", "max"], rows, align="rrrrr"
+    )
+
+
+def _fmt_secs(value: float | None) -> str:
+    if value is None:
+        return "—"
+    if value < 60:
+        return f"{value:.0f}s"
+    return f"{int(value // 60)}m{int(value % 60):02d}s"
+
+
 def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:
     window = parse_window(args.window)
     start, end = now - window, now
@@ -435,6 +526,7 @@ def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:
     starts = collect_latest(es, START_MESSAGE, start, end)
     listens = collect_latest(es, LISTENING_MESSAGE, start, end)
     coverage = evaluate_listening_coverage(arms.new, starts, listens, now=end)
+    listen_delays = summarise_listen_delays(arms.new, starts, listens)
     if arms.new:
         listening_check = Check(
             name="listening coverage",
@@ -483,6 +575,7 @@ def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:
         "old_arm": len(arms.old),
         "version_counts": arms.version_counts(),
         "control": {"name": control.name, "count": control.count, "ok": control.ok},
+        "listen_delays": listen_delays,
         "coverage": {
             "covered": coverage.covered,
             "misses": coverage.misses,
@@ -552,6 +645,34 @@ def render_report(result: dict) -> str:
             "Advertised-address sample:",
             "",
             render_sample(result["_records"]),
+            "",
+        ]
+    delays = result["listen_delays"]
+    lines += [
+        "Listener delay from `ant-node starting` to the listening line "
+        "(V2-1331, record-only — no pass rule):",
+        "",
+        render_listen_delays(delays),
+        "",
+    ]
+    if delays["slowest"]:
+        lines += ["Slowest to open a listener:", ""]
+        lines += [
+            f"- `{key}` — {_fmt_secs(seconds)}" for key, seconds in delays["slowest"]
+        ]
+        lines.append("")
+    if delays["no_listen_line"]:
+        lines += [
+            f"Started but no listening line in the window "
+            f"({len(delays['no_listen_line'])}):",
+            "",
+        ]
+        lines += [f"- `{key}`" for key in delays["no_listen_line"][:20]]
+        lines.append("")
+    if delays["stale_pairs"]:
+        lines += [
+            f"{delays['stale_pairs']} service(s) had a listening line older than "
+            "their start and were excluded as a previous run's.",
             "",
         ]
     lines.append(
