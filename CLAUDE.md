@@ -127,203 +127,62 @@ uv run ruff check .
 
 ## Declarative manifests (`deployments up` / `down` / `plan`)
 
-A deployment can be described by a single declarative YAML **manifest** and run
-with one command, instead of a hand-edited bash runbook:
+A deployment is described by one declarative YAML **manifest** and run with one
+command. This is the normal way to deploy; the legacy `runbooks/` bash scripts
+and the primitive `infra`/`provision` commands remain supported.
 
-- `saorsa-deploy deployments plan --config <manifest>` — print the computed command sequence (dry-run).
-- `saorsa-deploy deployments up --config <manifest>` — run the full deploy sequence.
-- `saorsa-deploy deployments down --name <deployment>` (or `--config <manifest>`) — run the destroy sequence. With `--name` alone the teardown is derived from what exists in S3 state (no manifest needed); `--config` mirrors a manifest's components.
-- `saorsa-deploy deployments config show|validate --config <manifest>` — inspect/validate a manifest.
+- `deployments plan --config <m>` — print the computed command sequence (dry-run).
+- `deployments up --config <m>` — run the full sequence. `down --config <m>` or
+  `down --name <n>` to tear down (with `--name` alone the teardown is derived
+  from what exists in S3 state).
+- `deployments config show|validate --config <m>` — inspect/validate.
 
 One manifest = one deployment's full desired state, discriminated by `kind`
-(`testnet`, `testnet-extension`, and the six `prod-*` kinds). The orchestrator
-(`deploy/saorsa_deploy/orchestrator/`, schema in `config/`) owns the
-ordering/flag-coupling invariants that previously lived in the `deploy-runbook`
-skill's prose — it is the single source of truth. `up` executes each step by
-re-entering the CLI in-process (`main(argv)`); a failing step halts the run.
+(`testnet`, `testnet-extension`, `elasticsearch`, and the `prod-*` kinds). The
+orchestrator (`deploy/saorsa_deploy/orchestrator/`, schema in `config/`) owns the
+ordering and flag-coupling invariants and is the single source of truth. `up`
+executes each step by re-entering the CLI in-process (`main(argv)`); a failing
+step halts the run.
 
-`up` is **resumable**: each completed step is recorded in a step journal
-(`saorsa-deploy/journals/{name}.json` in the tfstate bucket; logic in
-`orchestrator/journal.py`, persistence in `state.py`), so a re-run after a
-mid-sequence failure can skip the already-done steps — most valuably the
-~10-minute binary builds. A journal hit never silently skips: interactively
-`up` prompts [r]esume / [d]elete / [a]bort; non-interactively (agents, cron)
-pass **`--resume`** to skip the completed steps — without it a non-TTY
-journal hit refuses with guidance rather than hanging. If the journal doesn't
-match the computed plan (manifest edited, name reused, kind changed) a diff is
-shown and resume means "from the longest matching prefix". A fully successful
-`up` — or a successful `down` (either path) — deletes the journal;
-`plan`/`up --dry-run` never touch it.
+What will bite you:
 
-For testnet/extension kinds, **monitoring (InfluxDB) defaults ON**
-(omit the `monitoring:` block, or `monitoring: {enabled: false}` to opt out) so
-client upload/download metrics are captured; Elasticsearch log-forwarding stays
-opt-in. The **Grafana** dashboard VM is itself **opt-in and OFF by default** —
-add `grafana: true` under `monitoring:` (CLI: `monitoring infra --grafana`) to
-also stand up a Grafana VM; without it only InfluxDB is created (metrics stay
-queryable via InfluxDB/Flux).
+- **`up` is resumable and a journal hit never silently skips.** Completed steps
+  are journalled to the tfstate bucket, so a re-run can skip the ~10-minute
+  binary builds. Interactively it prompts [r]esume / [d]elete / [a]bort;
+  **non-interactively you must pass `--resume`** or a journal hit refuses rather
+  than hanging. A successful `up` or `down` deletes the journal; `plan` and
+  `up --dry-run` never touch it.
+- **Monitoring (InfluxDB) defaults ON** for testnet/extension kinds; the
+  **Grafana VM is opt-in and OFF** (`monitoring: {grafana: true}`). Elasticsearch
+  log-forwarding is opt-in.
+- **`extends: <path>` deep-merges a base profile, but lists REPLACE, not
+  append.** Also `--set dotted.key=value` and `--name`.
+- **Secrets are never in a manifest** — prod kinds name an env var
+  (`secret_key_env`, default `ARBITRUM_ONE_SECRET_KEY`).
+- **Never run two `up`/`down` for one name concurrently** (S3 + Terraform races).
+- **`keep_on_destroy: true`** inside `elastic:`/`monitoring:` leaves that stack
+  standing after `down`, so a run that went wrong stays investigable without
+  paying for the node fleet. The intent is persisted into the component's own S3
+  state at create time, so a manifest-less `down --name X` honours it too. A keep
+  with no stack is a validation error. Retention is untouched — a kept ES index
+  still expires on `elastic.retention_days` (default 7).
 
-A testnet may also carry a **pointer client tier** (`clients.pointers[]`) that
-creates, updates and reads paid mutable references for the life of the run — see
-"The pointer client tier" below.
+Reusable profiles are committed under `deploy/manifests/profiles/`
+(`reference.yaml` = every option, `staging.yaml` = THE staging profile every
+release train extends). Concrete run manifests live in the git-ignored
+`deploy/manifests/runs/`.
 
-Testnet node VMs can be placed on **DigitalOcean, Hetzner, Vultr, or OVH**
-(`nodes.providers.<name>` in a manifest; `--<provider>-vm-count` etc. on
-`nodes infra`). OVH (regions like `GRA9`/`UK1`/`DE1`, default flavor `b3-16`,
-`size:` → `--ovh-flavor`) reuses the prod-migration node module; it needs
-`OVH_APPLICATION_KEY`/`OVH_APPLICATION_SECRET`/`OVH_CONSUMER_KEY`/
-`OVH_CLOUD_PROJECT_SERVICE` at both create AND destroy time, and has no
-availability preflight (unlike Hetzner/Vultr). Clients support the same four
-providers.
+`slack_post: true` (valid for every kind) appends a `deployments slack-post`
+step; it is best-effort and never fails the run. `record-results --update-slack`
+posts a per-kind results summary as a **threaded reply**, which needs the Web API
+path's captured `(channel, ts)`.
 
-Every client kind accepts a **`bootstrap_cache`** option (default **true**) —
-per-entry on testnet `clients.uploaders[]`/`clients.downloaders[]` and
-`prod_uploaders.uploaders[]` (spec token `bootstrap_cache=true|false`),
-spec-level on the downloader/canary/local kinds (CLI flag
-`--bootstrap-cache/--no-bootstrap-cache`). When true the service invokes `ant`
-**without** `--bootstrap`, which enables the client's peer cache; the peers
-come from a `bootstrap_peers.toml` written to ant's config dir
-(`/root/.config/ant/` on client VMs — testnet bootstrap addresses for testnet
-kinds, the production list for prod kinds; for local-uploads/downloads the
-operator's `~/.config/ant/bootstrap_peers.toml` is written only when missing,
-never overwritten). `bootstrap_cache: false` restores the legacy explicit
-`--bootstrap` invocation, which disables the cache. The cache state per client
-is surfaced by `deployments slack-post`, `print-uploads`/`print-downloads`,
-and `generate-inventory`.
+Testnet node VMs can be placed on **DigitalOcean, Hetzner, Vultr or OVH**
+(`nodes.providers.<name>`). OVH needs four `OVH_*` vars at both create AND
+destroy time and has no availability preflight (unlike Hetzner/Vultr).
 
-Every VM-backed client kind also accepts **`forward_logs`** (default off) and
-**`rust_log`** (per-entry on testnet `clients.uploaders[]`/`downloaders[]` and
-`prod_uploaders.uploaders[]`; spec-level on `prod_downloaders` /
-`prod_continuous_downloader` / `prod_canary`; **not** the local-* kinds).
-`forward_logs: true` forwards the client `ant` process's stdout+stderr to
-Elasticsearch as raw lines (`message` field, tagged `role`/`stream`) in a
-**separate** index `telegraf-ant-clients-<name>`. Testnet/extension kinds reuse
-the deployment's **own** ES instance and so **require `elastic.enabled: true`**
-(validation error otherwise); prod kinds have no node-tier ES, so the deploy
-command stands up a **dedicated** small ES instance and tears it down on destroy
-unless `--keep-elastic` / `keep_elastic: true`. `rust_log` sets `RUST_LOG` on the
-client service: the client `ant` reads `RUST_LOG` via its tracing `EnvFilter`
-(full per-module filters like `a::b=debug` work), but only with logging enabled,
-so the service still passes `-v` (installs the subscriber) AND exports `RUST_LOG`
-(which overrides the `-v` level). In a colon-delimited spec `rust_log` must be the
-**last** token (its value may contain `::`). The client forwarder is a separate
-`telegraf-ant-client-elasticsearch` systemd unit (`provisioning/telegraf_client.py`);
-the ES `telegraf-ant-clients-*` index template is created by `elastic provision`.
-Both options are surfaced by `deployments slack-post`.
-
-Two profiling options were added on the `feat-debug_builds` branch. **Debug
-builds**: a binary spec accepts **`debug: true`** (`binaries.<ant|ant_node>` on
-testnet/extension kinds, `prod_*.binary` on prod kinds; branch builds only —
-release versions ship prebuilt). It builds the binary **without** `--release`
-(`build ant`/`build ant-node` gain a `--debug` flag; cargo drops the release
-flag and the artifact comes from `target/debug`). The S3 build key is unchanged:
-it is already namespaced by deployment `--name` and the builder always
-overwrites, so `up` rebuilds when the manifest toggles `debug` (the `--debug`
-token in the build step makes the journal re-run it) — no fetch-side flag is
-needed. **heaptrack memory profiling**: prod uploaders/downloaders accept
-**`memory_profiling: true`** (per-entry `prod_uploaders.uploaders[]` spec token
-`memory_profiling=true|false`; spec-level CLI flag
-`--memory-profiling/--no-memory-profiling` on `prod downloaders` /
-`prod continuous-downloader`). When set the provisioner installs the `heaptrack`
-apt package and the Python service wraps the `ant` invocation with
-`heaptrack -o /var/log/ant-heaptrack/<upload|download>-<idx>` (helper
-`_maybe_wrap_heaptrack` in `resources/scripts/prod_uploader.py` /
-`prod_downloader.py`); heaptrack writes `<base>.<pid>.zst` incrementally so even
-an OOM/SIGKILL leaves an analysable trace. heaptrack's own output is on stderr,
-so the `ant --json` result parse (which walks stdout from the end) is
-unaffected. Reuses the same `/var/log/ant-heaptrack/` path as the existing
-testnet-only `clients provision --heaptrack` flag. NOT wired to testnet clients
-(use `--heaptrack`), the prod-canary kind, or the local-* kinds.
-
-Separately, the testnet/extension **`nodes.log_level`** option (`info`/`debug`/
-`trace`) sets ant-node `--log-level` on **every** node-tier service — WAN nodes,
-genesis, **and** bootstraps. **ant-node has NO env-filter / per-module logging**:
-its `--log-level` is bound to the `RUST_LOG` env var and accepts a *single* level
-only (a multi-target `RUST_LOG` makes ant-node exit `INVALIDARGUMENT`), so nodes
-get one global level while only the client side gets the full `rust_log`
-env-filter — letting one deployment run nodes and clients at different levels.
-
-`nodes.log_level` also **lifts the node→ES Telegraf drop filter** so verbose node
-logs actually reach Elasticsearch. The forwarder drops any line whose level is in
-the node-tier `--drop-log-levels` flag (folded telegraf default `DEBUG,TRACE`); left
-alone that silently strips the very trace/debug the operator asked for (nodes
-write it to disk, ES shows only INFO/WARN). The orchestrator therefore derives the
-drop set from `nodes.log_level` (drop only levels strictly *more verbose* than the
-configured one) and passes it on the `nodes provision`/`provision-genesis`/`bootstraps
-provision` steps alongside `--with-telegraf`: `trace` → `--drop-log-levels ""` (keep
-everything), `debug` → `--drop-log-levels TRACE`, `info`/unset → omit the flag (folded
-telegraf default `DEBUG,TRACE`).
-An explicit **`elastic.drop_log_levels`** in the manifest always wins: set it to
-`"DEBUG,TRACE"` to keep verbose logs on disk but out of ES (volume), or `""` to
-force-keep everything regardless of node level. The **client** forwarder has no
-level filter (it ships raw stderr lines unconditionally), so `rust_log` trace
-already reaches ES; its only knob is buffer size — **`elastic.buffer_limit`** is
-now threaded to the client forwarder too (via `clients provision
---forward-buffer-limit`) so a high-volume trace uploader doesn't overflow the
-client forwarder's small default buffer and drop forwarded lines. Logic lives in
-`orchestrator/testnet.py` (`_resolve_elastic_drop_log_levels`).
-
-Testnet client address lists live in the dedicated **public-read**
-`saorsa-testnet-addresses` bucket (NOT the tfstate bucket, which keeps Block
-Public Access intact; bucket + IAM managed by the `aws-client-s3` Terraform
-module). Downloaders list+fetch them with **unsigned HTTPS** and uploaders
-flush through **presigned PUT URLs** minted by `clients provision` (7-day
-SigV4 max expiry) — both paths avoid the VM signing anything, so clock-skewed
-clients (whose own SigV4 requests S3 rejects at ~±15min) keep publishing and
-consuming addresses.
-
-**Keeping the observability stack past teardown.** Testnet/extension manifests
-accept **`keep_on_destroy: true`** inside the `elastic:` and/or `monitoring:`
-block: `deployments down` then destroys the clients/nodes/bootstraps but leaves
-that VM standing, so a run that went wrong stays investigable without paying for
-the node fleet. Both teardown paths honour it, because the intent is persisted
-into the **component's own S3 state** at create time (`elastic infra` /
-`monitoring infra` gain `--keep-on-destroy`, recorded next to `grafana_enabled`) —
-so a manifest-less `down --name X` behaves exactly like `down --config`. Default
-false; state docs predating the option have no key, which also means destroy. The
-key requires the matching `enabled: true` (a keep with no stack is a silent
-no-op, so it is a validation error). Two deliberate non-couplings: retention is
-untouched (a kept ES index still expires on `elastic.retention_days`, default 7 —
-raise it if needed; the testnet Influx bucket is infinite by default), and the
-primitive `elastic destroy` / `monitoring destroy` are never gated by the flag
-since they are the cleanup route. `down` prints each retained stack's endpoint and
-its exact destroy command, and says "torn down (observability stacks retained)"
-rather than "has been destroyed". The registry status flip is unaffected —
-`DESTROYED` is recorded by whichever command deletes the whole deployment state.
-Logic: `_observability_destroy_steps` in `orchestrator/testnet.py`,
-`build_destroy_steps_from_state` + `retained_observability` in
-`orchestrator/__init__.py`.
-
-A top-level `slack_post: true` (valid for **every** kind) appends a final
-`deployments slack-post --name <name>` step to `up`, posting a deployment
-summary once it's up. `slack-post` has two paths: when
-`ANT_DEPLOY_SLACK_BOT_TOKEN` (+ channel via `--channel`/`ANT_DEPLOY_SLACK_CHANNEL`)
-is set it posts via the Slack Web API (`chat.postMessage`) and persists the
-message's `(channel, ts)` to the deployment (`slack_channel`/`slack_message_ts`
-columns); otherwise it falls back to the `ANT_DEPLOY_SLACK_WEBHOOK_URL` incoming
-webhook (which returns no message reference). The step is **best-effort** (a
-Slack failure warns but never fails the run); `down` is unaffected.
-
-`deployments record-results --update-slack` posts a per-kind results summary as
-a **threaded reply** to that original message — it needs the Web API path's
-captured `(channel, ts)` plus `ANT_DEPLOY_SLACK_BOT_TOKEN`, and is likewise
-best-effort (warns, never fails the recording). The reply is kind-dispatched
-(per-host file-op aggregates for testnet/downloader kinds; per-host + per-file
-detail for prod-uploaders; alive/pending/confirmed-lost + hours-to-loss
-histogram for prod-canary). Web API client lives in
-`deploy/saorsa_deploy/slack_api.py`; reply block builders in
-`deploy/saorsa_deploy/slack_results.py`.
-
-Reuse: `extends: <path>` (deep-merge a base profile; **lists replace, not
-append**), `--set dotted.key=value`, and `--name`. Secrets are never in a
-manifest — prod kinds name an env var (`secret_key_env`, default
-`ARBITRUM_ONE_SECRET_KEY`). Reusable profiles are committed under
-`deploy/manifests/profiles/` (`reference.yaml` = every option, `staging.yaml` =
-THE staging profile every release train extends); concrete run manifests live in the git-ignored `deploy/manifests/runs/`
-(they churn per run, like `runbooks/`). The
-legacy `runbooks/` bash scripts and the primitive `infra`/`provision` commands
-remain fully supported and unchanged. See `deploy/README.md` §"Declarative
-manifests" for the schema reference.
+See `deploy/README.md` §"Declarative manifests" for the schema reference, and
+§"Resumable runs (the step journal)" for the journal.
 
 ## Deploying & Destroying Testnets
 
@@ -355,1155 +214,802 @@ An extension may also carry its **own client tier** (`extension.clients`, same s
 
 ### Running a prod continuous-downloader
 
-`prod continuous-downloader deploy` is a higher-level saorsa-deploy command that stands up a single-VM client deployment running a dedicated `prod_downloader.py` Python service against the **production** Autonomi network, with a paired InfluxDB monitoring VM. The bootstrap peers list is fetched at runtime from [WithAutonomi/ant-client `resources/bootstrap_peers.toml`](https://raw.githubusercontent.com/WithAutonomi/ant-client/refs/heads/main/resources/bootstrap_peers.toml); a curated list of public file addresses ships at `deploy/saorsa_deploy/resources/prod_addresses.txt` and can be overridden with `--addresses-path`.
+`prod continuous-downloader deploy` — one client VM running `prod_downloader.py`
+against the **production** Autonomi network forever, with a paired mandatory
+InfluxDB VM created in the same command. `deploy_args.kind =
+"prod-continuous-downloader"`. Bootstrap peers are fetched at runtime from
+WithAutonomi/ant-client; the curated address list is
+`deploy/saorsa_deploy/resources/prod_addresses.txt` (`--addresses-path` to
+override).
 
-- Single VM per deployment; takes one `--spec region[:vm_size]` (download-only — uploaders are rejected).
-- Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
-- The service is implemented in Python (`deploy/saorsa_deploy/resources/scripts/prod_downloader.py`) — not the shared `downloader.sh` — because every download (success or failure) keeps a per-op stdout/stderr log on disk under `/var/log/ant-prod-downloader/{idx:04d}-{addr_prefix}.{stdout,stderr}` for after-the-fact analysis. Testnet downloaders deliberately stay on `downloader.sh` so they keep no per-op logs.
-- `--sleep-interval-secs` configures a sleep at the **end of each full cycle** through the address list. Default 900 (15 minutes); pass `0` to disable and resume the back-to-back cycling of the legacy bash downloader. Persisted in `deploy_args.sleep_interval_secs` and surfaced by `deployments slack-post`. `--daily` is a convenience that sets it to `86400` for a permanent once-a-day cadence.
-- **Selectable providers** (added for permanent runs). `--provider {digitalocean,hetzner,vultr,ovh}` (default DO) chooses the **client** VM provider — non-DO is cheaper for a permanent run and cuts pooled DO egress; it reuses the existing `*-client` TF modules (un-hardcoded the old `digital_ocean:` prefix in `_ensure_client_infra`). `--monitoring-provider {digitalocean,ovh}` (default DO) chooses the **monitoring** VM provider — only DO and OVH have monitoring TF modules. Client and monitoring providers are independent; OVH needs the four `OVH_*` vars, Hetzner `HCLOUD_TOKEN`, Vultr `VULTR_API_KEY`. Optional `--monitoring-region` / `--monitoring-droplet-size` / `--monitoring-volume-type` override the per-provider monitoring defaults (DO still defaults to `lon1` / `s-2vcpu-4gb`).
-- **Bounded retention for permanent operation.** `--log-retention-days` (default 7) installs a daily `ant-prod-downloader-logprune.timer` systemd timer that `find -mtime +N -delete`s the per-op logs (`0` = keep forever). `--influx-retention-days` (default 7) is threaded into `monitoring provision` so the InfluxDB bucket expires old points (`0` = infinite); applied at first provision only.
-- **Long-history archival.** Because Influx retention is bounded, `deployments archive --name <n>` periodically copies results into Postgres (thin wrapper over `record-results`; one-shot by default for cron/`/schedule`, `--loop --interval-secs N` for a local long-runner). Run it from the box with `DATABASE_URL` at least as often as the Influx retention window; the per-op `deployment_download_records` table is the authoritative long-term history. Impl: `deploy/saorsa_deploy/cmd/archive_results.py`.
-- Registers a `Deployment` row with `deploy_args.kind = "prod-continuous-downloader"` (now also persisting `provider`, `monitoring_provider`, `influx_retention_days`, `log_retention_days`) so `deployments record-results --name ... --monitoring-name ... --window -1h` works unchanged against it (the new script keeps emitting to the existing `download` Influx measurement).
-- **Manifest support.** This kind is fully declarative via `deployments up/plan/down --config <manifest>` (`kind: prod-continuous-downloader`). The `ProdContinuousDownloaderSpec` schema (`config/models.py`) exposes all the permanent-operation options — `provider`, `monitoring_provider` (+ `monitoring_region`/`monitoring_droplet_size`/`monitoring_volume_type`), `influx_retention_days`, `log_retention_days`, plus the pre-existing `spec`/`binary`/`sleep_interval_secs`/`addresses_path`/etc. — and `orchestrator/prod.py` `_continuous_downloader` maps them to the deploy argv. Once-a-day = `sleep_interval_secs: 86400` (the `--daily` sugar has no manifest field). Example: `deploy/manifests/profiles/prod-continuous-downloader.yaml`.
-- `prod continuous-downloader destroy` tears down the monitoring VM alongside the client by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack for after-the-fact analysis. (Destroy reads the client/monitoring provider back from S3 state, so no provider flags are needed on teardown.)
+- **Single VM, download only** — one `--spec region[:vm_size]`; uploaders are
+  rejected.
+- Keeps a per-op stdout/stderr log under `/var/log/ant-prod-downloader/` (this is
+  why it is Python, not the shared `downloader.sh`, which keeps none).
+- `--sleep-interval-secs` sleeps at the end of each full cycle (default 900;
+  `0` = back-to-back; `--daily` = 86400).
+- Client and monitoring VM providers are **independent** (`--provider` across all
+  four; `--monitoring-provider` DO/OVH only). Destroy reads both back from state.
+- **Retention is bounded, so archive to Postgres**: `--log-retention-days`
+  (default 7) and `--influx-retention-days` (default 7, first provision only).
+  Run `deployments archive --name <n>` with `DATABASE_URL` at least as often as
+  the Influx window — `deployment_download_records` is the authoritative history.
+- `destroy` tears down monitoring too; `--keep-monitoring` to preserve it.
 
-See `deploy/README.md` §"Running continuous downloaders against production" for the full argument table and sequencing.
+Fully declarative (`kind: prod-continuous-downloader`). See `deploy/README.md`
+§"Running continuous downloaders against production".
 
 ### Running prod downloaders (one-shot)
 
-`prod downloaders deploy` is the one-shot sibling of `prod continuous-downloader`. The service walks the address list once and then exits 0; the systemd unit is `Type=simple Restart=no` so the VM can be left alone until destroy. All other behaviour is identical to the continuous variant — same provisioner (`ProdDownloaderProvisioner(one_shot=True)`), same `prod_downloader.py` script (toggled by the `ONE_SHOT=true` env var), same monitoring stack, same `record-results` / `slack-post` paths.
+`prod downloaders deploy` — the one-shot sibling of `prod continuous-downloader`:
+walks the address list once and exits 0, with `Type=simple Restart=no` so the VM
+can be left alone until destroy. Same provisioner and script, toggled by
+`ONE_SHOT=true`; same monitoring, `record-results` and `slack-post` paths.
+`deploy_args.kind = "prod-downloaders"`.
 
-- CLI: `prod downloaders deploy` / `prod downloaders destroy`. Same arguments as `prod continuous-downloader` **except** `--sleep-interval-secs` and the two retention flags are omitted.
-- **Provider selection** (`--provider` for the client VM across all four providers, `--monitoring-provider`/`--monitoring-region`/`--monitoring-droplet-size`/`--monitoring-volume-type` for the monitoring VM) mirrors the continuous variant — the client provider prefix was previously hardcoded to DigitalOcean, so a one-shot run could not share a vantage point with a Hetzner/OVH continuous baseline. Destroy reads both providers back from S3 state.
-- **`--download-diagnostics`** (default **off**) passes `ant file download --download-diagnostics <PATH>`, writing one JSONL record per chunk-fetch attempt. Default off because the flag exists only on instrumented `ant` builds — a stock binary rejects it and every download fails. The path is **per-operation** (`/var/log/ant-prod-downloader/<op>.diag.jsonl`, beside that op's `.stdout`/`.stderr`) because `ant` opens it with `truncate`: one shared path across a multi-address run would retain only the last address's records. Threaded via a `DOWNLOAD_DIAGNOSTICS` env-file line, mirroring `MEMORY_PROFILING`. Available on both download kinds and as a manifest key.
-- Registers a `Deployment` row with `deploy_args.kind = "prod-downloaders"`.
-- The persisted `deploy_args["addresses"]` (list of resolved addresses, also written for `prod-continuous-downloader`) is rendered inline by `deployments slack-post` instead of the raw `addresses_file` path.
-- **`deployments generate-inventory` covers both download kinds.** They keep no deployment state (they join production), so the inventory is built from S3 client/monitoring state plus the registry row: `node_vms`/`bootstrap_vms` empty and no devnet manifest (that describes a self-hosted network and its wallet key — meaningless here), but `client_vms` gives the VM IP/provider/region/SSH and a **`client_config`** section (schema **7**) gives the address list, the resolved binary, the settings that change how `ant` is invoked (`bootstrap_cache`, `download_diagnostics`, `memory_profiling`, `rust_log`, `clock_skew`, `network`, `sleep_interval_secs`) and the on-VM `paths` for the artefacts. The **`paths` block is the teardown-critical part**: nothing collects the per-op `.stdout`/`.stderr`, the `.diag.jsonl` or the heaptrack traces, and they die with the VM. The address list lives only in the registry, so `client_config` needs `DATABASE_URL`; without it the VM sections are still written and the command warns. `inventory.py`'s `SUPPORTED_SCHEMA_VERSIONS` accepts 3/4/5/6/7 — a client inventory has no `node_vms`, so `load_node_inventory` correctly rejects it. **`deployments up` runs the step automatically** for these two kinds (after the deploy, before `slack-post`), mirroring the final step of the testnet sequence; it is **`best_effort`**, so a snapshot failure warns rather than halting a run whose infrastructure is already up and billing. The other prod kinds emit no such step — `generate-inventory` has no path for them yet and would fail at the end of an otherwise-successful deploy.
+- Same arguments as the continuous variant **except** `--sleep-interval-secs` and
+  the two retention flags.
+- **`--download-diagnostics` is off by default**: the flag exists only on
+  instrumented `ant` builds, and a stock binary rejects it and fails every
+  download. The path is **per-operation**, because `ant` opens it with
+  `truncate` — one shared path would retain only the last address's records.
+- **Nothing collects the per-op logs, the `.diag.jsonl` or the heaptrack traces;
+  they die with the VM.** `up` therefore runs `generate-inventory` automatically
+  (inventory schema 7, `client_config.paths`) as a **`best_effort`** final step.
+  It needs `DATABASE_URL` for the address list, and warns without one.
 
-See `deploy/README.md` §"Running one-shot downloaders against production" for the full argument table.
+See `deploy/README.md` §"Running one-shot downloaders against production".
 
 ### The browser path on the production download kinds (WASM)
 
 Both remote download kinds take **`client_kind: native|wasm`** (CLI
-`--client-kind`, default native): `wasm` runs the transfers over WebRTC-Direct
-through ant-core compiled to WASM instead of the native `ant` binary, measuring
-what a browser client experiences against the REAL production network — which
-nothing else does, since `ant-cli` links native ant-core and so takes the native
-transport however it is invoked. **One transport per deployment** (a blended
-result describes neither instrument: WASM measured ~4.2x slower on download), so
-it is a property of the deployment, persisted in `deploy_args.client_kind`.
-Example: `deploy/manifests/profiles/prod-wasm-downloaders.yaml`. Impl:
-`prod_wasm.py` + `cmd/prod_wasm_cli.py` (the shared prod-WASM foundation,
-consumed by the upload kinds later), `provisioning/wasm_client.py` (extracted
-from `provisioning/client.py:_add_wasm_ops`, byte-identical), and a new
-`resources/wasm-client/src/cli.ts`.
+`--client-kind`, default native). `wasm` runs the transfers over WebRTC-Direct
+through ant-core compiled to WASM instead of the native `ant`, measuring what a
+browser client experiences against the real production network — which nothing
+else does, since `ant-cli` links native ant-core whatever you pass it.
+**One transport per deployment**, persisted in `deploy_args.client_kind` (WASM
+measured ~4.2x slower on download, so a blended result describes neither).
 
-**`ant-wasm` is a single-operation CLI that is a drop-in for `ant`.** Installed at
-`/usr/local/bin/ant-wasm` from the bundle's new `dist/cli.js` entry point, it
-supports `file upload --public [--merkle|--no-merkle] <path>` and `file download
-<addr> -o <path>`, reads `SECRET_KEY`/`BOOTSTRAP_MULTIADDRS`/`RUST_LOG` from the
-environment (no `--evm-network` — the payment identity comes from a node's
-HELLO), and prints a **final JSON line on stdout in the `ant --json` shape**
-(plus `payment_sent`, `error_kind`, `file_size`) with progress on stderr. A
-`--payment-marker <path>` file is written the instant a payment is submitted, so a
-parent can tell the money went out even if the child is killed before it prints.
-That shape is what leaves the prod Python services, their units, their per-op logs
-and their restart policies **unchanged by the transport** — `prod_downloader.py`
-walks the same list, keeps the same
-`/var/log/ant-prod-downloader/{op:04d}-{addr}.{stdout,stderr}` pair, and only
-spawns a different binary. It also buys crash accounting for free: the WASM
-process is the largest RSS on the VM, so an OOM lands on the **child**, the parent
-sees a signal exit, records `error_kind=crash` and continues — no checkpoint, no
-`inflight.json`, no restart-policy change. The testnet `ROLE` loop (`dist/main.js`)
-is untouched.
+`ant-wasm` is a single-operation CLI and a **drop-in for `ant`** at
+`/usr/local/bin/ant-wasm`: it prints a final JSON line in the `ant --json` shape,
+so the prod Python services, their units, their per-op logs and their restart
+policies are unchanged by the transport.
 
-**Over-cap is a SKIP, not a failure.** ant-core refuses a browser-path file above
-`WASM_MAX_FILE_BYTES` (1,000,000,000): a property of the transport, not of the
-network, since the content is stored and healthy. Address lines are
-`<address>[ <bytes>]`, so a declared over-cap size is skipped **up front** with
-nothing spawned, and a child's `error_kind=over_cap` is recorded as a skip too. A
-**bare line is never skipped** — unknown is not "too big". `status` is an integer
-Influx field (a string would be a type conflict and the point would be dropped),
-so the wire value is **`2`**, mapped to a new `OpRecordStatus.SKIPPED`. Skipped
-rows are STORED but excluded from every success-rate denominator (the
-`deployment_file_results` aggregates, `deployments compare`, `clients
-estimate-gas`, the Slack reply) — with a six-address list holding two over-cap
-entries, counting them would cap the gate at 66.7% and fail every run.
+What will bite you:
 
-**Refused, not ignored, under `client_kind: wasm`:** `bootstrap_cache` (selects
-ant's peer cache vs an explicit `--bootstrap`; a browser client does neither),
-`memory_profiling` and `download_diagnostics` (both act on the `ant` process). A
-silently-dropped option leaves the operator reading their own manifest as a
-description of the run. `rust_log`, `network` and `clock_skew` work normally —
-and `network` is now actually threaded through `prod continuous-downloader`'s
-infra step, where it was dropped for native too.
+- **Over-cap is a SKIP, not a failure.** ant-core refuses a file above
+  `WASM_MAX_FILE_BYTES` (1,000,000,000) — a property of the transport, not the
+  network. Wire value `2` (`OpRecordStatus.SKIPPED`); stored, but excluded from
+  **every** success-rate denominator. A **bare address line is never skipped** —
+  unknown is not "too big".
+- **Refused, not ignored**: `bootstrap_cache`, `memory_profiling`,
+  `download_diagnostics` (all act on the `ant` process). `rust_log`, `network`
+  and `clock_skew` work normally.
+- **`record-results` takes `client_kind` from `deploy_args`, not S3 client
+  state** — `clients destroy` deletes that state, and a re-run after teardown
+  would relabel every WASM op as native and push its failures into the native
+  hard floors.
+- **8 GB minimum**, refused outright on a DO slug below it (a browser-path
+  download holds ~4x the file in WASM memory); other providers only warn.
+- Bootstraps are **ICE-probed before any infrastructure exists** (zero answering
+  refuses, partial warns). `--skip-bootstrap-probe` exists for the 2–15 min
+  listener delay after an ant-node restart.
+- Results land in the **`wasm-client-metrics`** Influx bucket.
 
-**Bootstraps are ICE-probed before any infrastructure exists.** The committed
-`resources/prod_bootstrap_webrtc_multiaddrs.txt` (7 entries, written by `prod
-bootstrap webrtc-addresses`) is the default source — there is deliberately **no
-URL flag**, because nothing publishes these addresses at a URL —
-overridable with `--wasm-bootstrap-multiaddrs-file`. `webrtc_probe.probe()` is
-used because saorsa-transport's admission filter returns `Decision::Ignore` on
-every failure, so an unauthenticated probe cannot tell a firewalled port from a
-healthy one. **Zero answering refuses** (the alternative is a VM billing from
-creation that fails every op); a **partial** answer warns, names the dead entries
-and proceeds, since ant-core cools a failed endpoint down for 30 minutes and a
-live subset is a working deployment. `--skip-bootstrap-probe` exists because
-ant-node 0.20.0 opens the listener 2–15 min after a restart (V2-1331). Recorded as
-`deploy_args.wasm_bootstrap`.
+`wasm_binary: {branch, repo_owner}` takes a branch **or a tag** (`version:` is
+refused — no ant-core WASM package is published as a release). `build ant-wasm`
+runs `npm ci` against the committed lockfile and writes a `build-info.json` plus
+an S3 sidecar holding the ant-client **commit** — the commit is what identifies
+the code, where a moving branch name does not.
 
-**VM sizing is validated.** A browser-path download holds ~4x the file in WASM
-memory (900 MB → 3.9 GB RSS, run 587), so a size-less `--spec` defaults to
-`s-4vcpu-8gb` on DigitalOcean and a DO slug below 8 GB is **refused** (its memory
-is encoded in the slug, so it is a fact); other providers' names cannot be read
-here, so those only warn. An under-sized box makes every transfer an OOM kill,
-which reads as a network fault.
-
-**`wasm_binary: {branch, repo_owner}`** names the bundle, and `branch` takes a
-branch **or a tag** (`git clone --branch` accepts either) — that is how an RC is
-pinned. `version:` is refused pointing at the tag form and V2-1337, since no
-ant-core WASM package is published as a release. The orchestrator emits a
-resumable `build ant-wasm` step before the deploy. **`build ant-wasm` now runs
-`npm ci`** against the committed lockfile (`npm install` could resolve a different
-`node-datachannel` — the WebRTC implementation the whole path runs on — for the
-same ant-client ref) and writes a `build-info.json` into the tarball root plus an
-S3 sidecar `builds/<name>/<owner>/<ref>/ant-wasm-client.build-info.json` holding
-the ant-client **commit**, ref, owner, resolved `node-datachannel` version,
-`wasm_pack_version` and `built_at`. Deploy reads the sidecar into
-`deploy_args.wasm_build`; a pre-change bundle warns and records `null`. The commit
-is what identifies the code — a moving branch name does not.
-
-**Results stay separate.** WASM operations land in the `wasm-client-metrics`
-Influx bucket (so nothing can average two transports measured ~4x apart);
-`record-results` reads both buckets and takes `client_kind` from
-**`deploy_args`**, NOT from `_build_client_kind_lookup`'s S3 client state, which
-`clients destroy` deletes — a re-run after teardown would otherwise relabel every
-WASM op as native and push its failures into the native hard floors. A nullable
-**`address`** column on `deployment_download_records` records what each op
-fetched (both transports emit the field now; nothing else maps an operation to its
-target, and no past row can be backfilled because the Influx points never held
-it). `print-downloads`, `print-recorded-results`, `slack-post` and
-`record-results --update-slack` render the per-transport split with skip and crash
-counts; the Slack post names the bundle commit and the probe result.
-`generate-inventory` gains `client_kind`, `wasm_build`, `wasm_bootstrap` and the
-`ant_wasm_*` paths (schema **7**).
-
-See `deploy/README.md` §"The browser path on the production download kinds" for
-the full argument table.
+See `deploy/README.md` §"The browser path on the production download kinds".
 
 ### Upgrading the `ant` binary in place on a running prod downloader
 
-`deployments upgrade-ant-binary --name <name>` force-installs the latest (or a
-pinned/branch) `ant` binary on an already-running `prod-downloaders` or
-`prod-continuous-downloader` client VM over SSH and restarts the service —
-no infrastructure is touched. It exists because the `deploy`-time binary
-install op is presence-gated (`test -f /root/.local/bin/ant && SKIP`), so a
-plain re-`deploy` never picks up a new release on an existing deployment.
-Minimal flags (`--name` only needed; `--branch-name`/`--repo-owner`/
-`--ant-version` to override latest, `--ssh-key-path`,
-`--restart`/`--no-restart`, default on) — VM IP(s) come from the deployment's
-S3 client state, same as `deployments record-results`. `--no-restart` matters
-for a completed `prod-downloaders` run: the service has no checkpoint, so
-restarting it re-walks the whole address list from scratch, duplicating
-metrics. Impl: `deploy/saorsa_deploy/cmd/upgrade_ant_binary.py`,
-`provisioning/prod_downloader.py` `build_ant_binary_upgrade_command`.
+`deployments upgrade-ant-binary --name <n>` force-installs `ant` on an
+already-running `prod-downloaders` / `prod-continuous-downloader` client VM over
+SSH and restarts the service. No infrastructure is touched.
 
-See `deploy/README.md` §"Upgrading the `ant` binary in place" for the full argument table.
+It exists because the deploy-time install op is **presence-gated**
+(`test -f /root/.local/bin/ant && SKIP`), so a plain re-`deploy` never picks up a
+new release on an existing deployment. VM IPs come from S3 client state.
+
+- **`--no-restart` matters for a completed `prod-downloaders` run**: the service
+  has no checkpoint, so restarting re-walks the whole address list from scratch
+  and duplicates the metrics.
+
+See `deploy/README.md` §"Upgrading the `ant` binary in place".
 
 ### Upgrading the WASM client in place, and `client_build`
 
 `deployments upgrade-wasm-client --name <n> [--name <n>...] --branch-name <ref>`
 replaces the WASM bundle on a running **`prod-continuous-uploader`** or
-**`prod-continuous-downloader`** VM over SSH and restarts its unit. PROD-WUL-01
-and PROD-WDL-01 run permanently against production and the point of them is a
-*series*; iterating on the browser client means changing the binary under that
-series without breaking it. `upgrade-ant-binary` covers only native `ant`, and
-re-running `up` calls `record_deployment_created` again — a fresh registry row
-would end the series rather than continue it. Impl:
-`cmd/upgrade_wasm_client.py`.
+**`prod-continuous-downloader`** VM over SSH and restarts its unit. The permanent
+prod WASM deployments are a *series*, so iterating on the client must not break
+it — `upgrade-ant-binary` covers only native `ant`, and re-running `up` would
+call `record_deployment_created` again and start a fresh registry row.
 
-- **Refused before anything is built**: another kind, `client_kind: native`, an
-  unknown name, or no client state — all problems in one invocation reported at
-  once, because a build is ~10 minutes on a VM that bills. `DATABASE_URL` is
-  required (the kind, the transport and the old commit all come from the
-  registry). The one-shot kinds are rebuilt by every `up`; a testnet's WASM tier
-  dies with its testnet.
-- **One build, all names.** Built once under the FIRST named deployment and the
-  same bundle URL installed everywhere — installing identical bytes is what
-  keeps the deployments comparable, where a build per deployment could give each
-  a different commit of a branch that moved in between.
-- Per VM: `build_bundle_install_command(..., require_cli=True)` →
-  `build_ant_wasm_cli_command()` → `systemctl restart` that kind's unit. The
-  continuous uploader's **verifier VMs are deliberately untouched** — they are
-  native so that a `digest_mismatch` stays attributable to the upload rather
-  than to a browser read path. Timing is the operator's (run it outside the
-  daily window); a failure on one deployment is reported and the rest still
-  upgrade, exiting non-zero at the end.
+- **Everything is refused before anything is built** (wrong kind, `client_kind:
+  native`, unknown name, no client state), all problems reported in one
+  invocation, because a build is ~10 minutes on a billing VM. `DATABASE_URL` is
+  required.
+- **One build, all names** — built under the FIRST name and the same bundle URL
+  installed everywhere; identical bytes are what keep the deployments comparable.
+- **The continuous uploader's verifier VMs are deliberately untouched** (they are
+  native, so a `digest_mismatch` stays attributable to the upload rather than to
+  a browser read path).
+- A failure on one deployment still upgrades the rest, exiting non-zero at the end.
 - On success `deploy_args.wasm_build` is replaced and a `wasm_client_upgraded`
-  event records `{old_commit, new_commit, ref, repo_owner, upgraded_at}`; a
-  failure records `wasm_client_upgrade_failed` and leaves `deploy_args` alone,
-  so the registry never claims a build a VM did not take. A run manifest under
-  `deploy/manifests/runs/` still pinning a different `wasm_binary.branch` is
-  warned about — the next `up` would roll the upgrade back.
+  event records old/new commit; on failure `deploy_args` is left alone, so the
+  registry never claims a build a VM did not take.
+- A run manifest still pinning a different `wasm_binary.branch` is warned about —
+  the next `up` would roll the upgrade back.
 
 **`client_build` — which build performed each transfer.** `deploy_args.wasm_build`
-holds only the CURRENT build and is overwritten, so on its own it cannot separate
-a deployment's results before an upgrade from its results after, which is the only
-reason to upgrade in place. So the commit travels with the operation: `ant-wasm`
-reads `build-info.json` from its own bundle (resolved from the CLI's own location,
-not `WASM_DIR`, so it names the bundle it was actually unpacked with) and adds
-`client_build` to its final JSON line; `prod_downloader.py` and
-`prod_continuous_uploader.py` put it on the `download` / `prod_upload` /
-`prod_upload_verify` Influx points; a nullable `client_build` column on
-`deployment_download_records`, `deployment_prod_upload_results` and
-`deployment_prod_upload_verifications` receives it from `record-results` and from
-the continuous uploader's direct writes. **NULL means unknown build** — every
-native row, every native verifier row, every pre-column row — and the upsert
-**COALESCEs** exactly as `client_kind` does, so a re-record from a source without
-a build never erases one. `print-recorded-results` splits its tables and totals
-footers by it whenever a deployment shows more than one build; with one (or none)
-the output is unchanged. No past row can be backfilled: the Influx points never
-held the field.
+holds only the CURRENT build and is overwritten, so the commit travels with the
+operation instead: `ant-wasm` reads its own bundle's `build-info.json` and adds
+`client_build` to its result line, and a nullable `client_build` column on the
+three result tables receives it. **NULL means unknown build** and the upsert
+**COALESCEs** (as `client_kind` does), so a re-record from a source without a
+build never erases one. No past row can be backfilled.
 
-See `deploy/README.md` §"Upgrading the WASM client in place" for the full
-argument table.
+See `deploy/README.md` §"Upgrading the WASM client in place".
 
 ### The production upload file pool (`prod pool`)
 
 Production uploads must use **real files**, and a file must **never be uploaded
-twice** — a canary measuring chunk loss on content already on the network for
-months measures nothing. `prod pool` is the catalogue those files come from plus
-the ledger of what has been handed out. Three tables in the registry:
-`prod_file_pool` (references, never bytes), `prod_file_pool_digests` (one row per
-file+algorithm) and `prod_file_pool_claims` (one row per hand-out). Impl:
-`db/saorsa_db/{size_class,models/prod_file_pool}.py`,
-`deploy/saorsa_deploy/{pool_selection,pool_sources,results_guard}.py`,
-`cmd/prod_pool.py`.
+twice** — a canary measuring chunk loss on content that has been on the network
+for months measures nothing. `prod pool` is the catalogue those files come from
+plus the ledger of what has been handed out: `prod_file_pool`,
+`prod_file_pool_digests`, `prod_file_pool_claims`.
 
 Two kinds live in one catalogue — `url` (fetchable by a VM) and `local` (a path
 on the operator's machine) — and **the consumer chooses the kind, never a flag**,
 so no manifest can ask an uploader VM for a file on the laptop. Selection is by
 **size class** derived from bytes (`tiny` <10MiB, `small` <100MiB, `medium`
-<1GiB, `large` <5GiB, `xlarge` ≥5GiB; binary, half-open). Deliberately NOT the
-`file_size_buckets_mb` in `resources/gates/staging-thresholds.yaml`, which bucket
-transfer *durations* for the gates.
+<1GiB, `large` <5GiB, `xlarge` ≥5GiB; binary, half-open) — deliberately NOT the
+`file_size_buckets_mb` in the gate thresholds, which bucket transfer *durations*.
+Every consumer also accepts **`pool_min_size`/`pool_max_size`**, which *narrow* a
+requested class without changing the counts (binary units, **min inclusive, max
+exclusive**); bounds that exclude a requested class are refused at
+manifest-validate time rather than surfacing as "0 available".
 
-A class is sometimes too coarse, so every consumer also accepts
-**`pool_min_size`/`pool_max_size`** (manifest key on `prod_uploaders.uploaders[]`
-/ `prod_canary` / `prod_local_uploads`; spec tokens `pool_min_size=`/
-`pool_max_size=` on `--uploader`; `--pool-min-size`/`--pool-max-size` on the
-canary and local-uploads CLIs; `--min-size`/`--max-size` on `pool add
---from-listing` and `pool list`). They **narrow** each requested class without
-changing the counts, so a selection's shape survives. The motivating case: the
-**chunk floor is 4**, so a 14 KB file buys the same minimum loss observation as
-a 5 MB one at the same cost of one permanently-spent entry — "`tiny`, but ≥5 MB"
-is not a class. Units are binary and a bare number is bytes; **min inclusive,
-max exclusive**, so `10MB`/`100MB` is *exactly* `small`. Bounds that exclude a
-requested class are refused at manifest-validate time rather than surfacing as
-"0 available", which reads as an empty pool. Impl: `size_class.parse_size` /
-`bounded_byte_range`, `pool_selection.parse_size_bounds` / `validate_bounds`.
-NB `--pool` and friends live on `prod canary **deploy**`, not the `prod canary`
-group parser — a group-parser option must precede the subcommand, so the argv
-the orchestrator emits would not parse. `test_pool_size_bounds_plumbing.py`
-guards that every pool-kind argv the orchestrator emits actually parses.
+States: `available`, `claimed` (handed out, unconfirmed — **not** evidence
+anything reached production), `uploaded`, and **`partial`** (an upload stored
+some chunks and stopped, so completing it is useful work but chunks of it ARE in
+production). A **partial unique index** excluding `released` and `partial` makes
+"at most one blocking claim per file" a database guarantee — two concurrent
+deploys racing for the last large file cannot both win.
 
-A file is `available` (no blocking claim), `claimed` (handed out, unconfirmed),
-`uploaded` (confirmed, address recorded) or **`partial`** (an upload stored some
-chunks and stopped). `claimed` is **not** evidence anything reached production.
-`partial` is the awkward middle: the file goes back in the pool because
-completing it is useful work, but chunks of it ARE in production — so it is a
-status of its own rather than a `released` claim, it keeps the chunk counts, and
-**canary selection excludes it by construction** (not via a flag, so no manifest
-can opt into a contaminated loss measurement). A **partial unique index** on
-`prod_file_pool_claims` excluding `released` and `partial` makes "at most one
-blocking claim per file" a database guarantee — two concurrent deploys racing for the last large file cannot both
-win, and an `uploaded` file can never be reclaimed.
+What will bite you:
 
-**Consumers.** `prod uploaders` (`pool=small:3,medium:2` spec token / per-uploader
-`pool:` manifest key, exclusive with `urls`), `prod canary` (`--pool` /
-`pool:`, exclusive with `urls_file`), `prod local-uploads` (`--from-pool` /
-`pool:`, exclusive with `urls`/`local_dir`), and manual `prod pool checkout` for
-the **desktop application** — which has no DB link, so the *checkout* spends the
-file, not the upload. Four invariants: selection runs **before any
-infrastructure** (a shortfall aborts with no VMs and no mainnet spend, naming
-which inventory fell short); it is **all-or-nothing** across classes; the
-selection is **persisted to S3** so `up --resume` reuses it rather than drawing a
-fresh ~350 files; and claims attach to the **canonical** file so a duplicate
-group is spent once.
+- **Canary selection excludes `partial` by construction** — not via a flag, so no
+  manifest can opt into a contaminated loss measurement.
+- **Selection runs before any infrastructure** (a shortfall aborts with no VMs
+  and no mainnet spend, naming which inventory fell short), is
+  **all-or-nothing** across classes, and is **persisted to S3** so `up --resume`
+  reuses it. It is reused only while **live** — every file still carrying the
+  exact claim the draw recorded, still `CLAIMED`.
+- **A claim attaches to the canonical file**, so a duplicate group is spent once.
+- **`--pool` and friends live on `prod canary deploy`, not the `prod canary`
+  group parser** — a group-parser option must precede the subcommand, so the argv
+  the orchestrator emits would not parse.
+- For the **desktop application** (no DB link) `prod pool checkout` *spends* the
+  file, not the upload.
+- `record-results` closes claims for `prod-uploaders` and `prod-canary`;
+  `prod-local-uploads` resolves inline (a failed upload **releases**). NB
+  `list_all_prod_upload_results` **partitions** on success, so reaching partials
+  needs the other branch too.
+- **Teardown guard**: `prod uploaders destroy` compares recorded rows against
+  claims and **warns loudly rather than blocking** — refusing on a non-TTY would
+  strand billable infrastructure when `down` runs unattended.
+  `--skip-results-check` silences it.
+- **`import-history` matches on file name** and errs toward marking spent: a
+  false match is undone by `release`, a missed one ruins a canary. It resolves
+  the source from `deploy_args.kind`, since `deployment_prod_upload_results` is
+  written by two kinds and carries no hint of which.
+- A URL from a source publishing no checksum that is never downloaded **cannot**
+  be deduplicated before upload; `verify` reports how many entries are in that
+  state.
 
-That persisted draw is keyed on the deployment **name**, which every prod name
-reuses each release train — so a new run finds the previous run's draw under its
-own key. It is therefore only reused while it is still **live**: every file must
-still carry the exact claim the draw recorded, still `CLAIMED`. A claim that
-resolved to `UPLOADED`, was released, or was replaced by a different one means an
-earlier run finished with that file, and the draw is discarded and taken again
-(`selection_is_live` in `pool_selection.py`). Without this, STG-UL-01 on
-2026-08-18 was handed the four files the 2026-08-11 run had already uploaded, and
-only the duplicate-file gate stopped it re-uploading them for real money.
-`prod uploaders destroy` also deletes the persisted draw, since a destroyed
-deployment has nothing to resume.
+Scale: the canary is the dominant consumer, burning ~350 distinct files
+permanently per run, small+medium only. `pool add --from-listing
+internet-archive:<item>` catalogues hundreds from item metadata without
+downloading anything, and those real checksums are what let an IA URL and a local
+copy be recognised as one piece of content. `pool add --dir` batches its database
+work; `list`, tags and `stats` all narrow in SQL rather than in Python.
 
-**Claim resolution.** `record-results` closes claims for `prod-uploaders` (from
-`deployment_prod_upload_results`) and `prod-canary` (from `prod_canary_uploads` —
-different column names for the same concepts), recording address, chunks and
-ANT/ETH cost; it upserts, so a re-run can revise. A `partial_upload` row
-resolves the claim to `partial` rather than leaving it open — previously such a
-file was reported as "no matching upload result", which reads as "the run never
-touched this file", the opposite of what happened. A success beats a partial for
-the same file. NB `list_all_prod_upload_results` **partitions** on success
-(`failed_only=False` returns ONLY successes), so reaching partials needs the
-other branch too — `import-history` makes both calls. `prod-local-uploads` resolves
-inline per file (a failed upload **releases** rather than spends). Wrapped so a
-registry predating the migration cannot cost the operator their results.
-
-**Bulk cataloguing.** `pool add --dir` batches through
-`add_pool_files_bulk` — a fixed ~7 statements per 500-file batch instead of ~4
-statements plus a COMMIT *per file*. The per-file path measured 163ms/file
-against the managed Postgres while reading and hashing the file took 1ms, so
-~99% was round-trip latency; 300k files would have been ~13.6 hours. Two traps
-found while building it, both caught by a test asserting statement count is flat
-in file count rather than by timing: ORM `session.add` per row issues
-INSERT..RETURNING per object (use Core `insert()` with a list), and a
-`session.refresh()` loop plus a lazy relationship load reintroduced a SELECT per
-row after the inserts were already batched. Two further per-row traps found only by running it against a real archive
-directory: the duplicate links were written with an UPDATE each (207 links =
-5.3s), now one ORM bulk-update-by-primary-key; and the method returned ORM
-instances, which `session.commit()` expires — so the caller's summary re-fetched
-every row at two statements each, ~46s for 1156 files, *after* the progress bar
-had closed. It now returns detached `PoolFileRecord` values that cannot talk to
-the database. Re-runs are flat too — an interrupted import skips known files
-without a round-trip each. Semantics match
-the per-file path exactly, including duplicate-digest linking *within* a batch,
-where the pre-flight query cannot see an uncommitted sibling.
-
-**Scale.** Three things narrow in SQL rather than in Python, which matters once
-the local dataset lands: `list`'s LIMIT reaches the database (slicing a
-materialised list cost 2.28s to return ten rows from a 200k catalogue), tags are
-an indexed `prod_file_pool_tags` side table rather than a JSON column (2.11s →
-0.00s), and `pool_stats` COUNTs rather than materialising twenty result sets
-(4.47s → 0.15s). Tag matching is OR across the given tags, lower-cased on write.
-
-**Scale of demand.** The canary is the dominant consumer: ~350 distinct files burned
-permanently per run (382/311/313 measured), small+medium only. `prod pool add
---from-listing internet-archive:<item>` reads IA item metadata — name, size, MD5
-and SHA1 per file — so hundreds of entries are catalogued without downloading
-anything, and those real checksums are what let an IA URL and a local copy be
-recognised as one piece of content (`duplicate_of`).
-
-**Attribution.** `deployment_prod_upload_results` is written by **two** kinds —
-remote `prod-uploaders` runs via `record-results`, and `prod-local-uploads`
-inline — and the table carries no hint of which. Measured on the live registry:
-444 of 583 rows are local uploads, so attributing the table to `prod-uploaders`
-mislabels the majority. `import-history` therefore resolves the source from the
-deployment's `deploy_args.kind`. `prod_canary_uploads` needs no such lookup —
-only a canary writes there, so the table settles it. Because the command is a
-re-runnable sync rather than a one-shot, a re-run **corrects** the attribution of
-claims a previous import got wrong, but only ones it created itself (identified
-by their note) — never a claim a real run took.
-
-**Two honest limits.** `import-history` matches on **file name** — all the
-recorded history holds — and errs toward marking spent, since a false match is
-undone by `release` while a missed one ruins a canary. And a URL from a source
-publishing no checksum that is never downloaded **cannot** be deduplicated before
-upload; `verify` reports how many entries are in that state, and the datamap
-address (verified content-deterministic: 15/15 repeat uploads produced one
-address each) catches it afterwards.
-
-**Teardown guard.** Remote upload results sit in the deployment's InfluxDB until
-`record-results` runs, and teardown destroys that VM. `prod uploaders destroy`
-(and `prod canary destroy --no-keep-monitoring`) compare recorded rows against
-the deployment's pool claims — which say exactly how many files the run took —
-and **warn loudly rather than block**: refusing on a non-TTY would strand
-billable infrastructure when `down` runs unattended. `--skip-results-check`
-silences it. Impl: `results_guard.py`.
-
-**`prod files` now reads both upload tables.** It previously read only
-`deployment_prod_upload_results` and so could not see the ~1006 canary files —
-two thirds of what production holds.
-
-See `deploy/README.md` §"Managing the production file pool" for the full command
-and argument reference.
+See `deploy/README.md` §"Managing the production file pool".
 
 ### The daily production write test (`prod continuous-uploader`)
 
-Nothing else here tests **writes** to production on a schedule (V2-837): the
-daily download test re-fetches a fixed pre-June list, so a break in *uploading*
-would reach us from a user first. `prod continuous-uploader deploy` stands up
-one uploader VM that claims a few pool files a day, uploads them to production
-and reads each straight back, plus **N verifier VMs in other regions** that
-independently download every address and compare a **SHA-256 against the exact
-bytes the uploader uploaded**. Registers `deploy_args.kind =
-"prod-continuous-uploader"`; fully declarative (`ProdContinuousUploaderSpec`,
-`orchestrator/prod.py` `_continuous_uploader`). Impl:
-`cmd/prod_continuous_uploader.py`, `provisioning/prod_continuous_uploader.py`,
-`resources/scripts/prod_continuous_uploader.py` + `prod_upload_verifier.py`.
-Example: `deploy/manifests/profiles/prod-continuous-uploader.yaml`.
+Nothing else tests **writes** to production on a schedule (the daily download
+test re-fetches a fixed pre-June list), so a break in uploading would reach us
+from a user first. `prod continuous-uploader deploy` stands up one uploader VM
+that claims a few pool files a day, uploads them and reads each straight back,
+plus **N verifier VMs in other regions** that independently download every
+address and compare a **SHA-256 against the exact bytes the uploader uploaded**.
+`deploy_args.kind = "prod-continuous-uploader"`.
 
-- **It claims from the pool as each upload happens — the only kind that does.**
-  Every other consumer draws before any infrastructure exists because it needs
-  the whole set up front. A forever-running deployment has no "whole set", so
-  the uploader VM holds its own registry connection and calls `claim_pool_files`
-  per cycle. Nothing is reserved in advance (the canary's inventory is not
-  locked up for months), and a teardown strands nothing. Deploy time only
-  **preflights availability** and prints the runway; it deliberately does not
-  claim.
-- **VM-side database access**, also unique to this kind. Both roles run under a
-  venv at `/opt/ant-registry-client` where **`saorsa-db` is installed** (built
-  from the working tree, shipped over SSH via `files.put`), so they call the
-  *same* tested `claim_pool_files` — canonical-id resolution, the
-  partial-unique-index race arbitration and the all-or-nothing pre-check are
-  never reimplemented, because a drifting second copy double-spends files.
-  `db/` therefore requires **Python ≥3.12**, not 3.13: the VM images are Ubuntu
-  24.04. The registry needed no firewall change — the cluster is deliberately
-  open from any IP, gated by password over TLS
-  (`resources/digitalocean-registry-db/main.tf`).
-- **`prod pool client-role`** mints a least-privilege Postgres role for the VMs:
-  SELECT on the catalogue + `deployments`; SELECT/INSERT/UPDATE on
-  `prod_file_pool_claims` and the two result tables; **no DELETE, no DDL,
-  nothing else**. The URL is printed, never stored — the manifest names an env
-  var (`pool_database_url_env`), as it does for the wallet key.
+What makes this kind unlike every other:
+
+- **It claims from the pool as each upload happens.** Every other consumer draws
+  before any infrastructure exists because it needs the whole set up front; a
+  forever-running deployment has no "whole set", so the VM holds its own registry
+  connection and calls `claim_pool_files` per cycle. Nothing is reserved in
+  advance and a teardown strands nothing. Deploy time only **preflights
+  availability** and prints the runway — it deliberately does not claim.
+- **VM-side database access.** Both roles run a venv at
+  `/opt/ant-registry-client` with `saorsa-db` installed, so they call the *same*
+  tested `claim_pool_files` — canonical-id resolution, the index race arbitration
+  and the all-or-nothing pre-check are never reimplemented, because a drifting
+  second copy double-spends files. `db/` therefore requires **Python ≥3.12**, not
+  3.13 (the VM images are Ubuntu 24.04). `prod pool client-role` mints a
+  least-privilege Postgres role (no DELETE, no DDL); the URL is printed, never
+  stored (manifest names `pool_database_url_env`).
 - **Content verification, a first for this system.** The hash is taken over the
   bytes handed to `ant`, so it does not depend on the pool entry carrying a
-  catalogued digest (many carry only md5/sha1). Verdicts:
-  `ok` / `digest_mismatch` / `download_failed` / `inconclusive`.
-  **`digest_mismatch` is not a flavour of failure** — a download that fails is
-  an availability problem, one that returns *different bytes* is a correctness
-  problem — and a recorded mismatch is **never overwritten** by a later success.
-  **Only `ok` and `digest_mismatch` are terminal**: a failed or inconclusive
-  check is re-queued next cycle, because one transient blip would otherwise
-  brand a healthy file unavailable forever. Since a retry overwrites the row,
-  `attempts` + `first_failed_at` distinguish a blip from a week-long outage.
-- **The verifiers do not shard.** Every verifier checks every address: a second
-  region confirming *the same file* is the point, unlike the canary, which
-  shards probes for throughput. They also keep **no local state** — the work
-  queue is `list_unverified_uploads_for_host`, so a replaced VM resumes and an
-  outage of any length is caught up. (The canary probe needs SQLite only because
-  it cannot reach Postgres.)
-- **Postgres is authoritative, InfluxDB is dashboards.** Both roles write
-  results as they happen into `deployment_prod_upload_results` (+ new `sha256`
-  column) and **`deployment_prod_upload_verifications`**. Influx gets
-  `prod_upload`, `prod_upload_verify` and `prod_upload_pool_shortfall`, but its
-  retention is bounded — reading the address list from Influx would make a
-  verifier offline >7 days miss those addresses permanently. So
-  **`record-results` is a no-op for this kind** (it says so); use
-  `print-recorded-results`, which renders per-region verification counts.
-- **Pool exhaustion is a signal, not a crash**: the shortfall goes to its own
-  measurement (so "the pool ran dry" is never misread as "the network refused")
-  and the service sleeps and retries. Topping the pool up heals it with no
-  redeploy.
-- **Disk must exceed the largest drawable file on every VM** — the uploader
-  writes the source to disk before uploading, each verifier downloads it back
-  before hashing. The manifest validates this; `xlarge` with no `pool_max_size`
-  is refused because the requirement is then unknowable.
-- Claims resolve **inline**: success spends, partial marks partial (chunks are
-  on the network, so a canary must never get it), and a failure to fetch the
-  *source* **releases** — nothing reached the network, so burning it would be a
-  lie. `destroy` stops the services first and **warns** about unresolved claims
-  without releasing them: a claim that might correspond to a real upload must
-  never be freed by a sweep.
-- `generate-inventory` covers the kind (all three VMs + a `client_config`); `up`
-  emits it automatically as a `best_effort` final step. The address list grows
-  forever, so the inventory names the authoritative tables instead of inlining
-  it.
+  catalogued digest. Verdicts `ok` / `digest_mismatch` / `download_failed` /
+  `inconclusive`. **`digest_mismatch` is not a flavour of failure** — a download
+  that fails is availability, one returning *different bytes* is correctness —
+  and a recorded mismatch is **never overwritten** by a later success. **Only
+  `ok` and `digest_mismatch` are terminal**; a failed or inconclusive check is
+  re-queued next cycle, so one transient blip cannot brand a healthy file
+  unavailable forever. Since a retry overwrites the row, `attempts` +
+  `first_failed_at` distinguish a blip from a week-long outage.
+- **The verifiers do not shard** — every verifier checks every address, because a
+  second region confirming *the same file* is the point (unlike the canary, which
+  shards for throughput). They keep **no local state**, so a replaced VM resumes
+  and an outage of any length is caught up.
+- **Postgres is authoritative, InfluxDB is dashboards.** Influx retention is
+  bounded, so reading the address list from it would make a verifier offline >7
+  days miss those addresses permanently. **`record-results` is a no-op for this
+  kind** (it says so) — use `print-recorded-results`.
+- **Pool exhaustion is a signal, not a crash**: its own measurement, so "the pool
+  ran dry" is never misread as "the network refused", then sleep and retry.
+  Topping up the pool heals it with no redeploy.
+- **Disk must exceed the largest drawable file on every VM** (the uploader writes
+  the source to disk, each verifier downloads it back before hashing); `xlarge`
+  with no `pool_max_size` is refused because the requirement is then unknowable.
+- Claims resolve inline: success spends, partial marks partial, and a failure to
+  fetch the **source releases** — nothing reached the network, so burning it
+  would be a lie. `destroy` stops the services first and **warns** about
+  unresolved claims without releasing them.
 
-See `deploy/README.md` §"The daily production write test" for the full argument
-table.
+`generate-inventory` covers the kind; `up` emits it as a `best_effort` final
+step. The address list grows forever, so the inventory names the authoritative
+tables instead of inlining it.
+
+See `deploy/README.md` §"The daily production write test".
 
 #### The browser path on the daily write test (WASM)
 
 `client_kind: native|wasm` (CLI `--client-kind`, default native) makes the
-**uploader** service spawn `ant-wasm` instead of `ant`, so the daily test answers
-whether a *browser* client can still write to production — which nothing else
-does, since `ant-cli` links native ant-core. **One transport per deployment**
-(the browser path measured several times slower, so a blended daily series
-describes neither instrument), persisted in `deploy_args.client_kind`; the WASM
-series is its own deployment alongside the native PROD-UL-01. Example:
-`deploy/manifests/profiles/prod-wasm-continuous-uploader.yaml`. Reuses V2-1271's
-shared foundation (`prod_wasm.py`, `cmd/prod_wasm_cli.py`, `wasm_client.py`) and
-V2-1334's `client_kind` column and claim rules.
+**uploader** service spawn `ant-wasm`, so the daily test answers whether a
+*browser* client can still write to production. **One transport per deployment**
+(the browser path measured several times slower), persisted in
+`deploy_args.client_kind`; the WASM series is its own deployment alongside the
+native one. Everything around the spawn is unchanged — the per-cycle
+`claim_pool_files`, the SHA-256, the Postgres writes, the replacement logic, the
+unit names and restart policies.
 
-Everything around the spawn is unchanged — the per-cycle `claim_pool_files`, the
-SHA-256, the Postgres writes, the replacement logic, the unit names and restart
-policies. What differs:
-
-- **The argv**: `ant-wasm file upload --public [--merkle|--no-merkle]
-  --payment-marker <path> <file>` and `ant-wasm file download <addr> -o <path>`,
-  with no `--evm-network`/`--bootstrap`.
-- **The read-back runs over the same transport** (the uploader VM's own view as a
-  browser user); **the independent verifier VMs stay NATIVE**, so a
+- **The read-back runs over the same transport** (the VM's own view as a browser
+  user), but **the independent verifier VMs stay NATIVE**, so a
   `digest_mismatch` remains attributable to the upload rather than to the browser
-  read path. That path is covered by the read-back and by `prod downloaders
-  --client-kind wasm`.
+  read path.
 - **A failed upload is classified by whether a payment went out** — partial if it
   did (chunks may be in production, so a canary must never draw the file),
   released if it did not (nothing reached the network, so burning the entry would
-  be a lie). The result JSON's `payment_sent` OR the `--payment-marker` file
+  be a lie). The result JSON's `payment_sent` **or** the `--payment-marker` file
   decides it, the latter being the only evidence left when an OOM kills the WASM
-  child after the money went out. A signal exit records `error_kind=crash`. **The
-  native "no result document + non-zero exit → release" rule is untouched.** The
-  success check also had to move from `"error" in parsed` to the key's VALUE:
-  `ant-wasm` always emits `error`, set to null on success, where `ant --json`
-  omits it — a presence check reported every healthy browser-path upload as a
-  partial, which SPENDS the file's claim.
+  child after the money went out. A signal exit records `error_kind=crash`. The
+  native "no result document + non-zero exit → release" rule is untouched.
+- **The success check is on the `error` key's VALUE, not its presence.**
+  `ant-wasm` always emits `error` (null on success) where `ant --json` omits it —
+  a presence check reported every healthy browser-path upload as a partial, which
+  SPENDS the file's claim.
 - **The pool draw is narrowed to ant-core's browser cap**: `large`/`xlarge`
   refused at validation, `medium` clamped to 1,000,000,000 in `--pool-max-size`
-  so `plan` shows it. So an over-cap file is never claimed, and the runtime
-  `over_cap` status the one-shot uploader needs is unreachable here.
-- **Results stay separate**: rows carry `client_kind='wasm'`, Influx points go to
-  `wasm-client-metrics`. `record-results` is still a no-op for this kind (the VMs
-  write Postgres directly); read it with `print-recorded-results`, which labels
-  the transport.
-- **8 GB minimum**, validated exactly on DigitalOcean slugs. Nothing on a WASM
-  uploader runs `ant`, so the binary is not installed there; the verifiers keep it.
-- **Refused, not ignored**: `bootstrap_cache` (a browser client neither uses ant's
-  peer cache nor an explicit `--bootstrap`) and `log_level` (the `ant` verbosity
-  flag — `ant-wasm` has none and reads `RUST_LOG` from its environment, so use
-  `rust_log`). The CLI's `--log-level` default moved from `"info"` to `None` so an
-  explicit one can be told apart; every consumer already resolved None to `info`.
-- The bootstrap ICE probe and the resumable `build ant-wasm` step run **before any
-  infrastructure exists**. `generate-inventory` gains `client_kind`, `wasm_build`,
-  `wasm_bootstrap` and the `ant_wasm_*` paths.
+  so `plan` shows it. An over-cap file is therefore never claimed.
+- **Refused, not ignored**: `bootstrap_cache` (a browser client neither uses
+  ant's peer cache nor an explicit `--bootstrap`) and `log_level` (the `ant`
+  verbosity flag — use `rust_log`, which `ant-wasm` reads from its environment).
+- **8 GB minimum**, exact on DO slugs. Nothing on a WASM uploader runs `ant`, so
+  the binary is not installed there; the verifiers keep it.
+- Rows carry `client_kind='wasm'` and Influx points go to `wasm-client-metrics`.
+
+See `deploy/README.md` §"The daily production write test".
 
 ### Running prod uploaders
 
-`prod uploaders deploy` is the upload-side equivalent of `prod continuous-downloader`: it stands up one or more client VMs that each upload a list of public files to the production Autonomi network with `ant --json file upload --public`, then exit when the list is exhausted. Per-file results (chunks_stored / chunks_failed / address / file size / duration) are emitted to a `prod_upload` Influx measurement on a paired monitoring VM.
+`prod uploaders deploy` — one or more client VMs that each upload a list of
+public files to production with `ant --json file upload --public`, then exit when
+the list is exhausted. Per-file results go to a `prod_upload` Influx measurement
+on a paired mandatory monitoring VM. `deploy_args.kind = "prod-uploaders"`.
 
-- Multi-VM. Repeatable `--uploader REGION:VM_SIZE:urls=PATH` (region and vm_size required, then one file source — `urls=` XOR `pool=`); each uploader VM downloads its assigned URL list at runtime, uploads each file with `--public`, deletes the local copy, exits. **There is no `concurrency=` token** — the service is strictly serial, one file at a time (the only `--*concurrency` in the package is `prod canary --probe-concurrency`). Other accepted tokens: `pool_min_size=`, `pool_max_size=`, `exclude_partial=`, `payment=`, `log_level=`, `clock_skew=`, `network=`, `bootstrap_cache=`, `forward_logs=`, `memory_profiling=`, `rust_log=` (last).
-- **Duplicate-file preflight** (runs before any infrastructure is created, on both `prod uploaders deploy` and `deployments up`): the file name of every upload target (URL basename, as stored in `deployment_prod_upload_results` / shown by `prod files`) is checked against the recorded prod uploads list, and a name collision aborts the deploy. Override with `--allow-duplicate-files` (manifest: `prod_uploaders.allow_duplicate_files: true`) to re-upload missing chunks or test the already-stored path. Skipped with a warning when no `DATABASE_URL` is set.
-- Single shared `--secret-key` across all uploaders (or `ARBITRUM_ONE_SECRET_KEY` env var — deliberately distinct from the testnet `ANT_DEPLOY_SECRET_KEY` because prod uploads need a funded Arbitrum One mainnet wallet and cost real ETH).
-- Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
-- Service is implemented in Python (`deploy/saorsa_deploy/resources/scripts/prod_uploader.py`) — not bash — because per-upload JSON parsing and metric emission was easier that way. The systemd unit is `Type=simple, Restart=no` so the service stops on its own.
-- Registers a `Deployment` row with `deploy_args.kind = "prod-uploaders"`.
-- Companion commands: `deployments print-uploads --name <name>` (dispatches on kind — for prod-uploaders it pulls the `prod_upload` Influx measurement and prints per-host Rich tables; pass `--details` for one full record per upload) and `deployments record-results --name <name>` (also kind-dispatched — for prod-uploaders it upserts every Influx record into the `deployment_prod_upload_results` Postgres table; `--window` is ignored for this kind because uploads are a bounded run).
-- `prod uploaders destroy` tears down the monitoring VM alongside the uploader VMs by default; pass `--keep-monitoring` to preserve the InfluxDB + Grafana stack.
+- Multi-VM, repeatable `--uploader REGION:VM_SIZE:urls=PATH` (region and vm_size
+  required, then one file source — `urls=` XOR `pool=`). Other tokens:
+  `pool_min_size=`, `pool_max_size=`, `exclude_partial=`, `payment=`,
+  `log_level=`, `clock_skew=`, `network=`, `bootstrap_cache=`, `forward_logs=`,
+  `memory_profiling=`, `rust_log=` (**last**).
+- **The service is strictly serial, one file at a time. There is no
+  `concurrency=` token.**
+- **Duplicate-file preflight runs before any infrastructure** (on both `deploy`
+  and `up`): the file name of every target is checked against the recorded prod
+  uploads list and a collision **aborts** the deploy. Override with
+  `--allow-duplicate-files` to re-upload missing chunks or test the
+  already-stored path. Skipped with a warning when no `DATABASE_URL` is set.
+- **Single shared `--secret-key` / `ARBITRUM_ONE_SECRET_KEY`** — a funded
+  Arbitrum One **mainnet** wallet, real ETH. Deliberately distinct from the
+  testnet `ANT_DEPLOY_SECRET_KEY`.
+- Companions: `deployments print-uploads --name <n>` (`--details` for one full
+  record per upload) and `record-results` (`--window` is ignored for this kind —
+  uploads are a bounded run).
+- `destroy` tears down monitoring too; `--keep-monitoring` to preserve it.
 
-See `deploy/README.md` §"Running uploaders against production" for the full argument table and sequencing.
+See `deploy/README.md` §"Running uploaders against production".
 
 #### The browser path on `prod uploaders` (`--wasm-uploader`)
 
-`prod-uploaders` also runs **browser-path** uploaders — `--wasm-uploader` /
-manifest `prod_uploaders.wasm_uploaders[]` (+ `wasm_binary: {branch,
-repo_owner}`) — whose `ant-prod-uploader` service spawns `ant-wasm` instead of
-`ant`. Unlike the download kinds the transport is **per uploader, not per
+`--wasm-uploader` / manifest `prod_uploaders.wasm_uploaders[]` (+ `wasm_binary:
+{branch, repo_owner}`) makes an uploader's `ant-prod-uploader` service spawn
+`ant-wasm`. Unlike the download kinds the transport is **per uploader, not per
 deployment**: a native and a browser-path uploader in one run share the wallet,
-the monitoring stack and the prod bootstrap list, so both transports are
-measured against the same network at the same time. `uploaders` may be empty for
-a WASM-only run. Example:
-`deploy/manifests/profiles/prod-wasm-uploaders.yaml`.
+the monitoring stack and the prod bootstrap list, so both transports are measured
+against the same network at the same time. `uploaders` may be empty for a
+WASM-only run.
 
 Each WASM entry gets the `wasm-upload` **role** from `clients infra` — the role
-names the VM, its Terraform workspace and its S3 state key, and telling the
-tiers apart in all three is the point of running both — and the same shared
-`ARBITRUM_ONE_SECRET_KEY` as native (deploy prints the paying address). The
-V2-1271 foundation is reused unchanged: the bundle must exist in S3, the prod
-bootstraps are ICE-probed before any infrastructure, and an under-8 GB
-DigitalOcean slug is refused (default `s-4vcpu-8gb`).
+names the VM, its Terraform workspace and its S3 state key, and telling the tiers
+apart in all three is the point of running both.
 
-**The browser file cap shapes the pool draw.** ant-core refuses a file above
-`WASM_MAX_FILE_BYTES` (1,000,000,000), so `large`/`xlarge` are **refused at
-validation** — every file in them is over the cap, and a drawn one is a
-permanently-spent entry that could never be uploaded — while a `medium` request
-is implicitly narrowed to `pool_max_size=1000000000`, which `plan` SHOWS (an
-operator who wrote `medium` gets a narrower class than they asked for).
-`tiny`/`small` gain no bound, because a token that narrows nothing is not free:
-the argv is what the step journal compares. Logic in `prod_wasm.py`
-(`check_wasm_pool_request` / `clamp_wasm_pool_max_size` /
-`wasm_pool_max_size_is_clamped`), applied by both the manifest validator and the
-`--wasm-uploader` parser.
+- **The browser file cap shapes the pool draw.** `large`/`xlarge` are **refused
+  at validation** — every file in them is over the cap, and a drawn one is a
+  permanently-spent entry that could never be uploaded — while `medium` is
+  implicitly narrowed to `pool_max_size=1000000000`, which `plan` SHOWS.
+  `tiny`/`small` gain no bound, because a token that narrows nothing is not free:
+  the argv is what the step journal compares.
+- **Claim outcomes are the load-bearing part.** Success → `uploaded`. A failure
+  **after** a payment was submitted → `partial_upload` → `partial` (chunks ARE in
+  production, so uploaders may complete the file but a canary must never draw
+  it). A failure **before** any payment → `failed` → **released** (nothing
+  reached the network, so burning the entry would be a lie). An over-cap file →
+  released. A source-fetch failure → released too. "After payment" means
+  `payment_sent: true` **or** the `--payment-marker` file exists — the marker
+  covers a child killed after the money went out but before it printed anything,
+  and trusting only the JSON would return a paid-for file to the pool.
+- **Refused, not ignored**: `bootstrap_cache`, `memory_profiling`, `log_level`.
+- Results land in `wasm-client-metrics` (`fetch_all_prod_upload_points` reads
+  both buckets and dedupes on `(host, start_ns)`), and a nullable `client_kind`
+  column labels each row — resolved per host from the **`deploy_args`-persisted
+  uploader list**, NOT S3 client state, which `clients destroy` deletes; the
+  upsert also COALESCEs. Over-cap files are excluded from every denominator.
+- The duplicate-file preflight and the destroy results guard cover WASM entries
+  exactly as they do native ones. `generate-inventory` still has no
+  `prod-uploaders` path.
 
-**Claim outcomes are the load-bearing part**, and two new `ProdUploadStatus`
-values exist to carry them: success → `uploaded`; a failure **after** a payment
-was submitted → `partial_upload` → `partial` (chunks ARE in production, so
-uploaders may complete the file but a canary must never draw it); a failure
-**before** any payment → the new `failed` → **released** (nothing reached the
-network, so burning the entry would be a lie); an over-cap file → the new
-`over_cap` → released; a source-fetch failure → released too (it was previously
-left open, which read as "the run never touched this file" while withholding it
-forever). "After payment" means the result JSON says `payment_sent: true` **or**
-the `--payment-marker` file exists — the marker covers a child killed (an OOM
-reaches the WASM process long before the Python parent) after the money went out
-but before it printed anything, and trusting only the JSON would return a
-paid-for file to the pool.
-
-**Results stay separate.** WASM uploads land in the `wasm-client-metrics` bucket
-(`fetch_all_prod_upload_points` reads both and dedupes on `(host, start_ns)`),
-and a nullable **`client_kind`** column on `deployment_prod_upload_results`
-labels each row. It is resolved per host from the **`deploy_args`-persisted
-uploader list** (each entry now records its `client_kind` and the `hostname` its
-VM reports under), NOT from S3 client state, which `clients destroy` deletes — a
-re-run after teardown would otherwise relabel every WASM upload as native; the
-upsert also COALESCEs so a NULL never overwrites a known transport.
-`print-uploads`, `print-recorded-results`, `slack-post` (two headings, the WASM
-one only when WASM entries exist) and `record-results --update-slack` all split
-per transport, with over-cap files excluded from every denominator. The
-duplicate-file preflight and the `prod uploaders destroy` results guard cover
-WASM entries exactly as they do native ones. `generate-inventory` still has no
-`prod-uploaders` path (out of scope).
-
-**Refused, not ignored, on a WASM uploader:** `bootstrap_cache`,
-`memory_profiling` and `log_level`. The manifest has no such fields (so
-`extra="forbid"` names them) and the spec parser rejects the tokens by name.
-
-See `deploy/README.md` §"The browser path on `prod uploaders`" for the full
-argument table.
-
+See `deploy/README.md` §"The browser path on `prod uploaders`".
 
 ### Running prod uploads from the local machine
 
-`prod local-uploads` is the local-machine variant of `prod uploaders deploy`: it runs `ant --json file upload --public` sequentially against the production Autonomi network from the host the command is invoked on, instead of provisioning remote VMs. Per-file results are written directly into the `deployment_prod_upload_results` Postgres table — there is no Influx, no monitoring VM, and no destroy command. The intended use case is testing uploads from a real home internet connection.
+`prod local-uploads` — the local-machine variant of `prod uploaders deploy`: runs
+`ant --json file upload --public` sequentially against production from the host
+the command is invoked on, instead of provisioning remote VMs. Results are
+written **directly into `deployment_prod_upload_results`**; there is no Influx,
+no monitoring VM and no destroy command. The intended use case is testing uploads
+from a real home internet connection. `deploy_args.kind = "prod-local-uploads"`.
 
-- Two input modes: `--urls FILE` (download each URL to a temp file, upload, delete only the temp copy) and `--local-dir-path DIR` (recursively walk the directory and upload every regular file underneath, identifying each by its path relative to the root; source files are never modified or deleted).
+- Two input modes: `--urls FILE` (download each URL to a temp file, upload,
+  delete only the temp copy) and `--local-dir-path DIR` (walk recursively,
+  identifying each file by its path relative to the root; **source files are
+  never modified or deleted**).
 - Sequential, single-file-at-a-time. No `--concurrency` flag.
-- Same `--branch-name`/`--repo-owner`/`--ant-version` resolution as the other prod commands; the resolved binary is cached at `~/.cache/saorsa-deploy/ant-binaries/<key>/ant` (pinned releases are reused; `latest` and branch builds are re-fetched).
-- Single `--secret-key` (or `ARBITRUM_ONE_SECRET_KEY`) — funded Arbitrum One wallet, real ETH.
-- Registers a `Deployment` row with `deploy_args.kind = "prod-local-uploads"`. `deployments slack-post` has a dedicated branch for this kind that surfaces hostname, input mode + path, file count, and payment mode.
-- On completion the deployment is marked `stopped` regardless of per-file failures; failure detail lives in the per-row Postgres records.
+- Single `--secret-key` / `ARBITRUM_ONE_SECRET_KEY` — funded Arbitrum One wallet,
+  real ETH.
+- The resolved binary is cached at
+  `~/.cache/saorsa-deploy/ant-binaries/<key>/ant` (pinned releases are reused;
+  `latest` and branch builds are re-fetched).
+- On completion the deployment is marked `stopped` **regardless of per-file
+  failures**; failure detail lives in the per-row Postgres records.
 
-See `deploy/README.md` §"Running uploads from the local machine" for the full argument table.
+See `deploy/README.md` §"Running uploads from the local machine".
 
 ### Running prod downloads from the local machine
 
-`prod local-downloads` is the download-side equivalent of `prod local-uploads`: it walks an address list and runs `ant -v file download <address> -o <output>` sequentially from the host the command is invoked on, recording per-address results directly to the new `deployment_prod_download_results` Postgres table. No Influx, no monitoring VM, no remote infrastructure.
+`prod local-downloads` — the download-side equivalent: walks an address list
+running `ant -v file download <address> -o <output>` sequentially from the
+invoking host, recording per-address results to
+`deployment_prod_download_results`. No Influx, no monitoring VM, no remote
+infrastructure. `deploy_args.kind = "prod-local-downloads"`.
 
-- Single input mode: `--addresses-path FILE` (newline-separated address list; required — no bundled default).
-- Default output: per-run temp directory, file deleted as soon as the result row is upserted. Pass `--keep-output-dir DIR` to retain the downloads under a directory you control.
-- No `--secret-key`, no `--payment` — downloads are read-only against the network and cost nothing.
-- Same `--branch-name` / `--repo-owner` / `--ant-version` resolution as the other prod commands; the resolved binary is cached at `~/.cache/saorsa-deploy/ant-binaries/<key>/ant`.
-- Registers a `Deployment` row with `deploy_args.kind = "prod-local-downloads"`. `deployments slack-post` has a dedicated branch that surfaces binary, addresses-path, address count, and output mode (temp vs kept).
-- On completion the deployment is marked `stopped` regardless of per-address failures; failure detail lives in the per-row Postgres records. `deployments record-results` refuses this kind; `deployments print-recorded-results` renders per-address Rich tables (`--details` for one full record per download).
+- `--addresses-path FILE` is **required** — there is no bundled default.
+- Default output is a per-run temp directory, with each file deleted as soon as
+  its result row is upserted; `--keep-output-dir DIR` retains them.
+- No `--secret-key`, no `--payment` — downloads are read-only and cost nothing.
+- On completion the deployment is marked `stopped` regardless of per-address
+  failures.
+- **`record-results` refuses this kind**; use `print-recorded-results`
+  (`--details` for one full record per download).
 
-See `deploy/README.md` §"Running downloads from the local machine" for the full argument table.
+See `deploy/README.md` §"Running downloads from the local machine".
 
 ### Running prod canaries
 
-`prod canary deploy` stands up a long-lived loss-measurement deployment against production Autonomi: one upload VM walks a URL list once and exits its uploader service, while N probe VMs run forever, hourly probing every canary they own (per a static `blake3(canary_id)[0] % N` hash partition). All three measurements (`prod_canary_upload`, `prod_canary_chunk`, `prod_canary_probe`) land on a paired InfluxDB+Grafana monitoring stack; `record-results` pulls them into Postgres and re-derives a `prod_canary_loss` table. **The dataset is the product** — `prod canary destroy` defaults to `--keep-monitoring`; pass `--no-keep-monitoring` to also tear down Influx.
+`prod canary deploy` — a long-lived loss-measurement deployment against
+production: one upload VM walks a URL list once and exits its uploader service,
+while N probe VMs run forever, hourly probing every canary they own (per a static
+`blake3(canary_id)[0] % N` hash partition). All three measurements
+(`prod_canary_upload`, `prod_canary_chunk`, `prod_canary_probe`) land on a
+mandatory paired InfluxDB+Grafana stack. `deploy_args.kind = "prod-canary"`.
 
-- Multi-VM. One `--upload-spec REGION[:VM_SIZE]`, one or more `--probe-spec REGION[:VM_SIZE]:count=N` (sum of `count=N` becomes the probe shard count).
-- Single shared `--secret-key` (or `ARBITRUM_ONE_SECRET_KEY`). Funded Arbitrum One mainnet wallet, real ETH.
-- Monitoring is mandatory and created inside the same command (reuses `monitoring infra` + `monitoring provision`).
-- Loss confirmation: a canary is `lost` when **two consecutive failed probes from the same probe VM report the same `missing_chunk_address`** (the *two-strike rule*). Applied locally on each probe VM (SQLite-backed) and globally in `record-results` (Postgres-derived, authoritative).
-- Runtime services are dedicated Python scripts (`prod_canary_upload.py`, `prod_canary_probe.py`), not bash, because per-canary metric emission and asyncio probing were easier in Python. Upload-side systemd unit is `Type=simple Restart=no`; probe-side is `Type=simple Restart=always`.
-- Registers a `Deployment` row with `deploy_args.kind = "prod-canary"`.
-- Companion commands: `deployments record-results --name <name>` (kind-dispatched — pulls all three Influx measurements, upserts the four `prod_canary_*` Postgres tables, and rederives `prod_canary_loss`; idempotent and cron-safe) and `deployments print-recorded-results` (kind-dispatched — emits an alive / pending / confirmed-lost summary plus an hours-to-loss histogram, per-vantage breakdown, and per-chunk-role breakdown).
-- `prod canary destroy` keeps monitoring by default; pass `--no-keep-monitoring` to destroy the Influx + Grafana stack alongside.
+- One `--upload-spec REGION[:VM_SIZE]`, one or more
+  `--probe-spec REGION[:VM_SIZE]:count=N` (the counts sum to the probe shard
+  count).
+- Single shared `--secret-key` / `ARBITRUM_ONE_SECRET_KEY` — funded Arbitrum One
+  mainnet wallet, real ETH.
+- **Loss confirmation is the two-strike rule**: a canary is `lost` when **two
+  consecutive failed probes from the same probe VM report the same
+  `missing_chunk_address`**. Applied locally on each probe VM (SQLite-backed, the
+  only reason it needs SQLite — it cannot reach Postgres) and globally in
+  `record-results` (Postgres-derived, authoritative).
+- Upload-side unit is `Type=simple Restart=no`; probe-side is `Restart=always`.
+- **The dataset is the product**, so `destroy` defaults to `--keep-monitoring`;
+  pass `--no-keep-monitoring` to tear the Influx + Grafana stack down too.
+- `record-results` pulls all three measurements, upserts the four
+  `prod_canary_*` tables and rederives `prod_canary_loss` — idempotent and
+  cron-safe. `print-recorded-results` emits alive / pending / confirmed-lost plus
+  an hours-to-loss histogram, per-vantage and per-chunk-role breakdowns.
 
-See `deploy/README.md` §"Running canaries against production" for the full argument table and the dataset description.
+See `deploy/README.md` §"Running canaries against production".
 
 ### Running prod profiling nodes
 
-`prod nodes deploy` stands up node VM(s) — each running `--node-count` ant-node
-services (default 15, matching the prod fleet) — that join the **production**
-Autonomi network with every service wrapped in **heaptrack**, to chase the
-intermittent ant-node memory leak under real prod load with a **debug build**.
-This is the node-tier sibling of the prod client commands (uploaders/downloaders/
-canary).
+`prod nodes deploy` — node VM(s), each running `--node-count` ant-node services
+(default 15, matching the prod fleet), joined to the **production** network with
+every service wrapped in **heaptrack** and running a **debug build**, to chase
+the intermittent ant-node memory leak under real prod load. The node-tier sibling
+of the prod client commands. `deploy_args.kind = "prod-nodes"`.
 
-- **Vehicle (not `extend`, not `migration`).** `deployments extend` only reuses
-  another *testnet's* bootstraps; the `migration` subsystem is the established
-  prod-node provisioner but is modelled around migrating an existing source fleet
-  (drain/destroy-source/inventory-splice) — wrong for a throwaway profiling VM.
-  Instead `prod nodes` **seeds the deployment's S3 state with the production
-  bootstrap peers** (`fetch_prod_bootstraps()` → WithAutonomi `bootstrap_peers.toml`)
-  and then reuses the normal node lifecycle: `nodes infra` (all four providers'
-  TF modules) → a prod-mode `nodes provision` → `nodes start`. Prod-mode node
-  settings match `migration provision` (no `--evm-network` → arbitrum-one,
-  `Restart=always`, `RestartSec=10`, `LimitNOFILE=65536`); `--stop-on-upgrade` is
-  always emitted and no `--upgrade-channel` is set, so the pinned debug build
-  keeps running (never auto-upgrades).
-- **Node-side heaptrack** is the one genuinely new mechanism (heaptrack was
-  client-only before): `provisioning/node.py` wraps each service's `ExecStart`
-  `heaptrack -o <dir>/ant-node-<i> <ant-node …>`, composing **inside** the NAT
-  `ip netns exec` prefix (so heaptrack profiles the node, not netns), plus an
-  idempotent heaptrack apt-install op and a trace-dir mkdir. Traces go to the
-  **attached data volume** (`/mnt/ant-node-storage/heaptrack/ant-node-<i>.<pid>.zst`),
-  NOT the root disk — 15 debug nodes generate large, growing traces. heaptrack is
-  default **ON** for this command (`--no-heaptrack` to opt out).
-- **Debug build** reuses the existing `build ant-node --debug` (no migration/build
-  change). Manifest `binary.debug: true` → orchestrator emits the `build ant-node
-  --debug` step before the deploy; from the CLI run `build ant-node --debug` first
-  against the same `--name`.
-- **Optional monitoring** (`--monitoring`, off by default; `--grafana` opt-in):
-  reuses `monitoring infra/provision` + the node provision `--with-telegraf` seam
-  to forward host/per-service RSS metrics to InfluxDB (`testnet-metrics` bucket).
-- **Bounded trace retention**: `--log-retention-days` (default 7; `0` = keep
-  forever) installs a daily `ant-node-heaptrack-logprune.timer` that
-  `find -mtime +N -delete`s old `.zst` traces.
-- Registers a `Deployment` row with `deploy_args.kind = "prod-nodes"`. Fully
-  declarative via `deployments up/plan/down --config` (`kind: prod-nodes`,
-  `ProdNodesSpec` in `config/models.py`, `orchestrator/prod.py` `_nodes`); `up` is
-  resumable so a retry skips the ~10-minute debug build. Example:
-  `deploy/manifests/profiles/prod-nodes.yaml`. Impl: `cmd/prod_nodes.py`.
-- `prod nodes destroy` tears down the node VMs and (by default) the paired
-  monitoring stack; pass `--keep-monitoring` to retain it. `scp` the `.zst` traces
-  off each VM before destroy.
+- **The vehicle is neither `extend` nor `migration`.** `deployments extend` only
+  reuses another *testnet's* bootstraps, and the `migration` subsystem is
+  modelled around migrating an existing source fleet (drain / destroy-source /
+  inventory-splice) — wrong for a throwaway profiling VM. Instead it **seeds the
+  deployment's S3 state with the production bootstrap peers**
+  (`fetch_prod_bootstraps()`) and reuses the normal `nodes infra` → prod-mode
+  `nodes provision` → `nodes start` lifecycle. Prod-mode settings match
+  `migration provision` (no `--evm-network` → arbitrum-one, `Restart=always`,
+  `RestartSec=10`, `LimitNOFILE=65536`); `--stop-on-upgrade` is always emitted
+  and no upgrade channel is set, so the pinned debug build keeps running and
+  never auto-upgrades.
+- **Node-side heaptrack is the one genuinely new mechanism** (heaptrack was
+  client-only before): it composes **inside** the NAT `ip netns exec` prefix, so
+  it profiles the node rather than netns, and writes to the **attached data
+  volume**, NOT the root disk — 15 debug nodes generate large, growing traces.
+  Default **ON** here (`--no-heaptrack` to opt out).
+- `--log-retention-days` (default 7; `0` = keep forever) installs a daily timer
+  pruning old `.zst` traces.
+- Optional `--monitoring` (off by default, `--grafana` opt-in) forwards host and
+  per-service RSS metrics to InfluxDB via the `--with-telegraf` seam.
+- **`scp` the `.zst` traces off each VM before destroy.** `destroy` tears down
+  the paired monitoring stack by default (`--keep-monitoring` to retain it).
 
-See `deploy/README.md` §"Running profiling nodes against production" for the full
-argument table.
+Declarative (`kind: prod-nodes`); `binary.debug: true` emits the
+`build ant-node --debug` step, and `up` is resumable so a retry skips it.
+
+See `deploy/README.md` §"Running profiling nodes against production".
 
 ### Running prod crash-debug nodes
 
-`prod debug-nodes deploy` is the panic/crash-debugging sibling of `prod nodes`
-(which is heaptrack *memory* profiling). It stands up a small, isolated,
-**permanent** set of ant-node services joining the **production** network,
-configured to capture crash information over time, with its OWN dedicated small
-InfluxDB + short-retention Elasticsearch (not the main prod stack). Registers a
-`Deployment` row with `deploy_args.kind = "prod-debug-nodes"`; fully declarative
-via `deployments up/plan/down --config` (`ProdDebugNodesSpec` in `config/models.py`,
-`orchestrator/prod.py` `_debug_nodes`). Impl: `cmd/prod_debug_nodes.py`. Example:
-`deploy/manifests/profiles/prod-debug-nodes.yaml`.
+`prod debug-nodes deploy` — the panic/crash-debugging sibling of `prod nodes`
+(which is heaptrack *memory* profiling): a small, isolated, **permanent** set of
+ant-node services joining the **production** network, configured to capture crash
+information over time, with its OWN dedicated small InfluxDB + short-retention
+Elasticsearch (not the main prod stack). `deploy_args.kind =
+"prod-debug-nodes"`. Same vehicle as `prod nodes` — seed the production bootstrap
+peers into S3 state, then the normal node lifecycle.
 
-- **Crash-debug node config** (all default-guarded in `provisioning/node.py`, so
-  every other kind's systemd unit stays byte-identical):
-  - **`--rust-backtrace`** (default `full`; `1` or `""` to disable) →
-    `Environment=RUST_BACKTRACE=` on each service, PLUS an unconditional
-    `Environment=COLORBT_SHOW_HIDDEN=1` (ant-node's color-backtrace filters every
-    frame otherwise, printing `<empty backtrace>`). Both MUST be systemd
-    `Environment=` lines (not inlined on ExecStart) so they propagate through the
-    NAT `ip netns exec` wrapper.
-  - **`--coredumps`** (default on) → `LimitCORE=infinity` on the unit + a global
-    `kernel.core_pattern` sysctl writing cores to
-    `/mnt/ant-node-storage/coredumps/` (on the data volume, or the root disk on
-    volume-less providers), so even an OOM/SIGKILL leaves an inspectable core.
-    Also installs `gdb` + `elfutils` (`eu-stack`) on the VM to symbolise those
-    file cores in place — `systemd-coredump` is deliberately NOT installed (it
-    would be inert against the file-based `core_pattern`, or force cores off the
-    data volume). NB the release binary is stripped, so symbols are limited
-    without an unstripped build; the live COLORBT backtrace is the higher-value
-    signal. `--coredump-retention-days` (default 7) installs a daily prune timer.
-  - **`--log-retention-days`** (default **2**) installs a daily systemd timer
-    (`ant-node-debug-logprune`) pruning rotated ant-node debug logs under
-    `/mnt/ant-node-storage/log`. ant-node rotates `--log-dir` output
-    daily on its own (one `ant-node.YYYY-MM-DD.log` per service per day) and
-    self-prunes to `--log-max-files`/`ANT_LOG_MAX_FILES` (default 7), but at
-    DEBUG level that built-in cap alone can still vastly outgrow the disk; this
-    is an external backstop. `0` keeps logs forever. The install step also runs
-    the prune once immediately (not just enabling the timer) so a disk that's
-    already full gets relief right away rather than waiting for the next
-    scheduled run.
-    **The prune unit restarts the ES log forwarder, and must.** Telegraf's
-    `tail` input holds an open fd per matched file with no idle-close, so
-    `find -delete` alone unlinks without freeing: files leave `du` while ext4
-    keeps the blocks and `df` hits 100%. Measured on ant-prod-debug-01
-    (2026-08-02): **694 GiB across 70 fds** on a 968 GB disk showing 0 free with
-    271 GB visible; restarting the forwarder released all of it. So the unit has
-    a second `ExecStart=-/usr/bin/systemctl try-restart
-    telegraf-ant-elasticsearch.service` **after** the `find` — `try-restart` so
-    it no-ops under `--no-forward-logs`, `-`-prefixed so a forwarder failure
-    can't fail the prune, and unconditional because ant-node's own
-    `--log-max-files` self-pruning strands fds identically. This forces
-    **`from_beginning=false`** for the kind (threaded via
-    `build_node_telegraf_providers(from_beginning=...)`, default `True` so every
-    other kind's TOML is byte-identical): telegraf keeps no tail offset across
-    restarts, so backfill-from-start would re-ingest every remaining log on
-    every prune. Any new prune timer deleting files something else tails needs
-    the same treatment.
-  - **`--node-count` (default 4) is forwarder-bound, not fleet-matched.** At
-    `--log-level debug` each service emits ~758 lines/s (222 B avg) and one
-    telegraf tops out ~2 700 lines/s — CPU-bound in the JSON parse + `rename`/
-    `starlark`/`strings` chain, NOT blocked on ES (from the node VM, ES took
-    ~8 000 docs/s at telegraf's own batch size, 0 write rejections, 13% CPU;
-    bigger batches and `force_document_id=false` measured as no help). At 10
-    services only **~36%** of lines reached ES and the forwarder had wedged for
-    three days (190M docs/day → 5 684). So **Elasticsearch is a sample, not a
-    copy**, and the on-disk logs are the authoritative record — which
-    `--log-retention-days` discards. Raising one means raising the other.
-  - **`--log-level`** (default `debug`). **ant-node has NO per-module env filter**
-    — a single global level is the only option, so the requested per-module
-    `RUST_LOG` targeting (`saorsa_transport`, `saorsa_core::*`,
-    `ant_node::replication`) is NOT achievable at the deploy layer. `--log-level
-    debug` resolves the node→ES drop filter to `TRACE` (keep DEBUG, drop TRACE)
-    so the debug logs actually reach ES.
-  - heaptrack is OFF by default here (use `prod nodes` for the heaptrack kind).
-- **Dedicated monitoring/logging, selectable provider+region.** `--monitoring`
-  (default on) stands up a small InfluxDB; `--forward-logs` (default on) stands
-  up a dedicated Elasticsearch with a short ILM (`--elastic-retention-days`,
-  default 3). Node VMs pick their provider via `--provider` (all five providers);
-  the monitoring/ES VMs pick theirs independently via `--monitoring-provider` /
-  `--elastic-provider` (DigitalOcean/OVH/**Contabo** only — those are the
-  observability TF modules). Torn down on `destroy` unless `--keep-monitoring` /
-  `--keep-elastic`.
-- Vehicle is the same as `prod nodes`: seed the production bootstrap peers into
-  S3 state, then `nodes infra` → prod-mode `nodes provision` → `nodes start`
-  (arbitrum-one, `Restart=always`, `LimitNOFILE=65536`, `--stop-on-upgrade`, no
-  upgrade channel so the pinned debug build keeps running). `binary.debug: true`
-  emits a `build ant-node --debug` step; `up` is resumable.
+All crash-debug config is default-guarded in `provisioning/node.py`, so every
+other kind's systemd unit stays byte-identical.
 
-See `deploy/README.md` §"Running crash-debug nodes against production" for the
-full argument table.
+- **`--rust-backtrace`** (default `full`; `1` or `""` to disable) plus an
+  unconditional `COLORBT_SHOW_HIDDEN=1` — without it ant-node's color-backtrace
+  filters every frame and prints `<empty backtrace>`. Both **must** be systemd
+  `Environment=` lines, not inlined on ExecStart, so they propagate through the
+  NAT `ip netns exec` wrapper.
+- **`--coredumps`** (default on) → `LimitCORE=infinity` on the unit plus a global
+  `kernel.core_pattern` writing cores to the data volume (or the root disk on
+  volume-less providers), so even an OOM/SIGKILL leaves an inspectable core.
+  Installs `gdb` + `elfutils`; `systemd-coredump` is deliberately NOT installed
+  (it would be inert against a file-based `core_pattern`, or force cores off the
+  data volume). The release binary is stripped, so symbols are limited without an
+  unstripped build and the live COLORBT backtrace is the higher-value signal.
+  `--coredump-retention-days` (default 7) prunes.
+- **`--log-retention-days` (default 2), and its prune unit restarts the ES log
+  forwarder — it must.** Telegraf's `tail` input holds an open fd per matched
+  file with no idle-close, so `find -delete` alone unlinks without freeing: files
+  leave `du` while ext4 keeps the blocks and `df` hits 100%. Measured **694 GiB
+  across 70 fds** on a 968 GB disk showing 0 free. The unit therefore runs
+  `systemctl try-restart telegraf-ant-elasticsearch` **after** the `find`
+  (`try-restart` so it no-ops under `--no-forward-logs`, `-`-prefixed so a
+  forwarder failure cannot fail the prune). That forces
+  **`from_beginning=false`** for this kind, since telegraf keeps no tail offset
+  across restarts and backfill-from-start would re-ingest every remaining log on
+  every prune. **Any new prune timer deleting files something else tails needs
+  the same treatment.**
+- **`--node-count` (default 4) is forwarder-bound, not fleet-matched.** One
+  telegraf tops out ~2,700 lines/s — CPU-bound in the JSON parse chain, not
+  blocked on ES — while a debug-level service emits ~758, so at 10 services only
+  ~36% of lines reached ES and the forwarder had wedged for three days.
+  **Elasticsearch is a sample, not a copy**; the on-disk logs are the
+  authoritative record — which `--log-retention-days` discards, so raising one
+  means raising the other.
+- **`--log-level` (default `debug`): ant-node has NO per-module env filter**, so
+  a single global level is the only option and per-module `RUST_LOG` targeting is
+  not achievable at the deploy layer. `debug` resolves the node→ES drop filter to
+  `TRACE` so the debug logs actually reach ES.
+- heaptrack is OFF by default here (use `prod nodes` for that kind).
+
+Node VMs pick their provider via `--provider` (all five); the monitoring and ES
+VMs pick theirs independently via `--monitoring-provider` / `--elastic-provider`
+(DigitalOcean/OVH/**Contabo** only — those are the observability TF modules).
+Torn down on `destroy` unless `--keep-monitoring` / `--keep-elastic`.
+
+Declarative (`kind: prod-debug-nodes`); `binary.debug: true` emits the
+`build ant-node --debug` step and `up` is resumable.
+
+See `deploy/README.md` §"Running crash-debug nodes against production".
 
 ### Watching a production rollout (`prod rollout-watch`)
 
 `prod rollout-watch --to-version <v> [--name ant-prod-01] [--window 1h]
-[--json-out FILE]` reports a stable rollout from **Elasticsearch alone** —
-fleet adoption by node version, the auto-upgrade lifecycle messages, restarts,
-per-arm health while the fleet is mixed, and a version-telemetry check. Impl:
-`deploy/saorsa_deploy/cmd/prod_rollout_watch.py`. It replaced the
+[--json-out FILE]` reports a staged rollout from **Elasticsearch alone**: fleet
+adoption by node version, the auto-upgrade lifecycle messages, restarts, per-arm
+health while the fleet is mixed, and a version-telemetry check. It replaced the
 SQLite-backed upgrade tracker, which is gone.
 
-- **Stateless, and that is the point.** Every run queries ES afresh: no
+- **Stateless, and that is the point.** Every run queries ES afresh — no
   database, no cursor, no `init`. The tracker needed durable per-node state
   because it had to *infer* a running version from the sequence of upgrade log
   messages, and a cursor seeded after the rollout had started blinded it
-  permanently. ant-node **#225** stamps `node_version`/`node_commit` on every
-  JSON log line and V2-1263 promoted both to Telegraf tags on all 73
-  ant-prod-01 hosts (2026-09-23), so a service's version is now just the tag on
-  its most recent document.
+  permanently. ant-node now stamps `node_version`/`node_commit` on every JSON log
+  line and both are Telegraf tags on all 73 ant-prod-01 hosts, so a service's
+  version is just the tag on its most recent document.
 - **The denominator is "logged in the last 15 minutes"**, keyed on distinct
   `(tag.host.keyword, tag.service_number.keyword)` — which includes the 7
   bootstraps. Shorter and a quiet service drops out; longer and a service that
   died an hour ago still counts as running.
-- **The `unknown` label rule.** The bucket is printed as
-  `unknown (unstamped, pre-<to-version>)` because pre-#225 builds do not stamp
-  at all (a missing tag means the same thing and lands in the same bucket). It
-  applies **only** to the literal `unknown`: every future old arm is a real
-  version and appears under its own value, so the note must not follow it.
-- **The 5% suspension rule, applied to whichever arm is short.** Below 5% of
-  running services an arm's rates are dominated by whichever host happens to be
-  sick, and an arm of zero produces no rate at all — so the per-arm table is
-  omitted for `Per-arm comparison suspended: <new|old> arm is <n> services
-  (< 5% of running)`, and the four health queries are **not issued**, which is
-  most of the report's cost. It is the **new** arm that is short before the
-  rollout starts and the **old** one by the end; suspending on the old arm
-  alone would print a table of dashes for every pre-rollout baseline run.
-  Service-hours are the 15-minute buckets a service logged in × 0.25.
-- **`wire_tx_bytes`, never `udp_tx_bytes`**: saorsa-transport #169 changed what
-  the latter counts on the 2026-09-23 train, so across a mixed fleet the two
-  arms would not be measuring the same thing.
-- **§2 counts single-fire messages, so a document count IS an event count** and
-  no dedup is needed — but the obvious matchers do not have that property. A
-  start logs two lines back to back (`node.rs` + `upgrade/apply.rs`), so only
-  `Starting auto-apply upgrade from` is matched; their common prefix counted
-  every attempt twice. A success is `Upgrade to {} successful, initiating
-  graceful shutdown`, once per upgraded service on every path; `Successfully
-  upgraded to version {}! Restarting...` (the one service per host that
-  replaces the shared binary) and `Binary already upgraded to ...` (every other
-  service) are printed as **details** of it, with `replaced + reused =
-  succeeded` rendered as a visible check. All those lines log under
-  `tag.target = ant_node::node`, which the target filter did not match — the
-  root cause of the 0.20.0 rollout's under-counted successes, fixed by adding
-  that term.
-- **`Error during upgrade process:` is split transient vs failure.** It has
-  three log sites; the check-phase one (the GitHub release check and the
-  release-cache lock — `TRANSIENT_ERROR_MARKERS`) attempted nothing, so it goes
-  to an informational table annotated `all recovered` when every reporting
-  service is on the to-version at report time, and **only the failures table
-  breaches the rollout gate**. Everything else, including a variant a future
-  ant-node adds, is a failure — fail loud; downgrading one is an explicit list
-  addition. `Failed to spawn new binary` carries the annotation "binary already
-  replaced on disk; old version still running", the one case leaving a host
-  half-upgraded. A `retry backoff` count against an empty failures table is a
-  failure the matchers missed, which is the only reason that row exists.
-- Aggregations only (`size: 0`), never a document scroll — the prod node index
-  takes ~13.7M documents every two hours. `tag.*` fields are analysed, so every
-  `terms`/`composite`/`prefix` uses the `.keyword` subfield and host values are
-  upper-case.
+- **The `unknown` bucket is printed as `unknown (unstamped,
+  pre-<to-version>)`**, and that note applies **only** to the literal `unknown`
+  — every future old arm is a real version appearing under its own value, so the
+  note must not follow it.
+- **The 5% suspension rule applies to whichever arm is short**, not just the old
+  one: below 5% of running services an arm's rates are dominated by whichever
+  host happens to be sick, and an arm of zero produces no rate at all. The
+  per-arm table is omitted and the four health queries are **not issued**, which
+  is most of the report's cost. It is the **new** arm that is short before the
+  rollout starts and the **old** one by the end.
+- **`wire_tx_bytes`, never `udp_tx_bytes`** — saorsa-transport #169 changed what
+  the latter counts, so across a mixed fleet the two arms would not be measuring
+  the same thing.
+- **§2 counts single-fire messages, so a document count IS an event count** — but
+  the obvious matchers do not have that property. A start logs two lines back to
+  back, so only `Starting auto-apply upgrade from` is matched; their common
+  prefix counted every attempt twice. All those lines log under
+  `tag.target = ant_node::node`, which the target filter did not match — the root
+  cause of the 0.20.0 rollout's under-counted successes.
+- **`Error during upgrade process:` is split transient vs failure**, and **only
+  the failures table breaches the rollout gate**. The check-phase sites
+  (`TRANSIENT_ERROR_MARKERS`) attempted nothing and go to an informational table;
+  everything else, **including a variant a future ant-node adds**, is a failure —
+  fail loud, and downgrading one is an explicit list addition. A `retry backoff`
+  count against an empty failures table is a failure the matchers missed, which
+  is the only reason that row exists.
 
-See `deploy/README.md` §"Watching a production rollout" for the full argument
-table.
+See `deploy/README.md` §"Watching a production rollout".
 
 ### Upgrading the production bootstraps ahead of the fleet
 
-The seven production bootstraps (`~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json`
-— a **separate** file from the fleet's `inventory.json`, and one with **no
-`provider_id`**, so `load_node_inventory` needs `require_provider_id=False`)
-are every client's way into the network. `prod bootstrap upgrade --node-version
-<v>` walks them one at a time, ahead of the fleet's own 24h staged rollout, and
-in the same restart pins their WebRTC-Direct listener with
-`--webrtc-direct-port` (default **10001**). Unpinned, ant-node derives that port
-afresh on every start, so a published browser address goes stale on every
-restart. `prod bootstrap webrtc-addresses` then reads each bootstrap's
-`<root_dir>/webrtc-direct.multiaddr` and writes
-`deploy/saorsa_deploy/resources/prod_bootstrap_webrtc_multiaddrs.txt` — the
-published list the prod WASM client kinds consume. Impl: `cmd/prod_bootstrap_upgrade.py`
-(I/O), `prod_bootstrap_upgrade.py` (pure), `webrtc_probe.py` (the probe).
+The seven production bootstraps are every client's way into the network.
+`prod bootstrap upgrade --node-version <v>` walks them one at a time, ahead of
+the fleet's own 24h staged rollout, and in the same restart pins their
+WebRTC-Direct listener with `--webrtc-direct-port` (default **10001**) —
+unpinned, ant-node derives that port afresh on every start, so a published
+browser address goes stale on every restart.
 
-- **The binary path is read from the live unit, never assumed.** The tier
-  predates `cmd/bootstrap_production.py`'s `BINARY_INSTALL_PATH`, which read
-  `/usr/local/bin/ant-node` while every live host actually runs
-  `/opt/ant-node/ant-node` (the constant is now the latter — V2-1309 — but the
-  rule stays "read the unit", since a constant cannot know what a host was given
-  by hand). Installing over a constant rather than over what the unit executes
-  would leave a second, unused binary on disk while the service kept running the
-  old one — an upgrade that reports success and changes nothing. Root dir, log dir and service user
-  come from the same `ExecStart`; a unit missing `--stop-on-upgrade` (the node's
+Their inventory is `~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json` —
+a **separate** file from the fleet's `inventory.json`, and one with **no
+`provider_id`**, so `load_node_inventory` needs `require_provider_id=False`.
+
+- **The binary path is read from the live unit, never assumed.** Every live host
+  runs `/opt/ant-node/ant-node`; installing over a constant would leave a second,
+  unused binary on disk while the service kept running the old one — an upgrade
+  that reports success and changes nothing. Root dir, log dir and service user
+  come from the same `ExecStart`. A unit missing `--stop-on-upgrade` (the node's
   own auto-upgrader is then live and would undo the install) or `--root-dir` is
   refused.
-- **The unit edit is append-only.** One `--webrtc-direct-port` argument line is
-  appended and every other line stays byte-identical, because these seven units
-  carry hand-maintained arguments that a re-render from `build_systemd_unit`
-  would silently discard. Idempotent, and exactly reversible for the rollback
-  path. The `--bootstrap` peers those units carry are the one thing `upgrade`
-  deliberately leaves alone; `set-peers` (below) owns them.
-- **One archive, verified locally, uploaded to all seven.** The release tarball
-  is checksummed against the release's own `SHA256SUMS.txt` and run with
-  `--version` on this machine before anything is touched, so every host
-  demonstrably installs identical bytes rather than each fetching the release and
-  being trusted to have got the same thing.
-- **Firewalls are opened for the whole tier first** (`--skip-firewall` to opt
-  out): Hetzner via `hcloud firewall add-rule` on the firewall attached to the
-  host, AWS via `authorize-security-group-ingress` on the SG of the instance
-  holding that public IP (`InvalidPermission.Duplicate` = success), Vultr not at
-  all — the group exists in Terraform but is attached to nothing live. The
-  matching udp/10001 rule was added to all three `*-production` TF modules so the
-  next `terraform apply` is a no-op against what the CLI added.
-- **Two gates per host, then a 60 s settle.** The health gate reads only what the
+- **The unit edit is append-only.** One argument line is appended and every other
+  line stays byte-identical, because these seven units carry hand-maintained
+  arguments that a re-render from `build_systemd_unit` would silently discard.
+  Idempotent, and exactly reversible for the rollback path.
+- **One archive, verified locally, uploaded to all seven** — checksummed against
+  the release's own `SHA256SUMS.txt` and run with `--version` on this machine
+  before anything is touched, so every host demonstrably installs identical bytes
+  rather than each fetching the release and being trusted.
+- **Two gates per host, then a 60s settle.** The health gate reads only what the
   restart wrote (a log cursor is taken first) and requires `ant-node starting` at
   the **requested version** — `Restart=always` brings a host back on the *old*
-  binary when the new one will not run, and that writes the same line — plus
-  `ADR-0015 WebRTC Direct listening` on the pinned port and `is-active`. Then an
-  **ICE probe** from the operator's machine. Any failure restores the backup
-  binary and the original unit, prints `RESTORED`, and **stops the run**; hosts
-  after it are untouched.
-- **The probe must be a real ICE connectivity check**, not a STUN binding:
-  `saorsa-transport`'s admission filter returns `Decision::Ignore` on every
+  binary when the new one will not run, and that writes the same line — plus the
+  WebRTC listening line on the pinned port and `is-active`. Then an **ICE probe**
+  from the operator's machine. Any failure restores the backup binary and the
+  original unit, prints `RESTORED`, and **stops the run**; hosts after it are
+  untouched.
+- **The probe must be a real ICE connectivity check, not a STUN binding** —
+  saorsa-transport's admission filter returns `Decision::Ignore` on every
   failure, so an unauthenticated probe cannot tell a firewalled port from a
-  healthy one. `webrtc_probe.probe()` sends `USERNAME` =
-  `saorsa+webrtc+v2/<client-pwd>:<client-ufrag>` with a short-term
-  `MESSAGE-INTEGRITY` keyed on that server fragment plus a `FINGERPRINT`; any
-  well-formed STUN message back is a pass. DTLS is never completed. **Standard
-  library only**, so the rollout-watch scripts bundle can import it.
-- **Below ant-node 0.20.0 the WebRTC half is `not expected`**, not failed: the
-  **unit is left untouched**, the gate passes on the start line alone, the probe
-  is skipped and no address list is collected. The unit exemption is
-  load-bearing — 0.19.0 has no `--webrtc-direct-port` at all (verified on the
-  live tier) and clap exits on an unknown argument, so appending it would leave
-  a bootstrap that cannot start. That is what makes a same-version rehearsal
-  (`--limit-to nrt -y`) exercise the whole path safely.
-- **`webrtc-addresses` is all-or-nothing** and rewrites each address to the
-  **inventory** IP (the two Hetzner hosts carry a second public IPv4 on the same
-  interface; only the inventory one is in the client's `bootstrap_peers.toml`). A
-  missing file, malformed address or failed probe on any host exits non-zero and
-  leaves the existing file in place — a short list published as the production
-  bootstrap set silently narrows every browser client's way in.
+  healthy one. DTLS is never completed. **Standard library only**, so the
+  rollout-watch scripts bundle can import it.
+- **Below ant-node 0.20.0 the WebRTC half is `not expected`, not failed, and the
+  unit is left untouched.** 0.19.0 has no `--webrtc-direct-port` at all and clap
+  exits on an unknown argument, so appending it would leave a bootstrap that
+  cannot start. That exemption is what makes a same-version rehearsal
+  (`--limit-to <host> -y`) exercise the whole path safely.
+- **Firewalls are opened for the whole tier first** (`--skip-firewall` to opt
+  out): Hetzner via `hcloud`, AWS via `authorize-security-group-ingress`
+  (`InvalidPermission.Duplicate` = success), Vultr not at all — its group exists
+  in Terraform but is attached to nothing live.
 
-See `deploy/README.md` §"Upgrading the production bootstraps ahead of the fleet"
-for the full argument tables.
+`prod bootstrap webrtc-addresses` then reads each bootstrap's
+`<root_dir>/webrtc-direct.multiaddr` and writes
+`resources/prod_bootstrap_webrtc_multiaddrs.txt`, the published list the prod
+WASM client kinds consume. It is **all-or-nothing** and rewrites each address to
+the **inventory** IP (the two Hetzner hosts carry a second public IPv4 on the
+same interface, and only the inventory one is in the client's
+`bootstrap_peers.toml`). A missing file, malformed address or failed probe on any
+host exits non-zero and leaves the existing file in place — a short list
+published as the production bootstrap set silently narrows every browser client's
+way in.
 
 **`prod bootstrap set-peers` rewrites the tier's `--bootstrap` peer lists.** Each
 unit named the peers that host dials on a cold start, written by hand and never
-revisited: at 2026-09-24 five hosts listed the same three addresses (one a
-current bootstrap, two answering nothing) and another listed three in no
-inventory at all. Nothing was visibly wrong because every host had a populated
-`routing_snapshot.json` and peer cache — the cost lands only on a host that lost
-its data directory, which then had at most one live peer to rejoin through.
-`set-peers` gives each host **the other six inventory IPs on udp/10000** (the
-port the tier listens on and the one the client's `bootstrap_peers.toml` uses),
-**never itself**, one host at a time: rewrite, `daemon-reload`, `restart`, wait
-for `ant-node starting` in that host's own log plus `is-active`, settle 60 s,
-next. A failure restores the unit the command found and stops the run. Two
-properties make it safe on all seven: **only the `--bootstrap` lines move**
-(every other line byte-identical, for the same reason `upgrade` appends), and it
-is **idempotent** — a host already listing exactly those peers is not restarted,
-so a re-run after a mid-tier failure touches only what is left. No binary is
-swapped, so the gate does not match on a version the way `upgrade`'s does.
-`prod bootstrap deploy` now applies the same rule at provision time (genesis
-included — it is still provisioned first, so a from-scratch deploy brings it up
-while its peers are unreachable), and its `BINARY_INSTALL_PATH` was corrected to
-`/opt/ant-node/ant-node`; a re-provision previously installed a second, unused
-binary at `/usr/local/bin/ant-node` and left the service on the old one.
+revisited; nothing looks wrong while every host has a populated routing snapshot
+and peer cache, because the cost lands only on a host that lost its data
+directory. `set-peers` gives each host **the other six inventory IPs on
+udp/10000, never itself**, one host at a time: rewrite, `daemon-reload`,
+`restart`, wait for that host's own start line plus `is-active`, settle 60s,
+next. A failure restores the unit it found and stops the run. Two properties make
+it safe: **only the `--bootstrap` lines move**, and it is **idempotent** — a host
+already listing exactly those peers is not restarted, so a re-run after a
+mid-tier failure touches only what is left. `upgrade` deliberately leaves these
+lines alone. `prod bootstrap deploy` now applies the same rule at provision time.
+
+See `deploy/README.md` §"Upgrading the production bootstraps ahead of the fleet".
 
 ### WebRTC-Direct testnets and the WASM client tier
 
 `ant-cli` **cannot** exercise the WebRTC-Direct browser path — it links native
-`ant-core`, so it takes the native transport however it is invoked. A new client
-tier (V2-1169) runs a Node.js program importing **`ant-core` compiled to WASM**,
-reaching nodes over WebRTC-Direct. Roles `wasm-upload` / `wasm-download`,
-manifest keys `clients.wasm_uploaders[]` / `clients.wasm_downloaders[]`,
-independent of the native pair (a testnet may run either or both side by side).
-Example: `deploy/manifests/profiles/webrtc-wasm.yaml`.
+`ant-core`, so it takes the native transport however it is invoked. This tier
+runs a Node.js program importing **`ant-core` compiled to WASM**, reaching nodes
+over WebRTC-Direct. Roles `wasm-upload` / `wasm-download`, manifest keys
+`clients.wasm_uploaders[]` / `clients.wasm_downloaders[]`, independent of the
+native pair (a testnet may run either or both side by side). Example:
+`deploy/manifests/profiles/webrtc-wasm.yaml`.
 
-They are **distinct roles, not a flag on the native ones**, because the role names
-the VM, its Terraform workspace and its S3 state key — telling the transports
-apart in all three is the point of running both. The role-to-unit map is explicit
-in `deploy/saorsa_deploy/client_roles.py`; it replaced an `f"ant-{role}er"` string
-trick that spells the right thing for exactly the two native roles.
+They are **distinct roles, not a flag on the native ones**, because the role
+names the VM, its Terraform workspace and its S3 state key. The role-to-unit map
+is explicit in `client_roles.py`.
 
 Three pieces beyond an ordinary testnet, all no-ops when no WASM client is
 configured (every existing deployment renders byte-identical):
 
 - **A pinned WebRTC port on the bootstrap tier** — `bootstraps.webrtc_port`
-  (CLI `--webrtc-port` on `nodes provision-genesis` / `bootstraps provision`;
-  ant-node's flag is `--webrtc-direct-port`, alias `--webrtc-port`). Bootstraps
-  are the one tier whose browser-facing address must not move: a WASM client
-  bootstraps from it. Left unset ant-node **derives** the WebRTC port from the QUIC
-  port, so it moves whenever that does. Regular nodes deliberately keep the
-  derived port — their address changes propagate over the DHT as QUIC's do.
-  **The port is only half of a stable address**: the multiaddr also embeds the
-  DTLS certificate hash, which ant-node persists at
-  `<root_dir>/webrtc-direct.pem`. It survives restarts, but **wiping a
+  (ant-node's flag is `--webrtc-direct-port`). Bootstraps are the one tier whose
+  browser-facing address must not move; left unset ant-node **derives** the
+  WebRTC port from the QUIC port, so it moves whenever that does. Regular nodes
+  deliberately keep the derived port. **The port is only half of a stable
+  address**: the multiaddr also embeds the DTLS certificate hash, persisted at
+  `<root_dir>/webrtc-direct.pem` — it survives restarts, but **wiping a
   bootstrap's data volume rotates it and invalidates every cached browser
-  address**. WebRTC-Direct is ON by default in a stock ant-node build (no
-  feature flag, and no CLI flag to disable it).
-- **`build ant-wasm`** — builds the WASM package plus the TypeScript client to
-  `builds/{name}/{owner}/{branch}/ant-wasm-client.tar.gz`. A separate build path
-  is unavoidable: `ant-core` declares `default = ["native"]` and a `browser-wasm`
-  feature mutually exclusive with it (a wasm32 build without it stops at an
-  explicit `compile_error!`), and the artifact comes from `wasm-pack`, not
-  `cargo build --bin`. **Branch form only** — no WASM package is published as a
-  release, so `binaries.ant_wasm` rejects a version.
-- **`deployments webrtc-addresses`** — SSHes the **bootstrap VMs**, reads each
-  bootstrap service's `<root_dir>/webrtc-direct.multiaddr`, and saves them as
-  `bootstrap_webrtc_multiaddrs`. Cannot run at provision time (the address
-  embeds the certhash, which exists only once a node has started) and must run
-  before `clients provision` (a WASM client has no other way in). `deployments
-  up` sequences it after `nodes start`. Addresses advertising a non-public host
-  are rewritten to the VM's real IP.
-  **A WASM client gets the SAME bootstraps as a native client, and no more.**
-  The sole difference is address format — native takes bare `ip:port`, a browser
-  needs the full multiaddr (UDP port + DTLS certhash + peer id) — which is the
-  only reason a collection command exists at all: the certhash does not exist
-  until the node has run, so the list cannot be written ahead of time.
-  The node tier is deliberately **not** sampled, and there is no `--sample-nodes`
-  flag. An earlier revision handed each client ~32 ordinary node addresses spread
-  across the peer-id keyspace; production cannot supply that shape (a browser
-  gets a small bootstrap list), so it masked discovery failures rather than
-  exposing them. **If transfers do not work from the bootstraps alone, fix the
-  node.** `clients provision` reads only `bootstrap_webrtc_multiaddrs` — the
-  older `webrtc_client_bootstrap_multiaddrs` / `webrtc_seed_multiaddrs` keys in
-  pre-change state are deliberately not read.
+  address**. WebRTC-Direct is ON by default in a stock ant-node build.
+- **`build ant-wasm`** — `ant-core` declares `default = ["native"]` and a
+  `browser-wasm` feature mutually exclusive with it (a wasm32 build without it
+  stops at an explicit `compile_error!`), and the artifact comes from `wasm-pack`
+  rather than `cargo build --bin`, so a separate build path is unavoidable.
+  **Branch form only** — no WASM package is published as a release.
+- **`deployments webrtc-addresses`** — SSHes the **bootstrap VMs** and reads each
+  bootstrap service's `<root_dir>/webrtc-direct.multiaddr`. **Cannot run at
+  provision time** (the address embeds the certhash, which exists only once a
+  node has started) and **must run before `clients provision`** (a WASM client
+  has no other way in). `up` sequences it after `nodes start`. Addresses
+  advertising a non-public host are rewritten to the VM's real IP.
 
-`clients provision` installs Node 22, unpacks the bundle to
-`/opt/ant-wasm-client`, and writes `/etc/ant-wasm-client.env` plus the
-`ant-wasm-uploader`/`ant-wasm-downloader` unit — targeted per host, so native
-client VMs see none of it. The bundle is **always re-fetched** (unlike the
-presence-gated `ant` binary install, which is why `deployments
-upgrade-ant-binary` had to exist).
+What will bite you:
 
-**Addresses are one shared pool per deployment, read one way** — both tiers
-publish under the same prefix. The WASM downloader lists the whole prefix, so it
-fetches native-uploaded content as well as WASM; the native `downloader.sh`
-filters keys to `upload-*` and never sees WASM uploads. The per-uploader
-*object* is namespaced by role (`upload-` vs `wasm-upload-`) because
-`client_index` restarts at 1 per role: without that a native and a WASM
-uploader in one region both own `upload-<region>-1.txt`, and each whole-object
-PUT flush erases the other's list.
-
-**Every published address line is `<address> <bytes>`** (V2-1264, DEV-03 run
-588). ant-core refuses a browser-path file above `MAX_BROWSER_FILE_BYTES`
-(1,000,000,000) only *after* resolving its data map, so with bare lines the
-WASM downloader drew the native 1000 MiB uploads from the shared pool and each
-failed as `invalid public file size 1048576000`. Both uploaders now publish the
-size; both downloaders parse the first field, and one with a bound
-(`MAX_DOWNLOAD_BYTES`, `0` = none; `clients provision` sets it to
-`WASM_MAX_FILE_BYTES` for the WASM roles) skips over-cap entries before
-fetching anything. A bare line is never excluded — unknown is not "too big" —
-so pre-change lists keep working. `downloader.sh` tries up to five keys because
-one uploader's entire list can be over the cap. The constant lives in
-`client_roles.py` (the provisioner must not import the schema);
-`config.models` re-exports it.
-
-**No `bootstrap_cache` option on either WASM role** — it selects between ant's
-peer cache and an explicit `--bootstrap`, and a WASM client does neither. Passing
-the token is a hard error, not a silent no-op.
-
-**Payment: no private key ever enters WASM.** `ant-core` verifies each storage
-quote and hands the set to a JS callback, which does ERC-20 `approve` then one
-`payForQuotes` on the vault and returns the **mined** tx hash; `totalAmount` must
-exactly equal the sum of quote amounts or the upload is rejected. The payment
-network (chain id / token / vault) is read from a node's own `HELLO` rather than
-configured locally, so the client cannot pay on the wrong chain.
+- **A WASM client gets the SAME bootstraps as a native client, and no more.** The
+  sole difference is address format. The node tier is deliberately **not**
+  sampled and there is no `--sample-nodes` flag: an earlier revision handed each
+  client ~32 node addresses spread across the keyspace, which production cannot
+  supply (a browser gets a small bootstrap list), so it masked discovery failures
+  rather than exposing them. **If transfers do not work from the bootstraps
+  alone, fix the node.** `clients provision` reads only
+  `bootstrap_webrtc_multiaddrs`.
+- **`nodes.nat_percent: 0`** — nodes behind the simulated inbound NAT are
+  unreachable over WebRTC-Direct without relayed WebRTC, and each dial burns a
+  10s DataChannel timeout. This also makes the run incomparable to a native
+  baseline that used a different NAT fraction.
+- **A WASM upload needs ≥7 initial PUT peers** before it will pay; a small fleet
+  fails every upload with "Witnessed close group returned only N/7".
+- **No `bootstrap_cache` on either WASM role** — it selects between ant's peer
+  cache and an explicit `--bootstrap`, and a WASM client does neither. Passing
+  the token is a hard error, not a silent no-op.
+- **Every published address line is `<address> <bytes>`.** ant-core refuses a
+  browser-path file above 1,000,000,000 only *after* resolving its data map, so
+  with bare lines the WASM downloader drew the native 1000 MiB uploads from the
+  shared pool and failed every one. Both downloaders parse the first field, and
+  one with a bound skips over-cap entries before fetching anything. A bare line
+  is never excluded — unknown is not "too big" — so pre-change lists keep
+  working.
+- **Addresses are one shared pool per deployment, read two ways.** The WASM
+  downloader lists the whole prefix (so it fetches native uploads too); the
+  native `downloader.sh` filters keys to `upload-*` and never sees WASM uploads.
+  The per-uploader *object* is namespaced by role, because `client_index`
+  restarts at 1 per role — without that a native and a WASM uploader in one
+  region would each erase the other's list on every whole-object flush.
+- **Payment: no private key ever enters WASM.** ant-core verifies each storage
+  quote and hands the set to a JS callback, which does ERC-20 `approve` then one
+  `payForQuotes` and returns the **mined** tx hash; `totalAmount` must exactly
+  equal the sum of quote amounts or the upload is rejected. The payment network
+  is read from a node's own `HELLO` rather than configured locally, so the client
+  cannot pay on the wrong chain.
 
 **Results are kept separate at every layer, because the two transports are not
-the same instrument** — measured on DEV-01-wasm the WASM tier ran ~2.2x slower on
-upload and ~4.2x on download, so any blended figure describes neither and moves
-with whatever VM mix a run happened to use.
-- **Influx:** WASM file operations go to their own **`wasm-client-metrics`**
-  bucket (`INFLUXDB_WASM_BUCKET`). They are the same `upload`/`download`
-  measurements the native clients write, so one bucket would let any dashboard
-  panel or ad-hoc Flux query average the two — the same reasoning that put
-  client host metrics in their own bucket rather than behind a mutable tag. A
-  WASM VM's *host* metrics still go to `client-metrics` like every other
-  client's. `record-results` reads both buckets and deduplicates on
-  `(host, start_ns, measurement)`, tolerating a missing WASM bucket so
-  pre-feature deployments still record.
-- **Postgres:** a nullable **`client_kind`** column (`native`/`wasm`) on
-  `deployment_{upload,download}_records`, resolved from each VM's role — the same
-  denormalisation pattern as `network_profile`. NULL on every pre-feature row,
-  and NULL reads as native rather than unknown.
-- **`deployments compare`:** the client-record gates (upload/download success
-  floors, success rates, transfer p50/p95 per size bucket) are evaluated **once
-  per transport** and suffixed `[native]` / `[wasm]` whenever a run has WASM
-  records; with none, the gates are emitted exactly as before. Node-tier gates
-  (CPU, RSS, leak, per-GB ratios, log counts) are NOT split — one fleet serves
-  both transports.
-- **The two KINDS of WASM gate get opposite answers** — two keys in
-  `resources/gates/staging-thresholds.yaml`, both **required** (the retired
-  single `wasm_gates_advisory` fails validation naming its replacements).
-  **`wasm_floor_gates_advisory: true`**: the success FLOORS are absolute numbers
-  calibrated on the native transport which WASM does not meet (92.1% upload /
-  94.9% download against 99% / 99.5% on the first measured run), and the gap is
-  NAT — a peer behind the simulated inbound NAT is unreachable over
-  WebRTC-Direct until relayed WebRTC exists — not the release under test, so
-  gating on it would hard-fail every run. **`wasm_relative_gates_advisory:
-  false`**: the success-rate and per-bucket p50/p95 gates against the BASELINE
-  need no absolute calibration — they ask only whether this release made the
-  WASM tier worse than the last one did — so they **COUNT**, as SOFT gates like
-  their native twins. No WASM gate ever reaches the **exit code**; that stays
-  the native hard floors'.
-- **`compare --new-baseline`** (mutually exclusive with `--baseline-id`, exactly
-  one required) is for a run with no comparable predecessor. It evaluates only
-  the single-run floors; every relative gate is EMITTED as **NOT ASSESSED** with
-  the exact reason `new baseline` — emitted, not omitted, because a gate missing
-  from the report reads as one nobody thought about. Comparability checks are
-  skipped, `--window-label` is still required, the header says
-  `Baseline: none (new baseline)`, and exit 2 still means a native hard-floor
-  FAIL. `deployment_gate_verdicts.baseline_deployment_id` is nullable for it,
-  with a **partial unique index** on `(deployment_id, window_label) WHERE
-  baseline_deployment_id IS NULL` — Postgres treats NULLs as distinct, so
-  without it a re-run would accumulate rows instead of replacing its answer.
-- **`record-results` never erases `client_kind`.** The transport is resolved
-  from the deployment's S3 client state and `clients destroy` deletes it, so a
-  re-run after teardown resolves NULL for every host — and an unconditional
-  write would relabel every WASM op as native, pushing WASM failures into the
-  NATIVE hard floors. The upsert therefore COALESCEs: a NULL never overwrites a
-  known transport, a known one still updates. When the state is gone it warns,
-  naming the WASM hosts it could not classify.
+the same instrument** — measured ~2.2x slower on upload and ~4.2x on download,
+so any blended figure describes neither and moves with whatever VM mix a run
+happened to use:
+
+- **Influx**: WASM file operations go to their own **`wasm-client-metrics`**
+  bucket. They are the same `upload`/`download` measurements the native clients
+  write, so one bucket would let any panel or ad-hoc query average the two. A
+  WASM VM's *host* metrics still go to `client-metrics`. `record-results` reads
+  both and deduplicates on `(host, start_ns, measurement)`.
+- **Postgres**: a nullable **`client_kind`** column on
+  `deployment_{upload,download}_records`, resolved from each VM's role. NULL on
+  every pre-feature row, and NULL reads as native rather than unknown.
+- **`record-results` never erases `client_kind`.** The transport is resolved from
+  S3 client state and `clients destroy` deletes it, so a re-run after teardown
+  would resolve NULL for every host — and an unconditional write would relabel
+  every WASM op as native, pushing WASM failures into the NATIVE hard floors. The
+  upsert therefore COALESCEs, and warns when it cannot classify a WASM host.
+- **`deployments compare`** evaluates the client-record gates **once per
+  transport**, suffixed `[native]`/`[wasm]` whenever a run has WASM records; with
+  none, the gates are emitted exactly as before. Node-tier gates are NOT split —
+  one fleet serves both transports.
+- **The two KINDS of WASM gate get opposite answers**, and both keys are
+  **required**: **`wasm_floor_gates_advisory: true`** (the success floors are
+  absolute numbers calibrated on native which WASM does not meet, and the gap is
+  NAT, not the release under test, so gating would hard-fail every run) and
+  **`wasm_relative_gates_advisory: false`** (the baseline-relative gates need no
+  absolute calibration — they ask only whether this release made the WASM tier
+  worse than the last one did — so they **COUNT**, as soft gates). **No WASM gate
+  ever reaches the exit code**; that stays the native hard floors'.
 - **`clients estimate-gas` sizes the WASM tier too**, labelled `[wasm]` and
-  counted in the funder total (a WASM uploader holds its own funded wallet).
-  Its `fixed_eth_per_upload` is **doubled** via `wasm_fixed_cost_multiplier: 2.0`
-  in `resources/gas/client-gas-model.yaml` — a browser-path payment is two
-  transactions (ERC-20 `approve`, then `payForQuotes`) where a native one is one
-  — while `eth_per_gb`, the quote payload, is unchanged. Throughput comes from
-  the baseline's own `client_kind = 'wasm'` records; failing that, from the
-  NEAREST native uploader by size, labelled `approx: native twin <host>` (WASM
-  measured ~6–8x slower, so a native rate over-funds, which is the safe side).
-  Native uploaders are sized from native records only, so a future baseline
-  carrying both tiers cannot pollute native sizing.
-- `deployments slack-post` lists the two tiers under separate headings, and only
-  when WASM clients exist. The `record-results --update-slack` reply likewise
-  renders `Native successes/failures` + `WASM successes/failures` instead of one
-  blended total whenever a run has WASM records (NULL counts as native); with
-  none, the output is byte-identical to before.
+  counted in the funder total, with `fixed_eth_per_upload` **doubled** (a
+  browser-path payment is two transactions where a native one is one) while
+  `eth_per_gb` is unchanged. Throughput comes from the baseline's own WASM
+  records; failing that, from the NEAREST native uploader by size, labelled
+  `approx: native twin <host>` (a native rate over-funds, which is the safe
+  side). Native uploaders are sized from native records only.
+- `slack-post` and the `record-results --update-slack` reply render the two tiers
+  separately, and only when WASM clients exist.
 
-**Profile:** the WASM tier lives in `deploy/manifests/profiles/staging.yaml`
-itself — 3 WASM uploaders (900/300/20 MB) and 1 WASM downloader (8 GB VM: a
-browser-path download holds the whole file in WASM memory, ~4x file size)
-**ADDED on top of** the unchanged native tier, not swapped into it. 900 not 1000
-MB because ant-core caps a browser upload at 1,000,000,000 bytes. The profile's
-`nat_percent` dropped **30 → 10** for the same reason WASM's floors are
-advisory. Both changes make the first run on this profile a full
-**REBASELINE** — no earlier run is a valid baseline for it, which is what
-`--new-baseline` is for. The WASM binary is built from an ant-client **git tag**
-(`binaries.ant_wasm.branch: ant-cli-v<rc>`, `repo_owner: WithAutonomi`); no WASM
-package is published as a release. `build ant-wasm-check --branch <ref>
---repo-owner WithAutonomi` runs that same build **locally** in a temp dir and
-deploys nothing, so an ant-client API drift is caught before a build VM and ~10
-minutes are spent on it.
-
-**Verified against a local `ant-devnet`** (2026-09-07), not a cloud testnet: the
-WASM client runs under **plain Node.js** with `node-datachannel` supplying
-`globalThis.RTCPeerConnection` — no headless browser. HELLO, `find_node`, a
-5 MiB download and a real paid upload with byte-identical round-trip all pass.
-
-Two facts for whoever composes a run manifest:
-- **NAT.** Nodes behind the testnet's simulated inbound NAT are unreachable over
-  WebRTC-Direct without relayed WebRTC, and each dial burns a 10s DataChannel
-  timeout (`ant-node/docs/WEBRTC_DIRECT_TESTNET.md`). Use `nodes.nat_percent: 0`
-  — which also makes the run incomparable to a native baseline that used a
-  different NAT fraction.
-- **A WASM upload needs >= 7 initial PUT peers** before it will pay, so a small
-  fleet fails every upload with "Witnessed close group returned only N/7".
+**Profile:** the WASM tier lives in `staging.yaml` itself — 3 WASM uploaders
+(900/300/20 MB; 900 not 1000 because of the cap) and 1 WASM downloader on an
+8 GB VM — **added on top of** the unchanged native tier, not swapped into it. The
+profile's `nat_percent` dropped 30 → 10 for the same reason WASM's floors are
+advisory, and both changes made the first run on it a full **REBASELINE** (what
+`--new-baseline` is for). The WASM binary is built from an ant-client **git
+tag**. `build ant-wasm-check --branch <ref>` runs that same build **locally** in
+a temp dir and deploys nothing, so an ant-client API drift is caught before a
+build VM and ~10 minutes are spent on it.
 
 See `deploy/README.md` §"WASM client VMs (the browser path)".
 
@@ -1641,55 +1147,59 @@ against production.
 ### Simulating residential connections on client VMs (`network`)
 
 Client VMs sit on ~gigabit cloud links, which is not how real users reach the
-network — and upstream rate, which dominates uploads, is where a home line differs
-most. Any client VM can be shaped with `tc` to behave like a residential
-connection via a **`network:`** key taking either a built-in profile name or an
-inline mapping. Supported on `prod uploaders` (per-entry), `prod downloaders` /
-`prod continuous-downloader` (spec-level, CLI `--network`) — **the primary use
-case** — and on testnet/extension `clients.uploaders[]`/`downloaders[]`
-(secondary; CLI spec token `network=NAME`). NOT wired to `prod canary` or the
-`local-*` kinds. Omitting it leaves a deployment byte-identical to before.
+network — and upstream rate, which dominates uploads, is where a home line
+differs most. Any client VM can be shaped with `tc` via a **`network:`** key
+taking either a built-in profile name or an inline mapping. Supported on
+`prod uploaders` (per-entry), `prod downloaders` / `prod continuous-downloader`
+(spec-level, `--network`) — **the primary use case** — and on testnet/extension
+`clients.uploaders[]`/`downloaders[]` (secondary). NOT wired to `prod canary` or
+the `local-*` kinds. Omitting it leaves a deployment byte-identical to before.
 
-Profiles live in `deploy/saorsa_deploy/resources/network/profiles.yaml`,
-git-versioned with a `version:` echoed into every recorded run: `home-adsl`
-(10/1 Mbit), **`home-calibrated`** (27.4/6.29 Mbit, 12.7 ms — the only *measured*
-one, a real TalkTalk line as of 2026-07-30), `home-fttc` (60/18), `home-fttp`
-(300/50), `mobile-4g` (30/8, 60 ms, 20 ms jitter, 0.5% loss). Its loss is 0
-because 0/300 packets were lost — *below that sample's resolution*, not a proven
-lossless line. Impl: `provisioning/network_profile.py` (pure functions, mirroring
-the `clock_skew` seam), injected by `provisioning/{client,prod_uploader,
-prod_downloader}.py`.
+Profiles are git-versioned in `resources/network/profiles.yaml` with a
+`version:` echoed into every recorded run: `home-adsl` (10/1 Mbit),
+**`home-calibrated`** (27.4/6.29 Mbit, 12.7 ms — the only *measured* one, a real
+line as of 2026-07-30, whose loss is 0 because 0/300 packets were lost, i.e.
+*below that sample's resolution*, not a proven lossless line), `home-fttc`
+(60/18), `home-fttp` (300/50) and `mobile-4g` (30/8, 60 ms, 20 ms jitter, 0.5%
+loss).
 
 Four invariants, all load-bearing:
+
 - **Monitoring and SSH are exempt** (TCP 22/8086/9200 into an unshaped `htb`
   class). Otherwise the VM's own Telegraf metrics and forwarded client logs
   compete with the transfer for the capped uplink — the measured transfer comes
   out slower than a real user's (no user ships their own logs) and the run's
-  results can arrive incomplete, degrading the instrument taking the measurement.
-  Keyed on **port, not address**, because the ES VM is created *after* the client
-  VMs are provisioned, so its address does not exist when shaping is applied.
+  results can arrive incomplete, degrading the instrument taking the
+  measurement. Keyed on **port, not address**, because the ES VM is created
+  *after* the client VMs are provisioned, so its address does not exist when
+  shaping is applied.
 - **Delay is applied once, loss per direction.** RTT is a round-trip property, so
   `delay`/`jitter` go on egress only (both paths would double it); loss goes on
-  both, since inbound loss is what makes a *download* behave like a home download.
+  both, since inbound loss is what makes a *download* behave like a home
+  download.
 - **Queue depth is not a knob but is always a choice.** A rate cap implies a
-  queue; left to chance it gives either tail-drop collapse (throughput far below
-  the cap) or bufferbloat (standing delay that swamps `delay`). An explicit AQM is
-  pinned — `cake`, falling back to `fq_codel`. Relatedly every htb class sets an
-  explicit `quantum`: shaped and unshaped classes are four orders of magnitude
-  apart, so no single `r2q` avoids htb's "quantum too big/small" warnings.
+  queue, and left to chance it gives either tail-drop collapse (throughput far
+  below the cap) or bufferbloat (standing delay that swamps `delay`), so an
+  explicit AQM is pinned — `cake`, falling back to `fq_codel`. Relatedly every
+  htb class sets an explicit `quantum`: shaped and unshaped classes are four
+  orders of magnitude apart, so no single `r2q` avoids htb's warnings.
 - **Ingress needs an `ifb` mirror** — `tc` shapes egress only, so without it the
   downstream cap would not apply to downloads at all.
 
 Applied by a systemd oneshot (`ant-network-impairment.service`) so shaping
 survives reboot; the script is **convergent** (re-provisioning replaces rules
-rather than stacking — two `netem delay 30ms` would be 60 ms). The profile *name*
-is recorded on the four `deployment_*_records`/`_results` tables
-(`network_profile`, NULL = unshaped = every pre-feature row); the full resolved
-knob set lives once in `deploy_args`. Client egress is ~4x payload (fan-out), so
-at `home-adsl`'s 1 Mbit up a 100 MB upload takes ~67 min and 1 GB ~11 hours — size
-runs accordingly. **Never enable on a staging gate run**: `deployments compare`
-gates on transfer p50/p95 and shaped percentiles are not comparable to an unshaped
-baseline. See `deploy/README.md` §"Simulating a residential connection".
+rather than stacking — two `netem delay 30ms` would be 60 ms).
+
+- **Never enable on a staging gate run**: `deployments compare` gates on transfer
+  p50/p95, and shaped percentiles are not comparable to an unshaped baseline.
+- Client egress is ~4x payload (fan-out), so at `home-adsl`'s 1 Mbit up a 100 MB
+  upload takes ~67 min and 1 GB ~11 hours. Size runs accordingly.
+
+The profile *name* is recorded on the four `deployment_*_records`/`_results`
+tables (`network_profile`, NULL = unshaped = every pre-feature row); the full
+resolved knob set lives once in `deploy_args`.
+
+See `deploy/README.md` §"Simulating a residential connection".
 
 ### Cloud provider: Contabo (nodes + monitoring/logging)
 
@@ -1739,42 +1249,44 @@ When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) 
 
 ## The release ledger (`release-candidates` + `releases`)
 
-Two related command groups record the release train in the registry. Both are
-CLI-only — not exposed over the REST API — and both **require
-`DATABASE_URL`**, exiting non-zero rather than silently no-opping the way the
-deployment registry does. Both are driven by skills in the separate
-`releases` repo (`/home/chris/dev/releases/.claude/skills/`), not from this one.
+Two command groups record the release train in the registry. Both are
+**CLI-only** (not exposed over the REST API) and both **require `DATABASE_URL`**,
+exiting non-zero rather than silently no-opping the way the deployment registry
+does. Both are driven by skills in the separate `releases` repo
+(`/home/chris/dev/releases/.claude/skills/`), not from here — and those skills
+call the **bare** `saorsa-deploy` binary, since their cwd would make `uv run`
+resolve the wrong project.
 
-**`release-candidates`** (pre-existing) records each RC *cut*: one row per
-binary target (`ant-node 0.17.1-rc.1`, `ant 0.3.3-rc.1`), its constituent crates,
-and the PRs that landed in each. An `rc.N+1` respin cuts a **new** row — RCs are
-not re-edited.
+**`release-candidates`** records each RC *cut*: one row per binary target
+(`ant-node 0.17.1-rc.1`, `ant 0.3.3-rc.1`), its constituent crates, and the PRs
+that landed in each. An `rc.N+1` respin cuts a **new** row — RCs are not
+re-edited.
 
-**`releases`** (V2-1015) records the *channel state* of what actually shipped:
-`ship` → `promote` | `rolled-past`, plus `current` / `ls` / `show`. It exists
-because "what is on stable, what is on beta, how long has it soaked" was
-answerable only from GitHub tags and hand-transcribed prose in a Linear issue,
-and a beta the channel **rolled past** left no trace anywhere but a closed issue.
+**`releases`** records the *channel state* of what actually shipped: `ship` →
+`promote` | `rolled-past`, plus `current` / `ls` / `show`. It exists because
+"what is on stable, what is on beta, how long has it soaked" was answerable only
+from GitHub tags and hand-transcribed prose in a Linear issue, and a beta the
+channel **rolled past** left no trace anywhere but a closed issue.
 
-Design points that are load-bearing:
+Load-bearing design points:
 
-- **A separate table, not lifecycle columns on `release_candidates`.** Respins
+- **A separate table, not lifecycle columns on `release_candidates`** — respins
   produce several RC rows per release; the release is the lineage that shipped.
-- **One row per binary target**, matching the RC granularity — a train records
-  two releases sharing one `rc_branch`, and some trains ship only one.
-- **`releases.version` is the final, suffix-free version** (`0.17.1`). The beta
+- **One row per binary target**, matching the RC granularity: a train records two
+  releases sharing one `rc_branch`, and some trains ship only one.
+- **`releases.version` is the final, suffix-free version** (`0.17.1`); the beta
   suffix lives in `beta_tag`. That is what lets `promote` complete the same row
   the `ship` created.
 - **`release_crates` is NOT a reuse of `release_candidate_crates`.** RC crate
-  rows carry rc-suffixed versions and RC tags (`evmlib 0.9.1-rc.1`,
-  `ant-cli-v0.3.3-rc.1`); a released crate carries the suffix-free version and
-  the final tag. Reusing them would record the wrong versions against the release.
-- **The FK to `release_candidates` is resolved by the
-  `(binary_target, binary_version)` natural key**, not by id — `release-from-rc`
-  never holds the RC row id. It is nullable, and a miss warns rather than failing:
-  a ship record is worth having without the link.
+  rows carry rc-suffixed versions and RC tags; a released crate carries the
+  suffix-free version and the final tag, so reusing them would record the wrong
+  versions against the release.
+- **The FK to `release_candidates` is resolved by the `(binary_target,
+  binary_version)` natural key**, not by id — `release-from-rc` never holds the
+  RC row id. It is nullable, and a miss warns rather than failing: a ship record
+  is worth having without the link.
 - **`shipped_to_beta` is the only entry state; `promoted` and `rolled_past` are
-  terminal.** The repository refuses to leave a terminal state. A stable version
+  terminal.** The repository refuses to leave a terminal state — a stable version
   that quietly stopped being stable would make every later answer untrustworthy.
 - **`--reason` is required on `rolled-past`** — a rolled-past row with no reason
   says nothing the release's absence would not.
@@ -1784,20 +1296,15 @@ Design points that are load-bearing:
 - **Soak state has three values**: elapsed, not elapsed, and *unknown* (no
   planned promotion date recorded). Unknown is never collapsed into "not yet".
 
-Consumers, all in the `releases` repo: `ship-to-beta` Step 7 (`releases ship`),
-`release-from-rc` Step 10.3 (`releases promote --from-file`, replacing its old
-"if a recording command exists" hedge), and `beta-health-verdict`, which sources
-the beta version, ship date, soak window and the stable **control** version from
-`releases current` instead of scraping the Linear issue, and records
-`releases rolled-past` on a NO-PROMOTE verdict. Those skills call the **bare**
-`saorsa-deploy` binary (their cwd is the `releases` repo, where `uv run` would
-resolve the wrong project).
+Consumers, all in the `releases` repo: `ship-to-beta` Step 7, `release-from-rc`
+Step 10.3, and `beta-health-verdict`, which sources the beta version, ship date,
+soak window and the stable **control** version from `releases current` instead of
+scraping the Linear issue, and records `releases rolled-past` on a NO-PROMOTE
+verdict.
 
-See `deploy/README.md` §"Recording releases and channel state" for the full
-argument tables and the promote payload schema.
+See `deploy/README.md` §"Recording releases and channel state".
 
-
-### Sizing uploader gas funding (`clients estimate-gas`)
+## Sizing uploader gas funding (`clients estimate-gas`)
 
 Testnet uploader wallets hold a **fixed** amount of native ETH, so runway is inversely
 proportional to the gas price — when the price rises the same funding buys fewer
