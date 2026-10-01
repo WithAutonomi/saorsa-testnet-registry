@@ -220,6 +220,21 @@ simplification on both arms, so the ratio is unbiased.
 
 Control: chunk rpc traffic summary documents in the window.
 
+## `rss_slope.py`
+
+Per-service RSS slope from InfluxDB (`ant_node_memory.vm_rss`), **record-only** —
+it asserts nothing and always exits 0. Raised because the staging memory-leak
+gate passed at 4.239 %/h against a 5 %/h limit, close enough to be worth
+watching; but production's median over 6h measured 0.572 %/h, an order of
+magnitude below, so applying staging's threshold here would be false precision.
+The figures accumulate across trains until there is enough history for a real
+one.
+
+`ant_node_memory` carries no version tag, so unlike every other script here this
+cannot split by rollout arm — run it once the fleet is uniform. Influx host names
+are also mixed-case where Elasticsearch's are upper-case, so the two are not
+directly joinable.
+
 ## Not in this directory
 
 `scripts/client_artefact_smoke.py` lives one level up: it proves a shipped `ant`
