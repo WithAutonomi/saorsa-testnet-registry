@@ -4301,6 +4301,7 @@ seed before the rollout starts.
 ```bash
 uv run saorsa-deploy prod rollout-watch --to-version 0.20.0
 uv run saorsa-deploy prod rollout-watch --to-version 0.20.0 --window 6h --json-out watch.json
+uv run saorsa-deploy prod rollout-watch --to-version 0.20.0 --pretty
 ```
 
 | Argument | Required | Default | Description |
@@ -4309,8 +4310,17 @@ uv run saorsa-deploy prod rollout-watch --to-version 0.20.0 --window 6h --json-o
 | `--name` | no | `ant-prod-01` | Deployment whose elastic state supplies the ES URL, API key and the `telegraf-ant-nodes-<name>-*` index. No other credential path. |
 | `--window` | no | `1h` | The health window ending now (`15m`, `1h`, `6h`, `24h`). Adoption is always measured over the last 15 minutes. |
 | `--json-out` | no | — | Also write the full result as JSON to this path. |
+| `--pretty` | no | off | Render the five sections as terminal tables instead of markdown. |
 
 The report is one markdown block on stdout, in five sections.
+
+`--pretty` swaps that markdown for `rich` tables: the same five sections, the
+same numbers, drawn for a terminal rather than for a paste into an issue, with
+the version on target, a failure row, a restart loop and a diverging per-arm
+ratio coloured. It is **presentation only** — both renderers read the one result
+dict `build_report` returns, so they cannot disagree, and neither can
+`--json-out`, which is written either way. The markdown stays the default
+because the report's consumers are the rollout write-ups.
 
 **1. Adoption.** The denominator is every distinct `(host, service_number)` that
 logged in the last 15 minutes — "running services", including the bootstraps. A

@@ -37,6 +37,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 import requests
+from rich import box
+from rich.console import Console
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
 
 from saorsa_deploy.analysis.es import EsRun
 from saorsa_deploy.es_log_counts import (
@@ -1023,6 +1029,251 @@ def render_report(result: dict) -> str:
     return "\n".join(lines)
 
 
+# -- pretty rendering ------------------------------------------------------
+# Presentation only. Every number below is read out of the same `result` dict
+# the markdown renderer reads, so the two renderings cannot disagree: the
+# markdown remains the form that gets pasted into an issue, this one is for
+# reading in a terminal.
+def _ratio_style(value: float | None) -> str:
+    """Highlight a per-arm divergence.
+
+    Deliberately not a verdict: `wire_tx_bytes/service-hour` moving is a
+    traffic measurement rather than a fault, so the colour marks how far the
+    arms are apart and leaves which direction is good to the reader.
+    """
+    if value is None:
+        return "dim"
+    if value >= 1.25:
+        return "bold red"
+    if value >= 1.05:
+        return "yellow"
+    if value <= 0.8:
+        return "cyan"
+    return ""
+
+
+def _version_style(version: str, to_version: str) -> str:
+    if version == to_version:
+        return "green"
+    if version == UNKNOWN_VERSION:
+        return "dim"
+    return "yellow"
+
+
+def _table(*columns: str | tuple[str, str], title: str | None = None) -> Table:
+    """Numbers right, text left.
+
+    A column is right-aligned unless it is given as `(name, "left")` — a list
+    of service names right-aligned against a count reads as a column of
+    ragged text.
+
+    Nothing is `no_wrap`: a §4 metric name runs to 74 characters
+    (`webrtc::peer_connection::peer_connection_internal ERROR/1k
+    service-hours`), and pinning the first column at its full width on an
+    80-column terminal left rich nothing to give the number columns — they
+    came out one character wide, so the measurements, which are the point of
+    the table, were invisible. Let the names wrap and the numbers always fit.
+    """
+    table = Table(title=title, title_justify="left", box=box.SQUARE, header_style="bold")
+    for index, column in enumerate(columns):
+        name, justify = column if isinstance(column, tuple) else (column, "right")
+        table.add_column(name, justify="left" if index == 0 else justify)
+    return table
+
+
+def _esc(value) -> str:
+    """Escape a value that came out of Elasticsearch.
+
+    Rich reads `[...]` in a cell as markup, and every message, target and
+    version in this report is node log text: an upgrade error carrying
+    `[2/3]`, or any other square bracket, would otherwise be swallowed as a
+    style tag or raise outright, losing exactly the detail the failures table
+    exists to show.
+    """
+    return escape(str(value))
+
+
+def _section(console: Console, heading: str) -> None:
+    console.print()
+    console.print(Rule(f"[bold]{heading}[/bold]", align="left", style="dim"))
+    console.print()
+
+
+def render_report_pretty(result: dict, console: Console | None = None) -> None:
+    """Print the report as terminal tables instead of markdown.
+
+    Reads the same `result` dict `render_report` reads and recomputes nothing,
+    so `--pretty` can only ever change how the report looks.
+    """
+    console = console or Console()
+    adoption = result["adoption"]
+    to_version = result["to_version"]
+
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]{_esc(result['name'])}[/bold] → "
+            f"[bold cyan]{_esc(to_version)}[/bold cyan]\n"
+            f"Window {result['window']}  "
+            f"[dim]{result['window_start']} → {result['window_end']}[/dim]\n"
+            f"Adoption since [dim]{result['adoption_since']}[/dim]",
+            title="[bold]rollout watch[/bold]",
+            title_align="left",
+            expand=False,
+            padding=(0, 2),
+        )
+    )
+
+    _section(console, "1. Adoption")
+    bootstraps_total = adoption["bootstrap_services"]
+    table = _table("version", "services", "share", "hosts", "bootstraps")
+    for row in adoption["versions"]:
+        style = _version_style(str(row["version"]), to_version)
+        table.add_row(
+            _esc(row["label"]),
+            str(row["services"]),
+            f"{row['share']:.1f}%",
+            str(row["hosts"]),
+            f"{row['bootstraps']}/{bootstraps_total}",
+            style=style,
+        )
+    console.print(table)
+    plural = "" if bootstraps_total == 1 else "s"
+    console.print(
+        f"Running services: [bold]{adoption['running_services']}[/bold] across "
+        f"{adoption['running_hosts']} hosts ({bootstraps_total} bootstrap{plural})."
+    )
+    console.print(f"Checkpoint band: [bold]{_esc(adoption['band'])}[/bold]")
+
+    _section(console, "2. Upgrade events in the window")
+    counts: dict[str, int] = {}
+    table = _table("event", "count")
+    for event in result["upgrade_events"]["events"]:
+        counts[event["message"]] = event["count"]
+        table.add_row(_esc(event["label"]), str(event["count"]))
+    console.print(table)
+
+    replaced = counts.get(REPLACED_PREFIX, 0)
+    reused = counts.get(REUSED_PREFIX, 0)
+    succeeded = counts.get(SUCCESS_PREFIX, 0)
+    adds_up = replaced + reused == succeeded
+    verdict = "[green]ok[/green]" if adds_up else "[bold red]DOES NOT ADD UP[/bold red]"
+    console.print(
+        f"Detail check: {replaced} replaced + {reused} reused = {replaced + reused}, "
+        f"against {succeeded} succeeded — {verdict}"
+    )
+
+    console.print()
+    failures = result["upgrade_events"]["failures"]
+    if not failures:
+        console.print("Failures: [green]none[/green].")
+    else:
+        table = _table(
+            "failure",
+            "count",
+            ("services", "left"),
+            ("note", "left"),
+            title=(
+                "[bold red]Failures[/bold red] [dim](the only §2 table that breaches "
+                "the rollout gate)[/dim]"
+            ),
+        )
+        for failure in failures:
+            table.add_row(
+                _esc(failure["message"]),
+                str(failure["count"]),
+                _esc(", ".join(failure["services"])),
+                _esc(", ".join(failure["notes"])) or "—",
+                style="red",
+            )
+        console.print(table)
+
+    console.print()
+    transient = result["upgrade_events"]["transient"]
+    if not transient:
+        console.print("Transient check errors: [green]none[/green].")
+    else:
+        table = _table(
+            "error",
+            "count",
+            ("services", "left"),
+            ("status", "left"),
+            title=(
+                "Transient check errors [dim](the check phase failed, nothing was "
+                "attempted; informational, not a gate breach)[/dim]"
+            ),
+        )
+        for entry in transient:
+            recovered = not entry["follow_up"]
+            status = (
+                "[green]all recovered[/green]"
+                if recovered
+                else f"[yellow]follow up: {_esc(', '.join(entry['follow_up']))}[/yellow]"
+            )
+            table.add_row(
+                _esc(entry["message"]),
+                str(entry["count"]),
+                _esc(", ".join(entry["services"])),
+                status,
+            )
+        console.print(table)
+
+    _section(console, "3. Restarts in the window")
+    if not result["restarts"]:
+        console.print("No service started more than once.")
+    else:
+        table = _table("service", "starts", ("versions seen", "left"), ("flag", "left"))
+        for restart in result["restarts"]:
+            looping = restart["restart_loop"]
+            table.add_row(
+                _esc(restart["service"]),
+                str(restart["starts"]),
+                _esc(", ".join(restart["versions"])) or "—",
+                "[bold red]restart-loop[/bold red]" if looping else "",
+                style="red" if looping else "",
+            )
+        console.print(table)
+
+    _section(console, "4. Per-arm health")
+    per_arm = result["per_arm"]
+    if per_arm["suspended"]:
+        console.print(f"[yellow]Per-arm comparison suspended:[/yellow] {_esc(per_arm['reason'])}.")
+    else:
+        arm_counts_, hours = per_arm["service_counts"], per_arm["service_hours"]
+        console.print(
+            f"new arm: [bold]{arm_counts_['new']}[/bold] services, "
+            f"{hours['new']:.2f} service-hours.    "
+            f"old arm: [bold]{arm_counts_['old']}[/bold] services, "
+            f"{hours['old']:.2f} service-hours."
+        )
+        console.print()
+        table = _table("metric", "new", "old", "ratio (new/old)")
+        for row in per_arm["rows"]:
+            table.add_row(
+                _esc(row["metric"]),
+                _num(row["new"]),
+                _num(row["old"]),
+                f"[{_ratio_style(row['ratio'])}]{_num(row['ratio'])}[/]"
+                if _ratio_style(row["ratio"])
+                else _num(row["ratio"]),
+            )
+        console.print(table)
+
+    _section(console, "5. Version telemetry")
+    telemetry = result["version_telemetry"]
+    commits = telemetry["new_arm_commits"]
+    console.print(
+        f"node_commit values on the new arm: [bold]{len(commits)}[/bold]"
+        + (f" ({_esc(', '.join(commits))})" if commits else "")
+    )
+    missing = telemetry["missing_node_version_docs"]
+    console.print(
+        f"new-arm documents since {result['adoption_since']} with tag.node_version "
+        f"missing: " + (f"[yellow]{missing}[/yellow]" if missing else "[green]0[/green]")
+    )
+    console.print()
+
+
 # -- command ---------------------------------------------------------------
 def cmd_prod_rollout_watch(args) -> int:
     requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
@@ -1040,7 +1291,10 @@ def cmd_prod_rollout_watch(args) -> int:
         window=window,
         now=datetime.now(timezone.utc),
     )
-    print(render_report(result))
+    if getattr(args, "pretty", False):
+        render_report_pretty(result)
+    else:
+        print(render_report(result))
     if args.json_out:
         with open(args.json_out, "w") as fh:
             json.dump(result, fh, indent=2)
