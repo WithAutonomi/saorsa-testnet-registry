@@ -96,6 +96,20 @@ Use the abstract interface for unit testing with fakes.
 - `DeploymentEvent` — id, deployment_id (FK), event_type, details (JSON), timestamp
 - `DeploymentStatus` — pending, running, stopped, failed, destroying, destroyed
 
+## Deployment Statuses
+
+`pending` → `running` → `stopped` (success) or `failed`
+
+When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) or `failed`
+
+## API Endpoints (Read-Only)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/deployments` | List all deployments |
+| GET | `/api/deployments/<id>` | Get deployment with events |
+| GET | `/api/deployments/<id>/events` | List deployment events |
+
 ## Development
 
 ```bash
@@ -201,16 +215,31 @@ sequence these from a manifest.
 
 ### Extending a testnet (shared bootstraps)
 
-A testnet can be deployed as an **extension** of another — it reuses the source testnet's bootstrap VMs and peers with them, but has its own fresh node VMs (typically running a different `ant-node` binary for compatibility testing). Commands:
+A testnet can be deployed as an **extension** of another: it reuses the source
+testnet's bootstrap VMs and peers with them, but has its own fresh node VMs,
+typically running a different `ant-node` binary for compatibility testing.
 
-- `deployments extend --name DEV-02 --source DEV-01` — seeds DEV-02's state with a copy of DEV-01's `bootstrap_nodes` / `bootstrap_ip` / `bootstrap_port` and records `shared_bootstrap_from: "DEV-01"`. No infrastructure is created. Idempotent: re-running refreshes the bootstrap fields from the source.
-- `deployments unextend --name DEV-02 --force` — inverse: deletes DEV-02's deployment state. Never touches the source. Refuses if DEV-02 still has nodes or clients (run `nodes destroy` / `clients destroy` first).
+- `deployments extend --name DEV-02 --source DEV-01` copies DEV-01's
+  `bootstrap_nodes`/`bootstrap_ip`/`bootstrap_port` into DEV-02's state and
+  records `shared_bootstrap_from`. **No infrastructure is created.** Idempotent.
+- `deployments unextend --name DEV-02 --force` deletes DEV-02's deployment state.
+  Never touches the source. Refuses if DEV-02 still has nodes or clients.
 
-The pipeline for an extension skips the bootstrap/genesis stages entirely: `deployments extend` → `nodes infra` → `nodes provision` → `nodes start`. Destroy: `nodes destroy` → `deployments unextend`.
+The pipeline **skips the bootstrap/genesis stages entirely**: `extend` →
+`nodes infra` → `nodes provision` → `nodes start`. Destroy is `nodes destroy` →
+`unextend`.
 
-An extension may also carry its **own client tier** (`extension.clients`, same shape as `testnet.clients`, requires `extension.binaries.ant`) — the way to run a second client-version cohort against the same network for mixed-version testing. Extension clients ride the normal `clients infra` → `clients provision` → `clients start` pipeline under the extension's name: they bootstrap off the seeded (source) bootstrap peers, publish/fetch upload addresses under the extension's own S3 prefix (its downloaders consume its uploaders' addresses, not the source's), and report metrics to the extension's own monitoring stack — so each cohort's client metrics stay separable per deployment name. Destroy order becomes `clients destroy` → `nodes destroy` → `deployments unextend`.
+- **`bootstraps destroy` refuses if any deployment's `shared_bootstrap_from`
+  matches the name being destroyed, and `--force` does NOT override it** — you
+  must `unextend` each dependent first.
+- An extension may carry its **own client tier** (`extension.clients`, requires
+  `extension.binaries.ant`) — the way to run a second client-version cohort
+  against the same network. Its clients bootstrap off the seeded peers and
+  publish/fetch addresses under the **extension's own** S3 prefix, so each
+  cohort's metrics stay separable per deployment name. Destroy order becomes
+  `clients destroy` → `nodes destroy` → `unextend`.
 
-`bootstraps destroy` now scans for any deployment whose `shared_bootstrap_from` matches the name being destroyed and refuses if dependents exist. `--force` does not override this — the user must `deployments unextend` each dependent first.
+See `deploy/README.md` §"`deployments extend` / `deployments unextend`".
 
 ### Running a prod continuous-downloader
 
@@ -260,47 +289,116 @@ can be left alone until destroy. Same provisioner and script, toggled by
 
 See `deploy/README.md` §"Running one-shot downloaders against production".
 
+### The browser path (WASM): rules common to every kind
+
+`ant-cli` **cannot** exercise the WebRTC-Direct browser path — it links native
+`ant-core`, so it takes the native transport however it is invoked. Several kinds
+therefore have a WASM variant that runs the transfers through ant-core compiled
+to WASM. The rules below hold for all of them; each kind's own section states
+only what differs.
+
+- **`ant-wasm` is a drop-in for `ant`.** Installed at `/usr/local/bin/ant-wasm`
+  from the bundle's `dist/cli.js`, it supports `file upload --public` and `file
+  download`, reads `SECRET_KEY`/`BOOTSTRAP_MULTIADDRS`/`RUST_LOG` from the
+  environment (no `--evm-network`/`--bootstrap` — the payment identity comes from
+  a node's HELLO), and prints a **final JSON line in the `ant --json` shape**
+  plus `payment_sent`, `error_kind`, `file_size`, `client_build`. That shape is
+  what leaves the services, their units, their per-op logs and their restart
+  policies **unchanged by the transport**.
+- **The transport is a property of the DEPLOYMENT** (`client_kind: native|wasm`,
+  CLI `--client-kind`, persisted in `deploy_args.client_kind`), because a blended
+  result describes neither instrument — WASM measured ~2.2x slower on upload and
+  ~4.2x on download. **The one exception is `prod uploaders`**, where it is per
+  uploader on purpose, so both transports meet the same network at the same time.
+- **Results stay separate at every layer.** WASM operations land in the
+  **`wasm-client-metrics`** Influx bucket (they are the same `upload`/`download`
+  measurements, so one bucket would let any panel average the two), and a
+  nullable **`client_kind`** column labels each Postgres row. **NULL reads as
+  native.**
+- **`record-results` never erases `client_kind`, and resolves it from
+  `deploy_args`, not S3 client state** — `clients destroy` deletes that state, so
+  a re-run after teardown would otherwise relabel every WASM op as native and
+  push its failures into the NATIVE hard floors. The upsert **COALESCEs**: a NULL
+  never overwrites a known transport.
+- **The file cap is ant-core's, not the network's**: it refuses a browser-path
+  file above `WASM_MAX_FILE_BYTES` (1,000,000,000). What each kind does about it
+  differs — a download **skips**, a pool draw is **refused or clamped** — but an
+  over-cap file is never counted in a success-rate denominator, and a **bare
+  address line is never treated as over-cap** (unknown is not "too big").
+- **An upload that failed is classified by whether a payment went out**:
+  `payment_sent: true` in the result JSON **or** the existence of the
+  `--payment-marker` file. The marker is the only evidence left when an OOM
+  kills the WASM child (the largest RSS on the VM) after the money went out but
+  before it printed anything, and trusting only the JSON would return a paid-for
+  file to the pool.
+- **`bootstrap_cache` is refused on every WASM role** — it selects between ant's
+  peer cache and an explicit `--bootstrap`, and a browser client does neither.
+  Passing it is a hard error, not a silent no-op. Each kind refuses further
+  options that act on the `ant` process; a silently-dropped option leaves the
+  operator reading their own manifest as a description of the run.
+- **8 GB minimum on the prod kinds**, validated exactly on DigitalOcean slugs
+  (memory is encoded in the slug, so it is a fact) and only warned about
+  elsewhere. A browser-path transfer holds ~4x the file in WASM memory, so an
+  under-sized box makes every transfer an OOM kill, which reads as a network
+  fault.
+- **`wasm_binary: {branch, repo_owner}` takes a branch or a TAG** (that is how an
+  RC is pinned); `version:` is refused, since no ant-core WASM package is
+  published as a release. **`build ant-wasm` runs `npm ci`** against the
+  committed lockfile — `npm install` could resolve a different
+  `node-datachannel`, the WebRTC implementation the whole path runs on, for the
+  same ant-client ref — and writes a `build-info.json` plus an S3 sidecar holding
+  the ant-client **commit**. The commit is what identifies the code; a moving
+  branch name does not.
+- **`client_build` travels with each operation**, because `deploy_args.wasm_build`
+  holds only the current build and is overwritten. `ant-wasm` reads its own
+  bundle's `build-info.json` and puts the commit on every result row.
+  **NULL means unknown build** and the upsert COALESCEs, as `client_kind` does.
+  No past row can be backfilled — the Influx points never held the field.
+- **The prod bootstraps are ICE-probed before any infrastructure exists** on the
+  prod kinds, from the committed
+  `resources/prod_bootstrap_webrtc_multiaddrs.txt` (there is deliberately no URL
+  flag — nothing publishes these addresses at a URL). **Zero answering refuses**
+  (the alternative is a VM billing from creation that fails every op); a partial
+  answer warns, names the dead entries and proceeds, since ant-core cools a
+  failed endpoint down for 30 minutes and a live subset is a working deployment.
+  `--skip-bootstrap-probe` exists because ant-node opens the listener 2–15 min
+  after a restart.
+
+Shared implementation: `prod_wasm.py` + `cmd/prod_wasm_cli.py` (the prod-WASM
+foundation), `provisioning/wasm_client.py`, `resources/wasm-client/src/cli.ts`.
+
 ### The browser path on the production download kinds (WASM)
 
-Both remote download kinds take **`client_kind: native|wasm`** (CLI
-`--client-kind`, default native). `wasm` runs the transfers over WebRTC-Direct
-through ant-core compiled to WASM instead of the native `ant`, measuring what a
-browser client experiences against the real production network — which nothing
-else does, since `ant-cli` links native ant-core whatever you pass it.
-**One transport per deployment**, persisted in `deploy_args.client_kind` (WASM
-measured ~4.2x slower on download, so a blended result describes neither).
+Both remote download kinds take **`client_kind: native|wasm`**, measuring what a
+browser client experiences against the REAL production network. See "rules common
+to every kind" above for the transport, results, cap, sizing and probe rules.
+Example: `deploy/manifests/profiles/prod-wasm-downloaders.yaml`.
 
-`ant-wasm` is a single-operation CLI and a **drop-in for `ant`** at
-`/usr/local/bin/ant-wasm`: it prints a final JSON line in the `ant --json` shape,
-so the prod Python services, their units, their per-op logs and their restart
-policies are unchanged by the transport.
+What is specific to the download kinds:
 
-What will bite you:
-
-- **Over-cap is a SKIP, not a failure.** ant-core refuses a file above
-  `WASM_MAX_FILE_BYTES` (1,000,000,000) — a property of the transport, not the
-  network. Wire value `2` (`OpRecordStatus.SKIPPED`); stored, but excluded from
-  **every** success-rate denominator. A **bare address line is never skipped** —
-  unknown is not "too big".
-- **Refused, not ignored**: `bootstrap_cache`, `memory_profiling`,
-  `download_diagnostics` (all act on the `ant` process). `rust_log`, `network`
-  and `clock_skew` work normally.
-- **`record-results` takes `client_kind` from `deploy_args`, not S3 client
-  state** — `clients destroy` deletes that state, and a re-run after teardown
-  would relabel every WASM op as native and push its failures into the native
-  hard floors.
-- **8 GB minimum**, refused outright on a DO slug below it (a browser-path
-  download holds ~4x the file in WASM memory); other providers only warn.
-- Bootstraps are **ICE-probed before any infrastructure exists** (zero answering
-  refuses, partial warns). `--skip-bootstrap-probe` exists for the 2–15 min
-  listener delay after an ant-node restart.
-- Results land in the **`wasm-client-metrics`** Influx bucket.
-
-`wasm_binary: {branch, repo_owner}` takes a branch **or a tag** (`version:` is
-refused — no ant-core WASM package is published as a release). `build ant-wasm`
-runs `npm ci` against the committed lockfile and writes a `build-info.json` plus
-an S3 sidecar holding the ant-client **commit** — the commit is what identifies
-the code, where a moving branch name does not.
+- **Over-cap is a SKIP, not a failure.** The content is stored and healthy, so a
+  refusal is a property of the transport. Address lines are `<address>[ <bytes>]`,
+  so a declared over-cap size is skipped **up front** with nothing spawned, and a
+  child's `error_kind=over_cap` is recorded as a skip too. `status` is an integer
+  Influx field (a string would be a type conflict and the point would be
+  dropped), so the wire value is **`2`** → `OpRecordStatus.SKIPPED`. Skipped rows
+  are STORED but excluded from every success-rate denominator — with a six-address
+  list holding two over-cap entries, counting them would cap the gate at 66.7%
+  and fail every run.
+- **Crash accounting comes free**: the WASM process is the largest RSS on the VM,
+  so an OOM lands on the **child**, the parent sees a signal exit, records
+  `error_kind=crash` and continues — no checkpoint, no `inflight.json`, no
+  restart-policy change.
+- **Refused, not ignored**: `memory_profiling` and `download_diagnostics` (both
+  act on the `ant` process). `rust_log`, `network` and `clock_skew` work normally
+  — and `network` is now actually threaded through `prod continuous-downloader`'s
+  infra step, where it had been dropped for native too.
+- A nullable **`address`** column on `deployment_download_records` records what
+  each op fetched (both transports emit it now; nothing else maps an operation to
+  its target). `print-downloads`, `print-recorded-results`, `slack-post` and
+  `record-results --update-slack` render the per-transport split with skip and
+  crash counts; the Slack post names the bundle commit and the probe result.
+- The testnet `ROLE` loop (`dist/main.js`) is untouched.
 
 See `deploy/README.md` §"The browser path on the production download kinds".
 
@@ -325,33 +423,38 @@ See `deploy/README.md` §"Upgrading the `ant` binary in place".
 `deployments upgrade-wasm-client --name <n> [--name <n>...] --branch-name <ref>`
 replaces the WASM bundle on a running **`prod-continuous-uploader`** or
 **`prod-continuous-downloader`** VM over SSH and restarts its unit. The permanent
-prod WASM deployments are a *series*, so iterating on the client must not break
-it — `upgrade-ant-binary` covers only native `ant`, and re-running `up` would
-call `record_deployment_created` again and start a fresh registry row.
+prod WASM deployments are a *series*, and the point of them is the series, so
+iterating on the client must not break it — `upgrade-ant-binary` covers only
+native `ant`, and re-running `up` would call `record_deployment_created` again
+and start a fresh registry row. (`client_build`, which records *which* build
+performed each transfer and is what makes an in-place upgrade analysable, is in
+the common WASM rules above.)
 
-- **Everything is refused before anything is built** (wrong kind, `client_kind:
-  native`, unknown name, no client state), all problems reported in one
-  invocation, because a build is ~10 minutes on a billing VM. `DATABASE_URL` is
-  required.
-- **One build, all names** — built under the FIRST name and the same bundle URL
-  installed everywhere; identical bytes are what keep the deployments comparable.
+- **Everything is refused before anything is built** — another kind,
+  `client_kind: native`, an unknown name, or no client state — with all problems
+  in one invocation, because a build is ~10 minutes on a VM that bills.
+  `DATABASE_URL` is required (the kind, the transport and the old commit all come
+  from the registry). The one-shot kinds are rebuilt by every `up`, and a
+  testnet's WASM tier dies with its testnet, so neither needs this.
+- **One build, all names.** Built once under the FIRST named deployment and the
+  same bundle URL installed everywhere — installing identical bytes is what keeps
+  the deployments comparable, where a build per deployment could give each a
+  different commit of a branch that moved in between.
 - **The continuous uploader's verifier VMs are deliberately untouched** (they are
   native, so a `digest_mismatch` stays attributable to the upload rather than to
   a browser read path).
-- A failure on one deployment still upgrades the rest, exiting non-zero at the end.
+- Timing is the operator's — run it outside the daily window. A failure on one
+  deployment is reported and the rest still upgrade, exiting non-zero at the end.
 - On success `deploy_args.wasm_build` is replaced and a `wasm_client_upgraded`
-  event records old/new commit; on failure `deploy_args` is left alone, so the
-  registry never claims a build a VM did not take.
-- A run manifest still pinning a different `wasm_binary.branch` is warned about —
-  the next `up` would roll the upgrade back.
-
-**`client_build` — which build performed each transfer.** `deploy_args.wasm_build`
-holds only the CURRENT build and is overwritten, so the commit travels with the
-operation instead: `ant-wasm` reads its own bundle's `build-info.json` and adds
-`client_build` to its result line, and a nullable `client_build` column on the
-three result tables receives it. **NULL means unknown build** and the upsert
-**COALESCEs** (as `client_kind` does), so a re-record from a source without a
-build never erases one. No past row can be backfilled.
+  event records `{old_commit, new_commit, ref, repo_owner, upgraded_at}`; a
+  failure records `wasm_client_upgrade_failed` and leaves `deploy_args` alone, so
+  the registry never claims a build a VM did not take.
+- A run manifest under `deploy/manifests/runs/` still pinning a different
+  `wasm_binary.branch` is warned about — the next `up` would roll the upgrade
+  back.
+- `print-recorded-results` splits its tables and totals footers by `client_build`
+  whenever a deployment shows more than one; with one (or none) the output is
+  unchanged.
 
 See `deploy/README.md` §"Upgrading the WASM client in place".
 
@@ -484,39 +587,37 @@ See `deploy/README.md` §"The daily production write test".
 
 #### The browser path on the daily write test (WASM)
 
-`client_kind: native|wasm` (CLI `--client-kind`, default native) makes the
-**uploader** service spawn `ant-wasm`, so the daily test answers whether a
-*browser* client can still write to production. **One transport per deployment**
-(the browser path measured several times slower), persisted in
-`deploy_args.client_kind`; the WASM series is its own deployment alongside the
-native one. Everything around the spawn is unchanged — the per-cycle
+`client_kind: native|wasm` makes the **uploader** service spawn `ant-wasm`, so
+the daily test answers whether a *browser* client can still write to production.
+The WASM series is its own deployment alongside the native one. See "rules common
+to every kind" above. Everything around the spawn is unchanged — the per-cycle
 `claim_pool_files`, the SHA-256, the Postgres writes, the replacement logic, the
-unit names and restart policies.
+unit names and restart policies. Example:
+`deploy/manifests/profiles/prod-wasm-continuous-uploader.yaml`.
+
+What is specific to this kind:
 
 - **The read-back runs over the same transport** (the VM's own view as a browser
   user), but **the independent verifier VMs stay NATIVE**, so a
   `digest_mismatch` remains attributable to the upload rather than to the browser
-  read path.
-- **A failed upload is classified by whether a payment went out** — partial if it
-  did (chunks may be in production, so a canary must never draw the file),
-  released if it did not (nothing reached the network, so burning the entry would
-  be a lie). The result JSON's `payment_sent` **or** the `--payment-marker` file
-  decides it, the latter being the only evidence left when an OOM kills the WASM
-  child after the money went out. A signal exit records `error_kind=crash`. The
-  native "no result document + non-zero exit → release" rule is untouched.
+  read path. The browser read path is covered by the read-back and by
+  `prod downloaders --client-kind wasm`.
+- A failed upload is partial if a payment went out, released if not (see the
+  common rules). **The native "no result document + non-zero exit → release" rule
+  is untouched.**
 - **The success check is on the `error` key's VALUE, not its presence.**
-  `ant-wasm` always emits `error` (null on success) where `ant --json` omits it —
-  a presence check reported every healthy browser-path upload as a partial, which
-  SPENDS the file's claim.
-- **The pool draw is narrowed to ant-core's browser cap**: `large`/`xlarge`
-  refused at validation, `medium` clamped to 1,000,000,000 in `--pool-max-size`
-  so `plan` shows it. An over-cap file is therefore never claimed.
-- **Refused, not ignored**: `bootstrap_cache` (a browser client neither uses
-  ant's peer cache nor an explicit `--bootstrap`) and `log_level` (the `ant`
-  verbosity flag — use `rust_log`, which `ant-wasm` reads from its environment).
-- **8 GB minimum**, exact on DO slugs. Nothing on a WASM uploader runs `ant`, so
-  the binary is not installed there; the verifiers keep it.
-- Rows carry `client_kind='wasm'` and Influx points go to `wasm-client-metrics`.
+  `ant-wasm` always emits `error`, set to null on success, where `ant --json`
+  omits it — a presence check reported every healthy browser-path upload as a
+  partial, which SPENDS the file's claim.
+- **The pool draw is narrowed to the cap**: `large`/`xlarge` refused at
+  validation, `medium` clamped to 1,000,000,000 in `--pool-max-size` so `plan`
+  shows it. So an over-cap file is never claimed, and the runtime `over_cap`
+  status the one-shot uploader needs is unreachable here.
+- **`log_level` is refused too** (the `ant` verbosity flag — use `rust_log`). The
+  CLI's `--log-level` default moved from `"info"` to `None` so an explicit one
+  can be told apart; every consumer already resolved None to `info`.
+- Nothing on a WASM uploader runs `ant`, so the binary is not installed there;
+  the verifiers keep it.
 
 See `deploy/README.md` §"The daily production write test".
 
@@ -551,42 +652,41 @@ See `deploy/README.md` §"Running uploaders against production".
 
 #### The browser path on `prod uploaders` (`--wasm-uploader`)
 
-`--wasm-uploader` / manifest `prod_uploaders.wasm_uploaders[]` (+ `wasm_binary:
-{branch, repo_owner}`) makes an uploader's `ant-prod-uploader` service spawn
-`ant-wasm`. Unlike the download kinds the transport is **per uploader, not per
-deployment**: a native and a browser-path uploader in one run share the wallet,
-the monitoring stack and the prod bootstrap list, so both transports are measured
-against the same network at the same time. `uploaders` may be empty for a
-WASM-only run.
+`--wasm-uploader` / manifest `prod_uploaders.wasm_uploaders[]` makes an
+uploader's `ant-prod-uploader` service spawn `ant-wasm`. See "rules common to
+every kind" above. Example: `deploy/manifests/profiles/prod-wasm-uploaders.yaml`.
 
-Each WASM entry gets the `wasm-upload` **role** from `clients infra` — the role
-names the VM, its Terraform workspace and its S3 state key, and telling the tiers
-apart in all three is the point of running both.
-
-- **The browser file cap shapes the pool draw.** `large`/`xlarge` are **refused
-  at validation** — every file in them is over the cap, and a drawn one is a
+- **The transport is per uploader, not per deployment** — the one kind where that
+  is true. A native and a browser-path uploader in one run share the wallet, the
+  monitoring stack and the prod bootstrap list, so both transports are measured
+  against the same network at the same time. `uploaders` may be empty for a
+  WASM-only run.
+- Each WASM entry gets the `wasm-upload` **role** from `clients infra` — the role
+  names the VM, its Terraform workspace and its S3 state key, and telling the
+  tiers apart in all three is the point of running both. Same shared
+  `ARBITRUM_ONE_SECRET_KEY` as native (deploy prints the paying address).
+- **The cap shapes the pool draw.** `large`/`xlarge` are **refused at
+  validation** — every file in them is over the cap, and a drawn one is a
   permanently-spent entry that could never be uploaded — while `medium` is
   implicitly narrowed to `pool_max_size=1000000000`, which `plan` SHOWS.
   `tiny`/`small` gain no bound, because a token that narrows nothing is not free:
   the argv is what the step journal compares.
-- **Claim outcomes are the load-bearing part.** Success → `uploaded`. A failure
-  **after** a payment was submitted → `partial_upload` → `partial` (chunks ARE in
-  production, so uploaders may complete the file but a canary must never draw
-  it). A failure **before** any payment → `failed` → **released** (nothing
-  reached the network, so burning the entry would be a lie). An over-cap file →
-  released. A source-fetch failure → released too. "After payment" means
-  `payment_sent: true` **or** the `--payment-marker` file exists — the marker
-  covers a child killed after the money went out but before it printed anything,
-  and trusting only the JSON would return a paid-for file to the pool.
-- **Refused, not ignored**: `bootstrap_cache`, `memory_profiling`, `log_level`.
-- Results land in `wasm-client-metrics` (`fetch_all_prod_upload_points` reads
-  both buckets and dedupes on `(host, start_ns)`), and a nullable `client_kind`
-  column labels each row — resolved per host from the **`deploy_args`-persisted
-  uploader list**, NOT S3 client state, which `clients destroy` deletes; the
-  upsert also COALESCEs. Over-cap files are excluded from every denominator.
-- The duplicate-file preflight and the destroy results guard cover WASM entries
-  exactly as they do native ones. `generate-inventory` still has no
-  `prod-uploaders` path.
+- **Claim outcomes are the load-bearing part**, and two `ProdUploadStatus` values
+  exist to carry them. Success → `uploaded`. A failure **after** payment →
+  `partial_upload` → `partial` (chunks ARE in production, so uploaders may
+  complete the file but a canary must never draw it). A failure **before** any
+  payment → `failed` → **released**. Over-cap → released. A source-fetch failure
+  → released too, where it was previously left open — which read as "the run
+  never touched this file" while withholding it forever.
+- **Refused, not ignored**: `memory_profiling` and `log_level`. The manifest has
+  no such fields (so `extra="forbid"` names them) and the spec parser rejects the
+  tokens by name.
+- `fetch_all_prod_upload_points` reads both buckets and dedupes on
+  `(host, start_ns)`. `print-uploads`, `print-recorded-results`, `slack-post`
+  (two headings, the WASM one only when WASM entries exist) and
+  `record-results --update-slack` all split per transport. The duplicate-file
+  preflight and the destroy results guard cover WASM entries exactly as native
+  ones. `generate-inventory` still has no `prod-uploaders` path.
 
 See `deploy/README.md` §"The browser path on `prod uploaders`".
 
@@ -886,263 +986,212 @@ See `deploy/README.md` §"Upgrading the production bootstraps ahead of the fleet
 
 ### WebRTC-Direct testnets and the WASM client tier
 
-`ant-cli` **cannot** exercise the WebRTC-Direct browser path — it links native
-`ant-core`, so it takes the native transport however it is invoked. This tier
-runs a Node.js program importing **`ant-core` compiled to WASM**, reaching nodes
-over WebRTC-Direct. Roles `wasm-upload` / `wasm-download`, manifest keys
-`clients.wasm_uploaders[]` / `clients.wasm_downloaders[]`, independent of the
-native pair (a testnet may run either or both side by side). Example:
-`deploy/manifests/profiles/webrtc-wasm.yaml`.
+The testnet-side browser tier: roles `wasm-upload` / `wasm-download`, manifest
+keys `clients.wasm_uploaders[]` / `clients.wasm_downloaders[]`, independent of
+the native pair (a testnet may run either or both side by side). See "rules
+common to every kind" above for transport, results, cap, build and `client_build`.
+Example: `deploy/manifests/profiles/webrtc-wasm.yaml`.
 
 They are **distinct roles, not a flag on the native ones**, because the role
 names the VM, its Terraform workspace and its S3 state key. The role-to-unit map
-is explicit in `client_roles.py`.
+is explicit in `client_roles.py`; it replaced an `f"ant-{role}er"` string trick
+that spells the right thing for exactly the two native roles.
 
 Three pieces beyond an ordinary testnet, all no-ops when no WASM client is
 configured (every existing deployment renders byte-identical):
 
-- **A pinned WebRTC port on the bootstrap tier** — `bootstraps.webrtc_port`
-  (ant-node's flag is `--webrtc-direct-port`). Bootstraps are the one tier whose
-  browser-facing address must not move; left unset ant-node **derives** the
-  WebRTC port from the QUIC port, so it moves whenever that does. Regular nodes
-  deliberately keep the derived port. **The port is only half of a stable
-  address**: the multiaddr also embeds the DTLS certificate hash, persisted at
-  `<root_dir>/webrtc-direct.pem` — it survives restarts, but **wiping a
+- **A pinned WebRTC port on the bootstrap tier** — `bootstraps.webrtc_port` (CLI
+  `--webrtc-port` on `nodes provision-genesis` / `bootstraps provision`).
+  Bootstraps are the one tier whose browser-facing address must not move; left
+  unset ant-node **derives** the WebRTC port from the QUIC port, so it moves
+  whenever that does. Regular nodes deliberately keep the derived port — their
+  address changes propagate over the DHT as QUIC's do. **The port is only half of
+  a stable address**: the multiaddr also embeds the DTLS certhash, persisted at
+  `<root_dir>/webrtc-direct.pem`. It survives restarts, but **wiping a
   bootstrap's data volume rotates it and invalidates every cached browser
   address**. WebRTC-Direct is ON by default in a stock ant-node build.
-- **`build ant-wasm`** — `ant-core` declares `default = ["native"]` and a
-  `browser-wasm` feature mutually exclusive with it (a wasm32 build without it
-  stops at an explicit `compile_error!`), and the artifact comes from `wasm-pack`
-  rather than `cargo build --bin`, so a separate build path is unavoidable.
-  **Branch form only** — no WASM package is published as a release.
+- **`build ant-wasm`** — a separate build path is unavoidable: `ant-core`
+  declares `default = ["native"]` and a `browser-wasm` feature mutually exclusive
+  with it (a wasm32 build without it stops at an explicit `compile_error!`), and
+  the artifact comes from `wasm-pack`, not `cargo build --bin`.
 - **`deployments webrtc-addresses`** — SSHes the **bootstrap VMs** and reads each
-  bootstrap service's `<root_dir>/webrtc-direct.multiaddr`. **Cannot run at
-  provision time** (the address embeds the certhash, which exists only once a
-  node has started) and **must run before `clients provision`** (a WASM client
-  has no other way in). `up` sequences it after `nodes start`. Addresses
-  advertising a non-public host are rewritten to the VM's real IP.
+  bootstrap service's `webrtc-direct.multiaddr`, saving them as
+  `bootstrap_webrtc_multiaddrs`. **Cannot run at provision time** (the address
+  embeds the certhash, which exists only once a node has started) and **must run
+  before `clients provision`** (a WASM client has no other way in). `up`
+  sequences it after `nodes start`. Addresses advertising a non-public host are
+  rewritten to the VM's real IP.
 
 What will bite you:
 
 - **A WASM client gets the SAME bootstraps as a native client, and no more.** The
-  sole difference is address format. The node tier is deliberately **not**
-  sampled and there is no `--sample-nodes` flag: an earlier revision handed each
-  client ~32 node addresses spread across the keyspace, which production cannot
-  supply (a browser gets a small bootstrap list), so it masked discovery failures
-  rather than exposing them. **If transfers do not work from the bootstraps
-  alone, fix the node.** `clients provision` reads only
-  `bootstrap_webrtc_multiaddrs`.
+  sole difference is address format — native takes bare `ip:port`, a browser
+  needs the full multiaddr — which is the only reason a collection command exists
+  at all. The node tier is deliberately **not** sampled and there is no
+  `--sample-nodes` flag: an earlier revision handed each client ~32 node
+  addresses spread across the peer-id keyspace, which production cannot supply (a
+  browser gets a small bootstrap list), so it masked discovery failures rather
+  than exposing them. **If transfers do not work from the bootstraps alone, fix
+  the node.** `clients provision` reads only `bootstrap_webrtc_multiaddrs`.
 - **`nodes.nat_percent: 0`** — nodes behind the simulated inbound NAT are
   unreachable over WebRTC-Direct without relayed WebRTC, and each dial burns a
   10s DataChannel timeout. This also makes the run incomparable to a native
   baseline that used a different NAT fraction.
 - **A WASM upload needs ≥7 initial PUT peers** before it will pay; a small fleet
   fails every upload with "Witnessed close group returned only N/7".
-- **No `bootstrap_cache` on either WASM role** — it selects between ant's peer
-  cache and an explicit `--bootstrap`, and a WASM client does neither. Passing
-  the token is a hard error, not a silent no-op.
-- **Every published address line is `<address> <bytes>`.** ant-core refuses a
-  browser-path file above 1,000,000,000 only *after* resolving its data map, so
-  with bare lines the WASM downloader drew the native 1000 MiB uploads from the
-  shared pool and failed every one. Both downloaders parse the first field, and
-  one with a bound skips over-cap entries before fetching anything. A bare line
-  is never excluded — unknown is not "too big" — so pre-change lists keep
-  working.
+- **Every published address line is `<address> <bytes>`.** ant-core refuses an
+  over-cap file only *after* resolving its data map, so with bare lines the WASM
+  downloader drew the native 1000 MiB uploads from the shared pool and failed
+  every one. Both downloaders parse the first field, and one with a bound
+  (`MAX_DOWNLOAD_BYTES`, `0` = none) skips over-cap entries before fetching
+  anything. `downloader.sh` tries up to five keys because one uploader's entire
+  list can be over the cap. The constant lives in `client_roles.py` (the
+  provisioner must not import the schema).
 - **Addresses are one shared pool per deployment, read two ways.** The WASM
   downloader lists the whole prefix (so it fetches native uploads too); the
   native `downloader.sh` filters keys to `upload-*` and never sees WASM uploads.
-  The per-uploader *object* is namespaced by role, because `client_index`
-  restarts at 1 per role — without that a native and a WASM uploader in one
-  region would each erase the other's list on every whole-object flush.
+  The per-uploader *object* is namespaced by role (`upload-` vs `wasm-upload-`)
+  because `client_index` restarts at 1 per role — without that a native and a
+  WASM uploader in one region both own `upload-<region>-1.txt`, and each
+  whole-object PUT flush would erase the other's list.
 - **Payment: no private key ever enters WASM.** ant-core verifies each storage
   quote and hands the set to a JS callback, which does ERC-20 `approve` then one
-  `payForQuotes` and returns the **mined** tx hash; `totalAmount` must exactly
-  equal the sum of quote amounts or the upload is rejected. The payment network
-  is read from a node's own `HELLO` rather than configured locally, so the client
-  cannot pay on the wrong chain.
+  `payForQuotes` on the vault and returns the **mined** tx hash; `totalAmount`
+  must exactly equal the sum of quote amounts or the upload is rejected. The
+  payment network (chain id / token / vault) is read from a node's own `HELLO`
+  rather than configured locally, so the client cannot pay on the wrong chain.
 
-**Results are kept separate at every layer, because the two transports are not
-the same instrument** — measured ~2.2x slower on upload and ~4.2x on download,
-so any blended figure describes neither and moves with whatever VM mix a run
-happened to use:
+**Gates — the two KINDS get opposite answers**, and both keys in
+`staging-thresholds.yaml` are **required** (the retired single
+`wasm_gates_advisory` fails validation naming its replacements):
 
-- **Influx**: WASM file operations go to their own **`wasm-client-metrics`**
-  bucket. They are the same `upload`/`download` measurements the native clients
-  write, so one bucket would let any panel or ad-hoc query average the two. A
-  WASM VM's *host* metrics still go to `client-metrics`. `record-results` reads
-  both and deduplicates on `(host, start_ns, measurement)`.
-- **Postgres**: a nullable **`client_kind`** column on
-  `deployment_{upload,download}_records`, resolved from each VM's role. NULL on
-  every pre-feature row, and NULL reads as native rather than unknown.
-- **`record-results` never erases `client_kind`.** The transport is resolved from
-  S3 client state and `clients destroy` deletes it, so a re-run after teardown
-  would resolve NULL for every host — and an unconditional write would relabel
-  every WASM op as native, pushing WASM failures into the NATIVE hard floors. The
-  upsert therefore COALESCEs, and warns when it cannot classify a WASM host.
-- **`deployments compare`** evaluates the client-record gates **once per
-  transport**, suffixed `[native]`/`[wasm]` whenever a run has WASM records; with
-  none, the gates are emitted exactly as before. Node-tier gates are NOT split —
-  one fleet serves both transports.
-- **The two KINDS of WASM gate get opposite answers**, and both keys are
-  **required**: **`wasm_floor_gates_advisory: true`** (the success floors are
-  absolute numbers calibrated on native which WASM does not meet, and the gap is
-  NAT, not the release under test, so gating would hard-fail every run) and
-  **`wasm_relative_gates_advisory: false`** (the baseline-relative gates need no
-  absolute calibration — they ask only whether this release made the WASM tier
-  worse than the last one did — so they **COUNT**, as soft gates). **No WASM gate
-  ever reaches the exit code**; that stays the native hard floors'.
+- **`wasm_floor_gates_advisory: true`** — the success FLOORS are absolute numbers
+  calibrated on the native transport which WASM does not meet (92.1% upload /
+  94.9% download against 99% / 99.5% on the first measured run), and the gap is
+  **NAT** — a peer behind the simulated inbound NAT is unreachable over
+  WebRTC-Direct until relayed WebRTC exists — not the release under test, so
+  gating on it would hard-fail every run.
+- **`wasm_relative_gates_advisory: false`** — the success-rate and per-bucket
+  p50/p95 gates against the BASELINE need no absolute calibration, since they ask
+  only whether this release made the WASM tier worse than the last one did, so
+  they **COUNT**, as SOFT gates like their native twins.
+- **No WASM gate ever reaches the exit code**; that stays the native hard floors'.
+- `deployments compare` evaluates the client-record gates **once per transport**,
+  suffixed `[native]`/`[wasm]` whenever a run has WASM records; with none, the
+  gates are emitted exactly as before. **Node-tier gates are NOT split** — one
+  fleet serves both transports.
 - **`clients estimate-gas` sizes the WASM tier too**, labelled `[wasm]` and
-  counted in the funder total, with `fixed_eth_per_upload` **doubled** (a
-  browser-path payment is two transactions where a native one is one) while
-  `eth_per_gb` is unchanged. Throughput comes from the baseline's own WASM
+  counted in the funder total, with `fixed_eth_per_upload` **doubled** via
+  `wasm_fixed_cost_multiplier: 2.0` (a browser-path payment is two transactions,
+  `approve` then `payForQuotes`, where a native one is one) while `eth_per_gb` is
+  unchanged. Throughput comes from the baseline's own `client_kind = 'wasm'`
   records; failing that, from the NEAREST native uploader by size, labelled
-  `approx: native twin <host>` (a native rate over-funds, which is the safe
-  side). Native uploaders are sized from native records only.
+  `approx: native twin <host>` (WASM measured ~6–8x slower, so a native rate
+  over-funds, which is the safe side). Native uploaders are sized from native
+  records only, so a future baseline carrying both tiers cannot pollute native
+  sizing.
 - `slack-post` and the `record-results --update-slack` reply render the two tiers
-  separately, and only when WASM clients exist.
+  separately, and only when WASM clients exist (NULL counts as native).
 
 **Profile:** the WASM tier lives in `staging.yaml` itself — 3 WASM uploaders
 (900/300/20 MB; 900 not 1000 because of the cap) and 1 WASM downloader on an
 8 GB VM — **added on top of** the unchanged native tier, not swapped into it. The
 profile's `nat_percent` dropped 30 → 10 for the same reason WASM's floors are
 advisory, and both changes made the first run on it a full **REBASELINE** (what
-`--new-baseline` is for). The WASM binary is built from an ant-client **git
-tag**. `build ant-wasm-check --branch <ref>` runs that same build **locally** in
-a temp dir and deploys nothing, so an ant-client API drift is caught before a
-build VM and ~10 minutes are spent on it.
+`--new-baseline` is for). The binary is built from an ant-client **git tag**.
+`build ant-wasm-check --branch <ref> --repo-owner WithAutonomi` runs that same
+build **locally** in a temp dir and deploys nothing, so an ant-client API drift
+is caught before a build VM and ~10 minutes are spent on it.
+
+**Verified against a local `ant-devnet`** (2026-09-07), not a cloud testnet: the
+WASM client runs under **plain Node.js** with `node-datachannel` supplying
+`globalThis.RTCPeerConnection` — no headless browser. HELLO, `find_node`, a
+5 MiB download and a real paid upload with byte-identical round-trip all pass.
 
 See `deploy/README.md` §"WASM client VMs (the browser path)".
 
 ### The pointer client tier (`clients.pointers[]`)
 
-A **pointer** is a paid, owner-signed mutable reference (ADR-0016 in `ant-node`,
-V2-1277): one ML-DSA-65 owner key owns exactly one pointer at
-`BLAKE3::derive_key(owner)` forever, and every write — create AND update — is one
-paid single-node quote. The pointer client tier (V2-1339) exercises them for the
-life of a testnet, so the behaviour is measured before it reaches production, the
-way the WASM tier did for WebRTC. Impl: `client_roles.py` (role `pointer`, unit
-`ant-pointer`), `resources/scripts/pointer_client.py` (the workload),
-`pointer_results.py` (the pure arithmetic), `cmd/print_pointers.py`,
-`db/saorsa_db/models/pointer_record.py`. Example:
+A **pointer** is a paid, owner-signed mutable reference (ADR-0016 in `ant-node`):
+one ML-DSA-65 owner key owns exactly one pointer at `BLAKE3::derive_key(owner)`
+forever, and every write — create AND update — is one paid single-node quote. This
+tier exercises them for the life of a testnet, so the behaviour is measured before
+it reaches production, the way the WASM tier did for WebRTC. Role `pointer`, unit
+`ant-pointer`, manifest `clients.pointers[]`. Example:
 `deploy/manifests/profiles/pointers.yaml`.
 
 **A role of its own, and an upload-type role.** Its own because the role names the
 VM, its Terraform workspace and its S3 state key; upload-type because it carries a
-funded per-VM wallet, is topped up from the funding wallet and drained on destroy
-exactly as an uploader is. `is_upload(ROLE_POINTER)` is therefore **True** —
-callers that mean "uploads files" must test the role, since a pointer client has
-no `file_size_mb` (it is persisted as 0, which is what lets every shared wallet
-path treat it as an uploader without special-casing). The sites that dispatch on
-role and silently skip an unknown one are guarded by
-`test_pointer_client_plumbing.py`: `clients clean` (now stops EVERY role's unit,
-derived from `ALL_CLIENT_ROLES`), the destroy-time service stop (hard-coded
-`ant-uploader`, so a pointer client was drained while still spending — the exact
-nonce race that stop exists to prevent), `_FORWARD_ROLE_FILES`, the `clients infra`
-summary label (a ternary that spelled every non-native VM "Downloader"), and the
-`role` validation list in all four `*-client/variables.tf`.
+funded per-VM wallet, topped up and drained exactly as an uploader's.
+`is_upload(ROLE_POINTER)` is therefore **True**, so callers meaning "uploads
+files" must test the role — a pointer client has no `file_size_mb` (persisted as
+0, which is what lets every shared wallet path treat it as an uploader).
+`test_pointer_client_plumbing.py` guards the sites that dispatch on role and would
+silently skip a new one, including the destroy-time service stop that was
+hard-coded to `ant-uploader` — a pointer client was being drained while still
+spending, the exact nonce race that stop exists to prevent.
 
-**The workload is one serial scheduler, not three threads.** Create every
-`create_interval_secs` (60), update a random owned pointer every
-`update_interval_secs` (30) and read it back, sweep every known pointer — own AND
-every other client's published ones — no more often than every
-`sweep_interval_secs` (600). All three share one wallet and every write is an
-on-chain payment, so two concurrent writes would race the same nonce. Defaults are
-**180 paid writes per client per hour**, one Arbitrum Sepolia transaction every
-20s. Creation runs for the WHOLE run rather than seeding a pool up front, because
-decay with age needs pointers of every age present at every moment;
-`pointer_max` (0) is a safety cap, not the design.
+What will bite you:
 
-**The ledger is durable and load-bearing.** `/var/lib/ant-pointer/` holds the
-owner keys and a JSON ledger of the expected `(counter, target)` per owned pointer
-plus the last-seen counter per foreign one. `Restart=always`, and **ownership is
-immutable** — a lost key is a pointer that can never be updated again — so a
-restart that forgot the keys would abandon everything it had paid for. The key is
-written to the ledger BEFORE the create that pays for it. `clients clean` removes
-the directory deliberately: a surviving ledger would have the client sweeping
-pointers whose keys are gone and reporting every one as a failure.
+- **The workload is one serial scheduler, not three threads.** All three
+  activities share one wallet and every write is an on-chain payment, so two
+  concurrent writes would race the same nonce. Defaults are **180 paid writes per
+  client per hour**. Creation runs for the WHOLE run rather than seeding a pool up
+  front, because decay with age needs pointers of every age present at every
+  moment; `pointer_max` is a safety cap, not the design.
+- **The ledger is durable and load-bearing.** `/var/lib/ant-pointer/` holds the
+  owner keys and the expected `(counter, target)` per pointer. `Restart=always`,
+  and **ownership is immutable** — a lost key is a pointer that can never be
+  updated again — so the key is written to the ledger BEFORE the create that pays
+  for it. `clients clean` removes the directory deliberately: a surviving ledger
+  would have the client sweeping pointers whose keys are gone.
+- **Seven outcome classes, because four of the six failures are ordinary events.**
+  `ok`; `stale` — **EXPECTED at a non-zero rate**, since an eclipsed reader can be
+  served an older validly-signed state and cannot tell; `lost_write` (paid for,
+  not landed); `not_found` (the close group agreed there is nothing there — an
+  ANSWER, which is why `ant pointer get`'s exit-1 maps here and NOT to `error`);
+  `read_shortfall`; `anomaly` (a counter ABOVE the one written); and `error`, the
+  only class indicating a fault. NB `Error::CloseGroupShortfall` renders as
+  "close-group **PUT** shortfall" for READS too, so matching on the word PUT would
+  put every read shortfall in the write bucket.
+- **Cost is measured as PAID, never as quoted.** `ant pointer create --json`
+  prints no cost, so ANT comes from `ant wallet balance` and native gas from
+  `eth_getBalance` either side of each write. That is also the only way to see the
+  ADR's warning that a write which times out and is retried **pays twice**:
+  `paid_attempts > 1` is a double payment.
+- **The WASM downloader had to be taught to skip `pointer-` objects.** It lists
+  the whole shared prefix, so it would otherwise fetch pointer addresses as files
+  and the failures would land in the download success rate as lost content.
+  `downloader.sh` filters to `^upload-` and is unaffected.
+- **Results go in their own table** (`deployment_pointer_records`), recorded in the
+  SAME `record-results` pass as the file ops — a command an operator has to
+  remember separately does not get run. Not a third `deployment_*_records` sibling:
+  there is no file, and folding `stale` into `OpRecordStatus.FAILURE` would put the
+  expected stale-read rate into the upload/download hard floors.
+- **Eight `[pointer]` gates, none of which reaches the exit code** (every one
+  soft, so the worst is a SOFT FAIL). **NOT ASSESSED, never omitted** when the
+  baseline has no pointer records — which is every baseline on the first
+  pointer-carrying train. The two floors are additionally advisory
+  (`pointer_floor_gates_advisory: true`) because no run has measured a pointer
+  tier and the ADR does not say how large the expected stale rate is.
 
-**Seven outcome classes, because four of the six failures are ordinary events.**
-`ok`; `stale` (a state older than the one written, or a foreign counter going
-backwards) — **EXPECTED at a non-zero rate**, since ADR-0016 says an eclipsed
-reader can be served an older validly-signed state and cannot tell; `lost_write`
-(refused as "moved while in flight", or fell short of its quorum — paid for, not
-landed); `not_found` (the close group agreed there is nothing there — an ANSWER,
-which is why `ant pointer get`'s exit-1-on-absent maps here and NOT to `error`);
-`read_shortfall` (too few answered, or no state had two peers behind it);
-`anomaly` (a counter ABOVE the one written, which only a foreign write to an owned
-pointer could cause); `error` (the only class that indicates a fault).
-Classification is by matching strings `ant` prints, read off the branch — note
-`Error::CloseGroupShortfall` renders as "close-group **PUT** shortfall" for READS
-too, so matching on the word PUT would put every read shortfall in the write
-bucket.
-
-**Cost is measured as PAID, never as quoted.** `ant pointer create --json` prints
-only `{"address": ...}` — there is no cost in its output. So ANT comes from `ant
-wallet balance` and native gas from a plain `eth_getBalance` against the same RPC
-the payment settles on, read either side of each write. That is also the only way
-to see the ADR's warning that a write which times out and is retried **pays
-twice**: `paid_attempts > 1` is a double payment, and a write that spent and did
-not land is reported separately as "paid but not stored".
-
-**Targets and publishing.** `chunk` targets are drawn from the shared upload
-address pool so `resolve` checks end to end against a real data map, with a random
-32-byte fallback so the role never depends on the uploader tier (a node stores 33
-opaque bytes and never reads the target). A `chain_fraction` (0.10) of updates
-re-point at another OWNED pointer and are followed with `resolve`; chain
-resolution, its depth cap of 16 and its cycle check are entirely client-side. Each
-client publishes its addresses to `pointer-{region}-{index}.txt` under the
-deployment's shared prefix via the presigned PUT the uploaders use. `downloader.sh`
-filters the listing to `^upload-` and is unaffected; **the WASM downloader lists
-the whole prefix and had to be taught to skip `pointer-` objects**
-(`isNonFileKey` in `resources/wasm-client/src/addresses.ts`) or it would fetch
-pointer addresses as files and the failures would land in the download success
-rate as lost content.
-
-**Results.** Influx measurement `pointer` in `testnet-metrics` (tags `host`,
-`region`, `op`; no client-supplied timestamp, for the usual clock-skew reason);
-`record-results` records every op into **`deployment_pointer_records`** in the SAME
-pass as the file ops, because a pointer client rides an ordinary testnet and a
-command an operator has to remember separately does not get run. Its own table,
-not a third `deployment_*_records` sibling: there is no file, so `file_size_bytes`
-is meaningless, and folding `stale` into `OpRecordStatus.FAILURE` would put the
-expected stale-read rate into the upload/download hard floors.
 `deployments print-pointers --name` reads Influx (live, the only view during a
-run), `--id` reads Postgres (post-run, the only view that survives teardown), both
-through `pointer_results.py` so they cannot disagree; `--by-age` buckets **sweep**
-outcomes by age at read (a `get` is the confirming read, always ~0 age), own and
-foreign separately. `slack-post` and `record-results --update-slack` render the
-tier only when it exists.
+run); `--id` reads Postgres (post-run, the only view that survives teardown);
+both go through `pointer_results.py` so they cannot disagree. `--by-age` buckets
+**sweep** outcomes by age at read, own and foreign separately.
 
-**Node-side signal.** `record-log-counts` gains a `pointer` group in the log
-catalogue (version **3**; the connection groups are untouched, so v2 and v3 counts
-of them stay comparable) covering nine node WARN/INFO lines, and additionally
-counts `pointer_put_rpc` / `pointer_get_rpc` per outcome with latency p50/p95 into
-the same table keyed `<event>:<outcome>` (no migration). Those two are the only
-quantitative node-side pointer signal that is not DEBUG — stale refusals, quorum
-shortfalls and unpaid offers are all DEBUG and the node forwarder drops DEBUG at
-`log_level: info`, which is what staging runs at, so they are deliberately NOT
-catalogued (they would read zero for a reason unrelated to pointers). Promoting
-them is a request on V2-1277.
+`record-log-counts` gains a `pointer` group (catalogue version **3**; the
+connection groups are untouched, so v2 and v3 counts of them stay comparable).
+The stale refusals, quorum shortfalls and unpaid offers are all DEBUG and the node
+forwarder drops DEBUG at `log_level: info` — which is what staging runs at — so
+they are deliberately NOT catalogued; they would read zero for a reason unrelated
+to pointers.
 
-**Gates.** Eight `[pointer]` gates in `deployments compare`: a write and a read
-success floor (absolute, single-run, and therefore surviving `--new-baseline`),
-plus stale-read rate, lost-write rate, write/read latency p50/p95 and cost per
-write, all relative. **NOT ASSESSED, never omitted** when the baseline has no
-pointer records — which is every baseline on the first pointer-carrying train.
-**No pointer gate reaches the exit code**; every one is soft, so the worst is a
-`SOFT FAIL`. The two floors are additionally advisory
-(`pointer_floor_gates_advisory: true`) because no run has measured a pointer tier
-and the ADR does not say how large the expected stale rate is — a floor set today
-is a guess. `clients estimate-gas` sizes a pointer client from the **manifest
-rates** (no baseline needed — they are deterministic) against a new
-`fixed_eth_per_pointer_write`, seeded from the per-upload fixed cost and awaiting
-recalibration from the first run's measured spend.
+`staging.yaml` carries **two** pointer entries, geographically separated so
+cross-client sweeps span a real distance. **The train's RC must carry pointers**;
+if it predates them, strip the two entries for that train.
 
-`staging.yaml` carries **two** pointer entries, DigitalOcean `lon1` and `syd1` —
-geographically separated so cross-client sweeps span a real distance. **The train's
-RC must carry pointers**; if it predates them the run operator strips the two
-entries for that train. Not in scope: a `wasm-pointer` role (V2-1340) and pointers
-against production.
+See `deploy/README.md` §"Pointer client VMs".
 
 ### Simulating residential connections on client VMs (`network`)
 
@@ -1205,47 +1254,32 @@ See `deploy/README.md` §"Simulating a residential connection".
 
 **Contabo** is supported as a node provider (alongside DigitalOcean/Hetzner/
 Vultr/OVH) and as a monitoring/Elasticsearch provider (alongside DigitalOcean/
-OVH). It authenticates via an OAuth2 password flow reading four **`CNTB_OAUTH2_*`**
-env vars (`CLIENT_ID`/`CLIENT_SECRET`/`USER`=account email/`PASS`=API password),
-which the `contabo/contabo` Terraform provider reads directly from the
-environment — so, like OVH, there is no `TF_VAR` credential mapping, just a
-`_check_contabo_env` preflight (`deploy/saorsa_deploy/contabo.py`). TF modules:
+OVH). It authenticates via an OAuth2 password flow reading four
+**`CNTB_OAUTH2_*`** env vars (`CLIENT_ID`/`CLIENT_SECRET`/`USER`=account email/
+`PASS`=API password), which the `contabo/contabo` Terraform provider reads
+directly from the environment — so, like OVH, there is no `TF_VAR` credential
+mapping, just a `_check_contabo_env` preflight. TF modules:
 `resources/contabo{,-monitoring,-elastic}`.
 
 Two Contabo constraints shape the design:
+
 - **No attachable block volume.** Contabo's provider has no standalone
-  attachable/growable block-storage resource (extra disk is only a buggy
-  in-contract `extraStorage` add-on), so Contabo VMs are **root-disk only** —
-  reusing the existing `ovh_3az` root-disk machinery (`root_disk_ips` /
-  `build_root_disk_dir_command`; `NO_VOLUME_PROVIDERS` in `cmd/infra_nodes.py`;
-  a `root_disk` flag on `MonitoringProvisioner`/`ElasticProvisioner`). Size the
-  root disk (a VDS) up front — it can't be grown online later without a
-  disruptive rebuild. `--volume-size` etc. are ignored for Contabo.
-- **Committed monthly billing.** Contabo instances are prepaid monthly contracts
-  (no hourly billing, no proration on early destroy), which suits the *permanent*
+  attachable/growable block-storage resource, so Contabo VMs are **root-disk
+  only**, reusing the existing OVH 3-AZ root-disk machinery. **Size the root disk
+  up front** — it cannot be grown online later without a disruptive rebuild.
+  `--volume-size` and friends are ignored.
+- **Committed monthly billing.** Instances are prepaid monthly contracts (no
+  hourly billing, no proration on early destroy), which suits the *permanent*
   debug-node use case but not ephemeral churn.
 
-Contabo images are referenced by UUID (not resolvable by name via Terraform):
-pass **`--contabo-image-id`** (resolve via `cntb get images`) wherever a Contabo
-tier is used; the operator public key is registered as a `contabo_secret` from
-`--contabo-ssh-public-key-path` (default `~/.ssh/id_rsa.pub`) and `default_user=root`
-gives root SSH. Contabo is currently wired for the single-`--provider` node path
-(prod kinds / `nodes infra`) and the observability stacks; it is not yet a
+Images are referenced by UUID (not resolvable by name via Terraform): pass
+**`--contabo-image-id`** (resolve via `cntb get images`) wherever a Contabo tier
+is used. The operator public key is registered as a `contabo_secret` from
+`--contabo-ssh-public-key-path`, and `default_user=root` gives root SSH.
+
+Contabo is wired for the single-`--provider` node path (prod kinds /
+`nodes infra`) and the observability stacks; it is **not** yet a
 `nodes.providers.<name>` option in testnet/extension manifests.
-
-### Deployment Statuses
-
-`pending` → `running` → `stopped` (success) or `failed`
-
-When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) or `failed`
-
-### API Endpoints (Read-Only)
-
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/deployments` | List all deployments |
-| GET | `/api/deployments/<id>` | Get deployment with events |
-| GET | `/api/deployments/<id>/events` | List deployment events |
 
 ## The release ledger (`release-candidates` + `releases`)
 
@@ -1306,34 +1340,41 @@ See `deploy/README.md` §"Recording releases and channel state".
 
 ## Sizing uploader gas funding (`clients estimate-gas`)
 
-Testnet uploader wallets hold a **fixed** amount of native ETH, so runway is inversely
-proportional to the gas price — when the price rises the same funding buys fewer
-payment transactions and an exhausted client fails **every** subsequent upload, in a
-way indistinguishable from a network fault in the gate data. Staging run #566
-(2026-09-01) lost six of ten uploaders that way after the Arbitrum Sepolia base fee
-rose ~10x in three days, putting whole-run upload success (96.02%) and the
-mixed-version phase (79.35%) below their hard-gate floors for a non-product reason.
-Throughput was **not** the cause — that run did less work than its baseline.
+Testnet uploader wallets hold a **fixed** amount of native ETH, so runway is
+inversely proportional to the gas price — when the price rises the same funding
+buys fewer payment transactions, and an exhausted client fails **every**
+subsequent upload in a way indistinguishable from a network fault in the gate
+data. Staging run #566 lost six of ten uploaders that way after the Arbitrum
+Sepolia base fee rose ~10x in three days, putting whole-run upload success
+(96.02%) and the mixed-version phase (79.35%) below their hard-gate floors for a
+non-product reason. Throughput was **not** the cause — that run did less work
+than its baseline.
 
 `clients estimate-gas --config <manifest> --baseline-id <id>` is the read-only
-preflight, run as **Step 3b of the `run-staging-testnet` skill**. It reads the current
-base fee from the chain, takes per-uploader throughput from a previous run, and prints
-the ETH each uploader needs plus whether the funding wallet covers the total.
-**Exit 2 = something is short**; the fix is either the profile's `eth:` values (a
-profile SHA change, so a re-baselining event needing the RM) or a top-up of the
-funding wallet — no profile edit helps the latter.
+preflight, run as **Step 3b of the `run-staging-testnet` skill**: it reads the
+current base fee from the chain, takes per-uploader throughput from a previous
+run, and prints the ETH each uploader needs plus whether the funding wallet
+covers the total. **Exit 2 = something is short.** The fix is either the
+profile's `eth:` values (a profile SHA change, so a re-baselining event needing
+the RM) or a top-up of the funding wallet — no profile edit helps the latter.
 
-Three load-bearing details: throughput is taken as each client's **rate over its own
-active window**, never its raw count (a client that ran dry stopped early, so its
-count would teach the next run to under-fund); scaling is on **base fee**, so the
-priority fee and estimator buffer cancel in the ratio; and the funder check compares
-against the **full** recommended total, because top-up is per-wallet and sequential
-and a short funder leaves a half-provisioned run rather than failing up front.
+Three load-bearing details:
 
-Model + calibration: `resources/gas/client-gas-model.yaml` (versioned config, like the
-gate thresholds — recalibration needs no release). Pure logic in `gas_model.py`, I/O in
-`cmd/estimate_client_gas.py`, tests in `deploy/tests/test_gas_model.py` (which assert
-the shipped config still reproduces its own six calibration points).
+- Throughput is taken as each client's **rate over its own active window**, never
+  its raw count — a client that ran dry stopped early, so its count would teach
+  the next run to under-fund.
+- Scaling is on **base fee**, so the priority fee and estimator buffer cancel in
+  the ratio.
+- The funder check compares against the **full** recommended total, because
+  top-up is per-wallet and sequential, and a short funder leaves a
+  half-provisioned run rather than failing up front.
+
+Model and calibration live in `resources/gas/client-gas-model.yaml` (versioned
+config, like the gate thresholds, so recalibration needs no release). Pure logic
+in `gas_model.py`; `deploy/tests/test_gas_model.py` asserts the shipped config
+still reproduces its own six calibration points.
+
+See `deploy/README.md` §"Sizing uploader gas funding".
 
 ## Monitoring
 
@@ -1342,115 +1383,94 @@ Grafana VM. Standalone — usable by this repo or external setups. Runs on
 **DigitalOcean (default) or OVH** (`--provider ovh`).
 
 **Grafana is opt-in and OFF by default**: `monitoring infra` creates only the
-InfluxDB VM unless `--grafana` is passed (manifest `monitoring: { grafana: true }`).
-The choice is recorded as `grafana_enabled` in the monitoring S3 state. The
-Terraform `grafana` resources are `count`-gated on an `enable_grafana` variable
-(with `moved` blocks so pre-existing 2-VM stacks migrate to index `[0]` in place
+InfluxDB VM unless `--grafana` is passed (manifest `monitoring: {grafana:
+true}`). The choice is recorded as `grafana_enabled` in the monitoring S3 state,
+the Terraform `grafana` resources are `count`-gated on `enable_grafana` (with
+`moved` blocks so pre-existing 2-VM stacks migrate to index `[0]` in place
 rather than being recreated), and `monitoring destroy` passes `enable_grafana`
 back from state so the destroy plan matches what was created.
 
-When enabled, Grafana is split onto its own small VM so its panel rendering
-doesn't compete with InfluxDB for CPU/RAM (the cause of large dashboards like the
-per-node RSS panels failing to render on a single shared box). The InfluxDB VM
-carries the data volume; Grafana reaches it over the public `:8086` endpoint. The
-`monitoring infra`/`provision` flow (and `monitoring destroy`) manage both VMs in
-one Terraform state. Three provision-time cases, keyed off `grafana_enabled`:
-disabled (default) → InfluxDB only; enabled with its own `grafana_ip` → Grafana on
-that VM; legacy single-VM stacks (no `grafana_enabled` key, no `grafana_ip`) →
-co-locate Grafana on the InfluxDB VM. Prod client flows (canary/uploaders/
-downloaders) likewise default Grafana off; pass `--grafana` to those deploy
-commands to opt in.
+When enabled, Grafana is split onto its own small VM so its panel rendering does
+not compete with InfluxDB for CPU/RAM — the cause of large dashboards failing to
+render on a single shared box. The InfluxDB VM carries the data volume; Grafana
+reaches it over the public `:8086` endpoint. Three provision-time cases, keyed
+off `grafana_enabled`: disabled (default) → InfluxDB only; enabled with its own
+`grafana_ip` → Grafana on that VM; legacy single-VM stacks (no `grafana_enabled`
+key, no `grafana_ip`) → co-locate Grafana on the InfluxDB VM. Prod client flows
+likewise default Grafana off and pin the InfluxDB VM to `s-2vcpu-4gb` (a single
+client VM forwards little).
 
-### Commands
+Commands: `monitoring infra` / `provision` / `info` / `destroy`, plus
+`deployments provision-telegraf` (see "Telegraf provisioning" below).
+`provision` takes `--retention-days N` (default `0` = infinite, the dev default;
+set e.g. 14 for prod), applied to both buckets at first provision.
+`monitoring info --telegraf-config` emits portable Telegraf TOML. State lives
+under its own S3 key prefix `saorsa-deploy/monitoring/{name}.json`, independent
+of deployment state. Provider selection is in `cmd/obs_provider.py`; OVH is
+OpenStack-backed and needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an
+`ant_deploy` SSH key in the project.
 
-- `monitoring infra` — create the InfluxDB VM via Terraform (and the Grafana VM only with `--grafana`). `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (InfluxDB VM; default `s-4vcpu-8gb` do / `b3-8` ovh), `--grafana`/`--no-grafana` (default off), `--grafana-size` (default `s-1vcpu-2gb` do / `d2-4` ovh; only used with `--grafana`), `--volume-size`, `--volume-type` (ovh), `--keep-on-destroy` (record that `deployments down` must leave this stack standing — see "Keeping the observability stack past teardown" above). OVH needs `OVH_CLOUD_PROJECT_SERVICE` + OVH API creds + an `ant_deploy` SSH key in the project.
-- `monitoring provision` — install InfluxDB (InfluxDB VM) and, when Grafana was enabled, Grafana (Grafana VM); prints connection details. `--retention-days N` caps InfluxDB bucket retention (default `0` = infinite, the dev default; set e.g. 14 for prod). Retention is applied to both buckets at first provision.
-- `deployments provision-telegraf` — install Telegraf for host metrics (CPU, mem, disk, net) → InfluxDB **and** node log forwarding → Elasticsearch in one pass (see "Telegraf provisioning" below). Metrics-only when only monitoring state exists. Retrofit path (`--inventory-path`/`--host-ips-file`) provisions Tier-1 host+procstat metrics only; the Prometheus app-metrics scrape is only wired on the `--name` path with `node_count > 0`.
-- `monitoring info` — print connection details; `--telegraf-config` emits portable Telegraf TOML
-- `monitoring destroy` — tear down monitoring infrastructure (both VMs)
-
-The prod client flows (canary / uploaders / downloaders) pin the InfluxDB VM to
-`s-2vcpu-4gb` (a single client VM forwards little) but still get the split
-Grafana VM.
-
-### Architecture
-
-- Terraform manifests: `deploy/saorsa_deploy/resources/{digitalocean,ovh}-monitoring/` (OVH is OpenStack-backed: it mints an `ovh_cloud_project_user` and uses `openstack_compute_volume_attach_v2` for the InfluxDB data volume, like the `ovh` node module). Provider selection lives in `cmd/obs_provider.py`.
-- Provisioners: `deploy/saorsa_deploy/provisioning/monitoring.py` (InfluxDB on `influxdb_ip`, Grafana on `grafana_ip` in two pyinfra sessions), `telegraf_metrics.py` (Telegraf)
-- CLI commands: `deploy/saorsa_deploy/cmd/monitoring_infra.py`, `provision_monitoring.py`, `provision_telegraf_metrics.py`, `monitoring_info.py`, `destroy_monitoring.py`
-- State: separate S3 key prefix `saorsa-deploy/monitoring/{name}.json` (independent of deployment state); records `provider`, `vm_ip` (InfluxDB) and `grafana_ip`. tfstate key prefix is `do-monitoring`/`ovh-monitoring` per provider.
-- Telegraf metrics runs as a separate systemd service (`telegraf-ant-metrics`) alongside the existing log forwarding (`telegraf-ant-elasticsearch`)
+See `deploy/README.md` §"Monitoring" for the full argument tables.
 
 ### Traffic-accounting counters in InfluxDB + the Egress accounting dashboard (V2-1225)
 
 An 18-hour bandwidth episode on a prod node (2026-09-14) was invisible in every
 dashboard although the node's own traffic-accounting counters (V2-623) recorded
 it — they sat in Elasticsearch, while the `net.bytes_sent` they must be divided
-by lives in InfluxDB, and labels differ (`tag.host.keyword` upper-cased vs
-lowercase `host`). So the ES forwarder (`provisioning/telegraf.py`) now renders a
-**second output** whenever a deployment has both elastic and monitoring state
-(every kind via `telegraf_fold`; retrofit via `provision-telegraf`, where the
-Influx creds are resolved even under `--skip-metrics`): `[[outputs.influxdb_v2]]`
-with `namepass=["tail"]` and `tagpass target = ["*::traffic",
-"saorsa_transport::masque::relay_server"]` (`INFLUX_TRAFFIC_TARGET_PATTERNS`).
-The tagpass is **mandatory** (else every log line hits Influx); it is a **glob,
-not the issue's literal 5-list**, because ant-node#230 (V2-834) adds
-`ant_node::{payment,storage,upgrade}::traffic` and a literal list would drop them
-silently — a parametrised test asserts all eight targets match. Creds are
-duplicated into `/etc/default/telegraf-ant` as `INFLUXDB_*`; without monitoring
-the ES config/env are byte-identical (tested). The ES output is untouched.
+by lives in InfluxDB, and the labels differ (`tag.host.keyword` upper-cased vs
+lowercase `host`). So the ES forwarder renders a **second output** whenever a
+deployment has both elastic and monitoring state: an `[[outputs.influxdb_v2]]`
+with `namepass=["tail"]` and a `tagpass` on `target`.
 
-Points land in `tail` in `testnet-metrics` with the **upper-cased `host`** (the
-uppercase processor runs before every output; changing it would alter ES docs).
-Dashboard "Egress accounting" (uid `ant-egress-accounting`,
+- **The tagpass is mandatory** (else every log line hits Influx) and is a
+  **glob, not a literal list**, because ant-node#230 adds more
+  `*::traffic` targets and a literal list would drop them silently. Without
+  monitoring the ES config and env are byte-identical.
+- Points land in `tail` in `testnet-metrics` with the **upper-cased `host`** (the
+  uppercase processor runs before every output; changing it would alter ES docs).
+
+Dashboard **"Egress accounting"** (uid `ant-egress-accounting`,
 `provisioning/egress_dashboard.py`, written by every `monitoring provision` with
-Grafana): coverage % (numerator = `udp_tx_bytes` + `relay_carrier_udp_tx_bytes`
-+ `bytes_relayed` under BOTH relay targets; `wire_tx_bytes`/`fetch_response_tx_bytes`
-excluded as double counts; red <80%; legend mean = the figure for the range),
-unaccounted top-15 table, **socket ground truth egress/ingress** (`sock_tx_bytes`,
-`sock_rx_bytes` — V2-834's own 2% gate; empty on older builds; an earlier branch
-revision left relay-socket ingress in a separate `raw_rx_bytes`, bootstraps read
-21–33% without it — fixed upstream and renamed `relay_target_rx_bytes` at this
-dashboard's request; verified on DEV-02 2026-09-22 at 90–98% from `sock_rx` alone), a stacked egress decomposition, relay throughput/occupancy over both
-relay servers, replication serving, numerator note. Facts the Flux is shaped by,
-all MEASURED (prod ES 2026-09-17; DEV-01 on the V2-834 branch 2026-09-18):
-summaries are **cumulative per process, every 5 min** → `aggregateWindow(10m,
-last)` → `difference(nonNegative)` → per-`(host,_time)` `sum()` (NOT a second
-`aggregateWindow`: re-stamps one window late + bogus zero row); **one series can
-carry several lines per tick** (V2-834 emits the endpoint summary once per
-endpoint, one with `udp_tx_bytes=0`; `relay::traffic` interleaves per-session
-lines with the summary) — differenced raw it flaps `0,X,0,X` and reads 25× the
-NIC, so every series is windowed with `max`, never `last`; **`bytes_relayed` exists under two
-targets** (stream relay `relay::traffic`, dominant on V2-834 builds; MASQUE
-`masque::relay_server`, dominant on the shipped build and emitted only from the
-CONNECT path — an idle relay has no line); **host case**: `net` keeps the
-deployment name's case on a testnet (`DEV-01-ant-node-…`), so BOTH sides are
-lower-cased and `$host` matched `(?i)`, and the Host variable is pinned to `cpu`
-so tail points don't duplicate the dropdown; **NAT VMs**: `veth-nat` is the
-busiest interface and its `bytes_sent` is traffic INTO the netns → NIC side
-excludes `lo|all|veth*`; **performance**: range→filters→`aggregateWindow` with
-NOTHING in between (pushdown: one row per series per window; a 24h view went
-18s→2s), window scales with range (10m/30m/1h), `union`+`pivot` not `join()`;
-**the partial window at the range end is dropped on both sides** (5-min ticks vs
-10-s samples → measured 5× in that window, legend mean 95→116%). With all that,
-DEV-01 read 82–97% on every host on all three reconciliations at 2h and 24h.
-Companion dashboard **"Node traffic by service"** (uid
-`ant-node-traffic-by-service`, same module): prod has 700+ services, so
-fleet-wide it RANKS (four top-20 `(host, service)` tables by mean rate with peak
-window — `sort|>limit`, flat cost at any fleet size) and draws per-service lines
-only for ONE host (single-select Host variable, `single_host=True` in
-`_build_host_dashboard`). Found while building it: the ES forwarder's path
-parser handled `ant-node-N`, `ant-genesis-*` and bare `ant-bootstrap` but not
-the testnet bootstrap provisioner's `ant-bootstrap-{index}` dir, so every
-testnet bootstrap's `service_number` (ES and Influx) was the raw log path —
-fixed in the starlark; a test executes the parser against all four shapes. Verified on that live run AND against a local docker
-InfluxDB with synthetic points (restart, double endpoint line, per-session line,
-mixed-case host, veth-nat). Prod rollout: retrofit with `provision-telegraf
---name ant-prod-01 --host-ips-file <fleet ips> --host-role WAN_NODE
---skip-metrics --only-new-logs` (the last flag or the restart re-ingests every
-on-disk log into ES); the dashboard JSON can be dropped into
-`/var/lib/grafana/dashboards/` on the Grafana VM — the file provider picks it
-up without a restart.
+Grafana) plus a companion **"Node traffic by service"**. Facts the Flux is shaped
+by, all MEASURED:
+
+- Summaries are **cumulative per process, every 5 min** → `aggregateWindow(10m,
+  last)` → `difference(nonNegative)` → per-`(host,_time)` `sum()`. **Not** a
+  second `aggregateWindow` (it re-stamps one window late and adds a bogus zero
+  row).
+- **One series can carry several lines per tick**, so every series is windowed
+  with **`max`, never `last`** — differenced raw it flaps `0,X,0,X` and reads 25x
+  the NIC.
+- **`bytes_relayed` exists under two targets** (stream relay and MASQUE, the
+  latter emitted only from the CONNECT path, so an idle relay has no line).
+- **Host case**: `net` keeps the deployment name's case on a testnet, so BOTH
+  sides are lower-cased and `$host` matched `(?i)`; the Host variable is pinned to
+  `cpu` so tail points do not duplicate the dropdown.
+- **NAT VMs**: `veth-nat` is the busiest interface and its `bytes_sent` is traffic
+  INTO the netns, so the NIC side excludes `lo|all|veth*`.
+- **Performance**: range → filters → `aggregateWindow` with NOTHING in between
+  (pushdown; a 24h view went 18s → 2s), window scales with range,
+  `union`+`pivot` not `join()`.
+- **The partial window at the range end is dropped on both sides** (5-min ticks
+  vs 10-s samples measured 5x in that window).
+- `wire_tx_bytes`/`fetch_response_tx_bytes` are **excluded from the coverage
+  numerator** as double counts.
+- Prod has 700+ services, so fleet-wide the companion dashboard **RANKS** (top-20
+  tables, flat cost at any fleet size) and draws per-service lines for ONE host
+  only.
+
+Found while building it: the ES forwarder's path parser handled `ant-node-N`,
+`ant-genesis-*` and bare `ant-bootstrap` but **not** the testnet bootstrap
+provisioner's `ant-bootstrap-{index}` dir, so every testnet bootstrap's
+`service_number` was the raw log path.
+
+Prod rollout is a retrofit with `provision-telegraf --name ant-prod-01
+--host-ips-file <ips> --host-role WAN_NODE --skip-metrics --only-new-logs` —
+**the last flag matters**, or the restart re-ingests every on-disk log into ES.
+The dashboard JSON can be dropped into `/var/lib/grafana/dashboards/`; the file
+provider picks it up without a restart.
+
+See `deploy/README.md` §"Traffic-accounting counters → InfluxDB".
 
 ### Buckets (node vs client isolation)
 
@@ -1458,617 +1478,477 @@ Host metrics are split across **two InfluxDB buckets** so the "Node Host
 Statistics" and "Client Host Statistics" dashboards are *physically* isolated
 rather than relying on a mutable `host_role` dropdown:
 
-- **`testnet-metrics`** — node-tier host metrics (genesis/bootstrap/WAN nodes:
-  cpu/mem/disk/net/procstat), the `prometheus` per-node measurement, and all
-  application measurements (`download`, `prod_upload`, `prod_canary_*`, …).
-- **`client-metrics`** — client-tier host metrics only (uploader / downloader /
-  canary client VMs, tagged `host_role=CLIENT`), **plus** the client `ant`
-  service's memory (see below).
+- **`testnet-metrics`** — node-tier host metrics, the `prometheus` per-node
+  measurement, and all application measurements (`download`, `prod_upload`,
+  `prod_canary_*`, `pointer`, …).
+- **`client-metrics`** — client-tier host metrics only (tagged
+  `host_role=CLIENT`), **plus** the client `ant` service's memory.
 
-On CLIENT-role hosts, `deployments provision-telegraf` appends two extra inputs
-(from `resources/monitoring/telegraf_metrics_client.conf`, gated on
-`host_role=="CLIENT"` so node configs stay byte-identical and the cgroup input's
-"path missing" error never fires on the node fleet): a `procstat` keyed on
-`system.slice/ant-*.service` (per-process RSS, tagged `metric_source=ant-client`,
-2s interval) and a `cgroup` input reading `memory.current` + `memory.peak`
-(whole-service live + high-water peak, 2s) for the same glob. The single `ant-*`
-glob matches whichever client unit a VM runs (`ant-uploader`, `ant-downloader`,
-`ant-prod-uploader`, `ant-prod-downloader`, `ant-prod-canary-upload`,
-`ant-prod-canary-probe`) and nothing else. This covers testnet and prod
-uploads/downloads/canary; the local-* prod kinds run no systemd unit and are not
-covered. `memory.peak` is the reliable high-water companion when a sub-2s
-terminal spike clips the discretely-sampled procstat RSS.
+On CLIENT-role hosts `provision-telegraf` appends two extra inputs, **gated on
+`host_role=="CLIENT"`** so node configs stay byte-identical and the cgroup
+input's "path missing" error never fires on the node fleet: a `procstat` keyed on
+`system.slice/ant-*.service` (per-process RSS, 2s) and a `cgroup` input reading
+`memory.current` + `memory.peak` (2s). The single `ant-*` glob matches whichever
+client unit a VM runs and nothing else. `memory.peak` is the reliable high-water
+companion when a sub-2s terminal spike clips the discretely-sampled procstat RSS.
+The `local-*` prod kinds run no systemd unit and are not covered.
 
 `monitoring provision` creates both buckets and mints an **org-scoped** Telegraf
 token (read+write on every bucket, so adding a bucket never requires reminting
-the immutable token). `deployments provision-telegraf` routes CLIENT-role hosts
-to `client-metrics` and everything else to `testnet-metrics`. The Node Host
-Statistics dashboard queries `testnet-metrics`; Client Host Statistics queries
-`client-metrics` — neither can render the other's data regardless of the Role
-dropdown. Bucket names are constants in `monitoring.py` (`INFLUXDB_BUCKET` /
-`INFLUXDB_CLIENT_BUCKET`).
+the immutable token). Bucket names are constants in `monitoring.py`.
 
 ### Per-process memory composition (opt-in, `--node-memory-metrics`)
 
-`procstat.memory_rss` is a single **total** and cannot say what the memory is made
-of — the difference between a leak and a growing LMDB chunk-store mmap. Measured
-on prod: `ant-node-9` at 880 MB RSS of which 469 MB file-backed, then 3.48 GB of
-which 3.07 GB file-backed an hour later. That ambiguity made `memory_rss` misread
-as a 20x leak on STG-03 run 475. Collection is **two tiers** (V2-972):
+`procstat.memory_rss` is a single **total** and cannot say what the memory is
+made of — the difference between a leak and a growing LMDB chunk-store mmap.
+That ambiguity made `memory_rss` misread as a 20x leak on STG-03 run 475.
+Collection is **two tiers**:
 
-**Tier 1 — native `procstat` mmap, the routine signal.** Telegraf already collects
-`memory_pss`, `memory_anonymous`, `memory_private_clean/_dirty`,
-`memory_shared_clean/_dirty`, `memory_referenced`, `memory_swap` — they were only
-**permission-gated**. Granting `CAP_SYS_PTRACE` unlocks them with **no new plugin
-and no script**. The base config now sets `properties` explicitly to EXCLUDE
-telegraf's default `mmap`, and the opt-in fragment re-declares the same process
-sets with `properties = ["mmap"]` at **60s**. That split is load-bearing: mmap
-reads the whole of `/proc/<pid>/smaps` — **6.78%** of a core at the 10s agent
-interval vs **1.15%** at 60s vs **0.15%** without — so two tiers keep
-`cpu_usage`/`num_fds`/`num_threads`/`memory_rss` at 10s while paying mmap once a
-minute. Measured on the canary: telegraf **1.50%** total.
+- **Tier 1 — native `procstat` mmap, the routine signal.** Telegraf already
+  collects `memory_pss`, `memory_anonymous`, `memory_private_*`,
+  `memory_shared_*`, `memory_referenced` and `memory_swap` — they were only
+  **permission-gated**, so granting `CAP_SYS_PTRACE` unlocks them with **no new
+  plugin and no script**. The base config sets `properties` explicitly to EXCLUDE
+  telegraf's default `mmap`, and the opt-in fragment re-declares the same process
+  sets with `properties = ["mmap"]` at **60s**. That split is load-bearing: mmap
+  reads the whole of `/proc/<pid>/smaps` — 6.78% of a core at the 10s agent
+  interval vs 1.15% at 60s vs 0.15% without.
+- **Tier 2 — a systemd timer** (`--node-memory-interval`, default 300s, jittered)
+  supplying only what procstat cannot: `rss_anon/file/shmem`, `vm_swap`, the
+  `rollup_*` fields, and **`rollup_lazy_free`**. LazyFree is the point —
+  MADV_FREE'd pages stay resident until reclaimed — but it is a **lower bound**,
+  so zero does not exclude it. The three huge-page fields go together:
+  `AnonHugePages` is anon-only and says nothing about a file-backed mapping.
 
-**Tier 2 — a systemd timer** (`ant-node-memory-collector.timer`, cadence
-`--node-memory-interval`, default 300s, 60s for an investigation host, jittered by
-a tenth). Supplies only what procstat cannot: `rss_anon/file/shmem`, `vm_swap`,
-`rollup_pss_anon/file/shmem/dirty`, `rollup_swap_pss`, **`rollup_lazy_free`**,
-`rollup_anon_huge_pages`, `rollup_file_pmd_mapped`, `rollup_shmem_pmd_mapped`.
-`LazyFree` is the point — MADV_FREE'd pages stay resident until reclaimed, which
-IS V2-970's shape — but it is a **lower bound** (the kernel can under-report, so
-zero does not exclude it). The three huge-page fields go together: `AnonHugePages`
-is anon-only and says nothing about a file-backed mapping.
+- **NOT a Telegraf `inputs.exec`** — that route measured ~14.9% of a core, of
+  which ~12.5% was telegraf overhead that persisted even with a trivial input and
+  a 600s interval. The timer costs only the collector's own work.
+- **`CAP_SYS_PTRACE`, not `CAP_PERFMON`.** `/proc/<pid>/smaps*` is gated on
+  `ptrace_may_access`, NOT file permissions, so the pre-existing
+  `CAP_DAC_READ_SEARCH` does not satisfy it. `CAP_PERFMON` was tested on kernel
+  6.8.0-86: **0 of 13 processes readable**. Verify via `CapEff` (`0x80004` =
+  both, `0x4` = base only). **The failure mode is silent and partial** — the
+  cheap sources report normally while composition returns nothing — which cost a
+  canary cycle because all benchmarking had been done as root over SSH.
+- **Tags are attached by the collector**, since it posts to Influx directly and
+  `[global_tags]` never apply. `host` is load-bearing: without it the fleet's
+  `ant-node-1` series all merge, AND `record-analysis` drops host-less points.
+- **Units**: telegraf reports `memory_rss` in **bytes** but smaps fields in
+  **kB**; corrected once at capture so everything stored is bytes.
+- **Archival is rollup-only** (`memory_composition_by_service` in
+  `deployment_host_results.host_metrics`), excluded from the bucket table via
+  `ROLLUP_ONLY_METRICS` — ~164k rows / ~35 MB per 990-node run against a table
+  already 76% of the DB.
+- **`memory_rss − memory_anonymous` is non-anonymous/file-or-shared resident** —
+  NOT "file-backed", NOT "LMDB". Proving LMDB attribution needs a pathname-level
+  `smaps` snapshot, **not yet implemented**.
 
-**Tags are attached by the collector**, since it posts to Influx directly and
-Telegraf's `[global_tags]` never apply: `host`, `testnet_name`, `host_role`,
-matching procstat so the two measurements join. `host` is load-bearing — without
-it the fleet's `ant-node-1` series all merge, AND `record-analysis` drops
-host-less points so archival yields nothing. Caught on the canary before rollout.
-
-**NOT a Telegraf `inputs.exec`** — that route measured **~14.9%** of a core,
-of which ~12.5% was telegraf overhead that could not be explained (it persisted
-with only a trivial input, and with the interval at 600s). The timer costs only
-the collector's own work (~732ms per pass over 13 services).
-
-**`CAP_SYS_PTRACE`, not `CAP_PERFMON`.** `/proc/<pid>/smaps*` is gated on
-`ptrace_may_access`, NOT file permissions, so the unit's pre-existing
-`CAP_DAC_READ_SEARCH` does not satisfy it. `CAP_PERFMON` (the narrower grant) was
-tested on kernel 6.8.0-86: **0 of 13 processes readable**, same as nothing, with
-and without NNP. Granted only on opt-in hosts, with a matching
-`CapabilityBoundingSet` and `NoNewPrivileges=yes`; verify via `CapEff`
-(`0x80004` = both, `0x4` = base only). The failure mode is **silent and partial** —
-the cheap sources report normally while composition returns nothing — which cost
-one canary cycle because all benchmarking had been done as root over SSH.
-
-**Units:** telegraf reports `memory_rss` in **bytes** but smaps fields in **kB**;
-corrected once at capture so everything stored is bytes.
-
-**Archival is rollup-only** — `memory_composition_by_service` in
-`deployment_host_results.host_metrics` (JSON column, no migration), excluded from
-`deployment_host_metric_buckets` via `ROLLUP_ONLY_METRICS` (~164k rows / ~35 MB
-per 990-node run against a table already 76% of the DB; see V2-973).
-
-**`memory_rss − memory_anonymous` is non-anonymous/file-or-shared resident** — NOT
-"file-backed", NOT "LMDB". Proving LMDB attribution needs a pathname-level `smaps`
-snapshot, **not yet implemented**.
+See `deploy/README.md` §"Per-process memory composition".
 
 ### Per-device disk I/O
 
-**Both tiers** collect per-device disk I/O via a `[[inputs.diskio]]` stanza in the
-shared base config (`resources/monitoring/telegraf_metrics.conf`), **on by default,
-no flag**. Because the client config is an *append to the node base*, that one
-stanza covers node-tier and client-tier hosts and reaches every install path
-(`nodes provision`, `provision-genesis`, `bootstraps provision`, `clients provision`,
-the standalone `deployments provision-telegraf`, and `monitoring info
---telegraf-config`). Distinct from `[[inputs.disk]]`, which is capacity only.
-The `diskio` measurement emits the monotonic counters `read_bytes`/`write_bytes`,
-`reads`/`writes`, `read_time`/`write_time`, `io_time`, `weighted_io_time` plus the
-gauge `iops_in_progress`, tagged with the device `name` — throughput, IOPS, await
-and `%util` all derive from those.
+**Both tiers** collect per-device disk I/O via a `[[inputs.diskio]]` stanza in
+the shared base config, **on by default, no flag**. Because the client config is
+an *append to the node base*, that one stanza covers every install path.
+Distinct from `[[inputs.disk]]`, which is capacity only.
 
-The **`devices` list is include-only** (the plugin has no exclude option), so the
-glob `["sd*","vd*","nvme*","xvd*","dm-*"]` must name every wanted pattern — it spans
-all providers' naming plus LVM `dm-*`, and deliberately does not match `loop*`
-(Ubuntu's ~10 snapd loop devices would be that many dead series per host).
+- **The `devices` list is include-only** (the plugin has no exclude option), so
+  the glob must name every wanted pattern. It spans all providers' naming plus
+  LVM `dm-*`, and deliberately does not match `loop*` — Ubuntu's ~10 snapd loop
+  devices would be that many dead series per host.
+- **Identifying the node storage volume.** diskio knows only kernel device names,
+  never mountpoints, and the backing device varies by provider and by raw-ext4 vs
+  LVM-striped. So it is resolved **on the host at provision time**
+  (`findmnt` → `lsblk`), written to `ANT_DATA_DEVICE`, and matched by a
+  `[[processors.regex]]` that tags that device **`volume_role =
+  "node-storage"`** — so Grafana and `record-analysis` filter on it directly, no
+  join against `disk`, no LVM breakage. On **root-disk providers** the root
+  device is tagged (that series then also carries OS I/O — unavoidable when they
+  share a disk). **Client VMs never fall back to root**; they get the sentinel
+  `__none__`. **Always test `volume_role == "node-storage"`, never mere
+  presence.**
+- **Archival**: `record-analysis` persists **`disk_io_by_device`** into
+  `deployment_host_results.host_metrics`, keyed by device, each holding
+  `volume_role` plus per-second rate stats computed *within* a device (negative
+  deltas dropped as reboot counter resets). Devices are deliberately **NOT**
+  averaged together the way net pools across interfaces — a root disk and a node
+  storage volume are not interchangeable, and averaging an idle root against a
+  busy data volume describes neither.
+- `host_metrics` is a JSON column, so this needed **no Alembic migration**;
+  pre-existing rows simply lack the key. Retrofit a running deployment by
+  re-running `deployments provision-telegraf --name <name>`.
 
-**Identifying the node storage volume.** diskio knows only kernel device names
-(`sdb`, `dm-0`), never mountpoints, and the device backing `/mnt/ant-node-storage`
-varies by provider and by raw-ext4 vs LVM-striped. So it is resolved **on the host at
-provision time** (`findmnt -nro SOURCE` → `lsblk -nro KNAME`, the same idiom as
-`set_reserved_blocks.py`; `build_data_device_env_command` in
-`provisioning/telegraf_metrics.py`), written to `ANT_DATA_DEVICE` in
-`/etc/default/telegraf-ant-metrics`, and matched by a `[[processors.regex]]` scoped
-to `namepass=["diskio"]` that tags that device **`volume_role = "node-storage"`**.
-The tag lands in InfluxDB, so Grafana and `record-analysis` filter on it directly —
-no join against `disk`, no LVM breakage. On **root-disk providers** (Contabo, OVH
-3-AZ) node data lives on the OS root filesystem, so the **root device** is tagged
-(that series then also carries OS I/O — unavoidable when they share a disk).
-**Client VMs** never fall back to root; they get the sentinel `__none__`, which
-matches no device. Always test `volume_role == "node-storage"`, never mere presence.
-
-**Archival.** `deployments record-analysis` now runs a fourth Flux query (`diskio`
-alongside cpu/mem/net) and persists **`disk_io_by_device`** into
-`deployment_host_results.host_metrics` — a dict keyed by device name, each holding
-`volume_role` plus `read_bytes_per_sec` / `write_bytes_per_sec` / `reads_per_sec` /
-`writes_per_sec` as `{avg,min,max,samples}` stats. Rates are computed *within* a
-device (per-second deltas, negative deltas dropped as reboot counter resets).
-Devices are deliberately **NOT** averaged together the way net pools across
-interfaces — a root disk and a node storage volume are not interchangeable, and
-averaging an idle root disk against a busy data volume describes neither. The
-`record-analysis` summary table shows the node storage volume's figures (naming the
-device); `print-recorded-results` renders one row per (host, device) with the
-storage volume flagged. `host_metrics` is a JSON column, so this needed **no Alembic
-migration** and pre-existing rows simply lack the key (the section is skipped).
-Retrofit a running deployment by re-running `deployments provision-telegraf --name
-<name>`, which regenerates the config and restarts `telegraf-ant-metrics`.
+See `deploy/README.md` §"Per-device disk I/O".
 
 ### Bucketed host metrics + per-service node RSS
 
-`deployments record-analysis` writes host metrics **twice**: the unchanged whole-run
-rollup in `deployment_host_results`, plus fixed-width time buckets in
+`record-analysis` writes host metrics **twice**: the unchanged whole-run rollup
+in `deployment_host_results`, plus fixed-width time buckets in
 **`deployment_host_metric_buckets`** (one row per `(host, bucket_start, metric,
 device, service)` holding `avg`/`min`/`max`/`samples`). The buckets exist so an
-arbitrary sub-window can be re-derived **after the monitoring stack is destroyed** —
-previously `--window` fixed the window at capture and InfluxDB was then gone, which
-is why the rc.1 staging comparison could only be reported directionally (3.37h vs
-5.45h stored windows, the latter including the mixed-version phase).
+arbitrary sub-window can be re-derived **after the monitoring stack is
+destroyed** — previously `--window` fixed the window at capture and InfluxDB was
+then gone.
 
-`--bucket-secs` (default **300**; `0` disables bucket capture). **Width does not
-affect accuracy**: for a boundary-aligned window, `sum(avg*samples)/sum(samples)` is
-exactly the mean of the underlying 10s samples and `MIN(min)`/`MAX(max)`/
-`SUM(samples)` are exact, at any width — each bucket carries its own min/max, so a
-brief spike still surfaces. Width trades only window-edge precision (≤5 min) and
-trend-plot resolution. 300s keeps a staging-sized run near 100k rows (~18 MB)
-instead of ~500k; the registry is on DO's smallest managed Postgres (1 vCPU, ~1 GB
-RAM → `shared_buffers=190MB`, 10 GB disk), where table size *is* query time.
+`--bucket-secs` (default **300**; `0` disables capture). **Width does not affect
+accuracy** — for a boundary-aligned window `sum(avg*samples)/sum(samples)` is
+exactly the mean of the underlying 10s samples, and `MIN`/`MAX`/`SUM` are exact,
+at any width; each bucket carries its own min/max, so a brief spike still
+surfaces. It trades only window-edge precision (≤5 min) and trend resolution.
+What it buys is table size, and the registry is on DO's smallest managed Postgres
+where table size *is* query time.
 
 Three invariants, all deliberate:
-- **Rates are computed before bucketing, never after.** net/diskio are per-second
-  deltas taken *within* an interface/device; bucketing raw counters and
-  differencing afterwards is nonsense. `influx.py` is split into
-  `normalise_host_metric_points` (delta/normalise) and `bucket_host_metric_samples`
-  (windowing); `aggregate_host_metrics` keeps its signature and is now the
-  degenerate "one bucket spanning everything" case, so the two paths cannot drift.
-  A rate sample is timestamped at the **end** of its interval.
-- **Re-aggregating `avg` must be sample-weighted**, never a mean of means — buckets
-  hold unequal sample counts at run boundaries and missed scrapes. Done server-side
-  in `repo.get_host_metric_window(deployment_id, start, end)`, which returns
-  `host_metrics`-shaped entries so a window and the rollup are interchangeable.
-  Half-open on `bucket_start`: a bucket is in or out whole.
-- **Bucketed diskio is restricted to the `node-storage`-tagged device.** On a
-  measured staging run 348 of 421 device series were root-disk boot/ESP partitions
-  (`vda1`/`vda14`/`vda15`/`vda16`) duplicating `vda` — the majority of rows for no
-  signal. The rollup still keeps every device.
 
-Historical deployments have no bucket rows; consumers **must** degrade to the
-rollup. **No backfill is possible.** `deployments prune-host-buckets --older-than N
-[--name X] [--dry-run]` drops bucket rows only, leaving the rollup intact, so a
-pruned run degrades to exactly its pre-bucketing view.
+- **Rates are computed before bucketing, never after.** net/diskio are
+  per-second deltas taken *within* an interface/device; bucketing raw counters
+  and differencing afterwards is nonsense. `aggregate_host_metrics` is now the
+  degenerate "one bucket spanning everything" case of the same code, so the two
+  paths cannot drift. A rate sample is timestamped at the **end** of its interval.
+- **Re-aggregating `avg` must be sample-weighted**, never a mean of means —
+  buckets hold unequal sample counts at run boundaries and missed scrapes. Done
+  server-side in `repo.get_host_metric_window`, which returns `host_metrics`-shaped
+  entries so a window and the rollup are interchangeable. Half-open on
+  `bucket_start`: a bucket is in or out whole.
+- **Bucketed diskio is restricted to the `node-storage`-tagged device.** On a
+  measured staging run 348 of 421 device series were root-disk boot/ESP
+  partitions duplicating the root device — the majority of rows for no signal.
+  The rollup still keeps every device.
+
+Historical deployments have no bucket rows, so consumers **must** degrade to the
+rollup. **No backfill is possible.** `deployments prune-host-buckets --older-than
+N [--name X] [--dry-run]` drops bucket rows only, so a pruned run degrades to
+exactly its pre-bucketing view.
 
 **Per-service node RSS** (`rss_by_service` in the rollup, `rss_bytes` as a bucket
-series) is captured from the `procstat`/`memory_rss` field via the `node_service`
-tag — Telegraf always collected it, nothing ever queried it, so process-level memory
-was absent from the registry entirely. `mem_percent` is no substitute: whole-host,
-includes page cache, cannot attribute anything to one of 15 services on a VM. Keyed
-by `node_service` not PID (services restart, PIDs churn) and **never pooled into a
-host total** — one leaking service is invisible in a 15-service mean. The
-`record-analysis` table shows only the peak service as a scalar;
-`print-recorded-results` renders one row per (host, service). Client-tier RSS is a
-separate existing path in the `client-metrics` bucket and is unaffected.
+series) is captured from `procstat`/`memory_rss` via the `node_service` tag —
+Telegraf always collected it and nothing ever queried it, so process-level memory
+was absent from the registry entirely. `mem_percent` is no substitute:
+whole-host, includes page cache, cannot attribute anything to one of 15 services.
+Keyed by `node_service` not PID (services restart, PIDs churn) and **never pooled
+into a host total** — one leaking service is invisible in a 15-service mean.
+
+See `deploy/README.md` §"Bucketed host metrics".
 
 ### Normalised per-GB metrics (`deployment_derived_metrics`)
 
-Raw measurements aren't comparable across runs — a longer run moves more bytes —
-which is why the rc.1 gate verdict recorded **outbound bytes per GB of user
+Raw measurements are not comparable across runs — a longer run moves more bytes
+— which is why the rc.1 gate verdict recorded **outbound bytes per GB of user
 traffic** (directly the bandwidth bill) and **disk consumed per GB stored** as
-NOT ASSESSED. `record-analysis` now derives both at extraction time into
+NOT ASSESSED. `record-analysis` derives both at extraction time into
 **`deployment_derived_metrics`**, one row per `(deployment, metric,
 window_label)` carrying value + numerator + denominator + unit + `source` +
-`details` JSON. Ratios: `outbound_bytes_per_gb_uploaded`,
-`outbound_bytes_per_gb_traffic` (÷ uploaded + downloaded),
-`disk_bytes_per_gb_stored`. Components stored in their own right
-(`node_outbound_bytes_total`, `node_inbound_bytes_total`,
-`node_storage_growth_bytes`, `gb_uploaded`, `gb_downloaded`) so a ratio is
-debuggable and a later gate can renormalise — impossible once the run's InfluxDB
-is destroyed. Impl: `deploy/saorsa_deploy/derived_metrics.py` (pure functions),
-consumed by V2-721's comparison-report command.
+`details`. Components are stored in their own right so a ratio is debuggable and
+a later gate can renormalise — impossible once the run's InfluxDB is destroyed.
 
 Invariants, all load-bearing:
+
 - **Node tier only, by construction** — the numerator covers the queried Influx
-  bucket, which defaults to `testnet-metrics`; client VMs report to
+  bucket, which defaults to `testnet-metrics`, and client VMs report to
   `client-metrics`, so the workload generator's egress is excluded with no
   hostname heuristic.
-- **Outbound summed from raw counter deltas, never integrated from the stored
+- **Outbound is summed from raw counter deltas, never integrated from the stored
   averages** — rate samples are emitted per interface and pooled by *averaging*,
   so integrating them reports a 2-NIC host's mean, not its sum.
-- **Growth is `last - first`, not `max - min`** — a pruned host hasn't consumed
+- **Growth is `last - first`, not `max - min`** — a pruned host has not consumed
   its peak; the peak goes in `details.peak_growth_bytes`.
 - **Denominator = successful ops whose `finished_at` is in the window**, from the
-  per-op `deployment_{upload,download}_records`. `deployment_file_results` is an
-  aggregate with no per-op timestamps and cannot be windowed. **Run
-  `record-results` BEFORE `record-analysis`** or the ratios have no denominator.
-- **Unmeasurable ⇒ omitted, never estimated** (empty denominator, or no
-  node-storage series). `--no-derived` skips the whole computation.
+  per-op records. `deployment_file_results` is an aggregate with no per-op
+  timestamps and cannot be windowed. **Run `record-results` BEFORE
+  `record-analysis`** or the ratios have no denominator.
+- **Unmeasurable ⇒ omitted, never estimated.** `--no-derived` skips it entirely.
 
-This needed **filesystem occupancy**, which Telegraf collected (`[[inputs.disk]]`)
-but nothing ever queried — so "chunk-store size" was never in Postgres for any
-run, and `diskio` can't substitute (it counts I/O incl. rewrites/compaction, not
-what's resident). The `disk` measurement is tagged `volume_role=node-storage` by
-**mountpoint** (`path`), NOT device: `disk`'s `device` tag is the fstab-style
-source (`mapper/vg-lv`), never the kernel name `diskio` reports, so on LVM the two
-never match. `ANT_DATA_MOUNT` is resolved on the host beside `ANT_DATA_DEVICE`
-(`build_data_location_env_command`). Lands as `disk_usage_by_mount` in the rollup
-(with `first`/`last`/`growth_bytes`) and the `disk_used_bytes` bucket series
-(node-storage mount only). Retrofit a live deployment with `deployments
-provision-telegraf --name X`; **no past run can be backfilled**.
+This needed **filesystem occupancy**, which Telegraf collected
+(`[[inputs.disk]]`) but nothing ever queried — so chunk-store size was never in
+Postgres for any run, and `diskio` cannot substitute (it counts I/O including
+rewrites and compaction, not what is resident). The `disk` measurement is tagged
+`volume_role=node-storage` by **mountpoint**, NOT device: `disk`'s `device` tag
+is the fstab-style source (`mapper/vg-lv`), never the kernel name `diskio`
+reports, so on LVM the two never match. **No past run can be backfilled.**
 
 `deployments derive-metrics --name X [--window-start/-end ISO] [--label L]`
 re-derives a window from Postgres alone after teardown. It is marked
-`source=buckets` (outbound integrated as `avg × width`, growth between first/last
-bucket average — approximate) versus `record-analysis`'s exact `source=capture`;
-never compare the two, and `--label full-run` is refused outright. Bucket width is
-**inferred** from the stored buckets (modal gap, so a collection gap can't move
-it) because it isn't recorded on the rows and a wrong width scales every byte
-total by exactly that factor.
+`source=buckets` (outbound integrated as `avg × width` — approximate) versus
+`record-analysis`'s exact `source=capture`; **never compare the two**, and
+`--label full-run` is refused outright. Bucket width is **inferred** (modal gap,
+so a collection gap cannot move it) because it is not recorded on the rows and a
+wrong width scales every byte total by exactly that factor.
+
+See `deploy/README.md` §"Normalised per-GB metrics".
 
 ### Deterministic staging gate comparison (`deployments compare`)
 
 `deployments compare --id <candidate> --baseline-id <baseline>` compares two
 recorded runs on their **stored metrics alone**, applies versioned thresholds,
 and emits per-gate PASS / FAIL / GRAY / **NOT ASSESSED** as JSON plus a
-fixed-format markdown report — upserted into **`deployment_gate_verdicts`**
-keyed `(candidate, baseline, window_label)` so a re-run replaces rather than
+fixed-format markdown report — upserted into **`deployment_gate_verdicts`** keyed
+`(candidate, baseline, window_label)` so a re-run replaces rather than
 accumulates. Same inputs ⇒ byte-identical report (the renderer never reads the
-clock; `computed_at` is passed in). Exits `2` on a hard-gate fail only.
+clock). **Exits `2` on a hard-gate fail only.**
 
 Both runs are identified by **deployment id, never name** — staging names are
 reused every train. There is deliberately **no run-identity plumbing**: no
-`staging_runs` table, no RC↔deployment FK, no `profile_version` column, no
-"last shipped release" resolution. The baseline is the operator's judgment,
-supplied as an id.
+`staging_runs` table, no RC↔deployment FK, no `profile_version` column. The
+baseline is the operator's judgment, supplied as an id.
 
-**Covers**: 3 hard gates (upload floor 99%, download floor 99.5%, data
-integrity) + 8 soft gates (success rate, transfer p50/p95 **per file-size
-bucket**, node CPU, node RSS, leak slope, outbound bytes/GB, disk bytes/GB).
-Transfer percentiles are exact — from the per-op
-`deployment_{upload,download}_records`. **`deployment_file_results` is
-unusable**: an aggregate with no per-op timestamps, so it cannot be windowed.
+**Covers** 3 hard gates (upload floor 99%, download floor 99.5%, data integrity)
+and 8 soft gates (success rate, transfer p50/p95 **per file-size bucket**, node
+CPU, node RSS, leak slope, outbound bytes/GB, disk bytes/GB), plus one soft gate
+per connection-error group. Transfer percentiles are exact, from the per-op
+records — **`deployment_file_results` is unusable**, being an aggregate with no
+per-op timestamps.
 
-**Deliberately does NOT cover** three hard gates — the report is silent on them
-entirely: crashes (panics → stderr/journald, not the JSON logs telegraf tails;
-ES dies at teardown), mixed-version chunk storage (SSH `chunks.mdb` check), and
-canaries (separate deployment). The **`evaluate-staging-run`** skill supplies
-those observationally and assembles the release-issue report.
+**Deliberately does NOT cover** three hard gates, and the report is silent on
+them entirely: crashes (panics go to stderr/journald, not the JSON logs telegraf
+tails, and ES dies at teardown), mixed-version chunk storage (an SSH check), and
+canaries (a separate deployment). The **`evaluate-staging-run`** skill supplies
+those observationally.
 
-**Data integrity (V2-757).** The fourth used to be on that list, because nothing
-anywhere verified downloaded content: a transfer that "succeeded" while silently
-returning corrupt bytes passed every check the system made. Now `uploader.sh`
-hashes each generated file before invoking `ant` and publishes
-`<address> <bytes> <sha256>`; `downloader.sh` carries the hash through
-`eligible_addresses` (an address alone cannot say what was uploaded under it),
-hashes the output **before** the existing `rm`, and emits an integer
-`verify_status` on the `download` point — `0` ok, `1` mismatch, `2` unavailable
-— **omitted entirely on a failed download**, with `expected_sha256`/
-`actual_sha256` on a mismatch only. One- and two-field lines still parse and
-verify as `unavailable`, so a WASM uploader publishing into the same shared pool
-keeps working. Columns: `deployment_upload_records.sha256`,
-`deployment_download_records.{verify_status,expected_sha256,actual_sha256}`, all
-nullable — **NULL is "not applicable", never a failure**, and no past run can be
-backfilled. The `compare` gate is **hard, candidate-only** (so it survives
-`--new-baseline`), fails above `hard_gates.download_verify_mismatch_max: 0`
-(thresholds config **v5**; a COUNT, and the one legitimately-zero threshold in
-that file), and reads NOT ASSESSED with the reason `no verified downloads
-recorded` when nothing was checked. Its denominator is **ok + mismatch only** —
-`unavailable` was never checked and NULL was never checkable, so counting either
-would report an unverified run as a verified one; the reported **coverage**
-(verified ÷ successful downloads) is what says how much of the run was covered.
-**A mismatch never touches the availability floors**: a download that fails is an
-availability problem, one that returns different bytes is a correctness problem.
-Native testnet tier only — the WASM tier is V2-1360, the prod client kinds
-V2-1361. Ride-along: both scripts emitted `status=$exit_code` raw, which
-`record-results` reads as an enum and DROPS above 2, so an `ant` exit of 3 was
-silently discarded rather than recorded as a failure; every non-zero exit is now
-clamped to 1 at the emit site.
-
-**Prefer a labelled phase window over `full-run`.** A full-run window is the span
-of observed *metrics*, not the run's shape: the −3h node clock skew drags a host's
-first points well before T0, and any post-measurement phase (the mixed-version
-hour) is swept in even when the baseline never ran one. Both guards passed on
-STG-01 #474 vs #470 (length 1.13x, coverage 1.12x) while the candidate carried
-3h05m of pre-run data plus that extra phase — they check size and idleness, not
-phase composition, and nothing records phase boundaries so it cannot be detected.
-`compare` therefore *warns* on `--window-label full-run`. Moving that pair to
-steady-state took CPU +19.28%→+15.29% and disk/GB −2.35%→−1.07%, with both runs
-landing at ~8.7 GB/GB. Slice with `derive-metrics --id <id> --window-start/-end
---label steady-state` on **both** runs — **`--id`, not `--name`**: a name resolves
-to the newest run bearing it, so a reused-name baseline is unreachable otherwise,
-and `compare --window-label` needs the label on both sides.
-
-**Connection-error counts (V2-842).** `deployments record-log-counts --name X`
-counts a versioned set of named log strings in the run's Elasticsearch and stores
-the **counts** in `deployment_log_event_counts`; `compare` then adds one soft gate
-per group, failing above `connection_error_increase_percent` (10%, arbitrary —
-there is no run history behind it). Must run **before teardown**: ES is per-run
-scratch and nothing can be backfilled, so every pre-existing run reads NOT
-ASSESSED (never zero — zero would show the candidate's counts against nothing).
-Its own table, NOT `deployment_derived_metrics`, because `compare` refuses when
-the two runs' derived `source` sets differ, which an `elasticsearch` row would
-trigger against every existing baseline. The catalogue
-(`resources/log_patterns/connection-errors.yaml`, version stored on every count)
-groups patterns and says how each combines: `Connection attempt failed` and
-`connect_happy_eyeballs failed` are one group taking the **max**, not the sum —
-they are one failure logged at two layers (1,415/1,415 then 71,309/71,160 across
-the DEV-02 comparison). Phrases are **stable substrings**, never the paraphrase
-in an issue (`dial failed for all`, because the emit interpolates a count).
-Node-tier index only; each count stores host cardinality, level breakdown,
-observed span and total forwarded lines, because a bare count cannot tell a
-fleet-wide regression from one sick node, nor more errors from more logging. An
-**empty index aborts** rather than recording zeros; a zero against a populated
-index records but warns (fixed / renamed / emitted at a dropped level are
-indistinguishable from ES alone). Impl: `log_patterns.py`, `es_log_counts.py`
-(pure), `cmd/record_log_counts.py`, `_soft_log_event_counts` in
-`gate_comparison.py`.
-
-**Refuses** on mismatched `window_label`, mismatched derived-metric `source`
-(`capture` is exact, `buckets` approximate — comparing them measures the method),
-or window lengths differing >1.25x. **Warns** on **activity coverage** (op span ÷
-window) differing >1.3x: the per-GB numerators accumulate through idle time while
-the denominators don't. Measured — 39.2% coverage → 14.86 GB/GB vs 52–61% → 9.1–10.1.
-A window-*length* check cannot catch this; the length can be perfectly ordinary.
-
-**Statistics.** The spec names CPU *median* / RSS *p50*; buckets historically held
-only `{avg,min,max,samples}`. `_stats` in `influx.py` now captures `p50`/`p95` —
-exact in the rollup, per-bucket in `deployment_host_metric_buckets` (nullable, **no
-backfill possible**). Reports mark `[p50]` (exact whole-run), `[p50~]` (window
-*estimated* from per-bucket percentiles — they don't compose like avg/min/max), or
-`[mean]` (no percentile captured). Comparing two different statistics is NOT
-ASSESSED, never silently blended. Full-run comparisons read the **rollup** (exact);
-windowed ones read buckets.
-
-Node RSS compares a **percentile across services** (default p95), not the fleet
-max — with ~1000 services the max is an extreme order statistic (470→474: max
-+64%, median +3.8%, p95 +1.8%). Worst service always in the detail.
-
-The **leak check is absolute** (a leaking baseline shouldn't excuse the candidate)
-and uses the **median** service slope, not a tail. Fitting a line through 2h of
-jittery RSS gives slopes **symmetric about zero**: p5 −40…−60 %/h vs p95 +37…+60
-%/h, ~50% of services negative, positive tail ≈ negative tail. A p95 threshold
-would measure how noisy RSS is, not whether it leaks. Threshold 5%/h on the median
-is calibrated against the **noise floor** (observed medians +2.44/−2.06/−0.66/−1.54),
-**not** against a known leak — a PASS means "no fleet-wide RSS trend". A **tail
-asymmetry** figure is reported (the negative tail is a free self-calibrating noise
-reference for a subset leak) but not gated on.
-
-The leak window is computed **per host**, from that host's own last bucket: the
-profile skews node clocks ±3h and telegraf stamps by the host's clock, so a
-fleet-wide `max(bucket_start)` assessed **15 of 997 services** on run 470.
+- **Data integrity** is **hard, candidate-only** (so it survives
+  `--new-baseline`) and fails above `download_verify_mismatch_max: 0` — a COUNT,
+  and the one legitimately-zero threshold in the file. Its denominator is **ok +
+  mismatch only**: `unavailable` was never checked and NULL was never checkable,
+  so counting either would report an unverified run as verified. **A mismatch
+  never touches the availability floors** — a download that fails is
+  availability, one that returns different bytes is correctness. NULL is "not
+  applicable, never a failure", and no past run can be backfilled.
+- **`--new-baseline`** (mutually exclusive with `--baseline-id`, exactly one
+  required) evaluates only the single-run floors; every relative gate is
+  **EMITTED** as NOT ASSESSED with the reason `new baseline` — emitted, not
+  omitted, because a gate missing from the report reads as one nobody thought
+  about. `deployment_gate_verdicts.baseline_deployment_id` is nullable for it,
+  with a **partial unique index** WHERE it IS NULL, since Postgres treats NULLs
+  as distinct and a re-run would otherwise accumulate rows.
+- **Refuses** on mismatched `window_label`, mismatched derived-metric `source`
+  (`capture` is exact, `buckets` approximate — comparing them measures the
+  method), or window lengths differing >1.25x. **Warns** on activity coverage
+  differing >1.3x: the per-GB numerators accumulate through idle time while the
+  denominators do not. A window-*length* check cannot catch this.
+- **Prefer a labelled phase window over `full-run`** — see the README; both
+  guards can pass on a comparison that is still wrong.
+- **Statistics**: reports mark `[p50]` (exact whole-run), `[p50~]` (window
+  *estimated* from per-bucket percentiles, which do not compose like avg/min/max)
+  or `[mean]`. **Comparing two different statistics is NOT ASSESSED, never
+  silently blended.** Full-run comparisons read the rollup; windowed ones read
+  buckets.
+- **Node RSS compares a percentile across services** (default p95), not the fleet
+  max — with ~1000 services the max is an extreme order statistic (one run moved
+  max +64% while the median moved +3.8% and p95 +1.8%). The worst service is
+  always in the detail.
+- **The leak check is absolute** (a leaking baseline should not excuse the
+  candidate) and uses the **median** service slope, not a tail: fitting a line
+  through 2h of jittery RSS gives slopes symmetric about zero, so a p95 threshold
+  would measure how noisy RSS is, not whether it leaks. The 5%/h threshold is
+  calibrated against the **noise floor**, **not** against a known leak — a PASS
+  means "no fleet-wide RSS trend".
+- **Connection-error counts** come from `deployments record-log-counts`, which
+  must run **before teardown** (ES is per-run scratch), so every pre-existing run
+  reads NOT ASSESSED — never zero, which would show the candidate's counts
+  against nothing. Its own table, NOT `deployment_derived_metrics`, because
+  `compare` refuses when the two runs' `source` sets differ. The catalogue groups
+  patterns and says how each combines — `Connection attempt failed` and
+  `connect_happy_eyeballs failed` are one group taking the **max**, not the sum,
+  being one failure logged at two layers. Phrases are **stable substrings**,
+  never the paraphrase in an issue. An **empty index aborts** rather than
+  recording zeros.
 
 Thresholds live in `resources/gates/staging-thresholds.yaml` (git-versioned,
-`version:` echoed into every report and stored on the verdict) — the process
-schedules a quarterly recalibration that must not need a tool release. Override
-with `--thresholds`. Validation fails loudly; a threshold silently defaulting to
-zero would be a rubber stamp printing PASS. `--history <ids>` supplies prior
-**accepted** runs for the 2σ criterion — *selecting* them is judgment and belongs
-to the operator/skill, only the arithmetic is in the tool; below the minimum the
-percentage threshold stands alone. Impl: `gate_config.py`, `gate_comparison.py`
-(pure), `gate_report.py`, `cmd/compare_runs.py`.
+`version:` echoed into every report and stored on the verdict) so the quarterly
+recalibration needs no tool release. Validation fails loudly — a threshold
+silently defaulting to zero would be a rubber stamp printing PASS. `--history
+<ids>` supplies prior **accepted** runs for the 2σ criterion; *selecting* them is
+judgment and belongs to the operator, only the arithmetic is in the tool.
+
+See `deploy/README.md` §"Staging gate comparison".
 
 ### Clock-skewed hosts must not vanish from Influx capture
 
 **Every Flux `range()` in the query paths carries an explicit `stop`**
-(`FLUX_FAR_FUTURE` in `influx.py`; also applied in `influx_canary.py`). Flux
+(`FLUX_FAR_FUTURE` in `influx.py`, also applied in `influx_canary.py`). Flux
 defaults `stop` to `now()`, and `provisioning/clock_skew.py` jumps a VM's
-**system** clock (nodes ±`SKEW_HOURS`=3 in a per-host random direction, clients
-by an explicit signed duration), so a *forward*-skewed host's Telegraf writes
-every point hours ahead of real time — and those points were silently discarded.
+**system** clock (nodes ±3h in a per-host random direction, clients by an
+explicit signed duration), so a *forward*-skewed host's Telegraf writes every
+point hours ahead of real time — and those points were silently discarded.
 
 Shape-dependent, which is why it hid for so long: a long run lost only a
 forward-skewed host's final skew's-worth of data, a short run lost the host
-entirely. Found on DEV-03 (2026-07-25): a +3h node VM contributed **0 of 27**
-hosts to `record-analysis` while holding 460 `memory_rss` points. The same
-defect applied to the file-op (`record-results`), prod-upload and canary
-queries — all fixed together, since it is one mechanism.
+entirely. Found on DEV-03: a +3h node VM contributed **0 of 27** hosts to
+`record-analysis` while holding 460 `memory_rss` points. The same defect applied
+to the file-op, prod-upload and canary queries — all fixed together, since it is
+one mechanism.
 
 Skewed hosts are now captured, but their timestamps stay displaced, so a
 sub-window re-derived from buckets covers a *different* stretch of their run.
-`record-analysis` prints a **`Clock offset detected`** warning
-(`detect_clock_offsets`) listing hosts deviating from the fleet **median**
-`metrics_ended_at` by >15 min, with the signed offset. Median, not local clock:
-no assumption about the invoking machine, and a few skewed hosts can't drag it.
-Negative offsets may instead mean a host stopped reporting early — also worth
-knowing. Regression guard: `test_clock_skewed_metrics.py` asserts no bare
+`record-analysis` prints a **`Clock offset detected`** warning listing hosts
+deviating from the fleet **median** `metrics_ended_at` by >15 min, with the
+signed offset. Median, not local clock: no assumption about the invoking machine,
+and a few skewed hosts cannot drag it. Negative offsets may instead mean a host
+stopped reporting early — also worth knowing.
+
+Regression guard: `test_clock_skewed_metrics.py` asserts no bare
 `range(start: {start})` survives in either query module.
+
+See `deploy/README.md` §"Clock-skewed hosts".
 
 ### Telegraf provisioning (folded into the provision passes)
 
-The two Telegraf forwarders — Elasticsearch log forwarding (systemd
-`telegraf-ant-elasticsearch`) and InfluxDB host metrics (systemd
-`telegraf-ant-metrics`) — are installed **inside the existing provisioning
+The two Telegraf forwarders — Elasticsearch log forwarding
+(`telegraf-ant-elasticsearch`) and InfluxDB host metrics
+(`telegraf-ant-metrics`) — are installed **inside the existing provisioning
 passes**, not as a separate step. In a `deployments up` run there is **no
-standalone telegraf step**: the node-tier provision commands install Telegraf in
-the same SSH pass they use to provision the ant-node services, so the node VM
-list is walked **once**, not twice (the old separate pass over the large node
-list was the deploy bottleneck).
+standalone telegraf step**: the node VM list is walked **once**, not twice (the
+old separate pass over a large node list was the deploy bottleneck).
 
 - **`nodes provision` / `nodes provision-genesis` / `bootstraps provision`** take
-  a **`--with-telegraf`** flag (plus `--drop-log-levels` / `--buffer-limit` for
-  the ES side). When set, the command resolves whatever elastic / monitoring
-  state the deployment has and folds the matching forwarders into its pyinfra
-  pass — the first installs the Telegraf deb, the rest reuse it. A backend with
-  no state is skipped; if neither resolves it warns and installs nothing (never
-  fails node provisioning). The orchestrator adds `--with-telegraf` to all three
-  node-tier steps whenever elastic and/or monitoring is enabled, deriving
-  `--drop-log-levels` from `nodes.log_level` exactly as before.
+  **`--with-telegraf`** (plus `--drop-log-levels` / `--buffer-limit` for the ES
+  side). The command resolves whatever elastic/monitoring state the deployment
+  has and folds the matching forwarders into its pyinfra pass — the first
+  installs the deb, the rest reuse it. A backend with no state is skipped; if
+  neither resolves it warns and installs nothing, **never failing node
+  provisioning**. The orchestrator adds the flag to all three node-tier steps
+  whenever elastic and/or monitoring is enabled.
 - **Client host metrics** are installed by **`clients provision`** (best-effort,
-  gated on `--monitoring-name`), alongside the client→ES log forwarder it already
-  installs. So the client tier is also covered without a separate step.
+  gated on `--monitoring-name`), alongside the client→ES log forwarder.
 
-Because Telegraf is installed during provisioning (which runs before
-`nodes start`), host metrics still cover the node's lifetime from the first
-second.
+Because Telegraf is installed during provisioning, which runs before
+`nodes start`, host metrics cover the node's lifetime from the first second.
 
-The mechanism: each node/bootstrap provisioner accepts `extra_op_providers` — a
-list of objects exposing `add_ops(state, install=...)` — and folds their ops into
-its state before `run_ops`. `cmd/telegraf_fold.py` `build_node_telegraf_providers`
-resolves the ES + InfluxDB forwarders from state; the per-forwarder logic lives in
-`provisioning/telegraf.py` (ES) and `provisioning/telegraf_metrics.py` (InfluxDB),
-each exposing the `add_ops` seam; the shared install op is in
-`provisioning/telegraf_install.py`.
+The mechanism: each provisioner accepts `extra_op_providers` — objects exposing
+`add_ops(state, install=...)` — and folds their ops into its state before
+`run_ops`. `cmd/telegraf_fold.py` resolves the forwarders from state; the
+per-forwarder logic lives in `provisioning/telegraf.py` (ES) and
+`telegraf_metrics.py` (InfluxDB).
 
-The standalone **`deployments provision-telegraf`** command (combined ES +
-InfluxDB in one pass over a host group; `provisioning/telegraf_combined.py`,
-`cmd/provision_telegraf_combined.py`) is **retained for retrofit / manual re-runs**
-against an existing deployment — it's just no longer part of the `up` sequence.
+The standalone **`deployments provision-telegraf`** is **retained for retrofit /
+manual re-runs** against an existing deployment — it is just no longer part of
+`up`. Metrics-only when only monitoring state exists. The retrofit path
+(`--inventory-path`/`--host-ips-file`) provisions Tier-1 host+procstat metrics
+only; the Prometheus app-metrics scrape is wired only on the `--name` path with
+`node_count > 0`. **Always pass `--only-new-logs`** on a retrofit, or the restart
+re-ingests every on-disk log into ES.
+
+See `deploy/README.md` §"`deployments provision-telegraf` command".
 
 ### Standalone Elasticsearch (`kind: elasticsearch`) — the beta-channel instance
 
 A manifest kind whose *whole* deployment is one Elasticsearch instance — no
-nodes, no clients, no binary (V2-1016). It exists so **community beta-channel
-node operators**, on machines we do not run, have somewhere to forward logs;
-consumed by the `beta-health-verdict` skill and the beta rollout watch. It
-reuses the existing `elastic infra`/`provision`/`destroy` commands and the same
-`saorsa-deploy/elastic/{name}.json` state; the kind adds `--standalone` (which
-registers the `Deployment` row, since no `bootstraps infra` runs to do it) and
-the public-ingest shape. Impl: `orchestrator/elastic.py`,
-`provisioning/es_ingest_proxy.py`, `cmd/elastic_keys.py`. Example:
+nodes, no clients, no binary. It exists so **community beta-channel node
+operators**, on machines we do not run, have somewhere to forward logs; consumed
+by the `beta-health-verdict` skill and the beta rollout watch. It reuses the
+existing `elastic infra`/`provision`/`destroy` commands and the same state key;
+the kind adds `--standalone` (which registers the `Deployment` row, since no
+`bootstraps infra` runs to do it) and the public-ingest shape. Example:
 `deploy/manifests/profiles/elasticsearch.yaml`.
 
-- **`public_ingest: true` is a different posture, not a flag.** A testnet's ES
-  is reachable only by our own VMs for hours, so it runs **plaintext on 9200
-  with anonymous access enabled** — fine there, unacceptable for an endpoint on
-  the open internet. Public ingest binds ES to **loopback**, disables anonymous
-  access, closes 9200, and fronts it with **Caddy on 443**. Off by default, so
-  every existing testnet/prod stack renders **byte-identical** config (asserted
-  by a test that diffs against the pre-change provisioner).
+- **`public_ingest: true` is a different posture, not a flag.** A testnet's ES is
+  reachable only by our own VMs for hours, so it runs **plaintext on 9200 with
+  anonymous access enabled** — unacceptable for an endpoint on the open internet.
+  Public ingest binds ES to **loopback**, disables anonymous access, closes 9200,
+  and fronts it with **Caddy on 443**. Off by default, so every existing stack
+  renders **byte-identical** config.
 - **The proxy allowlists writes** (`_bulk`/`_doc`/`_create`, POST/PUT) and 404s
-  everything else — so an endpoint added by a future ES version is unreachable
-  by default rather than newly exposed. It also forces
-  **`filter_path=errors,items.*.error`**: ES otherwise answers a bulk request
-  with a result object *per document* (~200+ B each), making the response
+  everything else, so an endpoint added by a future ES version is unreachable by
+  default rather than newly exposed. It also forces a `filter_path`: ES otherwise
+  answers a bulk request with a result object *per document*, making the response
   roughly the size of the request — pure egress on every batch, forever.
-  Forcing it at the proxy means it holds regardless of the community
-  forwarder's config.
 - **DigitalOcean is not a preference, it is the only option that satisfies
-  "extendable disk".** DO's `digitalocean_volume.size` grows **online**
-  (`0 add / 1 change / 0 destroy` + `resize2fs`); **OVH's is ForceNew** and
+  "extendable disk".** DO's volume grows **online**; **OVH's is ForceNew** and
   would wipe the data; Contabo has no attachable volume; Vultr/Hetzner have no
-  `*-elastic` TF module. Egress is a non-issue here — ingest is **inbound**
-  (free on DO), and the disk caps egress structurally at `volume_size /
-  retention_days`, ~$2–5/month at 100 GB / 14 d.
-- **The DNS record is the one manual step, and the deploy is two steps because
-  of it.** The certificate is issued *during provisioning*, but the address does
-  not exist until `elastic infra` has run. So: infra prints the **reserved IP** →
-  operator sets the A record (**Cloudflare grey cloud / DNS only** — a proxied
-  record terminates TLS at Cloudflare and issuance fails) → `up --resume` runs
-  provision, which **preflights the record** and names the exact fix if it is
-  wrong. Two journal entries mean the resume retries provisioning alone instead
-  of recreating the VM. It is one-off: the **reserved IP survives a rebuild**
-  (record it in `reserved_ip`), which is the whole reason for using one.
+  `*-elastic` module. Egress is a non-issue — ingest is **inbound** (free on DO),
+  and the disk caps egress structurally at `volume_size / retention_days`.
+- **The DNS record is the one manual step, and the deploy is two steps because of
+  it.** The certificate is issued *during provisioning*, but the address does not
+  exist until `elastic infra` has run: infra prints the **reserved IP** →
+  operator sets the A record (**DNS only, grey cloud** — a proxied record
+  terminates TLS at Cloudflare and issuance fails) → `up --resume` runs provision,
+  which **preflights the record** and names the exact fix if it is wrong. Two
+  journal entries mean the resume retries provisioning alone instead of
+  recreating the VM. It is one-off: the **reserved IP survives a rebuild**.
 - **Port 80 is never opened** — TLS-ALPN-01 on 443 issues the certificate, so
-  there is no HTTP-01 challenge to serve and no cleartext listener to redirect
-  from.
+  there is no HTTP-01 challenge to serve and no cleartext listener.
 - **Per-user credentials, not a shared key** (`elastic mint-key` / `list-keys` /
-  `revoke-key`). Each participant gets their own ES API key with
-  `create_doc` + `auto_configure` on `beta-nodes-*` and **no `read`** — a leaked
-  key can add logs and nothing else: it cannot read another participant's logs,
-  overwrite a document, or touch another index. A shared key would mean a leak
-  re-keys *everyone* and nothing is attributable. The pre-existing
-  `ant_log_writer` role is deliberately **not** reused (it grants `read` and
-  `manage`). Keys **do not expire** by default — a participant runs their node
-  indefinitely, so a lifetime means re-keying everyone on a schedule and a
-  lapsed forwarder fails silently; revocation is the real control. An expiry
-  **cannot be cleared** once set (the update API rejects a null, but accepts a
-  longer value), so it is set at mint time or not at all. The encoded credential
-  is shown **once**.
+  `revoke-key`): each participant gets `create_doc` + `auto_configure` on
+  `beta-nodes-*` and **no `read`**, so a leaked key can add logs and nothing
+  else. A shared key would mean a leak re-keys *everyone* and nothing is
+  attributable. The pre-existing `ant_log_writer` role is deliberately **not**
+  reused (it grants `read` and `manage`). Keys **do not expire** by default —
+  revocation is the real control — and an expiry **cannot be cleared** once set.
+  The credential is shown **once**.
 - **Log level is enforced server-side, because a participant's forwarder config
   is theirs to change.** `min_log_level` (default `info`) drops anything more
-  verbose at ingest, via an ingest pipeline attached as the index's
-  **`index.final_pipeline`**. That slot is load-bearing and verified against ES
-  8.17.4: a client passing **`?pipeline=_none` does NOT bypass `final_pipeline`**,
-  but the same request **DOES bypass `default_pipeline`** entirely — so never use
-  `default_pipeline` for anything an untrusted client must not opt out of. The
-  proxy also strips a client-supplied `pipeline` param (`uri query -pipeline`).
-  Drop set derives from the minimum exactly like the node telegraf
-  `--drop-log-levels` (`info` → DEBUG,TRACE; `debug` → TRACE; `trace` → none);
-  WARN/ERROR never dropped; a document with **no** `level` is **kept**.
-  A dropped doc returns `status: 200, result: "noop"` with `errors: false`, so
-  forwarders treat it as accepted and do **not** retry — deliberate, since a
-  `fail` processor would make them retry the batch forever. The cost: drops are
-  **invisible** (nothing counts them) and participants are not notified.
-  **`elastic set-log-level --name X --min-level debug` changes it at runtime** —
-  it rewrites only the pipeline body, so no redeploy, no restart, no reindex;
-  applies to the next write, and already-indexed logs are untouched.
-  NB the **`reroute` processor is rejected in a final_pipeline** ("can't change
-  the target index"), so quarantining verbose logs to a cheap index only works
-  in `default_pipeline` — viable solely because the proxy strips `pipeline`.
-  This bounds **disk**, not bandwidth: the document already crossed the wire.
-- **`generate-inventory` covers this kind** (schema **6**, adding
-  `elasticsearch_config` beside v5's `client_config`); `up` emits it
-  automatically as a `best_effort` final step. `node_vms`/`client_vms` are
-  empty, so `load_node_inventory` rejects it like a client inventory. Two
-  deliberately separated sections: **`ingest`** (the public write URL, index
-  naming, `create`-only rule, body cap, current `min_log_level`) and **`read`**
-  — which is **NOT** the public URL. ES binds to loopback and 9200 is
-  firewalled, so the read key against `https://logs.autonomi.com` returns
-  **404 at the proxy**, indistinguishable from a missing index; the section
-  gives `http://localhost:9200` plus a ready-made `ssh -L` tunnel command and
-  says why. The **read-only key is included** (the file is meant to be shared);
-  the **admin password is not** — the provisioner sets the `elastic` superuser
-  and the log-writer from one secret, so the stored password is effectively
-  superuser. The command warns about what the file contains.
-- **The ingest contract (what V2-1021's forwarding daemon writes).** Verified
-  against ES 8.17.4 with security on, using a key minted by `elastic mint-key`:
-  `POST https://<host>/_bulk`, `Authorization: ApiKey <encoded>` (a real ES API
-  key, **not** a bearer token), `application/x-ndjson`, index
-  `beta-nodes-YYYY.MM.DD`, time field **`@timestamp`**, body ≤ **50 MB** (proxy
-  cap; ES's own is 100 MB). The proxy is **transparent** — it is the
-  Elasticsearch API, not a translation layer.
-  **The action must be `create`; `index` returns a per-item 403** — the key
-  grants `create_doc`, which cannot overwrite, so granting `index` would let one
-  participant overwrite another's document by `_id`.
+  verbose at ingest via an **`index.final_pipeline`**. That slot is load-bearing
+  and verified against ES 8.17.4: a client passing **`?pipeline=_none` does NOT
+  bypass `final_pipeline`**, but the same request **DOES bypass
+  `default_pipeline`** entirely — so never use `default_pipeline` for anything an
+  untrusted client must not opt out of. The proxy also strips a client-supplied
+  `pipeline` param. WARN/ERROR are never dropped; a document with **no** `level`
+  is **kept**. A dropped doc returns `200 / "noop"` with `errors: false` so
+  forwarders do not retry — deliberate, since a `fail` processor would make them
+  retry forever. The cost: drops are **invisible** and participants are not
+  notified. `elastic set-log-level` changes it at runtime with no redeploy,
+  restart or reindex. NB the **`reroute` processor is rejected in a
+  final_pipeline**, so quarantining verbose logs to a cheap index only works in
+  `default_pipeline`. This bounds **disk**, not bandwidth — the document already
+  crossed the wire.
+- **The ingest contract**: `POST https://<host>/_bulk`, `Authorization: ApiKey
+  <encoded>` (a real ES API key, **not** a bearer token),
+  `application/x-ndjson`, index `beta-nodes-YYYY.MM.DD`, time field
+  **`@timestamp`**, body ≤ **50 MB**. **The action must be `create`; `index`
+  returns a per-item 403**, since `create_doc` cannot overwrite and granting
+  `index` would let one participant overwrite another's document by `_id`.
   **`_bulk` returns HTTP 200 even when items fail**, so a client MUST read
-  `items[].status`: `201` indexed, `200` dropped by the level filter (expected,
-  not an error), `403`/`429`/`400` real failures.
-  The forced filter is **`errors,items.*.status,items.*.error`** and the
-  `status` part is load-bearing: `items.*.error` alone is smaller (16 B vs 13 KB
-  per 500-doc batch, against 100 KB unfiltered) but ES **collapses the items
-  array to only the failures**, destroying the position correlation — a client
-  then cannot tell which document a per-item 429 refers to and must retry the
-  whole batch, duplicating everything that already succeeded (auto-ID `create`
-  writes).
-  Reads are refused (`_search` and `GET /` both 403).
-- **One shared daily index, attribution by `beta_user` field** — not an index
-  per user: ~100 users x daily x 14 days would exceed 1000 shards on a single
-  small node.
+  `items[].status`: `201` indexed, `200` dropped by the level filter (expected),
+  `403`/`429`/`400` real failures. The forced filter keeps `items.*.status`, and
+  that part is load-bearing: `items.*.error` alone is smaller but ES **collapses
+  the items array to only the failures**, destroying the position correlation, so
+  a client could not tell which document a per-item 429 refers to and would have
+  to retry the whole batch. Reads are refused.
+- **One shared daily index, attribution by `beta_user` field** — not an index per
+  user: ~100 users × daily × 14 days would exceed 1000 shards on one small node.
 - `letsencrypt_staging: true` while iterating: production issuance allows only
   **5 duplicate certificates per week** and the lockout outlasts the debugging
   session that caused it.
-- The log-forwarder tooling that points community machines at this instance is a
-  **separate issue** — this kind stands up the endpoint and mints the
-  credentials only.
+- **`generate-inventory` covers this kind** (schema **6**). Two deliberately
+  separated sections: **`ingest`** (the public write URL and rules) and
+  **`read`** — which is **NOT** the public URL, since ES binds to loopback and
+  the read key against the public host returns **404 at the proxy**,
+  indistinguishable from a missing index. The read section gives
+  `http://localhost:9200` plus a ready-made `ssh -L` command and says why. The
+  **read-only key is included** (the file is meant to be shared); the **admin
+  password is not**, because the provisioner sets the superuser and the
+  log-writer from one secret.
+
+The log-forwarder tooling that points community machines at this instance is a
+**separate issue** — this kind stands up the endpoint and mints the credentials
+only.
+
+See `deploy/README.md` §"A standalone Elasticsearch instance".
 
 ## Elasticsearch (Log Forwarding)
 
-Optional per-testnet Elasticsearch instance on a dedicated VM. Enabled via `enable_log_forwarding` in deployment config. Telegraf forwards node JSON logs to the instance.
+Optional per-testnet Elasticsearch instance on a dedicated VM, enabled via
+`enable_log_forwarding`. Telegraf forwards node JSON logs to it. Runs on
+**DigitalOcean (default) or OVH** (`--provider ovh`, same env-var / SSH-key
+prerequisites as monitoring).
 
-Runs on **DigitalOcean (default) or OVH** (`--provider ovh`, same OVH env-var /
-SSH-key prerequisites as monitoring).
+Commands: `elastic infra` / `provision` / `info` / `destroy`, plus
+`mint-key` / `list-keys` / `revoke-key` / `set-log-level` for the standalone
+beta-channel kind (see above). `infra` takes `--droplet-size` (bump for large
+testnets), `--volume-size`, `--volume-type` (ovh) and `--keep-on-destroy`;
+`provision` takes `--retention-days` (default 7, ILM) and `--shards`. Node log
+forwarding itself is installed by the provision passes — see "Telegraf
+provisioning" above.
 
-### Commands
+- **A kept index still expires on the ILM policy**, so raise `--retention-days`
+  if the logs are needed for longer than a `keep_on_destroy` stack's lifetime.
 
-- `elastic infra` — create Elasticsearch VM via Terraform. `--provider {digitalocean,ovh}` (default digitalocean), `--droplet-size` (default `s-4vcpu-8gb` do / `b3-8` ovh; bump for large testnets), `--volume-size`, `--volume-type` (ovh), `--keep-on-destroy` (record that `deployments down` must leave this stack standing — see "Keeping the observability stack past teardown" under Declarative manifests). NB a kept index still expires on the ILM policy, so raise `--retention-days` if the logs are needed for longer.
-- `elastic provision` — install Elasticsearch 8.x, create index template, user + API key. `--retention-days` (default 7, ILM) + `--shards`
-- `elastic info` — print connection details (URL, user, password, API key)
-- `elastic destroy` — tear down Elasticsearch infrastructure
-- Node log forwarding is installed by `deployments provision-telegraf` (auto-loads ES credentials from state), alongside InfluxDB host metrics in one pass — see "Telegraf provisioning" under Monitoring.
+Terraform manifests are `resources/{digitalocean,ovh}-elastic/`; the provisioner
+is `provisioning/elastic.py`; state lives under its own S3 key prefix
+`saorsa-deploy/elastic/{name}.json`. Security: user `ant-log-writer` (read/write)
+plus a read-only API key for queries. Index pattern
+`telegraf-ant-nodes-{testnet_lower}-%Y.%m.%d`.
 
-### Architecture
-
-- Terraform manifests: `deploy/saorsa_deploy/resources/{digitalocean,ovh}-elastic/` (OVH is OpenStack-backed, like the monitoring/node modules; provider selection in `cmd/obs_provider.py`)
-- Provisioner: `deploy/saorsa_deploy/provisioning/elastic.py`
-- CLI commands: `deploy/saorsa_deploy/cmd/elastic_infra.py`, `provision_elastic.py`, `elastic_info.py`, `destroy_elastic.py`
-- State: separate S3 key prefix `saorsa-deploy/elastic/{name}.json` (records `provider`); tfstate key prefix `do-elastic`/`ovh-elastic` per provider
-- Security: user `ant-log-writer` (read/write) + read-only API key for queries
-- Index pattern: `telegraf-ant-nodes-{testnet_lower}-%Y.%m.%d`
+See `deploy/README.md` §"Elasticsearch" for the full argument tables.
 
 ## Key Commands
 
