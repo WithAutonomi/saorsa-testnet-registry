@@ -767,6 +767,12 @@ run a Node.js program that imports `ant-core` **compiled to WASM** and reaches
 nodes over WebRTC-Direct, which is the only way to measure the browser path the
 way the native client is measured.
 
+**No headless browser is involved.** Verified end to end against a local
+`ant-devnet` (2026-09-07), not a cloud testnet: the client runs under **plain
+Node.js**, with `node-datachannel` supplying `globalThis.RTCPeerConnection`.
+HELLO, `find_node`, a 5 MiB download and a real paid upload with a
+byte-identical round-trip all pass.
+
 They are separate roles (`wasm-upload` / `wasm-download`) rather than a flag on
 the native ones, because the role is what names the VM, its Terraform workspace
 and its S3 state key — and telling the two transports apart in all three is the
@@ -1250,6 +1256,15 @@ separately by `clients provision`).
 
 #### Traffic-accounting counters → InfluxDB (the ES forwarder's second output)
 
+**Why this output exists.** An 18-hour bandwidth episode on a production node
+(2026-09-14) was invisible in every dashboard even though the node's own
+traffic-accounting counters (V2-623) had recorded it the whole time. The
+counters sat in Elasticsearch while the `net.bytes_sent` they must be divided by
+lives in InfluxDB, and the two label hosts differently (`tag.host.keyword`,
+upper-cased, against a lowercase `host`) — so no query could put a numerator and
+its denominator side by side. This output lands the counters in the same store,
+under the same host tag, as the NIC figures.
+
 Whenever a deployment has **both** elastic and monitoring state, the ES log
 forwarder is rendered with a second output: an `[[outputs.influxdb_v2]]` that
 writes the node's periodic **traffic-accounting summaries** (V2-623: cumulative
@@ -1628,7 +1643,7 @@ Devices are deliberately **not** averaged together the way the network counters 
 
 #### Per-process memory composition — opt-in (`--node-memory-metrics`)
 
-`procstat.memory_rss` is a single total and cannot say what the memory is *made of* — the difference between a leak and a growing LMDB chunk-store mmap. Measured on a production node, `ant-node-9` held 880 MB RSS of which 469 MB was file-backed; an hour later, 3.48 GB of which 3.07 GB was file-backed. Read as a total that looks alarming; read by composition it is the chunk store doing its job.
+`procstat.memory_rss` is a single total and cannot say what the memory is *made of* — the difference between a leak and a growing LMDB chunk-store mmap. Measured on a production node, `ant-node-9` held 880 MB RSS of which 469 MB was file-backed; an hour later, 3.48 GB of which 3.07 GB was file-backed. Read as a total that looks alarming; read by composition it is the chunk store doing its job. That ambiguity is not hypothetical: it is what made `memory_rss` misread as a **20x leak** on STG-03 run 475.
 
 `--node-memory-metrics` turns on composition collection in **two tiers**.
 
@@ -1691,6 +1706,15 @@ Rollback: re-run without `--node-memory-metrics`. The mmap tier and the capabili
 `deployments record-analysis` writes host metrics twice: the whole-run rollup in `deployment_host_results` (unchanged, and still the cheap "how did the run look overall" view), **and** fixed-width time buckets in **`deployment_host_metric_buckets`**. The buckets exist so an arbitrary sub-window can be re-derived **after the monitoring stack is destroyed** — previously the window was fixed at capture time by `--window`, and once InfluxDB was gone it could never be revisited. That is what forced the rc.1 staging comparison to be reported as directional only: the two runs' stored windows were 3.37 h and 5.45 h, the latter including the mixed-version phase, so their CPU/memory/network figures were not like-for-like.
 
 One row per `(host, bucket_start, metric, device, service)`, holding `avg`/`min`/`max`/`samples`. A tall numeric table rather than JSON-per-bucket, so a window is filtered server-side and re-aggregated in one `GROUP BY`.
+
+**Why the default is 300s.** Width does not affect accuracy — for a
+boundary-aligned window `sum(avg*samples)/sum(samples)` is exactly the mean of
+the underlying 10s samples, and `MIN(min)`/`MAX(max)`/`SUM(samples)` are exact,
+at any width. It trades only window-edge precision (≤5 min) and trend-plot
+resolution. What it buys is table size: 300s keeps a staging-sized run near
+**100k rows (~18 MB)** instead of ~500k. The registry runs on DigitalOcean's
+smallest managed Postgres (1 vCPU, ~1 GB RAM → `shared_buffers=190MB`, 10 GB
+disk), where table size *is* query time.
 
 ```bash
 # Default: 5-minute buckets
@@ -2051,6 +2075,21 @@ The command refuses outright when the two runs cannot be validly compared:
 
 It **warns** (rather than refusing) when the two runs' **activity coverage** — the fraction of the window in which clients were actually transferring — differs by more than `max_activity_coverage_ratio` (1.3x). The per-GB numerators accumulate through idle time while the denominators do not, so a mostly-idle window inflates every ratio. Measured across four recorded runs: 39.2% coverage → 14.86 GB/GB, against 52–61% coverage → 9.1–10.1 GB/GB. A window-*length* check cannot catch this, because the length can be perfectly ordinary.
 
+**Both guards can pass on a comparison that is still wrong, so prefer a labelled
+phase window over `full-run`.** A full-run window is the span of observed
+*metrics*, not the run's shape: a −3h node clock skew drags a host's first points
+well before T0, and any post-measurement phase (the mixed-version hour) is swept
+in even when the baseline never ran one. On STG-01 #474 against #470 both guards
+passed — length 1.13x, coverage 1.12x — while the candidate carried 3h05m of
+pre-run data plus that extra phase. The guards check size and idleness, not phase
+composition, and nothing records phase boundaries, so it cannot be detected;
+`compare` therefore *warns* on `--window-label full-run`. Re-slicing that pair to
+steady state moved CPU from +19.28% to +15.29% and disk/GB from −2.35% to
+−1.07%, with both runs landing at ~8.7 GB/GB. Slice **both** runs first with
+`derive-metrics --id <id> --window-start/-end --label steady-state` — `--id`, not
+`--name`, since a name resolves to the newest run bearing it and staging names
+are reused every train.
+
 A metric that is legitimately absent (an empty denominator produces no row at all) is **NOT ASSESSED**, never a zero — a zero would trip every threshold and read as a catastrophic regression.
 
 #### Statistics, and one honest substitution
@@ -2068,6 +2107,12 @@ Comparing two different statistics against each other is refused as NOT ASSESSED
 Node RSS is compared at a **percentile across services** (default p95), not the fleet maximum. With ~1000 services the maximum is an extreme order statistic that moves with the single unluckiest one: measured 470 → 474, the max moved +64% while the median moved +3.8% and the p95 +1.8%. The worst service is always reported in the gate detail, so an outlier is visible without deciding the gate alone. Set `node_rss_service_percentile: 100` to restore worst-service behaviour.
 
 The **memory leak** check is absolute (a property of the run, not a comparison — a leaking baseline should not excuse the candidate) and is evaluated on the **median** service's fitted RSS slope. A tail percentile does not work here: fitting a line through 2h of a jittery RSS signal produces slopes symmetric about zero — measured across four runs, p5 of −40 to −60 %/h against p95 of +37 to +60 %/h, with ~50% of services showing a negative slope and the positive tail matching the negative tail to within a few points. A threshold on p95 would measure how noisy RSS is, not whether it leaks. A **tail asymmetry** figure is reported alongside (the negative tail is a free, self-calibrating noise reference for a leak confined to a subset of services) but is deliberately not gated on yet — four runs is too little history to set a threshold.
+
+The leak window is computed **per host, from that host's own last bucket**, not
+from a fleet-wide `max(bucket_start)`. Testnet manifests skew node clocks by ±3h
+and Telegraf stamps every point by the host's own clock, so one fleet-wide
+cut-off lands inside only the fast hosts' data: on run 470 it assessed **15 of
+997 services**.
 
 #### Thresholds
 
@@ -3234,6 +3279,30 @@ Tags are repeatable on both `add` and `list` (`--tag prc --tag video`), stored
 lower-cased in an indexed side table, and `list --tag a --tag b` matches **any**
 of them, not all.
 
+**What `--dir` batching is worth, and the traps it hides.** The per-file path
+measured **163ms/file** against the managed Postgres while reading and hashing
+the file took **1ms** — ~99% was round-trip latency, so 300k files would have
+taken ~13.6 hours. `add_pool_files_bulk` is a fixed ~7 statements per 500-file
+batch instead of ~4 statements plus a COMMIT per file. Four per-row traps turned
+up while building it, every one caught by a test asserting statement count is
+**flat in file count** rather than by timing:
+
+* ORM `session.add` per row issues `INSERT..RETURNING` per object — use Core
+  `insert()` with a list.
+* A `session.refresh()` loop plus a lazy relationship load reintroduced a SELECT
+  per row *after* the inserts were already batched.
+* Duplicate links were written with an UPDATE each (207 links = 5.3s) — now one
+  ORM bulk-update-by-primary-key.
+* Returning ORM instances let `session.commit()` expire them, so the caller's
+  summary re-fetched every row at two statements each (~46s for 1156 files)
+  *after* the progress bar had closed. It now returns detached `PoolFileRecord`
+  values that cannot talk to the database.
+
+Re-runs are flat too — an interrupted import skips known files without a
+round-trip each. Semantics match the per-file path exactly, including
+duplicate-digest linking *within* a batch, where the pre-flight query cannot see
+an uncommitted sibling.
+
 #### The desktop-application flow
 
 Nothing in a GUI application can write to this database, so the **checkout** is
@@ -3282,8 +3351,19 @@ Four things this guarantees:
 * **Selection is all-or-nothing.** A request for 40 tiny + 230 small + 110
   medium that runs short on medium claims *nothing*, rather than burning 270
   files on a run that then aborts.
-* **`up --resume` reuses the same files.** The selection is persisted to S3, so
-  a retried deploy does not draw a fresh set while the first sits claimed.
+* **`up --resume` reuses the same files — but only while the draw is still
+  live.** The selection is persisted to S3, so a retried deploy does not draw a
+  fresh set while the first sits claimed. That persistence is keyed on the
+  deployment **name**, which every prod name reuses each release train, so a new
+  run finds the previous run's draw under its own key. It is therefore reused
+  only if every file still carries the exact claim the draw recorded, still
+  `CLAIMED` (`selection_is_live` in `pool_selection.py`); a claim that resolved
+  to `UPLOADED`, was released, or was replaced by a different one means an
+  earlier run finished with that file, and the draw is discarded and taken
+  again. Without that check, STG-UL-01 on 2026-08-18 was handed the four files
+  the 2026-08-11 run had already uploaded, and only the duplicate-file gate
+  stopped it re-uploading them for real money. `prod uploaders destroy` deletes
+  the persisted draw too, since a destroyed deployment has nothing to resume.
 * **The duplicate preflight becomes redundant.** `--allow-duplicate-files` and
   the name-based check still apply to the legacy `urls=` path, but a pool
   selection cannot return a spent file by construction.
@@ -4304,6 +4384,12 @@ report's cost.
 **5. Version telemetry.** The distinct `tag.node_commit` values on the new arm
 (expect one) and the number of new-arm documents in the last 15 minutes with no
 `tag.node_version` (expect zero).
+
+**Every query is an aggregation (`size: 0`), never a document scroll.** The
+production node index takes ~**13.7M documents every two hours**, so scrolling
+any part of it is not an option at any window length. `tag.*` fields are
+analysed, so every `terms`/`composite`/`prefix` goes through the `.keyword`
+subfield, and host values are upper-case.
 
 ### Simulating a residential connection (`network`)
 
