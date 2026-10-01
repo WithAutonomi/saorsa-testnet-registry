@@ -6,22 +6,22 @@ A single-user system for managing testnet deployments, structured as a uv worksp
 
 - **`db/`** (`saorsa-db`) - Shared database models, repositories, and Alembic migrations
 - **`web/`** (`saorsa-web`) - Flask app serving a read-only REST API (`/api/...`) and web UI (`/deployments`) with Jinja2 + HTMX
-- **`mcp/`** (`saorsa-deploy-mcp`) - MCP server that runs saorsa-deploy as subprocesses and reads deployment state from the database
-- **`deploy/`** (`saorsa-deploy`) - CLI tool that provisions testnets via Terraform and Pyinfra, records deployments in PostgreSQL
+- **`deploy/`** (`saorsa-deploy`) - CLI tool that provisions testnets via Terraform and Pyinfra, records deployments in PostgreSQL. **This is the interface** — everything below is a `saorsa-deploy` command.
+- **`mcp/`** (`saorsa-deploy-mcp`) - **LEGACY, unused.** An MCP server wrapping a subset of `saorsa-deploy`. Not maintained: its `create_deployment`/`destroy_deployment` tools still shell out to the `infra`/`destroy` commands that `d3a56c5` (2026-04-17) split up, so they fail outright. Do not route work through it and do not extend it; drive the CLI.
 - **Database** - PostgreSQL, managed via Alembic migrations (inside `db/`)
 - **Deployment** - Digital Ocean App Platform (`app.yaml`)
 
 ### Data Flow
 
 ```
-Claude → MCP Server → saorsa-deploy (subprocess) → infrastructure
+Claude / operator → saorsa-deploy (CLI) → infrastructure
                           ↕
                       PostgreSQL (via saorsa-db)
                           ↑
                    Read-only web UI (via saorsa-db)
 ```
 
-The MCP server invokes `saorsa-deploy` CLI commands as blocking subprocesses. `saorsa-deploy` records deployment lifecycle events directly in PostgreSQL via the `saorsa-db` repository interfaces. The web app is a read-only viewer.
+`saorsa-deploy` records deployment lifecycle events directly in PostgreSQL via the `saorsa-db` repository interfaces. The web app is a read-only viewer.
 
 ## Project Structure
 
@@ -50,7 +50,7 @@ web/
 mcp/
   pyproject.toml
   saorsa_deploy_mcp/
-    server.py                   # MCP server — subprocess + DB reads
+    server.py                   # MCP server — legacy, unused (see Architecture)
 deploy/
   pyproject.toml
   README.md                     # Command reference, argument tables, architecture
@@ -112,9 +112,6 @@ cd db && uv run alembic upgrade head
 # Start dev server
 uv run flask --app saorsa_web.app run
 
-# Run the MCP server (stdio transport)
-uv run python -m saorsa_deploy_mcp.server
-
 # Run tests
 uv run pytest
 
@@ -150,8 +147,8 @@ re-entering the CLI in-process (`main(argv)`); a failing step halts the run.
 `orchestrator/journal.py`, persistence in `state.py`), so a re-run after a
 mid-sequence failure can skip the already-done steps — most valuably the
 ~10-minute binary builds. A journal hit never silently skips: interactively
-`up` prompts [r]esume / [d]elete / [a]bort; non-interactively (agents, the MCP
-server) pass **`--resume`** to skip the completed steps — without it a non-TTY
+`up` prompts [r]esume / [d]elete / [a]bort; non-interactively (agents, cron)
+pass **`--resume`** to skip the completed steps — without it a non-TTY
 journal hit refuses with guidance rather than hanging. If the journal doesn't
 match the computed plan (manifest edited, name reused, kind changed) a diff is
 shown and resume means "from the longest matching prefix". A fully successful
@@ -330,21 +327,18 @@ manifests" for the schema reference.
 
 ## Deploying & Destroying Testnets
 
-The data flow is: **Claude → MCP → saorsa-deploy (subprocess) → infrastructure**
+Deploy and destroy by driving the **`saorsa-deploy` CLI** — normally a manifest
+through `deployments up` / `down` (see "Declarative manifests" above). The MCP
+server is legacy and partly broken; do not route deployments through it.
 
-`saorsa-deploy` runs locally (or wherever the MCP server runs). It needs cloud credentials in the local environment: `DO_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, SSH keys. When `DATABASE_URL` is set, it automatically records deployments in PostgreSQL.
+`saorsa-deploy` runs locally. It needs cloud credentials in the local environment: `DO_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, SSH keys. When `DATABASE_URL` is set, it automatically records deployments in PostgreSQL.
 
-When asked to deploy, launch, create, or destroy a testnet, **use the `saorsa-testnet-registry` MCP tools** — do not search the codebase. The MCP server provides:
-
-- `create_deployment` — runs the full deployment sequence (bootstraps infra → nodes infra → nodes provision-genesis → bootstraps provision → nodes provision → nodes start)
-- `destroy_deployment` — runs saorsa-deploy nodes destroy then bootstraps destroy to tear down infrastructure
-
-NOTE: the MCP server currently still shells out to the pre-split `infra`/`destroy` commands and needs an update before Claude can use these tools end-to-end. Until then, run the saorsa-deploy CLI directly.
+The full testnet sequence is `bootstraps infra` → `nodes infra` → `nodes
+provision-genesis` → `bootstraps provision` → `nodes provision` → `nodes start`;
+teardown is `nodes destroy` → `bootstraps destroy`. `deployments up`/`down`
+sequence these from a manifest.
 
 `nodes provision` installs the ant-node binary, writes systemd unit files, and **enables** the services; it does not start them. `nodes start` is a separate step that runs `systemctl start ant-node-{1..N}` in parallel across every node VM. The split exists so that optional setup (notably port-restricted NAT simulation configured via `--nat-percent`) can run between unit-write and service-start.
-- `list_deployments` — lists all deployments from the database
-- `get_deployment` — gets deployment details, events, and status
-- `testnet://docs/deployment-config` — resource with full parameter documentation
 
 ### Extending a testnet (shared bootstraps)
 
@@ -1746,7 +1740,7 @@ When destroying: `running`/`stopped` → `destroying` → `destroyed` (success) 
 ## The release ledger (`release-candidates` + `releases`)
 
 Two related command groups record the release train in the registry. Both are
-CLI-only — not exposed over the REST API or the MCP server — and both **require
+CLI-only — not exposed over the REST API — and both **require
 `DATABASE_URL`**, exiting non-zero rather than silently no-opping the way the
 deployment registry does. Both are driven by skills in the separate
 `releases` repo (`/home/chris/dev/releases/.claude/skills/`), not from this one.
