@@ -26,6 +26,26 @@ which one to use.
 * Every wall-clock boundary gets its own wake (Step 4). "I armed a monitor" is not a schedule.
 * Keep a task list and update it at every phase boundary, every wake, and every deviation.
 * Do not work around infrastructure or permission problems. Diagnose, record, abandon if needed.
+* **The issue always ends in `In Review`, never `Done` or `Canceled`** — whatever happened. A human
+  reads every results comment; a status that says "finished" has let a useless run go unnoticed.
+  The outcome is carried by the verdict (see "The verdict") and by the warnings that open the
+  comment, not by the issue status. If the issue's own text says to set `Done` or `Cancelled`, this
+  rule wins.
+
+### The verdict
+
+Every run ends with exactly one verdict. It heads the results comment and is the third word of the
+final line (Step 8), which the calling script reads to decide whether to start the next run.
+
+| verdict | when |
+| -- | -- |
+| `PASS` | the full procedure ran, every acceptance criterion passed, and there is **no** warning |
+| `WARN` | no criterion failed, but there is at least one warning (see Step 7) |
+| `FAIL` | at least one acceptance criterion failed |
+| `ABANDONED` | a precondition or stop condition ended the run before its procedure completed |
+
+`PASS` is a claim that a later run may safely build on this one. When in doubt between `PASS` and
+`WARN`, it is `WARN`.
 
 ### Abandoning the run
 
@@ -35,11 +55,13 @@ Abandon means, in this order:
    Skip any recording that cannot succeed, and say so.
 2. Tear down compute (Step 6), verified.
 3. Tear down the observability stacks too, unless the issue names them as retained.
-4. Post a comment on `$issue_number` describing what happened, what was recorded, what was skipped,
-   and the exact question or failure that ended the run. Set `$issue_number` to `Canceled`.
+4. Post a comment on `$issue_number` (in the Step 7 form, verdict `ABANDONED`) describing what
+   happened, what was recorded, what was skipped, and the exact question or failure that ended the
+   run. Set `$issue_number` to `In Review`.
 
-Precondition failures (Steps 1–2) happen before any infrastructure exists: stop, report which item
-failed, and leave the issue as it is. There is nothing to tear down.
+Precondition failures (Steps 1–2) happen before any infrastructure exists, so there is nothing to
+tear down: post a short comment naming the item that failed (verdict `ABANDONED`), set the issue to
+`In Review`, and go to Step 8 with `-` as the registry id.
 
 ### Retained observability stacks
 
@@ -241,8 +263,8 @@ by itself — continue the procedure and report it.
 
 The issue may name explicit stop conditions ("no relay reservations by T0+30m", "pending upgrade",
 "node VM at 100% disk with services dying"). A stop condition means **abandon the run** — collect
-the evidence the issue asks for, extract, tear down, cancel. It never means "hand back with the
-deployment up"; there is no one to hand back to.
+the evidence the issue asks for, extract, tear down, report as `ABANDONED`. It never means "hand
+back with the deployment up"; there is no one to hand back to.
 
 ## Step 5 — Record results
 
@@ -350,7 +372,36 @@ results comment as the first line — that is the one thing a human must act on.
 
 ## Step 7 — Update Linear
 
-Post a comment on `$issue_number` with:
+Post a comment on `$issue_number`. **Its first two things, before anything else, are the verdict
+and the warnings** — a reader who stops after ten lines must already know whether the run can be
+trusted:
+
+```
+## Results — <deployment-name>, registry id <id> — <PASS|WARN|FAIL|ABANDONED>
+
+### Warnings
+1. <the most serious first, one or two lines each, with the number that shows it>
+```
+
+If there are none, write `### Warnings` followed by `None.` — never omit the heading. A warning is
+anything a reader must know before relying on this run, **whether or not a criterion gated on it**:
+
+* a criterion that FAILED or is NOT ASSESSED;
+* **the run did not do what it was for, even though every criterion passed** — the load, rate,
+  scale or condition its Purpose depends on was not reached; a success rate, error count or
+  resource figure the issue only "observes" came out far from what it expected or from what
+  earlier runs of the same shape recorded. Compare what you measured against the issue's own sizing
+  and Purpose, and say so here if they disagree (a reference run that passed all six of its criteria
+  while 35% of its uploads failed is the case this rule exists for);
+* anything still running or billing — retained stacks, resources teardown could not remove;
+* a deviation, late wake, retry or provider incident that affects how far the numbers can be trusted
+  or compared with another run;
+* a recording that is missing, partial or was skipped.
+
+Do not soften a warning, bury it in a later section, or leave it only in the observations. Details
+belong further down; the fact belongs here.
+
+Then:
 
 * An overview of what happened, human-readable.
 * The acceptance criteria as a table: one row per criterion, PASS / FAIL / NOT ASSESSED, with the
@@ -360,11 +411,14 @@ Post a comment on `$issue_number` with:
 * Teardown verification result, and — if any stack is retained — its endpoints and destroy
   commands.
 
-Then set `$issue_number` to `Done` (or `Canceled` if the run was abandoned).
+Then set `$issue_number` to `In Review` — always, whatever the verdict.
 
 ## Step 8 — Exit
 
 The run is finished only when Step 7 is done. Print one final line —
-`RUN COMPLETE <issue> <Done|Canceled> <registry-id>` — and **end your turn with no pending tool
-calls, waits or schedules**. In headless mode that is what ends the process; the calling script
+`RUN COMPLETE <issue> <verdict> <registry-id>` — and **end your turn with no pending tool
+calls, waits or schedules**. `<verdict>` is the single word from "The verdict", the same one that
+heads the results comment; `<registry-id>` is `-` if the run never got one. The calling script reads
+this line: any verdict other than `PASS` is treated as a bad run, and in a chain of dependent runs
+it stops the runs that follow. In headless mode that is what ends the process; the calling script
 waits on it and will not start the next issue until it exits.
