@@ -69,7 +69,7 @@ block). Extends `<profile>.yaml`. **Do not edit the profile.**
 extends: ../profiles/<profile>.yaml
 
 name: <NAME>
-purpose: "<one line — lands in the registry and the Slack post>"
+purpose: "<V2-NNNN>: <one line — lands in the registry and the Slack post>"
 slack_post: [choose: true / false]
 
 testnet:
@@ -103,6 +103,11 @@ testnet:
     grafana: [choose]
     keep_on_destroy: [choose]      # must match the Teardown section
 ```
+
+> `purpose` **always starts with this issue's own Linear id** (`V2-NNNN: …`). It is the only
+> thing that ties the Slack post and the registry row back to the issue. The id does not exist
+> until the issue is created, so create the issue, then put the id into `purpose` (and into the
+> `--purpose` string of the plan the Preconditions quote) before applying `afk`.
 
 **Shape:** <N bootstraps + N node VMs × per_vm = N nodes (N plain, N NAT'd) + N clients>.
 <One sentence on why this shape answers the question.>
@@ -149,7 +154,8 @@ Exit 2 from `estimate-gas` → raise `eth:` (only ever raise) and record it.
    fails; no <signal> by T0+<m>; a pending or applied upgrade; a node VM at 100% disk with
    services dying>. Abandon = collect the evidence the phase asks for, run whatever of
    the extraction still works, tear down compute, [choose: destroy / leave] the
-   observability stacks (must match Teardown), post the results comment, set **Cancelled**.
+   observability stacks (must match Teardown), post the results comment with verdict
+   `ABANDONED`, set **In Review**.
 3. **Hard ceiling: compute is torn down by T0+<H> regardless of state.** <Last phase
    boundary + time for win-end evidence + margin, typically +1h30m.> If the ceiling wake
    fires and compute is still up, the run is over: abandon as above.
@@ -278,6 +284,14 @@ bug filed against the crate, a rerun, or a decision for the RM.>
 
 ## Results comment (posted on this issue)
 
+> The runner always opens the comment with the verdict (`PASS` / `WARN` / `FAIL` / `ABANDONED`)
+> and a **Warnings** block, before the numbered items below. Use this section to name the
+> run-specific things that must be raised there — above all, what would mean the run did not do
+> what it was for even if every criterion passed (a load or rate the Purpose depends on, a
+> success rate that is only observed). Give the expected figure so the runner can compare.
+
+0. **Verdict and warnings.** Warn if: <the conditions specific to this run, each with its expected
+   value>.
 1. Registry id; highest prior `<NAME>` id; <baseline/reference run ids>.
 2. Provenance: <binaries and SHAs before/after build, pins, registry SHA, profile SHA,
    latest ant-node tag at deploy>.
@@ -329,6 +343,6 @@ uv run saorsa-deploy monitoring destroy --name <NAME> --force
    no blocking questions; stop conditions mean abandon.
 3. Win-end evidence, then destroy compute and verify.
 4. Extract against the retained ES/Influx.
-5. Post the results comment; <file bugs / hand to the RM>; set **Done** (or **Cancelled**
-   if abandoned).
+5. Post the results comment, verdict and warnings first; <file bugs / hand to the RM>; set
+   **In Review** — always. A human reads the comment and moves the issue on.
 6. <Human follow-up, if anything is retained.>
