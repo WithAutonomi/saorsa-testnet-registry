@@ -1866,6 +1866,28 @@ gated phrase counts alone. An event with no documents records nothing rather tha
 zeros — zeros would read on the next comparison as a pointer tier that stopped
 working.
 
+Catalogue **v4** (V2-1413) adds two groups for the V2-1363 pointer A/B. The
+`subtree_audit_failure` group counts the auditor-side
+`warn!("Audit: {challenged_peer} failed subtree audit ({reason:?})")`, one
+pattern per `AuditFailureReason` variant at ant-node v0.21.0 — `Timeout`,
+`MalformedResponse`, `DigestMismatch`, `KeyAbsent`, `Rejected` — so the group
+sums to the **true** failure total and no reason is silently uncounted.
+`tail.message` is analysed, so the parentheses are discarded and it is the
+reason *token* that discriminates; it is distinct per variant, so exactly one
+pattern matches any one message. The `storage_commitment_rotated` group counts
+the rotation line itself, which is not a failure but is the only info-level
+evidence that commitments were rotating at all — see
+`analysis pointer-commitments` below for the `pointers=` split the phrase count
+cannot make. ant-node #238's two new strings are **deliberately not** in the
+catalogue, with the reason recorded in the YAML: one shares its message with the
+pre-existing heavy-pool drops so a phrase count cannot discriminate them, and
+the other is `debug!`, which the node forwarder drops at `log_level: info`. Both
+of #238's regression modes surface as `subtree_audit_fail_timeout` rising
+instead. Every pre-existing key is untouched, so v3 and v4 counts of them are
+comparable; it is only the new keys that the four prior pointer runs
+(612/614/615/627) have no counts for, which the comparison reports as NOT
+ASSESSED.
+
 #### Arguments
 
 | Argument | Type | Required | Default | Description |
@@ -2158,6 +2180,7 @@ teardown; there is no backfill.
 | `analysis smoke --name N` | ES + InfluxDB reachable, node logs arriving, `net` fields present. |
 | `analysis log-count --name N --phrase P --start … --end … [--index node\|client] [--hosts …]` | Count of a log phrase in a window with host cardinality, top hosts and level breakdown. |
 | `analysis counter-delta --name N --field tail.X --start … --end …` | Delta and rate of a cumulative per-service counter (per host, per service, max − min; single-sample services reported, not folded in as zero). |
+| `analysis pointer-commitments --name N --start … --end … [--hosts …] [--json-out F]` | Commitment-rotation coverage: total rotations, how many carry `pointers=`, how many report `pointers=0`, the non-zero remainder and the host spread of it. See below. |
 | `analysis udp-rate --name N --start … --end … [--every 1m]` | Per-host UDP out-datagram rate from InfluxDB (`udp_outdatagrams`, lower case) — plain tier only, see above. |
 | `analysis relay-report --name N --start … --end … [--hosts …]` | Counts of every relay-lifecycle phrase plus the `relay recv stream closed` ÷ `Proactive relay torn down` ratio (V2-1061's gate metric), optionally for a host cohort. |
 | `analysis teardowns --name N --start … --end … --out F.jsonl` | Exports each `Proactive relay torn down` document (ts, host, service, `relay_addr`, `relay_server`, `allocation_id`). |
@@ -2180,6 +2203,41 @@ cadence**. Hence: captures launch through `systemd-run` so PID 1 owns them,
 `capture` verifies the pcap is growing before reporting success, every capture's
 span is verified against the request before any derived number is read, and
 `flowstat --expect-seconds` exits non-zero on a short window.
+
+#### `analysis pointer-commitments` — making a clean audit count falsifiable (V2-1413)
+
+`deployments record-log-counts` counts the auditor-side
+`failed subtree audit ({reason:?})` WARN, one catalogue pattern per
+`AuditFailureReason` variant, summed into the `subtree_audit_failure` group. The
+A/B that decides ant-node #238 turns on the `DigestMismatch` member. But a
+candidate arm reporting zero of them is **unfalsifiable on its own**: it reads
+identically to a run whose audits never opened a pointer leaf, and ant-node
+v0.21.0 has no info-level line for a successful round-2 pointer opening.
+
+The one available proxy is the commitment rotation,
+`info!("Storage commitment rotated: hash={hash} key_count={key_count} pointers={pointer_count}")`.
+The whole line is one unparsed `tail.message` — `hash=`, `key_count=` and
+`pointers=` are **not** fields — so telling `pointers=0` from `pointers=7` needs
+a wildcard on `tail.message.keyword`, which `match_phrase` cannot express and
+the catalogue therefore cannot answer. Hence a command rather than a seventh
+pattern. The query shape is taken verbatim from `evaluate_commitment` in
+`scripts/rollout-watch/pointer_signals.py`, already proven against ant-prod-01;
+the only differences are the index and the absence of a version arm (a testnet
+run is single-version).
+
+Three statuses, and the one that matters is the middle one:
+
+* **NOT APPLICABLE** — no rotation in the window. Says nothing about coverage;
+  widen the window rather than reading a zero failure count as clean.
+* **FAIL** — either some rotations carry no `pointers=` at all (a service on the
+  fleet is not pointer-capable, so the audit counts describe two builds), or
+  every rotation reports `pointers=0` (commitments rotated and never covered a
+  pointer leaf — exactly the unfalsifiable case).
+* **PASS** — every rotation carries `pointers=` and some report a non-zero
+  count, with the host spread of the non-zero ones alongside it.
+
+It exits **0 whatever it finds**: this is a measurement taken before teardown,
+not a gate. `deployments compare` is untouched.
 
 #### Query traps these commands bake in
 
