@@ -19,6 +19,7 @@ ANALYSIS_MODULES = (
     "saorsa_deploy.analysis.isolate",
     "saorsa_deploy.analysis.stall_probe",
     "saorsa_deploy.analysis.es",
+    "saorsa_deploy.analysis.pointer_commitments",
     "saorsa_deploy.analysis.relay",
     "saorsa_deploy.analysis.phase_extract",
     "saorsa_deploy.analysis.recovery",

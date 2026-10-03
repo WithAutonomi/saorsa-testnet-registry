@@ -20,7 +20,13 @@
 # recorded before v3 has no pointer counts at all, which the comparison reports
 # as NOT ASSESSED rather than as zero -- a zero against a run that had no
 # pointer clients would read as a perfect result.
-version: 3
+#
+# v4 (2026-10-03, V2-1413): ADDED the subtree storage-audit failure group and
+# the commitment-rotation group, for the V2-1363 pointer A/B. Nothing existing
+# changed, so v3 and v4 counts of every pre-existing key ARE comparable -- it is
+# only the NEW keys that the four prior pointer runs (612/614/615/627) have no
+# counts for, which the comparison reports as NOT ASSESSED.
+version: 4
 
 # ---------------------------------------------------------------------------
 # Verification.
@@ -144,6 +150,52 @@ groups:
       Not a fault -- dropping a pointer a node is no longer responsible for is
       correct. Counted so churn can be told apart from a pointer regression.
 
+  # -------------------------------------------------------------------------
+  # Subtree storage-audit groups (V2-1413). Both pinned against ant-node
+  # `v0.21.0` and read off the source on 2026-10-03. If a later ant-node renames
+  # either emit these read ZERO, and a zero phrase count never distinguishes
+  # "did not happen" from "the string was renamed" -- confirm against the pinned
+  # source before reporting a zero as an improvement.
+  - key: subtree_audit_failure
+    label: Subtree storage-audit failures (node)
+    aggregate: sum
+    # All five members are the SAME auditor-side WARN
+    # (`src/replication/storage_commitment_audit.rs:1184`,
+    # `warn!("Audit: {challenged_peer} failed subtree audit ({reason:?})")`)
+    # discriminated by the `AuditFailureReason` Debug rendering. They sum
+    # because each is a distinct failure of a distinct audit, and every variant
+    # in `src/replication/types.rs:356-367` has a pattern, so the group total is
+    # the TRUE total and no failure is silently uncounted.
+    #
+    # Deliberately NOT added, because each would read as a false zero:
+    # ant-node #238's `reason="pointer_binding_budget"` rides on the existing
+    # "Audit responder admission dropped" message, whose phrase also matches the
+    # pre-existing heavy-pool cooldown / work-budget drops, so a phrase count
+    # cannot discriminate them; and its round-2 "cannot serve the record round 1
+    # read for pointer" reaches the auditor only inside a `debug!`, which the
+    # node-tier forwarder drops at `log_level: info`. Both of #238's regression
+    # modes surface here instead as `subtree_audit_fail_timeout` rising, because
+    # `RejectKind::Transient` grades into the timeout lane (`grade_reject` ->
+    # `RejectGrade::TimeoutLane` -> `AuditFailureReason::Timeout`).
+    note: >-
+      Every confirmed subtree-audit failure the auditor charged, by reason.
+      `DigestMismatch` is the one the V2-1363 A/B turns on: a pointer updated
+      twice between audit round 1 and round 2 charges an honest holder.
+
+  - key: storage_commitment_rotated
+    label: Storage commitment rotations (node)
+    aggregate: sum
+    # INFO, and not a failure: rotating the commitment is the normal cycle. It
+    # is the only info-level evidence that pointer leaves are being committed at
+    # all -- a successful round-2 pointer opening has no info-level line
+    # anywhere in v0.21.0 -- which is what makes a clean audit-failure count
+    # falsifiable rather than indistinguishable from an audit that never opened
+    # a pointer leaf. `analysis pointer-commitments` splits these by whether the
+    # line reports `pointers=0`, which this phrase count cannot.
+    note: >-
+      Not a fault. The denominator-ish companion to the audit failures: it says
+      commitments were rotating, so a zero failure count means something.
+
 # ---------------------------------------------------------------------------
 # Patterns.
 #
@@ -256,6 +308,47 @@ patterns:
     # -- the count is interpolated, so the phrase starts after it.
     phrase: "pointer records this node is no longer responsible for"
     module: ant_node::replication::pointer
+
+  # --- subtree storage audit (V2-1413) ------------------------------------
+  # One WARN, five reasons. `tail.message` is analysed, so the match is case-
+  # and punctuation-insensitive -- but the parenthesised reason still
+  # discriminates, because the reason token is distinct per variant and
+  # `match_phrase` requires the tokens adjacent and in order.
+  - key: subtree_audit_fail_digest_mismatch
+    group: subtree_audit_failure
+    phrase: "failed subtree audit (DigestMismatch)"
+    module: ant_node::replication::storage_commitment_audit
+
+  - key: subtree_audit_fail_key_absent
+    group: subtree_audit_failure
+    phrase: "failed subtree audit (KeyAbsent)"
+    module: ant_node::replication::storage_commitment_audit
+
+  - key: subtree_audit_fail_timeout
+    group: subtree_audit_failure
+    phrase: "failed subtree audit (Timeout)"
+    module: ant_node::replication::storage_commitment_audit
+
+  - key: subtree_audit_fail_rejected
+    group: subtree_audit_failure
+    phrase: "failed subtree audit (Rejected)"
+    module: ant_node::replication::storage_commitment_audit
+
+  - key: subtree_audit_fail_malformed
+    group: subtree_audit_failure
+    phrase: "failed subtree audit (MalformedResponse)"
+    module: ant_node::replication::storage_commitment_audit
+
+  - key: storage_commitment_rotated
+    group: storage_commitment_rotated
+    # "Storage commitment rotated: hash={hash} key_count={key_count}
+    # pointers={pointer_count}" -- the whole line is one unparsed
+    # `tail.message`; `hash=`, `key_count=` and `pointers=` are NOT fields, so
+    # telling `pointers=0` from `pointers=7` needs a wildcard on
+    # `tail.message.keyword`, which `match_phrase` cannot express. That is what
+    # `analysis pointer-commitments` is for.
+    phrase: "Storage commitment rotated"
+    module: ant_node::replication
 
 # ---------------------------------------------------------------------------
 # Retired patterns.

@@ -1187,6 +1187,31 @@ forwarder drops DEBUG at `log_level: info` — which is what staging runs at —
 they are deliberately NOT catalogued; they would read zero for a reason unrelated
 to pointers.
 
+**Catalogue v4 (V2-1413) adds the subtree storage-audit counts**, for the
+V2-1363 A/B. `subtree_audit_failure` carries one pattern per
+`AuditFailureReason` variant at ant-node v0.21.0 (`Timeout`,
+`MalformedResponse`, `DigestMismatch`, `KeyAbsent`, `Rejected`) off the single
+auditor WARN, so the group sums to the **true** total — `tail.message` is
+analysed, so the parentheses are discarded and it is the reason *token* that
+discriminates, which it does uniquely. ant-node #238's two new strings are
+deliberately absent (one shares its message with the pre-existing heavy-pool
+drops; the other is `debug!`); both its regression modes show up as
+`subtree_audit_fail_timeout` rising. Every pre-existing key is untouched, so
+only the NEW keys read NOT ASSESSED against runs 612/614/615/627.
+
+**A clean audit-failure count is unfalsifiable on its own**, because v0.21.0 has
+no info-level line for a successful round-2 pointer opening: zero failures reads
+identically to audits that never opened a pointer leaf. The proxy is
+`analysis pointer-commitments --name N --start … --end …`, which splits the
+`Storage commitment rotated` line by whether it reports `pointers=0`. That needs
+a **wildcard on `tail.message.keyword`** — the whole line is one unparsed
+`tail.message`, `pointers=` is not a field, and `match_phrase` cannot express a
+wildcard — which is why it is a command and not a seventh pattern. Query shape
+reused verbatim from `evaluate_commitment` in
+`scripts/rollout-watch/pointer_signals.py`; the only differences are the index
+and no version arm (a testnet run is single-version). Exits **0 whatever it
+finds** — a measurement, not a gate.
+
 `staging.yaml` carries **two** pointer entries, geographically separated so
 cross-client sweeps span a real distance. **The train's RC must carry pointers**;
 if it predates them, strip the two entries for that train.
