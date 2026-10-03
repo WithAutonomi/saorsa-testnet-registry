@@ -16,6 +16,10 @@ from saorsa_deploy.provisioning.apt import (
     build_set_hostname_command,
 )
 from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
+from saorsa_deploy.provisioning.firewall import (
+    DISABLE_FIREWALL_OP_NAME,
+    build_disable_firewall_command,
+)
 from saorsa_deploy.provisioning.progress import (
     OpTimingHandler,
     RichLiveProgressHandler,
@@ -248,6 +252,12 @@ class AntBootstrapNodeProvisioner:
                 name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
                 commands=[build_disable_unattended_upgrades_command()],
             )
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_FIREWALL_OP_NAME,
+                commands=[build_disable_firewall_command()],
+            )
 
             if self.hostname:
                 add_op(
@@ -461,6 +471,12 @@ class AntBootstrapNodesProvisioner:
                 server.shell,
                 name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
                 commands=[build_disable_unattended_upgrades_command()],
+            )
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_FIREWALL_OP_NAME,
+                commands=[build_disable_firewall_command()],
             )
             add_op(
                 state,

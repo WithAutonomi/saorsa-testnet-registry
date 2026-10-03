@@ -378,6 +378,50 @@ uv run saorsa-deploy nodes provision --name DEV-01 --node-count 25
 uv run saorsa-deploy nodes start --name DEV-01
 ```
 
+#### Host firewall (ufw)
+
+Every node-tier host (`nodes provision-genesis`, `bootstraps provision`,
+`nodes provision`) and every client host (`clients provision`) runs a
+`Disable host firewall (ufw)` op early in its provisioning pass:
+
+```sh
+command -v ufw >/dev/null 2>&1 && ufw disable >/dev/null 2>&1 || true
+```
+
+It is there because **Vultr's Ubuntu 24.04 image boots with `ufw` active**,
+default-deny on incoming, and exactly one allow rule — `22/tcp`. Everything
+else is dropped by netfilter *after* reaching the NIC, which is invisible until
+something has to dial in: SSH works, provisioning works, and node-to-node
+traffic works because nodes hole-punch outbound. Only direct inbound
+connections fail. On run DEV-03 (V2-1410, registry id 632) clients made 6,821
+direct QUIC attempts to node ports on the seven Vultr node VMs and **connected
+none of them**, while the DigitalOcean VMs on the same fleet accepted tens of
+thousands; not one of the 105 Vultr nodes was ever promoted to a `Direct`
+address.
+
+**Disable, not allow**: node services listen on OS-assigned high UDP ports (and
+MASQUE relay servers on further OS-assigned ports), so an allow-list cannot
+name them without changing how ports are assigned. Testnet VMs are disposable
+and already exposed by design.
+
+The command is idempotent and persistent (`ufw disable` writes `ENABLED=no` to
+`/etc/ufw/ufw.conf`, so it survives a reboot), and a no-op on images with no
+`ufw` binary — every other provider's — which is why it is added
+unconditionally rather than per provider. It is the same string the NAT
+simulation has run since June 2026; both call
+`provisioning/firewall.py:build_disable_firewall_command()` so they cannot
+drift.
+
+Verify on any provisioned VM:
+
+```bash
+ssh root@<VM> "ufw status"          # expect 'Status: inactive' (or no ufw at all)
+ssh root@<VM> "iptables -S INPUT"   # expect '-P INPUT ACCEPT'
+```
+
+Not covered: the monitoring, Elasticsearch, build and `prod uploaders` /
+`prod downloaders` / `prod canary` client VMs, which nothing dials in to.
+
 #### Port-restricted NAT simulation
 
 `nodes provision` can run a configurable percentage of VMs behind a

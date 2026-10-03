@@ -15,6 +15,10 @@ from saorsa_deploy.provisioning.apt import (
     build_set_hostname_command,
 )
 from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
+from saorsa_deploy.provisioning.firewall import (
+    DISABLE_FIREWALL_OP_NAME,
+    build_disable_firewall_command,
+)
 from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT, build_mount_volume_command
 
 BINARY_INSTALL_PATH = "/usr/local/bin/ant-node"
@@ -157,6 +161,12 @@ class AntGenesisNodeProvisioner:
                 server.shell,
                 name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
                 commands=[build_disable_unattended_upgrades_command()],
+            )
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_FIREWALL_OP_NAME,
+                commands=[build_disable_firewall_command()],
             )
 
             if self.hostname:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 
+from saorsa_deploy.provisioning.firewall import build_disable_firewall_command
+
 NAT_NAMESPACE = "ant_nat"
 NAT_HOST_IP = "10.200.0.1"
 NAT_NS_IP = "10.200.0.2"
@@ -73,7 +75,7 @@ if ip netns list 2>/dev/null | awk '{{print $1}}' | grep -qx "{NAT_NAMESPACE}"; 
     echo 'ANT_NAT:ALREADY'
     exit 0
 fi
-command -v ufw >/dev/null 2>&1 && ufw disable >/dev/null 2>&1 || true
+{build_disable_firewall_command()}
 
 NS="{NAT_NAMESPACE}"
 HOST_IP="{NAT_HOST_IP}"

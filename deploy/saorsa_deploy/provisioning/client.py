@@ -35,6 +35,10 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     format_skew_offset,
 )
+from saorsa_deploy.provisioning.firewall import (
+    DISABLE_FIREWALL_OP_NAME,
+    build_disable_firewall_command,
+)
 from saorsa_deploy.provisioning.monitoring import INFLUXDB_WASM_BUCKET
 from saorsa_deploy.provisioning.network_profile import (
     build_network_impairment_command,
@@ -663,6 +667,12 @@ class AntClientProvisioner:
                 server.shell,
                 name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
                 commands=[build_disable_unattended_upgrades_command()],
+            )
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_FIREWALL_OP_NAME,
+                commands=[build_disable_firewall_command()],
             )
 
             # Set each VM's OS hostname to its inventory name. Only the

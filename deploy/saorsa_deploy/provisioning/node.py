@@ -19,6 +19,10 @@ from saorsa_deploy.provisioning.clock_skew import (
     build_clock_skew_command,
     skew_direction_for_ip,
 )
+from saorsa_deploy.provisioning.firewall import (
+    DISABLE_FIREWALL_OP_NAME,
+    build_disable_firewall_command,
+)
 from saorsa_deploy.provisioning.full_nodes import (
     DEFAULT_FULL_HEADROOM_MB,
     build_fill_storage_command,
@@ -421,6 +425,12 @@ class AntNodeProvisioner:
                 server.shell,
                 name=DISABLE_UNATTENDED_UPGRADES_OP_NAME,
                 commands=[build_disable_unattended_upgrades_command()],
+            )
+            add_op(
+                state,
+                server.shell,
+                name=DISABLE_FIREWALL_OP_NAME,
+                commands=[build_disable_firewall_command()],
             )
 
             if self.root_disk_ips:

@@ -217,8 +217,9 @@ class TestAntNodeProvisioner:
         provisioner.execute()
 
         mock_connect.assert_called_once()
-        # disable-uu + volume-mount + log-dirs + download + write-units + enable = 6
-        assert mock_add_op.call_count == 6
+        # disable-uu + disable-ufw + volume-mount + log-dirs + download
+        # + write-units + enable = 7
+        assert mock_add_op.call_count == 7
         mock_run_ops.assert_called_once()
         mock_disconnect.assert_called_once()
 
@@ -351,8 +352,9 @@ class TestAntNodeProvisioner:
         )
         provisioner.execute()
 
-        # disable-uu + volume-mount + log-dirs + download + write-units + enable = 6
-        assert mock_add_op.call_count == 6
+        # disable-uu + disable-ufw + volume-mount + log-dirs + download
+        # + write-units + enable = 7
+        assert mock_add_op.call_count == 7
 
     @patch("saorsa_deploy.provisioning.node.disconnect_all")
     @patch("saorsa_deploy.provisioning.node.run_ops")
@@ -488,8 +490,9 @@ class TestAntNodeProvisioner:
         )
         provisioner.execute()
 
-        # Op order: disable-uu, mount-volume, create-logs, binary-install, ...
-        download_call = mock_add_op.call_args_list[3]
+        # Op order: disable-uu, disable-ufw, mount-volume, create-logs,
+        # binary-install, ...
+        download_call = mock_add_op.call_args_list[4]
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
         assert commands[0].startswith("test -f /usr/local/bin/ant-node")
