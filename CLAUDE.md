@@ -213,6 +213,22 @@ sequence these from a manifest.
 
 `nodes provision` installs the ant-node binary, writes systemd unit files, and **enables** the services; it does not start them. `nodes start` is a separate step that runs `systemctl start ant-node-{1..N}` in parallel across every node VM. The split exists so that optional setup (notably port-restricted NAT simulation configured via `--nat-percent`) can run between unit-write and service-start.
 
+**Every node-tier and client host has `ufw` disabled at provision time** (op
+`Disable host firewall (ufw)`, early in the pass, before the unit-file write and
+before NAT setup). **Vultr's Ubuntu 24.04 image boots with `ufw` active,
+default-deny incoming, allowing only `22/tcp`** — so SSH, provisioning and
+node-to-node traffic (nodes hole-punch outbound) all work while nothing can dial
+*in*. That cost run DEV-03 (V2-1410, id 632) its upload rate: of 6,821 direct
+client QUIC attempts to the seven Vultr node VMs, zero connected, against tens
+of thousands succeeding on the DigitalOcean VMs, and 0 of 105 Vultr nodes ever
+became `Direct`. Disable rather than allow, because node services (and MASQUE relay
+servers) take OS-assigned high UDP ports an allow-list cannot name. The command
+is idempotent, persists across reboot, and is a no-op where `ufw` is absent —
+every other provider — so it is unconditional. One definition
+(`provisioning/firewall.py`) shared with the NAT script, which has run the same
+line since June 2026. **Not** applied to the monitoring, Elasticsearch, build or
+`prod uploaders`/`downloaders`/`canary` client VMs — nothing dials in to those.
+
 ### Extending a testnet (shared bootstraps)
 
 A testnet can be deployed as an **extension** of another: it reuses the source
