@@ -165,11 +165,45 @@ There are two classes of failure and they are handled differently.
 `monitoring infra`, `elastic infra` — anything creating VMs or volumes at a cloud provider). Read
 the failing lane's error and classify it before deciding; the class, not the step, decides.
 
-* **Terminal — the provider refused.** Capacity or "not available" / "out of stock", a quota or
-  limit exceeded, a plan or size not offered in that region, 401/403/"invalid token", billing, or
-  the OVH ~60-minute silent hang in `nodes infra` (the per-region 40-vCPU quota). These last a
-  while. Do **not** retry. Abandon the run: `deployments down --name <deployment-name>`, verify
-  (Step 6), report which provider and step failed and the error.
+* **Terminal — the provider refused for a reason that will not change in the next few minutes.** A
+  quota or limit exceeded, 401/403/"invalid token", billing, an unknown region or image, or the OVH
+  ~60-minute silent hang in `nodes infra` (the per-region 40-vCPU quota). Do **not** retry. Abandon
+  the run: `deployments down --name <deployment-name>`, verify (Step 6), report which provider and
+  step failed and the error.
+* **Capacity-shaped — "not available", "out of stock", "Size is not available in this region", "no
+  capacity", "insufficient capacity". Never classify these from the error string: ask the
+  provider's catalogue.** Providers reuse one message both for a size that is *structurally* absent
+  from a region and for one that is merely *momentarily* exhausted there, and only the second is
+  worth retrying — so the string alone cannot decide the class. DigitalOcean's
+  `422 Size is not available in this region` is the known case: it ended DEV-06 run 645 for
+  nothing, having refused `s-2vcpu-4gb` in `nyc1` for a bootstrap droplet and granted the identical
+  slug in the identical region 70 seconds later, in the same `up`, for a pointer client.
+
+  Make one read-only catalogue call for the failing provider, size and region:
+
+  ```bash
+  # DigitalOcean
+  curl -s -H "Authorization: Bearer $DO_TOKEN" 'https://api.digitalocean.com/v2/sizes?per_page=200' \
+    | jq -r --arg s '<size>' --arg r '<region>' '.sizes[]
+        | select(.slug==$s)
+        | "available=\(.available) offers_region=\(.regions|index($r)!=null)"'
+  ```
+
+  Vultr: `/v2/plans`, match the plan's `locations[]`. OVH: the region's
+  `data.ovh_cloud_project_flavors`. Then:
+
+  * Size catalogued for that region **and** `available=true` → it was **momentary capacity**.
+    Treat as **transient**: follow the transient rule below, same 3-attempt budget.
+  * Size **not** offered in that region, or the region unavailable → **structural**, therefore
+    **terminal**: abandon, and say in the results comment that the manifest — or the tool's default
+    region list, which is where the bootstrap tier gets its regions — names a region that cannot
+    serve that size.
+  * The check prints **nothing** (unknown slug), or the call itself fails → **terminal**. Never
+    default a capacity-shaped failure to transient because the evidence was unobtainable; an
+    unknown slug is a manifest error, and an unanswerable catalogue is its own finding.
+
+  Record the check's output either way, under the deviation. It is one read-only call, and it is
+  the difference between discarding a fully-preflighted multi-hour run and losing three minutes.
 * **Transient — the provider's API misbehaved on a call that normally works.** A 5xx, a 429, a
   timeout or connection reset, a TLS error, or a 404 / "Invalid instance-id" on the **read-back**
   of a resource that was just created (Vultr does this; it ended DEV-01 run 613 for nothing).
