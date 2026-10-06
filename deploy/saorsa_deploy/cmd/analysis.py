@@ -18,6 +18,7 @@ ANALYSIS_MODULES = (
     "saorsa_deploy.analysis.restart_nodes",
     "saorsa_deploy.analysis.isolate",
     "saorsa_deploy.analysis.stall_probe",
+    "saorsa_deploy.analysis.rot_chunks",
     "saorsa_deploy.analysis.es",
     "saorsa_deploy.analysis.pointer_commitments",
     "saorsa_deploy.analysis.relay",

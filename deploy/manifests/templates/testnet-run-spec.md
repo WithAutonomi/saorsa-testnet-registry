@@ -164,7 +164,9 @@ Exit 2 from `estimate-gas` → raise `eth:` (only ever raise) and record it.
    clock; a late wake is recorded with its actual time.
 5. `up` **runs in the background and is waited on by PID**; T0 is read from the client
    units' `ActiveEnterTimestamp`.
-6. **No host is modified during the run.** Reads only: <snapshot / `df` / ES / Influx>.
+6. **A host is modified only where this issue's phases direct it**, through a committed
+   `saorsa-deploy` command named here, with the time and the targets recorded in the
+   results comment. Everything else is reads only: <snapshot / `df` / ES / Influx>.
 7. <Recurring health read and its thresholds — e.g. disk every 30 min; >90% fails
    criterion N and continues; 100% with failing units is a stop condition.>
 
