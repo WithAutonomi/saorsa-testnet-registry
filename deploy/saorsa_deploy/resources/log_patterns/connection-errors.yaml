@@ -26,7 +26,18 @@
 # changed, so v3 and v4 counts of every pre-existing key ARE comparable -- it is
 # only the NEW keys that the four prior pointer runs (612/614/615/627) have no
 # counts for, which the comparison reports as NOT ASSESSED.
-version: 4
+#
+# v5 (2026-10-06, V2-1441): ADDED the payment-RPC failure group, the first
+# ADVISORY group. It measures the environment the run happened in -- whether
+# the public Arbitrum Sepolia RPC was rate-limiting the nodes' payment
+# verification -- not the release, so it is reported beside the gates it
+# confounds and never counted in the verdict. Added because the V2-1359 A/B
+# (runs 635/639/650) read a 41-46% upload-duration regression that the raw logs
+# attributed to ~8,900 HTTP 429s an hour from that endpoint, and nothing in the
+# recorded run said so. Nothing existing changed, so v4 and v5 counts of every
+# pre-existing key ARE comparable; runs before v5 have no payment-RPC counts,
+# which the comparison reports as NOT ASSESSED (advisory).
+version: 5
 
 # ---------------------------------------------------------------------------
 # Verification.
@@ -196,6 +207,49 @@ groups:
       Not a fault. The denominator-ish companion to the audit failures: it says
       commitments were rotating, so a zero failure count means something.
 
+  # -------------------------------------------------------------------------
+  # Payment RPC (V2-1441). ADVISORY: this group is about the environment, not
+  # the release. Every node verifies every paid PUT against the payment vault
+  # over an EVM JSON-RPC endpoint, and on a testnet that endpoint is the
+  # anonymous public Arbitrum Sepolia one (`--evm-network arbitrum-sepolia`,
+  # `https://sepolia-rollup.arbitrum.io/rpc`), shared by every node process in
+  # the fleet and by everyone else on the internet using it that hour. When it
+  # rate-limits, the node rejects the PUT with `payment failed`, the client
+  # retries the chunk, and every upload gets slower -- uniformly, across
+  # uploaders, sizes and payment modes, which is the signature to look for.
+  #
+  # Measured on the V2-1359 A/B candidate (run 650, 2026-10-06, daytime):
+  # 4,004 / 1,584 / 2,608 / 1,148 / 3,602 node-side 429 lines per hour from T0,
+  # on all 14 node VMs, while uploads ran 41-46% slower at the median than a
+  # reference that ran overnight. That is why the group exists: so the figure
+  # is recorded with the run and the next duration regression is read against
+  # it rather than discovered in Elasticsearch after the reference's logs are
+  # gone.
+  #
+  # Advisory because a FAIL here would blame the release for the weather. The
+  # comparison still renders the row, marked advisory, and repeats `confounds`
+  # as a warning at the top of the report when the candidate's per-hour rate is
+  # well above the baseline's.
+  - key: payment_rpc_failure
+    label: Payment RPC failures (node)
+    aggregate: max
+    advisory: true
+    confounds: >-
+      the native upload-duration (p50/p95) and upload-success gates: a PUT
+      rejected for a payment-verification RPC failure is retried by the client,
+      so uploads slow down for a reason that has nothing to do with the release
+    # Both members are the SAME event -- one failed `completedPayments` call --
+    # seen in two renderings: the lookup wrapper names the call, the HTTP
+    # status names the cause. Any one line carries both when the cause is a
+    # 429, so summing would double-count; the lookup count is the larger and is
+    # the better estimate of "how often did verification fail at the RPC", the
+    # 429 count is how much of that was rate limiting.
+    note: >-
+      Payment verification could not reach or was refused by the EVM RPC
+      endpoint. Environmental: the public Sepolia endpoint is shared with the
+      world. A rise here is a reason to doubt the upload-duration gates, not a
+      finding about the release.
+
 # ---------------------------------------------------------------------------
 # Patterns.
 #
@@ -349,6 +403,32 @@ patterns:
     # `analysis pointer-commitments` is for.
     phrase: "Storage commitment rotated"
     module: ant_node::replication
+
+  # --- payment RPC (V2-1441) ----------------------------------------------
+  # Both ride ant-node's `warn!(target: "ant_node::payment::verify", "Slow
+  # payment verification failed: context={..}, proof_type={..},
+  # proof_bytes={..}, elapsed_ms={..}: {e}")` (`src/payment/verifier.rs`, at
+  # v0.21.0), where `{e}` is the verifier's error chain. A verification that
+  # fails FAST (< 500 ms, `PAYMENT_VERIFY_SLOW_LOG_MS`) is logged at DEBUG,
+  # which the node-tier forwarder drops at `log_level: info`, so these counts
+  # are a LOWER BOUND on RPC failures. A 429 after the HTTP client's retries is
+  # never fast, so in practice the rate-limited case is counted.
+  - key: payment_rpc_http_429
+    group: payment_rpc_failure
+    # `completedPayments lookup failed: HTTP error 429 with body: {...}`. The
+    # body is the provider's text ("Too Many Requests", "Rate Limit Hit", ...)
+    # and varies between endpoints; the status code does not. Stable substring
+    # only: `tail.message` is analysed, so the three tokens match in order.
+    phrase: "HTTP error 429"
+    module: ant_node::payment::verify
+
+  - key: completed_payments_lookup_failed
+    group: payment_rpc_failure
+    # `Error::Payment(format!("completedPayments lookup failed: {e}"))` in
+    # `PaymentVerifier` -- every failure of the vault lookup, whatever the
+    # cause (429, 5xx, timeout, connection refused). The superset of the 429s.
+    phrase: "completedPayments lookup failed"
+    module: ant_node::payment::verify
 
 # ---------------------------------------------------------------------------
 # Retired patterns.

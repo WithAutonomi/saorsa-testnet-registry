@@ -410,6 +410,87 @@ Read the output for:
   A **zero** count is not self-explaining: "fixed", "renamed" and "emitted at a level the node
   forwarder drops" are indistinguishable from Elasticsearch alone. If a group fell to zero,
   either confirm the literal is still in the pinned source or report it as unconfirmed.
+  - **`Connection errors: Payment RPC failures (node)` is advisory and is not a connection
+    error.** It is catalogue v5's environmental group: how often the nodes' payment
+    verification was refused or rate-limited by the EVM RPC endpoint. It renders
+    `PASS (advisory)` / `FAIL (advisory)` and never reaches the overall verdict. Read it
+    before any upload gate — see **Payment RPC health** below. A run recorded before v5 has
+    no such counts and the row reads NOT ASSESSED (advisory); say so, it is not a gap in the
+    run.
+
+### Payment RPC health: check it on every run, before reading an upload gate
+
+Every node verifies every paid PUT against the payment vault over an EVM JSON-RPC endpoint.
+On a testnet that endpoint is the **anonymous public Arbitrum Sepolia RPC**
+(`--evm-network arbitrum-sepolia`), shared by every node process in the fleet and by the rest
+of the internet. When it rate-limits, the node rejects the PUT with `payment failed`, the
+client retries the chunk, and **every upload slows down for a reason that has nothing to do
+with the release**. The V2-1359 A/B (V2-1441, runs 635/639/650) read a 41–46% upload-duration
+regression that way, and only the raw logs — pulled hours before they would have been
+destroyed — showed ~8,900 node-side `HTTP error 429` lines an hour behind it. This check
+exists so that never has to be discovered after the fact again.
+
+**What to read, in order:**
+
+1. **The warning.** `compare` prints `Payment RPC failures (node): <cand>/h on the candidate
+   vs <base>/h on the baseline. … confounds the native upload-duration (p50/p95) and
+   upload-success gates …` whenever the candidate's per-hour rate is at least 2× the
+   baseline's, or the baseline has no such counts. If that warning is present, the upload
+   gates are **confounded** for this run. If it is absent and the row is assessed, they are
+   not, and nothing more is needed here.
+2. **The row.** Candidate and baseline counts, per-hour rates and host spread are in the
+   gate's detail. Fleet-wide (most node hosts) is the rate-limit signature; two hosts of
+   many is something else.
+3. **The shape, while the run's Elasticsearch is still up** — it is, by design: Step 8 of
+   `run-staging-testnet` keeps STG-01's `elastic` stack alive for this verification. The
+   `Staging run — rc.N` sub-issue carries the per-hour table from the run session; if it does
+   not, pull it now, read-only, with the URL and API key from
+   `uv run saorsa-deploy elastic info --name STG-01` (index `telegraf-ant-nodes-stg-01-*`):
+
+   ```bash
+   curl -s -H "Authorization: ApiKey $ES_KEY" -H 'Content-Type: application/json' \
+     "$ES_URL/telegraf-ant-nodes-stg-01-*/_search" -d '{
+     "size": 0,
+     "query": {"bool": {"must": [{"match_phrase": {"tail.message": "HTTP error 429"}}],
+               "filter": [{"range": {"@timestamp": {"gte": "<T0>", "lt": "<run end>"}}}]}},
+     "aggs": {"per_hour": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h"}},
+              "hosts": {"terms": {"field": "tag.host.keyword", "size": 40}}}}'
+   ```
+
+   And the client side of the same thing, which the node-tier catalogue cannot see (index
+   `telegraf-ant-clients-stg-01-*`, phrase `payment failed`): how many of the uploaders'
+   `Failed to store chunk on` lines were payment rejections rather than transport failures.
+4. **The uniformity test**, from Postgres, no Elasticsearch needed: upload p50 per uploader
+   host, candidate vs baseline (`deployment_upload_records`, `client_hostname`,
+   `duration_ms`, window-filtered). A payment-path cause slows **every** uploader, both
+   payment modes (`merkle` and `no-merkle` clients alike) and both file sizes by a similar
+   factor. A release regression in replication or transport usually does not look like that.
+
+**The rule.** The gate verdicts are still the tool's and are pasted unchanged. But when the
+warning fired:
+
+- Every S2/S3 upload-duration FAIL and any S1 upload-success movement is reported in the
+  **What happened** prose with one clause naming the confounder and the two per-hour rates —
+  "uploads were 40% slower at the median, with the public payment RPC refusing about 2,200
+  node-side verifications an hour against 300 on the baseline, so this run cannot attribute
+  the slowdown to the release".
+- The **Verdict** line says the duration finding is **confounded, not cleared**: the run
+  neither shows a regression nor rules one out. Do not downgrade the stored SOFT FAIL, and do
+  not write it up as a pass.
+- Downloads are the control: they pay nothing, so a download-duration FAIL alongside is
+  **not** explained by this and stands on its own.
+- Hand the RM the choice in plain words: accept the explained-but-unproven delta on this
+  evidence, or re-run the pair (both arms) when the endpoint is quiet or on a dedicated RPC
+  endpoint. That is the RM's call at the gate verdict, not yours.
+
+When the warning did **not** fire but the candidate's rate is itself high (thousands an hour
+on most hosts) and the baseline's was too, say so in one clause: both runs carried the same
+weather, so the comparison holds, but the absolute durations on this profile are inflated by
+it.
+
+What this check cannot do: prove the **baseline** was clean if it predates catalogue v5, and
+count the verifications that failed in under 500 ms (those are logged at DEBUG and dropped), so
+the recorded figure is a lower bound.
 
 ## Step 6 — Gather the two observational hard gates
 
@@ -561,7 +642,10 @@ drown the signal. The reader wants to know whether the release is good.
 The **one** exception: when a measurement limitation would change how someone acts on a number,
 say it in a single plain-language clause — "the CPU figure is an average across the fleet rather
 than a typical host, so a few busy machines can pull it up". Never more than a clause, never a
-section, and only where it changes the reading.
+section, and only where it changes the reading. The payment-RPC confounder (Step 5, **Payment
+RPC health**) is the standing instance of this: when its warning fired, the upload-duration
+sentences carry that clause, every time, because without it the reader will act on a
+regression the run cannot attribute to the release.
 
 Do not include a "Method notes" or "Known gaps" section. Do not explain the window choice; the
 Window row in the table is the whole of what a reader needs.
@@ -671,3 +755,11 @@ State these in the final report rather than working around them:
 - **The memory-leak threshold is calibrated against the noise floor, not against a known leak.**
   It was set from four runs, none of which is known to contain one. A PASS there means "no
   fleet-wide RSS trend", not "no leak".
+- **The upload gates are hostage to the public payment RPC.** Nodes verify every paid PUT
+  against the anonymous Arbitrum Sepolia endpoint, so an upload-duration delta is only
+  attributable to the release when both runs saw a similar payment-RPC failure rate (the
+  advisory `Payment RPC failures (node)` row, catalogue v5, and its warning). A baseline that
+  predates v5 has no such counts, so its weather cannot be checked after the fact; the
+  recorded count is a lower bound (sub-500 ms failures are logged at DEBUG and dropped); and
+  the client-side view is not recorded at all. Moving testnets to a dedicated endpoint would
+  remove the confounder; until then it is read, not removed.

@@ -889,3 +889,170 @@ def test_deleting_counts_is_scoped_to_a_window(repo):
     assert repo.delete_log_event_counts(deployment.id, window_label="steady-state") == 1
     remaining = repo.list_log_event_counts_for_deployment(deployment.id)
     assert [row.window_label for row in remaining] == ["full-run"]
+
+
+# ---------------------------------------------------------------------------
+# Advisory (environmental) groups -- V2-1441
+#
+# The payment-RPC group measures the weather the run happened in, not the
+# release: the public Sepolia endpoint rate-limiting payment verification. It
+# is recorded and rendered like any other group, but it never decides the
+# verdict, and a rise in it is repeated as a WARNING naming the gates it casts
+# doubt on.
+# ---------------------------------------------------------------------------
+
+
+def test_advisory_defaults_to_false():
+    parsed = parse_pattern_set(_catalogue(), "cat.yaml", "cat")
+    assert parsed.group("g").advisory is False
+    assert parsed.group("g").confounds == ""
+
+
+def test_non_boolean_advisory_is_refused():
+    """'yes' would be a silent choice about whether a group decides the verdict."""
+    data = _catalogue(
+        groups=[{"key": "g", "label": "G", "aggregate": "sum", "advisory": "yes"}]
+    )
+    with pytest.raises(LogPatternError, match="advisory"):
+        parse_pattern_set(data, "cat.yaml", "cat")
+
+
+def test_confounds_on_a_counted_group_is_refused():
+    """A counted group IS one of the gates; it cannot also cast doubt on them."""
+    data = _catalogue(
+        groups=[{"key": "g", "label": "G", "aggregate": "sum", "confounds": "x"}]
+    )
+    with pytest.raises(LogPatternError, match="confounds"):
+        parse_pattern_set(data, "cat.yaml", "cat")
+
+
+def test_bundled_catalogue_marks_the_payment_rpc_group_advisory(patterns):
+    """The bundled v5 group: two phrases, advisory, and it names what it confounds."""
+    assert patterns.version >= 5
+    group = patterns.group("payment_rpc_failure")
+    assert group is not None
+    assert group.advisory is True
+    assert group.aggregate == "max"
+    assert "upload" in group.confounds
+    keys = {p.key for p in patterns.patterns_in_group("payment_rpc_failure")}
+    assert keys == {"payment_rpc_http_429", "completed_payments_lookup_failed"}
+    # Every other group still counts: this flag must not leak.
+    assert all(
+        not g.advisory for g in patterns.groups if g.key != "payment_rpc_failure"
+    )
+
+
+def _advisory_patterns():
+    return parse_pattern_set(
+        _catalogue(
+            groups=[
+                {"key": "g", "label": "G", "aggregate": "sum"},
+                {
+                    "key": "env",
+                    "label": "Env",
+                    "aggregate": "max",
+                    "advisory": True,
+                    "confounds": "the upload-duration gates",
+                },
+            ],
+            patterns=[
+                {"key": "p", "group": "g", "phrase": "boom"},
+                {"key": "e", "group": "env", "phrase": "429"},
+            ],
+        ),
+        "cat.yaml",
+        "cat",
+    )
+
+
+def test_an_advisory_group_fail_is_reported_but_never_decides_the_verdict(config):
+    verdict = compare_runs(
+        _run(2, "STG-01", [_row("e", "env", 5000)]),
+        _run(1, "STG-01", [_row("e", "env", 100)]),
+        config,
+        pattern_set=_advisory_patterns(),
+    )
+    gate = _connection_gates(verdict)["Connection errors: Env"]
+    assert gate["verdict"] == FAIL
+    assert gate["advisory"] is True
+    assert "advisory, not blocking" in gate["detail"]
+    assert verdict["overall"] != "SOFT FAIL"
+
+
+def test_a_counted_group_fail_still_decides_the_verdict(config):
+    """The control for the test above: same rise on a counted group."""
+    verdict = compare_runs(
+        _run(2, "STG-01", [_row("p", "g", 5000)]),
+        _run(1, "STG-01", [_row("p", "g", 100)]),
+        config,
+        pattern_set=_advisory_patterns(),
+    )
+    gate = _connection_gates(verdict)["Connection errors: G"]
+    assert gate["verdict"] == FAIL
+    assert gate["advisory"] is False
+    assert verdict["overall"] == "SOFT FAIL"
+
+
+def test_an_advisory_group_absent_on_one_side_is_marked_advisory_too(config):
+    verdict = compare_runs(
+        _run(2, "STG-01", [_row("e", "env", 5000)]),
+        _run(1, "STG-01", []),
+        config,
+        pattern_set=_advisory_patterns(),
+    )
+    gate = _connection_gates(verdict)["Connection errors: Env"]
+    assert gate["verdict"] == NOT_ASSESSED
+    assert gate["advisory"] is True
+
+
+def test_a_rise_in_an_advisory_group_warns_about_what_it_confounds():
+    warnings = log_count_warnings(
+        _run(2, "STG-01", [_row("e", "env", 5000)]),
+        _run(1, "STG-01", [_row("e", "env", 100)]),
+        _advisory_patterns(),
+    )
+    hits = [w for w in warnings if w.startswith("Env:")]
+    assert len(hits) == 1
+    assert "1,250/h on the candidate vs 25/h on the baseline" in hits[0]
+    assert "the upload-duration gates" in hits[0]
+
+
+def test_a_rise_below_the_confounder_factor_does_not_warn():
+    """1.5x is weather too, but a warning that fires every run gets ignored."""
+    warnings = log_count_warnings(
+        _run(2, "STG-01", [_row("e", "env", 150)]),
+        _run(1, "STG-01", [_row("e", "env", 100)]),
+        _advisory_patterns(),
+    )
+    assert not any(w.startswith("Env:") for w in warnings)
+
+
+def test_a_counted_group_rise_is_a_gate_not_a_confounder():
+    warnings = log_count_warnings(
+        _run(2, "STG-01", [_row("p", "g", 5000)]),
+        _run(1, "STG-01", [_row("p", "g", 100)]),
+        _advisory_patterns(),
+    )
+    assert not any("confounds" in w for w in warnings)
+
+
+def test_an_advisory_group_the_baseline_never_recorded_still_warns():
+    """Runs before v5 have no payment-RPC counts; the candidate's figure still matters."""
+    warnings = log_count_warnings(
+        _run(2, "STG-01", [_row("e", "env", 5000)]),
+        _run(1, "STG-01", [_row("p", "g", 10)]),
+        _advisory_patterns(),
+    )
+    hits = [w for w in warnings if w.startswith("Env:")]
+    assert len(hits) == 1
+    assert "baseline recorded no such counts" in hits[0]
+
+
+def test_compare_carries_the_confounder_warning_into_the_verdict(config):
+    verdict = compare_runs(
+        _run(2, "STG-01", [_row("e", "env", 5000)]),
+        _run(1, "STG-01", [_row("e", "env", 100)]),
+        config,
+        pattern_set=_advisory_patterns(),
+    )
+    assert any(w.startswith("Env:") for w in verdict["warnings"])

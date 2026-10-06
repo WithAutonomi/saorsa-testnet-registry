@@ -1932,6 +1932,28 @@ comparable; it is only the new keys that the four prior pointer runs
 (612/614/615/627) have no counts for, which the comparison reports as NOT
 ASSESSED.
 
+Catalogue **v5** (V2-1441) adds the first **advisory** group,
+`payment_rpc_failure` (`Payment RPC failures (node)`). Every node verifies every
+paid PUT against the payment vault over an EVM JSON-RPC endpoint, and on a
+testnet that is the anonymous public Arbitrum Sepolia one, shared by the whole
+fleet and by the rest of the internet. When it rate-limits, the node rejects the
+PUT with `payment failed`, the client retries the chunk, and every upload slows
+down for a reason that has nothing to do with the release — which is exactly
+what the V2-1359 A/B (runs 635/639/650) read as a 41–46% upload-duration
+regression until the raw logs showed ~8,900 node-side `HTTP error 429` lines an
+hour. The group counts ant-node's `Slow payment verification failed … : {e}`
+WARN (`ant_node::payment::verify`) by two phrases, `HTTP error 429` and
+`completedPayments lookup failed`, combined with `max`; a verification that
+fails in under 500 ms is logged at DEBUG and dropped, so the count is a lower
+bound. **Advisory** means the row is rendered like any other, marked
+`(advisory)`, but never reaches the overall verdict — a FAIL here would blame
+the release for the weather. Instead the group carries a `confounds:` sentence
+naming the gates it casts doubt on, and `deployments compare` repeats it as a
+**warning** whenever the candidate's per-hour rate is at least 2× the
+baseline's (or the baseline has no such counts), so the caveat sits at the top
+of the report beside the upload-duration gates it applies to. Nothing existing
+changed, so v4 and v5 counts of every pre-existing key are comparable.
+
 #### Arguments
 
 | Argument | Type | Required | Default | Description |
@@ -1947,7 +1969,7 @@ ASSESSED.
 
 #### What is counted, and what a count means
 
-The catalogue (`resources/log_patterns/connection-errors.yaml`) is git-versioned config, like the gate thresholds, and its `version` is stored on every recorded count. It names six strings across five groups; the comparison gates on **groups**, not individual strings.
+The catalogue (`resources/log_patterns/connection-errors.yaml`) is git-versioned config, like the gate thresholds, and its `version` is stored on every recorded count. Its strings are organised into groups; the comparison gates on **groups**, not individual strings, and a group marked `advisory: true` is reported but never decides the verdict (see catalogue v5 above).
 
 `Connection attempt failed` (`saorsa_core::transport_handle`) and `connect_happy_eyeballs failed` (`saorsa_transport::happy_eyeballs`) share one group, combined with `max` rather than `sum`. They are the same failure logged at two layers — measured across the DEV-02 comparison at 1,415/1,415 on the baseline and 71,309/71,160 on the branch, tracking each other to within 0.2% across a 50x swing — so summing them would report one occurrence twice, and gating them separately would read as two independent corroborating signals.
 

@@ -56,6 +56,18 @@ class LogPatternGroup:
     label: str
     aggregate: str
     note: str = ""
+    #: Reported in full but never part of the overall verdict. For a group that
+    #: measures the ENVIRONMENT the run happened in rather than the release --
+    #: the payment RPC being rate-limited, say -- a FAIL would blame the
+    #: release for the weather. The comparison still renders the row, marked
+    #: advisory, so the figure is in front of the reader beside the gates it
+    #: confounds.
+    advisory: bool = False
+    #: For an advisory group only: the gates a rise in this group casts doubt
+    #: on, in plain words. The comparison repeats it as a WARNING whenever the
+    #: candidate's per-hour rate is well above the baseline's, so the caveat
+    #: sits at the top of the report rather than in a YAML comment nobody reads.
+    confounds: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,12 +166,28 @@ def parse_pattern_set(data: dict, source_path: str, name: str) -> LogPatternSet:
                 f"of {', '.join(_VALID_AGGREGATES)}. 'max' is for one event "
                 "logged at several layers, 'sum' for genuinely distinct events."
             )
+        advisory = entry.get("advisory", False)
+        if not isinstance(advisory, bool):
+            raise LogPatternError(
+                f"{path}: group '{key}' has advisory {advisory!r}; must be true "
+                "or false. An advisory group is reported but never decides the "
+                "verdict, so a value that is neither would be a silent choice."
+            )
+        confounds = str(entry.get("confounds") or "").strip()
+        if confounds and not advisory:
+            raise LogPatternError(
+                f"{path}: group '{key}' has 'confounds:' but is not advisory. "
+                "Only an environmental (advisory) group can confound the other "
+                "gates; a counted group IS one of the gates."
+            )
         groups.append(
             LogPatternGroup(
                 key=key,
                 label=_require_str(entry, "label", path, f"group '{key}'"),
                 aggregate=aggregate,
                 note=str(entry.get("note") or "").strip(),
+                advisory=advisory,
+                confounds=confounds,
             )
         )
 
