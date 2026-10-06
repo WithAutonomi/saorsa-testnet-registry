@@ -181,6 +181,19 @@ What will bite you:
   with no stack is a validation error. Retention is untouched — a kept ES index
   still expires on `elastic.retention_days` (default 7).
 
+Unattended runs are driven from a Linear issue: `scripts/run-testnet-issues.sh`
+/ `run-testnet-chain.sh` → the `run-testnet-from-issue` skill, and
+`scripts/run-maintenance-issues.sh` → the **`run-prod-maintenance-from-issue`**
+skill for production maintenance. Both sit on `scripts/lib/issue-runs.sh` (one
+loop, one `RUN COMPLETE <issue> <verdict> <field>` parser) and differ in their
+**interrupt policy**: a testnet Ctrl-C kills the `deployments up` it started,
+while a maintenance Ctrl-C **never signals a running `saorsa-deploy prod …`** —
+it waits, because only the live command can run its own rollback and a host left
+between the binary swap and the restart has none. The maintenance skill refuses
+an issue whose Procedure holds anything but `saorsa-deploy` commands and
+read-only checks (a raw mutating SSH step included), never re-runs a mutating
+command after a failure, and starts nothing new at the hard ceiling.
+
 Reusable profiles are committed under `deploy/manifests/profiles/`
 (`reference.yaml` = every option, `staging.yaml` = THE staging profile every
 release train extends). Concrete run manifests live in the git-ignored
@@ -943,6 +956,30 @@ a **separate** file from the fleet's `inventory.json`, and one with **no
   come from the same `ExecStart`. A unit missing `--stop-on-upgrade` (the node's
   own auto-upgrader is then live and would undo the install) or `--root-dir` is
   refused.
+- **The command leaves the whole binary directory owned by the unit's `User=`**
+  (`chown -R` on both the install and the rollback, then `find <dir> ! -user
+  <svc>` — any output rolls the host back and stops the run). ant-node's own
+  upgrader runs as that user and writes `<binary>.backup` with `fs::copy`, which
+  cannot overwrite a file it does not own; six hosts log in as root and `cp`
+  without `-p` takes the invoking user, so this command used to leave a
+  `root:root` backup that defeated the upgrader **permanently**. NRT and SYD sat
+  retrying hourly on 0.20.0 through the whole 0.21.0 rollout — alive, serving and
+  a release behind, with nothing alerting on it. `prod bootstrap deploy` chowns
+  the directory at provision time for the same reason.
+- **`--limit-to` never shrinks the published address list**: the collection after
+  the last host reads the WHOLE inventory. The file is every browser client's way
+  in, and the all-or-nothing guard catches an unreachable host, not a short input
+  list.
+- **`prod bootstrap status` is the read-only view** — per host: on-disk vs running
+  version, `active`, the pinned WebRTC port, `stop_on_upgrade`, the backup
+  binary's owner and size, and the `find`-derived `foreign_owned` list. It
+  **never refuses a host** (a unit `upgrade` would reject still yields a row with
+  `unit_ok: false`), `--json` puts the array alone on stdout, and the exit code
+  says only whether the report is complete: `0` all reachable, `1` otherwise.
+  `running_version` comes from the start line in the log **of the day systemd
+  says the running process started** — ant-node rotates daily and keeps 14, so
+  the newest file holds no start line on a host that has been up for days, and
+  walking back from it reads 4.7 GB off nrt's disk for one line.
 - **The unit edit is append-only.** One argument line is appended and every other
   line stays byte-identical, because these seven units carry hand-maintained
   arguments that a re-render from `build_systemd_unit` would silently discard.

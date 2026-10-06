@@ -27,6 +27,7 @@ lives in ``saorsa_deploy/webrtc_probe.py``.
 
 import ipaddress
 import json
+import posixpath
 import shlex
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from pathlib import Path
 
 import requests
 from rich.console import Console
+from rich.table import Table
 
 from saorsa_deploy import webrtc_probe
 from saorsa_deploy.binary_source import RELEASE_ASSET_NAME
@@ -51,14 +53,24 @@ from saorsa_deploy.prod_bootstrap_upgrade import (
     WEBRTC_PORT_FLAG,
     BootstrapUnit,
     add_webrtc_port,
+    build_backup_stat_command,
+    build_foreign_owner_command,
     build_log_cursor_command,
     build_log_tail_command,
+    build_service_start_command,
+    build_started_version_command,
     evaluate_health,
     expected_digest,
     file_digest,
+    latest_started_version,
+    parse_backup_stat,
+    parse_foreign_owners,
     parse_log_cursor,
+    parse_service_start_date,
     parse_unit,
+    parse_version_output,
     peers_for,
+    read_unit,
     release_urls,
     remove_webrtc_port,
     require_version,
@@ -446,7 +458,20 @@ def _read_unit(vm: NodeVm, ssh_key: str) -> tuple[str, BootstrapUnit]:
 def _install_binary(
     vm: NodeVm, ssh_key: str, unit: BootstrapUnit, archive: Path, version: str
 ) -> None:
-    """Upload, verify on the host, back up the old binary and swap it in."""
+    """Upload, verify on the host, back up the old binary and swap it in.
+
+    **Everything under the binary directory is left owned by the service
+    user.** ant-node's own auto-upgrader runs as that user and writes
+    ``<binary>.backup`` with ``fs::copy``, which cannot overwrite a file it does
+    not own -- so a backup this command left as ``root:root`` (six of the seven
+    hosts log in as root, and ``cp`` without ``-p`` takes the invoking user)
+    defeated the upgrader permanently. ant-bootstrap-nrt and -syd sat retrying
+    hourly on 0.20.0 for the whole of the 0.21.0 rollout for exactly that
+    reason. ``chown -R`` on the whole directory, not ``cp -p`` or a chown of the
+    one file: ``cp -p`` would preserve a root-owned *source*'s owner, and the
+    directory also holds the upgrader's own temp dir and the peers file, which
+    are supposed to be the service user's anyway.
+    """
     remote_archive = f"/tmp/{RELEASE_ASSET_NAME}"
     scp = subprocess.run(
         [
@@ -476,15 +501,34 @@ def _install_binary(
     require_version(
         _run(vm, ssh_key, _privileged(vm, "/tmp/ant-node.new --version")), version
     )
+    binary_dir = posixpath.dirname(unit.binary_path)
+    owner = f"{unit.service_user}:{unit.service_user}"
     _run(
         vm,
         ssh_key,
         _privileged(
             vm,
             f"cp {unit.binary_path} {unit.binary_path}.backup && "
-            f"mv /tmp/ant-node.new {unit.binary_path}",
+            f"mv /tmp/ant-node.new {unit.binary_path} && "
+            f"chown -R {owner} {binary_dir}",
         ),
     )
+    # Should never fire: its job is to fail loudly if the chown did not take,
+    # rather than leave the host silently un-upgradeable until the next train.
+    # Raised from here, so _upgrade_host's except rolls the host back, prints
+    # RESTORED and stops the run -- the same path a failed health gate takes.
+    foreign = parse_foreign_owners(
+        _run(
+            vm,
+            ssh_key,
+            _privileged(vm, build_foreign_owner_command(binary_dir, unit.service_user)),
+        )
+    )
+    if foreign:
+        raise RuntimeError(
+            f"{vm.name}: entries under {binary_dir} not owned by "
+            f"{unit.service_user}: {', '.join(foreign)}"
+        )
 
 
 def _write_unit(vm: NodeVm, ssh_key: str, text: str) -> None:
@@ -571,12 +615,21 @@ def _rollback(
         except (RuntimeError, ValueError, subprocess.SubprocessError) as e:
             console.print(f"  [bold red]{vm.name}: {description} failed: {e}[/bold red]")
 
+    # Chowned for the same reason the install is: a restore that put the old
+    # binary back under the backup's owner would leave the live binary owned by
+    # root, which is the mirror of the defect being fixed.
+    binary_dir = posixpath.dirname(unit.binary_path)
+    owner = f"{unit.service_user}:{unit.service_user}"
     attempt(
         "restore binary",
         lambda: _run(
             vm,
             ssh_key,
-            _privileged(vm, f"mv {unit.binary_path}.backup {unit.binary_path}"),
+            _privileged(
+                vm,
+                f"mv {unit.binary_path}.backup {unit.binary_path} && "
+                f"chown -R {owner} {binary_dir}",
+            ),
         ),
     )
     # The unit is restored from the text read before the edit, not by editing
@@ -818,8 +871,24 @@ def cmd_prod_bootstrap_upgrade(args) -> None:
         return
 
     console.print()
+    # Collection is over the WHOLE inventory, never the --limit-to subset: the
+    # file it writes is the complete published bootstrap set, and rewriting it
+    # from two hosts would silently narrow every browser client's way into the
+    # network to those two. The all-or-nothing guard inside _collect_multiaddrs
+    # protects against an unreachable host, not against a short input list.
+    everything = _load_bootstraps(args.inventory_path, None, console)
+    if len(everything) != len(vms):
+        console.print(
+            f"--limit-to upgraded {len(vms)} host(s); collecting WebRTC "
+            f"addresses from all {len(everything)} bootstraps."
+        )
+        clear_known_hosts([vm.ip for vm in everything], console)
     _collect_multiaddrs(
-        vms, args.inventory_path, args.ssh_key_path, DEFAULT_MULTIADDR_OUT, console
+        everything,
+        args.inventory_path,
+        args.ssh_key_path,
+        DEFAULT_MULTIADDR_OUT,
+        console,
     )
 
 
@@ -1142,3 +1211,184 @@ def cmd_prod_bootstrap_set_peers(args) -> None:
         f"[green]{len(done)} bootstrap(s) now list the other "
         f"{len(all_ips) - 1} inventory host(s) on udp/{args.peer_port}.[/green]"
     )
+
+
+# --------------------------------------------------------------------------
+# status
+# --------------------------------------------------------------------------
+
+
+def _status_row(vm: NodeVm, ssh_key: str) -> dict:
+    """Everything one bootstrap says about itself, read-only.
+
+    No refusals: a host whose unit ``parse_unit`` would reject, or whose
+    binary will not run, still produces a row. ``status`` is the thing an
+    operator reads *before* deciding whether a mutating verb may be used, so a
+    host it cannot describe is the one it most needs to describe.
+    """
+    row: dict = {
+        "name": vm.name,
+        "ip": vm.ip,
+        "provider": vm.provider,
+        "reachable": True,
+        "error": None,
+        "unit_ok": False,
+        "unit_error": None,
+        "service_user": None,
+        "binary_path": None,
+        "root_dir": None,
+        "log_dir": None,
+        "webrtc_port": None,
+        "stop_on_upgrade": False,
+        "on_disk_version": None,
+        "running_version": None,
+        "active": None,
+        "backup": {"present": False, "owner": None, "size": None},
+        "foreign_owned": [],
+    }
+
+    try:
+        unit_text = _run(vm, ssh_key, _privileged(vm, f"cat {UNIT_FILE_PATH}"))
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        row["reachable"] = False
+        row["error"] = str(e)
+        return row
+
+    facts = read_unit(unit_text)
+    row.update(
+        unit_ok=facts.error is None,
+        unit_error=facts.error,
+        service_user=facts.service_user,
+        binary_path=facts.binary_path,
+        root_dir=facts.root_dir,
+        log_dir=facts.log_dir,
+        webrtc_port=facts.webrtc_port,
+        stop_on_upgrade=facts.stop_on_upgrade,
+    )
+
+    errors: list[str] = []
+
+    def read(description: str, command: str) -> str | None:
+        try:
+            return _run(vm, ssh_key, _privileged(vm, command))
+        except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+            errors.append(f"{description}: {e}")
+            return None
+
+    if facts.binary_path:
+        # The on-disk version is documented as null on failure rather than as
+        # an error: a binary that will not run is a finding in its own right,
+        # and it is the row's other fields that say why.
+        try:
+            row["on_disk_version"] = parse_version_output(
+                _run(vm, ssh_key, _privileged(vm, f"{facts.binary_path} --version"))
+            )
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError):
+            row["on_disk_version"] = None
+
+    if facts.log_dir:
+        # The start line is looked for only in the log of the day the running
+        # process started: see build_started_version_command for why the newest
+        # file is the wrong one and why walking back from it is far too much
+        # reading. No date, or no log for it, means no running version.
+        started_on = parse_service_start_date(
+            read("read the service start time", build_service_start_command()) or ""
+        )
+        if started_on:
+            log_line = read(
+                "read the start line",
+                build_started_version_command(facts.log_dir, started_on),
+            )
+            if log_line is not None:
+                row["running_version"] = latest_started_version(log_line)
+
+    # Via _ssh, not _run: `is-active` exits non-zero for every state but
+    # `active`, and `inactive` or `failed` is an answer, not a failed read.
+    active = _ssh(vm, ssh_key, _privileged(vm, f"systemctl is-active {SERVICE_NAME}"))
+    row["active"] = active.stdout.strip() or None
+
+    if facts.binary_path:
+        stat_out = _ssh(vm, ssh_key, _privileged(vm, build_backup_stat_command(facts.binary_path)))
+        # A missing backup exits non-zero, which is a fact about the host and
+        # not a failed read: a bootstrap whose upgrader has never run has none.
+        row["backup"] = parse_backup_stat(stat_out.stdout if stat_out.returncode == 0 else "")
+
+        directory = posixpath.dirname(facts.binary_path)
+        foreign = read(
+            "find foreign-owned entries",
+            build_foreign_owner_command(directory, facts.service_user),
+        )
+        if foreign is not None:
+            row["foreign_owned"] = parse_foreign_owners(foreign)
+
+    if errors:
+        row["reachable"] = False
+        row["error"] = "; ".join(errors)
+    return row
+
+
+def _status_table(rows: list[dict]) -> Table:
+    table = Table(title="Production bootstrap tier")
+    for column in (
+        "host",
+        "on disk",
+        "running",
+        "active",
+        "webrtc",
+        "stop-on-upgrade",
+        "backup owner",
+        "foreign",
+        "error",
+    ):
+        table.add_column(column, overflow="fold")
+    for row in rows:
+        backup = row["backup"]
+        table.add_row(
+            row["name"],
+            row["on_disk_version"] or "-",
+            row["running_version"] or "-",
+            row["active"] or "-",
+            str(row["webrtc_port"]) if row["webrtc_port"] else "-",
+            "yes" if row["stop_on_upgrade"] else "no",
+            backup["owner"] or ("-" if backup["present"] else "absent"),
+            str(len(row["foreign_owned"])),
+            row["error"] or row["unit_error"] or "",
+        )
+    return table
+
+
+def cmd_prod_bootstrap_status(args) -> None:
+    """Report the production bootstrap tier. Reads only; changes nothing.
+
+    The exit code says whether the *report* is complete, not whether the tier
+    is healthy: nothing here is a gate, and a version or an owner the caller
+    does not like is for the caller to compare. The one incomplete answer is a
+    host that did not respond, which is why that -- and only that -- exits 1.
+    """
+    # With --json the array is the only thing on stdout, so jq can consume it:
+    # progress, warnings and the table's own heading all go to stderr.
+    console = Console(stderr=bool(args.json))
+    vms = _load_bootstraps(args.inventory_path, args.limit_to, console)
+    clear_known_hosts([vm.ip for vm in vms], console)
+
+    rows = []
+    for vm in vms:
+        console.print(f"Reading {vm.name} ({vm.provider}, {vm.ip})...")
+        rows.append(_status_row(vm, _resolve_ssh_key(vm, args.ssh_key_path)))
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        # Rich assumes an 80-column terminal when stdout is not a tty, which
+        # squeezes nine columns into unreadable slivers -- and a report tee'd
+        # into a maintenance run's log is still meant to be read.
+        table_console = console if console.is_terminal else Console(width=160)
+        table_console.print(_status_table(rows))
+
+    unreachable = [row["name"] for row in rows if not row["reachable"]]
+    if unreachable:
+        console.print(
+            f"[bold red]{len(unreachable)} host(s) could not be read: "
+            f"{', '.join(unreachable)}. This report is incomplete.[/bold red]"
+        )
+        sys.exit(1)

@@ -82,6 +82,7 @@ WEBRTC_LISTENING_MESSAGE = "ADR-0015 WebRTC Direct listening"
 
 _VERSION_OUTPUT_RE = re.compile(r"^ant-node\s+(?P<version>\S+)\s*$", re.MULTILINE)
 _SUMS_LINE_RE = re.compile(r"^(?P<digest>[0-9a-fA-F]{64})\s+\*?(?P<name>\S+)\s*$")
+_START_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,27 @@ class BootstrapUnit:
     service_user: str
     log_dir: str | None
     webrtc_port: int | None
+
+
+@dataclass(frozen=True)
+class UnitFacts:
+    """Everything readable from a live unit, with nothing refused.
+
+    ``status`` reports; it never refuses, so a unit :func:`parse_unit` would
+    reject still has to produce a row. The strict read is this same extraction
+    plus a raise on ``error``, so the two cannot drift apart: a field that
+    stops being extractable stops being extractable for both.
+    """
+
+    exec_start: str | None
+    binary_path: str | None
+    root_dir: str | None
+    service_user: str
+    log_dir: str | None
+    webrtc_port: int | None
+    stop_on_upgrade: bool
+    #: Why :func:`parse_unit` would refuse this unit, or ``None``.
+    error: str | None
 
 
 def release_urls(version: str) -> tuple[str, str]:
@@ -203,47 +225,87 @@ def _flag_value(tokens: list[str], flag: str) -> str | None:
     return None
 
 
-def parse_unit(text: str) -> BootstrapUnit:
-    """Read a live ``ant-bootstrap.service`` into the fields the upgrade needs.
+def _unit_service_user(lines: list[str]) -> str:
+    """The unit's ``User=``, or ``root`` -- which is what systemd defaults to."""
+    for line in lines:
+        if line.startswith("User="):
+            return line[len("User=") :].strip() or "root"
+    return "root"
 
-    Raises ``ValueError`` when the unit is not one this command may touch. The
-    two refusals are deliberate: without ``--root-dir`` there is nowhere to read
-    the published multiaddr from, and without ``--stop-on-upgrade`` the node's
-    own auto-upgrader is live on the host, so a binary swapped in underneath it
-    can be replaced again minutes later by whatever the channel is serving.
+
+def read_unit(text: str) -> UnitFacts:
+    """Extract everything a live unit says, recording refusals instead of raising.
+
+    The two refusals are deliberate, and are why :func:`parse_unit` exists on
+    top of this: without ``--root-dir`` there is nowhere to read the published
+    multiaddr from, and without ``--stop-on-upgrade`` the node's own
+    auto-upgrader is live on the host, so a binary swapped in underneath it can
+    be replaced again minutes later by whatever the channel is serving. Here
+    they are reported, because the read-only ``status`` verb has to describe a
+    host it may not touch.
     """
     lines = text.splitlines()
-    first, last = _exec_start_bounds(lines)
+    service_user = _unit_service_user(lines)
+    try:
+        first, last = _exec_start_bounds(lines)
+    except ValueError as e:
+        return UnitFacts(
+            exec_start=None,
+            binary_path=None,
+            root_dir=None,
+            service_user=service_user,
+            log_dir=None,
+            webrtc_port=None,
+            stop_on_upgrade=False,
+            error=str(e),
+        )
+
     exec_start = _joined_exec_start(lines, first, last)
     tokens = exec_start[len("ExecStart=") :].split()
-    if not tokens:
-        raise ValueError("unit has an empty ExecStart=")
+    root_dir = _flag_value(tokens, "--root-dir")
+    stop_on_upgrade = "--stop-on-upgrade" in tokens
+    raw_port = _flag_value(tokens, WEBRTC_PORT_FLAG)
 
-    if "--stop-on-upgrade" not in tokens:
-        raise ValueError(
+    if not tokens:
+        error = "unit has an empty ExecStart="
+    elif not stop_on_upgrade:
+        error = (
             "unit does not pass --stop-on-upgrade: the node's own auto-upgrader "
             "is live on this host and would undo the install"
         )
-    root_dir = _flag_value(tokens, "--root-dir")
-    if not root_dir:
-        raise ValueError("unit does not pass --root-dir")
+    elif not root_dir:
+        error = "unit does not pass --root-dir"
+    else:
+        error = None
 
-    service_user = "root"
-    for line in lines:
-        if line.startswith("User="):
-            service_user = line[len("User=") :].strip() or "root"
-            break
-
-    raw_port = _flag_value(tokens, WEBRTC_PORT_FLAG)
-    webrtc_port = int(raw_port) if raw_port and raw_port.isdigit() else None
-
-    return BootstrapUnit(
+    return UnitFacts(
         exec_start=exec_start,
-        binary_path=tokens[0],
+        binary_path=tokens[0] if tokens else None,
         root_dir=root_dir,
         service_user=service_user,
         log_dir=_flag_value(tokens, "--log-dir"),
-        webrtc_port=webrtc_port,
+        webrtc_port=int(raw_port) if raw_port and raw_port.isdigit() else None,
+        stop_on_upgrade=stop_on_upgrade,
+        error=error,
+    )
+
+
+def parse_unit(text: str) -> BootstrapUnit:
+    """Read a live ``ant-bootstrap.service`` into the fields the upgrade needs.
+
+    Raises ``ValueError`` when the unit is not one this command may touch; see
+    :func:`read_unit` for why each refusal is there.
+    """
+    facts = read_unit(text)
+    if facts.error is not None:
+        raise ValueError(facts.error)
+    return BootstrapUnit(
+        exec_start=facts.exec_start,
+        binary_path=facts.binary_path,
+        root_dir=facts.root_dir,
+        service_user=facts.service_user,
+        log_dir=facts.log_dir,
+        webrtc_port=facts.webrtc_port,
     )
 
 
@@ -519,3 +581,89 @@ def build_log_tail_command(log_dir: str, cursor_path: str | None, offset: int) -
         f'if [ "$f" = "{cursor_path}" ]; then tail -c +{offset + 1} "$f"; '
         'else cat "$f"; fi'
     )
+
+
+def build_service_start_command(service: str = SERVICE_NAME) -> str:
+    """Print when the service's current main process started, in UTC."""
+    return f"systemctl show {service} -p ExecMainStartTimestamp --value --timestamp=utc"
+
+
+def parse_service_start_date(stdout: str) -> str | None:
+    """The ``YYYY-MM-DD`` in ``Thu 2026-10-01 12:24:17 UTC``, or ``None``."""
+    match = _START_DATE_RE.search(stdout or "")
+    return match.group(1) if match else None
+
+
+def build_started_version_command(log_dir: str, start_date: str) -> str:
+    """Print the ``ant-node starting`` line of the service's current run.
+
+    Scoped to the log file for ``start_date`` -- the date systemd says the
+    running main process started -- which is the only file that can hold the
+    line belonging to the run that is live now.
+
+    Two things make that scoping load-bearing rather than an optimisation.
+    ant-node rotates daily (``ant-node.YYYY-MM-DD.log``, 14 kept), so **the
+    newest file is the wrong one**: a healthy bootstrap that last restarted when
+    it was upgraded has no start line in today's at all, measured on all seven
+    live hosts on 2026-10-06, and reading only the newest would report "no
+    running version" for precisely the hosts that are fine. And walking the
+    files newest-first instead means reading everything written since the last
+    restart: 4.7 GB on ant-bootstrap-nrt, on a production disk, for one line.
+
+    A date systemd would not give, or one whose log has rotated away, yields no
+    line -- and therefore no version. An older start line is not a fallback: it
+    belongs to a run that has ended, which is the one thing this field must not
+    report as running.
+    """
+    return (
+        f"grep -h -F {STARTING_MESSAGE!r} {log_dir}/*{start_date}*.log "
+        "2>/dev/null | tail -1"
+    )
+
+
+def latest_started_version(log_text: str) -> str | None:
+    """The ``version`` of the last ``ant-node starting`` line in ``log_text``.
+
+    The *running* version, as against the one on disk: an upgrade that wrote
+    the binary and could not restart, or a host whose service has been down
+    since before an install, is exactly the state the two disagreeing
+    describes.
+    """
+    version = None
+    for record in _json_records(log_text):
+        if record.get("message") != STARTING_MESSAGE:
+            continue
+        candidate = record.get("version")
+        if isinstance(candidate, str) and candidate:
+            version = candidate
+    return version
+
+
+def build_backup_stat_command(binary_path: str) -> str:
+    """Print ``<user>:<group> <size>`` for the upgrader's backup binary."""
+    return f"stat -c '%U:%G %s' {binary_path}.backup"
+
+
+def parse_backup_stat(stdout: str) -> dict:
+    """``{present, owner, size}`` from :func:`build_backup_stat_command`.
+
+    A root-owned backup is what left two production bootstraps permanently
+    un-upgradeable: ant-node's own upgrader runs as the service user and writes
+    this file with ``fs::copy``, which cannot overwrite a file it does not own,
+    so the upgrade fails at the backup step and retries for ever.
+    """
+    for line in (stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and ":" in parts[0] and parts[1].isdigit():
+            return {"present": True, "owner": parts[0], "size": int(parts[1])}
+    return {"present": False, "owner": None, "size": None}
+
+
+def build_foreign_owner_command(directory: str, service_user: str) -> str:
+    """Print every entry under ``directory`` not owned by ``service_user``."""
+    return f"find {directory} ! -user {service_user}"
+
+
+def parse_foreign_owners(stdout: str) -> list[str]:
+    """The paths :func:`build_foreign_owner_command` printed, if any."""
+    return [line.strip() for line in (stdout or "").splitlines() if line.strip()]

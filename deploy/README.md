@@ -2777,9 +2777,12 @@ Order of operations:
    given by hand). A unit that does not
    pass `--stop-on-upgrade` or `--root-dir` is refused. The archive is uploaded,
    extracted, `chown`ed to the service user and run with `--version` on the host; the
-   old binary is copied to `<binary>.backup` and replaced; the unit gains one appended
-   `--webrtc-direct-port <port>` argument line and nothing else changes; then
-   `daemon-reload` and `restart`.
+   old binary is copied to `<binary>.backup`, the new one is moved onto the binary
+   path, and **the whole binary directory is then `chown -R`ed to the service user**
+   and verified with `find <dir> ! -user <svc>` — any output at all raises, which
+   rolls the host back and stops the run (see "the ownership invariant" below); the
+   unit gains one appended `--webrtc-direct-port <port>` argument line and nothing
+   else changes; then `daemon-reload` and `restart`.
 4. **Health gate**, up to 180 s, reading only what the restart wrote: the node's own
    JSON log must carry `ant-node starting` at the requested **version** (an old binary
    brought back by `Restart=always` writes that line too), then
@@ -2789,11 +2792,13 @@ Order of operations:
    each. A plain STUN binding is not enough: the listener's admission filter answers
    anything unauthenticated with silence, so the probe sends a real ICE connectivity
    check (see below).
-6. **On any failure**: the backup binary and the original unit are restored, the
-   service is restarted, `RESTORED` is printed and the run **stops** — hosts after it
-   are untouched.
+6. **On any failure**: the backup binary and the original unit are restored — the
+   restore `chown -R`s the binary directory too, for the same reason the install does
+   — the service is restarted, `RESTORED` is printed and the run **stops**; hosts
+   after it are untouched.
 7. **On success**: 60 s settle, then the next host. After the last one,
-   `webrtc-addresses` runs automatically and prints the file it wrote.
+   `webrtc-addresses` runs automatically and prints the file it wrote. **Collection
+   covers the whole inventory even under `--limit-to`** (see below).
 
 For a `--node-version` below `0.20.0` the WebRTC half is reported as `not expected`:
 the **unit is left alone**, the gate passes on the start line alone, the probe is
@@ -2802,6 +2807,93 @@ ant-node 0.19.0 has no `--webrtc-direct-port` at all (verified on the live tier)
 clap exits on an unknown argument, so appending it would leave a bootstrap that
 cannot start. That is what makes a same-version rehearsal
 (`--node-version <current> --limit-to nrt -y`) exercise the whole path safely.
+
+#### The ownership invariant
+
+**When this command leaves a host, every entry under the directory holding the
+binary (`/opt/ant-node` on the live tier) is owned by the unit's `User=`.** The
+command *establishes* that, it does not merely test for it.
+
+It is load-bearing because ant-node's own auto-upgrader runs as the service user and,
+before replacing the binary, writes `<binary>.backup` with `fs::copy` — which cannot
+overwrite a file it does not own. Six of the seven hosts log in as `root`, and `cp`
+without `-p` creates its destination owned by the invoking user, so until V2-1412 this
+command left a `root:root` backup behind. ant-bootstrap-nrt and ant-bootstrap-syd then
+sat retrying hourly on 0.20.0 — `Backup creation failed: Permission denied (os error
+13)` — for the whole of the 0.21.0 rollout, alive and serving but a release behind,
+with nothing alerting on it. The condition was created on 2026-09-24 and first became
+visible 35 hours into the *next* train's rollout.
+
+`chown -R` on the directory, not `cp -p` and not a chown of the one file: `cp -p`
+preserves the *source's* owner, so a root-owned live binary would yield a root-owned
+backup again, and a per-file chown covers only the files this command knows about —
+the directory also holds `bootstrap_peers.toml` and the upgrader's own `ant-upgrade-*`
+temp dir, which are the service user's anyway. The `find` afterwards should never
+fire; its job is to fail loudly if a chown did not take, rather than leave a host
+silently un-upgradeable until the next train.
+
+`prod bootstrap deploy` applies the same rule at provision time (`chown -R` on
+`/opt/ant-node` after the binary install, before the unit is written), so a rebuilt
+bootstrap does not come up with a root-owned directory — in which the upgrader's
+`tempdir_in(binary_dir)` would fail outright.
+
+#### `--limit-to` never shrinks the published address list
+
+The address collection that runs after the last host reads the **whole inventory**,
+never the `--limit-to` subset, and says so when they differ. The file it writes is the
+complete published bootstrap set that every prod WASM client kind consumes, so
+rewriting it from the two hosts a remediation touched would silently narrow every
+browser client's way into the network to those two. The all-or-nothing guard inside
+collection protects against an unreachable host; it cannot tell a short input list
+from a complete one.
+
+### Reporting the bootstrap tier (`prod bootstrap status`)
+
+Read-only. Nothing is written, no service is restarted, and no host is refused — it is
+what an operator (or the maintenance skill) reads *before* deciding whether a mutating
+verb may be used, so a host it cannot describe is the one it most needs to describe.
+
+```bash
+uv run saorsa-deploy prod bootstrap status
+uv run saorsa-deploy prod bootstrap status --json | jq '.[] | {name, backup}'
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--inventory-path` | string | `~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json` | Bootstrap inventory JSON |
+| `--limit-to` | string | every host | Comma-separated host names or regions, reported in that order (e.g. `nrt,syd`) |
+| `--ssh-key-path` | string | per-host `ssh_key` | Override the inventory's SSH key |
+| `--json` | flag | - | Write the rows as a JSON array, the only thing on stdout |
+
+Per host, every read through the same `sudo`-wrapping the mutating verbs use:
+
+| JSON field | Source |
+|------------|--------|
+| `name`, `ip`, `provider` | the inventory |
+| `reachable`, `error` | whether every read below succeeded |
+| `unit_ok`, `unit_error` | `cat /etc/systemd/system/ant-bootstrap.service`. A unit `upgrade` would **refuse** still produces a row, with the refusal in `unit_error` |
+| `service_user`, `binary_path`, `root_dir`, `log_dir` | the parsed unit (`null` where unextractable) |
+| `webrtc_port`, `stop_on_upgrade` | the parsed unit |
+| `on_disk_version` | `<binary_path> --version`; `null` if it will not run |
+| `running_version` | the `version` of the `ant-node starting` line belonging to the **current** run: `systemctl show -p ExecMainStartTimestamp` gives the date, and only that date's `*.log` is grepped. `null` if systemd will not say or the log has rotated away — an older start line is never substituted, since it belongs to a run that has ended |
+| `active` | `systemctl is-active ant-bootstrap`, stripped (`active`, `inactive`, `failed`, …) |
+| `backup` | `{present, owner, size}` from `stat -c '%U:%G %s' <binary_path>.backup`. **This is the field the V2-1412 incident is read from**: an owner that is not the service user is a host whose own upgrader can never upgrade it again |
+| `foreign_owned` | the paths `find <dirname(binary_path)> ! -user <service_user>` printed; `[]` when clean |
+
+`on_disk_version` and `running_version` disagreeing is its own finding: an install that
+landed but could not restart, or a service down since before one.
+
+Scoping the start-line grep to the service's own start date is not an optimisation.
+ant-node rotates its log daily and keeps 14, so **the newest file is the wrong one**: a
+healthy bootstrap that last restarted when it was upgraded has no start line in today's
+file at all — measured on all seven live hosts on 2026-10-06, where reading only the
+newest reported "no running version" for every one of them. And walking the files
+newest-first instead means reading everything written since that restart: 4.7 GB on
+ant-bootstrap-nrt, off a production disk, for one line.
+
+**Exit code: `0` when every host was reachable, `1` when any was not.** It is a
+measurement, not a gate — the exit code says only whether the report is complete.
+There is deliberately no `--expect-version`: the caller compares the values.
 
 ### Publishing the bootstrap WebRTC addresses (`prod bootstrap webrtc-addresses`)
 
@@ -2885,6 +2977,89 @@ to answer is whether it came back at all.
 `prod bootstrap deploy` applies the same rule at provision time — every node, genesis
 included, is given the other inventory hosts on the node port — so a redeployed
 bootstrap no longer comes up with the single genesis peer it used to get.
+
+### Running production maintenance from an issue (unattended)
+
+Testnet runs are driven unattended from a Linear issue by the
+`run-testnet-from-issue` skill plus `scripts/run-testnet-issues.sh` (independent
+runs) or `scripts/run-testnet-chain.sh` (a chain, where the first run that is not a
+clean `PASS` stops the rest). Production maintenance has the same shape and a
+deliberately different discipline:
+
+```bash
+scripts/run-maintenance-issues.sh V2-1445[,V2-1446,...]
+```
+
+Each issue is handed to the **`run-prod-maintenance-from-issue`** skill in a headless
+`claude -p` session. Independent mode only — a maintenance that depends on another one
+finishing is a judgement a human makes between the two. Exit `0` only if every run was
+a `PASS`; `130` on Ctrl-C. `CLAUDE_MODEL`, `MAX_RESUMES` and `LOG_DIR` (default
+`~/.autonomi/maintenance-runs`) are the same knobs the testnet scripts take.
+
+`scripts/lib/issue-runs.sh` holds what both share: the loop, the verdict parser, the
+resume-on-API-error behaviour and the interrupt handler, parameterised by skill name,
+session-name prefix and interrupt policy. `scripts/lib/testnet-runs.sh` is a thin
+wrapper over it that selects the testnet skill and the testnet policy.
+
+**The two interrupt policies are the point of the split.** A testnet run's Ctrl-C
+kills any `saorsa-deploy deployments up` it started and names what may be left — the
+fleet is scratch, and a half-built one bills for nothing. A maintenance run's Ctrl-C
+stops the session and then **waits** for any `saorsa-deploy prod …` process to finish;
+**it is never signalled**. Killing one part way through — between the binary swap and
+the restart, say — is the one way this tooling can itself break a production host, and
+only the live command can run its own rollback. The operator who truly must kill it
+does so by hand, knowingly.
+
+#### The issue contract
+
+The skill refuses an issue, before doing anything, that is missing any of these
+headings, naming the one it could not find: `## Purpose`, `## Target` (tier, hosts,
+inventory, SSH key), `## Procedure` (the exact commands, in order),
+`## Preconditions`, `## Validation` (checks with **expected values**),
+`## Stop conditions`, `## Hard ceiling` (a duration from the start of the Procedure)
+and `## Rollback`.
+
+It also refuses an issue whose Procedure or Validation contains a step that is not a
+`uv run saorsa-deploy …` command, a read-only check (SSH running only
+`stat`/`cat`/`ls`/`find`/`grep`/`systemctl is-active`/`--version`, `git` reads, an
+HTTP GET) or a Linear update. **A raw mutating SSH or shell step is refused.** If a
+maintenance needs something no command can do, the answer is a change to
+`saorsa-deploy`, with tests, not a skill that types shell at production.
+
+Three rules it runs under, all for the same reason:
+
+* **A mutating command is never re-run after a failure.** A non-zero exit is a stop
+  condition: these commands are serial and gated, so the host they stopped on is the
+  only one in an unknown state and the hosts after it are untouched. The run is
+  abandoned, the host's final state is reported — in particular whether the command
+  printed `RESTORED` or `RESTORE INCOMPLETE` — and the next step is a human's, most
+  likely a second maintenance issue.
+* **At the hard ceiling no new command is started**, and one already running is waited
+  for however long it takes.
+* **A command whose log exists was started and is never started again**, which is what
+  makes a resumed session (the driver resumes one that died on an API error) safe. The
+  Procedure's commands are written to
+  `~/.autonomi/maintenance-runs/<issue>/commands.sh` before any of them runs, and each
+  is teed to its own `<n>-<verb>.log` in the same directory with its UTC start, end
+  and exit code.
+
+#### Verdicts
+
+| verdict | when |
+| -- | -- |
+| `PASS` | the whole Procedure ran, every Validation check matched, no warning |
+| `WARN` | no check failed, but there is a warning — including "the run did nothing because a precondition made it unnecessary" |
+| `FAIL` | at least one Validation check did not match |
+| `ABANDONED` | a precondition failed, a stop condition fired, or the ceiling was reached before the Procedure completed |
+
+The results comment leads with the verdict and then the warnings — `RESTORE INCOMPLETE`
+is always the first warning — followed by the Validation table, a per-host before/after
+table from the read-only status the issue names (`prod bootstrap status --json` for the
+bootstrap tier), every command with its times and exit code, and the deviations. The
+issue **always** ends `In Review`, never `Done` or `Canceled`, whatever the verdict.
+
+The final line is `RUN COMPLETE <issue> <verdict> -`; the trailing dash keeps the field
+count identical to the testnet line, so one parser serves both.
 
 ### Running continuous downloaders against production (`prod continuous-downloader`)
 

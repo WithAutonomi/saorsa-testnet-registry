@@ -326,6 +326,21 @@ def _provision_node(
                 commands=[install_cmd],
             )
 
+        # Whatever installed the binary did so as root, so the directory the
+        # service runs out of is handed to the service user before the unit
+        # that runs it is written. ant-node's own auto-upgrader runs as that
+        # user and writes both a backup binary and a temp dir *inside* this
+        # directory, neither of which it can do under root ownership -- a
+        # rebuilt bootstrap would be un-upgradeable from its first day. The
+        # live tier was chowned by hand; this makes it a property of the
+        # deploy. Idempotent, and a no-op where it already holds.
+        add_op(
+            state,
+            server.shell,
+            name="Own the binary directory as the service user",
+            commands=[f"chown -R {SERVICE_USER}:{SERVICE_USER} {BINARY_INSTALL_DIR}"],
+        )
+
         # Systemd unit
         unit_content = build_systemd_unit(
             binary_path=BINARY_INSTALL_PATH,
