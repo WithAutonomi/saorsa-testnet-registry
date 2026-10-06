@@ -73,6 +73,7 @@ WantedBy=multi-user.target
 """
 
 BINARY_PATH = "/opt/ant-node/ant-node"
+BINARY_DIR = "/opt/ant-node"
 ROOT_DIR = "/mnt/ant-node-storage/data/ant-bootstrap"
 LOG_DIR = "/mnt/ant-node-storage/logs/ant-bootstrap"
 MULTIADDR = "/ip4/10.0.0.7/udp/10001/webrtc-direct/certhash/uEiDabc_123/p2p/" + "a" * 64
@@ -528,11 +529,39 @@ def _vm(name, ip, provider="hetzner", ssh_user="root"):
 class _FakeHost:
     """Records every command run against one host and answers the reads."""
 
-    def __init__(self, unit=LIVE_UNIT, log="", multiaddr=MULTIADDR, active=True):
+    def __init__(
+        self,
+        unit=LIVE_UNIT,
+        log="",
+        multiaddr=MULTIADDR,
+        active=True,
+        version="0.20.0",
+        foreign=(),
+        backup=("ant:ant", 26614568),
+        started_on="2026-10-01",
+        log_dates=None,
+        ssh_fails_on=None,
+    ):
         self.unit = unit
         self.log = log
         self.multiaddr = multiaddr
         self.active = active
+        #: What ``<binary> --version`` prints; ``None`` to make it fail.
+        self.version = version
+        #: What ``find <dir> ! -user <svc>`` prints. Empty on a clean host,
+        #: which is what the install's ownership guard expects to see.
+        self.foreign = list(foreign)
+        #: ``(owner, size)`` for ``<binary>.backup``; ``None`` = no such file.
+        self.backup = backup
+        #: The date systemd reports the running process started; ``None`` makes
+        #: that read fail, which is a host with no reportable running version.
+        self.started_on = started_on
+        #: The dates this host still has a log file for. Default: just the
+        #: start date, so a start date outside it models one rotated away.
+        self.log_dates = list(log_dates) if log_dates is not None else [started_on]
+        #: A substring of a command that ssh itself cannot run -- exit 255,
+        #: which is not the same as the command choosing a non-zero exit.
+        self.ssh_fails_on = ssh_fails_on
         self.commands: list[str] = []
         self.written_units: list[str] = []
 
@@ -543,15 +572,33 @@ class _FakeHost:
             self.unit = stdin or ""
             return ""
         if command == f"cat {cmd.UNIT_FILE_PATH}":
+            if self.unit is None:
+                raise RuntimeError("ssh: connect to host port 22: No route to host")
             return self.unit
         if command.endswith(f"/{cmd.MULTIADDR_FILENAME}"):
             if self.multiaddr is None:
                 raise RuntimeError("No such file or directory")
             return self.multiaddr
+        if command.startswith("stat -c"):
+            if self.backup is None:
+                raise RuntimeError("stat: cannot stat: No such file or directory")
+            return f"{self.backup[0]} {self.backup[1]}\n"
+        if command.startswith("find ") and "! -user" in command:
+            return "".join(f"{path}\n" for path in self.foreign)
         if "--version" in command:
-            return "ant-node 0.20.0\n"
+            if self.version is None:
+                raise RuntimeError("Permission denied")
+            return f"ant-node {self.version}\n"
         if command.startswith("f=$(ls -1t") and "wc -c" in command:
             return f"{LOG_DIR}/today.log 0\n"
+        if command.startswith("systemctl show"):
+            if self.started_on is None:
+                raise RuntimeError("Unit ant-bootstrap.service could not be found.")
+            return f"Thu {self.started_on} 12:24:17 UTC\n"
+        if "grep" in command and cmd.STARTING_MESSAGE in command:
+            # Only the log of the day the running process started is read, so
+            # a date this host has no file for reads as nothing at all.
+            return next((self.log for date in self.log_dates if f"*{date}*" in command), "")
         if "tail -c" in command or command.startswith("cat $(ls"):
             return self.log
         return ""
@@ -567,12 +614,27 @@ def fake_hosts(monkeypatch):
 
     def _ssh(vm, ssh_key, command, *, timeout=120, stdin=None):
         host = hosts[vm.name]
-        host.commands.append(command)
-        return SimpleNamespace(
-            returncode=0,
-            stdout="active" if host.active else "failed",
-            stderr="",
-        )
+        if host.ssh_fails_on and host.ssh_fails_on in command:
+            host.commands.append(command)
+            return SimpleNamespace(
+                returncode=255,
+                stdout="",
+                stderr="ssh: connect to host port 22: Connection timed out",
+            )
+        if f"systemctl is-active {cmd.SERVICE_NAME}" in command:
+            host.commands.append(command)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="active" if host.active else "failed",
+                stderr="",
+            )
+        # Every other _ssh read answers exactly as _run does, except that a
+        # failure comes back as a non-zero exit instead of an exception --
+        # which is how `status` tells "no backup file" from "unreachable".
+        try:
+            return SimpleNamespace(returncode=0, stdout=host.run(command, stdin), stderr="")
+        except RuntimeError as e:
+            return SimpleNamespace(returncode=1, stdout="", stderr=str(e))
 
     monkeypatch.setattr(cmd, "_run", _run)
     monkeypatch.setattr(cmd, "_ssh", _ssh)
@@ -626,7 +688,7 @@ class TestUpgradeFailurePath:
     def test_the_backup_binary_is_restored(self, monkeypatch):
         self._run_upgrade(monkeypatch, "")
         commands = self.hosts["ant-bootstrap-fsn1"].commands
-        assert f"mv {BINARY_PATH}.backup {BINARY_PATH}" in commands
+        assert f"mv {BINARY_PATH}.backup {BINARY_PATH} && chown -R ant:ant {BINARY_DIR}" in commands
 
     def test_the_appended_flag_is_removed(self, monkeypatch):
         self._run_upgrade(monkeypatch, "")
@@ -690,7 +752,10 @@ class TestUpgradeFailurePath:
         cmd.cmd_prod_bootstrap_upgrade(_upgrade_args(probe_advisory=True))
         for vm in self.vms:
             assert WEBRTC_PORT_FLAG in self.hosts[vm.name].written_units[-1]
-            assert f"mv {BINARY_PATH}.backup {BINARY_PATH}" not in (self.hosts[vm.name].commands)
+            assert not any(
+                command.startswith(f"mv {BINARY_PATH}.backup")
+                for command in self.hosts[vm.name].commands
+            )
         assert collected == []
 
     def test_an_advisory_run_still_rolls_back_a_failed_health_gate(self, monkeypatch):
@@ -813,6 +878,454 @@ class TestWebrtcAddresses:
         with pytest.raises(SystemExit):
             cmd.cmd_prod_bootstrap_webrtc_addresses(self._args())
         assert self.out.read_text() == "previous\n"
+
+
+_ALT_USER_UNIT = LIVE_UNIT.replace("User=ant", "User=antnode")
+
+
+def _write_inventory(path: Path, regions) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "testnet_id": "ant-prod-01-bootstraps",
+                "node_vms": [
+                    {
+                        "name": f"ant-bootstrap-{region}",
+                        "provider": "vultr",
+                        "region": region,
+                        "ip": f"10.0.0.{index}",
+                        "ssh_user": "root",
+                        "ssh_key": "~/.ssh/ant-production",
+                    }
+                    for index, region in enumerate(regions, start=1)
+                ],
+            }
+        )
+    )
+    return path
+
+
+def _write_targets_under(command: str, directory: str) -> list[str]:
+    """Every path ``command`` writes that lies under ``directory``.
+
+    Only the two shapes this module uses: a ``cp``/``mv`` destination and a
+    ``>`` redirect, each ``&&``-joined segment considered separately.
+    """
+    targets: list[str] = []
+    for segment in command.split("&&"):
+        tokens = segment.split()
+        if not tokens:
+            continue
+        if tokens[0] in ("cp", "mv") and len(tokens) >= 3:
+            targets.append(tokens[-1])
+        if ">" in tokens and tokens.index(">") + 1 < len(tokens):
+            targets.append(tokens[tokens.index(">") + 1])
+    return [
+        target for target in targets if target == directory or target.startswith(f"{directory}/")
+    ]
+
+
+def _chowned_paths(command: str, owner: str) -> list[str]:
+    """Every path ``command`` chowns to ``owner``, recursively or not."""
+    paths: list[str] = []
+    for segment in command.split("&&"):
+        tokens = segment.split()
+        if tokens and tokens[0] == "chown" and owner in tokens:
+            paths.append(tokens[-1])
+    return paths
+
+
+class TestBinaryDirectoryOwnership:
+    """1-3. The command leaves the binary directory owned by the service user.
+
+    A ``root:root`` ``<binary>.backup`` is permanent: ant-node's own upgrader
+    runs as the service user and writes that file with ``fs::copy``, which
+    cannot overwrite a file it does not own. ant-bootstrap-nrt and -syd sat
+    retrying hourly on 0.20.0 for the whole 0.21.0 rollout because this command
+    had left them one on 2026-09-24.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _wire(self, monkeypatch, fake_hosts, tmp_path):
+        self.hosts = fake_hosts
+        self.vm = _vm("ant-bootstrap-fsn1", "1.1.1.1")
+        self.hosts[self.vm.name] = _FakeHost()
+        self.archive = tmp_path / "ant-node.tar.gz"
+        self.archive.write_bytes(b"")
+        monkeypatch.setattr(
+            cmd.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+    def _install(self, unit_text=LIVE_UNIT):
+        unit = parse_unit(unit_text)
+        cmd._install_binary(self.vm, "key", unit, self.archive, "0.20.0")
+        return unit, self.hosts[self.vm.name].commands
+
+    def test_the_directory_is_chowned_after_the_swap(self):
+        _, commands = self._install()
+        swap = [c for c in commands if f"mv /tmp/ant-node.new {BINARY_PATH}" in c]
+        assert len(swap) == 1
+        assert swap[0].endswith(f"chown -R ant:ant {BINARY_DIR}")
+
+    def test_the_ownership_is_verified_after_the_chown(self):
+        _, commands = self._install()
+        swap_at = next(
+            i for i, c in enumerate(commands) if f"mv /tmp/ant-node.new {BINARY_PATH}" in c
+        )
+        find_at = next(i for i, c in enumerate(commands) if c == f"find {BINARY_DIR} ! -user ant")
+        assert find_at > swap_at
+
+    def test_the_service_user_comes_from_the_unit(self):
+        # Not a constant: the owner is whoever the unit's User= names, because
+        # that is who ant-node's upgrader will run as on this host.
+        self.hosts[self.vm.name] = _FakeHost(unit=_ALT_USER_UNIT)
+        _, commands = self._install(_ALT_USER_UNIT)
+        assert any(c.endswith(f"chown -R antnode:antnode {BINARY_DIR}") for c in commands)
+        assert f"find {BINARY_DIR} ! -user antnode" in commands
+
+    def test_rollback_chowns_what_it_restores(self):
+        # The mirror of the same defect: a restore that moved the backup back
+        # under root ownership would leave the *live* binary root-owned.
+        unit = parse_unit(LIVE_UNIT)
+        cmd._rollback(self.vm, "key", unit, LIVE_UNIT, Console())
+        commands = self.hosts[self.vm.name].commands
+        restore = [c for c in commands if f"mv {BINARY_PATH}.backup" in c]
+        assert len(restore) == 1
+        assert restore[0] == (
+            f"mv {BINARY_PATH}.backup {BINARY_PATH} && chown -R ant:ant {BINARY_DIR}"
+        )
+
+    @pytest.mark.parametrize(
+        "unit_text,owner",
+        [(LIVE_UNIT, "ant:ant"), (_ALT_USER_UNIT, "antnode:antnode")],
+    )
+    def test_every_write_under_the_directory_is_chowned(self, unit_text, owner):
+        # The generic rule, over both functions' whole command streams: a path
+        # written under the binary directory is chowned by that command or a
+        # later one. This is what fails on any future line that writes there
+        # without owning what it wrote.
+        self.hosts[self.vm.name] = _FakeHost(unit=unit_text)
+        unit = parse_unit(unit_text)
+        cmd._install_binary(self.vm, "key", unit, self.archive, "0.20.0")
+        cmd._rollback(self.vm, "key", unit, unit_text, Console())
+        commands = self.hosts[self.vm.name].commands
+
+        unchowned = []
+        for index, command in enumerate(commands):
+            for target in _write_targets_under(command, BINARY_DIR):
+                if not any(
+                    target == path or target.startswith(f"{path}/")
+                    for later in commands[index:]
+                    for path in _chowned_paths(later, owner)
+                ):
+                    unchowned.append(target)
+        assert unchowned == []
+        # The rule must have something to say: if nothing writes there, the
+        # scan above passes vacuously.
+        assert any(_write_targets_under(c, BINARY_DIR) for c in commands)
+
+
+class TestOwnershipGuard:
+    """4. An ownership the chown did not establish stops the run."""
+
+    @pytest.fixture(autouse=True)
+    def _wire(self, monkeypatch, fake_hosts, tmp_path):
+        self.hosts = fake_hosts
+        self.vms = [
+            _vm("ant-bootstrap-fsn1", "1.1.1.1"),
+            _vm("ant-bootstrap-ash", "2.2.2.2"),
+        ]
+        monkeypatch.setattr(cmd, "_load_bootstraps", lambda *a, **k: self.vms)
+        archive = tmp_path / "ant-node.tar.gz"
+        archive.write_bytes(b"")
+        monkeypatch.setattr(cmd, "_preflight_binary", lambda *a, **k: archive)
+        monkeypatch.setattr(cmd, "HEALTH_TIMEOUT_SECS", 1)
+        monkeypatch.setattr(cmd.webrtc_probe, "probe", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cmd.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        self.hosts["ant-bootstrap-fsn1"] = _FakeHost(foreign=[f"{BINARY_DIR}/ant-node.backup"])
+        self.hosts["ant-bootstrap-ash"] = _FakeHost()
+
+    def test_it_rolls_the_host_back_and_stops(self):
+        with pytest.raises(SystemExit) as exit_info:
+            cmd.cmd_prod_bootstrap_upgrade(_upgrade_args())
+        assert exit_info.value.code == 1
+        commands = self.hosts["ant-bootstrap-fsn1"].commands
+        assert f"mv {BINARY_PATH}.backup {BINARY_PATH} && chown -R ant:ant {BINARY_DIR}" in commands
+        assert self.hosts["ant-bootstrap-ash"].commands == []
+
+    def test_a_clean_find_does_not_stop_the_run(self, monkeypatch):
+        log = "\n".join([_starting_line("0.20.0"), _webrtc_line("0.0.0.0:10001")])
+        for vm in self.vms:
+            self.hosts[vm.name] = _FakeHost(log=log)
+        collected = []
+        monkeypatch.setattr(cmd, "_collect_multiaddrs", lambda *a, **k: collected.append(a))
+        cmd.cmd_prod_bootstrap_upgrade(_upgrade_args())
+        assert len(collected) == 1
+
+
+class TestLimitToAddressCollection:
+    """5. ``--limit-to`` upgrades a subset and still publishes the whole tier."""
+
+    REGIONS = ("nrt", "syd", "ewr", "lax", "fsn1", "ash", "aws")
+
+    @pytest.fixture(autouse=True)
+    def _wire(self, monkeypatch, fake_hosts, tmp_path):
+        self.hosts = fake_hosts
+        self.inventory = _write_inventory(tmp_path / "bootstrap-inventory.json", self.REGIONS)
+        self.out = tmp_path / "prod_bootstrap_webrtc_multiaddrs.txt"
+        monkeypatch.setattr(cmd, "DEFAULT_MULTIADDR_OUT", self.out)
+        archive = tmp_path / "ant-node.tar.gz"
+        archive.write_bytes(b"")
+        monkeypatch.setattr(cmd, "_preflight_binary", lambda *a, **k: archive)
+        monkeypatch.setattr(cmd, "_install_binary", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "HEALTH_TIMEOUT_SECS", 1)
+        monkeypatch.setattr(cmd.webrtc_probe, "probe", lambda *a, **k: True)
+        log = "\n".join([_starting_line("0.20.0"), _webrtc_line("0.0.0.0:10001")])
+        for region in self.REGIONS:
+            self.hosts[f"ant-bootstrap-{region}"] = _FakeHost(log=log)
+
+    def test_only_the_named_hosts_are_restarted(self):
+        cmd.cmd_prod_bootstrap_upgrade(
+            _upgrade_args(inventory_path=str(self.inventory), limit_to="nrt,syd")
+        )
+        restarted = [
+            region
+            for region in self.REGIONS
+            if any(
+                f"systemctl restart {cmd.SERVICE_NAME}" in command
+                for command in self.hosts[f"ant-bootstrap-{region}"].commands
+            )
+        ]
+        assert restarted == ["nrt", "syd"]
+
+    def test_the_published_list_still_covers_the_whole_tier(self):
+        # The file is every browser client's way into the network; rewriting it
+        # from the two hosts a remediation touched would narrow it to two.
+        cmd.cmd_prod_bootstrap_upgrade(
+            _upgrade_args(inventory_path=str(self.inventory), limit_to="nrt,syd")
+        )
+        lines = self.out.read_text().splitlines()
+        assert len(lines) == len(self.REGIONS)
+        assert [line.split("/")[2] for line in lines] == [
+            f"10.0.0.{index}" for index in range(1, len(self.REGIONS) + 1)
+        ]
+
+    def test_an_unreachable_untouched_host_leaves_the_file_alone(self):
+        self.out.write_text("previous\n")
+        self.hosts["ant-bootstrap-lax"].multiaddr = None
+        with pytest.raises(SystemExit):
+            cmd.cmd_prod_bootstrap_upgrade(
+                _upgrade_args(inventory_path=str(self.inventory), limit_to="nrt,syd")
+            )
+        assert self.out.read_text() == "previous\n"
+
+
+def _status_args(**overrides):
+    defaults = {
+        "inventory_path": "inventory.json",
+        "limit_to": None,
+        "ssh_key_path": None,
+        "json": True,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestBootstrapStatus:
+    """6. ``status`` reports; it never refuses a host."""
+
+    @pytest.fixture(autouse=True)
+    def _wire(self, monkeypatch, fake_hosts):
+        self.hosts = fake_hosts
+        self.vms = [
+            _vm("ant-bootstrap-nrt", "207.148.94.42", provider="vultr"),
+            _vm("ant-bootstrap-fsn1", "49.12.119.240"),
+        ]
+        monkeypatch.setattr(cmd, "_load_bootstraps", lambda *a, **k: self.vms)
+        for vm in self.vms:
+            self.hosts[vm.name] = _FakeHost(log=_starting_line("0.21.0"))
+
+    def _rows(self, capsys, **overrides):
+        cmd.cmd_prod_bootstrap_status(_status_args(**overrides))
+        return json.loads(capsys.readouterr().out)
+
+    def test_every_documented_field_is_reported(self, capsys):
+        rows = self._rows(capsys)
+        assert [row["name"] for row in rows] == [vm.name for vm in self.vms]
+        row = rows[0]
+        assert row == {
+            "name": "ant-bootstrap-nrt",
+            "ip": "207.148.94.42",
+            "provider": "vultr",
+            "reachable": True,
+            "error": None,
+            "unit_ok": True,
+            "unit_error": None,
+            "service_user": "ant",
+            "binary_path": BINARY_PATH,
+            "root_dir": ROOT_DIR,
+            "log_dir": LOG_DIR,
+            "webrtc_port": None,
+            "stop_on_upgrade": True,
+            "on_disk_version": "0.20.0",
+            "running_version": "0.21.0",
+            "active": "active",
+            "backup": {"present": True, "owner": "ant:ant", "size": 26614568},
+            "foreign_owned": [],
+        }
+
+    def test_the_json_array_is_the_only_thing_on_stdout(self, capsys):
+        # So `jq` can consume it: the progress lines go to stderr.
+        cmd.cmd_prod_bootstrap_status(_status_args())
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)
+        assert "Reading ant-bootstrap-nrt" in captured.err
+
+    def test_a_root_owned_backup_is_reported_verbatim(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].backup = ("root:root", 20543208)
+        self.hosts["ant-bootstrap-nrt"].foreign = [f"{BINARY_DIR}/ant-node.backup"]
+        row = self._rows(capsys)[0]
+        assert row["backup"] == {
+            "present": True,
+            "owner": "root:root",
+            "size": 20543208,
+        }
+        assert row["foreign_owned"] == [f"{BINARY_DIR}/ant-node.backup"]
+
+    def test_an_absent_backup_is_not_an_error(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].backup = None
+        row = self._rows(capsys)[0]
+        assert row["backup"] == {"present": False, "owner": None, "size": None}
+        assert row["reachable"] is True
+
+    def test_a_unit_the_upgrade_would_refuse_still_yields_a_row(self, capsys):
+        # status is what an operator reads before deciding whether a mutating
+        # verb may be used, so the host it cannot touch is the one it most
+        # needs to describe.
+        refused = LIVE_UNIT.replace("  --stop-on-upgrade \\\n", "")
+        self.hosts["ant-bootstrap-nrt"].unit = refused
+        row = self._rows(capsys)[0]
+        assert row["unit_ok"] is False
+        assert "--stop-on-upgrade" in row["unit_error"]
+        assert row["stop_on_upgrade"] is False
+        assert row["binary_path"] == BINARY_PATH
+        assert row["reachable"] is True
+
+    def test_a_pinned_webrtc_port_is_reported(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].unit = add_webrtc_port(LIVE_UNIT, 10001)
+        assert self._rows(capsys)[0]["webrtc_port"] == 10001
+
+    def test_an_unreachable_host_is_a_row_and_exit_1(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].unit = None
+        with pytest.raises(SystemExit) as exit_info:
+            cmd.cmd_prod_bootstrap_status(_status_args())
+        assert exit_info.value.code == 1
+        rows = json.loads(capsys.readouterr().out)
+        assert len(rows) == 2
+        assert rows[0]["reachable"] is False
+        assert "No route to host" in rows[0]["error"]
+        assert rows[1]["reachable"] is True
+
+    def test_every_host_reachable_exits_zero(self, capsys):
+        cmd.cmd_prod_bootstrap_status(_status_args())
+        assert len(json.loads(capsys.readouterr().out)) == 2
+
+    def test_a_binary_that_will_not_run_reports_no_version(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].version = None
+        row = self._rows(capsys)[0]
+        assert row["on_disk_version"] is None
+        assert row["reachable"] is True
+
+    def test_a_service_that_never_started_reports_no_running_version(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].log = ""
+        self.hosts["ant-bootstrap-nrt"].active = False
+        row = self._rows(capsys)[0]
+        assert row["running_version"] is None
+        assert row["active"] == "failed"
+
+    def test_only_the_start_dates_log_is_read(self, capsys):
+        # ant-node rotates daily and keeps 14, so the newest file is the wrong
+        # one: a bootstrap that last restarted when it was upgraded has no
+        # start line in today's. Walking back from the newest instead means
+        # reading everything since that restart — 4.7 GB on the live nrt host.
+        self._rows(capsys)
+        greps = [
+            command
+            for command in self.hosts["ant-bootstrap-nrt"].commands
+            if cmd.STARTING_MESSAGE in command and "grep" in command
+        ]
+        assert len(greps) == 1
+        assert "*2026-10-01*.log" in greps[0]
+        assert "ls -1t" not in greps[0]
+
+    def test_an_unknowable_start_time_reports_no_running_version(self, capsys):
+        # And no older start line is substituted: that line belongs to a run
+        # that has ended, which is the one thing this field must not report as
+        # running. A read that failed also makes the report incomplete.
+        self.hosts["ant-bootstrap-nrt"].started_on = None
+        with pytest.raises(SystemExit) as exit_info:
+            cmd.cmd_prod_bootstrap_status(_status_args())
+        assert exit_info.value.code == 1
+        row = json.loads(capsys.readouterr().out)[0]
+        assert row["running_version"] is None
+        assert "read the service start time" in row["error"]
+
+    def test_a_rotated_away_start_log_reports_no_running_version(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].started_on = "2026-09-01"
+        row = self._rows(capsys)[0]
+        assert row["running_version"] is None
+        assert row["reachable"] is True
+
+    def test_a_dropped_connection_on_the_stat_is_not_an_absent_backup(self, capsys):
+        # ssh's own 255 has to be told apart from stat's "no such file": the
+        # second is a fact about the host, the first is a fact this report
+        # never established, and reporting it as "no backup" with
+        # `reachable: true` is the report claiming something it does not know.
+        self.hosts["ant-bootstrap-nrt"].ssh_fails_on = "stat -c"
+        with pytest.raises(SystemExit) as exit_info:
+            cmd.cmd_prod_bootstrap_status(_status_args())
+        assert exit_info.value.code == 1
+        row = json.loads(capsys.readouterr().out)[0]
+        assert row["reachable"] is False
+        assert "stat the backup binary" in row["error"]
+        assert row["backup"] == {"present": False, "owner": None, "size": None}
+
+    def test_a_dropped_connection_on_is_active_is_not_an_inactive_service(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].ssh_fails_on = "systemctl is-active"
+        with pytest.raises(SystemExit):
+            cmd.cmd_prod_bootstrap_status(_status_args())
+        row = json.loads(capsys.readouterr().out)[0]
+        assert row["reachable"] is False
+        assert "systemctl is-active" in row["error"]
+        assert row["active"] is None
+
+    def test_a_service_that_is_down_is_still_a_reachable_host(self, capsys):
+        # The other side of the same coin: `is-active` exits non-zero for every
+        # state but `active`, and `failed` is an answer.
+        self.hosts["ant-bootstrap-nrt"].active = False
+        row = self._rows(capsys)[0]
+        assert row["active"] == "failed"
+        assert row["reachable"] is True
+
+    def test_the_two_versions_can_disagree(self, capsys):
+        # Its own finding: an install that landed but could not restart.
+        self.hosts["ant-bootstrap-nrt"].version = "0.21.0"
+        self.hosts["ant-bootstrap-nrt"].log = _starting_line("0.20.0")
+        row = self._rows(capsys)[0]
+        assert (row["on_disk_version"], row["running_version"]) == ("0.21.0", "0.20.0")
+
+    def test_the_table_is_rendered_without_json(self, capsys):
+        cmd.cmd_prod_bootstrap_status(_status_args(json=False))
+        out = capsys.readouterr().out
+        assert "ant-bootstrap-nrt" in out
+        assert "0.21.0" in out
 
 
 class TestBootstrapInventory:

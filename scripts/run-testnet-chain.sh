@@ -15,7 +15,7 @@
 # updated — so the next issue starts only when the previous session has exited.
 #
 # Exit status: 0 if every run was a PASS, 1 if the chain stopped on a run that
-# was WARN, FAIL, ABANDONED or left no verdict (see lib/testnet-runs.sh), 130
+# was WARN, FAIL, ABANDONED or left no verdict (see lib/issue-runs.sh), 130
 # on Ctrl-C. WARN stops the chain on purpose: it is what a run prints when
 # every criterion passed but the run did not do what it was for.
 #

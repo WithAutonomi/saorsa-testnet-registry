@@ -12,7 +12,7 @@
 # updated — so the next issue starts only when the previous session has exited.
 #
 # Exit status: 0 if every run was a PASS, 1 if any was WARN, FAIL, ABANDONED or
-# left no verdict (see lib/testnet-runs.sh), 130 on Ctrl-C.
+# left no verdict (see lib/issue-runs.sh), 130 on Ctrl-C.
 #
 # Ctrl-C stops the current session AND any `saorsa-deploy deployments up` it
 # started, then tells you what to clean up. Killing the terminal does the same

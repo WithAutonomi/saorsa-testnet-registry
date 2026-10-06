@@ -1223,3 +1223,82 @@ class TestResolveHetznerAvailability:
         with pytest.raises(SystemExit) as exc_info:
             _resolve_hetzner_availability(nodes, console)
         assert exc_info.value.code == 1
+
+
+# === The provision pass's binary-directory ownership (V2-1412) ===
+
+
+class TestBinaryDirectoryIsOwnedByTheServiceUser:
+    """The pass that installs the binary also hands its directory over.
+
+    Whichever branch installs it does so as root, and ant-node's own
+    auto-upgrader runs as `ant`: it writes `<binary>.backup` and a temp dir
+    *inside* this directory, neither of which it can do under root ownership.
+    `/opt/ant-node` is `ant:ant` on all seven live hosts only because someone
+    chowned it by hand; a rebuilt bootstrap would be un-upgradeable from its
+    first day.
+    """
+
+    def _ops(self, **overrides):
+        from saorsa_deploy.cmd.bootstrap_production import _provision_node
+
+        recorded = []
+
+        def add_op(state, op, **kwargs):
+            recorded.append((getattr(op, "__name__", str(op)), kwargs))
+
+        kwargs = {
+            "ip": "1.2.3.4",
+            "provider": "vultr",
+            "ssh_key_path": "~/.ssh/ant-production",
+            "binary_url": "https://example/ant-node-cli-linux-x64.tar.gz",
+            "binary_is_archive": True,
+            "bootstrap_peers": ["1.1.1.1:10000"],
+            "rewards_address": "0xc20c19b57629fc22E8e1e50a3b924A20b0fA25AA",
+            "evm_network": "arbitrum-one",
+            "console": MagicMock(),
+        }
+        kwargs.update(overrides)
+        with (
+            patch("pyinfra.api.operation.add_op", add_op),
+            patch("pyinfra.api.connect.connect_all", MagicMock()),
+            patch("pyinfra.api.connect.disconnect_all", MagicMock()),
+            patch("pyinfra.api.operations.run_ops", MagicMock()),
+        ):
+            _provision_node(**kwargs)
+        return recorded
+
+    @staticmethod
+    def _index_of_name(ops, name):
+        return next(i for i, (_, kwargs) in enumerate(ops) if kwargs.get("name") == name)
+
+    @pytest.mark.parametrize(
+        "overrides,install_op",
+        [
+            ({}, "Download and install ant-node binary"),
+            (
+                {"binary_is_archive": False},
+                "Download and install ant-node binary",
+            ),
+            (
+                {"binary_path": "/tmp/ant-node", "binary_url": None},
+                "Upload local ant-node binary",
+            ),
+        ],
+        ids=["archive", "bare-binary", "local-file"],
+    )
+    def test_the_chown_follows_the_install_and_precedes_the_unit(
+        self, overrides, install_op
+    ):
+        ops = self._ops(**overrides)
+        chown_at = self._index_of_name(
+            ops, "Own the binary directory as the service user"
+        )
+        assert ops[chown_at][1]["commands"] == [
+            f"chown -R {SERVICE_USER}:{SERVICE_USER} {BINARY_INSTALL_DIR}"
+        ]
+        # After the install, or it would chown a directory the install then
+        # writes into as root; before the unit, so the service never starts on
+        # a directory its own upgrader cannot use.
+        assert chown_at > self._index_of_name(ops, install_op)
+        assert chown_at < self._index_of_name(ops, "Write systemd unit file")
