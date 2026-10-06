@@ -39,11 +39,20 @@ or ask which one to use.
   the ceiling passes, **wait for it**, however long it takes — its own per-step timeouts bound it.
   Killing it is the one way this tooling can itself break a production host: only the live command
   can run its own rollback. Then abandon without starting anything else.
-* **On a session resume** (your first message says your previous turn ended unexpectedly): re-read
-  your task list and the per-command logs under `~/.autonomi/maintenance-runs/$issue_number/`. **A
-  command whose log file exists was started and is NEVER started again** — read its exit status out
-  of the log instead. If a log exists with no recorded exit status, the command was in flight when
-  the session died: treat it as a stop condition, report what the log shows, and abandon.
+* **Never end your turn while a mutating command is in flight.** In a headless run, ending your turn
+  ends the session (see Step 3), so the wait has to happen inside the turn. The only turn you end is
+  Step 7's.
+* **On a session resume** (your first message says your previous turn ended, or did not print
+  `RUN COMPLETE`): re-read your task list and the per-command logs and `.exit` files under
+  `~/.autonomi/maintenance-runs/$issue_number/`. **A command whose log file exists was started and
+  is NEVER started again.** Then, in this order:
+  * **An `.exit` file exists** → that is the command's exit status. Use it and carry on from there.
+  * **No `.exit` file, but the process is still alive** (`pgrep -af 'saorsa[-]deploy prod'` — the
+    `[-]` keeps the pattern from matching your own command line) → it was launched detached and
+    survived. **Wait for it**, exactly as Step 3 says. Do not start it again and never signal it.
+  * **No `.exit` file and no live process** → it was in flight when the session died. Treat it as a
+    stop condition, report what the log shows, and abandon. Say in the comment how far the log got,
+    and whether the hosts are provably unmodified.
 * **Never touch a host the issue did not name.** `--limit-to` is how a command is confined to them.
 * Keep a task list and update it at every step and every deviation.
 * **The issue always ends in `In Review`, never `Done` or `Canceled`** — whatever happened. A human
@@ -137,18 +146,41 @@ One command at a time, in the issue's order. For each, in this order:
 
 1. Check the clock against the ceiling. At or past it, start nothing: go to Step 4 and abandon.
 2. Record the UTC start time in the task list.
-3. Run it with stdout **and** stderr teed to `~/.autonomi/maintenance-runs/$issue_number/<n>-<verb>.log`
-   (`<n>` is the step number, `<verb>` the command's own verb, e.g. `1-bootstrap-upgrade.log`).
-   Never pipe a command through `tee` alone and read `$?` — the pipeline's status is the pipe's.
-   Use `… > >(tee log) 2>&1` or redirect and `cat`, then read the exit code of the command itself.
-4. Record the UTC end time and the **exit code**, appended to the log as a final line, so a resumed
-   session can tell a finished command from one that was in flight.
+3. **Launch it detached, never as a child of this session.** Write a one-command runner to
+   `~/.autonomi/maintenance-runs/$issue_number/run-<n>-<verb>.sh` that `cd`s to the repository,
+   runs the command with stdout **and** stderr redirected to
+   `~/.autonomi/maintenance-runs/$issue_number/<n>-<verb>.log` (`<n>` the step number, `<verb>` the
+   command's own verb, e.g. `1-bootstrap-upgrade.log`), then appends `=== END <utc> exit=$rc ===`
+   to that log and writes the bare exit code to `<n>-<verb>.exit`. Start it with:
+
+   ```bash
+   setsid nohup ~/.autonomi/maintenance-runs/$issue_number/run-<n>-<verb>.sh \
+       >/dev/null 2>&1 </dev/null &
+   ```
+
+   Then confirm it really is detached — `ps -o pid,pgid,sid,args -C saorsa-deploy` must show it
+   with its own session id, not this session's.
+
+   Never pipe the command through `tee` and read `$?` — the pipeline's status is the pipe's. Write
+   the exit code of the command itself.
+
+   **This is not a style preference.** This skill is invoked from
+   `scripts/run-maintenance-issues.sh` as a headless `claude -p` session, which **exits the moment
+   you end your turn**, and a background Bash task is a child of that process and is killed at
+   teardown. On 2026-10-06 that killed a `prod bootstrap upgrade` 26 seconds into a production host
+   (session log: `terminal_reason: completed`, `api_error_status: null`, rc 0; task output:
+   `[killed]`). A foreground Bash call is not the alternative: it is capped at 600,000 ms, which is
+   shorter than this command's own 1200 s per-host gate. Detaching is the only shape that survives,
+   and it is also what lets a resumed session find the command still running rather than dead.
+4. **Poll for the `.exit` file inside this turn, and do not end your turn while the command is in
+   flight.** A single background `until test -f <...>.exit; do sleep 10; done` gives you one
+   notification when it lands; do not arm per-step monitors and do not narrate progress. Record the
+   UTC end time and the exit code in the task list.
 5. A non-zero exit is a stop condition — see the never-re-run rule. Go to Step 4 and abandon.
 
-These commands are slow by design (`HEALTH_TIMEOUT_SECS` is 1200 s, so a bootstrap health gate
-allows up to 20 minutes per host, plus a 60 s settle between hosts), so give each a timeout generous
-enough that **you** never time out before the command's own gate does: the ceiling is the bound that
-matters, not your tool call's.
+These commands are slow by design: `HEALTH_TIMEOUT_SECS` is 1200 s, so a bootstrap health gate
+allows up to 20 minutes per host, plus a 60 s settle between hosts. The ceiling is the only bound
+that matters — never your own tool call's.
 
 Watch the output for the rollback lines the `## Rollback` section names. `RESTORED` means the tool
 put the host back; `RESTORE INCOMPLETE` means it could not, and that host needs a human before
@@ -158,6 +190,17 @@ anything else happens on the tier.
 
 Run every check in `## Validation` and compare what you got against the **expected value the issue
 wrote**, not against what you would like to see. Each check is PASS, FAIL or NOT ASSESSED.
+
+Where the issue states an **exemption in prose** that does not match where the data actually turns
+up — it exempts a known pre-run event but names the wrong table, field or command for it — apply
+the exemption's stated intent and **establish the fact independently** rather than inferring it from
+the exemption. Then record both readings: score the row, and raise a warning giving the literal
+reading, the verdict it would produce, and the evidence that decided it. Never silently pick the
+kinder reading, and never widen an exemption past the specific event the issue named. (V2-1445
+exempted the two hosts' pre-upgrade `Backup creation failed` attempt but placed it in
+`rollout-watch`'s `transient` table, where it in fact lands in `failures`; the fact was settled by
+querying Elasticsearch for the document's timestamp and re-running over a window starting after the
+Procedure.)
 
 Where the issue names a read-only status command (`prod bootstrap status --json` for the bootstrap
 tier), run it and quote the fields. Run it **before** the Procedure too where the issue asks for a

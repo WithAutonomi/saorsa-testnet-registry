@@ -86,11 +86,21 @@ _claude_once() {
 # re-explaining the task.
 #
 # A print-mode session also ends its process on an API error (a 529 mid-run
-# killed a testnet session and left the fleet with no operator). So: if the
-# session exits non-zero WITHOUT having printed MARKER — the line the skill
-# prints as its very last act — it did not finish, and it is resumed with the
-# same context. Up to MAX_RESUMES times, with a growing pause for the outage to
-# clear. A zero exit is never resumed.
+# killed a testnet session and left the fleet with no operator). So: a session
+# that has not printed MARKER — the line the skill prints as its very last act —
+# did not finish, and it is resumed with the same context. Up to MAX_RESUMES
+# times, with a growing pause for an outage to clear.
+#
+# **The exit code is deliberately not part of that test.** Print mode exits when
+# the agent ends its turn, and it exits ZERO when it does so cleanly — including
+# when the agent ends the turn early, believing it will be woken when some
+# background work finishes. It will not be: a background Bash task is a child of
+# the `claude` process and is killed at teardown. On 2026-10-06 a maintenance run
+# ended that way mid-upgrade against a production bootstrap — `subtype: success`,
+# `api_error_status: null`, rc 0, no MARKER, no results comment — and because the
+# old condition here also required `rc != 0`, nothing was resumed and the run
+# simply vanished. The marker is the only evidence that a skill finished; the
+# exit code is evidence of nothing.
 MAX_RESUMES="${MAX_RESUMES:-6}"
 run_claude_session() {
     local name="$1" prompt="$2" log="$3" marker="$4"
@@ -102,7 +112,7 @@ run_claude_session() {
     echo "[$(date -u +%FT%TZ)] session $RUN_SESSION_ID  (resume with: claude --resume $RUN_SESSION_ID)"
     _claude_once "$log" "$prompt" --name "$name" --session-id "$RUN_SESSION_ID"
     rc=$?
-    while (( rc != 0 )) && ! grep -q "$marker" "$log" && (( attempt < MAX_RESUMES )); do
+    while ! grep -q "$marker" "$log" && (( attempt < MAX_RESUMES )); do
         # Only resume a session that actually started; otherwise the failure is
         # in the invocation itself and resuming would loop on the same error.
         if ! grep -q "$RUN_SESSION_ID" "$log"; then
@@ -111,12 +121,17 @@ run_claude_session() {
         fi
         attempt=$((attempt + 1))
         delay=$(( 60 * attempt ))
-        echo "[$(date -u +%FT%TZ)] session exited rc=$rc without finishing; resuming $RUN_SESSION_ID in ${delay}s (attempt $attempt/$MAX_RESUMES)"
+        echo "[$(date -u +%FT%TZ)] session exited rc=$rc without printing '$marker'; resuming $RUN_SESSION_ID in ${delay}s (attempt $attempt/$MAX_RESUMES)"
         sleep "$delay"
         _claude_once "$log" --resume "$RUN_SESSION_ID" \
-"Your previous turn ended unexpectedly at $(date -u +%FT%TZ) (an API error or crash), not because the \
-work was done. The task is still in progress. Re-read your task list and the current clock, work out where \
-you are relative to the schedule, and continue from there. Do not start again from the beginning, do not \
+"Your previous turn ended at $(date -u +%FT%TZ) without printing '$marker', so the work was NOT done — \
+whatever the exit code was. Either an API error killed the session, or you ended your turn early. If you \
+ended it waiting to be notified that a background command had finished, understand that no such \
+notification can arrive: this is a headless print-mode session, it exits when you end your turn, and a \
+background task is killed with it. Any command you launched that way is dead, not running. \
+The task is still in progress. Re-read your task list, the current clock and every per-command log and \
+exit file on disk, work out where you are relative to the schedule, and continue from there — a command \
+that recorded an exit code is finished and is never re-run. Do not start again from the beginning, do not \
 repeat steps already recorded as done, and do not ask anything."
         rc=$?
     done
