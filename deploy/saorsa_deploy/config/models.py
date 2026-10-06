@@ -16,6 +16,7 @@ from typing import Annotated, Literal, Optional, Union
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from saorsa_deploy.client_roles import WASM_MAX_FILE_BYTES as _WASM_MAX_FILE_BYTES
+from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.provisioning.clock_skew import parse_skew_duration
 from saorsa_deploy.provisioning.network_profile import resolve_network
 
@@ -168,6 +169,37 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
 
 
+# Manifest provider keys -> saorsa_deploy.providers.PROVIDERS keys.
+_PROVIDER_KEY = {
+    "digital_ocean": "digitalocean",
+    "hetzner": "hetzner",
+    "vultr": "vultr",
+    "ovh": "ovh",
+    "ovh_3az": "ovh_3az",
+}
+
+
+def _check_known_regions(provider_key: str, regions: list[str], where: str) -> None:
+    """Reject region names the deploy tool does not know.
+
+    `bootstraps infra` / `nodes infra` validate `--do-regions-list` against
+    PROVIDERS at run time (providers.resolve_regions, bootstrap.py); until
+    2026-10-06 `config validate` and `plan` did not, so a manifest naming a
+    region the provider offers but the tool does not know (V2-1449: nyc2)
+    passed validation and failed after the build and half the infrastructure
+    had been created. Same check, same wording, at manifest-load time.
+    """
+    cfg = PROVIDERS.get(_PROVIDER_KEY.get(provider_key, provider_key))
+    if cfg is None:
+        return
+    unknown = [r for r in regions if r not in cfg.regions]
+    if unknown:
+        raise ValueError(
+            f"{where}: unknown {cfg.name} region(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(cfg.regions)}"
+        )
+
+
 class Binary(_Base):
     """Binary source: a release ``version`` XOR a ``branch`` build.
 
@@ -238,6 +270,12 @@ class Bootstraps(_Base):
     regions_list: Optional[list[str]] = None  # bootstraps infra --do-regions-list
     attached_volume_size: Optional[int] = None
 
+    @model_validator(mode="after")
+    def _known_regions(self) -> "Bootstraps":
+        if self.regions_list:
+            _check_known_regions("digital_ocean", self.regions_list, "bootstraps.regions_list")
+        return self
+
 
 class ProviderNodes(_Base):
     """Per-provider node VM allocation. ``vm_count`` is PER REGION (matches CLI).
@@ -295,6 +333,13 @@ class Nodes(_Base):
             )
         if not self.providers:
             raise ValueError("nodes.providers: at least one provider is required")
+        return self
+
+    @model_validator(mode="after")
+    def _known_regions(self) -> "Nodes":
+        for key, cfg in self.providers.items():
+            if cfg.regions_list:
+                _check_known_regions(key, cfg.regions_list, f"nodes.providers.{key}.regions_list")
         return self
 
     @model_validator(mode="after")

@@ -13,8 +13,13 @@ class ProviderConfig:
 PROVIDERS = {
     "digitalocean": ProviderConfig(
         name="digitalocean",
+        # Ordering is the default selection order (first N regions). The last
+        # three were added 2026-10-06 after DigitalOcean withdrew s-8vcpu-16gb
+        # from nyc1 (V2-1440, V2-1449): nyc2, nyc3 and sfo2 carry block storage
+        # and the node droplet size, and sit in the same metros as nyc1/sfo3.
         regions=[
             "lon1", "nyc1", "ams3", "sfo3", "sgp1", "blr1", "fra1", "tor1", "syd1",
+            "nyc2", "nyc3", "sfo2",
         ],
         default_region="lon1",
         tf_dir="digitalocean",

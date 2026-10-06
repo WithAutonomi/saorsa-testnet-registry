@@ -10,6 +10,7 @@ from saorsa_deploy.bootstrap import (
     list_stale_bootstrap_state_keys,
     purge_stale_bootstrap_state,
 )
+from saorsa_deploy.providers import PROVIDERS
 
 
 class TestSelectBootstrapRegions:
@@ -29,8 +30,8 @@ class TestSelectBootstrapRegions:
         ]
 
     def test_raises_when_count_exceeds_available_regions(self):
-        with pytest.raises(ValueError, match="only 9"):
-            _select_bootstrap_regions(10)
+        with pytest.raises(ValueError, match=f"only {len(PROVIDERS['digitalocean'].regions)}"):
+            _select_bootstrap_regions(len(PROVIDERS["digitalocean"].regions) + 1)
 
     def test_all_regions_unique(self):
         regions = _select_bootstrap_regions(7)

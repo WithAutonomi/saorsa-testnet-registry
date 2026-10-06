@@ -136,3 +136,22 @@ class TestResolveRegionsOverride:
         ]
         with pytest.raises(ValueError, match="Unknown digitalocean region"):
             resolve_regions(specs, providers=single_provider)
+
+
+class TestDigitalOceanAllowlistCoversSameMetroReplacements:
+    """V2-1440 / V2-1449: DigitalOcean withdrew s-8vcpu-16gb from nyc1; the
+    same-metro replacements must be known to the tool or `nodes infra` rejects
+    a manifest the provider would accept."""
+
+    def test_nyc2_nyc3_sfo2_are_known(self):
+        from saorsa_deploy.providers import PROVIDERS
+
+        for region in ("nyc2", "nyc3", "sfo2"):
+            assert region in PROVIDERS["digitalocean"].regions
+
+    def test_default_ordering_unchanged_for_first_nine(self):
+        from saorsa_deploy.providers import PROVIDERS
+
+        assert PROVIDERS["digitalocean"].regions[:9] == [
+            "lon1", "nyc1", "ams3", "sfo3", "sgp1", "blr1", "fra1", "tor1", "syd1",
+        ]
