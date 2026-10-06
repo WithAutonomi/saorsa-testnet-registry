@@ -201,13 +201,22 @@ class TestNeverSignalPolicy:
         self.pkill_log = tmp_path / "pkill.args"
         self.pgrep_calls = tmp_path / "pgrep.calls"
         self.pgrep_calls.write_text("")
-        _stub(bin_dir, "pkill", f'echo "$@" >> {self.pkill_log}\nexit 0')
+        #: One shared file both stubs append their own name to, so the order
+        #: the handler calls them in is readable.
+        self.order_log = tmp_path / "order"
+        self.order_log.write_text("")
+        _stub(
+            bin_dir,
+            "pkill",
+            f'echo pkill >> {self.order_log}\necho "$@" >> {self.pkill_log}\nexit 0',
+        )
 
     def _pgrep_stub(self, busy_calls: int):
         _stub(
             self.bin_dir,
             "pgrep",
             f"""
+echo pgrep >> {self.order_log}
 echo "x" >> {self.pgrep_calls}
 calls=$(wc -w < {self.pgrep_calls})
 # The real pattern is '[s]aorsa-deploy prod', so match the tail of it.
@@ -243,6 +252,40 @@ exit 1
         result = self._wait()
         assert result.returncode == 0
         assert result.stdout == ""
+
+    def test_the_handler_waits_before_it_stops_the_session(self):
+        # The prod command runs as a grandchild of the claude session (its Bash
+        # tool), so stopping the session first risks killing the command by
+        # proxy, mid-swap — exactly what this policy exists to prevent. The
+        # wait therefore comes first and the whole handler blocks on it.
+        self._pgrep_stub(busy_calls=3)
+        result = _bash(
+            self.bin_dir,
+            ". %s/issue-runs.sh && RUN_INTERRUPT_POLICY=never-signal "
+            "SESSION_PID=4243 RUN_SKILL=run-prod-maintenance-from-issue "
+            "_issue_runs_interrupted" % LIB,
+        )
+        assert result.returncode == 130
+        order = self.order_log.read_text().split()
+        assert "pgrep" in order and "pkill" in order
+        # Every consultation of the process table precedes the first signal.
+        assert order.index("pkill") > max(
+            index for index, call in enumerate(order) if call == "pgrep"
+        )
+
+    def test_the_kill_deploy_handler_keeps_the_opposite_order(self):
+        # A testnet fleet is scratch: its deploy is killed, not waited for, so
+        # the session goes down first and the deploy with it.
+        self._pgrep_stub(busy_calls=0)
+        result = _bash(
+            self.bin_dir,
+            ". %s/issue-runs.sh && RUN_INTERRUPT_POLICY=kill-deploy "
+            "SESSION_PID=4243 RUN_SKILL=run-testnet-from-issue "
+            "_issue_runs_interrupted" % LIB,
+        )
+        assert result.returncode == 130
+        order = self.order_log.read_text().split()
+        assert order[0] == "pkill"
 
     def test_the_maintenance_driver_selects_that_policy(self):
         # And the testnet library keeps the opposite one: a half-built testnet

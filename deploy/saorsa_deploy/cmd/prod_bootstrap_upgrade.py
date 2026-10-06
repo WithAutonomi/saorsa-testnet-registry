@@ -111,6 +111,11 @@ PROBE_ATTEMPTS = 3
 #: bouncing at once is a noticeable fraction of it.
 INTER_HOST_WAIT_SECS = 60
 
+#: What ssh(1) itself exits with when it could not run the command at all --
+#: as against any exit code the command chose. A read whose non-zero exit is an
+#: answer still has to tell this one apart from that answer.
+_SSH_FAILURE_EXIT = 255
+
 
 @dataclass
 class HostFailure:
@@ -1275,6 +1280,22 @@ def _status_row(vm: NodeVm, ssh_key: str) -> dict:
             errors.append(f"{description}: {e}")
             return None
 
+    def read_tolerating_failure(description: str, command: str):
+        """Run a read whose non-zero exit is an answer, not a failed read.
+
+        ``systemctl is-active`` exits non-zero for every state but ``active``,
+        and ``stat`` exits non-zero when the backup simply does not exist, so
+        neither can go through :func:`read`. **SSH's own 255 still has to be
+        told apart from those**: without that, a connection that dropped on
+        this one read would report "no backup" and leave ``reachable`` true,
+        which is the report claiming a fact it never established.
+        """
+        result = _ssh(vm, ssh_key, _privileged(vm, command))
+        if result.returncode == _SSH_FAILURE_EXIT:
+            errors.append(f"{description}: {result.stderr.strip() or 'ssh failed'}")
+            return None
+        return result
+
     if facts.binary_path:
         # The on-disk version is documented as null on failure rather than as
         # an error: a binary that will not run is a finding in its own right,
@@ -1302,16 +1323,22 @@ def _status_row(vm: NodeVm, ssh_key: str) -> dict:
             if log_line is not None:
                 row["running_version"] = latest_started_version(log_line)
 
-    # Via _ssh, not _run: `is-active` exits non-zero for every state but
-    # `active`, and `inactive` or `failed` is an answer, not a failed read.
-    active = _ssh(vm, ssh_key, _privileged(vm, f"systemctl is-active {SERVICE_NAME}"))
-    row["active"] = active.stdout.strip() or None
+    active = read_tolerating_failure(
+        "systemctl is-active", f"systemctl is-active {SERVICE_NAME}"
+    )
+    if active is not None:
+        row["active"] = active.stdout.strip() or None
 
     if facts.binary_path:
-        stat_out = _ssh(vm, ssh_key, _privileged(vm, build_backup_stat_command(facts.binary_path)))
         # A missing backup exits non-zero, which is a fact about the host and
         # not a failed read: a bootstrap whose upgrader has never run has none.
-        row["backup"] = parse_backup_stat(stat_out.stdout if stat_out.returncode == 0 else "")
+        stat_out = read_tolerating_failure(
+            "stat the backup binary", build_backup_stat_command(facts.binary_path)
+        )
+        if stat_out is not None:
+            row["backup"] = parse_backup_stat(
+                stat_out.stdout if stat_out.returncode == 0 else ""
+            )
 
         directory = posixpath.dirname(facts.binary_path)
         foreign = read(

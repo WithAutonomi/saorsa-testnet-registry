@@ -188,8 +188,10 @@ skill for production maintenance. Both sit on `scripts/lib/issue-runs.sh` (one
 loop, one `RUN COMPLETE <issue> <verdict> <field>` parser) and differ in their
 **interrupt policy**: a testnet Ctrl-C kills the `deployments up` it started,
 while a maintenance Ctrl-C **never signals a running `saorsa-deploy prod …`** —
-it waits, because only the live command can run its own rollback and a host left
-between the binary swap and the restart has none. The maintenance skill refuses
+it waits for that command and stops the session only afterwards (the command is
+a grandchild of the session, so the other order could kill it by proxy), because
+only the live command can run its own rollback and a host left between the
+binary swap and the restart has none. The maintenance skill refuses
 an issue whose Procedure holds anything but `saorsa-deploy` commands and
 read-only checks (a raw mutating SSH step included), never re-runs a mutating
 command after a failure, and starts nothing new at the hard ceiling.

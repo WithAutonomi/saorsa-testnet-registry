@@ -2783,11 +2783,16 @@ Order of operations:
    rolls the host back and stops the run (see "the ownership invariant" below); the
    unit gains one appended `--webrtc-direct-port <port>` argument line and nothing
    else changes; then `daemon-reload` and `restart`.
-4. **Health gate**, up to 180 s, reading only what the restart wrote: the node's own
+4. **Health gate**, up to 1200 s, reading only what the restart wrote: the node's own
    JSON log must carry `ant-node starting` at the requested **version** (an old binary
    brought back by `Restart=always` writes that line too), then
    `ADR-0015 WebRTC Direct listening` bound to the pinned port, then
    `systemctl is-active` = `active`.
+   The 1200 s is calibrated, not generous: ant-node 0.20.0 opens the WebRTC listener
+   only after rejoining the network, and the original 180 s **rolled back a healthy
+   host**. Measured on the production tier at 1m43s and 2m36s (nrt) and over 3m29s
+   (syd); after the 2026-09-25 `set-peers` restart it took 14m26s (fsn1) and 13m35s
+   (ash), which 600 s would also have failed.
 5. **ICE probe** from this machine to `<inventory ip>:<port>` — three attempts, 5 s
    each. A plain STUN binding is not enough: the listener's admission filter answers
    anything unauthenticated with silence, so the probe sends a real ICE connectivity
@@ -3004,11 +3009,13 @@ wrapper over it that selects the testnet skill and the testnet policy.
 **The two interrupt policies are the point of the split.** A testnet run's Ctrl-C
 kills any `saorsa-deploy deployments up` it started and names what may be left — the
 fleet is scratch, and a half-built one bills for nothing. A maintenance run's Ctrl-C
-stops the session and then **waits** for any `saorsa-deploy prod …` process to finish;
-**it is never signalled**. Killing one part way through — between the binary swap and
-the restart, say — is the one way this tooling can itself break a production host, and
-only the live command can run its own rollback. The operator who truly must kill it
-does so by hand, knowingly.
+**waits** for any `saorsa-deploy prod …` process to finish and stops the session only
+after it has; **the command is never signalled**. Killing one part way through —
+between the binary swap and the restart, say — is the one way this tooling can itself
+break a production host, and only the live command can run its own rollback. The order
+matters: the command runs as a grandchild of the claude session, via its Bash tool, so
+stopping the session first could kill it by proxy. Ctrl-C therefore blocks until the
+command finishes. The operator who truly must kill it does so by hand, knowingly.
 
 #### The issue contract
 

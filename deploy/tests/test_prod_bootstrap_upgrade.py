@@ -540,6 +540,7 @@ class _FakeHost:
         backup=("ant:ant", 26614568),
         started_on="2026-10-01",
         log_dates=None,
+        ssh_fails_on=None,
     ):
         self.unit = unit
         self.log = log
@@ -558,6 +559,9 @@ class _FakeHost:
         #: The dates this host still has a log file for. Default: just the
         #: start date, so a start date outside it models one rotated away.
         self.log_dates = list(log_dates) if log_dates is not None else [started_on]
+        #: A substring of a command that ssh itself cannot run -- exit 255,
+        #: which is not the same as the command choosing a non-zero exit.
+        self.ssh_fails_on = ssh_fails_on
         self.commands: list[str] = []
         self.written_units: list[str] = []
 
@@ -610,6 +614,13 @@ def fake_hosts(monkeypatch):
 
     def _ssh(vm, ssh_key, command, *, timeout=120, stdin=None):
         host = hosts[vm.name]
+        if host.ssh_fails_on and host.ssh_fails_on in command:
+            host.commands.append(command)
+            return SimpleNamespace(
+                returncode=255,
+                stdout="",
+                stderr="ssh: connect to host port 22: Connection timed out",
+            )
         if f"systemctl is-active {cmd.SERVICE_NAME}" in command:
             host.commands.append(command)
             return SimpleNamespace(
@@ -1270,6 +1281,37 @@ class TestBootstrapStatus:
         self.hosts["ant-bootstrap-nrt"].started_on = "2026-09-01"
         row = self._rows(capsys)[0]
         assert row["running_version"] is None
+        assert row["reachable"] is True
+
+    def test_a_dropped_connection_on_the_stat_is_not_an_absent_backup(self, capsys):
+        # ssh's own 255 has to be told apart from stat's "no such file": the
+        # second is a fact about the host, the first is a fact this report
+        # never established, and reporting it as "no backup" with
+        # `reachable: true` is the report claiming something it does not know.
+        self.hosts["ant-bootstrap-nrt"].ssh_fails_on = "stat -c"
+        with pytest.raises(SystemExit) as exit_info:
+            cmd.cmd_prod_bootstrap_status(_status_args())
+        assert exit_info.value.code == 1
+        row = json.loads(capsys.readouterr().out)[0]
+        assert row["reachable"] is False
+        assert "stat the backup binary" in row["error"]
+        assert row["backup"] == {"present": False, "owner": None, "size": None}
+
+    def test_a_dropped_connection_on_is_active_is_not_an_inactive_service(self, capsys):
+        self.hosts["ant-bootstrap-nrt"].ssh_fails_on = "systemctl is-active"
+        with pytest.raises(SystemExit):
+            cmd.cmd_prod_bootstrap_status(_status_args())
+        row = json.loads(capsys.readouterr().out)[0]
+        assert row["reachable"] is False
+        assert "systemctl is-active" in row["error"]
+        assert row["active"] is None
+
+    def test_a_service_that_is_down_is_still_a_reachable_host(self, capsys):
+        # The other side of the same coin: `is-active` exits non-zero for every
+        # state but `active`, and `failed` is an answer.
+        self.hosts["ant-bootstrap-nrt"].active = False
+        row = self._rows(capsys)[0]
+        assert row["active"] == "failed"
         assert row["reachable"] is True
 
     def test_the_two_versions_can_disagree(self, capsys):

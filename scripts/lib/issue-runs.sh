@@ -48,12 +48,14 @@
 #                 up` it started, then says what may be left behind. For
 #                 testnet runs: the infrastructure is scratch, and a half-built
 #                 testnet costs money for nothing.
-#   never-signal  Ctrl-C stops the session, then WAITS for any running
-#                 `saorsa-deploy prod …` to finish. For production maintenance:
-#                 killing a command part way through — between the binary swap
-#                 and the restart, say — is the one way this tooling can itself
-#                 break a production host. The operator who truly must kill it
-#                 does so by hand, knowingly.
+#   never-signal  Ctrl-C WAITS for any running `saorsa-deploy prod …` to
+#                 finish, and stops the session only after it has. For
+#                 production maintenance: killing a command part way through —
+#                 between the binary swap and the restart, say — is the one way
+#                 this tooling can itself break a production host, and the
+#                 command runs as a grandchild of the session, so stopping the
+#                 session first could kill it by proxy. The operator who truly
+#                 must kill it does so by hand, knowingly.
 #
 # Patterns use the [x] trick so they can never match this script's own command
 # line.
@@ -117,15 +119,24 @@ _issue_runs_wait_for_prod() {
 _issue_runs_interrupted() {
     trap - INT TERM HUP
     echo
-    echo "[$(date -u +%FT%TZ)] INTERRUPTED — stopping the session"
+    echo "[$(date -u +%FT%TZ)] INTERRUPTED"
     case "$RUN_INTERRUPT_POLICY" in
         kill-deploy)
             _issue_runs_stop_session
             _issue_runs_kill_deploy
             ;;
         never-signal)
-            _issue_runs_stop_session
+            # The prod command is WAITED FOR FIRST, and only then is the session
+            # stopped. It runs as a grandchild of the claude session (its Bash
+            # tool), so stopping the session first risks killing the command by
+            # proxy, mid-swap -- the one thing this policy exists to prevent,
+            # and not something this script can establish either way. Ctrl-C
+            # therefore blocks until the command finishes. The cost is that the
+            # session is still alive while we wait and could in principle start
+            # one more command; that is the lesser risk, because a host left
+            # between the binary swap and the restart has no rollback at all.
             _issue_runs_wait_for_prod
+            _issue_runs_stop_session
             ;;
         *)
             echo "Unknown RUN_INTERRUPT_POLICY '$RUN_INTERRUPT_POLICY'; stopping the session only" >&2

@@ -145,9 +145,10 @@ One command at a time, in the issue's order. For each, in this order:
    session can tell a finished command from one that was in flight.
 5. A non-zero exit is a stop condition — see the never-re-run rule. Go to Step 4 and abandon.
 
-These commands are slow by design (a bootstrap health gate allows up to 20 minutes per host, plus a
-60 s settle between hosts), so give each a timeout generous enough that **you** never time out
-before the command's own gate does: the ceiling is the bound that matters, not your tool call's.
+These commands are slow by design (`HEALTH_TIMEOUT_SECS` is 1200 s, so a bootstrap health gate
+allows up to 20 minutes per host, plus a 60 s settle between hosts), so give each a timeout generous
+enough that **you** never time out before the command's own gate does: the ceiling is the bound that
+matters, not your tool call's.
 
 Watch the output for the rollback lines the `## Rollback` section names. `RESTORED` means the tool
 put the host back; `RESTORE INCOMPLETE` means it could not, and that host needs a human before
