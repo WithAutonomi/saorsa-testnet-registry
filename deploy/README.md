@@ -2253,7 +2253,14 @@ to each key. The three modes are one invocation each.
 one to `/mnt/ant-node-storage/rot-backup/<tag>/<service>/` and overwrites the
 original with the six bytes `rotted`. A service holding fewer than `--min-files`
 files is recorded as `too_few_files:<n>` and **not touched at all**. Hosts run in
-parallel, services on a host in order.
+parallel, services on a host in order. The manifest records each service's own
+`rotted_at`, taken from the host's clock at the start of its rot.
+
+**A per-key failure is not a skip.** While any key of a service rotted, the
+service is `injected` and its failures are listed in the record's `errors` field
+rather than in `skipped` — a transient `cp` would otherwise take a service out of
+the run's `injected` count although its keys are in fact rotted. The exit code is
+still 1.
 
 The manifest is `~/.autonomi/testnets/<name>/rot-chunks-<tag>.json` (or `--out`)
 and is the input to both other modes: it holds the rotted keys and, as the
@@ -2265,7 +2272,13 @@ written with what succeeded.
 **`--verify`** re-reads every key in the manifest and classifies it: a rotted key
 is `removed` (absent), `rotted` (still the injected bytes), `repaired`
 (byte-identical to the backup) or `other`; a control key is `missing`, `changed`
-or `unchanged`. It writes
+or `unchanged`. **A key of a service that answered nothing is `unknown`** — not
+read, as against read and found absent. That distinction is load-bearing: an
+unreachable host would otherwise report a removal for every injected key and a
+loss for every control key, which is exactly the shape of the result the run is
+gating on. `unknown` is in no other bucket, so `repaired` + `removed` +
+`still_rotted` + `other` falls short of `rotted_keys` by precisely the keys
+nobody could read, and the summary names the hosts. It writes
 `rot-chunks-<tag>.verify-<UTC yyyymmddThhmmssZ>.json` (or `--json-out`), whose
 `.keys[]` a phase script filters on `.class == "repaired"`. **Classifications
 never change the exit code** — it is a report. Exit 1 only for an unreachable
@@ -2280,11 +2293,19 @@ detection), `detected_only` or `none`. It also prints the five phrase counts per
 target host and, as the control, **the removal lines on hosts the manifest never
 touched**. Output goes to `rot-chunks-<tag>.attribute-<UTC ts>.json`.
 
+`first_detection_latency_s` is measured from the service's own `rotted_at`, not
+from `applied_at`: the latter precedes the probe and the full-service `sha256sum`
+listing pass by however long those take, which would silently pad every latency.
+`applied_at` stays the ES window start, where a floor earlier than the first rot
+is only ever safe. `targets_detected` divides by the hosts something was actually
+injected on, so a host skipped for `too_few_files` is not counted as a detection
+miss.
+
 Each mode prints one unwrapped summary line for the run's phase script to grep:
 
 ```
-ROT_APPLY tag=<tag> hosts=<n> services=<n> injected=<n> skipped=<n> rotted_keys=<n>
-ROT_VERIFY tag=<tag> verified_at=<ts> rotted_keys=<n> repaired=<n> removed=<n> still_rotted=<n> other=<n> intact=<n> unchanged=<n> changed=<n> missing=<n>
+ROT_APPLY tag=<tag> hosts=<n> services=<n> injected=<n> skipped=<n> rotted_keys=<n> key_errors=<n>
+ROT_VERIFY tag=<tag> verified_at=<ts> rotted_keys=<n> repaired=<n> removed=<n> still_rotted=<n> other=<n> intact=<n> unchanged=<n> changed=<n> missing=<n> unknown=<n> unreachable_hosts=<ip,… | ->
 ROT_ATTRIBUTE tag=<tag> window=<start>..<end> rotted_keys=<n> detected=<n> removed=<n> audit=<n> fetch=<n> detected_only=<n> none=<n> targets_detected=<n>/<m> overflow_lines=<n> not_removable_lines=<n> nontarget_removals=<n>
 ```
 
@@ -2305,6 +2326,16 @@ Two warnings:
 
 `--ips` is required by `--apply` (the target set is never implicit) and ignored
 by the other two modes, which take their host set from the manifest.
+
+**Keys are staged on the host as a file, never passed on the command line.** ssh
+hands the whole `bash -s -- …` command to the remote shell as one argument, which
+the kernel caps at `MAX_ARG_STRLEN` (128 KiB) — about 1,950 keys — and `--verify`
+sends a service's rotted *and* control keys together, so a busy service would
+fail outright. `remote.push_file` writes the list to `/var/tmp/` and the remote
+script deletes it when it is done. The `stdin_extra` seam cannot carry it: bash
+reads a piped script in blocks, so a `while read` loop consumes the rest of the
+script text and the statement after the loop never runs (measured, at every
+payload size).
 
 #### The failure the capture commands guard against (V2-988, 2026-08-15)
 

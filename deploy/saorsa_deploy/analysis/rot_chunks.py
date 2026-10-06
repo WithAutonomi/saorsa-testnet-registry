@@ -115,17 +115,32 @@ done
 echo "STATUS=done"
 """
 
-# Args: tag, service, root, backup root, then the keys. The redirect truncates
-# and rewrites the SAME inode under the SAME name -- never a delete or a rename.
+# Args: tag, service, root, backup root, key-list file. The key list is STAGED
+# AS A FILE, never argv: ssh hands the whole `bash -s -- …` command to the
+# remote shell as ONE argument, which the kernel caps at MAX_ARG_STRLEN
+# (128 KiB) -- about 1,950 keys -- and a service one busy hour larger than that
+# would fail outright. (The `stdin_extra` seam cannot carry it either: bash
+# reads a script from a pipe in blocks, so a `while read` loop eats the rest of
+# the script text. Measured: the statement after the loop never runs, at every
+# payload size.)
+#
+# The redirect truncates and rewrites the SAME inode under the SAME name --
+# never a delete or a rename.
 ROT_SCRIPT = r"""set -u
-TAG="$1"; SVC="$2"; ROOT="$3"; BACKUP="$4"; shift 4
+TAG="$1"; SVC="$2"; ROOT="$3"; BACKUP="$4"; KEYFILE="$5"
 BK="$BACKUP/$TAG/$SVC"
+# The injection time of THIS service, from the host's own clock: the latency
+# origin for `--attribute`, which the manifest-wide applied_at is not (it
+# precedes the listing and its full-service sha256 pass).
+printf 'ROTAT\t%s\t%s\n' "$SVC" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! mkdir -p "$BK"; then
   printf 'ROTERR\t%s\terror:backup_dir:%s\n' "$SVC" "$BK"
+  rm -f "$KEYFILE"
   echo "STATUS=done"
   exit 0
 fi
-for KEY in "$@"; do
+while IFS= read -r KEY; do
+  [ -n "$KEY" ] || continue
   XY="${KEY: -2}"
   F="$ROOT/chunks/$XY/$KEY"
   if [ ! -f "$F" ]; then
@@ -141,15 +156,19 @@ for KEY in "$@"; do
   else
     printf 'ROT\t%s\t%s\terror:write_failed\n' "$SVC" "$KEY"
   fi
-done
+done < "$KEYFILE"
+rm -f "$KEYFILE"
 echo "STATUS=done"
 """.replace("__ROT_BYTES__", ROT_BYTES)
 
-# Args: tag, service, root, backup root, then `R:<key>` / `I:<key>` specs.
+# Args: tag, service, root, backup root, spec-list file holding `R:<key>` /
+# `I:<key>` lines. Staged as a file for the same reason as the rot keys, and
+# more pressingly: verify sends a service's rotted AND intact keys together.
 VERIFY_SCRIPT = r"""set -u
-TAG="$1"; SVC="$2"; ROOT="$3"; BACKUP="$4"; shift 4
+TAG="$1"; SVC="$2"; ROOT="$3"; BACKUP="$4"; SPECFILE="$5"
 BK="$BACKUP/$TAG/$SVC"
-for SPEC in "$@"; do
+while IFS= read -r SPEC; do
+  [ -n "$SPEC" ] || continue
   KIND="${SPEC%%:*}"; KEY="${SPEC#*:}"
   XY="${KEY: -2}"
   F="$ROOT/chunks/$XY/$KEY"
@@ -168,7 +187,8 @@ for SPEC in "$@"; do
     SH=$(sha256sum "$F" 2>/dev/null | cut -d' ' -f1)
     printf 'V\t%s\t%s\t%s\ttrue\tfalse\tfalse\t%s\t%s\n' "$SVC" "$KIND" "$KEY" "$SZ" "$SH"
   fi
-done
+done < "$SPECFILE"
+rm -f "$SPECFILE"
 echo "STATUS=done"
 """.replace("__ROT_LEN__", str(len(ROT_BYTES))).replace("__ROT_BYTES__", ROT_BYTES)
 
@@ -239,6 +259,22 @@ def sample_keys(
     return sorted(random.Random(f"{tag}:{hostname}:{service}").sample(ordered, count))
 
 
+def _safe(text: str) -> str:
+    """A tag or service name reduced to what is safe in a remote path."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", text) or "x"
+
+
+def stage_lines(vm: hosts.Vm, lines: list[str], tag: str, service: str, kind: str) -> str | None:
+    """Write a key list to a file on the VM; returns its path, or None on failure.
+
+    Keys never travel on the command line -- see the note above `ROT_SCRIPT`.
+    The remote script deletes the file when it is done with it.
+    """
+    path = f"/var/tmp/rot-chunks-{_safe(tag)}-{_safe(service)}.{kind}"
+    res = remote.push_file(vm, "".join(f"{line}\n" for line in lines), path)
+    return path if res.returncode == 0 else None
+
+
 def _rows(res: remote.RemoteResult, marker: str) -> list[list[str]]:
     out = []
     for line in res.stdout.splitlines():
@@ -278,11 +314,16 @@ def parse_listing(res: remote.RemoteResult) -> dict[str, dict]:
     return listing
 
 
-def parse_rot(res: remote.RemoteResult) -> tuple[dict[str, str], str | None]:
-    """`key -> "ok" | "error:…"`, plus a service-wide error if one was reported."""
+def parse_rot(res: remote.RemoteResult) -> tuple[dict[str, str], str | None, str | None]:
+    """`key -> "ok" | "error:…"`, a service-wide error, and the host's rot time."""
     outcomes = {p[1]: p[2] for p in _rows(res, "ROT") if len(p) >= 3}
     svc_errors = [p[1] for p in _rows(res, "ROTERR") if len(p) >= 2]
-    return outcomes, (svc_errors[0] if svc_errors else None)
+    rotted_at = [p[1] for p in _rows(res, "ROTAT") if len(p) >= 2]
+    return (
+        outcomes,
+        (svc_errors[0] if svc_errors else None),
+        (rotted_at[0] if rotted_at else None),
+    )
 
 
 def parse_verify(res: remote.RemoteResult) -> dict[tuple[str, str], dict]:
@@ -350,6 +391,8 @@ def apply_host(
                 "total_files": 0,
                 "rotted": [],
                 "intact": [],
+                "rotted_at": None,
+                "errors": None,
                 "skipped": f"error:{host_rec['error']}",
             }
             for svc in services
@@ -376,6 +419,8 @@ def apply_host(
             "total_files": 0,
             "rotted": [],
             "intact": [],
+            "rotted_at": None,
+            "errors": None,
             "skipped": None,
         }
         if entry is None:
@@ -395,13 +440,19 @@ def apply_host(
             host_rec["services"].append(svc_rec)
             continue
         chosen = sample_keys(tag, hostname, svc, list(files), fraction)
+        keyfile = stage_lines(vm, chosen, tag, svc, "keys")
+        if keyfile is None:
+            svc_rec["skipped"] = "error:could not stage the key list"
+            host_rec["services"].append(svc_rec)
+            continue
         rot_res = remote.run_script(
             vm,
             ROT_SCRIPT,
-            [tag, svc, roots[svc], BACKUP_ROOT, *chosen],
+            [tag, svc, roots[svc], BACKUP_ROOT, keyfile],
             timeout=60 + 2 * len(chosen),
         )
-        outcomes, svc_error = parse_rot(rot_res)
+        outcomes, svc_error, rotted_at = parse_rot(rot_res)
+        svc_rec["rotted_at"] = rotted_at
         if svc_error:
             svc_rec["skipped"] = svc_error
             host_rec["services"].append(svc_rec)
@@ -413,9 +464,15 @@ def apply_host(
         # still an untouched file, and the verify pass must watch it as one.
         svc_rec["intact"] = [files[k] for k in sorted(files) if k not in set(rotted)]
         if failed:
-            svc_rec["skipped"] = "error:" + "; ".join(
-                f"{k[:8]}:{v}" for k, v in sorted(failed.items())
-            )
+            # A per-key failure is NOT a skip while other keys rotted: the
+            # service was injected, and counting it as skipped would drop the
+            # run's `injected` gate by one over a transient `cp`. The exit code
+            # still goes to 1 from `errors` being set.
+            svc_rec["errors"] = {k: v for k, v in sorted(failed.items())}
+            if not rotted:
+                svc_rec["skipped"] = "error:" + "; ".join(
+                    f"{k[:8]}:{v}" for k, v in sorted(failed.items())
+                )
         host_rec["services"].append(svc_rec)
     return host_rec
 
@@ -457,9 +514,9 @@ def cmd_apply(args: argparse.Namespace, console: Console) -> int:
     path.write_text(json.dumps(manifest, indent=2))
 
     table = Table(title=f"rot-chunks apply tag={args.tag}")
-    for col in ("host", "service", "total", "rotted", "intact", "skipped"):
+    for col in ("host", "service", "total", "rotted", "intact", "skipped", "key errors"):
         table.add_column(col)
-    injected = skipped = rotted_keys = services = 0
+    injected = skipped = rotted_keys = services = key_errors = 0
     for host in results:
         for svc in host["services"]:
             services += 1
@@ -468,6 +525,7 @@ def cmd_apply(args: argparse.Namespace, console: Console) -> int:
             else:
                 injected += 1
             rotted_keys += len(svc["rotted"])
+            key_errors += len(svc["errors"] or {})
             table.add_row(
                 host["hostname"] or host["ip"],
                 svc["service"],
@@ -475,6 +533,7 @@ def cmd_apply(args: argparse.Namespace, console: Console) -> int:
                 str(len(svc["rotted"])),
                 str(len(svc["intact"])),
                 svc["skipped"] or "",
+                str(len(svc["errors"] or {})) if svc["errors"] else "",
             )
     console.print(table)
     console.print(f"wrote {path}")
@@ -482,12 +541,13 @@ def cmd_apply(args: argparse.Namespace, console: Console) -> int:
     # phase script and rich would soft-wrap it at the terminal width.
     print(
         f"ROT_APPLY tag={args.tag} hosts={len(results)} services={services} "
-        f"injected={injected} skipped={skipped} rotted_keys={rotted_keys}"
+        f"injected={injected} skipped={skipped} rotted_keys={rotted_keys} "
+        f"key_errors={key_errors}"
     )
     errored = [h["ip"] for h in results if h["error"]] + [
         h["ip"]
         for h in results
-        if any((s["skipped"] or "").startswith("error:") for s in h["services"])
+        if any((s["skipped"] or "").startswith("error:") or s["errors"] for s in h["services"])
     ]
     if errored:
         console.print(
@@ -501,32 +561,56 @@ def cmd_apply(args: argparse.Namespace, console: Console) -> int:
 # -- verify ----------------------------------------------------------------
 def verify_host(
     vm: hosts.Vm, host_rec: dict, tag: str
-) -> tuple[dict[tuple[str, str], dict], str | None]:
-    """Re-read every manifest key of one host; returns records and any host error."""
+) -> tuple[dict[tuple[str, str], dict], str | None, set[str]]:
+    """Re-read every manifest key of one host.
+
+    Returns the records, any host error, and the services that were asked and
+    answered nothing -- an unanswered service is NOT an empty chunk store, so
+    its keys must not be classified from the absence of a record.
+    """
     records: dict[tuple[str, str], dict] = {}
     error: str | None = None
+    unanswered: set[str] = set()
     for svc in host_rec["services"]:
         specs = [f"R:{k}" for k in svc["rotted"]] + [f"I:{f['key']}" for f in svc["intact"]]
         if not specs or not svc["root"]:
             continue
+        specfile = stage_lines(vm, specs, tag, svc["service"], "specs")
+        if specfile is None:
+            unanswered.add(svc["service"])
+            error = "could not stage the key list"
+            continue
         res = remote.run_script(
             vm,
             VERIFY_SCRIPT,
-            [tag, svc["service"], svc["root"], BACKUP_ROOT, *specs],
+            [tag, svc["service"], svc["root"], BACKUP_ROOT, specfile],
             timeout=120 + 2 * len(specs),
         )
         parsed = parse_verify(res)
         if not parsed:
             error = (res.stderr or res.stdout).strip()[-400:] or "no verify records"
+            unanswered.add(svc["service"])
         records.update(parsed)
-    return records, error
+    return records, error, unanswered
 
 
-def classify_host(host_rec: dict, records: dict[tuple[str, str], dict]) -> list[dict]:
+def classify_host(
+    host_rec: dict,
+    records: dict[tuple[str, str], dict],
+    unanswered: set[str] | None = None,
+) -> list[dict]:
+    """Classify one host's manifest keys against what the host reported.
+
+    A key of a service that answered nothing is `unknown`, never `removed` or
+    `missing`: an unreachable host would otherwise fabricate a removal for
+    every injected key and a loss for every control key.
+    """
+    unanswered = unanswered or set()
     rows = []
     host = host_rec["hostname"] or host_rec["ip"]
     for svc in host_rec["services"]:
         name = svc["service"]
+        blind = name in unanswered
         for key in svc["rotted"]:
             rows.append(
                 {
@@ -534,7 +618,7 @@ def classify_host(host_rec: dict, records: dict[tuple[str, str], dict]) -> list[
                     "service": name,
                     "key": key,
                     "kind": "rotted",
-                    "class": classify_rotted(records.get((name, key))),
+                    "class": "unknown" if blind else classify_rotted(records.get((name, key))),
                 }
             )
         for f in svc["intact"]:
@@ -544,7 +628,9 @@ def classify_host(host_rec: dict, records: dict[tuple[str, str], dict]) -> list[
                     "service": name,
                     "key": f["key"],
                     "kind": "intact",
-                    "class": classify_intact(records.get((name, f["key"])), f),
+                    "class": "unknown"
+                    if blind
+                    else classify_intact(records.get((name, f["key"])), f),
                 }
             )
     return rows
@@ -566,6 +652,10 @@ def verify_totals(rows: list[dict]) -> dict:
         "unchanged": counts["unchanged"],
         "changed": counts["changed"],
         "missing": counts["missing"],
+        # Not read, as against read and found absent. Deliberately in no other
+        # bucket: `repaired` + `removed` + `still_rotted` + `other` falls short
+        # of `rotted_keys` by exactly the rotted keys nobody could read.
+        "unknown": counts["unknown"],
     }
 
 
@@ -581,10 +671,13 @@ def cmd_verify(args: argparse.Namespace, console: Console) -> int:
     results = remote.run_parallel(vms, lambda vm: verify_host(vm, by_ip[vm.ip], args.tag))
     rows: list[dict] = []
     errors: list[str] = []
-    for vm, (records, error) in zip(vms, results, strict=False):
+    unreachable: list[str] = []
+    for vm, (records, error, unanswered) in zip(vms, results, strict=False):
         if error:
             errors.append(f"{vm.ip}: {error}")
-        rows.extend(classify_host(by_ip[vm.ip], records))
+        if unanswered:
+            unreachable.append(vm.ip)
+        rows.extend(classify_host(by_ip[vm.ip], records, unanswered))
 
     verified_at = iso(utc_now())
     totals = verify_totals(rows)
@@ -592,7 +685,14 @@ def cmd_verify(args: argparse.Namespace, console: Console) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
-            {"tag": args.tag, "verified_at": verified_at, "keys": rows, "totals": totals}, indent=2
+            {
+                "tag": args.tag,
+                "verified_at": verified_at,
+                "keys": rows,
+                "totals": totals,
+                "unreachable_hosts": unreachable,
+            },
+            indent=2,
         )
     )
 
@@ -609,6 +709,7 @@ def cmd_verify(args: argparse.Namespace, console: Console) -> int:
         "unchanged",
         "changed",
         "missing",
+        "unknown",
     ):
         table.add_column(col)
     per_service: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -628,6 +729,7 @@ def cmd_verify(args: argparse.Namespace, console: Console) -> int:
             str(t["unchanged"]),
             str(t["changed"]),
             str(t["missing"]),
+            str(t["unknown"]),
         )
     console.print(table)
     console.print(f"wrote {out_path}")
@@ -637,7 +739,8 @@ def cmd_verify(args: argparse.Namespace, console: Console) -> int:
         f"removed={totals['removed']} still_rotted={totals['still_rotted']} "
         f"other={totals['other']} intact={totals['intact_keys']} "
         f"unchanged={totals['unchanged']} changed={totals['changed']} "
-        f"missing={totals['missing']}"
+        f"missing={totals['missing']} unknown={totals['unknown']} "
+        f"unreachable_hosts={','.join(unreachable) if unreachable else '-'}"
     )
     if errors:
         console.print("[bold red]host error(s): " + "; ".join(errors) + "[/bold red]")
@@ -694,12 +797,30 @@ def attribution_for(detected: datetime | None, removed: datetime | None) -> str:
     return "detected_only" if detected is not None else "none"
 
 
+def injected_hosts(manifest: dict) -> list[str]:
+    """The hosts something was actually injected on.
+
+    A host skipped for `too_few_files` carries no rotted key, so counting it in
+    the `targets_detected` denominator would read as a detection miss.
+    """
+    return [
+        h["hostname"] or h["ip"]
+        for h in manifest["hosts"]
+        if any(s["skipped"] is None for s in h["services"])
+    ]
+
+
 def attribute_keys(manifest: dict, detections: dict, removals: dict) -> list[dict]:
+    fallback = parse_ts(manifest["applied_at"]) if manifest.get("applied_at") else None
     rows = []
     for host_rec in manifest["hosts"]:
         host = host_rec["hostname"] or host_rec["ip"]
         es_host = str(host).upper()
         for svc in host_rec["services"]:
+            # Latency is measured from THIS service's own injection, not from
+            # the manifest's applied_at, which precedes the probe and the
+            # full-service sha256 listing pass by however long those took.
+            origin = parse_ts(svc["rotted_at"]) if svc.get("rotted_at") else fallback
             for key in svc["rotted"]:
                 detected = detections.get((es_host, key.lower()))
                 removed = removals.get((es_host, key.lower()))
@@ -713,17 +834,21 @@ def attribute_keys(manifest: dict, detections: dict, removals: dict) -> list[dic
                         "attribution": attribution_for(detected, removed),
                         "_detected": detected,
                         "_removed": removed,
+                        "_origin": origin,
                     }
                 )
     return rows
 
 
-def _service_stats(group: list[dict], applied: datetime | None) -> dict:
+def _service_stats(group: list[dict]) -> dict:
     detected = [r for r in group if r["_detected"] is not None]
     removed = [r for r in group if r["_removed"] is not None]
-    latency = None
-    if detected and applied is not None:
-        latency = round(min(r["_detected"] for r in detected).timestamp() - applied.timestamp(), 1)
+    latencies = [
+        r["_detected"].timestamp() - r["_origin"].timestamp()
+        for r in detected
+        if r.get("_origin") is not None
+    ]
+    latency = round(min(latencies), 1) if latencies else None
     gaps = [
         (r["_removed"] - r["_detected"]).total_seconds()
         for r in group
@@ -757,7 +882,6 @@ def cmd_attribute(args: argparse.Namespace, console: Console) -> int:
     manifest = json.loads(path.read_text())
     start = args.start or manifest["applied_at"]
     end = args.end or iso(utc_now())
-    applied = parse_ts(manifest["applied_at"]) if manifest.get("applied_at") else None
 
     run = EsRun(args.name)
     docs = fetch_docs(run, start, end)
@@ -787,7 +911,7 @@ def cmd_attribute(args: argparse.Namespace, console: Console) -> int:
     ):
         table.add_column(col)
     for (host, service), group in sorted(per_service.items()):
-        s = _service_stats(group, applied)
+        s = _service_stats(group)
         table.add_row(
             host,
             service,
@@ -825,7 +949,8 @@ def cmd_attribute(args: argparse.Namespace, console: Console) -> int:
     console.print(phrase_table)
 
     control = nontarget_removals(removal_hosts, target_hosts)
-    totals = _service_stats(rows, applied)
+    totals = _service_stats(rows)
+    injected = injected_hosts(manifest)
     detected_hosts = {r["host"] for r in rows if r["_detected"] is not None}
     payload_rows = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]
     out_path = sidecar_path(args.name, args.tag, "attribute", args.json_out, stamp())
@@ -837,6 +962,7 @@ def cmd_attribute(args: argparse.Namespace, console: Console) -> int:
                 "window": {"start": start, "end": end},
                 "keys": payload_rows,
                 "per_target": per_target,
+                "injected_hosts": injected,
                 "nontarget_removals": control,
                 "totals": totals,
             },
@@ -856,7 +982,7 @@ def cmd_attribute(args: argparse.Namespace, console: Console) -> int:
         f"rotted_keys={totals['rotted']} detected={totals['detected']} "
         f"removed={totals['removed']} audit={totals['audit']} fetch={totals['fetch']} "
         f"detected_only={totals['detected_only']} none={totals['none']} "
-        f"targets_detected={len(detected_hosts)}/{len(target_hosts)} "
+        f"targets_detected={len(detected_hosts)}/{len(injected)} "
         f"overflow_lines={overflow} not_removable_lines={not_removable} "
         f"nontarget_removals={control['count']}"
     )

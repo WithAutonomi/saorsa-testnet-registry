@@ -110,15 +110,41 @@ def _list_out(per_service: dict[str, list[str]]) -> str:
     return "\n".join(lines) + "\nSTATUS=done\n"
 
 
+ROTTED_AT = "2026-10-06T10:02:00Z"
+
+
+def _staging_push(store: dict | None = None):
+    """A `push_file` stand-in that records what each spec/key file holds."""
+    store = {} if store is None else store
+
+    def push(vm, content, remote_path, timeout=120):
+        store[(vm.ip, remote_path)] = [ln for ln in content.splitlines() if ln]
+        return RemoteResult(vm, 0, "STATUS=pushed\n", "")
+
+    return push, store
+
+
 def _rot_out(service: str, keys: list[str], failures: dict[str, str] | None = None) -> str:
     failures = failures or {}
-    lines = [f"ROT\t{service}\t{k}\t{failures.get(k, 'ok')}" for k in keys]
+    lines = [f"ROTAT\t{service}\t{ROTTED_AT}"]
+    lines += [f"ROT\t{service}\t{k}\t{failures.get(k, 'ok')}" for k in keys]
     return "\n".join(lines) + "\nSTATUS=done\n"
 
 
 def _fake_remote(listings: dict[str, dict[str, list[str]]], rot_failures=None, probe_exec=True):
-    """A run_script stand-in that answers the probe, list and rot payloads."""
-    calls = {"probe": [], "list": [], "rot": []}
+    """Stand-ins for `run_script` and `push_file`.
+
+    The key list is staged as a file rather than passed on argv, so the fake
+    `push_file` records it and the rot payload is answered from what was staged.
+    """
+    calls = {"probe": [], "list": [], "rot": [], "pushed": []}
+    staged: dict[tuple[str, str], list[str]] = {}
+
+    def push(vm, content, remote_path, timeout=120):
+        lines = [ln for ln in content.splitlines() if ln]
+        staged[(vm.ip, remote_path)] = lines
+        calls["pushed"].append((vm.ip, remote_path, tuple(lines)))
+        return RemoteResult(vm, 0, "STATUS=pushed\n", "")
 
     def run(vm, script, args=(), timeout=None, stdin_extra=""):
         args = list(args)
@@ -136,14 +162,15 @@ def _fake_remote(listings: dict[str, dict[str, list[str]]], rot_failures=None, p
                 "",
             )
         if script == rot_chunks.ROT_SCRIPT:
-            _tag, service, _root, _backup, *keys = args
+            _tag, service, _root, _backup, keyfile = args
+            keys = staged[(vm.ip, keyfile)]
             calls["rot"].append((vm.ip, service, tuple(keys)))
             return RemoteResult(
                 vm, 0, _rot_out(service, keys, (rot_failures or {}).get(service)), ""
             )
         raise AssertionError("unexpected script")
 
-    return run, calls
+    return run, push, calls
 
 
 # --- 1. sampling -----------------------------------------------------------
@@ -172,9 +199,12 @@ def test_service_below_min_files_is_skipped_and_never_rotted(inventory, tmp_path
         HOST_A: {"ant-node-1": [key(i) for i in range(37)], "ant-node-2": []},
         HOST_B: {"ant-node-1": [key(i) for i in range(500, 700)]},
     }
-    run, calls = _fake_remote(listings)
+    run, push, calls = _fake_remote(listings)
     out = tmp_path / "m.json"
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(inventory=inventory, ips=[HOST_A_IP], apply=True, out=str(out))
         )
@@ -197,9 +227,12 @@ def test_apply_writes_manifest_with_disjoint_rotted_and_intact_sets(inventory, t
         HOST_A: {"ant-node-1": a_keys, "ant-node-2": a_keys},
         HOST_B: {"ant-node-1": b_keys},
     }
-    run, calls = _fake_remote(listings)
+    run, push, calls = _fake_remote(listings)
     out = tmp_path / "m.json"
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(
                 inventory=inventory,
@@ -236,8 +269,11 @@ def test_apply_writes_manifest_with_disjoint_rotted_and_intact_sets(inventory, t
 def test_apply_refuses_a_tag_that_already_has_a_manifest(inventory, tmp_path):
     out = tmp_path / "m.json"
     out.write_text("{}")
-    run, calls = _fake_remote({})
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    run, push, calls = _fake_remote({})
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(inventory=inventory, ips=[HOST_A_IP], apply=True, out=str(out))
         )
@@ -246,24 +282,33 @@ def test_apply_refuses_a_tag_that_already_has_a_manifest(inventory, tmp_path):
     assert out.read_text() == "{}"
 
 
-def test_apply_reports_a_rot_error_but_still_writes_the_manifest(inventory, tmp_path):
+def test_apply_reports_a_rot_error_but_still_writes_the_manifest(inventory, tmp_path, capsys):
     keys = [key(i) for i in range(200)]
     chosen = rot_chunks.sample_keys("p1", HOST_B, "ant-node-1", keys, 0.5)
-    run, _ = _fake_remote(
+    run, push, _ = _fake_remote(
         {HOST_B: {"ant-node-1": keys}},
         rot_failures={"ant-node-1": {chosen[0]: "error:write_failed"}},
     )
     out = tmp_path / "m.json"
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(inventory=inventory, ips=[HOST_B_IP], apply=True, out=str(out))
         )
     assert rc == 1
     svc = json.loads(out.read_text())["hosts"][0]["services"][0]
     assert len(svc["rotted"]) == 99 and chosen[0] not in svc["rotted"]
-    assert svc["skipped"].startswith("error:")
+    # 99 keys rotted, so the SERVICE was injected: a per-key failure must not
+    # count it as skipped, which would drop the run's `injected` gate by one.
+    assert svc["skipped"] is None
+    assert svc["errors"] == {chosen[0]: "error:write_failed"}
+    assert svc["rotted_at"] == ROTTED_AT
     # the key that failed to rot stays in the control set -- it is untouched
     assert chosen[0] in {f["key"] for f in svc["intact"]}
+    out_text = capsys.readouterr().out
+    assert "injected=1 skipped=0" in out_text and "key_errors=1" in out_text
 
 
 def test_apply_without_ips_is_refused(inventory, tmp_path):
@@ -278,8 +323,12 @@ def test_apply_records_an_unreachable_host_and_exits_one(inventory, tmp_path):
     def run(vm, script, args=(), timeout=None, stdin_extra=""):
         return RemoteResult(vm, 255, "", "ssh: connect to host: Connection refused")
 
+    push, _staged = _staging_push()
     out = tmp_path / "m.json"
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(inventory=inventory, ips=[HOST_B_IP], apply=True, out=str(out))
         )
@@ -292,7 +341,7 @@ def test_apply_records_an_unreachable_host_and_exits_one(inventory, tmp_path):
 # --- 3. verify classification ---------------------------------------------
 
 
-def _manifest(tmp_path, rotted, intact, hostname=HOST_B, ip=HOST_B_IP):
+def _manifest(tmp_path, rotted, intact, hostname=HOST_B, ip=HOST_B_IP, rotted_at=ROTTED_AT):
     path = tmp_path / "m.json"
     path.write_text(
         json.dumps(
@@ -315,6 +364,8 @@ def _manifest(tmp_path, rotted, intact, hostname=HOST_B, ip=HOST_B_IP):
                                 "total_files": len(rotted) + len(intact),
                                 "rotted": rotted,
                                 "intact": intact,
+                                "rotted_at": rotted_at,
+                                "errors": None,
                                 "skipped": None,
                             }
                         ],
@@ -351,15 +402,21 @@ def test_verify_classifies_every_row_of_both_tables(inventory, tmp_path, capsys)
         _v("ant-node-1", "I", intact[2]["key"], False),  # missing
     ]
 
+    push, staged = _staging_push()
+
     def run(vm, script, args=(), timeout=None, stdin_extra=""):
         assert script == rot_chunks.VERIFY_SCRIPT
-        specs = args[4:]
-        assert [s[:2] for s in specs].count("R:") == 4
-        assert [s[:2] for s in specs].count("I:") == 3
+        # The specs travel in a staged file, never on the command line.
+        specs = staged[(vm.ip, args[4])]
+        assert [spec[:2] for spec in specs].count("R:") == 4
+        assert [spec[:2] for spec in specs].count("I:") == 3
         return RemoteResult(vm, 0, "\n".join(lines) + "\nSTATUS=done\n", "")
 
     report = tmp_path / "verify.json"
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(inventory=inventory, verify=True, out=str(path), json_out=str(report))
         )
@@ -385,12 +442,14 @@ def test_verify_classifies_every_row_of_both_tables(inventory, tmp_path, capsys)
         "unchanged": 1,
         "changed": 1,
         "missing": 1,
+        "unknown": 0,
     }
+    assert payload["unreachable_hosts"] == []
     assert payload["verified_at"].endswith("Z")
     out = capsys.readouterr().out
     assert "ROT_VERIFY tag=p1" in out
     assert "repaired=1 removed=1 still_rotted=1 other=1" in out
-    assert "intact=3 unchanged=1 changed=1 missing=1" in out
+    assert "intact=3 unchanged=1 changed=1 missing=1 unknown=0 unreachable_hosts=-" in out
 
 
 def test_verify_sha_change_alone_is_changed():
@@ -400,20 +459,64 @@ def test_verify_sha_change_alone_is_changed():
     assert rot_chunks.classify_intact({**rec, "sha256": "aaa"}, expected) == "unchanged"
 
 
-def test_verify_unreachable_host_exits_one_but_still_reports(inventory, tmp_path):
-    path = _manifest(tmp_path, [key(1)], [])
+def test_verify_unreachable_host_reports_unknown_not_removed(inventory, tmp_path, capsys):
+    """An unreachable host must not fabricate a removal for every injected key."""
+    path = _manifest(tmp_path, [key(1), key(2)], [{"key": key(3), "size": 10, "sha256": "a"}])
 
     def run(vm, script, args=(), timeout=None, stdin_extra=""):
         return RemoteResult(vm, 255, "", "ssh: connect to host: Connection refused")
 
+    push, _staged = _staging_push()
     report = tmp_path / "verify.json"
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(inventory=inventory, verify=True, out=str(path), json_out=str(report))
         )
     assert rc == 1
-    # an unanswered key is "removed" on disk, but the host error is what is loud
-    assert json.loads(report.read_text())["totals"]["removed"] == 1
+    payload = json.loads(report.read_text())
+    assert payload["totals"]["removed"] == 0
+    assert payload["totals"]["missing"] == 0
+    assert payload["totals"]["repaired"] == 0
+    assert payload["totals"]["unknown"] == 3
+    assert {r["class"] for r in payload["keys"]} == {"unknown"}
+    assert payload["unreachable_hosts"] == [HOST_B_IP]
+    out = capsys.readouterr().out
+    assert "unknown=3" in out and f"unreachable_hosts={HOST_B_IP}" in out
+
+
+def test_verify_staging_failure_is_unknown_too(inventory, tmp_path):
+    path = _manifest(tmp_path, [key(1)], [])
+
+    def run(vm, script, args=(), timeout=None, stdin_extra=""):
+        raise AssertionError("the verify script must not run when staging failed")
+
+    def push(vm, content, remote_path, timeout=120):
+        return RemoteResult(vm, 1, "", "disk full")
+
+    report = tmp_path / "verify.json"
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
+        rc = rot_chunks.cmd_rot_chunks(
+            _args(inventory=inventory, verify=True, out=str(path), json_out=str(report))
+        )
+    assert rc == 1
+    assert json.loads(report.read_text())["totals"] == {
+        "rotted_keys": 1,
+        "repaired": 0,
+        "removed": 0,
+        "still_rotted": 0,
+        "other": 0,
+        "intact_keys": 0,
+        "unchanged": 0,
+        "changed": 0,
+        "missing": 0,
+        "unknown": 1,
+    }
 
 
 def test_verify_missing_manifest_exits_one(inventory, tmp_path):
@@ -432,7 +535,12 @@ def _doc(host, ts, message):
 
 def test_attribute_joins_detections_and_removals_per_key(inventory, tmp_path, capsys):
     k_audit, k_fetch, k_detected, k_none = (key(i) for i in range(1, 5))
-    path = _manifest(tmp_path, [k_audit, k_fetch, k_detected, k_none], [])
+    path = _manifest(
+        tmp_path,
+        [k_audit, k_fetch, k_detected, k_none],
+        [],
+        rotted_at="2026-10-06T10:00:10Z",
+    )
     docs = {
         "detection": [
             # ES stores tag.host upper-cased; the manifest holds the inventory spelling
@@ -520,8 +628,11 @@ def test_attribute_joins_detections_and_removals_per_key(inventory, tmp_path, ca
     assert not any(k.startswith("_") for r in payload["keys"] for k in r)
 
     assert payload["totals"]["detected"] == 2 and payload["totals"]["removed"] == 2
-    assert payload["totals"]["first_detection_latency_s"] == 30.0
+    # measured from the service's own rotted_at (10:00:10), NOT from
+    # applied_at (10:00:00), which precedes the listing and sha256 pass
+    assert payload["totals"]["first_detection_latency_s"] == 20.0
     assert payload["totals"]["median_detect_to_remove_s"] == 120.0
+    assert payload["injected_hosts"] == [HOST_B]
     assert payload["nontarget_removals"] == {
         "count": 2,
         "hosts": {"DEV-04-ANT-NODE-PLAIN-9": 2},
@@ -612,9 +723,12 @@ def test_root_dir_falls_back_when_exec_start_has_none():
 
 def test_apply_uses_the_fallback_root_when_the_unit_has_none(inventory, tmp_path):
     keys = [key(i) for i in range(120)]
-    run, calls = _fake_remote({HOST_B: {"ant-node-1": keys}}, probe_exec=False)
+    run, push, calls = _fake_remote({HOST_B: {"ant-node-1": keys}}, probe_exec=False)
     out = tmp_path / "m.json"
-    with patch("saorsa_deploy.analysis.remote.run_script", side_effect=run):
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
         rc = rot_chunks.cmd_rot_chunks(
             _args(inventory=inventory, ips=[HOST_B_IP], apply=True, out=str(out))
         )
@@ -646,6 +760,176 @@ def test_listing_ignores_non_key_filenames():
 def test_rot_script_never_deletes_or_renames_and_writes_in_place():
     # The property the whole measurement rests on: ant-node takes a different
     # path for a *missing* file than for one that no longer hashes to its key.
-    assert " rm " not in rot_chunks.ROT_SCRIPT and "mv " not in rot_chunks.ROT_SCRIPT
+    assert "mv " not in rot_chunks.ROT_SCRIPT
+    # the only removal in the script is the staged key list, never a chunk file
+    removals = [ln.strip() for ln in rot_chunks.ROT_SCRIPT.splitlines() if "rm " in ln]
+    assert removals == ['rm -f "$KEYFILE"', 'rm -f "$KEYFILE"']
     assert 'printf \'%s\' "rotted" > "$F"' in rot_chunks.ROT_SCRIPT
     assert 'cp -p "$F" "$BK/$KEY"' in rot_chunks.ROT_SCRIPT
+
+
+# --- 6. the key list never travels on the command line ---------------------
+
+
+def test_apply_and_verify_stage_keys_as_a_file_never_on_argv(inventory, tmp_path):
+    """ssh hands `bash -s -- …` to the remote shell as ONE argument, capped at
+    MAX_ARG_STRLEN (128 KiB), so a service with a few thousand files would fail
+    outright if its keys went on the command line."""
+    keys = [key(i) for i in range(4000)]
+    run, push, calls = _fake_remote({HOST_B: {"ant-node-1": keys}})
+    manifest = tmp_path / "m.json"
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
+        rc = rot_chunks.cmd_rot_chunks(
+            _args(inventory=inventory, ips=[HOST_B_IP], apply=True, out=str(manifest))
+        )
+    assert rc == 0
+    svc = json.loads(manifest.read_text())["hosts"][0]["services"][0]
+    assert len(svc["rotted"]) == 2000
+    # the 2,000 keys reached the host through the staged file
+    assert len(calls["pushed"][0][2]) == 2000
+    assert set(calls["pushed"][0][2]) == set(svc["rotted"])
+
+    # ... and the same holds for verify, which sends rotted AND intact together
+    seen = {}
+
+    def verify_run(vm, script, args=(), timeout=None, stdin_extra=""):
+        assert len(args) == 5, "the spec list must not be spread across argv"
+        assert max(len(a) for a in args) < 200
+        seen["specs"] = push_store[(vm.ip, args[4])]
+        return RemoteResult(vm, 0, "STATUS=done\n", "")
+
+    verify_push, push_store = _staging_push()
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=verify_run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=verify_push),
+    ):
+        rot_chunks.cmd_rot_chunks(
+            _args(
+                inventory=inventory,
+                verify=True,
+                out=str(manifest),
+                json_out=str(tmp_path / "v.json"),
+            )
+        )
+    assert len(seen["specs"]) == 4000
+
+
+def test_apply_argv_is_bounded_whatever_the_key_count(inventory, tmp_path):
+    keys = [key(i) for i in range(4000)]
+    run, push, calls = _fake_remote({HOST_B: {"ant-node-1": keys}})
+    recorded = []
+
+    def recording_run(vm, script, args=(), timeout=None, stdin_extra=""):
+        recorded.append(sum(len(a) + 1 for a in args))
+        return run(vm, script, args, timeout, stdin_extra)
+
+    with (
+        patch("saorsa_deploy.analysis.remote.run_script", side_effect=recording_run),
+        patch("saorsa_deploy.analysis.remote.push_file", side_effect=push),
+    ):
+        rot_chunks.cmd_rot_chunks(
+            _args(inventory=inventory, ips=[HOST_B_IP], apply=True, out=str(tmp_path / "m.json"))
+        )
+    # 128 KiB is the kernel's per-argument cap; nothing here comes near it
+    assert max(recorded) < 1024
+
+
+# --- 7. targets_detected counts injected hosts only ------------------------
+
+
+def test_targets_detected_denominator_excludes_a_skipped_host(inventory, tmp_path, capsys):
+    """A host skipped for too_few_files carries no rotted key, so counting it
+    in the denominator would read as a detection miss."""
+    path = tmp_path / "m.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "DEV-04",
+                "tag": "p1",
+                "applied_at": "2026-10-06T10:00:00Z",
+                "finished_at": "2026-10-06T10:01:00Z",
+                "fraction": 0.5,
+                "min_files": 100,
+                "hosts": [
+                    {
+                        "ip": HOST_B_IP,
+                        "hostname": HOST_B,
+                        "nat_simulated": False,
+                        "services": [
+                            {
+                                "service": "ant-node-1",
+                                "root": "/r",
+                                "total_files": 200,
+                                "rotted": [key(1)],
+                                "intact": [],
+                                "rotted_at": ROTTED_AT,
+                                "errors": None,
+                                "skipped": None,
+                            }
+                        ],
+                    },
+                    {
+                        "ip": HOST_A_IP,
+                        "hostname": HOST_A,
+                        "nat_simulated": True,
+                        "services": [
+                            {
+                                "service": "ant-node-1",
+                                "root": "/r",
+                                "total_files": 12,
+                                "rotted": [],
+                                "intact": [],
+                                "rotted_at": None,
+                                "errors": None,
+                                "skipped": "too_few_files:12",
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+    )
+    docs = {
+        "detection": [
+            _doc(HOST_B.upper(), "2026-10-06T10:03:00Z", f"committed key {key(1)} does not hash")
+        ],
+        "removal": [],
+        "not_removable": [],
+        "overflow": [],
+        "stale_commitment": [],
+    }
+
+    def fake_hits(self, filters, start, end, index=None, fields=None, page_size=1000):
+        phrase = filters[0]["match_phrase"]["tail.message"]
+        kind = next(k for k, v in rot_chunks.PHRASES.items() if v == phrase)
+        return docs[kind]
+
+    with patch("saorsa_deploy.analysis.es.EsRun.hits", new=fake_hits):
+        rc = rot_chunks.cmd_rot_chunks(
+            _args(
+                inventory=inventory,
+                attribute=True,
+                out=str(path),
+                json_out=str(tmp_path / "a.json"),
+            )
+        )
+    assert rc == 0
+    assert rot_chunks.injected_hosts(json.loads(path.read_text())) == [HOST_B]
+    # 1/1, not 1/2: the skipped host was never a target
+    assert "targets_detected=1/1" in capsys.readouterr().out
+
+
+def test_injected_hosts_is_empty_when_every_service_was_skipped():
+    manifest = {
+        "hosts": [
+            {
+                "ip": "10.0.0.9",
+                "hostname": "H",
+                "services": [{"skipped": "too_few_files:3"}, {"skipped": "error:boom"}],
+            }
+        ]
+    }
+    assert rot_chunks.injected_hosts(manifest) == []
