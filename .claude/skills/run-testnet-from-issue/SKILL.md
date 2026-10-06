@@ -14,7 +14,10 @@ which one to use.
 ## Rules
 
 * Coordination only. Every action is a `saorsa-deploy` CLI command, a read-only query (SSH `df`,
-  ES/Influx/Grafana), or a Linear update. No host is modified during the run.
+  ES/Influx/Grafana), or a Linear update. A host is modified only when the issue's phase
+  commands direct it through a committed `saorsa-deploy` command (for example `analysis
+  isolate`, `analysis restart-nodes`, `analysis rot-chunks`); never on the runner's own
+  initiative, and the time and targets go in the results comment.
 * This run is **unattended**. You must ABSOLUTELY NEVER block on a question for the user. If you
   reach a decision you cannot make from the issue, the code, or these rules, **abandon the run**
   (see "Abandoning the run") and report the question in the results comment.

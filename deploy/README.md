@@ -2221,6 +2221,7 @@ teardown; there is no backfill.
 | `analysis fetch --name N --tag T --ips … --out-dir D` | scp back the pcap / json / log / tcpdump.err / probe log for a tag. |
 | `analysis restart-nodes --name N --ips … [--services …] [--stagger-seconds 30] --tag T [--out F]` | Graceful stop + start of every (or the named) ant-node service on each VM in turn, recording per-service **stop duration** (the shutdown cost) and per-VM UTC window edges. Exits non-zero if any service is not active afterwards. |
 | `analysis stall-probe --name N --ip IP --seconds S --peers K --tag T [--dry-run]` | Blocks UDP to/from K live peers, one at a time, for S seconds via iptables in the nodes' namespace, with trap-cleaned rules and a JSONL log. Always `--dry-run` first on the real VM, then one 3 s smoke probe. |
+| `analysis rot-chunks --name N --tag T (--apply --ips … [--services …] [--fraction 0.5] [--min-files 100] \| --verify \| --attribute [--start … --end …]) [--out F] [--json-out F]` | Corrupt a deterministic sample of chunk files **in place** on the given node VMs, then re-read them from disk, then attribute each removal to an audit detection or to a fetch. See below. |
 | `analysis smoke --name N` | ES + InfluxDB reachable, node logs arriving, `net` fields present. |
 | `analysis log-count --name N --phrase P --start … --end … [--index node\|client] [--hosts …]` | Count of a log phrase in a window with host cardinality, top hosts and level breakdown. |
 | `analysis counter-delta --name N --field tail.X --start … --end …` | Delta and rate of a cumulative per-service counter (per host, per service, max − min; single-sample services reported, not folded in as zero). |
@@ -2234,6 +2235,107 @@ teardown; there is no backfill.
 | `analysis backstop PCAP [--local IP]` | Dialler/acceptor role inference and acceptor-originated unsolicited datagrams (the accept-side keep-alive fingerprint). |
 | `analysis probe-score PCAP --probes F.jsonl --local IP` | Joins a stall-probe log with a pcap: SURVIVED / DIED per probed flow. |
 | `analysis close-delivery PCAP --teardowns F.jsonl --local IP` | For each flow to a torn-down relay address that ended around the teardown: TOLD (last datagram inbound, ≤ 1 outbound after) vs UNTOLD (≥ 2 outbound after the last inbound — the dialler pinging into the void). |
+
+#### `analysis rot-chunks` — injecting the corruption a run has to measure (V2-1442)
+
+ant-node PR #242 (V2-1382) makes a node whose chunk file no longer hashes to its
+key report that key from round 1 of a subtree audit, remove the file, stop
+claiming the key and let replication refetch it. **Nothing rots on its own
+inside a six-hour testnet**, so a run that tests the repair path has to corrupt
+the files itself and then prove, from disk and from Elasticsearch, what happened
+to each key. The three modes are one invocation each.
+
+**`--apply`** resolves each service's root dir from its unit (`--root-dir` out of
+`systemctl show -p ExecStart --value`, falling back to
+`/mnt/ant-node-storage/data/<service>`), lists every chunk file under
+`<root>/chunks/<xy>/<64 hex>` with its size and sha256, samples `round(n ×
+--fraction)` of them with `random.Random(f"{tag}:{host}:{service}")`, copies each
+one to `/mnt/ant-node-storage/rot-backup/<tag>/<service>/` and overwrites the
+original with the six bytes `rotted`. A service holding fewer than `--min-files`
+files is recorded as `too_few_files:<n>` and **not touched at all**. Hosts run in
+parallel, services on a host in order. The manifest records each service's own
+`rotted_at`, taken from the host's clock at the start of its rot.
+
+**A per-key failure is not a skip.** While any key of a service rotted, the
+service is `injected` and its failures are listed in the record's `errors` field
+rather than in `skipped` — a transient `cp` would otherwise take a service out of
+the run's `injected` count although its keys are in fact rotted. The exit code is
+still 1.
+
+The manifest is `~/.autonomi/testnets/<name>/rot-chunks-<tag>.json` (or `--out`)
+and is the input to both other modes: it holds the rotted keys and, as the
+control set, every untouched key with its size and sha256. **A tag whose manifest
+already exists is refused (exit 2)** rather than rotting a second slice. Exit 1
+if a host was unreachable or any key failed to rot; the manifest is still
+written with what succeeded.
+
+**`--verify`** re-reads every key in the manifest and classifies it: a rotted key
+is `removed` (absent), `rotted` (still the injected bytes), `repaired`
+(byte-identical to the backup) or `other`; a control key is `missing`, `changed`
+or `unchanged`. **A key of a service that answered nothing is `unknown`** — not
+read, as against read and found absent. That distinction is load-bearing: an
+unreachable host would otherwise report a removal for every injected key and a
+loss for every control key, which is exactly the shape of the result the run is
+gating on. `unknown` is in no other bucket, so `repaired` + `removed` +
+`still_rotted` + `other` falls short of `rotted_keys` by precisely the keys
+nobody could read, and the summary names the hosts. It writes
+`rot-chunks-<tag>.verify-<UTC yyyymmddThhmmssZ>.json` (or `--json-out`), whose
+`.keys[]` a phase script filters on `.class == "repaired"`. **Classifications
+never change the exit code** — it is a report. Exit 1 only for an unreachable
+host or a missing manifest.
+
+**`--attribute`** joins the manifest with the node log index over
+`applied_at`..now (or `--start`/`--end`), matching five ant-node phrases and
+pulling the 64-hex key out of each message. Per rotted key it reports the first
+detection and the first removal **on that host**, and hence `audit` (detected at
+or before the removal — the path under test), `fetch` (removed with no prior
+detection), `detected_only` or `none`. It also prints the five phrase counts per
+target host and, as the control, **the removal lines on hosts the manifest never
+touched**. Output goes to `rot-chunks-<tag>.attribute-<UTC ts>.json`.
+
+`first_detection_latency_s` is measured from the service's own `rotted_at`, not
+from `applied_at`: the latter precedes the probe and the full-service `sha256sum`
+listing pass by however long those take, which would silently pad every latency.
+`applied_at` stays the ES window start, where a floor earlier than the first rot
+is only ever safe. `targets_detected` divides by the hosts something was actually
+injected on, so a host skipped for `too_few_files` is not counted as a detection
+miss.
+
+Each mode prints one unwrapped summary line for the run's phase script to grep:
+
+```
+ROT_APPLY tag=<tag> hosts=<n> services=<n> injected=<n> skipped=<n> rotted_keys=<n> key_errors=<n>
+ROT_VERIFY tag=<tag> verified_at=<ts> rotted_keys=<n> repaired=<n> removed=<n> still_rotted=<n> other=<n> intact=<n> unchanged=<n> changed=<n> missing=<n> unknown=<n> unreachable_hosts=<ip,… | ->
+ROT_ATTRIBUTE tag=<tag> window=<start>..<end> rotted_keys=<n> detected=<n> removed=<n> audit=<n> fetch=<n> detected_only=<n> none=<n> targets_detected=<n>/<m> overflow_lines=<n> not_removable_lines=<n> nontarget_removals=<n>
+```
+
+`injected` and `skipped` count **services**, not keys; they sum to `services`.
+Every timestamp the tool writes or prints is UTC ISO-8601 to the second with a
+`Z`, so a phase script can compare them as plain strings, and the path of every
+JSON file written is printed.
+
+Two warnings:
+
+* **The file is overwritten in place, never deleted or renamed** — the redirect
+  truncates and rewrites the same inode under the same name. A *missing* file
+  goes down a different code path in ant-node, so a run that deleted them would
+  measure something else entirely.
+* **Keep the node's `verify_on_read` at its default**, or nothing is repaired:
+  with verification off the node hands the rotted bytes back and never reports
+  the key, and every rotted key reads as `rotted` for the whole run.
+
+`--ips` is required by `--apply` (the target set is never implicit) and ignored
+by the other two modes, which take their host set from the manifest.
+
+**Keys are staged on the host as a file, never passed on the command line.** ssh
+hands the whole `bash -s -- …` command to the remote shell as one argument, which
+the kernel caps at `MAX_ARG_STRLEN` (128 KiB) — about 1,950 keys — and `--verify`
+sends a service's rotted *and* control keys together, so a busy service would
+fail outright. `remote.push_file` writes the list to `/var/tmp/` and the remote
+script deletes it when it is done. The `stdin_extra` seam cannot carry it: bash
+reads a piped script in blocks, so a `while read` loop consumes the rest of the
+script text and the statement after the loop never runs (measured, at every
+payload size).
 
 #### The failure the capture commands guard against (V2-988, 2026-08-15)
 
