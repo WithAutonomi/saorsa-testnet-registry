@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import statistics
 import sys
 from typing import Any
@@ -35,6 +34,7 @@ import requests
 from rich.console import Console
 from rich.table import Table
 
+from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.cmd.analysis import add_deployment_args, add_window_args
 from saorsa_deploy.es_log_counts import (
     HOST_FIELD,
@@ -380,13 +380,6 @@ def _quiet_tls() -> None:
     requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
 
-def _emit(obj: Any, json_out: str | None, console: Console) -> None:
-    if json_out:
-        with open(json_out, "w") as fh:
-            json.dump(obj, fh, indent=2)
-        console.print(f"wrote {json_out}")
-
-
 def cmd_smoke(args) -> int:
     _quiet_tls()
     console = Console()
@@ -414,22 +407,20 @@ def cmd_log_count(args) -> int:
     run = EsRun(args.name)
     index = run.client_index() if args.index == "client" else None
     result = run.count_phrase(args.phrase, args.start, args.end, index=index, hosts=args.hosts)
-    print(json.dumps(result, indent=2))
-    _emit(result, args.json_out, Console())
+    emit_json(result, args.json_out, console_for(args.json_out), echo=True)
     return 0
 
 
 def cmd_counter_delta(args) -> int:
     _quiet_tls()
     result = EsRun(args.name).counter_delta(args.field, args.start, args.end)
-    print(json.dumps(result, indent=2))
-    _emit(result, args.json_out, Console())
+    emit_json(result, args.json_out, console_for(args.json_out), echo=True)
     return 0
 
 
 def cmd_udp_rate(args) -> int:
     _quiet_tls()
-    console = Console()
+    console = console_for(args.json_out)
     rows = EsRun(args.name).udp_datagrams(args.start, args.end, every=args.every, field=args.field)
     means = per_host_udp_means(rows)
     table = Table(title=f"{args.field} mean rate per host, {args.every} buckets")
@@ -443,7 +434,7 @@ def cmd_udp_rate(args) -> int:
         "their node traffic is inside ant_nat (use `analysis snapshot`).[/dim]"
     )
     payload = {"field": args.field, "every": args.every, "per_host_mean": means}
-    _emit(payload, args.json_out, console)
+    emit_json(payload, args.json_out, console)
     return 0
 
 
@@ -465,7 +456,7 @@ def register(subparsers) -> None:
     add_window_args(p)
     p.add_argument("--index", choices=["node", "client"], default="node")
     p.add_argument("--hosts", nargs="+", default=None, help="Restrict to these tag.host values.")
-    p.add_argument("--json-out", default=None)
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_log_count)
 
     p = subparsers.add_parser(
@@ -478,7 +469,7 @@ def register(subparsers) -> None:
     add_deployment_args(p)
     p.add_argument("--field", required=True)
     add_window_args(p)
-    p.add_argument("--json-out", default=None)
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_counter_delta)
 
     p = subparsers.add_parser(
@@ -492,7 +483,7 @@ def register(subparsers) -> None:
     add_window_args(p)
     p.add_argument("--every", default="1m")
     p.add_argument("--field", default="udp_outdatagrams")
-    p.add_argument("--json-out", default=None)
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_udp_rate)
 
 

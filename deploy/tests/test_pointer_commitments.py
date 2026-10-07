@@ -230,6 +230,8 @@ def test_json_out_holds_the_same_shape_as_the_table(run, tmp_path):
             "end": "2026-10-03T04:00:00Z",
             "hosts": None,
             "json_out": str(out),
+            "min_rotations": None,
+            "min_hosts": None,
         },
     )()
     responses = [_response(10, 4), _response(10, 4), _response(2, 3), _response(8, 4)]
@@ -254,6 +256,181 @@ def test_the_rendered_table_shows_n_a_rather_than_a_percentage_of_nothing():
     text = console.export_text()
     assert "n/a" in text
     assert pc.STATUS_NOT_APPLICABLE in text
+
+
+# ---------------------------------------------------------------------------
+# Sufficiency: enough rotations to conclude anything (V2-1450)
+# ---------------------------------------------------------------------------
+
+
+def test_the_run_647_shape_is_insufficient_not_pass(run):
+    """One rotation, one host, non-zero, against the run issue's own criterion
+    of >=20 rotations on >=5 hosts. The compositional verdict is clean and the
+    sensitivity criterion was missed by more than an order of magnitude, which
+    is exactly the reading `PASS` must not be given to."""
+    responses = [
+        _response(1, 1),
+        _response(1, 1),
+        _response(0, 0),
+        _response(1, 1, (("DEV-06-ANT-NODE-DE1-1", 1),)),
+    ]
+    with patch.object(run, "search", side_effect=responses):
+        result = pc.collect(run, "S", "E", min_rotations=20, min_hosts=5)
+    assert result["status"] == pc.STATUS_INSUFFICIENT
+    assert result["non_zero"] == 1
+    assert result["pointer_coverage"] == 1.0
+
+
+def test_the_insufficient_detail_names_both_observed_values_and_both_floors():
+    result = pc.summarise(3, 3, 0, 2, 2, {}, min_rotations=20, min_hosts=5)
+    assert result["status"] == pc.STATUS_INSUFFICIENT
+    for fragment in ("3 rotation(s)", "floor of 20", "2 rotating host(s)", "floor of 5"):
+        assert fragment in result["detail"]
+
+
+def test_either_floor_alone_is_enough_to_be_short():
+    """Volume and spread are independent: 40 rotations all on one host does not
+    demonstrate spread, and 4 rotations across 9 hosts does not demonstrate
+    volume."""
+    spread = pc.summarise(40, 40, 10, 1, 1, {}, min_hosts=5)
+    assert spread["status"] == pc.STATUS_INSUFFICIENT
+    assert "floor of 5" in spread["detail"]
+    assert "floor of 20" not in spread["detail"]
+
+    volume = pc.summarise(4, 4, 1, 9, 9, {}, min_rotations=20)
+    assert volume["status"] == pc.STATUS_INSUFFICIENT
+    assert "floor of 20" in volume["detail"]
+
+
+def test_floors_that_are_met_pass_with_no_caveat():
+    result = pc.summarise(40, 40, 10, 8, 7, {}, min_rotations=20, min_hosts=5)
+    assert result["status"] == pc.STATUS_PASS
+    assert "NOT assessed" not in result["detail"]
+    assert result["min_rotations"] == 20 and result["min_hosts"] == 5
+
+
+def test_no_floors_keeps_the_compositional_verdict_but_says_it_is_not_one():
+    """Acceptance 4: with nothing to measure volume against, `PASS` may not read
+    as a sensitivity verdict."""
+    result = pc.summarise(1, 1, 0, 1, 1, {})
+    assert result["status"] == pc.STATUS_PASS
+    assert "volume and host spread NOT assessed" in result["detail"]
+    assert result["min_rotations"] is None and result["min_hosts"] is None
+
+
+def test_the_all_zero_fail_also_carries_the_caveat_when_unassessed():
+    """`every rotation reports pointers=0` is a claim about ABSENCE, so it rests
+    on volume the same way `PASS` does."""
+    result = pc.summarise(800, 800, 800, 20, 0, {})
+    assert result["status"] == pc.STATUS_FAIL
+    assert "volume and host spread NOT assessed" in result["detail"]
+
+
+def test_a_shortfall_outranks_the_all_zero_fail(run):
+    """One rotation reporting `pointers=0` is not evidence that no commitment
+    ever covered a pointer leaf -- it is evidence of one rotation. The
+    well-formedness FAIL below is the opposite case and still wins."""
+    result = pc.summarise(1, 1, 1, 1, 0, {}, min_rotations=20, min_hosts=5)
+    assert result["status"] == pc.STATUS_INSUFFICIENT
+
+
+def test_a_rotation_missing_pointers_fails_at_any_volume():
+    """A statement about the LINES, not about how many of them there were: one
+    mis-shaped rotation proves a non-pointer-capable service is on the fleet."""
+    result = pc.summarise(1, 0, 0, 1, 0, {}, min_rotations=20, min_hosts=5)
+    assert result["status"] == pc.STATUS_FAIL
+    assert "pre-pointer string" in result["detail"]
+
+
+def test_no_rotations_stays_not_applicable_under_a_floor():
+    """`total == 0` is not a shortfall to widen past -- it is the pre-existing
+    NOT APPLICABLE case, whose own advice is already to widen the window."""
+    result = pc.summarise(0, 0, 0, 0, 0, {}, min_rotations=20, min_hosts=5)
+    assert result["status"] == pc.STATUS_NOT_APPLICABLE
+    assert "widen the window" in result["detail"]
+
+
+def test_an_unknown_host_cardinality_cannot_demonstrate_spread():
+    """`hosts` is None when the aggregation is missing; a supplied floor is
+    unmet rather than quietly satisfied."""
+    result = pc.summarise(40, 40, 10, None, None, {}, min_hosts=5)
+    assert result["status"] == pc.STATUS_INSUFFICIENT
+    assert "unknown rotating host(s)" in result["detail"]
+
+
+def test_the_floors_are_rendered_only_when_supplied():
+    """A `-` row on every other run would imply the tool had an opinion about
+    volume, which without a floor it does not."""
+    base = {"name": "DEV-06", "start": "S", "end": "E"}
+    gated = Console(record=True, width=120)
+    gated.print(pc.render({**pc.summarise(1, 1, 0, 1, 1, {}, 20, 5), **base}))
+    text = gated.export_text()
+    assert "min rotations" in text and "min hosts" in text
+    assert pc.STATUS_INSUFFICIENT in text
+
+    plain = Console(record=True, width=120)
+    plain.print(pc.render({**pc.summarise(1, 1, 0, 1, 1, {}), **base}))
+    assert "min rotations" not in plain.export_text()
+
+
+def test_the_floors_travel_into_the_json(run, tmp_path):
+    """The JSON a run issue archives has to say what the verdict was measured
+    against, or the status cannot be re-read later."""
+    out = tmp_path / "commitments.json"
+    args = type(
+        "Args",
+        (),
+        {
+            "name": "DEV-06",
+            "start": "S",
+            "end": "E",
+            "hosts": None,
+            "json_out": str(out),
+            "min_rotations": 20,
+            "min_hosts": 5,
+        },
+    )()
+    responses = [_response(1, 1), _response(1, 1), _response(0, 0), _response(1, 1)]
+    with (
+        patch.object(EsRun, "search", side_effect=responses),
+        patch.object(EsRun, "elastic", return_value=dict(run.elastic())),
+    ):
+        assert pc.cmd_pointer_commitments(args) == 0
+    payload = json.loads(out.read_text())
+    assert payload["status"] == pc.STATUS_INSUFFICIENT
+    assert payload["min_rotations"] == 20 and payload["min_hosts"] == 5
+
+
+def test_json_out_to_stdout_suppresses_the_table_and_the_detail(run, capsys):
+    """Shares the `--json-out -` contract with every other analysis command."""
+    args = type(
+        "Args",
+        (),
+        {
+            "name": "DEV-06",
+            "start": "S",
+            "end": "E",
+            "hosts": None,
+            "json_out": "-",
+            "min_rotations": None,
+            "min_hosts": None,
+        },
+    )()
+    responses = [
+        _response(10, 4),
+        _response(10, 4),
+        _response(2, 3),
+        _response(8, 4, (("DEV-06-ANT-NODE-DE1-1", 5),)),
+    ]
+    with (
+        patch.object(EsRun, "search", side_effect=responses),
+        patch.object(EsRun, "elastic", return_value=dict(run.elastic())),
+    ):
+        assert pc.cmd_pointer_commitments(args) == 0
+    out = capsys.readouterr().out
+    assert json.loads(out)["non_zero"] == 8
+    assert "commitment rotations" not in out
+    assert "top hosts by non-zero rotation" not in out
 
 
 # ---------------------------------------------------------------------------

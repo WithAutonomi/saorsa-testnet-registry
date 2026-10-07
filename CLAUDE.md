@@ -1267,6 +1267,27 @@ reused verbatim from `evaluate_commitment` in
 and no version arm (a testnet run is single-version). Exits **0 whatever it
 finds** — a measurement, not a gate.
 
+**Its verdict separates composition from sufficiency** (V2-1450). The line is
+emitted at most hourly per node and only when the responsible key set changed,
+so a short window legitimately holds one rotation — which is well formed, and
+used to print **PASS**: run 647 did exactly that against its own criterion of
+≥20 rotations on ≥5 hosts. Pass the run's own `--min-rotations` / `--min-hosts`
+and a shortfall reads **INSUFFICIENT**; with neither supplied the detail line
+says volume and spread were **not assessed**. A rotation *missing* `pointers=`
+still FAILs at any volume (one line proves a non-pointer-capable service), while
+a shortfall outranks the all-`pointers=0` FAIL (absence needs volume).
+
+**`--json-out -` / `/dev/stdout` is how an unattended runner reads an
+`analysis` command** (every one but `flowstat`, which must stay stdlib-only for
+the VM): the JSON goes to stdout exactly once and every human line
+— the `wrote …` trailer, the table, the preamble — is suppressed. These commands
+used to print the object as their own output *and* write it to the destination,
+so `/dev/stdout` emitted it twice with the trailer on top; `jq` aborted and the
+`// 0` default produced a confident **0**, which is how run 647's `reach` table
+came out as thirty zeros for a fleet at 100% upload and download success. The
+`tail -1` mitigation in the older run issues does not cover a parse abort. Use
+`-`; a real path keeps its trailer.
+
 `staging.yaml` carries **two** pointer entries, geographically separated so
 cross-client sweeps span a real distance. **The train's RC must carry pointers**;
 if it predates them, strip the two entries for that train.

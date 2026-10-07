@@ -30,18 +30,27 @@ ant-prod-01. The only differences are the index (a testnet's own node index
 rather than the prod one) and the absence of version-arm filtering: a testnet
 run is single-version, so there is no `to_version` split to make.
 
+The verdict is in two parts, because composition and sufficiency are different
+questions (V2-1450). `pointers=` present on every rotation and non-zero on some
+says the rotations SEEN were well formed; it says nothing about whether enough
+were seen to conclude from, and `COMMITMENT_ROTATION_INTERVAL_SECS = 3600` with
+no jitter plus the "only on a change" condition means a short window
+legitimately holds one or two. So `--min-rotations` / `--min-hosts` carry the
+reader's own floors and a shortfall is reported as INSUFFICIENT; with neither
+supplied the compositional verdict stands but says in its detail line that
+volume and spread were not assessed. Run 647 (V2-1438) printed `PASS` off ONE
+rotation on ONE host against a criterion of >=20 on >=5.
+
 Read-only. Exits 0 whatever it finds -- it is a measurement, not a gate; the A/B
 comparison reads the numbers out of the run's results comment.
 """
 
 from __future__ import annotations
 
-import json
-
-from rich.console import Console
 from rich.table import Table
 
 from saorsa_deploy.analysis.es import EsRun, hosts_filter
+from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.cmd.analysis import (
     add_deployment_args,
     add_window_args,
@@ -69,7 +78,17 @@ ZERO_POINTERS_WILDCARD = "*pointers=0"
 
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
+STATUS_INSUFFICIENT = "INSUFFICIENT"
 STATUS_NOT_APPLICABLE = "NOT APPLICABLE"
+
+#: Appended to every verdict that depends on how much was observed, when the
+#: caller supplied no floor to measure the observation against. Without it a
+#: one-rotation window reads `PASS`, which is what V2-1438's run 647 printed
+#: against a criterion of >=20 rotations on >=5 hosts -- a miss by more than an
+#: order of magnitude that the status did not reflect.
+UNASSESSED_CAVEAT = (
+    " -- volume and host spread NOT assessed (pass --min-rotations/--min-hosts to gate on them)"
+)
 
 TOP_HOSTS = 10
 
@@ -127,6 +146,43 @@ def _top_hosts(response: dict) -> dict[str, int]:
     return {b["key"]: b["doc_count"] for b in buckets}
 
 
+def shortfall(
+    total: int,
+    hosts: int | None,
+    min_rotations: int | None,
+    min_hosts: int | None,
+) -> str | None:
+    """The reason the observation is too thin to conclude from, or None.
+
+    The floors are measured against `total` and `hosts` -- how many rotations
+    were seen and on how many hosts -- NOT against the non-zero subsets. Those
+    two describe the OBSERVATION rather than its outcome, so one floor means
+    the same thing whichever verdict follows; `non_zero` is 0 by definition in
+    the all-`pointers=0` case, and a floor on it would turn that genuine
+    finding into a shortfall every time.
+
+    `hosts` is None when the cardinality aggregation is missing, which cannot
+    demonstrate spread, so a supplied `--min-hosts` counts as unmet.
+    """
+    seen_hosts = hosts or 0
+    short = []
+    if min_rotations is not None and total < min_rotations:
+        short.append(f"{total:,} rotation(s) against a floor of {min_rotations:,}")
+    if min_hosts is not None and seen_hosts < min_hosts:
+        short.append(
+            f"{'unknown' if hosts is None else f'{seen_hosts:,}'} rotating host(s) "
+            f"against a floor of {min_hosts:,}"
+        )
+    if not short:
+        return None
+    return (
+        "insufficient observation: " + " and ".join(short) + ". The line is "
+        "info-level and emitted at most once an hour per node, and only when "
+        "the node's responsible key set changed, so widen the window rather "
+        "than reading a verdict into this."
+    )
+
+
 def summarise(
     total: int,
     with_pointers: int,
@@ -134,13 +190,23 @@ def summarise(
     hosts: int | None,
     hosts_with_non_zero: int | None,
     top_hosts_non_zero: dict[str, int],
+    min_rotations: int | None = None,
+    min_hosts: int | None = None,
 ) -> dict:
     """Turn the four responses' numbers into the reported shape.
 
     `total == 0` is NOT APPLICABLE, never a failure and never a division: no
     rotation in the window says nothing about whether pointer leaves were
     committed, and the window may simply predate the first rotation (the cycle
-    is on the order of minutes, so a short window can legitimately miss it).
+    is hourly per node and only fires on a change, so a short window can
+    legitimately miss it).
+
+    The verdict order is deliberate. A rotation missing `pointers=` is a
+    statement about the LINES -- one is proof that a non-pointer-capable
+    service is on the fleet -- so it stands at any volume. Everything after it
+    is a statement about ABSENCE or about a rate, which needs enough rotations
+    to mean anything, so a supplied floor that is unmet short-circuits to
+    INSUFFICIENT ahead of both the all-zero FAIL and the PASS.
     """
     non_zero = with_pointers - zero_pointers
     if total == 0:
@@ -155,6 +221,8 @@ def summarise(
             "hosts": hosts,
             "hosts_with_non_zero": hosts_with_non_zero,
             "top_hosts_non_zero": top_hosts_non_zero,
+            "min_rotations": min_rotations,
+            "min_hosts": min_hosts,
             "status": STATUS_NOT_APPLICABLE,
             "detail": (
                 "not applicable: 0 commitment rotation(s) in this window. The "
@@ -173,6 +241,8 @@ def summarise(
         "hosts": hosts,
         "hosts_with_non_zero": hosts_with_non_zero,
         "top_hosts_non_zero": top_hosts_non_zero,
+        "min_rotations": min_rotations,
+        "min_hosts": min_hosts,
     }
     if with_pointers < total:
         result["status"] = STATUS_FAIL
@@ -182,23 +252,38 @@ def summarise(
             "fleet is not running a pointer-capable ant-node"
         )
         return result
+    thin = shortfall(total, hosts, min_rotations, min_hosts)
+    if thin:
+        result["status"] = STATUS_INSUFFICIENT
+        result["detail"] = thin
+        return result
+    # Both verdicts below read on volume, so with no floor to measure it
+    # against neither may be presented as a sensitivity verdict.
+    caveat = UNASSESSED_CAVEAT if (min_rotations is None and min_hosts is None) else ""
     if non_zero == 0:
         result["status"] = STATUS_FAIL
         result["detail"] = (
             f"all {total:,} rotation(s) carry `pointers=`, but every one reports "
             "`pointers=0`: no commitment ever covered a pointer leaf, so a clean "
-            "subtree-audit count is not evidence the audit opened one"
+            "subtree-audit count is not evidence the audit opened one" + caveat
         )
         return result
     result["status"] = STATUS_PASS
     result["detail"] = (
         f"all {total:,} rotation(s) carry `pointers=`; {non_zero:,} report a "
-        f"non-zero count across {hosts_with_non_zero} host(s)"
+        f"non-zero count across {hosts_with_non_zero} host(s)" + caveat
     )
     return result
 
 
-def collect(run: EsRun, start: str, end: str, hosts: list[str] | None = None) -> dict:
+def collect(
+    run: EsRun,
+    start: str,
+    end: str,
+    hosts: list[str] | None = None,
+    min_rotations: int | None = None,
+    min_hosts: int | None = None,
+) -> dict:
     """Run the four counts against a deployment's own node index."""
     pointers = {"wildcard": {MESSAGE_KEYWORD_FIELD: POINTERS_WILDCARD}}
     zero = {"wildcard": {MESSAGE_KEYWORD_FIELD: ZERO_POINTERS_WILDCARD}}
@@ -221,6 +306,8 @@ def collect(run: EsRun, start: str, end: str, hosts: list[str] | None = None) ->
         hosts=_hosts(total_resp),
         hosts_with_non_zero=_hosts(non_zero_resp),
         top_hosts_non_zero=_top_hosts(non_zero_resp),
+        min_rotations=min_rotations,
+        min_hosts=min_hosts,
     )
     result["name"] = run.name
     result["index"] = run.node_index()
@@ -246,14 +333,28 @@ def render(result: dict) -> Table:
     table.add_row("non-zero share", "n/a" if share is None else f"{share:.1%}")
     table.add_row("hosts rotating", str(result["hosts"]))
     table.add_row("hosts with a non-zero", str(result["hosts_with_non_zero"]))
+    # Only when a floor was supplied: a row reading "-" on every other run
+    # would imply the tool had an opinion about volume, which without a floor
+    # it does not.
+    if result.get("min_rotations") is not None:
+        table.add_row("min rotations", f"{result['min_rotations']:,}")
+    if result.get("min_hosts") is not None:
+        table.add_row("min hosts", f"{result['min_hosts']:,}")
     table.add_row("status", result["status"])
     return table
 
 
 def cmd_pointer_commitments(args) -> int:
-    console = Console()
+    console = console_for(args.json_out)
     run = EsRun(args.name)
-    result = collect(run, args.start, args.end, args.hosts)
+    result = collect(
+        run,
+        args.start,
+        args.end,
+        args.hosts,
+        min_rotations=args.min_rotations,
+        min_hosts=args.min_hosts,
+    )
     console.print(render(result))
     console.print(result["detail"])
     if result["top_hosts_non_zero"]:
@@ -262,10 +363,7 @@ def cmd_pointer_commitments(args) -> int:
             + ", ".join(f"{h}={c}" for h, c in result["top_hosts_non_zero"].items())
             + "[/dim]"
         )
-    if args.json_out:
-        with open(args.json_out, "w") as fh:
-            json.dump(result, fh, indent=2)
-        console.print(f"wrote {args.json_out}")
+    emit_json(result, args.json_out, console)
     return 0
 
 
@@ -281,5 +379,21 @@ def register(subparsers) -> None:
     add_deployment_args(p)
     add_window_args(p)
     p.add_argument("--hosts", nargs="+", default=None, help="Restrict to these tag.host values.")
-    p.add_argument("--json-out", default=None)
+    p.add_argument(
+        "--min-rotations",
+        type=int,
+        default=None,
+        help=(
+            "Floor on rotations observed. Below it the status is INSUFFICIENT rather "
+            "than a verdict. No default: supplying neither floor leaves volume and "
+            "spread unassessed, which the detail line then says."
+        ),
+    )
+    p.add_argument(
+        "--min-hosts",
+        type=int,
+        default=None,
+        help="Floor on the number of rotating hosts. See --min-rotations.",
+    )
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_pointer_commitments)
