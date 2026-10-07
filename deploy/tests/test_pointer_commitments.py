@@ -455,9 +455,11 @@ def test_the_catalogue_covers_every_audit_failure_reason():
     assert len(AUDIT_FAILURE_REASONS) == len(keys)
 
 
-def test_the_catalogue_carries_the_commitment_group_and_version_four():
+def test_the_catalogue_carries_the_commitment_group_since_version_four():
     patterns = load_pattern_set()
-    assert patterns.version == 4
+    # v4 added the commitment group; later versions (v5 added the advisory
+    # payment-RPC group) keep it, so this is a floor, not an equality.
+    assert patterns.version >= 4
     groups = {g.key for g in patterns.groups}
     assert {"subtree_audit_failure", "storage_commitment_rotated"} <= groups
     commitment = patterns.patterns_in_group("storage_commitment_rotated")

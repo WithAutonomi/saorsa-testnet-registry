@@ -1124,7 +1124,7 @@ def compare_runs(
     warnings: list[str] = (
         []
         if new_baseline
-        else list(log_count_warnings(candidate, baseline))
+        else list(log_count_warnings(candidate, baseline, pattern_set))
     )
 
     # Neither comparability guard inspects what the windows CONTAIN.
@@ -1842,21 +1842,26 @@ def _group_definitions(
     candidate_rows: list[dict],
     baseline_rows: list[dict],
     pattern_set=None,
-) -> list[tuple[str, str, str]]:
-    """Ordered ``(key, label, aggregate)`` for every group either run recorded.
+) -> list[tuple[str, str, str, bool]]:
+    """Ordered ``(key, label, aggregate, advisory)`` for every group either run recorded.
 
-    The catalogue is the authority on how a group's members combine and what it
-    is called, and its order is the reporting order. A group present in the
-    stored rows but absent from the catalogue is still evaluated -- the counts
-    were taken deliberately and dropping them would be a silent loss -- using
-    its key as the label and ``max`` as the aggregate, which is the
-    conservative choice because it can only understate a sum.
+    The catalogue is the authority on how a group's members combine, what it
+    is called and whether it counts towards the verdict, and its order is the
+    reporting order. A group present in the stored rows but absent from the
+    catalogue is still evaluated -- the counts were taken deliberately and
+    dropping them would be a silent loss -- using its key as the label,
+    ``max`` as the aggregate (the conservative choice, because it can only
+    understate a sum) and counted, because an unknown group is more likely a
+    retired connection-error group than a retired environmental one, and a
+    silently discounted regression is the worse mistake.
     """
     known = []
     seen = set()
     if pattern_set is not None:
         for group in pattern_set.groups:
-            known.append((group.key, group.label, group.aggregate))
+            known.append(
+                (group.key, group.label, group.aggregate, bool(group.advisory))
+            )
             seen.add(group.key)
     extra = sorted(
         {
@@ -1865,7 +1870,7 @@ def _group_definitions(
             if row.get("event_group") and row["event_group"] not in seen
         }
     )
-    return known + [(key, key, "max") for key in extra]
+    return known + [(key, key, "max", False) for key in extra]
 
 
 def log_event_group_values(
@@ -1963,12 +1968,20 @@ def _soft_log_event_counts(
     catastrophic regression on the very first run.
     """
     results = []
-    for key, label, aggregate in _group_definitions(
+    for key, label, aggregate, advisory in _group_definitions(
         candidate.log_event_counts, baseline.log_event_counts, pattern_set
     ):
         gate = f"Connection errors: {label}"
         cand = log_event_group_values(candidate.log_event_counts, key, aggregate)
         base = log_event_group_values(baseline.log_event_counts, key, aggregate)
+
+        # An advisory group measures the environment the run happened in (the
+        # payment RPC being rate-limited, say), not the release. Its row is
+        # rendered like any other so the figure sits beside the gates it
+        # confounds, but it never reaches the overall verdict -- the same
+        # treatment as the uncalibrated WASM floors, for a different reason.
+        def _advise(detail: str) -> str:
+            return f"{detail} — advisory, not blocking" if advisory else detail
 
         if cand is None or base is None:
             which = []
@@ -1985,11 +1998,12 @@ def _soft_log_event_counts(
                     baseline=base["value"] if base else None,
                     threshold=config.connection_error_increase_percent,
                     unit="count",
-                    detail=(
+                    detail=_advise(
                         f"no recorded log counts on the {' and '.join(which)} run. "
                         "Run `deployments record-log-counts` while that run's "
                         "Elasticsearch is still up; it cannot be backfilled."
                     ),
+                    advisory=advisory,
                 )
             )
             continue
@@ -2027,12 +2041,13 @@ def _soft_log_event_counts(
                     baseline=base["value"],
                     threshold=config.connection_error_increase_percent,
                     unit="count",
-                    detail=(
+                    detail=_advise(
                         f"{detail}. The baseline never logged this, so a relative "
                         "change is undefined — but it appeared on the candidate."
                         if appeared
                         else "neither run logged this at all"
                     ),
+                    advisory=advisory,
                 )
             )
             continue
@@ -2059,16 +2074,83 @@ def _soft_log_event_counts(
                 threshold=config.connection_error_increase_percent,
                 unit="count",
                 noise=noise,
-                detail=detail,
+                detail=_advise(detail),
+                advisory=advisory,
             )
         )
     return results
 
 
-def log_count_warnings(candidate: RunMetrics, baseline: RunMetrics) -> list[str]:
+#: How far above the baseline's per-hour rate an advisory (environmental)
+#: group must sit before the comparison repeats its `confounds` note as a
+#: warning. 2x rather than the 10% gate threshold because this is not a gate:
+#: it is a reason to doubt OTHER gates, and a reader told to doubt the upload
+#: durations every time the public RPC had a slightly worse hour would learn to
+#: ignore the warning. On the run that motivated it the rate was 8,900/h
+#: against a reference whose client-side payment errors were 2.6x lower.
+CONFOUNDER_RISE_FACTOR = 2.0
+
+
+def _confounder_warnings(
+    candidate: RunMetrics, baseline: RunMetrics, pattern_set
+) -> list[str]:
+    """One warning per advisory group whose rate is well above the baseline's.
+
+    The catalogue says which gates the group casts doubt on (`confounds`);
+    this puts that sentence at the top of the report, with the two per-hour
+    rates, whenever the candidate's rate is `CONFOUNDER_RISE_FACTOR` times the
+    baseline's or the baseline has no counts to compare against. A rise in an
+    environmental group is not a finding about the release, but a duration
+    regression read without it would be -- wrongly.
+    """
+    warnings: list[str] = []
+    if pattern_set is None:
+        return warnings
+    for group in pattern_set.groups:
+        if not group.advisory or not group.confounds:
+            continue
+        cand = log_event_group_values(
+            candidate.log_event_counts, group.key, group.aggregate
+        )
+        if cand is None or cand["value"] <= 0:
+            continue
+        base = log_event_group_values(
+            baseline.log_event_counts, group.key, group.aggregate
+        )
+        cand_rate = cand.get("rate_per_hour") or cand["value"]
+        if base is None:
+            comparison = (
+                f"{cand_rate:,.0f}/h on the candidate ({cand['hosts']} hosts); the "
+                "baseline recorded no such counts, so there is nothing to say how "
+                "unusual that is"
+            )
+        else:
+            base_rate = base.get("rate_per_hour") or base["value"]
+            if base_rate > 0 and cand_rate < CONFOUNDER_RISE_FACTOR * base_rate:
+                continue
+            comparison = (
+                f"{cand_rate:,.0f}/h on the candidate vs {base_rate:,.0f}/h on the "
+                f"baseline"
+            )
+        warnings.append(
+            f"{group.label}: {comparison}. This group is advisory and measures "
+            f"the environment, not the release, but it confounds {group.confounds}. "
+            "Read those gates against this figure before calling a duration delta "
+            "a regression."
+        )
+    return warnings
+
+
+def log_count_warnings(
+    candidate: RunMetrics, baseline: RunMetrics, pattern_set=None
+) -> list[str]:
     """Caveats a reader needs before acting on a count delta.
 
-    Two things a count comparison cannot see for itself:
+    Three things a count comparison cannot see for itself. The first is the
+    environment: an advisory catalogue group (the payment RPC being
+    rate-limited) running well above the baseline's rate, which casts doubt on
+    the gates it `confounds` -- see :func:`_confounder_warnings`. Then the two
+    the counts themselves cannot reveal:
 
     * **Pattern-version drift.** The catalogue is versioned config and its
       phrases will change. Two counts of different strings are not a
@@ -2079,6 +2161,8 @@ def log_count_warnings(candidate: RunMetrics, baseline: RunMetrics) -> list[str]
       gate's detail; this says when to read it.
     """
     warnings: list[str] = []
+    if candidate.log_event_counts:
+        warnings.extend(_confounder_warnings(candidate, baseline, pattern_set))
     if not candidate.log_event_counts or not baseline.log_event_counts:
         return warnings
 

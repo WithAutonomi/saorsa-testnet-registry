@@ -563,11 +563,15 @@ so there is nothing to record for it.
 
 ### `record-log-counts`
 
-Counts the connection-error strings (`Connection attempt failed`,
-`connect_happy_eyeballs failed`, `dial failed for all`, `Accept stream error`,
-`QUIC disconnect for peer`, `Failed to send identity announce`) in STG-01's
-Elasticsearch and stores the counts in `deployment_log_event_counts`. The
-verification then gates on them.
+Counts the catalogue's log strings (`resources/log_patterns/connection-errors.yaml`:
+the connection, dial and identity-announce failures, the pointer and subtree-audit
+groups, and from v5 the **payment-RPC failures**) in STG-01's Elasticsearch and
+stores the counts in `deployment_log_event_counts`. The verification then gates on
+them — all but the payment-RPC group, which is **advisory**: it measures whether the
+public Arbitrum Sepolia RPC was rate-limiting the nodes' payment verification, which
+is the weather the run happened in rather than a property of the release, and the
+verification reads the upload-duration gates against it (`evaluate-staging-run`,
+**Payment RPC health**).
 
 Run it here, in the same extraction step, and **before any teardown**. It reads
 the deployment's own Elasticsearch, which is per-run scratch: once that instance
@@ -615,6 +619,35 @@ is no backfill — the run's Elasticsearch is destroyed at teardown — so a lab
 skip here is a gate that cannot be assessed for this train. This was skipped on the
 2026-08-24 train because the slice was written up as optional; the verification had
 to fall back to a full-run comparison to assess those gates at all.
+
+### Payment RPC health: pull the per-hour shape while Elasticsearch is alive
+
+The counts above give the verification a total and a per-hour rate. They do not
+give it the **shape** — whether the rate limiting ran all day or hit one hour, and
+whether it was fleet-wide — and by the time anyone asks, the index may be gone. So
+pull it here, in the same extraction step, and paste it into the Step 9 report.
+URL and API key from `uv run saorsa-deploy elastic info --name STG-01`; use T0 and
+the run end for the range:
+
+```bash
+curl -s -H "Authorization: ApiKey $ES_KEY" -H 'Content-Type: application/json' \
+  "$ES_URL/telegraf-ant-nodes-stg-01-*/_search" -d '{
+  "size": 0,
+  "query": {"bool": {"must": [{"match_phrase": {"tail.message": "HTTP error 429"}}],
+            "filter": [{"range": {"@timestamp": {"gte": "<T0>", "lt": "<run end>"}}}]}},
+  "aggs": {"per_hour": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h"}},
+           "hosts": {"terms": {"field": "tag.host.keyword", "size": 40}}}}'
+```
+
+Report the per-hour `doc_count` series and the number of hosts in the `hosts`
+buckets. Then the client side, which the node-tier catalogue cannot see: the same
+query against `telegraf-ant-clients-stg-01-*` with the phrase `payment failed`,
+and beside it the uploaders' total `Failed to store chunk on` count, so the
+verification can say what fraction of the clients' store failures were payment
+rejections. A fleet-wide series in the thousands per hour is the public endpoint
+rate-limiting the fleet; the verification treats the upload-duration gates as
+confounded when it is well above the baseline's. Do not interpret it further here —
+record it.
 
 Each label has a distinct weakness, which is why both are recorded rather than one
 being chosen:
@@ -712,6 +745,10 @@ Update the train's `Staging run — rc.N` sub-issue with:
 - The connection-error counts recorded at Step 7, per group, with the host
   spread. Flag any zero count as needing a source check rather than reporting it
   as an improvement.
+- **Payment RPC health**: the `Payment RPC failures (node)` count under each
+  label, the per-hour node-side `HTTP error 429` series and host count from Step
+  7, and the client-side `payment failed` count against the uploaders' total
+  `Failed to store chunk on`. Figures only; the verification does the reading.
 - T0 and each phase boundary timestamp.
 - Transfer results as **separate native and WASM rows** (uploads and downloads,
   success/total and rate for each), plus any WASM `error_kind=crash` (OOM) events.
