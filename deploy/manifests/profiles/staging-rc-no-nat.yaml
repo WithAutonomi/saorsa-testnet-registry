@@ -17,7 +17,7 @@ testnet:
       digital_ocean:
         vm_count: 5
         regions_list: [ams3, blr1, fra1, lon1, nyc1, syd1, sgp1]
-        size: s-8vcpu-16gb
+        size: s-8vcpu-16gb-intel
         attached_volume_size: 100
       vultr:
         vm_count: 5
@@ -43,7 +43,7 @@ testnet:
 
   elastic:
     enabled: true
-    droplet_size: s-8vcpu-16gb
+    droplet_size: s-8vcpu-16gb-intel
     volume_size: 500
     shards: 8
 

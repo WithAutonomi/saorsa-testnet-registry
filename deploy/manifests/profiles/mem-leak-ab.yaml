@@ -32,8 +32,8 @@ testnet:
     providers:
       digital_ocean:
         vm_count: 1
-        regions_list: [ams3, blr1, fra1, lon1, nyc1, sfo3, sgp1]   # sfo3 not syd1: syd1 lacks s-8vcpu-16gb
-        size: s-8vcpu-16gb
+        regions_list: [ams3, blr1, fra1, lon1, nyc1, sfo3, sgp1]   # the -intel slug is listed in every DO region; the generic s-8vcpu-16gb is capacity-gated per region and cost four DEV-04 attempts (V2-1443, V2-1454)
+        size: s-8vcpu-16gb-intel
         attached_volume_size: 500
       vultr:
         vm_count: 1

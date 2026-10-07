@@ -53,7 +53,7 @@ testnet:
       digital_ocean:
         vm_count: 5
         regions_list: [ams3, blr1, fra1, lon1, nyc1]   # explicit regions
-        size: s-8vcpu-16gb                              # → --do-droplet-size
+        size: s-8vcpu-16gb-intel                              # → --do-droplet-size
         attached_volume_size: 100                       # GB volume per VM (per-provider; ovh_3az can't have one)
       hetzner:
         vm_count: 1
@@ -148,7 +148,7 @@ testnet:
 
   elastic:                   # optional log-forwarding stack. Remove the block (or set enabled: false) to skip.
     enabled: true
-    droplet_size: s-8vcpu-16gb   # elastic infra --droplet-size
+    droplet_size: s-8vcpu-16gb-intel   # elastic infra --droplet-size
     volume_size: 500             # GB; bump for large/long testnets
     shards: 8                    # primary shards per daily index (match the ES droplet's vCPU count)
     retention_days: 7            # ILM retention before deletion

@@ -33,7 +33,7 @@ prod_uploaders:
         medium: 2
 
     - region: nyc3
-      vm_size: s-8vcpu-16gb
+      vm_size: s-8vcpu-16gb-intel
       pool:
         large: 2
 

@@ -79,7 +79,7 @@ testnet:
       digital_ocean:
         vm_count: 6
         regions_list: [blr1, sgp1, syd1]
-        size: s-8vcpu-16gb
+        size: s-8vcpu-16gb-intel
         attached_volume_size: 100
 
   clients:
@@ -147,7 +147,7 @@ testnet:
 
   elastic:
     enabled: true
-    droplet_size: s-8vcpu-16gb
+    droplet_size: s-8vcpu-16gb-intel
     volume_size: 500
     shards: 8
 
