@@ -24,12 +24,12 @@ it is expected, and the gate in the run issue is on the scored count.
 """
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 
 from rich.console import Console
 from rich.table import Table
 
+from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.analysis.pcap import load_jsonl, parse_ts, read_packets
 
 
@@ -161,10 +161,9 @@ def _print(result, console: Console) -> None:
 def cmd_close_delivery(args):
     teardowns = load_teardowns(args.teardowns)
     result = analyse(args.pcap, teardowns, args.local, args.before, args.after)
-    _print(result, Console())
-    if args.json_out:
-        with open(args.json_out, "w") as fh:
-            fh.write(json.dumps(result, indent=2) + "\n")
+    console = console_for(args.json_out)
+    _print(result, console)
+    emit_json(result, args.json_out, console)
     return 0
 
 
@@ -189,5 +188,5 @@ def register(subparsers):
     p.add_argument(
         "--after", type=float, default=60.0, help="seconds after a teardown a flow may end"
     )
-    p.add_argument("--json-out")
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_close_delivery)

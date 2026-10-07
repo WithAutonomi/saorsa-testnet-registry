@@ -26,9 +26,9 @@ issue is on the summary: 21 s -> survival >= 80%; 31 s -> death >= 80%.
 """
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 
+from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.analysis.pcap import load_jsonl, read_packets
 
 
@@ -104,11 +104,7 @@ def score(pcap, probes, local, resume_window=15.0, active_window=30.0):
 def cmd_probe_score(args):
     probes = load_jsonl(args.probes)
     out = score(args.pcap, probes, args.local, args.resume_window, args.active_window)
-    text = json.dumps(out, indent=2)
-    if args.json_out:
-        with open(args.json_out, "w") as fh:
-            fh.write(text + "\n")
-    print(text)
+    emit_json(out, args.json_out, console_for(args.json_out), echo=True)
     return 0
 
 
@@ -128,5 +124,5 @@ def register(subparsers):
     )
     p.add_argument("--resume-window", type=float, default=15.0)
     p.add_argument("--active-window", type=float, default=30.0)
-    p.add_argument("--json-out")
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_probe_score)

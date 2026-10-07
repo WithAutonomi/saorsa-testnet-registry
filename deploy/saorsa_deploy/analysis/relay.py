@@ -17,6 +17,7 @@ from rich.table import Table
 
 from saorsa_deploy.analysis import hosts as hosts_mod
 from saorsa_deploy.analysis.es import EsRun, hosts_filter
+from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.cmd.analysis import add_deployment_args, add_window_args
 from saorsa_deploy.es_log_counts import MESSAGE_FIELD, TIMESTAMP_FIELD
 
@@ -173,7 +174,7 @@ def cmd_relay_report(args) -> int:
     import requests
 
     requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-    console = Console()
+    console = console_for(args.json_out)
     result = relay_report(EsRun(args.name), args.start, args.end, hosts=args.hosts)
     table = Table(title=f"relay lifecycle {args.start} → {args.end}")
     table.add_column("key")
@@ -190,10 +191,7 @@ def cmd_relay_report(args) -> int:
     console.print(f"died_per_teardown  = {result['died_per_teardown']}")
     if args.hosts:
         console.print(f"[dim]hosts filter: {', '.join(args.hosts)}[/dim]")
-    if args.json_out:
-        with open(args.json_out, "w") as fh:
-            json.dump(result, fh, indent=2)
-        console.print(f"wrote {args.json_out}")
+    emit_json(result, args.json_out, console)
     return 0
 
 
@@ -220,7 +218,7 @@ def cmd_relay_servers(args) -> int:
     import requests
 
     requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-    console = Console()
+    console = console_for(args.json_out)
     run = EsRun(args.name)
     docs = run.hits([{"match_phrase": {MESSAGE_FIELD: PREPARED_PHRASE}}], args.start, args.end)
     ranked = rank_relay_servers(docs, hosts_mod.node_vms(args.name, args.inventory))
@@ -237,10 +235,7 @@ def cmd_relay_servers(args) -> int:
             str(r["client_hosts"]),
         )
     console.print(table)
-    if args.json_out:
-        with open(args.json_out, "w") as fh:
-            json.dump(ranked, fh, indent=2)
-        console.print(f"wrote {args.json_out}")
+    emit_json(ranked, args.json_out, console)
     return 0
 
 
@@ -255,7 +250,7 @@ def register(subparsers) -> None:
     add_deployment_args(p)
     add_window_args(p)
     p.add_argument("--hosts", nargs="+", default=None, help="Restrict to these tag.host values.")
-    p.add_argument("--json-out", default=None)
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_relay_report)
 
     p = subparsers.add_parser(
@@ -275,7 +270,7 @@ def register(subparsers) -> None:
     add_deployment_args(p)
     add_window_args(p)
     p.add_argument("--top", type=int, default=10)
-    p.add_argument("--json-out", default=None)
+    add_json_out_arg(p)
     p.set_defaults(func=cmd_relay_servers)
 
 

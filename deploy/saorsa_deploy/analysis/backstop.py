@@ -37,9 +37,9 @@ Limits, stated so nobody over-reads the output:
 """
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 
+from saorsa_deploy.analysis.json_out import add_json_out_arg, console_for, emit_json
 from saorsa_deploy.analysis.pcap import _histogram, _percentile, read_packets
 
 RESPONSE_WINDOW = 1.0  # s: an ack/response follows its trigger well inside this
@@ -169,11 +169,7 @@ def cmd_backstop(args):
     result = analyse(args.pcaps, args.start, args.end, args.label)
     if args.no_detail:
         result.pop("flows_detail", None)
-    text = json.dumps(result, indent=2)
-    if args.json_out:
-        with open(args.json_out, "w") as fh:
-            fh.write(text + "\n")
-    print(text)
+    emit_json(result, args.json_out, console_for(args.json_out), echo=True)
     return 0
 
 
@@ -190,6 +186,6 @@ def register(subparsers):
     p.add_argument("--start", type=float, help="epoch seconds; ignore earlier packets")
     p.add_argument("--end", type=float, help="epoch seconds; ignore later packets")
     p.add_argument("--label", default="", help="host label for the report")
-    p.add_argument("--json-out", help="write the JSON summary here")
+    add_json_out_arg(p)
     p.add_argument("--no-detail", action="store_true", help="omit per-flow detail")
     p.set_defaults(func=cmd_backstop)

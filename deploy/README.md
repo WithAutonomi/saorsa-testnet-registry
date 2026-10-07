@@ -2223,9 +2223,9 @@ teardown; there is no backfill.
 | `analysis stall-probe --name N --ip IP --seconds S --peers K --tag T [--dry-run]` | Blocks UDP to/from K live peers, one at a time, for S seconds via iptables in the nodes' namespace, with trap-cleaned rules and a JSONL log. Always `--dry-run` first on the real VM, then one 3 s smoke probe. |
 | `analysis rot-chunks --name N --tag T (--apply --ips … [--services …] [--fraction 0.5] [--min-files 100] \| --verify \| --attribute [--start … --end …]) [--out F] [--json-out F]` | Corrupt a deterministic sample of chunk files **in place** on the given node VMs, then re-read them from disk, then attribute each removal to an audit detection or to a fetch. See below. |
 | `analysis smoke --name N` | ES + InfluxDB reachable, node logs arriving, `net` fields present. |
-| `analysis log-count --name N --phrase P --start … --end … [--index node\|client] [--hosts …]` | Count of a log phrase in a window with host cardinality, top hosts and level breakdown. |
+| `analysis log-count --name N --phrase P --start … --end … [--index node\|client] [--hosts …] [--json-out F\|-]` | Count of a log phrase in a window with host cardinality, top hosts and level breakdown. |
 | `analysis counter-delta --name N --field tail.X --start … --end …` | Delta and rate of a cumulative per-service counter (per host, per service, max − min; single-sample services reported, not folded in as zero). |
-| `analysis pointer-commitments --name N --start … --end … [--hosts …] [--json-out F]` | Commitment-rotation coverage: total rotations, how many carry `pointers=`, how many report `pointers=0`, the non-zero remainder and the host spread of it. See below. |
+| `analysis pointer-commitments --name N --start … --end … [--hosts …] [--min-rotations N] [--min-hosts N] [--json-out F\|-]` | Commitment-rotation coverage: total rotations, how many carry `pointers=`, how many report `pointers=0`, the non-zero remainder and the host spread of it. See below. |
 | `analysis udp-rate --name N --start … --end … [--every 1m]` | Per-host UDP out-datagram rate from InfluxDB (`udp_outdatagrams`, lower case) — plain tier only, see above. |
 | `analysis relay-report --name N --start … --end … [--hosts …]` | Counts of every relay-lifecycle phrase plus the `relay recv stream closed` ÷ `Proactive relay torn down` ratio (V2-1061's gate metric), optionally for a host cohort. |
 | `analysis teardowns --name N --start … --end … --out F.jsonl` | Exports each `Proactive relay torn down` document (ts, host, service, `relay_addr`, `relay_server`, `allocation_id`). |
@@ -2371,7 +2371,7 @@ pattern. The query shape is taken verbatim from `evaluate_commitment` in
 the only differences are the index and the absence of a version arm (a testnet
 run is single-version).
 
-Three statuses, and the one that matters is the middle one:
+Four statuses:
 
 * **NOT APPLICABLE** — no rotation in the window. Says nothing about coverage;
   widen the window rather than reading a zero failure count as clean.
@@ -2379,11 +2379,72 @@ Three statuses, and the one that matters is the middle one:
   fleet is not pointer-capable, so the audit counts describe two builds), or
   every rotation reports `pointers=0` (commitments rotated and never covered a
   pointer leaf — exactly the unfalsifiable case).
+* **INSUFFICIENT** — a supplied `--min-rotations` / `--min-hosts` floor was not
+  met. The detail line names both observed values and both floors.
 * **PASS** — every rotation carries `pointers=` and some report a non-zero
   count, with the host spread of the non-zero ones alongside it.
 
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--min-rotations` | int | No | — | Floor on rotations observed; below it the status is `INSUFFICIENT`. |
+| `--min-hosts` | int | No | — | Floor on the number of rotating hosts; below it the status is `INSUFFICIENT`. |
+| `--json-out` | path | No | — | Write the verdict as JSON here; `-` or `/dev/stdout` writes it to stdout as the only output. |
+
+**Composition and sufficiency are different questions, and the floors are how
+the second one gets asked.** The rotation line is emitted at most hourly per
+node (`COMMITMENT_ROTATION_INTERVAL_SECS = 3600`, no jitter) and only when the
+node's responsible key set changed, so a short window legitimately holds one or
+two rotations. One rotation on one host carrying a non-zero `pointers=` is
+perfectly well formed, and before V2-1450 it printed **PASS** — which is what
+DEV-06 run 647 reported against its own criterion of ≥20 rotations on ≥5 hosts,
+a miss by more than an order of magnitude the status did not reflect. So pass
+the run's own floors and read `INSUFFICIENT`; with **neither** floor supplied
+the compositional verdict still stands but its detail line says in as many
+words that volume and host spread were **not assessed**.
+
+Two orderings inside the verdict are deliberate:
+
+* a rotation **missing** `pointers=` FAILs at any volume — one mis-shaped line
+  proves a non-pointer-capable service is on the fleet, which is a statement
+  about the lines rather than about how many there were;
+* a shortfall outranks the all-`pointers=0` FAIL — "no commitment ever covered a
+  pointer leaf" is a claim about absence, and one rotation cannot support it.
+
+The floors are measured against total rotations and rotating hosts, not against
+the non-zero subsets: those two describe the *observation*, so one floor means
+the same thing whichever verdict follows (`non_zero` is 0 by definition in the
+all-zero case, and a floor on it would turn that genuine finding into a
+shortfall every time).
+
 It exits **0 whatever it finds**: this is a measurement taken before teardown,
 not a gate. `deployments compare` is untouched.
+
+#### `--json-out -` — machine-readable output for an unattended runner
+
+Every `analysis` command that takes `--json-out` accepts **`-` or
+`/dev/stdout`** to mean "the JSON *is* the output": the object goes to stdout
+exactly once and **nothing else does** — no `wrote …` trailer, no table, no
+preamble, no `[dim]` footnote. (The one exception is `analysis flowstat`, which
+is pushed to node VMs and run under a bare `python3`, so it may not import the
+shared helper — see its row above. It is always driven with a real path.) That
+is what makes
+
+```bash
+cnum() { uv run saorsa-deploy analysis log-count --name "$NAME" --index client \
+         --phrase "$1" --start "$2" --end "$3" --json-out - 2>/dev/null \
+         | jq -r '.count // 0'; }
+```
+
+return the true count. A real path keeps today's behaviour, trailer included.
+
+Before V2-1450 these commands printed the object as their own human output
+*and* wrote it to the `--json-out` destination, so `--json-out /dev/stdout`
+emitted it twice with the trailer on top: `jq` parsed the duplicates and then
+aborted on the trailer, and the `// 0` default turned that into a confident
+**0**. That is how DEV-06 run 647's reachability table came out as thirty zeros
+for a fleet with 100% upload and download success. The `tail -1` mitigation
+carried in several run issues does not cover it — the failure is a parse abort,
+not a stray preamble line.
 
 #### Query traps these commands bake in
 
