@@ -285,8 +285,7 @@ def parse_duration_ms(value: Any, *, field: str = "delay") -> float:
             ms = float(text)
         except ValueError as exc:
             raise NetworkProfileError(
-                f"Invalid {field} '{value}': expected a duration such as '30ms', "
-                f"'12.7ms' or '1s'."
+                f"Invalid {field} '{value}': expected a duration such as '30ms', '12.7ms' or '1s'."
             ) from exc
     if ms < 0:
         raise NetworkProfileError(f"Invalid {field} '{value}': must not be negative.")
@@ -312,9 +311,7 @@ def parse_loss_percent(value: Any) -> float:
             f"Invalid loss '{value}': expected a percentage such as 0.2 or '0.2%'."
         ) from exc
     if loss < 0 or loss > 100:
-        raise NetworkProfileError(
-            f"Invalid loss '{value}': must be between 0 and 100 percent."
-        )
+        raise NetworkProfileError(f"Invalid loss '{value}': must be between 0 and 100 percent.")
     return loss
 
 
@@ -389,9 +386,7 @@ def load_profiles(path: Optional[Path] = None) -> dict[str, NetworkProfile]:
         raise NetworkProfileError(f"{profiles_path}: 'profiles' must be a non-empty mapping.")
 
     return {
-        name: _profile_from_mapping(
-            name, data, profile_set_version=version, source="builtin"
-        )
+        name: _profile_from_mapping(name, data, profile_set_version=version, source="builtin")
         for name, data in entries.items()
     }
 
@@ -543,9 +538,7 @@ def build_network_impairment_script(
     # Ingress: loss only. Delay is deliberately omitted so RTT is not doubled.
     ingress_netem = _netem_args(0.0, 0.0, profile.loss_percent)
 
-    exempt_ip_lines = "\n".join(
-        f'    EXEMPT_IPS="$EXEMPT_IPS {ip}"' for ip in ips
-    ) or "    :"
+    exempt_ip_lines = "\n".join(f'    EXEMPT_IPS="$EXEMPT_IPS {ip}"' for ip in ips) or "    :"
     exempt_ports = " ".join(str(port) for port in ALL_EXEMPT_PORTS)
 
     return f"""\

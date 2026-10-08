@@ -52,17 +52,13 @@ def _common_patches():
             "saorsa_deploy.cmd.provision_bootstraps._resolve_binary_source",
             return_value=(None, True),
         ),
-        patch(
-            "saorsa_deploy.cmd.provision_bootstraps.AntBootstrapNodesProvisioner"
-        ),
+        patch("saorsa_deploy.cmd.provision_bootstraps.AntBootstrapNodesProvisioner"),
     )
 
 
 class TestCmdProvisionBootstraps:
     def test_provisions_additional_nodes_in_single_call(self):
-        load, update, clear, _event, _bin, prov_cls = (
-            p.start() for p in _common_patches()
-        )
+        load, update, clear, _event, _bin, prov_cls = (p.start() for p in _common_patches())
         try:
             load.return_value = dict(_STATE)
             cmd_provision_bootstraps(_args())
@@ -81,9 +77,7 @@ class TestCmdProvisionBootstraps:
             patch.stopall()
 
     def test_clears_known_hosts_for_additional_ips(self):
-        load, _update, clear, _event, _bin, _prov_cls = (
-            p.start() for p in _common_patches()
-        )
+        load, _update, clear, _event, _bin, _prov_cls = (p.start() for p in _common_patches())
         try:
             load.return_value = dict(_STATE)
             cmd_provision_bootstraps(_args())
@@ -93,14 +87,10 @@ class TestCmdProvisionBootstraps:
             patch.stopall()
 
     def test_single_bootstrap_is_noop(self):
-        load, _update, _clear, _event, _bin, prov_cls = (
-            p.start() for p in _common_patches()
-        )
+        load, _update, _clear, _event, _bin, prov_cls = (p.start() for p in _common_patches())
         try:
             load.return_value = {
-                "bootstrap_nodes": [
-                    {"ip": "10.0.0.1", "region": "lon1", "bootstrap_index": 1}
-                ],
+                "bootstrap_nodes": [{"ip": "10.0.0.1", "region": "lon1", "bootstrap_index": 1}],
                 "bootstrap_port": 10000,
             }
             cmd_provision_bootstraps(_args())
@@ -109,9 +99,7 @@ class TestCmdProvisionBootstraps:
             patch.stopall()
 
     def test_provisioner_failure_marks_failed_and_exits(self):
-        load, _update, _clear, _event, _bin, prov_cls = (
-            p.start() for p in _common_patches()
-        )
+        load, _update, _clear, _event, _bin, prov_cls = (p.start() for p in _common_patches())
         status_patch = patch("saorsa_deploy.registry.record_status")
         record_status = status_patch.start()
         try:

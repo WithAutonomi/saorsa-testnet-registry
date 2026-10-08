@@ -16,6 +16,7 @@ Two rules it must not break:
   would corrupt the deltas in the team's daily message. This keeps its own local
   snapshot, which also makes the deltas mean "since *you* last looked".
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -29,8 +30,7 @@ from rich.console import Console
 from saorsa_deploy.state import load_monitoring_state
 
 REPORTER_SCRIPT = (
-    Path(__file__).resolve().parent.parent
-    / "resources" / "scripts" / "prod_canary_reporter.py"
+    Path(__file__).resolve().parent.parent / "resources" / "scripts" / "prod_canary_reporter.py"
 )
 
 
@@ -42,9 +42,7 @@ def _load_reporter():
     copying its ~750 lines keeps one implementation of the analysis: whatever the
     team sees in Slack is exactly what this prints.
     """
-    spec = importlib.util.spec_from_file_location(
-        "prod_canary_reporter", REPORTER_SCRIPT
-    )
+    spec = importlib.util.spec_from_file_location("prod_canary_reporter", REPORTER_SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -104,9 +102,7 @@ def cmd_prod_canary_report(args):
     influx_url = (mon_state.get("influxdb_url") or "").rstrip("/")
     influx_token = mon_state.get("influxdb_token") or ""
     influx_org = mon_state.get("influxdb_org", "ant") or "ant"
-    influx_bucket = (
-        mon_state.get("influxdb_bucket", "testnet-metrics") or "testnet-metrics"
-    )
+    influx_bucket = mon_state.get("influxdb_bucket", "testnet-metrics") or "testnet-metrics"
     if not influx_url or not influx_token:
         console.print(
             "[bold red]Error:[/bold red] monitoring state has no Influx "
@@ -117,12 +113,18 @@ def cmd_prod_canary_report(args):
     now = datetime.now(tz=timezone.utc)
     try:
         uploads = reporter.fetch_uploads(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=influx_bucket, deployment_name=args.name,
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            deployment_name=args.name,
         )
         probes = reporter.fetch_probes(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=influx_bucket, deployment_name=args.name,
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            deployment_name=args.name,
         )
     except urllib.error.URLError as e:
         console.print(f"[bold red]Error:[/bold red] Influx query failed: {e}")
@@ -150,8 +152,7 @@ def cmd_prod_canary_report(args):
 
     if args.no_save_state:
         console.print(
-            "\n[dim](state not saved — next run's \"since last\" comparison is "
-            "unchanged)[/dim]"
+            '\n[dim](state not saved — next run\'s "since last" comparison is unchanged)[/dim]'
         )
     else:
         reporter.write_state(state_path, state, now)

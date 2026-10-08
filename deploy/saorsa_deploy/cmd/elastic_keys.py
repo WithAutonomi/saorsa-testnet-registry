@@ -51,7 +51,10 @@ class EsAdminError(RuntimeError):
 
 
 def _es_request(
-    state: dict, method: str, path: str, data: dict | None = None,
+    state: dict,
+    method: str,
+    path: str,
+    data: dict | None = None,
     ssh_key_path: str = "~/.ssh/id_rsa",
 ) -> dict:
     """Run an administrative request against Elasticsearch, over SSH.
@@ -73,7 +76,7 @@ def _es_request(
 
     remote = (
         "PW=$(cat /etc/elasticsearch/ant-credentials/password) && "
-        f"curl -sS --fail-with-body -u \"elastic:$PW\" -X {method} "
+        f'curl -sS --fail-with-body -u "elastic:$PW" -X {method} '
         f"'http://localhost:9200{path}' -H 'Content-Type: application/json'"
     )
     payload = None
@@ -84,11 +87,16 @@ def _es_request(
     result = subprocess.run(
         [
             "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=15",
-            "-i", str(Path(ssh_key_path).expanduser()),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=15",
+            "-i",
+            str(Path(ssh_key_path).expanduser()),
             f"root@{vm_ip}",
             remote,
         ],
@@ -99,8 +107,7 @@ def _es_request(
     )
     if result.returncode != 0:
         raise EsAdminError(
-            (result.stdout or result.stderr or "").strip()
-            or f"ssh/curl exited {result.returncode}"
+            (result.stdout or result.stderr or "").strip() or f"ssh/curl exited {result.returncode}"
         )
     try:
         return json.loads(result.stdout)
@@ -168,15 +175,14 @@ def cmd_elastic_mint_key(args):
     # Omitting `expiration` entirely is what makes a key never expire; there is
     # no way to clear it afterwards (the update API rejects a null), so this has
     # to be right at creation time.
-    expiration = (
-        DEFAULT_EXPIRATION if args.expiration is None else args.expiration
-    )
+    expiration = DEFAULT_EXPIRATION if args.expiration is None else args.expiration
     if expiration:
         payload["expiration"] = expiration
 
     try:
-        resp = _es_request(state, "POST", "/_security/api_key", payload,
-                           ssh_key_path=args.ssh_key_path)
+        resp = _es_request(
+            state, "POST", "/_security/api_key", payload, ssh_key_path=args.ssh_key_path
+        )
     except Exception as e:  # noqa: BLE001 - surfaced verbatim to the operator
         _fail(console, e)
 
@@ -192,18 +198,15 @@ def cmd_elastic_mint_key(args):
                     f"  [bold]Endpoint:[/bold]   {ingest_url}",
                     f"  [bold]Index:[/bold]      {BETA_INDEX_PATTERN}",
                     "",
-                    "  [bold]Credential (send to the user, it is not recoverable "
-                    "later):[/bold]",
+                    "  [bold]Credential (send to the user, it is not recoverable later):[/bold]",
                     f"  {encoded}",
                     "",
                     "  [dim]Used as:  Authorization: ApiKey <credential>[/dim]",
-                    "  [dim]Write-only: it can add documents and nothing else — "
-                    "no reads,[/dim]",
+                    "  [dim]Write-only: it can add documents and nothing else — no reads,[/dim]",
                     "  [dim]no overwrites, no other index.[/dim]",
                     "",
                     "  [dim]Revoke with:[/dim]",
-                    f"  saorsa-deploy elastic revoke-key --name {args.name} "
-                    f"--user {args.user}",
+                    f"  saorsa-deploy elastic revoke-key --name {args.name} --user {args.user}",
                 ]
             ),
             title=f"Ingest key: {args.user}",
@@ -223,8 +226,9 @@ def cmd_elastic_list_keys(args):
     console = Console()
     state = _load(console, args.name)
     try:
-        resp = _es_request(state, "GET", "/_security/api_key?active_only=true",
-                           ssh_key_path=args.ssh_key_path)
+        resp = _es_request(
+            state, "GET", "/_security/api_key?active_only=true", ssh_key_path=args.ssh_key_path
+        )
     except Exception as e:  # noqa: BLE001
         _fail(console, e)
 
@@ -256,9 +260,7 @@ def cmd_elastic_list_keys(args):
 def _fmt_ms(value) -> str:
     if not value:
         return ""
-    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).strftime(
-        "%Y-%m-%d %H:%M"
-    )
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 def cmd_elastic_revoke_key(args):
@@ -285,10 +287,7 @@ def cmd_elastic_revoke_key(args):
             f"'{args.name}'. Nothing was revoked.[/yellow]"
         )
         return
-    console.print(
-        f"[bold green]Revoked {len(invalidated)} key(s) for '{args.user}'."
-        "[/bold green]"
-    )
+    console.print(f"[bold green]Revoked {len(invalidated)} key(s) for '{args.user}'.[/bold green]")
     console.print(
         "[dim]Revocation is immediate; the user's forwarder will start getting "
         "401s on its next batch.[/dim]"
@@ -317,18 +316,23 @@ def cmd_elastic_set_log_level(args):
         sys.exit(1)
 
     try:
-        _es_request(state, "PUT", f"/_ingest/pipeline/{LOG_FILTER_PIPELINE}", body,
-                    ssh_key_path=args.ssh_key_path)
+        _es_request(
+            state,
+            "PUT",
+            f"/_ingest/pipeline/{LOG_FILTER_PIPELINE}",
+            body,
+            ssh_key_path=args.ssh_key_path,
+        )
     except Exception as e:  # noqa: BLE001
         _fail(console, e)
 
     kept = f"{args.min_level.upper()} and above"
     dropped = ", ".join(drop) if drop else "nothing"
+    console.print(f"[bold green]Ingest level for '{args.name}' is now {kept}.[/bold green]")
     console.print(
-        f"[bold green]Ingest level for '{args.name}' is now {kept}.[/bold green]"
+        f"[dim]Dropping: {dropped}. Applies to the next document "
+        f"written; already-indexed logs are unaffected.[/dim]"
     )
-    console.print(f"[dim]Dropping: {dropped}. Applies to the next document "
-                  f"written; already-indexed logs are unaffected.[/dim]")
     if drop:
         # Community forwarders see a dropped document as accepted, so nobody
         # upstream will notice a tightening. Say so rather than let it be a

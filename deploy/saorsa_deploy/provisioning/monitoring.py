@@ -134,9 +134,7 @@ class MonitoringProvisioner:
                 ],
             )
         else:
-            self.console.print(
-                "[dim]Grafana disabled — provisioning InfluxDB only.[/dim]"
-            )
+            self.console.print("[dim]Grafana disabled — provisioning InfluxDB only.[/dim]")
 
         return self._connection_details(token)
 
@@ -146,9 +144,7 @@ class MonitoringProvisioner:
         ``op_adders`` is a list of callables each taking the pyinfra ``state``
         and registering operations via ``add_op``; they run in order.
         """
-        hosts_data = [
-            (host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})
-        ]
+        hosts_data = [(host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})]
         inventory = Inventory((hosts_data, {}))
         state = State(inventory=inventory, config=Config())
 
@@ -158,9 +154,7 @@ class MonitoringProvisioner:
         try:
             for adder in op_adders:
                 adder(state)
-            self.console.print(
-                f"Running {label} provisioning operations..."
-            )
+            self.console.print(f"Running {label} provisioning operations...")
             run_ops(state)
         finally:
             disconnect_all(state)
@@ -214,9 +208,7 @@ class MonitoringProvisioner:
             state,
             server.shell,
             name="Order InfluxDB after its data volume",
-            commands=[
-                build_mount_ordering_dropin_command("influxdb", MONITORING_MOUNT_POINT)
-            ],
+            commands=[build_mount_ordering_dropin_command("influxdb", MONITORING_MOUNT_POINT)],
         )
 
     def _add_install_influxdb_ops(self, state: State):
@@ -326,9 +318,7 @@ class MonitoringProvisioner:
             ],
         )
 
-    def _add_configure_grafana_ops(
-        self, state: State, *, influxdb_url: str, influx_token: str
-    ):
+    def _add_configure_grafana_ops(self, state: State, *, influxdb_url: str, influx_token: str):
         # Grafana runs on its own VM and cannot read the InfluxDB VM's local
         # token file, so the URL + token are substituted here and written with
         # a quoted heredoc (no shell expansion of the already-resolved values).
@@ -341,8 +331,7 @@ class MonitoringProvisioner:
             name="Write Grafana datasource provisioning",
             commands=[
                 "mkdir -p /etc/grafana/provisioning/datasources",
-                f"cat > {GRAFANA_DATASOURCE_PATH} << 'DS_EOF'\n"
-                f"{datasource_yaml}DS_EOF",
+                f"cat > {GRAFANA_DATASOURCE_PATH} << 'DS_EOF'\n{datasource_yaml}DS_EOF",
             ],
         )
 
@@ -385,8 +374,7 @@ class MonitoringProvisioner:
             server.shell,
             name="Write node overview dashboard",
             commands=[
-                f"cat > {GRAFANA_NODE_TABLE_PATH}"
-                f" << 'TABLE_EOF'\n{node_table_json}\nTABLE_EOF",
+                f"cat > {GRAFANA_NODE_TABLE_PATH} << 'TABLE_EOF'\n{node_table_json}\nTABLE_EOF",
             ],
         )
 
@@ -396,8 +384,7 @@ class MonitoringProvisioner:
             server.shell,
             name="Write egress accounting dashboard",
             commands=[
-                f"cat > {GRAFANA_EGRESS_DASHBOARD_PATH}"
-                f" << 'EGRESS_EOF'\n{egress_json}\nEGRESS_EOF",
+                f"cat > {GRAFANA_EGRESS_DASHBOARD_PATH} << 'EGRESS_EOF'\n{egress_json}\nEGRESS_EOF",
             ],
         )
 
@@ -456,7 +443,7 @@ class MonitoringProvisioner:
                 "sleep 3; done && "
                 "curl -s -X PUT http://admin:admin@localhost:3000/api/user/password "
                 "-H 'Content-Type: application/json' "
-                f"-d '{{\"oldPassword\":\"admin\",\"newPassword\":\"{self.grafana_password}\"}}'"
+                f'-d \'{{"oldPassword":"admin","newPassword":"{self.grafana_password}"}}\''
                 " || echo 'GRAFANA_PASSWORD:ALREADY_CHANGED'",
             ],
         )
@@ -492,9 +479,7 @@ class MonitoringProvisioner:
             text=True,
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to retrieve Telegraf token: {result.stderr}"
-            )
+            raise RuntimeError(f"Failed to retrieve Telegraf token: {result.stderr}")
         return result.stdout.strip()
 
     def _connection_details(self, token: str) -> dict:
@@ -530,13 +515,11 @@ class MonitoringProvisioner:
             .replace("{{INFLUXDB_RETENTION_SECONDS}}", str(retention_seconds))
         )
 
-    def _build_grafana_datasource_yaml(
-        self, *, influxdb_url: str, influx_token: str
-    ) -> str:
+    def _build_grafana_datasource_yaml(self, *, influxdb_url: str, influx_token: str) -> str:
         template = self._read_resource("grafana-datasource.yml")
-        return template.replace(
-            "{{INFLUXDB_URL}}", influxdb_url
-        ).replace("{{INFLUX_TOKEN}}", influx_token)
+        return template.replace("{{INFLUXDB_URL}}", influxdb_url).replace(
+            "{{INFLUX_TOKEN}}", influx_token
+        )
 
     def _build_grafana_dashboard_provider_yaml(self) -> str:
         template = self._read_resource("grafana-dashboard-provider.yml")
@@ -556,11 +539,11 @@ class MonitoringProvisioner:
                 (self._panel_memory_usage, {}),
                 (self._panel_node_rss, {}),
                 (self._panel_node_cpu, {}),
-                (self._panel_disk_usage,
-                 {"title": "System Disk Usage", "mount_path": "/"}),
-                (self._panel_disk_usage,
-                 {"title": "Attached Volume Usage",
-                  "mount_path": "/mnt/ant-node-storage"}),
+                (self._panel_disk_usage, {"title": "System Disk Usage", "mount_path": "/"}),
+                (
+                    self._panel_disk_usage,
+                    {"title": "Attached Volume Usage", "mount_path": "/mnt/ant-node-storage"},
+                ),
                 (self._panel_network_inbound, {}),
                 (self._panel_network_outbound, {}),
             ],
@@ -583,8 +566,7 @@ class MonitoringProvisioner:
             panel_specs=[
                 (self._panel_cpu_usage, {}),
                 (self._panel_memory_usage, {}),
-                (self._panel_disk_usage,
-                 {"title": "System Disk Usage", "mount_path": "/"}),
+                (self._panel_disk_usage, {"title": "System Disk Usage", "mount_path": "/"}),
                 (self._panel_network_inbound, {}),
                 (self._panel_network_outbound, {}),
             ],
@@ -648,10 +630,13 @@ class MonitoringProvisioner:
             if x + w > 24:
                 x = 0
                 y += h
-            panels.append(panel_fn(
-                grid_pos={"h": h, "w": w, "x": x, "y": y},
-                bucket=bucket, **kwargs,
-            ))
+            panels.append(
+                panel_fn(
+                    grid_pos={"h": h, "w": w, "x": x, "y": y},
+                    bucket=bucket,
+                    **kwargs,
+                )
+            )
             x += w
             if x >= 24:
                 x = 0
@@ -689,7 +674,7 @@ class MonitoringProvisioner:
                         "datasource": {"type": "influxdb", "uid": "influxdb"},
                         "definition": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             f'  bucket: "{bucket}",\n'
                             '  tag: "host_role"\n'
                             ")"
@@ -701,7 +686,7 @@ class MonitoringProvisioner:
                         "label": "Role",
                         "query": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             f'  bucket: "{bucket}",\n'
                             '  tag: "host_role"\n'
                             ")"
@@ -723,12 +708,12 @@ class MonitoringProvisioner:
                         # host to the dropdown.
                         "definition": (
                             f'from(bucket: "{bucket}")\n'
-                            '  |> range(start: -1h)\n'
+                            "  |> range(start: -1h)\n"
                             '  |> filter(fn: (r) => r["_measurement"] == "cpu")\n'
-                            '  |> filter(fn: (r) => '
+                            "  |> filter(fn: (r) => "
                             'r["host_role"] =~ /^${host_role}$/)\n'
                             '  |> keep(columns: ["host"])\n'
-                            '  |> group()\n'
+                            "  |> group()\n"
                             '  |> distinct(column: "host")'
                         ),
                         "allValue": ".*",
@@ -738,12 +723,12 @@ class MonitoringProvisioner:
                         "label": "Host",
                         "query": (
                             f'from(bucket: "{bucket}")\n'
-                            '  |> range(start: -1h)\n'
+                            "  |> range(start: -1h)\n"
                             '  |> filter(fn: (r) => r["_measurement"] == "cpu")\n'
-                            '  |> filter(fn: (r) => '
+                            "  |> filter(fn: (r) => "
                             'r["host_role"] =~ /^${host_role}$/)\n'
                             '  |> keep(columns: ["host"])\n'
-                            '  |> group()\n'
+                            "  |> group()\n"
                             '  |> distinct(column: "host")'
                         ),
                         "refresh": 2,
@@ -766,9 +751,9 @@ class MonitoringProvisioner:
         filters = (
             '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
             '  |> filter(fn: (r) => r["host_role"]'
-            ' =~ /^$host_role$/)\n'
+            " =~ /^$host_role$/)\n"
             '  |> filter(fn: (r) => r["node_service"]'
-            ' =~ /^$node_service$/)\n'
+            " =~ /^$node_service$/)\n"
         )
 
         # Table fields: always-present ones first, then optional ones.
@@ -783,9 +768,7 @@ class MonitoringProvisioner:
             "p2p_routing_table_size",
             "p2p_routing_buckets_filled",
         ]
-        field_filter = " or\n       ".join(
-            f'r["_field"] == "{f}"' for f in table_fields
-        )
+        field_filter = " or\n       ".join(f'r["_field"] == "{f}"' for f in table_fields)
         # Only rename columns guaranteed to exist. Optional columns
         # (connected_peers, routing, etc.) keep their p2p_ names and
         # get human-readable names via Grafana field overrides.
@@ -793,9 +776,7 @@ class MonitoringProvisioner:
             "p2p_uptime_seconds": "Uptime (s)",
             "p2p_runtime_threads": "Threads",
         }
-        rename_lines = ",\n       ".join(
-            f'{k}: "{v}"' for k, v in rename_map.items()
-        )
+        rename_lines = ",\n       ".join(f'{k}: "{v}"' for k, v in rename_map.items())
 
         table_query = (
             'import "join"\n\n'
@@ -804,9 +785,7 @@ class MonitoringProvisioner:
             " stop: v.timeRangeStop)\n"
             '  |> filter(fn: (r) => r["_measurement"]'
             ' == "prometheus")\n'
-            f"  |> filter(fn: (r) =>\n       {field_filter})\n"
-            + filters
-            + "  |> last()\n"
+            f"  |> filter(fn: (r) =>\n       {field_filter})\n" + filters + "  |> last()\n"
             "  |> group()\n"
             '  |> pivot(rowKey: ["host", "node_service"],'
             ' columnKey: ["_field"], valueColumn: "_value")\n\n'
@@ -815,9 +794,7 @@ class MonitoringProvisioner:
             " stop: v.timeRangeStop)\n"
             '  |> filter(fn: (r) => r["_measurement"]'
             ' == "prometheus"'
-            ' and r["_field"] == "p2p_node_info")\n'
-            + filters
-            + "  |> last()\n"
+            ' and r["_field"] == "p2p_node_info")\n' + filters + "  |> last()\n"
             "  |> group()\n"
             '  |> keep(columns: ["host", "node_service",'
             ' "version"])\n\n'
@@ -826,7 +803,7 @@ class MonitoringProvisioner:
             "  right: versions,\n"
             "  on: (l, r) => l.host == r.host"
             " and l.node_service == r.node_service,\n"
-            '  as: (l, r) => ({l with version: r.version}),\n'
+            "  as: (l, r) => ({l with version: r.version}),\n"
             ")\n"
             "  |> rename(columns: {\n"
             '       host: "Host",\n'
@@ -854,24 +831,24 @@ class MonitoringProvisioner:
                     "fieldConfig": {
                         "defaults": {},
                         "overrides": [
+                            self._table_override("Uptime (s)", unit="s"),
+                            self._table_override("p2p_connected_peers", display="Connected Peers"),
                             self._table_override(
-                                "Uptime (s)", unit="s"),
+                                "p2p_transport_active_connections", display="Active Connections"
+                            ),
                             self._table_override(
-                                "p2p_connected_peers",
-                                display="Connected Peers"),
+                                "p2p_routing_table_size", display="Routing Table Size"
+                            ),
                             self._table_override(
-                                "p2p_transport_active_connections",
-                                display="Active Connections"),
-                            self._table_override(
-                                "p2p_routing_table_size",
-                                display="Routing Table Size"),
-                            self._table_override(
-                                "p2p_routing_buckets_filled",
-                                display="Routing Buckets"),
+                                "p2p_routing_buckets_filled", display="Routing Buckets"
+                            ),
                         ],
                     },
                     "gridPos": {
-                        "h": 24, "w": 24, "x": 0, "y": 0,
+                        "h": 24,
+                        "w": 24,
+                        "x": 0,
+                        "y": 0,
                     },
                     "options": {
                         "showHeader": True,
@@ -900,7 +877,7 @@ class MonitoringProvisioner:
                         },
                         "definition": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             '  bucket: "testnet-metrics",\n'
                             '  tag: "host"\n'
                             ")"
@@ -912,7 +889,7 @@ class MonitoringProvisioner:
                         "label": "Host",
                         "query": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             '  bucket: "testnet-metrics",\n'
                             '  tag: "host"\n'
                             ")"
@@ -933,7 +910,7 @@ class MonitoringProvisioner:
                         },
                         "definition": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             '  bucket: "testnet-metrics",\n'
                             '  tag: "host_role"\n'
                             ")"
@@ -945,7 +922,7 @@ class MonitoringProvisioner:
                         "label": "Role",
                         "query": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             '  bucket: "testnet-metrics",\n'
                             '  tag: "host_role"\n'
                             ")"
@@ -966,7 +943,7 @@ class MonitoringProvisioner:
                         },
                         "definition": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             '  bucket: "testnet-metrics",\n'
                             '  tag: "node_service"\n'
                             ")"
@@ -978,7 +955,7 @@ class MonitoringProvisioner:
                         "label": "Service",
                         "query": (
                             'import "influxdata/influxdb/schema"\n'
-                            'schema.tagValues(\n'
+                            "schema.tagValues(\n"
                             '  bucket: "testnet-metrics",\n'
                             '  tag: "node_service"\n'
                             ")"
@@ -1121,12 +1098,9 @@ class MonitoringProvisioner:
     def _procstat_agg_targets(self, field: str, *, bucket: str) -> list[dict]:
         """max / mean / min across nodes as three Grafana targets."""
         return [
-            {"query": self._procstat_agg_query(field, "max", bucket=bucket),
-             "refId": "A"},
-            {"query": self._procstat_agg_query(field, "mean", bucket=bucket),
-             "refId": "B"},
-            {"query": self._procstat_agg_query(field, "min", bucket=bucket),
-             "refId": "C"},
+            {"query": self._procstat_agg_query(field, "max", bucket=bucket), "refId": "A"},
+            {"query": self._procstat_agg_query(field, "mean", bucket=bucket), "refId": "B"},
+            {"query": self._procstat_agg_query(field, "min", bucket=bucket), "refId": "C"},
         ]
 
     def _panel_node_rss(self, grid_pos: dict, *, bucket: str) -> dict:
@@ -1175,7 +1149,12 @@ class MonitoringProvisioner:
         }
 
     def _panel_disk_usage(
-        self, grid_pos: dict, *, bucket: str, title: str, mount_path: str,
+        self,
+        grid_pos: dict,
+        *,
+        bucket: str,
+        title: str,
+        mount_path: str,
     ) -> dict:
         return {
             "title": title,
@@ -1203,12 +1182,10 @@ class MonitoringProvisioner:
         }
 
     def _panel_network_inbound(self, grid_pos: dict, *, bucket: str) -> dict:
-        return self._panel_network(
-            "Network Inbound", "bytes_recv", grid_pos, bucket=bucket)
+        return self._panel_network("Network Inbound", "bytes_recv", grid_pos, bucket=bucket)
 
     def _panel_network_outbound(self, grid_pos: dict, *, bucket: str) -> dict:
-        return self._panel_network(
-            "Network Outbound", "bytes_sent", grid_pos, bucket=bucket)
+        return self._panel_network("Network Outbound", "bytes_sent", grid_pos, bucket=bucket)
 
     def _p2p_query(self, fields: list[str]) -> str:
         """Base Flux query for p2p metrics from the prometheus measurement.
@@ -1229,13 +1206,16 @@ class MonitoringProvisioner:
         )
 
     def _p2p_panel(
-        self, title: str, fields: list[str], unit: str, grid_pos: dict,
+        self,
+        title: str,
+        fields: list[str],
+        unit: str,
+        grid_pos: dict,
     ) -> dict:
         """Timeseries panel — for metrics where trends over time matter
         (latency, duration, scores that evolve)."""
         query = (
-            self._p2p_query(fields)
-            + "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
+            self._p2p_query(fields) + "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
             "createEmpty: false)\n"
             '  |> keep(columns: ["_time", "_value", "host"])\n'
             '  |> yield(name: "mean")'
@@ -1256,13 +1236,16 @@ class MonitoringProvisioner:
         }
 
     def _p2p_stat(
-        self, title: str, fields: list[str], unit: str, grid_pos: dict,
+        self,
+        title: str,
+        fields: list[str],
+        unit: str,
+        grid_pos: dict,
     ) -> dict:
         """Stat panel — shows current value per host as big numbers.
         For point-in-time gauges (peers, table size, threads, uptime)."""
         query = (
-            self._p2p_query(fields)
-            + "  |> mean()\n"
+            self._p2p_query(fields) + "  |> mean()\n"
             '  |> keep(columns: ["_value", "host"])\n'
             '  |> yield(name: "mean")'
         )
@@ -1293,14 +1276,18 @@ class MonitoringProvisioner:
         }
 
     def _p2p_gauge(
-        self, title: str, fields: list[str], unit: str, grid_pos: dict,
-        min_val: float = 0, max_val: float = 1,
+        self,
+        title: str,
+        fields: list[str],
+        unit: str,
+        grid_pos: dict,
+        min_val: float = 0,
+        max_val: float = 1,
     ) -> dict:
         """Gauge panel — semicircle showing current value against a range.
         For scores and ratios (success rate, health, security scores)."""
         query = (
-            self._p2p_query(fields)
-            + "  |> mean()\n"
+            self._p2p_query(fields) + "  |> mean()\n"
             '  |> keep(columns: ["_value", "host"])\n'
             '  |> yield(name: "mean")'
         )
@@ -1336,13 +1323,16 @@ class MonitoringProvisioner:
         }
 
     def _p2p_rate(
-        self, title: str, fields: list[str], unit: str, grid_pos: dict,
+        self,
+        title: str,
+        fields: list[str],
+        unit: str,
+        grid_pos: dict,
     ) -> dict:
         """Timeseries panel showing rate of change — for counters
         (operations, events, errors). Uses derivative to show ops/sec."""
         query = (
-            self._p2p_query(fields)
-            + "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
+            self._p2p_query(fields) + "  |> aggregateWindow(every: v.windowPeriod, fn: mean, "
             "createEmpty: false)\n"
             "  |> derivative(unit: 1s, nonNegative: true)\n"
             '  |> keep(columns: ["_time", "_value", "host"])\n'
@@ -1369,9 +1359,7 @@ class MonitoringProvisioner:
         Drops host grouping so all nodes are averaged together.
         Filters still apply (host_role, node_service).
         """
-        field_filter = " or ".join(
-            f'r["_field"] == "{f}"' for f in fields
-        )
+        field_filter = " or ".join(f'r["_field"] == "{f}"' for f in fields)
         return (
             'from(bucket: "testnet-metrics")\n'
             "  |> range(start: v.timeRangeStart,"
@@ -1381,20 +1369,23 @@ class MonitoringProvisioner:
             f"  |> filter(fn: (r) => {field_filter})\n"
             '  |> filter(fn: (r) => r["host"] =~ /^$host$/)\n'
             '  |> filter(fn: (r) => r["host_role"]'
-            ' =~ /^$host_role$/)\n'
+            " =~ /^$host_role$/)\n"
             '  |> filter(fn: (r) => r["node_service"]'
-            ' =~ /^$node_service$/)\n'
+            " =~ /^$node_service$/)\n"
             '  |> group(columns: ["_field"])\n'
         )
 
     def _p2p_testnet_stat(
-        self, title: str, fields: list[str], unit: str,
-        grid_pos: dict, agg: str = "mean",
+        self,
+        title: str,
+        fields: list[str],
+        unit: str,
+        grid_pos: dict,
+        agg: str = "mean",
     ) -> dict:
         """Stat panel showing a single testnet-wide value."""
         query = (
-            self._p2p_testnet_query(fields)
-            + f"  |> {agg}()\n"
+            self._p2p_testnet_query(fields) + f"  |> {agg}()\n"
             '  |> keep(columns: ["_value", "_field"])\n'
             f'  |> yield(name: "{agg}")'
         )
@@ -1425,13 +1416,17 @@ class MonitoringProvisioner:
         }
 
     def _p2p_testnet_gauge(
-        self, title: str, fields: list[str], unit: str,
-        grid_pos: dict, min_val: float = 0, max_val: float = 1,
+        self,
+        title: str,
+        fields: list[str],
+        unit: str,
+        grid_pos: dict,
+        min_val: float = 0,
+        max_val: float = 1,
     ) -> dict:
         """Gauge panel showing a testnet-wide average."""
         query = (
-            self._p2p_testnet_query(fields)
-            + "  |> mean()\n"
+            self._p2p_testnet_query(fields) + "  |> mean()\n"
             '  |> keep(columns: ["_value", "_field"])\n'
             '  |> yield(name: "mean")'
         )
@@ -1468,7 +1463,9 @@ class MonitoringProvisioner:
 
     @staticmethod
     def _table_override(
-        column: str, display: str | None = None, unit: str | None = None,
+        column: str,
+        display: str | None = None,
+        unit: str | None = None,
     ) -> dict:
         """Build a Grafana field override for the table panel."""
         props = []
@@ -1482,7 +1479,12 @@ class MonitoringProvisioner:
         }
 
     def _panel_network(
-        self, title: str, field: str, grid_pos: dict, *, bucket: str,
+        self,
+        title: str,
+        field: str,
+        grid_pos: dict,
+        *,
+        bucket: str,
     ) -> dict:
         return {
             "title": title,

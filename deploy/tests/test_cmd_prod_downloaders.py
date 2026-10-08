@@ -27,9 +27,7 @@ def _deploy_args(**overrides):
 @pytest.fixture
 def deploy_patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.prod_downloaders.record_deployment_created"
-        ) as p_create,
+        patch("saorsa_deploy.cmd.prod_downloaders.record_deployment_created") as p_create,
         patch("saorsa_deploy.cmd.prod_downloaders.record_event") as p_event,
         patch("saorsa_deploy.cmd.prod_downloaders.record_status") as p_status,
         patch(
@@ -40,21 +38,11 @@ def deploy_patches():
             "saorsa_deploy.cmd.prod_downloaders._client_stack_exists",
             return_value=False,
         ) as p_client_exists,
-        patch(
-            "saorsa_deploy.cmd.monitoring_infra.cmd_monitoring_infra"
-        ) as p_mon_infra,
-        patch(
-            "saorsa_deploy.cmd.provision_monitoring.cmd_provision_monitoring"
-        ) as p_prov_mon,
-        patch(
-            "saorsa_deploy.cmd.infra_clients.cmd_infra_clients"
-        ) as p_infra_clients,
-        patch(
-            "saorsa_deploy.cmd.prod_downloaders._provision_prod_downloader"
-        ) as p_prov_clients,
-        patch(
-            "saorsa_deploy.cmd.prod_downloaders._start_prod_downloader"
-        ) as p_start_clients,
+        patch("saorsa_deploy.cmd.monitoring_infra.cmd_monitoring_infra") as p_mon_infra,
+        patch("saorsa_deploy.cmd.provision_monitoring.cmd_provision_monitoring") as p_prov_mon,
+        patch("saorsa_deploy.cmd.infra_clients.cmd_infra_clients") as p_infra_clients,
+        patch("saorsa_deploy.cmd.prod_downloaders._provision_prod_downloader") as p_prov_clients,
+        patch("saorsa_deploy.cmd.prod_downloaders._start_prod_downloader") as p_start_clients,
     ):
         yield SimpleNamespace(
             record_create=p_create,
@@ -71,25 +59,16 @@ def deploy_patches():
 
 
 class TestDeployHappyPath:
-
-    def test_deploy_rejects_addresses_file_with_extra_tokens(
-        self, deploy_patches, tmp_path
-    ):
+    def test_deploy_rejects_addresses_file_with_extra_tokens(self, deploy_patches, tmp_path):
         custom_file = tmp_path / "addrs.txt"
-        custom_file.write_text(
-            "ant file download " + "a" * 64 + " -o foo.bin\n"
-        )
+        custom_file.write_text("ant file download " + "a" * 64 + " -o foo.bin\n")
 
         with pytest.raises(SystemExit):
-            cmd_prod_downloaders_deploy(
-                _deploy_args(addresses_path=str(custom_file))
-            )
+            cmd_prod_downloaders_deploy(_deploy_args(addresses_path=str(custom_file)))
 
 
 class TestDeployFailure:
-    def test_deploy_records_failed_status_when_underlying_stage_exits(
-        self, deploy_patches
-    ):
+    def test_deploy_records_failed_status_when_underlying_stage_exits(self, deploy_patches):
         deploy_patches.prov_clients.side_effect = SystemExit(1)
 
         with pytest.raises(SystemExit):

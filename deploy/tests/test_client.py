@@ -116,16 +116,12 @@ class TestParseUploaderSpec:
 
     @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
     def test_payment_with_default_vm_size(self, payment_type):
-        result = parse_uploader_spec(
-            f"digital_ocean:lon1:50:payment={payment_type}"
-        )
+        result = parse_uploader_spec(f"digital_ocean:lon1:50:payment={payment_type}")
         assert result["payment_type"] == payment_type
         assert result["vm_size"] == "s-2vcpu-4gb"
 
     def test_payment_with_explicit_vm_size(self):
-        result = parse_uploader_spec(
-            "digital_ocean:nyc1:100:s-4vcpu-8gb:payment=no-merkle"
-        )
+        result = parse_uploader_spec("digital_ocean:nyc1:100:s-4vcpu-8gb:payment=no-merkle")
         assert result["payment_type"] == "no-merkle"
         assert result["vm_size"] == "s-4vcpu-8gb"
 
@@ -139,9 +135,7 @@ class TestParseUploaderSpec:
 
     def test_payment_duplicate_rejected(self):
         with pytest.raises(ValueError, match="duplicate key"):
-            parse_uploader_spec(
-                "digital_ocean:lon1:50:payment=merkle:payment=no-merkle"
-            )
+            parse_uploader_spec("digital_ocean:lon1:50:payment=merkle:payment=no-merkle")
 
 
 class TestParseDownloaderSpec:
@@ -486,9 +480,7 @@ class TestParseBootstrapCache:
 
     def test_duplicate_rejected(self):
         with pytest.raises(ValueError, match="duplicate key"):
-            parse_downloader_spec(
-                "digital_ocean:lon1:bootstrap_cache=true:bootstrap_cache=false"
-            )
+            parse_downloader_spec("digital_ocean:lon1:bootstrap_cache=true:bootstrap_cache=false")
 
 
 # --- Client log-forwarder buffer wiring ---

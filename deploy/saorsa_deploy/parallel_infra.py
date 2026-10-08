@@ -169,9 +169,7 @@ def _print_failure(console: Console, result: LaneResult) -> None:
     console.print()
 
 
-def run_parallel_group(
-    console: Console, group: StepGroup, *, log_dir: Path | None = None
-) -> None:
+def run_parallel_group(console: Console, group: StepGroup, *, log_dir: Path | None = None) -> None:
     """Run every lane of ``group`` concurrently; abort the deploy on any failure.
 
     Returns normally only when all lanes succeed (the caller then records the
@@ -197,9 +195,7 @@ def run_parallel_group(
     lock = threading.Lock()
     results: list[LaneResult | None] = [None] * len(lanes)
 
-    with Live(
-        _build_table(states, 0), console=console, refresh_per_second=4
-    ) as live:
+    with Live(_build_table(states, 0), console=console, refresh_per_second=4) as live:
         with ThreadPoolExecutor(max_workers=len(lanes)) as pool:
             future_to_idx = {
                 pool.submit(_run_lane, i, lane, states[i], lock, log_dir): i
@@ -235,6 +231,4 @@ def run_parallel_group(
         )
         sys.exit(failures[0].exit_code or 1)
 
-    console.print(
-        f"[green]All {len(lanes)} infrastructure lane(s) completed.[/green]"
-    )
+    console.print(f"[green]All {len(lanes)} infrastructure lane(s) completed.[/green]")

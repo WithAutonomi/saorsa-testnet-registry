@@ -18,8 +18,18 @@ PROVIDERS = {
         # from nyc1 (V2-1440, V2-1449): nyc2, nyc3 and sfo2 carry block storage
         # and the node droplet size, and sit in the same metros as nyc1/sfo3.
         regions=[
-            "lon1", "nyc1", "ams3", "sfo3", "sgp1", "blr1", "fra1", "tor1", "syd1",
-            "nyc2", "nyc3", "sfo2",
+            "lon1",
+            "nyc1",
+            "ams3",
+            "sfo3",
+            "sgp1",
+            "blr1",
+            "fra1",
+            "tor1",
+            "syd1",
+            "nyc2",
+            "nyc3",
+            "sfo2",
         ],
         default_region="lon1",
         tf_dir="digitalocean",
@@ -38,8 +48,18 @@ PROVIDERS = {
         # storage clusters (attached-volume creates fail with
         # "Unable to find a block storage cluster in that location").
         regions=[
-            "ewr", "ord", "lax", "ams", "lhr", "fra",
-            "sjc", "syd", "nrt", "cdg", "sgp", "dfw",
+            "ewr",
+            "ord",
+            "lax",
+            "ams",
+            "lhr",
+            "fra",
+            "sjc",
+            "syd",
+            "nrt",
+            "cdg",
+            "sgp",
+            "dfw",
         ],
         default_region="ewr",
         tf_dir="vultr",
@@ -53,7 +73,13 @@ PROVIDERS = {
         # user_data or availability_zone, which this module needs, so they must
         # go through the OpenStack/Nova-based ovh-3az module instead.
         regions=[
-            "GRA9", "SBG5", "DE1", "UK1", "WAW1", "RBX-A", "BHS5",
+            "GRA9",
+            "SBG5",
+            "DE1",
+            "UK1",
+            "WAW1",
+            "RBX-A",
+            "BHS5",
         ],
         default_region="GRA9",
         tf_dir="ovh",
@@ -76,7 +102,15 @@ PROVIDERS = {
         # varies per region. Like ovh_3az, Contabo has NO attachable block
         # storage, so its nodes are root-disk-only (resources/contabo).
         regions=[
-            "EU", "US-central", "US-east", "US-west", "UK", "SIN", "AUS", "JPN", "IND",
+            "EU",
+            "US-central",
+            "US-east",
+            "US-west",
+            "UK",
+            "SIN",
+            "AUS",
+            "JPN",
+            "IND",
         ],
         default_region="EU",
         tf_dir="contabo",
@@ -227,7 +261,5 @@ def resolve_client_provider(token: str) -> ClientProviderInfo:
     internal = CLIENT_PROVIDER_ALIASES.get(token)
     if internal is None:
         valid = ", ".join(sorted(CLIENT_PROVIDER_ALIASES))
-        raise ValueError(
-            f"Unknown provider '{token}'. Valid providers: {valid}."
-        )
+        raise ValueError(f"Unknown provider '{token}'. Valid providers: {valid}.")
     return CLIENT_PROVIDERS[internal]

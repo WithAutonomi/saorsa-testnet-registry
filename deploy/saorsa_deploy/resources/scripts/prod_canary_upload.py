@@ -45,6 +45,7 @@ Optional env:
     DOWNLOAD_TIMEOUT   urllib HTTP timeout in seconds (default 600).
     UPLOAD_SLEEP_SECS  Seconds to sleep between uploads (default 0).
 """
+
 from __future__ import annotations
 
 import json
@@ -105,12 +106,7 @@ def _safe_filename(url: str, fallback_index: int) -> str:
 
 
 def _escape_tag(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace(",", "\\,")
-        .replace("=", "\\=")
-        .replace(" ", "\\ ")
-    )
+    return value.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
 
 
 def _escape_field_string(value: str) -> str:
@@ -145,13 +141,9 @@ def _post_influx(url: str, token: str, org: str, bucket: str, line: str) -> None
         print(f"WARN: Influx write failed: {e}", file=sys.stderr, flush=True)
 
 
-def _post_query_csv(
-    url: str, token: str, org: str, flux: str
-) -> str:
+def _post_query_csv(url: str, token: str, org: str, flux: str) -> str:
     """POST a Flux query and return the raw CSV body."""
-    target = (
-        f"{url.rstrip('/')}/api/v2/query?org={urllib.parse.quote(org)}"
-    )
+    target = f"{url.rstrip('/')}/api/v2/query?org={urllib.parse.quote(org)}"
     req = urllib.request.Request(
         target,
         data=flux.encode("utf-8"),
@@ -243,9 +235,7 @@ def _build_upload_line(
     # as Influx string fields so they don't lose precision; downstream
     # record-results parses them back as Decimal.
     if storage_cost_atto:
-        fields.append(
-            f'storage_cost_atto="{_escape_field_string(storage_cost_atto)}"'
-        )
+        fields.append(f'storage_cost_atto="{_escape_field_string(storage_cost_atto)}"')
     if gas_cost_wei:
         fields.append(f'gas_cost_wei="{_escape_field_string(gas_cost_wei)}"')
     if chunk_attempts_total is not None:
@@ -262,10 +252,7 @@ def _build_chunk_line(
     chunk_role: str,
     timestamp_ns: int,
 ) -> str:
-    tag_set = (
-        f"deployment_name={_escape_tag(deployment_name)},"
-        f"host={_escape_tag(host)}"
-    )
+    tag_set = f"deployment_name={_escape_tag(deployment_name)},host={_escape_tag(host)}"
     field_set = (
         f'canary_id="{_escape_field_string(canary_id)}",'
         f'chunk_address="{_escape_field_string(chunk_address)}",'
@@ -285,10 +272,7 @@ def _build_probe_line(
     duration_ms: int,
     timestamp_ns: int,
 ) -> str:
-    tag_set = (
-        f"deployment_name={_escape_tag(deployment_name)},"
-        f"host={_escape_tag(host)}"
-    )
+    tag_set = f"deployment_name={_escape_tag(deployment_name)},host={_escape_tag(host)}"
     field_set = (
         f'canary_id="{_escape_field_string(canary_id)}",'
         f'status="{_escape_field_string(status)}",'
@@ -324,8 +308,10 @@ def _run_ant(
     env["SECRET_KEY"] = secret_key
     stdout_log_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(stdout_log_path, "w", encoding="utf-8", errors="replace") as out_fh, \
-            open(stderr_log_path, "w", encoding="utf-8", errors="replace") as err_fh:
+    with (
+        open(stdout_log_path, "w", encoding="utf-8", errors="replace") as out_fh,
+        open(stderr_log_path, "w", encoding="utf-8", errors="replace") as err_fh,
+    ):
         proc = subprocess.run(
             cmd,
             env=env,
@@ -374,12 +360,12 @@ def _parse_probe_outcome(
     for line in stderr_text.splitlines():
         idx = line.find(_FAILED_DATAMAP_NEEDLE)
         if idx >= 0:
-            missing = line[idx + len(_FAILED_DATAMAP_NEEDLE):].strip()
+            missing = line[idx + len(_FAILED_DATAMAP_NEEDLE) :].strip()
             role = "data_map"
             break
         idx = line.find(_FAILED_DATA_NEEDLE)
         if idx >= 0:
-            tail = line[idx + len(_FAILED_DATA_NEEDLE):]
+            tail = line[idx + len(_FAILED_DATA_NEEDLE) :]
             end = tail.find(_FAILED_DATA_END)
             missing = tail[:end].strip() if end >= 0 else tail.strip()
             role = "data"
@@ -396,7 +382,7 @@ def _parse_probe_outcome(
         # Lines look like:
         # "chunk_get exhausted close group for <addr>: queried=N not_found=N "
         # "timeout=N network_err=N"
-        tail = line[idx + len(_PEER_SUMMARY_NEEDLE):]
+        tail = line[idx + len(_PEER_SUMMARY_NEEDLE) :]
         for token in tail.split():
             if "=" not in token:
                 continue
@@ -526,10 +512,13 @@ def main() -> int:
         upload_cmd = [
             ant_path,
             *bootstrap_args,
-            "--evm-network", evm_network,
+            "--evm-network",
+            evm_network,
             "--json",
             *verbosity,
-            "file", "upload", "--public",
+            "file",
+            "upload",
+            "--public",
             str(local_path),
         ]
         upload_exit, upload_stdout, _upload_stderr = _run_ant(
@@ -551,9 +540,7 @@ def main() -> int:
         storage_cost_atto = str(parsed.get("storage_cost_atto") or "")
         gas_cost_wei = str(parsed.get("gas_cost_wei") or "")
         chunk_attempts_raw = parsed.get("chunk_attempts_total")
-        chunk_attempts_total = (
-            int(chunk_attempts_raw) if chunk_attempts_raw is not None else None
-        )
+        chunk_attempts_total = int(chunk_attempts_raw) if chunk_attempts_raw is not None else None
 
         if upload_exit != 0 or not top_address:
             print(
@@ -574,7 +561,11 @@ def main() -> int:
             *bootstrap_args,
             "--json",
             *verbosity,
-            "file", "download", top_address, "-o", str(verify_path),
+            "file",
+            "download",
+            top_address,
+            "-o",
+            str(verify_path),
         ]
         verify_stdout_log = log_dir / f"verify-{canary_id}.stdout"
         verify_stderr_log = log_dir / f"verify-{canary_id}.stderr"
@@ -595,9 +586,7 @@ def main() -> int:
         )
         verify_path.unlink(missing_ok=True)
 
-        initial_verify = (
-            INITIAL_VERIFY_OK if verify_status == PROBE_OK else INITIAL_VERIFY_FAILED
-        )
+        initial_verify = INITIAL_VERIFY_OK if verify_status == PROBE_OK else INITIAL_VERIFY_FAILED
         print(
             f"  ok: canary_id={canary_id} top={top_address} "
             f"chunks={chunks_stored}/{total_chunks} "
@@ -625,9 +614,7 @@ def main() -> int:
             gas_cost_wei=gas_cost_wei,
             chunk_attempts_total=chunk_attempts_total,
         )
-        _post_influx(
-            influx_url, influx_token, influx_org, influx_bucket, upload_line
-        )
+        _post_influx(influx_url, influx_token, influx_org, influx_bucket, upload_line)
 
         # We only know the data-map address from `ant --json` output. The
         # underlying data chunks aren't exposed by the CLI, so we record
@@ -642,9 +629,7 @@ def main() -> int:
             chunk_role=CHUNK_ROLE_DATA_MAP,
             timestamp_ns=upload_finished_ns,
         )
-        _post_influx(
-            influx_url, influx_token, influx_org, influx_bucket, chunk_line
-        )
+        _post_influx(influx_url, influx_token, influx_org, influx_bucket, chunk_line)
 
         probe_line = _build_probe_line(
             host=host,
@@ -656,9 +641,7 @@ def main() -> int:
             duration_ms=verify_duration_ms,
             timestamp_ns=verify_finished_ns,
         )
-        _post_influx(
-            influx_url, influx_token, influx_org, influx_bucket, probe_line
-        )
+        _post_influx(influx_url, influx_token, influx_org, influx_bucket, probe_line)
 
         local_path.unlink(missing_ok=True)
         position += 1

@@ -50,8 +50,7 @@ def _provision_client_telegraf(
         {
             "ip": c["ip"],
             "name": (
-                f"{name}-ant-client-"
-                f"{c.get('role', 'upload')}-{c['region']}-{c['client_index']}"
+                f"{name}-ant-client-{c.get('role', 'upload')}-{c['region']}-{c['client_index']}"
             ),
             "ssh_user": ssh_user,
             "ssh_key": ssh_key,
@@ -70,10 +69,7 @@ def _provision_client_telegraf(
             **client_kwargs,
         ).execute()
     except Exception as e:
-        console.print(
-            f"[bold red]Telegraf metrics provisioning failed on "
-            f"clients:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Telegraf metrics provisioning failed on clients:[/bold red] {e}")
         return (True, False)
     return (True, True)
 
@@ -127,18 +123,13 @@ def provision_client_telegraf_best_effort(
     on failure.
     """
     console = console or Console()
-    console.print(
-        "[bold cyan]Provisioning client host metrics (Telegraf)[/bold cyan]"
-    )
+    console.print("[bold cyan]Provisioning client host metrics (Telegraf)[/bold cyan]")
     try:
         provisioned = provision_client_telegraf_for_deployment(
             name, ssh_key_path, ssh_user, console
         )
         if not provisioned:
-            console.print(
-                "[yellow]No client VMs found to provision host metrics on."
-                "[/yellow]"
-            )
+            console.print("[yellow]No client VMs found to provision host metrics on.[/yellow]")
         return provisioned
     except SystemExit:
         console.print(
@@ -149,7 +140,6 @@ def provision_client_telegraf_best_effort(
         return False
     except Exception as e:
         console.print(
-            f"[yellow]Client host-metrics provisioning error ({e}); deploy "
-            "continues.[/yellow]"
+            f"[yellow]Client host-metrics provisioning error ({e}); deploy continues.[/yellow]"
         )
         return False

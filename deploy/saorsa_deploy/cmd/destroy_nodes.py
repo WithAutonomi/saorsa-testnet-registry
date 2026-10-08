@@ -75,9 +75,7 @@ def _apply_provider_size_vars(
         variables["product_id"] = p_cfg.get("product_id", "V92")
 
 
-def _check_contabo_destroy_env(
-    provider_names: list[str], console: Console
-) -> None:
+def _check_contabo_destroy_env(provider_names: list[str], console: Console) -> None:
     """Exit early when Contabo regions are present but the OAuth2 env is missing.
 
     The contabo provider needs its credentials to delete resources, just like on
@@ -94,9 +92,7 @@ def _check_contabo_destroy_env(
         sys.exit(1)
 
 
-def _check_ovh_destroy_env(
-    provider_names: list[str], console: Console
-) -> None:
+def _check_ovh_destroy_env(provider_names: list[str], console: Console) -> None:
     """Exit early when OVH regions are present but the env lacks credentials.
 
     Terraform re-reads the module's data sources on destroy, so the OVH API
@@ -145,9 +141,7 @@ def cmd_destroy_nodes(args):
         return
 
     if region_pairs:
-        console.print(
-            f"[dim]Found {len(region_pairs)} node region(s) to destroy.[/dim]"
-        )
+        console.print(f"[dim]Found {len(region_pairs)} node region(s) to destroy.[/dim]")
         for provider, region in region_pairs:
             console.print(f"  [dim]{provider}/{region}[/dim]")
     if orphan_main_keys:
@@ -159,16 +153,13 @@ def cmd_destroy_nodes(args):
             console.print(f"  [dim]{key}[/dim]")
     console.print()
 
-    _all_destroy_providers = [p for p, _ in region_pairs] + [
-        p for p, _ in orphan_main_keys
-    ]
+    _all_destroy_providers = [p for p, _ in region_pairs] + [p for p, _ in orphan_main_keys]
     _check_ovh_destroy_env(_all_destroy_providers, console)
     _check_contabo_destroy_env(_all_destroy_providers, console)
 
     if not args.force:
         confirm = input(
-            f"This will destroy all node VMs for '{args.name}'. Type 'yes' to "
-            "confirm: "
+            f"This will destroy all node VMs for '{args.name}'. Type 'yes' to confirm: "
         )
         if confirm.strip().lower() != "yes":
             console.print("[yellow]Aborted.[/yellow]")
@@ -216,16 +207,10 @@ def cmd_destroy_nodes(args):
             # LARGER between it and the size actually recorded in this
             # region's own tfstate, since DO/OVH reject any destroy plan that
             # would shrink an existing volume.
-            recorded_size = int(
-                terraform_variables.get("attached_volume_size", "20")
-            )
+            recorded_size = int(terraform_variables.get("attached_volume_size", "20"))
             actual_size = int(_orphan_volume_size(state_key))
-            variables["attached_volume_size"] = str(
-                max(recorded_size, actual_size)
-            )
-        _apply_provider_size_vars(
-            variables, provider_name, providers_config.get(provider_name)
-        )
+            variables["attached_volume_size"] = str(max(recorded_size, actual_size))
+        _apply_provider_size_vars(variables, provider_name, providers_config.get(provider_name))
 
         configs.append(
             TerraformRunConfig(
@@ -272,24 +257,18 @@ def cmd_destroy_nodes(args):
         )
         seen_keys.add(state_key)
 
-    console.print(
-        f"[bold]Destroying node infrastructure across {len(configs)} region(s)...[/bold]"
-    )
+    console.print(f"[bold]Destroying node infrastructure across {len(configs)} region(s)...[/bold]")
     console.print()
 
     results = execute_terraform_runs(configs, action="destroy")
     failures = [r for r in results if not r.success]
     if failures:
-        console.print(
-            f"[bold red]{len(failures)} region(s) failed to destroy.[/bold red]"
-        )
+        console.print(f"[bold red]{len(failures)} region(s) failed to destroy.[/bold red]")
         record_event(args.name, "destroy_nodes_failed", {"failures": len(failures)})
         record_status(args.name, DeploymentStatus.FAILED)
         sys.exit(1)
 
-    console.print(
-        f"[bold green]All {len(results)} region(s) destroyed successfully.[/bold green]"
-    )
+    console.print(f"[bold green]All {len(results)} region(s) destroyed successfully.[/bold green]")
     console.print()
 
     for config in configs:
@@ -332,25 +311,19 @@ def cmd_destroy_nodes(args):
                 },
             )
         except Exception as e:
-            console.print(
-                f"[yellow]Warning: Failed to update deployment state: {e}[/yellow]"
-            )
+            console.print(f"[yellow]Warning: Failed to update deployment state: {e}[/yellow]")
     else:
         try:
             delete_deployment_state(args.name)
             console.print("[dim]Deployment state removed from S3.[/dim]")
             fully_destroyed = True
         except Exception as e:
-            console.print(
-                f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]"
-            )
+            console.print(f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]")
 
     record_event(args.name, "destroy_nodes_completed")
     if fully_destroyed:
         record_status(args.name, DeploymentStatus.DESTROYED)
-    console.print(
-        f"[bold green]Node VMs for '{args.name}' destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]Node VMs for '{args.name}' destroyed.[/bold green]")
 
 
 def _scan_orphan_main_vm_keys(name: str) -> list[tuple[str, str]]:
@@ -371,8 +344,7 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
     orphans = _scan_orphan_main_vm_keys(name)
     if not orphans:
         console.print(
-            f"[yellow]No node infrastructure found for '{name}'. "
-            "Nothing to destroy.[/yellow]"
+            f"[yellow]No node infrastructure found for '{name}'. Nothing to destroy.[/yellow]"
         )
         return
 
@@ -389,10 +361,7 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
     _check_contabo_destroy_env([p for p, _ in orphans], console)
 
     if not force:
-        confirm = input(
-            f"Destroy orphaned node resources for '{name}'? Type 'yes' to "
-            "confirm: "
-        )
+        confirm = input(f"Destroy orphaned node resources for '{name}'? Type 'yes' to confirm: ")
         if confirm.strip().lower() != "yes":
             console.print("[yellow]Aborted.[/yellow]")
             sys.exit(0)
@@ -429,9 +398,7 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
     results = execute_terraform_runs(configs, action="destroy")
     failures = [r for r in results if not r.success]
     if failures:
-        console.print(
-            f"[bold red]{len(failures)} region(s) failed to destroy.[/bold red]"
-        )
+        console.print(f"[bold red]{len(failures)} region(s) failed to destroy.[/bold red]")
         sys.exit(1)
     for c in configs:
         try:
@@ -441,6 +408,4 @@ def _destroy_nodes_without_state(name: str, force: bool, console: Console) -> No
         if c.workspace_dir.exists():
             shutil.rmtree(c.workspace_dir)
 
-    console.print(
-        f"[bold green]Orphaned node infrastructure for '{name}' destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]Orphaned node infrastructure for '{name}' destroyed.[/bold green]")

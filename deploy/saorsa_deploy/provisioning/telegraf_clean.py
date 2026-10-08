@@ -38,8 +38,7 @@ class TelegrafCleanProvisioner:
     def execute(self) -> None:
         """Tear down telegraf-ant-elasticsearch on all hosts."""
         hosts_data = [
-            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path})
-            for ip in self.host_ips
+            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
         config = Config()
@@ -58,8 +57,7 @@ class TelegrafCleanProvisioner:
                 name=f"Stop and disable {TELEGRAF_SERVICE_NAME}",
                 commands=[
                     f"systemctl stop {TELEGRAF_SERVICE_NAME} 2>/dev/null || true",
-                    f"systemctl disable {TELEGRAF_SERVICE_NAME} 2>/dev/null "
-                    f"|| true",
+                    f"systemctl disable {TELEGRAF_SERVICE_NAME} 2>/dev/null || true",
                 ],
             )
 
@@ -98,12 +96,8 @@ class TelegrafCleanProvisioner:
         failed = state.failed_hosts
         total = len(self.host_ips)
         succeeded = total - len(failed)
-        self.console.print(
-            f"Telegraf-logs cleanup complete: {succeeded}/{total} hosts"
-        )
+        self.console.print(f"Telegraf-logs cleanup complete: {succeeded}/{total} hosts")
         if failed:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError(
-                f"{len(failed)} host(s) failed telegraf-logs cleanup"
-            )
+            raise RuntimeError(f"{len(failed)} host(s) failed telegraf-logs cleanup")

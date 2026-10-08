@@ -110,8 +110,11 @@ GROUND_TRUTH_RX: tuple[tuple[str, str], ...] = ((TARGET_ENDPOINT, "sock_rx_bytes
 EGRESS_DECOMPOSITION: tuple[tuple[str, str, str], ...] = (
     ("DHT / wire messaging (wire_tx_bytes)", TARGET_CORE, "wire_tx_bytes"),
     ("chunk GET serving (get_success_tx_bytes)", TARGET_STORAGE, "get_success_tx_bytes"),
-    ("replication fetch responses (fetch_response_tx_bytes)", TARGET_REPLICATION,
-     "fetch_response_tx_bytes"),
+    (
+        "replication fetch responses (fetch_response_tx_bytes)",
+        TARGET_REPLICATION,
+        "fetch_response_tx_bytes",
+    ),
     ("relay server (bytes_relayed)", TARGET_RELAY, "bytes_relayed"),
     ("MASQUE relay server (bytes_relayed)", TARGET_MASQUE_RELAY_SERVER, "bytes_relayed"),
     ("relay client stream (stream_tx_bytes)", TARGET_ENDPOINT, "stream_tx_bytes"),
@@ -191,7 +194,7 @@ HOST_FILTER = '  |> filter(fn: (r) => r["host"] =~ /(?i)^$host$/)\n'
 # shown, on the already-reduced rows.
 SERVICE_LABEL_MAP = (
     "service_number: regexp.replaceAllString("
-    "r: /^.*ant-(node|bootstrap)-([0-9]+).*$/, v: r.service_number, t: \"$2\")"
+    'r: /^.*ant-(node|bootstrap)-([0-9]+).*$/, v: r.service_number, t: "$2")'
 )
 
 # aggregateWindow stamps the window cut off by the range end at the range end
@@ -347,8 +350,11 @@ def _timeseries(
 
 def panel_coverage(grid_pos: dict, *, bucket: str) -> dict:
     """Panel 1: accounted / actual egress, per host, as a percentage."""
-    query = _joined_accounted_and_nic(bucket) + "joined\n" + COVERAGE_MAP + (
-        '  |> yield(name: "coverage")'
+    query = (
+        _joined_accounted_and_nic(bucket)
+        + "joined\n"
+        + COVERAGE_MAP
+        + ('  |> yield(name: "coverage")')
     )
     return _timeseries(
         "Egress accounting coverage (%)",
@@ -430,7 +436,11 @@ def _rate_query(
         WINDOW_PROLOGUE
         + "\n"
         + _counter_increase(
-            bucket, specs, stream="bytes", group_by=group_by, host_filter=host_filter,
+            bucket,
+            specs,
+            stream="bytes",
+            group_by=group_by,
+            host_filter=host_filter,
             service_label="service_number" in group_by,
         )
         + "\nbytes\n"
@@ -441,12 +451,20 @@ def _rate_query(
 
 
 def _ground_truth_panel(
-    title: str, grid_pos: dict, *, bucket: str,
-    specs: tuple[tuple[str, str], ...], nic_field: str, direction: str,
+    title: str,
+    grid_pos: dict,
+    *,
+    bucket: str,
+    specs: tuple[tuple[str, str], ...],
+    nic_field: str,
+    direction: str,
 ) -> dict:
     fields = " + ".join(f for _t, f in specs)
-    query = _joined(bucket, specs, nic_field=nic_field) + "joined\n" + COVERAGE_MAP + (
-        '  |> yield(name: "coverage")'
+    query = (
+        _joined(bucket, specs, nic_field=nic_field)
+        + "joined\n"
+        + COVERAGE_MAP
+        + ('  |> yield(name: "coverage")')
     )
     return _timeseries(
         title,
@@ -473,15 +491,23 @@ def _ground_truth_panel(
 
 def panel_ground_truth_egress(grid_pos: dict, *, bucket: str) -> dict:
     return _ground_truth_panel(
-        "Socket ground truth — egress (%)", grid_pos, bucket=bucket,
-        specs=GROUND_TRUTH_TX, nic_field="bytes_sent", direction="sent",
+        "Socket ground truth — egress (%)",
+        grid_pos,
+        bucket=bucket,
+        specs=GROUND_TRUTH_TX,
+        nic_field="bytes_sent",
+        direction="sent",
     )
 
 
 def panel_ground_truth_ingress(grid_pos: dict, *, bucket: str) -> dict:
     return _ground_truth_panel(
-        "Socket ground truth — ingress (%)", grid_pos, bucket=bucket,
-        specs=GROUND_TRUTH_RX, nic_field="bytes_recv", direction="received",
+        "Socket ground truth — ingress (%)",
+        grid_pos,
+        bucket=bucket,
+        specs=GROUND_TRUTH_RX,
+        nic_field="bytes_recv",
+        direction="received",
     )
 
 
@@ -548,8 +574,7 @@ def panel_active_reservations(grid_pos: dict, *, bucket: str) -> dict:
         (TARGET_RELAY, "active_sessions"),
     )
     query = (
-        WINDOW_PROLOGUE
-        + "\n"
+        WINDOW_PROLOGUE + "\n"
         f'from(bucket: "{bucket}")\n'
         "  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n"
         '  |> filter(fn: (r) => r["_measurement"] == "tail")\n'
@@ -651,8 +676,12 @@ def _top_services_query(bucket: str, specs: tuple[tuple[str, str], ...]) -> str:
         WINDOW_PROLOGUE
         + "\n"
         + _counter_increase(
-            bucket, specs, stream="bytes", group_by=("host", "service_number"),
-            host_filter=False, service_label=True,
+            bucket,
+            specs,
+            stream="bytes",
+            group_by=("host", "service_number"),
+            host_filter=False,
+            service_label=True,
         )
         + "\nbytes\n"
         "  |> map(fn: (r) => ({r with _value: r._value / w_secs}))\n"
@@ -675,8 +704,12 @@ def _top_services_query(bucket: str, specs: tuple[tuple[str, str], ...]) -> str:
 
 
 def _top_services_table(
-    title: str, grid_pos: dict, *, bucket: str,
-    specs: tuple[tuple[str, str], ...], description: str,
+    title: str,
+    grid_pos: dict,
+    *,
+    bucket: str,
+    specs: tuple[tuple[str, str], ...],
+    description: str,
 ) -> dict:
     return {
         "title": title,
@@ -728,7 +761,9 @@ def _top_services_table(
 
 def panel_top_relay_services(grid_pos: dict, *, bucket: str) -> dict:
     return _top_services_table(
-        f"Top {TOP_N_SERVICES} services by relay bytes forwarded", grid_pos, bucket=bucket,
+        f"Top {TOP_N_SERVICES} services by relay bytes forwarded",
+        grid_pos,
+        bucket=bucket,
         specs=RELAY_BYTES,
         description=(
             "bytes_relayed over both relay servers, per service, fleet-wide. Mean rate "
@@ -740,7 +775,9 @@ def panel_top_relay_services(grid_pos: dict, *, bucket: str) -> dict:
 
 def panel_top_egress_services(grid_pos: dict, *, bucket: str) -> dict:
     return _top_services_table(
-        f"Top {TOP_N_SERVICES} services by socket egress", grid_pos, bucket=bucket,
+        f"Top {TOP_N_SERVICES} services by socket egress",
+        grid_pos,
+        bucket=bucket,
         specs=GROUND_TRUTH_TX,
         description=(
             "sock_tx_bytes per service, fleet-wide: everything the process sent on "
@@ -752,7 +789,9 @@ def panel_top_egress_services(grid_pos: dict, *, bucket: str) -> dict:
 
 def panel_top_ingress_services(grid_pos: dict, *, bucket: str) -> dict:
     return _top_services_table(
-        f"Top {TOP_N_SERVICES} services by socket ingress", grid_pos, bucket=bucket,
+        f"Top {TOP_N_SERVICES} services by socket ingress",
+        grid_pos,
+        bucket=bucket,
         specs=GROUND_TRUTH_RX,
         description=(
             "sock_rx_bytes per service, fleet-wide: everything the process received "
@@ -764,7 +803,9 @@ def panel_top_ingress_services(grid_pos: dict, *, bucket: str) -> dict:
 
 def panel_top_chunk_serving_services(grid_pos: dict, *, bucket: str) -> dict:
     return _top_services_table(
-        f"Top {TOP_N_SERVICES} services by chunk GET serving", grid_pos, bucket=bucket,
+        f"Top {TOP_N_SERVICES} services by chunk GET serving",
+        grid_pos,
+        bucket=bucket,
         specs=CHUNK_GET_SERVING,
         description=(
             "get_success_tx_bytes per service, fleet-wide: bytes served in successful "
@@ -775,8 +816,12 @@ def panel_top_chunk_serving_services(grid_pos: dict, *, bucket: str) -> dict:
 
 
 def _per_service_panel(
-    title: str, grid_pos: dict, *, bucket: str,
-    specs: tuple[tuple[str, str], ...], description: str,
+    title: str,
+    grid_pos: dict,
+    *,
+    bucket: str,
+    specs: tuple[tuple[str, str], ...],
+    description: str,
 ) -> dict:
     return _timeseries(
         title,
@@ -790,14 +835,20 @@ def _per_service_panel(
 
 def panel_service_egress(grid_pos: dict, *, bucket: str) -> dict:
     return _per_service_panel(
-        "Socket egress per service", grid_pos, bucket=bucket, specs=GROUND_TRUTH_TX,
+        "Socket egress per service",
+        grid_pos,
+        bucket=bucket,
+        specs=GROUND_TRUTH_TX,
         description="Rate of sock_tx_bytes.",
     )
 
 
 def panel_service_ingress(grid_pos: dict, *, bucket: str) -> dict:
     return _per_service_panel(
-        "Socket ingress per service", grid_pos, bucket=bucket, specs=GROUND_TRUTH_RX,
+        "Socket ingress per service",
+        grid_pos,
+        bucket=bucket,
+        specs=GROUND_TRUTH_RX,
         description="Rate of sock_rx_bytes.",
     )
 
@@ -808,7 +859,10 @@ def _make_category_panel(label: str, target: str, field: str):
 
     def panel(grid_pos: dict, *, bucket: str) -> dict:
         return _per_service_panel(
-            f"{name} per service", grid_pos, bucket=bucket, specs=((target, field),),
+            f"{name} per service",
+            grid_pos,
+            bucket=bucket,
+            specs=((target, field),),
             description=f"Rate of {field} (target {target}).",
         )
 

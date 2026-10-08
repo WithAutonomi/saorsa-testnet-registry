@@ -48,9 +48,7 @@ def select_full_ips(
     if percent <= 0 or not vm_ips_by_region:
         return []
     exclude = exclude or set()
-    candidates = sorted(
-        ip for ips in vm_ips_by_region.values() for ip in ips if ip not in exclude
-    )
+    candidates = sorted(ip for ips in vm_ips_by_region.values() for ip in ips if ip not in exclude)
     total = len(candidates)
     if total == 0:
         return []

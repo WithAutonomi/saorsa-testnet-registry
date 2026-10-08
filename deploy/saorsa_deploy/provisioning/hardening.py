@@ -37,9 +37,7 @@ class ProductionHardeningProvisioner:
 
     def execute(self) -> None:
         connect_opts = {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}
-        inventory = Inventory(
-            ([(self.ip, connect_opts)], {})
-        )
+        inventory = Inventory(([(self.ip, connect_opts)], {}))
         config = Config()
         if self.ssh_user != "root":
             config.SUDO = True
@@ -186,14 +184,8 @@ class ProductionHardeningProvisioner:
             " -m state --state NEW -j ANT_RATE_LIMIT"
             " 2>/dev/null || true"
         )
-        apply_udp = (
-            f"iptables -I INPUT -p udp --dport {p}"
-            " -m state --state NEW -j ANT_RATE_LIMIT"
-        )
-        apply_tcp = (
-            f"iptables -I INPUT -p tcp --dport {p}"
-            " -m state --state NEW -j ANT_RATE_LIMIT"
-        )
+        apply_udp = f"iptables -I INPUT -p udp --dport {p} -m state --state NEW -j ANT_RATE_LIMIT"
+        apply_tcp = f"iptables -I INPUT -p tcp --dport {p} -m state --state NEW -j ANT_RATE_LIMIT"
         iptables_cmds = [
             # Flush any existing ant-node rate limit rules
             flush_udp,
@@ -248,8 +240,10 @@ def build_systemd_unit(
 
     exec_args = [
         binary_path,
-        "--port", str(port),
-        "--root-dir", data_dir,
+        "--port",
+        str(port),
+        "--root-dir",
+        data_dir,
         "--enable-logging",
         "--stop-on-upgrade",
     ]

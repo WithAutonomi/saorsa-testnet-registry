@@ -39,9 +39,7 @@ class Deployment(Base):
         default=DeploymentStatus.PENDING,
         nullable=False,
     )
-    workflow_run_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger, nullable=True
-    )
+    workflow_run_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     deploy_args: Mapped[dict] = mapped_column(JSON, nullable=False)
     # Reference to the Slack message created by `deployments slack-post` via
     # the Web API (chat.postMessage). Stored so `deployments record-results
@@ -49,9 +47,7 @@ class Deployment(Base):
     # null when the deployment was posted via the legacy incoming webhook (which
     # returns no message reference) or never posted at all.
     slack_channel: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    slack_message_ts: Mapped[Optional[str]] = mapped_column(
-        String(64), nullable=True
-    )
+    slack_message_ts: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

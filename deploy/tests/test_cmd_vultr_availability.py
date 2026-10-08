@@ -70,7 +70,11 @@ class TestBuildAvailabilityTable:
         # 5 metadata columns + 3 region columns
         assert len(table.columns) == 8
         assert [c.header for c in table.columns[:5]] == [
-            "Plan", "vCPU", "RAM (MB)", "Disk (GB)", "$/mo"
+            "Plan",
+            "vCPU",
+            "RAM (MB)",
+            "Disk (GB)",
+            "$/mo",
         ]
         assert [c.header for c in table.columns[5:]] == ["ewr", "lhr", "fra"]
         assert table.row_count == 2

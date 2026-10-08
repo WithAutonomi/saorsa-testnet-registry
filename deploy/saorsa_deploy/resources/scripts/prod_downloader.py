@@ -60,6 +60,7 @@ entry be skipped up front instead of paying for a data-map resolution to be
 refused; a bare line is never treated as over-cap, because unknown is not
 "too big".
 """
+
 from __future__ import annotations
 
 import os
@@ -163,12 +164,7 @@ def _escape_field_string(value: str) -> str:
 
 
 def _escape_tag(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace(",", "\\,")
-        .replace("=", "\\=")
-        .replace(" ", "\\ ")
-    )
+    return value.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
 
 
 def _post_influx(url: str, token: str, org: str, bucket: str, line: str) -> None:
@@ -309,10 +305,14 @@ def _build_native_argv(
     cmd = [
         ant_path,
         *bootstrap_args,
-        "--evm-network", evm_network,
+        "--evm-network",
+        evm_network,
         *verbosity,
-        "file", "download", address,
-        "-o", str(output_path),
+        "file",
+        "download",
+        address,
+        "-o",
+        str(output_path),
     ]
     # One diagnostics file per download: ant opens the path with truncate, so a
     # single shared path would leave only the last address's records.
@@ -321,9 +321,7 @@ def _build_native_argv(
     return cmd
 
 
-def _build_wasm_argv(
-    *, ant_wasm_path: str, address: str, output_path: Path
-) -> list[str]:
+def _build_wasm_argv(*, ant_wasm_path: str, address: str, output_path: Path) -> list[str]:
     """The `ant-wasm` download argv.
 
     No `--bootstrap` and no `--evm-network`: the bootstrap multiaddrs come from
@@ -334,8 +332,11 @@ def _build_wasm_argv(
     """
     return [
         ant_wasm_path,
-        "file", "download", address,
-        "-o", str(output_path),
+        "file",
+        "download",
+        address,
+        "-o",
+        str(output_path),
     ]
 
 
@@ -409,9 +410,7 @@ def _run_transfer(
 
     def _pump_stderr() -> None:
         try:
-            with open(
-                stderr_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stderr_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stderr is not None
                 for line in proc.stderr:
                     fh.write(line)
@@ -421,9 +420,7 @@ def _run_transfer(
 
     def _pump_stdout() -> None:
         try:
-            with open(
-                stdout_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stdout_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     fh.write(line)
@@ -469,17 +466,13 @@ def main() -> int:
     evm_network = os.environ.get("EVM_NETWORK", "arbitrum-one")
     sleep_interval_secs = int(os.environ.get("SLEEP_INTERVAL_SECS", "900"))
     one_shot = os.environ.get("ONE_SHOT", "false").strip().lower() == "true"
-    download_dir = Path(
-        os.environ.get("DOWNLOAD_DIR", "/var/lib/ant-prod-downloader/downloads")
-    )
+    download_dir = Path(os.environ.get("DOWNLOAD_DIR", "/var/lib/ant-prod-downloader/downloads"))
     influx_url = os.environ.get("INFLUX_URL", "")
     influx_token = os.environ.get("INFLUX_TOKEN", "")
     influx_org = os.environ.get("INFLUX_ORG", "ant")
     influx_bucket = os.environ.get("INFLUX_BUCKET", "testnet-metrics")
     memory_profiling = os.environ.get("MEMORY_PROFILING", "false").lower() == "true"
-    download_diagnostics = (
-        os.environ.get("DOWNLOAD_DIAGNOSTICS", "false").lower() == "true"
-    )
+    download_diagnostics = os.environ.get("DOWNLOAD_DIAGNOSTICS", "false").lower() == "true"
     heaptrack_dir = Path(os.environ.get("HEAPTRACK_DIR", "/var/log/ant-heaptrack"))
     client_kind = os.environ.get("CLIENT_KIND", "native").strip().lower()
     is_wasm = client_kind == "wasm"
@@ -538,9 +531,7 @@ def main() -> int:
                 else None
             )
             diagnostics_path = (
-                log_dir / f"{log_basename}.diag.jsonl"
-                if download_diagnostics
-                else None
+                log_dir / f"{log_basename}.diag.jsonl" if download_diagnostics else None
             )
 
             print(f"[{idx}/{len(addresses)}] cycle={cycle} {address}", flush=True)
@@ -564,12 +555,18 @@ def main() -> int:
                 )
                 if influx_enabled:
                     _post_influx(
-                        influx_url, influx_token, influx_org, influx_bucket,
+                        influx_url,
+                        influx_token,
+                        influx_org,
+                        influx_bucket,
                         _build_line(
-                            host=host, region=region,
+                            host=host,
+                            region=region,
                             status=STATUS_SKIPPED,
-                            total_ms=0, download_secs=0.0,
-                            file_size=declared_bytes, start_ns=start_ns,
+                            total_ms=0,
+                            download_secs=0.0,
+                            file_size=declared_bytes,
+                            start_ns=start_ns,
                             address=address,
                             error_kind=ERROR_KIND_OVER_CAP,
                         ),
@@ -611,14 +608,20 @@ def main() -> int:
                 )
                 if influx_enabled:
                     line = _build_line(
-                        host=host, region=region,
-                        status=STATUS_FAILURE, total_ms=total_ms,
+                        host=host,
+                        region=region,
+                        status=STATUS_FAILURE,
+                        total_ms=total_ms,
                         download_secs=0.0,
-                        file_size=0, start_ns=start_ns,
+                        file_size=0,
+                        start_ns=start_ns,
                         address=address,
                     )
                     _post_influx(
-                        influx_url, influx_token, influx_org, influx_bucket,
+                        influx_url,
+                        influx_token,
+                        influx_org,
+                        influx_bucket,
                         line,
                     )
                 continue
@@ -664,8 +667,7 @@ def main() -> int:
                 status = STATUS_SKIPPED
                 cycle_skips += 1
                 print(
-                    f"  skipped: this transport refuses the file "
-                    f"(log={stderr_log_path})",
+                    f"  skipped: this transport refuses the file (log={stderr_log_path})",
                     flush=True,
                 )
             else:
@@ -690,7 +692,8 @@ def main() -> int:
 
             if influx_enabled:
                 line = _build_line(
-                    host=host, region=region,
+                    host=host,
+                    region=region,
                     status=status,
                     total_ms=total_ms,
                     download_secs=download_secs,
@@ -701,7 +704,11 @@ def main() -> int:
                     client_build=client_build,
                 )
                 _post_influx(
-                    influx_url, influx_token, influx_org, influx_bucket, line,
+                    influx_url,
+                    influx_token,
+                    influx_org,
+                    influx_bucket,
+                    line,
                 )
 
             try:
@@ -720,9 +727,7 @@ def main() -> int:
             return 0
 
         if sleep_interval_secs > 0:
-            print(
-                f"sleeping {sleep_interval_secs}s before next cycle", flush=True
-            )
+            print(f"sleeping {sleep_interval_secs}s before next cycle", flush=True)
             time.sleep(sleep_interval_secs)
 
 

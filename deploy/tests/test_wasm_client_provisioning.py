@@ -111,9 +111,7 @@ class TestWasmOps:
         # The bundle is namespaced by deployment name and the builder always
         # overwrites, so a re-provision after a rebuild must pick up the new one.
         cmds = " ".join(
-            " ".join(k.get("commands", []))
-            for k in self._run()
-            if "bundle" in k["name"]
+            " ".join(k.get("commands", [])) for k in self._run() if "bundle" in k["name"]
         )
         assert "rm -rf /opt/ant-wasm-client" in cmds
         assert "test -f" not in cmds.split("wget")[0]
@@ -122,9 +120,7 @@ class TestWasmOps:
         # A failed endpoint gets a 30-minute cooldown inside ant-core, so a
         # single dead bootstrap would strand the client for that long.
         cmds = " ".join(
-            " ".join(k.get("commands", []))
-            for k in self._run()
-            if "env file" in k["name"]
+            " ".join(k.get("commands", [])) for k in self._run() if "env file" in k["name"]
         )
         assert "BOOTSTRAP_MULTIADDRS=" in cmds
         assert cmds.count("/webrtc-direct/") == 2
@@ -132,9 +128,7 @@ class TestWasmOps:
     def test_env_file_is_not_world_readable(self):
         # It carries the uploader's wallet key.
         cmds = " ".join(
-            " ".join(k.get("commands", []))
-            for k in self._run()
-            if "env file" in k["name"]
+            " ".join(k.get("commands", [])) for k in self._run() if "env file" in k["name"]
         )
         assert "chmod 600 /etc/ant-wasm-client.env" in cmds
 
@@ -168,11 +162,7 @@ class TestTeardownRoleParsing:
     @staticmethod
     def _parse(suffix: str):
         role = next(
-            (
-                r
-                for r in sorted(VALID_ROLES, key=len, reverse=True)
-                if suffix.startswith(f"{r}-")
-            ),
+            (r for r in sorted(VALID_ROLES, key=len, reverse=True) if suffix.startswith(f"{r}-")),
             None,
         )
         parts = suffix.split("-")
@@ -314,9 +304,8 @@ class TestAddressKeyNamespacing:
         assert "/saorsa-deploy/addresses/DEV-01/upload-lon1-1.txt" in self._url(ROLE_UPLOAD)
 
     def test_wasm_key_is_distinct(self):
-        assert (
-            "/saorsa-deploy/addresses/DEV-01/wasm-upload-lon1-1.txt"
-            in self._url(ROLE_WASM_UPLOAD)
+        assert "/saorsa-deploy/addresses/DEV-01/wasm-upload-lon1-1.txt" in self._url(
+            ROLE_WASM_UPLOAD
         )
 
     def test_the_two_cannot_collide(self):

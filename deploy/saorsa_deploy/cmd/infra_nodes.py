@@ -81,39 +81,27 @@ def _build_provider_specs(args) -> list[ProviderSpec]:
     if args.do_vm_count > 0:
         override = _parse_regions_list(getattr(args, "do_regions_list", None))
         count = len(override) if override else args.do_regions
-        specs.append(
-            ProviderSpec("digitalocean", args.do_vm_count, count, override)
-        )
+        specs.append(ProviderSpec("digitalocean", args.do_vm_count, count, override))
     if args.hetzner_vm_count > 0:
         override = _parse_regions_list(getattr(args, "hetzner_regions_list", None))
         count = len(override) if override else args.hetzner_regions
-        specs.append(
-            ProviderSpec("hetzner", args.hetzner_vm_count, count, override)
-        )
+        specs.append(ProviderSpec("hetzner", args.hetzner_vm_count, count, override))
     if args.vultr_vm_count > 0:
         override = _parse_regions_list(getattr(args, "vultr_regions_list", None))
         count = len(override) if override else args.vultr_regions
-        specs.append(
-            ProviderSpec("vultr", args.vultr_vm_count, count, override)
-        )
+        specs.append(ProviderSpec("vultr", args.vultr_vm_count, count, override))
     if getattr(args, "ovh_vm_count", 0) > 0:
         override = _parse_regions_list(getattr(args, "ovh_regions_list", None))
         count = len(override) if override else args.ovh_regions
-        specs.append(
-            ProviderSpec("ovh", args.ovh_vm_count, count, override)
-        )
+        specs.append(ProviderSpec("ovh", args.ovh_vm_count, count, override))
     if getattr(args, "ovh_3az_vm_count", 0) > 0:
         override = _parse_regions_list(getattr(args, "ovh_3az_regions_list", None))
         count = len(override) if override else getattr(args, "ovh_3az_regions", 1)
-        specs.append(
-            ProviderSpec("ovh_3az", args.ovh_3az_vm_count, count, override)
-        )
+        specs.append(ProviderSpec("ovh_3az", args.ovh_3az_vm_count, count, override))
     if getattr(args, "contabo_vm_count", 0) > 0:
         override = _parse_regions_list(getattr(args, "contabo_regions_list", None))
         count = len(override) if override else getattr(args, "contabo_regions", 1)
-        specs.append(
-            ProviderSpec("contabo", args.contabo_vm_count, count, override)
-        )
+        specs.append(ProviderSpec("contabo", args.contabo_vm_count, count, override))
     return specs
 
 
@@ -243,9 +231,7 @@ def cmd_infra_nodes(args):
     ovh_3az_flavor = getattr(args, "ovh_3az_flavor", "b3-16")
     contabo_product_id = getattr(args, "contabo_product_id", "V92")
     contabo_image_id = getattr(args, "contabo_image_id", None)
-    contabo_ssh_public_key_path = getattr(
-        args, "contabo_ssh_public_key_path", "~/.ssh/id_rsa.pub"
-    )
+    contabo_ssh_public_key_path = getattr(args, "contabo_ssh_public_key_path", "~/.ssh/id_rsa.pub")
     force = getattr(args, "force", False)
 
     record_event(args.name, "infra_nodes_started")
@@ -284,9 +270,7 @@ def cmd_infra_nodes(args):
         sys.exit(1)
 
     try:
-        region_pairs = resolve_regions(
-            provider_specs, providers=providers_for_resolve
-        )
+        region_pairs = resolve_regions(provider_specs, providers=providers_for_resolve)
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -336,9 +320,7 @@ def cmd_infra_nodes(args):
         # block storage (ovh_3az, contabo) are excluded: those nodes use the root
         # disk and their TF modules have no volume.
         if provider_name not in NO_VOLUME_PROVIDERS:
-            variables["attached_volume_size"] = str(
-                _provider_volume_size(args, provider_name)
-            )
+            variables["attached_volume_size"] = str(_provider_volume_size(args, provider_name))
         if provider_name == "digitalocean":
             variables["droplet_size"] = do_droplet_size
         elif provider_name == "hetzner":
@@ -416,8 +398,13 @@ def cmd_infra_nodes(args):
     # total failure. Previously we saved regions only after a successful
     # apply, which left orphans invisible to destroy.
     providers_state = _build_provider_state(
-        provider_specs, do_droplet_size, hetzner_server_type, vultr_plan,
-        ovh_flavor, ovh_3az_flavor, contabo_product_id,
+        provider_specs,
+        do_droplet_size,
+        hetzner_server_type,
+        vultr_plan,
+        ovh_flavor,
+        ovh_3az_flavor,
+        contabo_product_id,
     )
     terraform_variables = {
         "name": args.name,
@@ -433,9 +420,7 @@ def cmd_infra_nodes(args):
             },
         )
     except Exception as e:
-        console.print(
-            f"[bold red]Failed to record planned regions before apply:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Failed to record planned regions before apply:[/bold red] {e}")
         console.print(
             "[bold red]Aborting to avoid creating resources destroy can't find.[/bold red]"
         )
@@ -443,9 +428,7 @@ def cmd_infra_nodes(args):
 
     console.print(f"[bold]Provisioning infrastructure across {len(configs)} region(s)...[/bold]")
     for spec in provider_specs:
-        console.print(
-            f"  {spec.name}: {spec.vm_count} VMs × {spec.region_count} region(s)"
-        )
+        console.print(f"  {spec.name}: {spec.vm_count} VMs × {spec.region_count} region(s)")
     console.print()
 
     results = execute_terraform_runs(configs)
@@ -503,9 +486,7 @@ def _apply_hetzner_preflight(
 
     token = os.environ.get("HCLOUD_TOKEN")
     if not token:
-        raise RuntimeError(
-            "HCLOUD_TOKEN is not set; Hetzner availability preflight cannot run."
-        )
+        raise RuntimeError("HCLOUD_TOKEN is not set; Hetzner availability preflight cannot run.")
 
     hetzner_cfg = PROVIDERS["hetzner"]
     if hetzner_spec.regions_override is not None:
@@ -515,8 +496,7 @@ def _apply_hetzner_preflight(
         preferred = hetzner_cfg.regions[: hetzner_spec.region_count]
         fallback_pool = hetzner_cfg.regions
     console.print(
-        f"[bold]Checking Hetzner capacity for {server_type} "
-        f"in {', '.join(preferred)}...[/bold]"
+        f"[bold]Checking Hetzner capacity for {server_type} in {', '.join(preferred)}...[/bold]"
     )
     resolved, notes = resolve_hetzner_regions(
         preferred=preferred,
@@ -527,9 +507,7 @@ def _apply_hetzner_preflight(
     )
     for note in notes:
         console.print(f"[yellow]{note}[/yellow]")
-    console.print(
-        f"[green]Hetzner preflight ok: using {', '.join(resolved)}[/green]"
-    )
+    console.print(f"[green]Hetzner preflight ok: using {', '.join(resolved)}[/green]")
 
     new_providers = dict(PROVIDERS)
     new_providers["hetzner"] = replace(hetzner_cfg, regions=resolved)
@@ -549,9 +527,7 @@ def _apply_vultr_preflight(
 
     token = os.environ.get("VULTR_API_KEY")
     if not token:
-        raise RuntimeError(
-            "VULTR_API_KEY is not set; Vultr availability preflight cannot run."
-        )
+        raise RuntimeError("VULTR_API_KEY is not set; Vultr availability preflight cannot run.")
 
     vultr_cfg = providers_in["vultr"]
     if vultr_spec.regions_override is not None:
@@ -561,8 +537,7 @@ def _apply_vultr_preflight(
         preferred = vultr_cfg.regions[: vultr_spec.region_count]
         fallback_pool = vultr_cfg.regions
     console.print(
-        f"[bold]Checking Vultr availability for {plan} "
-        f"in {', '.join(preferred)}...[/bold]"
+        f"[bold]Checking Vultr availability for {plan} in {', '.join(preferred)}...[/bold]"
     )
     resolved, notes = resolve_vultr_regions(
         preferred=preferred,
@@ -573,9 +548,7 @@ def _apply_vultr_preflight(
     )
     for note in notes:
         console.print(f"[yellow]{note}[/yellow]")
-    console.print(
-        f"[green]Vultr preflight ok: using {', '.join(resolved)}[/green]"
-    )
+    console.print(f"[green]Vultr preflight ok: using {', '.join(resolved)}[/green]")
 
     new_providers = dict(providers_in)
     new_providers["vultr"] = replace(vultr_cfg, regions=resolved)

@@ -172,6 +172,5 @@ def parse_restarted(stdout_lines) -> bool:
     on, so the marker's absence is the signal that the restart itself failed.
     """
     return any(
-        line.strip() == f"{MARKER}:RESTARTED:{LOG_FORWARDER_SERVICE}"
-        for line in stdout_lines
+        line.strip() == f"{MARKER}:RESTARTED:{LOG_FORWARDER_SERVICE}" for line in stdout_lines
     )

@@ -43,8 +43,7 @@ def parse_service_name(service_name: str) -> int:
     m = SERVICE_NAME_RE.match(service_name)
     if not m:
         raise ValueError(
-            "--service-name must look like 'ant-node-<positive int>', "
-            f"got {service_name!r}"
+            f"--service-name must look like 'ant-node-<positive int>', got {service_name!r}"
         )
     return int(m.group(1))
 
@@ -206,9 +205,7 @@ def parse_node_unit(content: str) -> dict:
     restart_policy_m = re.search(r"^Restart=(\S+)$", content, re.MULTILINE)
     restart_sec_m = re.search(r"^RestartSec=(\d+)", content, re.MULTILINE)
     limit_nofile_m = re.search(r"^LimitNOFILE=(\d+)$", content, re.MULTILINE)
-    rust_backtrace_m = re.search(
-        r"^Environment=RUST_BACKTRACE=(.*)$", content, re.MULTILINE
-    )
+    rust_backtrace_m = re.search(r"^Environment=RUST_BACKTRACE=(.*)$", content, re.MULTILINE)
 
     return {
         "bootstrap_peers": re.findall(r"--bootstrap (\S+)", exec_start),

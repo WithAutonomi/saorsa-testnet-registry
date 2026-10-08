@@ -163,9 +163,7 @@ def _download_diagnostics_flag(spec) -> list[str]:
     if getattr(spec, "download_diagnostics", None) is None:
         return []
     return (
-        ["--download-diagnostics"]
-        if spec.download_diagnostics
-        else ["--no-download-diagnostics"]
+        ["--download-diagnostics"] if spec.download_diagnostics else ["--no-download-diagnostics"]
     )
 
 
@@ -266,9 +264,7 @@ def _wasm_bundle_build_steps(manifest: Manifest, spec) -> list[Step]:
     the ordering is not optional. Resumable like every other build step, which
     matters because it is the ~10-minute part of the run.
     """
-    if getattr(spec, "client_kind", None) != "wasm" and not getattr(
-        spec, "wasm_uploaders", None
-    ):
+    if getattr(spec, "client_kind", None) != "wasm" and not getattr(spec, "wasm_uploaders", None):
         return []
     binary = spec.wasm_binary
     return [
@@ -762,9 +758,12 @@ def _inventory_steps(manifest: Manifest) -> list[Step]:
     return [
         Step(
             [
-                "deployments", "generate-inventory",
-                "--name", manifest.name,
-                "--ssh-key-path", manifest.ssh_key_path,
+                "deployments",
+                "generate-inventory",
+                "--name",
+                manifest.name,
+                "--ssh-key-path",
+                manifest.ssh_key_path,
             ],
             "Generate inventory snapshot",
             # Best-effort: the deployment is already up and costing money by
@@ -793,9 +792,7 @@ def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list
                 manifest.name, manifest.ssh_key_path, manifest.spec.binary, None
             )
         else:
-            steps = ant_build_steps(
-                manifest.name, manifest.ssh_key_path, manifest.spec.binary
-            )
+            steps = ant_build_steps(manifest.name, manifest.ssh_key_path, manifest.spec.binary)
     return steps + builder(manifest) + _inventory_steps(manifest)
 
 

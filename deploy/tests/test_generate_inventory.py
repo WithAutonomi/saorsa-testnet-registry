@@ -69,10 +69,14 @@ class TestObservabilityAndProdBootstraps:
             ssh_key="/k",
             created_at="2026-04-16T18:00:00Z",
             monitoring_state={
-                "region": "EU", "provider": "contabo", "vm_ip": "10.9.0.1",
+                "region": "EU",
+                "provider": "contabo",
+                "vm_ip": "10.9.0.1",
             },
             elastic_state={
-                "region": "EU", "provider": "contabo", "vm_ip": "10.9.0.2",
+                "region": "EU",
+                "provider": "contabo",
+                "vm_ip": "10.9.0.2",
             },
         )
         obs = inv["observability_vms"]
@@ -118,9 +122,7 @@ class TestBuildInventory:
         inv = build_inventory(_state(), created_at="2026-04-16T18:00:00Z")
         assert inv["binary"] == {
             "ant_node_version": "branch:jacderida/feat/shard-consumer-instrumentation",
-            "ant_node_release_url": (
-                "s3://ant-node-builds/builds/jacderida/feat/ant-node"
-            ),
+            "ant_node_release_url": ("s3://ant-node-builds/builds/jacderida/feat/ant-node"),
         }
 
     def test_binary_field_from_release_version(self):
@@ -161,9 +163,7 @@ class TestBuildInventory:
 
     def test_firewalls_includes_digitalocean_when_only_bootstrap(self):
         state = _state(vm_ips={}, vm_ids={})
-        inv = build_inventory(
-            state, node_count=3, created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(state, node_count=3, created_at="2026-04-16T18:00:00Z")
         assert inv["firewalls"] == {"digitalocean": FIREWALL_PLACEHOLDER}
 
     def test_node_vms_shape(self):
@@ -210,9 +210,7 @@ class TestBuildInventory:
         assert all(v["provider_id"] == "" for v in inv["node_vms"])
 
     def test_services_list_matches_node_count(self):
-        inv = build_inventory(
-            _state(node_count=3), node_count=3, created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(node_count=3), node_count=3, created_at="2026-04-16T18:00:00Z")
         vm = inv["node_vms"][0]
         assert vm["services"] == ["ant-node-1", "ant-node-2", "ant-node-3"]
         assert vm["nodes"] == [
@@ -303,9 +301,7 @@ class TestBootstrapVmsField:
         )
 
     def test_one_entry_per_bootstrap_node(self):
-        inv = build_inventory(
-            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z")
         assert len(inv["bootstrap_vms"]) == 3
 
     def test_entries_are_sorted_by_bootstrap_index(self):
@@ -321,9 +317,7 @@ class TestBootstrapVmsField:
         assert indices == [1, 2, 3]
 
     def test_each_entry_has_required_fields(self):
-        inv = build_inventory(
-            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z")
         entry = inv["bootstrap_vms"][0]
         assert set(entry.keys()) == {
             "name",
@@ -339,9 +333,7 @@ class TestBootstrapVmsField:
         }
 
     def test_service_name_follows_ant_bootstrap_index(self):
-        inv = build_inventory(
-            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z")
         services = [v["services"] for v in inv["bootstrap_vms"]]
         assert services == [
             ["ant-bootstrap-1"],
@@ -352,9 +344,7 @@ class TestBootstrapVmsField:
             assert entry["nodes"] == [{"service_name": entry["services"][0]}]
 
     def test_name_uses_testnet_id_and_index(self):
-        inv = build_inventory(
-            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z")
         names = [v["name"] for v in inv["bootstrap_vms"]]
         assert names == [
             "DEV-02-ant-bootstrap-1",
@@ -363,9 +353,7 @@ class TestBootstrapVmsField:
         ]
 
     def test_provider_is_digitalocean(self):
-        inv = build_inventory(
-            self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(self._multi_bootstrap_state(), created_at="2026-04-16T18:00:00Z")
         assert all(v["provider"] == "digitalocean" for v in inv["bootstrap_vms"])
 
     def test_ssh_defaults_and_override(self):
@@ -412,21 +400,15 @@ class TestClientVmsField:
         assert inv["client_vms"] == []
 
     def test_one_entry_per_client(self):
-        inv = build_inventory(
-            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z")
         assert len(inv["client_vms"]) == 2
 
     def test_entries_sorted_by_client_index(self):
-        inv = build_inventory(
-            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z")
         assert [c["client_index"] for c in inv["client_vms"]] == [1, 2]
 
     def test_entry_shape(self):
-        inv = build_inventory(
-            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z")
         entry = inv["client_vms"][0]
         assert set(entry.keys()) == {
             "name",
@@ -449,9 +431,7 @@ class TestClientVmsField:
         assert entry["ssh_key"] == DEFAULT_SSH_KEY
 
     def test_name_uses_testnet_region_and_index(self):
-        inv = build_inventory(
-            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z")
         names = [c["name"] for c in inv["client_vms"]]
         assert names == [
             "DEV-02-ant-client-upload-nyc1-1",
@@ -462,24 +442,18 @@ class TestClientVmsField:
         clients = self._clients()
         clients[0]["bootstrap_cache"] = False
         clients[1]["bootstrap_cache"] = True
-        inv = build_inventory(
-            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=clients, created_at="2026-04-16T18:00:00Z")
         # entries are sorted by client_index: [1 (nyc1), 2 (lon1)]
         assert [c["bootstrap_cache"] for c in inv["client_vms"]] == [True, False]
 
     def test_bootstrap_cache_none_for_legacy_state(self):
-        inv = build_inventory(
-            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z")
         assert [c["bootstrap_cache"] for c in inv["client_vms"]] == [None, None]
 
     def test_services_match_the_vm_role(self):
         clients = self._clients()
         clients[0]["role"] = "download"
-        inv = build_inventory(
-            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=clients, created_at="2026-04-16T18:00:00Z")
         # sorted by client_index: [1 (nyc1, upload default), 2 (lon1, download)]
         upload_entry, download_entry = inv["client_vms"]
         assert upload_entry["services"] == ["ant-uploader"]
@@ -509,9 +483,7 @@ class TestClientVmsField:
                 "ip": "2.2.2.2",
             },
         ]
-        inv = build_inventory(
-            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=clients, created_at="2026-04-16T18:00:00Z")
         names = [c["name"] for c in inv["client_vms"]]
         assert names == [
             "DEV-02-ant-client-upload-lon1-1",
@@ -522,9 +494,7 @@ class TestClientVmsField:
     def test_provider_passed_through_from_client_state(self):
         clients = self._clients()
         clients[0]["provider"] = "vultr"
-        inv = build_inventory(
-            _state(), clients=clients, created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=clients, created_at="2026-04-16T18:00:00Z")
         # sorted by client_index: [1 (nyc1, default digitalocean), 2 (lon1, vultr)]
         assert [c["provider"] for c in inv["client_vms"]] == [
             "digitalocean",
@@ -532,9 +502,7 @@ class TestClientVmsField:
         ]
 
     def test_file_size_and_vm_size_propagate(self):
-        inv = build_inventory(
-            _state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z"
-        )
+        inv = build_inventory(_state(), clients=self._clients(), created_at="2026-04-16T18:00:00Z")
         by_index = {c["client_index"]: c for c in inv["client_vms"]}
         assert by_index[1]["file_size_mb"] == 250
         assert by_index[1]["vm_size"] == "s-4vcpu-8gb"
@@ -580,9 +548,7 @@ class TestBuildDevnetManifest:
         }
 
     def test_base_port_from_bootstrap_port(self):
-        manifest = build_devnet_manifest(
-            _state(bootstrap_port=40001), wallet_private_key="k"
-        )
+        manifest = build_devnet_manifest(_state(bootstrap_port=40001), wallet_private_key="k")
         assert manifest["base_port"] == 40001
 
     def test_node_count_is_total_across_node_vms(self):
@@ -592,9 +558,7 @@ class TestBuildDevnetManifest:
 
     def test_node_count_override_multiplies_by_vm_count(self):
         # 5 per VM × 4 VMs = 20
-        manifest = build_devnet_manifest(
-            _state(), wallet_private_key="k", node_count=5
-        )
+        manifest = build_devnet_manifest(_state(), wallet_private_key="k", node_count=5)
         assert manifest["node_count"] == 20
 
     def test_bootstrap_multiaddrs_use_state_port_by_default(self):
@@ -681,9 +645,7 @@ class TestBuildDevnetManifest:
 
     def test_raises_for_unknown_evm_network(self):
         with pytest.raises(ValueError, match="Unknown EVM network"):
-            build_devnet_manifest(
-                _state(), wallet_private_key="k", evm_network="bogus"
-            )
+            build_devnet_manifest(_state(), wallet_private_key="k", evm_network="bogus")
 
     def test_round_trips_through_json(self):
         manifest = build_devnet_manifest(

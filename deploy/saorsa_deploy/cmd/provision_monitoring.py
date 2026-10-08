@@ -19,11 +19,16 @@ def _wait_for_ssh(ip: str, ssh_key_path: str, console: Console, timeout: int = 1
         result = subprocess.run(
             [
                 "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=5",
-                "-o", "BatchMode=yes",
-                "-i", ssh_key_path,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "BatchMode=yes",
+                "-i",
+                ssh_key_path,
                 f"root@{ip}",
                 "true",
             ],
@@ -33,9 +38,7 @@ def _wait_for_ssh(ip: str, ssh_key_path: str, console: Console, timeout: int = 1
             console.print(f"[dim]SSH ready on {ip}.[/dim]")
             return
         time.sleep(5)
-    console.print(
-        f"[yellow]Warning: SSH not ready after {timeout}s, proceeding anyway...[/yellow]"
-    )
+    console.print(f"[yellow]Warning: SSH not ready after {timeout}s, proceeding anyway...[/yellow]")
 
 
 def print_connection_summary(name: str, details: dict, console: Console):
@@ -47,9 +50,7 @@ def print_connection_summary(name: str, details: dict, console: Console):
     token = details["influxdb_token"]
 
     grafana_password = details.get("grafana_password", "")
-    grafana_line = (
-        f"{grafana_url}  (admin / {grafana_password})" if grafana_url else "disabled"
-    )
+    grafana_line = f"{grafana_url}  (admin / {grafana_password})" if grafana_url else "disabled"
 
     lines = [
         f"  [bold]InfluxDB:[/bold]  {influxdb_url}",
@@ -85,9 +86,7 @@ def cmd_provision_monitoring(args):
 
     vm_ip = state.get("vm_ip")
     if not vm_ip:
-        console.print(
-            "[bold red]Error:[/bold red] No VM IP found in monitoring state."
-        )
+        console.print("[bold red]Error:[/bold red] No VM IP found in monitoring state.")
         sys.exit(1)
 
     # Grafana is opt-in. The `grafana_enabled` flag (absent on legacy single-VM
@@ -140,9 +139,7 @@ def cmd_provision_monitoring(args):
         )
         connection_details = provisioner.execute()
     except Exception as e:
-        console.print(
-            f"[bold red]Monitoring provisioning failed:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Monitoring provisioning failed:[/bold red] {e}")
         sys.exit(1)
 
     # Update monitoring state with connection details
@@ -150,13 +147,9 @@ def cmd_provision_monitoring(args):
         update_monitoring_state(args.name, connection_details)
         console.print("[dim]Monitoring state updated in S3.[/dim]")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to update monitoring state: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to update monitoring state: {e}[/yellow]")
 
     console.print()
-    console.print(
-        "[bold green]Monitoring stack provisioned successfully.[/bold green]"
-    )
+    console.print("[bold green]Monitoring stack provisioned successfully.[/bold green]")
 
     print_connection_summary(args.name, connection_details, console)

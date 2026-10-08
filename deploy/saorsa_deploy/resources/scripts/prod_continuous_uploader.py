@@ -131,8 +131,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _escape_tag(value: str) -> str:
     return (
-        str(value).replace("\\", "\\\\").replace(" ", "\\ ").replace(",", "\\,")
-        .replace("=", "\\=")
+        str(value).replace("\\", "\\\\").replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
     )
 
 
@@ -161,9 +160,7 @@ def _post_influx(url: str, token: str, org: str, bucket: str, line: str) -> None
 
 
 def _build_line(measurement: str, tags: dict, fields: dict) -> str:
-    tag_part = ",".join(
-        f"{_escape_tag(k)}={_escape_tag(v)}" for k, v in tags.items() if v != ""
-    )
+    tag_part = ",".join(f"{_escape_tag(k)}={_escape_tag(v)}" for k, v in tags.items() if v != "")
     field_parts = []
     for key, value in fields.items():
         if isinstance(value, bool):
@@ -224,9 +221,7 @@ def _backoff_delays(attempts: int, base_secs: float, cap_secs: float) -> list:
     Returned without jitter so the schedule itself is a plain, testable
     sequence; the randomisation is applied when sleeping (`_jittered`).
     """
-    return [
-        min(base_secs * (2**attempt), cap_secs) for attempt in range(attempts - 1)
-    ]
+    return [min(base_secs * (2**attempt), cap_secs) for attempt in range(attempts - 1)]
 
 
 def _jittered(delay: float) -> float:
@@ -397,14 +392,25 @@ def _payment_flags(payment_type: str) -> list:
 
 
 def _build_native_upload_argv(
-    *, ant_path: str, evm_network: str, log_level: str, payment_type: str,
+    *,
+    ant_path: str,
+    evm_network: str,
+    log_level: str,
+    payment_type: str,
     file_path,
 ) -> list:
     """The native `ant` upload argv — unchanged from before the browser path."""
     return [
-        ant_path, *_resolve_bootstrap_args(), "--evm-network", evm_network,
-        "--json", _verbosity_flag(log_level),
-        "file", "upload", "--public", *_payment_flags(payment_type),
+        ant_path,
+        *_resolve_bootstrap_args(),
+        "--evm-network",
+        evm_network,
+        "--json",
+        _verbosity_flag(log_level),
+        "file",
+        "upload",
+        "--public",
+        *_payment_flags(payment_type),
         str(file_path),
     ]
 
@@ -429,8 +435,12 @@ def _build_wasm_upload_argv(
     """
     return [
         ant_wasm_path,
-        "file", "upload", "--public", *_payment_flags(payment_type),
-        "--payment-marker", str(payment_marker_path),
+        "file",
+        "upload",
+        "--public",
+        *_payment_flags(payment_type),
+        "--payment-marker",
+        str(payment_marker_path),
         str(file_path),
     ]
 
@@ -440,8 +450,15 @@ def _build_native_download_argv(
 ) -> list:
     """The native `ant` read-back argv."""
     return [
-        ant_path, "--evm-network", evm_network, _verbosity_flag(log_level),
-        "file", "download", address, "-o", str(output_path),
+        ant_path,
+        "--evm-network",
+        evm_network,
+        _verbosity_flag(log_level),
+        "file",
+        "download",
+        address,
+        "-o",
+        str(output_path),
     ]
 
 
@@ -617,11 +634,12 @@ def main() -> int:
                     influx_bucket,
                     _build_line(
                         EXHAUSTION_MEASUREMENT,
-                        {"host": host, "region": region,
-                         "deployment_name": deployment_name},
-                        {"cycle": cycle, "reason": str(exc)[:500],
-                         "requested": json.dumps(
-                             {k.value: v for k, v in pool_request.items()})},
+                        {"host": host, "region": region, "deployment_name": deployment_name},
+                        {
+                            "cycle": cycle,
+                            "reason": str(exc)[:500],
+                            "requested": json.dumps({k.value: v for k, v in pool_request.items()}),
+                        },
                     ),
                 )
                 session.close()
@@ -631,8 +649,11 @@ def main() -> int:
 
             _log(f"cycle {cycle}: claimed {len(claims)} file(s)")
             cycle_stats = {
-                "attempted": 0, "succeeded": 0, "partial": 0,
-                "source_failed": 0, "replacements": 0,
+                "attempted": 0,
+                "succeeded": 0,
+                "partial": 0,
+                "source_failed": 0,
+                "replacements": 0,
             }
 
             queue = list(claims)
@@ -652,15 +673,16 @@ def main() -> int:
                 started_at = datetime.now(timezone.utc)
                 start_ns = time.time_ns()
                 log_base = Path(LOG_DIR) / (
-                    f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-"
-                    f"{op_counter:04d}-{_log_safe(safe)}"
+                    f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-{op_counter:04d}-{_log_safe(safe)}"
                 )
 
                 # ---- fetch the source ----
                 try:
                     cycle_stats["attempted"] += 1
                     size_bytes, source_sha256 = _download(
-                        locator, local_path, download_timeout,
+                        locator,
+                        local_path,
+                        download_timeout,
                         attempts=fetch_attempts,
                         base_secs=fetch_backoff,
                     )
@@ -694,15 +716,25 @@ def main() -> int:
                         reason=str(exc)[:500],
                     )
                     _post_influx(
-                        influx_url, influx_token, influx_org, influx_bucket,
+                        influx_url,
+                        influx_token,
+                        influx_org,
+                        influx_bucket,
                         _build_line(
                             UPLOAD_MEASUREMENT,
                             {"host": host, "region": region},
-                            {"status": STATUS_DOWNLOAD_FAILED, "total_ms": 0,
-                             "file_size": 0, "start_ns": start_ns,
-                             "chunks_stored": 0, "chunks_failed": 0,
-                             "total_chunks": 0, "file_name": file_name,
-                             "source_url": locator, "reason": str(exc)[:200]},
+                            {
+                                "status": STATUS_DOWNLOAD_FAILED,
+                                "total_ms": 0,
+                                "file_size": 0,
+                                "start_ns": start_ns,
+                                "chunks_stored": 0,
+                                "chunks_failed": 0,
+                                "total_chunks": 0,
+                                "file_name": file_name,
+                                "source_url": locator,
+                                "reason": str(exc)[:200],
+                            },
                         ),
                     )
                     local_path.unlink(missing_ok=True)
@@ -715,8 +747,12 @@ def main() -> int:
                     # no signal at all.
                     if cycle_stats["replacements"] < max_replacements and pool_file:
                         replacement = _claim_replacement(
-                            pool_repo, pool_file, deployment_id, deployment_name,
-                            min_bytes, max_bytes,
+                            pool_repo,
+                            pool_file,
+                            deployment_id,
+                            deployment_name,
+                            min_bytes,
+                            max_bytes,
                         )
                         if replacement is not None:
                             cycle_stats["replacements"] += 1
@@ -802,8 +838,7 @@ def main() -> int:
                 total_chunks = int(parsed.get("total_chunks") or 0)
                 upload_secs = parsed.get("elapsed_secs")
                 reason = parsed.get("reason") or (
-                    None if status is ProdUploadStatus.SUCCESS
-                    else f"ant exit {rc}"
+                    None if status is ProdUploadStatus.SUCCESS else f"ant exit {rc}"
                 )
                 storage_cost = parsed.get("storage_cost_atto")
                 gas_cost = parsed.get("gas_cost_wei")
@@ -901,24 +936,33 @@ def main() -> int:
                     _log(f"WARNING: could not resolve claim {claim.id}: {exc}")
 
                 _post_influx(
-                    influx_url, influx_token, influx_org, influx_bucket,
+                    influx_url,
+                    influx_token,
+                    influx_org,
+                    influx_bucket,
                     _build_line(
                         UPLOAD_MEASUREMENT,
                         {"host": host, "region": region},
-                        {"status": influx_status, "total_ms": duration_ms,
-                         "file_size": size_bytes, "start_ns": start_ns,
-                         "chunks_stored": chunks_stored,
-                         "chunks_failed": chunks_failed,
-                         "total_chunks": total_chunks,
-                         "upload_secs": float(upload_secs) if upload_secs else 0.0,
-                         "address": address or "", "file_name": file_name,
-                         "source_url": locator, "sha256": source_sha256,
-                         "reason": reason or "",
-                         # Only the browser path reports these, and
-                         # _build_line drops empty strings, so a native point is
-                         # unchanged.
-                         "error_kind": error_kind,
-                         "client_build": client_build},
+                        {
+                            "status": influx_status,
+                            "total_ms": duration_ms,
+                            "file_size": size_bytes,
+                            "start_ns": start_ns,
+                            "chunks_stored": chunks_stored,
+                            "chunks_failed": chunks_failed,
+                            "total_chunks": total_chunks,
+                            "upload_secs": float(upload_secs) if upload_secs else 0.0,
+                            "address": address or "",
+                            "file_name": file_name,
+                            "source_url": locator,
+                            "sha256": source_sha256,
+                            "reason": reason or "",
+                            # Only the browser path reports these, and
+                            # _build_line drops empty strings, so a native point is
+                            # unchanged.
+                            "error_kind": error_kind,
+                            "client_build": client_build,
+                        },
                     ),
                 )
 
@@ -953,11 +997,13 @@ def main() -> int:
         # "production refused our uploads" from "we never got to try".
         produced_signal = cycle_stats["succeeded"] > 0 or cycle_stats["partial"] > 0
         _post_influx(
-            influx_url, influx_token, influx_org, influx_bucket,
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
             _build_line(
                 CYCLE_MEASUREMENT,
-                {"host": host, "region": region,
-                 "deployment_name": deployment_name},
+                {"host": host, "region": region, "deployment_name": deployment_name},
                 {
                     "cycle": cycle,
                     "attempted": cycle_stats["attempted"],
@@ -1140,16 +1186,24 @@ def _verify_once(
 
     influx_url, influx_token, influx_org, influx_bucket = influx
     _post_influx(
-        influx_url, influx_token, influx_org, influx_bucket,
+        influx_url,
+        influx_token,
+        influx_org,
+        influx_bucket,
         _build_line(
             VERIFY_MEASUREMENT,
             {"host": host, "region": region, "deployment_name": deployment_name},
-            {"status": status.value, "ok": status is ProdUploadVerifyStatus.OK,
-             "duration_ms": duration_ms,
-             "bytes_downloaded": bytes_downloaded or 0,
-             "age_secs": age or 0, "address": address,
-             "file_name": file_name, "reason": reason or "",
-             "client_build": client_build},
+            {
+                "status": status.value,
+                "ok": status is ProdUploadVerifyStatus.OK,
+                "duration_ms": duration_ms,
+                "bytes_downloaded": bytes_downloaded or 0,
+                "age_secs": age or 0,
+                "address": address,
+                "file_name": file_name,
+                "reason": reason or "",
+                "client_build": client_build,
+            },
         ),
     )
     output_path.unlink(missing_ok=True)

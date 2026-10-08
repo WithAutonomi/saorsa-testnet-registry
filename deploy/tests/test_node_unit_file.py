@@ -51,16 +51,12 @@ class TestNatUnitFile:
         nat_unit = _build_node_unit_file("ant-node-1", exec_start, is_nat=True)
         plain_unit = _build_node_unit_file("ant-node-1", exec_start, is_nat=False)
         # Everything after the NAT wrapper should match the plain ExecStart.
-        nat_exec = [
-            line for line in nat_unit.splitlines() if line.startswith("ExecStart=")
-        ][0]
-        plain_exec = [
-            line for line in plain_unit.splitlines() if line.startswith("ExecStart=")
-        ][0]
+        nat_exec = [line for line in nat_unit.splitlines() if line.startswith("ExecStart=")][0]
+        plain_exec = [line for line in plain_unit.splitlines() if line.startswith("ExecStart=")][0]
         assert nat_exec == f"ExecStart={NAT_IP_EXEC_PREFIX}{exec_start}"
         assert plain_exec == f"ExecStart={exec_start}"
         # Same ant-node arguments after stripping the NAT wrapper.
-        assert nat_exec[len(f"ExecStart={NAT_IP_EXEC_PREFIX}"):] == plain_exec[len("ExecStart="):]
+        assert nat_exec[len(f"ExecStart={NAT_IP_EXEC_PREFIX}") :] == plain_exec[len("ExecStart=") :]
 
     def test_other_unit_settings_match_plain(self):
         exec_start = _sample_exec_start()
@@ -88,8 +84,7 @@ class TestHeaptrackExecStart:
         # heaptrack must be the outermost program, with -o pointing at the base,
         # immediately followed by the ant-node binary.
         assert exec_start.startswith(
-            "heaptrack -o /mnt/ant-node-storage/heaptrack/ant-node-1 "
-            "/usr/local/bin/ant-node "
+            "heaptrack -o /mnt/ant-node-storage/heaptrack/ant-node-1 /usr/local/bin/ant-node "
         )
 
     def test_heaptrack_keeps_all_ant_node_flags(self):
@@ -105,7 +100,7 @@ class TestHeaptrackExecStart:
         # Stripping the heaptrack prefix yields the identical ant-node command.
         prefix = "heaptrack -o /mnt/ant-node-storage/heaptrack/ant-node-1 "
         assert wrapped.startswith(prefix)
-        assert wrapped[len(prefix):] == plain
+        assert wrapped[len(prefix) :] == plain
 
     def test_heaptrack_composes_inside_nat_prefix(self):
         # In a NAT unit the netns prefix must remain outermost so heaptrack
@@ -118,6 +113,5 @@ class TestHeaptrackExecStart:
         unit = _build_node_unit_file("ant-node-1", exec_start, is_nat=True)
         assert (
             f"ExecStart={NAT_IP_EXEC_PREFIX}heaptrack -o "
-            "/mnt/ant-node-storage/heaptrack/ant-node-1 /usr/local/bin/ant-node "
-            in unit
+            "/mnt/ant-node-storage/heaptrack/ant-node-1 /usr/local/bin/ant-node " in unit
         )

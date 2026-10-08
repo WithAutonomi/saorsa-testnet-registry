@@ -69,9 +69,7 @@ class TestProvisionClientTelegrafForDeployment:
     @patch.object(ptm, "TelegrafMetricsProvisioner")
     @patch.object(ptm, "load_client_state")
     @patch.object(ptm, "load_monitoring_state")
-    def test_resolves_influx_from_monitoring_state(
-        self, mock_mon, mock_client, mock_prov, _ckh
-    ):
+    def test_resolves_influx_from_monitoring_state(self, mock_mon, mock_client, mock_prov, _ckh):
         mock_mon.return_value = {
             "influxdb_url": "http://mon:8086",
             "influxdb_token": "secret",
@@ -96,9 +94,7 @@ class TestProvisionClientTelegrafForDeployment:
     @patch.object(ptm, "TelegrafMetricsProvisioner")
     @patch.object(ptm, "load_client_state")
     @patch.object(ptm, "load_monitoring_state")
-    def test_no_clients_returns_false(
-        self, mock_mon, mock_client, mock_prov
-    ):
+    def test_no_clients_returns_false(self, mock_mon, mock_client, mock_prov):
         mock_mon.return_value = {"influxdb_url": "u", "influxdb_token": "t"}
         mock_client.return_value = {"clients": []}
 
@@ -115,9 +111,7 @@ class TestBestEffortWrapper:
     def test_swallows_system_exit(self, mock_inner):
         mock_inner.side_effect = SystemExit(1)
         assert (
-            ptm.provision_client_telegraf_best_effort(
-                "X", "~/.ssh/id_rsa", console=MagicMock()
-            )
+            ptm.provision_client_telegraf_best_effort("X", "~/.ssh/id_rsa", console=MagicMock())
             is False
         )
 
@@ -126,9 +120,7 @@ class TestBestEffortWrapper:
         # e.g. no monitoring state for the deployment
         mock_inner.side_effect = RuntimeError("no monitoring state")
         assert (
-            ptm.provision_client_telegraf_best_effort(
-                "X", "~/.ssh/id_rsa", console=MagicMock()
-            )
+            ptm.provision_client_telegraf_best_effort("X", "~/.ssh/id_rsa", console=MagicMock())
             is False
         )
 
@@ -136,8 +128,6 @@ class TestBestEffortWrapper:
     def test_passes_through_success(self, mock_inner):
         mock_inner.return_value = True
         assert (
-            ptm.provision_client_telegraf_best_effort(
-                "X", "~/.ssh/id_rsa", console=MagicMock()
-            )
+            ptm.provision_client_telegraf_best_effort("X", "~/.ssh/id_rsa", console=MagicMock())
             is True
         )

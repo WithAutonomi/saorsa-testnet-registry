@@ -35,20 +35,13 @@ class TestExtractFileNames:
 @pytest.fixture
 def urls_file(tmp_path):
     p = tmp_path / "urls.txt"
-    p.write_text(
-        "# leading comment\n"
-        "https://example.com/a.bin\n"
-        "\n"
-        "https://example.com/b.bin\n"
-    )
+    p.write_text("# leading comment\nhttps://example.com/a.bin\n\nhttps://example.com/b.bin\n")
     return p
 
 
 class TestParseSpec:
     def test_full_spec(self, urls_file):
-        spec = parse_prod_uploader_spec(
-            f"lon1:s-2vcpu-4gb:urls={urls_file}"
-        )
+        spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}")
         assert spec == {
             "region": "lon1",
             "vm_size": "s-2vcpu-4gb",
@@ -82,9 +75,7 @@ class TestParseSpec:
 
     def test_empty_region_rejected(self, urls_file):
         with pytest.raises(ValueError):
-            parse_prod_uploader_spec(
-                f":s-2vcpu-4gb:urls={urls_file}"
-            )
+            parse_prod_uploader_spec(f":s-2vcpu-4gb:urls={urls_file}")
 
     def test_empty_vm_size_rejected(self, urls_file):
         with pytest.raises(ValueError):
@@ -92,27 +83,19 @@ class TestParseSpec:
 
     def test_unknown_key_rejected(self, urls_file):
         with pytest.raises(ValueError):
-            parse_prod_uploader_spec(
-                f"lon1:s-2vcpu-4gb:bogus=x:urls={urls_file}"
-            )
+            parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:bogus=x:urls={urls_file}")
 
     @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
     def test_payment_key_accepted(self, urls_file, payment_type):
-        spec = parse_prod_uploader_spec(
-            f"lon1:s-2vcpu-4gb:urls={urls_file}:payment={payment_type}"
-        )
+        spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}:payment={payment_type}")
         assert spec["payment_type"] == payment_type
 
     def test_payment_key_invalid_value_rejected(self, urls_file):
         with pytest.raises(ValueError):
-            parse_prod_uploader_spec(
-                f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=bogus"
-            )
+            parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=bogus")
 
     def test_payment_key_optional(self, urls_file):
-        spec = parse_prod_uploader_spec(
-            f"lon1:s-2vcpu-4gb:urls={urls_file}"
-        )
+        spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}")
         assert spec["payment_type"] is None
 
     def test_duplicate_payment_rejected(self, urls_file):
@@ -121,23 +104,18 @@ class TestParseSpec:
                 f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=merkle:payment=no-merkle"
             )
 
-
     def test_log_level_optional(self, urls_file):
         spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}")
         assert spec["log_level"] is None
 
     @pytest.mark.parametrize("level", ["info", "debug", "trace"])
     def test_log_level_accepted(self, urls_file, level):
-        spec = parse_prod_uploader_spec(
-            f"lon1:s-2vcpu-4gb:urls={urls_file}:log_level={level}"
-        )
+        spec = parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}:log_level={level}")
         assert spec["log_level"] == level
 
     def test_log_level_invalid_value_rejected(self, urls_file):
         with pytest.raises(ValueError, match="log_level"):
-            parse_prod_uploader_spec(
-                f"lon1:s-2vcpu-4gb:urls={urls_file}:log_level=verbose"
-            )
+            parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}:log_level=verbose")
 
     def test_log_level_combines_with_payment_and_cache(self, urls_file):
         spec = parse_prod_uploader_spec(
@@ -161,9 +139,7 @@ class TestParseSpec:
 
     def test_bootstrap_cache_invalid_value_rejected(self, urls_file):
         with pytest.raises(ValueError, match="bootstrap_cache"):
-            parse_prod_uploader_spec(
-                f"lon1:s-2vcpu-4gb:urls={urls_file}:bootstrap_cache=yes"
-            )
+            parse_prod_uploader_spec(f"lon1:s-2vcpu-4gb:urls={urls_file}:bootstrap_cache=yes")
 
     def test_bootstrap_cache_combines_with_payment(self, urls_file):
         spec = parse_prod_uploader_spec(
@@ -216,15 +192,9 @@ def _deploy_args(uploader_specs, **overrides):
 @pytest.fixture
 def deploy_patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders.record_deployment_created"
-        ) as p_create,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders.record_event"
-        ) as p_event,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders.record_status"
-        ) as p_status,
+        patch("saorsa_deploy.cmd.prod_uploaders.record_deployment_created") as p_create,
+        patch("saorsa_deploy.cmd.prod_uploaders.record_event") as p_event,
+        patch("saorsa_deploy.cmd.prod_uploaders.record_status") as p_status,
         patch(
             "saorsa_deploy.cmd.prod_uploaders._monitoring_stack_exists",
             return_value=False,
@@ -234,15 +204,9 @@ def deploy_patches():
             return_value=False,
         ) as p_client_exists,
         patch("saorsa_deploy.cmd.prod_uploaders._ensure_monitoring") as p_mon,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders._ensure_client_infra"
-        ) as p_infra,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders._provision_uploaders"
-        ) as p_prov,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders._start_uploaders"
-        ) as p_start,
+        patch("saorsa_deploy.cmd.prod_uploaders._ensure_client_infra") as p_infra,
+        patch("saorsa_deploy.cmd.prod_uploaders._provision_uploaders") as p_prov,
+        patch("saorsa_deploy.cmd.prod_uploaders._start_uploaders") as p_start,
         patch(
             "saorsa_deploy.cmd.prod_uploaders.get_repository",
             return_value=None,
@@ -263,20 +227,19 @@ def deploy_patches():
 
 
 class TestDeployHappyPath:
-
     def test_deploy_rejects_when_no_uploaders(self, deploy_patches):
         with pytest.raises(SystemExit):
             cmd_prod_uploaders_deploy(_deploy_args([]))
 
 
 class TestDeployFailure:
-    def test_deploy_records_failed_when_provision_exits(
-        self, deploy_patches, urls_file
-    ):
+    def test_deploy_records_failed_when_provision_exits(self, deploy_patches, urls_file):
         deploy_patches.provision.side_effect = SystemExit(1)
-        args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:urls={urls_file}",
-        ])
+        args = _deploy_args(
+            [
+                f"lon1:s-2vcpu-4gb:urls={urls_file}",
+            ]
+        )
 
         with pytest.raises(SystemExit):
             cmd_prod_uploaders_deploy(args)
@@ -298,9 +261,7 @@ class _FakeRepo:
 
 
 class TestDuplicateFileCheck:
-    def test_aborts_before_any_infra_when_file_already_uploaded(
-        self, deploy_patches, urls_file
-    ):
+    def test_aborts_before_any_infra_when_file_already_uploaded(self, deploy_patches, urls_file):
         # urls_file uploads a.bin and b.bin; a.bin is already in the list.
         deploy_patches.get_repository.return_value = _FakeRepo(["a.bin"])
         args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
@@ -334,9 +295,7 @@ class TestNetworkProfileIsPersisted:
         """The client-infra spec is what writes S3 state; it dropped the profile."""
         from saorsa_deploy.cmd.infra_clients import parse_uploader_spec
 
-        synth = (
-            "digital_ocean:sfo3:0:s-4vcpu-8gb:bootstrap_cache=true:network=mobile-4g"
-        )
+        synth = "digital_ocean:sfo3:0:s-4vcpu-8gb:bootstrap_cache=true:network=mobile-4g"
         assert parse_uploader_spec(synth)["network"] == "mobile-4g"
 
     def test_deploy_args_entry_holds_the_resolved_knob_set(self):

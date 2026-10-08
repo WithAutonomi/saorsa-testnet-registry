@@ -6,6 +6,7 @@ per-VM outputs back to the originating spec. If the result order didn't match
 submission order, same-region clients would get each other's IPs — exactly
 the symptom that motivated this regression test.
 """
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,5 +50,8 @@ def test_results_preserve_submission_order_when_futures_complete_out_of_order():
         results = execute_terraform_runs(configs)
 
     assert [r.outputs["vm_ip"] for r in results] == [
-        "10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4",
+        "10.0.0.1",
+        "10.0.0.2",
+        "10.0.0.3",
+        "10.0.0.4",
     ]

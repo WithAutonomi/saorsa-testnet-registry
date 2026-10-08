@@ -187,9 +187,7 @@ class TestUploaderSpecClockSkew:
         assert spec["clock_skew"] == -7200
 
     def test_with_vm_size_and_payment(self):
-        spec = parse_uploader_spec(
-            "hetzner:fsn1:100:cpx32:payment=merkle:clock_skew=30m"
-        )
+        spec = parse_uploader_spec("hetzner:fsn1:100:cpx32:payment=merkle:clock_skew=30m")
         assert spec["clock_skew"] == 1800
         assert spec["vm_size"] == "cpx32"
         assert spec["payment_type"] == "merkle"
@@ -247,15 +245,11 @@ class TestProdUploaderSpecClockSkew:
         assert spec["clock_skew"] is None
 
     def test_positive_duration(self):
-        spec = parse_prod_uploader_spec(
-            "lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=2h"
-        )
+        spec = parse_prod_uploader_spec("lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=2h")
         assert spec["clock_skew"] == 7200
 
     def test_negative_duration(self):
-        spec = parse_prod_uploader_spec(
-            "lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=-90m"
-        )
+        spec = parse_prod_uploader_spec("lon1:s-2vcpu-4gb:urls=/x.txt:clock_skew=-90m")
         assert spec["clock_skew"] == -5400
 
     def test_boolean_value_now_rejected(self):

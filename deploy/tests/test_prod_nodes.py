@@ -33,10 +33,7 @@ def test_build_node_infra_args_no_duplicate_count(provider):
     ns = _build_node_infra_args(_deploy_args(provider, vm_size="custom-size"))
     prefix, size_var, _ = _PROVIDER_INFO[provider]
     # Every provider count attribute exists; only the chosen one is non-zero.
-    counts = {
-        p: getattr(ns, f"{pre}_vm_count")
-        for p, (pre, _, _) in _PROVIDER_INFO.items()
-    }
+    counts = {p: getattr(ns, f"{pre}_vm_count") for p, (pre, _, _) in _PROVIDER_INFO.items()}
     assert getattr(ns, f"{prefix}_vm_count") == 1
     assert sum(counts.values()) == 1  # all others are 0
     assert getattr(ns, f"{prefix}_regions_list") == "ord"
@@ -89,11 +86,11 @@ def _drop_args(log_level=None, override=None):
 @pytest.mark.parametrize(
     "level,expected",
     [
-        ("trace", ""),       # forward everything
-        ("TRACE", ""),       # case-insensitive
+        ("trace", ""),  # forward everything
+        ("TRACE", ""),  # case-insensitive
         ("debug", "TRACE"),  # keep DEBUG, drop the noisier TRACE
-        ("info", None),      # omit → forwarder default DEBUG,TRACE
-        (None, None),        # unset → omit
+        ("info", None),  # omit → forwarder default DEBUG,TRACE
+        (None, None),  # unset → omit
     ],
 )
 def test_resolve_node_drop_log_levels_derives_from_log_level(level, expected):
@@ -105,8 +102,5 @@ def test_resolve_node_drop_log_levels_explicit_override_wins(override):
     # An explicit --elastic-drop-log-levels beats any log_level-derived value,
     # including the empty-string "keep everything" escape hatch.
     assert (
-        _resolve_node_drop_log_levels(
-            _drop_args(log_level="info", override=override)
-        )
-        == override
+        _resolve_node_drop_log_levels(_drop_args(log_level="info", override=override)) == override
     )

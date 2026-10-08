@@ -99,14 +99,17 @@ def _simulate_heap_shell(mem_kb: int) -> int:
 
 
 class TestHeapSizingLogic:
-    @pytest.mark.parametrize("mem_kb,expected_mb", [
-        (8_000_000, 3906),       # ~8 GB RAM → ~3.9g
-        (16_432_000, 8023),      # ~16 GB RAM → ~8g
-        (32_000_000, 15625),     # ~32 GB RAM → ~15.6g
-        (66_000_000, 31744),     # ~64 GB RAM → capped at 31g
-        (100_000_000, 31744),    # 100 GB RAM → still capped at 31g
-        (512_000, 1024),         # ~500 MB RAM → floored at 1g
-    ])
+    @pytest.mark.parametrize(
+        "mem_kb,expected_mb",
+        [
+            (8_000_000, 3906),  # ~8 GB RAM → ~3.9g
+            (16_432_000, 8023),  # ~16 GB RAM → ~8g
+            (32_000_000, 15625),  # ~32 GB RAM → ~15.6g
+            (66_000_000, 31744),  # ~64 GB RAM → capped at 31g
+            (100_000_000, 31744),  # 100 GB RAM → still capped at 31g
+            (512_000, 1024),  # ~500 MB RAM → floored at 1g
+        ],
+    )
     def test_expected_heap(self, mem_kb, expected_mb):
         assert _simulate_heap_shell(mem_kb) == expected_mb
 
@@ -199,9 +202,19 @@ class TestSetupScript:
     def test_index_template_has_expected_mappings(self):
         p = _make_provisioner()
         script = p._build_setup_script()
-        for field in ["timestamp", "message", "level", "target", "peer_id",
-                       "version", "commit", "host", "service_number",
-                       "testnet_name", "host_role"]:
+        for field in [
+            "timestamp",
+            "message",
+            "level",
+            "target",
+            "peer_id",
+            "version",
+            "commit",
+            "host",
+            "service_number",
+            "testnet_name",
+            "host_role",
+        ]:
             assert f"'{field}'" in script
 
     def test_password_is_random(self):

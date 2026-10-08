@@ -123,9 +123,10 @@ class TestSpecParsing:
         # native grammar.
         from saorsa_deploy.cmd.infra_clients import parse_uploader_spec
 
-        assert parse_uploader_spec("digital_ocean:lon1:10:bootstrap_cache=false")[
-            "bootstrap_cache"
-        ] is False
+        assert (
+            parse_uploader_spec("digital_ocean:lon1:10:bootstrap_cache=false")["bootstrap_cache"]
+            is False
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -293,9 +294,7 @@ class TestOrchestrator:
     def test_native_only_deployment_is_completely_unaffected(self):
         m = _manifest(
             {
-                "uploaders": [
-                    {"provider": "digital_ocean", "region": "lon1", "file_size_mb": 10}
-                ],
+                "uploaders": [{"provider": "digital_ocean", "region": "lon1", "file_size_mb": 10}],
                 "downloaders": [{"provider": "digital_ocean", "region": "lon1"}],
             },
             binaries={"ant_node": {"version": "1.0"}, "ant": {"version": "0.3.0"}},
@@ -320,9 +319,7 @@ class TestUnitRendering:
         assert "EnvironmentFile=/etc/ant-wasm-client.env" in unit
 
     def test_downloader_unit(self):
-        assert "Description=Ant WASM Client Downloader" in _build_wasm_unit(
-            ROLE_WASM_DOWNLOAD
-        )
+        assert "Description=Ant WASM Client Downloader" in _build_wasm_unit(ROLE_WASM_DOWNLOAD)
 
     def test_both_roles_run_the_same_program(self):
         # One program branching on ROLE, because upload and download share the

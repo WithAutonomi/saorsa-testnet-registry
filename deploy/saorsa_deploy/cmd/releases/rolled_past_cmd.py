@@ -29,15 +29,12 @@ def cmd_releases_rolled_past(args):
         identifier = f"{args.binary_target} {args.version}"
     else:
         sys.stderr.write(
-            "releases rolled-past: provide --id, or both --binary-target "
-            "and --version.\n"
+            "releases rolled-past: provide --id, or both --binary-target and --version.\n"
         )
         sys.exit(2)
 
     if release is None:
-        sys.stderr.write(
-            f"releases rolled-past: no release found for {identifier}\n"
-        )
+        sys.stderr.write(f"releases rolled-past: no release found for {identifier}\n")
         sys.exit(1)
 
     try:
@@ -47,7 +44,6 @@ def cmd_releases_rolled_past(args):
         sys.exit(2)
 
     console.print(
-        f"[yellow]Rolled past[/yellow]  id={release.id}  "
-        f"{release.binary_target} {release.version}"
+        f"[yellow]Rolled past[/yellow]  id={release.id}  {release.binary_target} {release.version}"
     )
     console.print(f"  [cyan]Reason[/cyan] {args.reason}")

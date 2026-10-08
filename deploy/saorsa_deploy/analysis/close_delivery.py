@@ -22,6 +22,7 @@ it ended for some other reason. A teardown with no matching flow at all is
 counted too -- on a sample VM that simply had no connection through that relay
 it is expected, and the gate in the run issue is on the scored count.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -83,9 +84,7 @@ def analyse(pcap, teardowns, local, before=5.0, after=60.0):
         pk.sort()
         first, last = pk[0][0], pk[-1][0]
         # Nearest teardown for this address whose window contains the flow's end.
-        candidates = [
-            t for t in by_addr[remote] if t["ts"] - before <= last <= t["ts"] + after
-        ]
+        candidates = [t for t in by_addr[remote] if t["ts"] - before <= last <= t["ts"] + after]
         if not candidates:
             unscored += 1
             continue
@@ -123,9 +122,7 @@ def analyse(pcap, teardowns, local, before=5.0, after=60.0):
         "local": local,
         "window_seconds": {"before": before, "after": after},
         "teardowns": len(teardowns),
-        "teardowns_without_flows": sum(
-            1 for t in teardowns if t["relay_addr"] not in addrs_seen
-        ),
+        "teardowns_without_flows": sum(1 for t in teardowns if t["relay_addr"] not in addrs_seen),
         "scored": scored,
         "told": told,
         "untold": scored - told,

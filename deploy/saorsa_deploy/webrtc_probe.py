@@ -36,9 +36,7 @@ from dataclasses import dataclass
 SERVER_UFRAG_PREFIX = "saorsa+webrtc+v2/"
 
 #: RFC 5245 ``ice-char``: the alphabet an ufrag/pwd may be drawn from.
-_ICE_CHARS = (
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz" "0123456789+/"
-)
+_ICE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 _ICE_STRING_LENGTH = 32
 
 MAGIC_COOKIE = 0x2112A442
@@ -87,14 +85,10 @@ def _attribute(attr_type: int, value: bytes) -> bytes:
 
 
 def _header(message_type: int, body_length: int, transaction_id: bytes) -> bytes:
-    return (
-        struct.pack("!HHI", message_type, body_length, MAGIC_COOKIE) + transaction_id
-    )
+    return struct.pack("!HHI", message_type, body_length, MAGIC_COOKIE) + transaction_id
 
 
-def build_binding_request(
-    username: str, key: str, transaction_id: bytes
-) -> bytes:
+def build_binding_request(username: str, key: str, transaction_id: bytes) -> bytes:
     """A short-term-credential Binding Request, integrity-protected and
     fingerprinted.
 
@@ -115,15 +109,11 @@ def build_binding_request(
     body += _attribute(ATTR_ICE_CONTROLLING, os.urandom(8))
     body += _attribute(ATTR_PRIORITY, struct.pack("!I", 1))
 
-    integrity_header = _header(
-        BINDING_REQUEST, len(body) + _MESSAGE_INTEGRITY_LEN, transaction_id
-    )
+    integrity_header = _header(BINDING_REQUEST, len(body) + _MESSAGE_INTEGRITY_LEN, transaction_id)
     digest = hmac.new(key.encode(), integrity_header + body, hashlib.sha1).digest()
     body += _attribute(ATTR_MESSAGE_INTEGRITY, digest)
 
-    fingerprint_header = _header(
-        BINDING_REQUEST, len(body) + _FINGERPRINT_LEN, transaction_id
-    )
+    fingerprint_header = _header(BINDING_REQUEST, len(body) + _FINGERPRINT_LEN, transaction_id)
     crc = (zlib.crc32(fingerprint_header + body) & 0xFFFFFFFF) ^ FINGERPRINT_XOR
     body += _attribute(ATTR_FINGERPRINT, struct.pack("!I", crc))
 
@@ -149,9 +139,7 @@ def parse_stun_message(data: bytes) -> StunMessage:
     if body_length % 4:
         raise ValueError(f"body length {body_length} is not a multiple of 4")
     if _HEADER_LEN + body_length != len(data):
-        raise ValueError(
-            f"declared length {body_length} does not match {len(data) - _HEADER_LEN}"
-        )
+        raise ValueError(f"declared length {body_length} does not match {len(data) - _HEADER_LEN}")
 
     transaction_id = data[8:_HEADER_LEN]
     attributes: list[tuple[int, bytes]] = []
@@ -174,9 +162,7 @@ def parse_stun_message(data: bytes) -> StunMessage:
     )
 
 
-def probe(
-    ip: str, port: int, timeout: float = DEFAULT_TIMEOUT_SECS, attempts: int = 1
-) -> bool:
+def probe(ip: str, port: int, timeout: float = DEFAULT_TIMEOUT_SECS, attempts: int = 1) -> bool:
     """True if ``ip:port`` answers an ICE connectivity check within ``timeout``.
 
     Each attempt gets its own credentials and transaction id, so a reply to an
@@ -192,9 +178,7 @@ def _probe_once(ip: str, port: int, timeout: float) -> bool:
     client_ufrag = random_ice_string()
     client_pwd = random_ice_string()
     remote_ufrag = server_ufrag(client_pwd)
-    request = build_binding_request(
-        f"{remote_ufrag}:{client_ufrag}", remote_ufrag, os.urandom(12)
-    )
+    request = build_binding_request(f"{remote_ufrag}:{client_ufrag}", remote_ufrag, os.urandom(12))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:

@@ -3,6 +3,7 @@
 Covers the manifest-model validation, the orchestrator build-step argv, and the
 builder's cargo-flag / target-subdir derivation (release vs debug, musl vs not).
 """
+
 import pytest
 
 from saorsa_deploy.config.models import Binary
@@ -55,8 +56,11 @@ class TestBuilderCargoFlags:
     @pytest.mark.parametrize("cls", [AntBuilder, AntNodeBuilder])
     def test_release_default(self, cls):
         b = cls(
-            name="STG-01", ip="1.2.3.4", ssh_key_path="~/.ssh/id_rsa",
-            repo_owner="o", branch_name="br",
+            name="STG-01",
+            ip="1.2.3.4",
+            ssh_key_path="~/.ssh/id_rsa",
+            repo_owner="o",
+            branch_name="br",
         )
         assert b._cargo_release_flag == " --release"
         assert b._target_subdir == "release"
@@ -64,8 +68,12 @@ class TestBuilderCargoFlags:
     @pytest.mark.parametrize("cls", [AntBuilder, AntNodeBuilder])
     def test_debug_drops_release(self, cls):
         b = cls(
-            name="STG-01", ip="1.2.3.4", ssh_key_path="~/.ssh/id_rsa",
-            repo_owner="o", branch_name="br", debug=True,
+            name="STG-01",
+            ip="1.2.3.4",
+            ssh_key_path="~/.ssh/id_rsa",
+            repo_owner="o",
+            branch_name="br",
+            debug=True,
         )
         assert b._cargo_release_flag == ""
         assert b._target_subdir == "debug"
@@ -73,8 +81,13 @@ class TestBuilderCargoFlags:
     @pytest.mark.parametrize("cls", [AntBuilder, AntNodeBuilder])
     def test_debug_musl_target_subdir(self, cls):
         b = cls(
-            name="STG-01", ip="1.2.3.4", ssh_key_path="~/.ssh/id_rsa",
-            repo_owner="o", branch_name="br", musl=True, debug=True,
+            name="STG-01",
+            ip="1.2.3.4",
+            ssh_key_path="~/.ssh/id_rsa",
+            repo_owner="o",
+            branch_name="br",
+            musl=True,
+            debug=True,
         )
         assert b._target_subdir == "x86_64-unknown-linux-musl/debug"
         assert b._cargo_target_flag == " --target x86_64-unknown-linux-musl"
@@ -82,8 +95,12 @@ class TestBuilderCargoFlags:
     @pytest.mark.parametrize("cls", [AntBuilder, AntNodeBuilder])
     def test_release_musl_unchanged(self, cls):
         b = cls(
-            name="STG-01", ip="1.2.3.4", ssh_key_path="~/.ssh/id_rsa",
-            repo_owner="o", branch_name="br", musl=True,
+            name="STG-01",
+            ip="1.2.3.4",
+            ssh_key_path="~/.ssh/id_rsa",
+            repo_owner="o",
+            branch_name="br",
+            musl=True,
         )
         assert b._target_subdir == "x86_64-unknown-linux-musl/release"
 

@@ -99,31 +99,21 @@ def _destroy_aws(by_region: dict, repo, console: Console) -> list[str]:
     failures: list[str] = []
     for region, vms in by_region.items():
         instance_ids = [vm.source_provider_id for vm in vms]
-        console.print(
-            f"[bold]{region}:[/bold] terminating "
-            f"{len(instance_ids)} instance(s)..."
-        )
+        console.print(f"[bold]{region}:[/bold] terminating {len(instance_ids)} instance(s)...")
 
         ec2 = boto3.client("ec2", region_name=region)
 
         try:
-            _, explicit_volumes = _check_root_delete_on_termination(
-                ec2, instance_ids
-            )
+            _, explicit_volumes = _check_root_delete_on_termination(ec2, instance_ids)
         except Exception as e:
-            console.print(
-                f"[red]{region}: failed to inspect block device mappings: {e}"
-                "[/red]"
-            )
+            console.print(f"[red]{region}: failed to inspect block device mappings: {e}[/red]")
             failures.extend(vm.source_name for vm in vms)
             continue
 
         try:
             ec2.terminate_instances(InstanceIds=instance_ids)
         except Exception as e:
-            console.print(
-                f"[red]{region}: terminate_instances failed: {e}[/red]"
-            )
+            console.print(f"[red]{region}: terminate_instances failed: {e}[/red]")
             failures.extend(vm.source_name for vm in vms)
             continue
 
@@ -143,10 +133,7 @@ def _destroy_aws(by_region: dict, repo, console: Console) -> list[str]:
                 ec2.delete_volume(VolumeId=vol_id)
                 console.print(f"  [dim]Deleted volume {vol_id}[/dim]")
             except Exception as e:
-                console.print(
-                    f"[yellow]Warning: failed to delete volume {vol_id}: {e}"
-                    "[/yellow]"
-                )
+                console.print(f"[yellow]Warning: failed to delete volume {vol_id}: {e}[/yellow]")
 
         now = datetime.now(timezone.utc)
         for vm in vms:
@@ -155,9 +142,7 @@ def _destroy_aws(by_region: dict, repo, console: Console) -> list[str]:
                 status=MigrationVmStatus.SOURCE_DESTROYED,
                 source_destroyed_at=now,
             )
-        console.print(
-            f"[green]{region}: {len(instance_ids)} instance(s) terminated.[/green]"
-        )
+        console.print(f"[green]{region}: {len(instance_ids)} instance(s) terminated.[/green]")
     return failures
 
 
@@ -176,8 +161,7 @@ def _do_check(resp: requests.Response, context: str) -> None:
     if resp.ok:
         return
     raise RuntimeError(
-        f"{context} → HTTP {resp.status_code} {resp.reason}: "
-        f"{resp.text.strip() or '<empty body>'}"
+        f"{context} → HTTP {resp.status_code} {resp.reason}: {resp.text.strip() or '<empty body>'}"
     )
 
 
@@ -205,9 +189,7 @@ def _do_volume_ids_for_vm(vm) -> list[str]:
         timeout=DO_REQUEST_TIMEOUT,
     )
     if resp.status_code == 404:
-        return _do_volume_ids_by_name(
-            f"{vm.source_name}-data", vm.source_region
-        )
+        return _do_volume_ids_by_name(f"{vm.source_name}-data", vm.source_region)
     _do_check(resp, f"DO GET droplets/{vm.source_provider_id}")
     return (resp.json().get("droplet") or {}).get("volume_ids") or []
 
@@ -233,10 +215,7 @@ def _do_delete_volume(volume_id: str) -> None:
         )
         if resp.status_code in (204, 404):  # deleted, or already gone
             return
-        last_error = (
-            f"HTTP {resp.status_code} {resp.reason}: "
-            f"{resp.text.strip() or '<empty body>'}"
-        )
+        last_error = f"HTTP {resp.status_code} {resp.reason}: {resp.text.strip() or '<empty body>'}"
         # A 422 here usually means the droplet detach hasn't settled yet; wait
         # and retry rather than orphaning the volume.
         if attempt < DO_VOLUME_DELETE_ATTEMPTS - 1:
@@ -263,18 +242,14 @@ def _destroy_digitalocean(vms: list, repo, console: Console) -> list[str]:
         try:
             volume_ids = _do_volume_ids_for_vm(vm)
         except Exception as e:
-            console.print(
-                f"[red]{vm.source_name}: volume lookup failed: {e}[/red]"
-            )
+            console.print(f"[red]{vm.source_name}: volume lookup failed: {e}[/red]")
             failures.append(vm.source_name)
             continue
 
         try:
             _do_delete_droplet(vm.source_provider_id)
         except Exception as e:
-            console.print(
-                f"[red]{vm.source_name}: droplet delete failed: {e}[/red]"
-            )
+            console.print(f"[red]{vm.source_name}: droplet delete failed: {e}[/red]")
             failures.append(vm.source_name)
             continue
 
@@ -322,8 +297,7 @@ def _vultr_check(resp: requests.Response, context: str) -> None:
     if resp.ok:
         return
     raise RuntimeError(
-        f"{context} → HTTP {resp.status_code} {resp.reason}: "
-        f"{resp.text.strip() or '<empty body>'}"
+        f"{context} → HTTP {resp.status_code} {resp.reason}: {resp.text.strip() or '<empty body>'}"
     )
 
 
@@ -358,11 +332,7 @@ def _vultr_block_ids_for_vm(vm) -> list[str]:
     still found and removed.
     """
     blocks = _vultr_list_blocks()
-    attached = [
-        b["id"]
-        for b in blocks
-        if b.get("attached_to_instance") == vm.source_provider_id
-    ]
+    attached = [b["id"] for b in blocks if b.get("attached_to_instance") == vm.source_provider_id]
     if attached:
         return attached
     label = f"{vm.source_name}-data"
@@ -455,18 +425,14 @@ def _destroy_vultr(vms: list, repo, console: Console) -> list[str]:
         try:
             block_ids = _vultr_block_ids_for_vm(vm)
         except Exception as e:
-            console.print(
-                f"[red]{vm.source_name}: block lookup failed: {e}[/red]"
-            )
+            console.print(f"[red]{vm.source_name}: block lookup failed: {e}[/red]")
             failures.append(vm.source_name)
             continue
 
         try:
             _vultr_delete_instance(vm.source_provider_id)
         except Exception as e:
-            console.print(
-                f"[red]{vm.source_name}: instance delete failed: {e}[/red]"
-            )
+            console.print(f"[red]{vm.source_name}: instance delete failed: {e}[/red]")
             failures.append(vm.source_name)
             continue
 
@@ -510,9 +476,7 @@ def cmd_migration_destroy_source(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
     if args.force:
@@ -522,8 +486,7 @@ def cmd_migration_destroy_source(args):
         targets = [
             vm
             for vm in repo.list_vms(migration.id)
-            if vm.status != MigrationVmStatus.SOURCE_DESTROYED
-            and vm.source_provider_id
+            if vm.status != MigrationVmStatus.SOURCE_DESTROYED and vm.source_provider_id
         ]
     else:
         leftover_states = [
@@ -540,19 +503,13 @@ def cmd_migration_destroy_source(args):
                     f"'{state.value}'. Drain them first or pass --force."
                 )
                 sys.exit(1)
-        targets = repo.list_vms(
-            migration.id, status=MigrationVmStatus.SOURCE_DRAINED
-        )
+        targets = repo.list_vms(migration.id, status=MigrationVmStatus.SOURCE_DRAINED)
 
     if not targets:
-        console.print(
-            "[bold red]Error:[/bold red] No VMs left to destroy."
-        )
+        console.print("[bold red]Error:[/bold red] No VMs left to destroy.")
         sys.exit(1)
 
-    unsupported = sorted(
-        {vm.source_provider for vm in targets} - set(SUPPORTED_SOURCE_PROVIDERS)
-    )
+    unsupported = sorted({vm.source_provider for vm in targets} - set(SUPPORTED_SOURCE_PROVIDERS))
     if unsupported:
         console.print(
             f"[bold red]Error:[/bold red] unsupported source_provider(s): "
@@ -584,24 +541,18 @@ def cmd_migration_destroy_source(args):
 
     if failures:
         console.print()
-        console.print(
-            f"[bold red]{len(failures)} VM(s) failed:[/bold red] "
-            f"{', '.join(failures)}"
-        )
+        console.print(f"[bold red]{len(failures)} VM(s) failed:[/bold red] {', '.join(failures)}")
         sys.exit(1)
 
     # Migration is fully destroyed only when every VM is SOURCE_DESTROYED.
     leftover = [
-        vm
-        for vm in repo.list_vms(migration.id)
-        if vm.status != MigrationVmStatus.SOURCE_DESTROYED
+        vm for vm in repo.list_vms(migration.id) if vm.status != MigrationVmStatus.SOURCE_DESTROYED
     ]
     if not leftover:
         repo.update_migration_status(migration.id, MigrationStatus.COMPLETE)
         console.print()
         console.print(
-            "[bold green]All source VMs destroyed. "
-            "Migration status: complete.[/bold green]"
+            "[bold green]All source VMs destroyed. Migration status: complete.[/bold green]"
         )
         console.print(
             "[dim]Next: run `saorsa-deploy migration complete --name "

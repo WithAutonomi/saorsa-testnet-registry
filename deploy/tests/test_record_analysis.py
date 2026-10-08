@@ -142,9 +142,7 @@ def test_streaming_reader_skips_rows_no_consumer_can_place():
         ",_result,0,not-a-timestamp,hostC,cpu,usage_idle,80.0\n"
     )
     rows = list(
-        influx._normalise_flux_rows(
-            influx._iter_flux_rows(body, keep=influx.HOST_METRIC_COLUMNS)
-        )
+        influx._normalise_flux_rows(influx._iter_flux_rows(body, keep=influx.HOST_METRIC_COLUMNS))
     )
     assert [r["host"] for r in rows] == ["hostA"]
     assert rows == _parse_flux_csv(body)
@@ -183,8 +181,7 @@ def test_parse_flux_csv_interns_repeated_tag_values():
     """
     header = ",result,table,_time,host,_measurement,_field,_value\n"
     rows_csv = "".join(
-        f",_result,0,2026-04-19T10:0{i}:00Z,hostA,cpu,usage_idle,9{i}.0\n"
-        for i in range(5)
+        f",_result,0,2026-04-19T10:0{i}:00Z,hostA,cpu,usage_idle,9{i}.0\n" for i in range(5)
     )
     rows = _parse_flux_csv(header + rows_csv)
     assert len(rows) == 5
@@ -328,16 +325,10 @@ def test_aggregate_diskio_converts_counters_to_rates():
         "net": [],
         "diskio": [
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0),
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 10_000
-            ),
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:20+00:00", "sdb", "read_bytes", 30_000
-            ),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 10_000),
+            _diskio_point("hostA", "2026-04-19T10:00:20+00:00", "sdb", "read_bytes", 30_000),
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "write_bytes", 0),
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "write_bytes", 1_000
-            ),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sdb", "write_bytes", 1_000),
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "reads", 0),
             _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sdb", "reads", 50),
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "writes", 0),
@@ -367,16 +358,10 @@ def test_aggregate_diskio_skips_counter_resets():
         "mem": [],
         "net": [],
         "diskio": [
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:00+00:00", "sda", "write_bytes", 10_000
-            ),
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sda", "write_bytes", 10_000),
             # reboot — counter restarts
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sda", "write_bytes", 500
-            ),
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:20+00:00", "sda", "write_bytes", 2_500
-            ),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sda", "write_bytes", 500),
+            _diskio_point("hostA", "2026-04-19T10:00:20+00:00", "sda", "write_bytes", 2_500),
         ],
     }
     results = aggregate_host_metrics(points)
@@ -401,17 +386,11 @@ def test_aggregate_diskio_keeps_devices_separate():
         "net": [],
         "diskio": [
             # Root disk: idle, but a large absolute counter.
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:00+00:00", "sda", "read_bytes", 1_000_000
-            ),
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sda", "read_bytes", 1_000_000
-            ),
+            _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sda", "read_bytes", 1_000_000),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sda", "read_bytes", 1_000_000),
             # Data volume: busy, small absolute counter.
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0),
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 50_000
-            ),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 50_000),
         ],
     }
     results = aggregate_host_metrics(points)
@@ -431,11 +410,19 @@ def test_aggregate_diskio_marks_the_node_storage_volume():
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "sda", "read_bytes", 0),
             _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "sda", "read_bytes", 10),
             _diskio_point(
-                "hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0,
+                "hostA",
+                "2026-04-19T10:00:00+00:00",
+                "sdb",
+                "read_bytes",
+                0,
                 volume_role="node-storage",
             ),
             _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 50_000,
+                "hostA",
+                "2026-04-19T10:00:10+00:00",
+                "sdb",
+                "read_bytes",
+                50_000,
                 volume_role="node-storage",
             ),
         ],
@@ -474,11 +461,19 @@ def test_only_the_exact_node_storage_role_marks_the_volume():
         "net": [],
         "diskio": [
             _diskio_point(
-                "hostA", "2026-04-19T10:00:00+00:00", "vda", "read_bytes", 0,
+                "hostA",
+                "2026-04-19T10:00:00+00:00",
+                "vda",
+                "read_bytes",
+                0,
                 volume_role="vda",
             ),
             _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 10,
+                "hostA",
+                "2026-04-19T10:00:10+00:00",
+                "vda",
+                "read_bytes",
+                10,
                 volume_role="vda",
             ),
         ],
@@ -495,9 +490,9 @@ def test_aggregate_diskio_ignores_points_without_a_device_tag():
         "net": [],
         "diskio": [
             {
-                "_time": datetime.fromisoformat(
-                    "2026-04-19T10:00:00+00:00"
-                ).astimezone(timezone.utc),
+                "_time": datetime.fromisoformat("2026-04-19T10:00:00+00:00").astimezone(
+                    timezone.utc
+                ),
                 "host": "hostA",
                 "_measurement": "diskio",
                 "_field": "read_bytes",
@@ -549,11 +544,19 @@ def test_serialize_host_entry_persists_disk_io_by_device():
         "net": [],
         "diskio": [
             _diskio_point(
-                "hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0,
+                "hostA",
+                "2026-04-19T10:00:00+00:00",
+                "sdb",
+                "read_bytes",
+                0,
                 volume_role="node-storage",
             ),
             _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 10_000,
+                "hostA",
+                "2026-04-19T10:00:10+00:00",
+                "sdb",
+                "read_bytes",
+                10_000,
                 volume_role="node-storage",
             ),
         ],
@@ -575,18 +578,24 @@ def test_serialized_disk_io_is_json_round_trippable():
         "net": [],
         "diskio": [
             _diskio_point(
-                "hostA", "2026-04-19T10:00:00+00:00", "dm-0", "read_bytes", 0,
+                "hostA",
+                "2026-04-19T10:00:00+00:00",
+                "dm-0",
+                "read_bytes",
+                0,
                 volume_role="node-storage",
             ),
             _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "dm-0", "read_bytes", 100,
+                "hostA",
+                "2026-04-19T10:00:10+00:00",
+                "dm-0",
+                "read_bytes",
+                100,
                 volume_role="node-storage",
             ),
         ],
     }
-    serialized = record_analysis_mod._serialize_host_entry(
-        aggregate_host_metrics(points)[0]
-    )
+    serialized = record_analysis_mod._serialize_host_entry(aggregate_host_metrics(points)[0])
     assert json.loads(json.dumps(serialized)) == serialized
 
 
@@ -603,12 +612,8 @@ def test_aggregate_tracks_start_and_end_per_host():
     }
     results = aggregate_host_metrics(points)
     assert len(results) == 1
-    assert results[0]["metrics_started_at"] == datetime.fromisoformat(
-        "2026-04-19T09:58:00+00:00"
-    )
-    assert results[0]["metrics_ended_at"] == datetime.fromisoformat(
-        "2026-04-19T10:05:00+00:00"
-    )
+    assert results[0]["metrics_started_at"] == datetime.fromisoformat("2026-04-19T09:58:00+00:00")
+    assert results[0]["metrics_ended_at"] == datetime.fromisoformat("2026-04-19T10:05:00+00:00")
 
 
 def test_aggregate_multi_host_produces_sorted_results():
@@ -672,9 +677,7 @@ def test_fetch_host_metric_points_defaults_to_epoch(monkeypatch):
         return iter(())
 
     monkeypatch.setattr(influx, "_stream_flux", _fake_stream_flux)
-    fetch_host_metric_points(
-        url="http://x", token="t", org="ant", bucket="testnet-metrics"
-    )
+    fetch_host_metric_points(url="http://x", token="t", org="ant", bucket="testnet-metrics")
     # cpu / mem / net / disk / diskio / procstat / ant_node_memory
     assert len(seen) == 7
     assert all("range(start: 0," in flux for flux in seen)
@@ -731,9 +734,7 @@ def _run_cmd_record_analysis(monkeypatch, repo_obj, diskio_points: list[dict]):
     record_analysis_mod.cmd_record_analysis(args)
 
 
-def test_record_analysis_summary_table_reports_the_storage_volume(
-    monkeypatch, repo, capsys
-):
+def test_record_analysis_summary_table_reports_the_storage_volume(monkeypatch, repo, capsys):
     r, _ = repo
     r.create(name="DEV-TEST", deploy_args={})
     _run_cmd_record_analysis(
@@ -743,11 +744,19 @@ def test_record_analysis_summary_table_reports_the_storage_volume(
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "vda", "read_bytes", 0),
             _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 0),
             _diskio_point(
-                "hostA", "2026-04-19T10:00:00+00:00", "sdb", "read_bytes", 0,
+                "hostA",
+                "2026-04-19T10:00:00+00:00",
+                "sdb",
+                "read_bytes",
+                0,
                 volume_role="node-storage",
             ),
             _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "sdb", "read_bytes", 20 * 1024**2,
+                "hostA",
+                "2026-04-19T10:00:10+00:00",
+                "sdb",
+                "read_bytes",
+                20 * 1024**2,
                 volume_role="node-storage",
             ),
         ],
@@ -763,9 +772,7 @@ def test_record_analysis_summary_table_reports_the_storage_volume(
     assert set(row.host_metrics[0]["disk_io_by_device"]) == {"sdb", "vda"}
 
 
-def test_record_analysis_summary_table_handles_no_storage_volume(
-    monkeypatch, repo, capsys
-):
+def test_record_analysis_summary_table_handles_no_storage_volume(monkeypatch, repo, capsys):
     """A client VM (or a host provisioned before the volume_role tag) has no
     node-storage device; the table must render rather than raise."""
     r, _ = repo
@@ -775,9 +782,7 @@ def test_record_analysis_summary_table_handles_no_storage_volume(
         r,
         [
             _diskio_point("hostA", "2026-04-19T10:00:00+00:00", "vda", "read_bytes", 0),
-            _diskio_point(
-                "hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 1_000
-            ),
+            _diskio_point("hostA", "2026-04-19T10:00:10+00:00", "vda", "read_bytes", 1_000),
         ],
     )
     out = capsys.readouterr().out
@@ -888,9 +893,7 @@ def test_set_host_result_summary_raises_when_no_row(repo):
 
 def test_merge_deploy_args_adds_new_keys(repo):
     r, _ = repo
-    deployment = r.create(
-        name="DEV-MERGE", deploy_args={"bootstrap_count": 3, "name": "DEV-MERGE"}
-    )
+    deployment = r.create(name="DEV-MERGE", deploy_args={"bootstrap_count": 3, "name": "DEV-MERGE"})
 
     updated = r.merge_deploy_args(deployment.id, {"node_count": 12})
 
@@ -940,10 +943,7 @@ def test_parse_flux_csv_memory_is_bounded_per_row():
     import tracemalloc
 
     n_rows = 20_000
-    header = (
-        ",result,table,_start,_stop,_time,host,host_role,region,"
-        "_measurement,_field,_value\n"
-    )
+    header = ",result,table,_start,_stop,_time,host,host_role,region,_measurement,_field,_value\n"
     body = header + "".join(
         f",_result,0,2026-04-19T00:00:00Z,2026-04-20T00:00:00Z,"
         f"2026-04-19T10:00:{i % 60:02d}Z,host{i % 40},NODE,lon1,cpu,"
@@ -1034,8 +1034,8 @@ class _ReusedNameRepo:
     def __init__(self):
         self.recorded_against = None
         self._rows = {
-            442: type("D", (), {"id": 442, "name": "STG-01"})(),   # old, pending
-            513: type("D", (), {"id": 513, "name": "STG-01"})(),   # newest, destroyed
+            442: type("D", (), {"id": 442, "name": "STG-01"})(),  # old, pending
+            513: type("D", (), {"id": 513, "name": "STG-01"})(),  # newest, destroyed
         }
 
     def get_active_by_name(self, name):
@@ -1119,9 +1119,7 @@ def test_record_analysis_by_name_takes_the_newest_run_not_the_newest_active(
 
 
 def test_record_analysis_id_takes_precedence_over_name(monkeypatch):
-    repo = _drive_resolution(
-        monkeypatch, _resolve_args(name="STG-01", deployment_id=442)
-    )
+    repo = _drive_resolution(monkeypatch, _resolve_args(name="STG-01", deployment_id=442))
     assert repo.recorded_against == 442
 
 

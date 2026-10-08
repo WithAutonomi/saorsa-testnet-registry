@@ -136,9 +136,7 @@ class DeploymentProdUploadVerification(Base):
     # How long after the upload finished this check ran. Denormalised at write
     # time because the upload row can be pruned or the deployment reused, and
     # "confirmed again later" is the whole point of the second region.
-    age_at_check_secs: Mapped[Optional[int]] = mapped_column(
-        BigInteger, nullable=True
-    )
+    age_at_check_secs: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

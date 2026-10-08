@@ -63,9 +63,7 @@ class Release(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    binary_target: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    binary_target: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     #: The final, suffix-free version (``0.17.1``) — NOT ``0.17.1-beta.1``.
     #: The beta and final tags carry the suffixed forms.
     version: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -140,9 +138,7 @@ class Release(Base):
             "beta_tag": self.beta_tag,
             "beta_tag_sha": self.beta_tag_sha,
             "shipped_to_beta_at": (
-                self.shipped_to_beta_at.isoformat()
-                if self.shipped_to_beta_at
-                else None
+                self.shipped_to_beta_at.isoformat() if self.shipped_to_beta_at else None
             ),
             "planned_promotion_at": (
                 self.planned_promotion_at.isoformat()
@@ -151,9 +147,7 @@ class Release(Base):
             ),
             "final_tag": self.final_tag,
             "final_tag_sha": self.final_tag_sha,
-            "promoted_at": (
-                self.promoted_at.isoformat() if self.promoted_at else None
-            ),
+            "promoted_at": (self.promoted_at.isoformat() if self.promoted_at else None),
             "outcome": self.outcome.value,
             "notes": self.notes,
             "recorded_at": self.recorded_at.isoformat(),

@@ -50,9 +50,7 @@ class ProdDiskSurvey(Base):
     # How many hosts the survey set out to reach. Not derivable from
     # host_count + len(failed_hosts): a host can answer SSH yet return no df
     # line, landing in neither. NULL on pre-V2-1147 rows.
-    attempted_host_count: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True
-    )
+    attempted_host_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

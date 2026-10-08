@@ -281,9 +281,7 @@ def _clients_infra_argv(name: str, clients: Clients) -> list[str]:
     return argv
 
 
-def _observability_destroy_steps(
-    name: str, elastic: Elastic, monitoring: Monitoring
-) -> list[Step]:
+def _observability_destroy_steps(name: str, elastic: Elastic, monitoring: Monitoring) -> list[Step]:
     """Elastic / monitoring teardown steps, honouring ``keep_on_destroy``.
 
     A kept stack is simply never destroyed: the testnet tiers go away and its
@@ -306,9 +304,7 @@ def _observability_destroy_steps(
     return steps
 
 
-def _clients_destroy_argv(
-    name: str, ssh_key: str, skip_drain_failures: bool
-) -> list[str]:
+def _clients_destroy_argv(name: str, ssh_key: str, skip_drain_failures: bool) -> list[str]:
     argv = ["clients", "destroy", "--name", name, "--force", "--ssh-key-path", ssh_key]
     if skip_drain_failures:
         argv.append("--skip-drain-failures")
@@ -504,9 +500,7 @@ def _provision_and_start_steps(
     return steps
 
 
-def build_testnet_deploy_steps(
-    manifest: Manifest, *, skip_builds: bool = False
-) -> list[Step]:
+def build_testnet_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list[Step]:
     spec: TestnetSpec = manifest.testnet
     name = manifest.name
     ssh_key = manifest.ssh_key_path
@@ -606,9 +600,7 @@ def build_testnet_destroy_steps(
     if spec.clients is not None:
         steps.append(
             Step(
-                _clients_destroy_argv(
-                    name, manifest.ssh_key_path, skip_drain_failures
-                ),
+                _clients_destroy_argv(name, manifest.ssh_key_path, skip_drain_failures),
                 "Destroy clients",
             )
         )
@@ -621,9 +613,7 @@ def build_testnet_destroy_steps(
 # --------------------------------------------------------------------------- #
 # extension (reuses another testnet's bootstraps; no bootstrap/genesis tier)
 # --------------------------------------------------------------------------- #
-def build_extension_deploy_steps(
-    manifest: Manifest, *, skip_builds: bool = False
-) -> list[Step]:
+def build_extension_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list[Step]:
     spec: ExtensionSpec = manifest.extension
     name = manifest.name
     ssh_key = manifest.ssh_key_path
@@ -719,9 +709,7 @@ def build_extension_destroy_steps(
     if spec.clients is not None:
         steps.append(
             Step(
-                _clients_destroy_argv(
-                    name, manifest.ssh_key_path, skip_drain_failures
-                ),
+                _clients_destroy_argv(name, manifest.ssh_key_path, skip_drain_failures),
                 "Destroy clients",
             )
         )

@@ -9,9 +9,7 @@ the install stays visible to module-level mocks.
 """
 
 #: The Telegraf release installed on every provisioned VM.
-TELEGRAF_DEB_URL = (
-    "https://dl.influxdata.com/telegraf/releases/telegraf_1.33.0-1_amd64.deb"
-)
+TELEGRAF_DEB_URL = "https://dl.influxdata.com/telegraf/releases/telegraf_1.33.0-1_amd64.deb"
 
 #: pyinfra op name for the install step.
 TELEGRAF_INSTALL_OP_NAME = "Install Telegraf"

@@ -48,8 +48,7 @@ def _raise_with_body(resp: requests.Response, context: str) -> None:
         return
     body = resp.text.strip()
     raise RuntimeError(
-        f"{context} → HTTP {resp.status_code} {resp.reason}: "
-        f"{body or '<empty body>'}"
+        f"{context} → HTTP {resp.status_code} {resp.reason}: {body or '<empty body>'}"
     )
 
 
@@ -121,16 +120,12 @@ def _aws_get_data_volume(vm: NodeVm) -> CloudVolume:
     instance_resp = ec2.describe_instances(InstanceIds=[vm.provider_id])
     reservations = instance_resp.get("Reservations") or []
     if not reservations or not reservations[0].get("Instances"):
-        raise RuntimeError(
-            f"AWS instance {vm.provider_id} not found in region {vm.region}"
-        )
+        raise RuntimeError(f"AWS instance {vm.provider_id} not found in region {vm.region}")
     instance = reservations[0]["Instances"][0]
     root_device = instance.get("RootDeviceName")
 
     volumes_resp = ec2.describe_volumes(
-        Filters=[
-            {"Name": "attachment.instance-id", "Values": [vm.provider_id]}
-        ]
+        Filters=[{"Name": "attachment.instance-id", "Values": [vm.provider_id]}]
     )
     candidates = []
     for vol in volumes_resp.get("Volumes", []):
@@ -180,13 +175,10 @@ def _aws_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
                 )
             if state == "failed":
                 raise RuntimeError(
-                    f"AWS volume modification for {volume.id} failed: "
-                    f"{mod.get('StatusMessage')}"
+                    f"AWS volume modification for {volume.id} failed: {mod.get('StatusMessage')}"
                 )
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"Timed out waiting for AWS volume {volume.id} to reach {target_gb} GiB"
-    )
+    raise TimeoutError(f"Timed out waiting for AWS volume {volume.id} to reach {target_gb} GiB")
 
 
 # ---------- DigitalOcean ----------
@@ -195,9 +187,7 @@ def _aws_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
 def _do_token() -> str:
     token = os.environ.get("DO_TOKEN")
     if not token:
-        raise RuntimeError(
-            "DO_TOKEN env var not set — required for DigitalOcean volume operations"
-        )
+        raise RuntimeError("DO_TOKEN env var not set — required for DigitalOcean volume operations")
     return token
 
 
@@ -272,13 +262,9 @@ def _do_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
                 region=volume.region,
             )
         if status == "errored":
-            raise RuntimeError(
-                f"DigitalOcean resize action {action_id} for {volume.id} errored"
-            )
+            raise RuntimeError(f"DigitalOcean resize action {action_id} for {volume.id} errored")
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"Timed out waiting for DO volume {volume.id} resize to complete"
-    )
+    raise TimeoutError(f"Timed out waiting for DO volume {volume.id} resize to complete")
 
 
 # ---------- Hetzner ----------
@@ -287,9 +273,7 @@ def _do_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
 def _hetzner_token() -> str:
     token = os.environ.get("HCLOUD_TOKEN")
     if not token:
-        raise RuntimeError(
-            "HCLOUD_TOKEN env var not set — required for Hetzner volume operations"
-        )
+        raise RuntimeError("HCLOUD_TOKEN env var not set — required for Hetzner volume operations")
     return token
 
 
@@ -366,13 +350,9 @@ def _hetzner_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
                 region=volume.region,
             )
         if status == "error":
-            raise RuntimeError(
-                f"Hetzner resize action {action_id} for volume {volume.id} errored"
-            )
+            raise RuntimeError(f"Hetzner resize action {action_id} for volume {volume.id} errored")
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"Timed out waiting for Hetzner volume {volume.id} resize to complete"
-    )
+    raise TimeoutError(f"Timed out waiting for Hetzner volume {volume.id} resize to complete")
 
 
 # ---------- Vultr ----------
@@ -381,9 +361,7 @@ def _hetzner_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
 def _vultr_token() -> str:
     token = os.environ.get("VULTR_API_KEY")
     if not token:
-        raise RuntimeError(
-            "VULTR_API_KEY env var not set — required for Vultr volume operations"
-        )
+        raise RuntimeError("VULTR_API_KEY env var not set — required for Vultr volume operations")
     return token
 
 
@@ -419,8 +397,7 @@ def _vultr_list_blocks() -> list[dict]:
 
 def _vultr_get_data_volume(vm: NodeVm) -> CloudVolume:
     candidates = [
-        b for b in _vultr_list_blocks()
-        if b.get("attached_to_instance") == vm.provider_id
+        b for b in _vultr_list_blocks() if b.get("attached_to_instance") == vm.provider_id
     ]
     if len(candidates) != 1:
         raise RuntimeError(
@@ -462,9 +439,7 @@ def _vultr_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
                 region=volume.region,
             )
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"Timed out waiting for Vultr block {volume.id} resize to complete"
-    )
+    raise TimeoutError(f"Timed out waiting for Vultr block {volume.id} resize to complete")
 
 
 # ---------- OVH ----------
@@ -481,9 +456,7 @@ def _vultr_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
 def _ovh_env(name: str) -> str:
     val = os.environ.get(name)
     if not val:
-        raise RuntimeError(
-            f"{name} env var not set — required for OVH volume operations"
-        )
+        raise RuntimeError(f"{name} env var not set — required for OVH volume operations")
     return val
 
 
@@ -530,10 +503,7 @@ def _ovh_call(method: str, path: str, body: dict | None = None):
 def _ovh_get_data_volume(vm: NodeVm) -> CloudVolume:
     sn = _ovh_env("OVH_CLOUD_PROJECT_SERVICE")
     volumes = _ovh_call("GET", f"/cloud/project/{sn}/volume")
-    candidates = [
-        v for v in volumes
-        if vm.provider_id in (v.get("attachedTo") or [])
-    ]
+    candidates = [v for v in volumes if vm.provider_id in (v.get("attachedTo") or [])]
     if len(candidates) != 1:
         raise RuntimeError(
             f"Expected exactly one attached volume on OVH instance "
@@ -567,6 +537,4 @@ def _ovh_resize(volume: CloudVolume, target_gb: int) -> CloudVolume:
                 region=volume.region,
             )
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise TimeoutError(
-        f"Timed out waiting for OVH volume {volume.id} resize to complete"
-    )
+    raise TimeoutError(f"Timed out waiting for OVH volume {volume.id} resize to complete")

@@ -26,7 +26,15 @@ CONTABO_REQUIRED_ENV_VARS = (
 # Region codes accepted by the create-instance API. The Terraform provider docs
 # list only the first five, but the API accepts the wider set.
 CONTABO_REGIONS = (
-    "EU", "US-central", "US-east", "US-west", "UK", "SIN", "AUS", "JPN", "IND",
+    "EU",
+    "US-central",
+    "US-east",
+    "US-west",
+    "UK",
+    "SIN",
+    "AUS",
+    "JPN",
+    "IND",
 )
 
 

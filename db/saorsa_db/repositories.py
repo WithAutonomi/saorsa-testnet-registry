@@ -92,7 +92,12 @@ from saorsa_db.models.release_candidate import (
     ReleaseCandidateCrate,
     ReleaseCandidatePR,
 )
-from saorsa_db.size_class import SizeClass, bounded_byte_range, byte_range, describe_bounds
+from saorsa_db.size_class import (
+    SizeClass,
+    bounded_byte_range,
+    byte_range,
+    describe_bounds,
+)
 from saorsa_db.size_class import ordered as size_class_ordered
 
 
@@ -103,12 +108,10 @@ class DeploymentRepository(ABC):
         name: str,
         deploy_args: dict,
         workflow_run_id: int | None = None,
-    ) -> Deployment:
-        ...
+    ) -> Deployment: ...
 
     @abstractmethod
-    def get(self, deployment_id: int) -> Deployment | None:
-        ...
+    def get(self, deployment_id: int) -> Deployment | None: ...
 
     @abstractmethod
     def get_by_name(self, name: str) -> Deployment | None:
@@ -131,23 +134,18 @@ class DeploymentRepository(ABC):
         ...
 
     @abstractmethod
-    def list_all(self) -> list[Deployment]:
-        ...
+    def list_all(self) -> list[Deployment]: ...
 
     @abstractmethod
-    def list_active(self) -> list[Deployment]:
-        ...
+    def list_active(self) -> list[Deployment]: ...
 
     @abstractmethod
     def update_status(
         self, deployment_id: int, status: DeploymentStatus
-    ) -> Deployment:
-        ...
+    ) -> Deployment: ...
 
     @abstractmethod
-    def merge_deploy_args(
-        self, deployment_id: int, updates: dict
-    ) -> Deployment:
+    def merge_deploy_args(self, deployment_id: int, updates: dict) -> Deployment:
         """Shallow-merge ``updates`` into the deployment's ``deploy_args`` JSON."""
         ...
 
@@ -165,12 +163,10 @@ class DeploymentRepository(ABC):
         deployment_id: int,
         event_type: str,
         details: dict | None = None,
-    ) -> DeploymentEvent:
-        ...
+    ) -> DeploymentEvent: ...
 
     @abstractmethod
-    def delete(self, deployment_id: int) -> None:
-        ...
+    def delete(self, deployment_id: int) -> None: ...
 
     @abstractmethod
     def upsert_file_result(
@@ -186,14 +182,12 @@ class DeploymentRepository(ABC):
         avg_duration_ms: int | None,
         min_duration_ms: int | None,
         max_duration_ms: int | None,
-    ) -> DeploymentFileResult:
-        ...
+    ) -> DeploymentFileResult: ...
 
     @abstractmethod
     def list_file_results_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentFileResult]:
-        ...
+    ) -> list[DeploymentFileResult]: ...
 
     @abstractmethod
     def upsert_upload_record(
@@ -211,8 +205,7 @@ class DeploymentRepository(ABC):
         network_profile: str | None = None,
         client_kind: str | None = None,
         sha256: str | None = None,
-    ) -> DeploymentUploadRecord:
-        ...
+    ) -> DeploymentUploadRecord: ...
 
     @abstractmethod
     def upsert_download_record(
@@ -234,20 +227,17 @@ class DeploymentRepository(ABC):
         verify_status: str | None = None,
         expected_sha256: str | None = None,
         actual_sha256: str | None = None,
-    ) -> DeploymentDownloadRecord:
-        ...
+    ) -> DeploymentDownloadRecord: ...
 
     @abstractmethod
     def list_upload_records_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentUploadRecord]:
-        ...
+    ) -> list[DeploymentUploadRecord]: ...
 
     @abstractmethod
     def list_download_records_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentDownloadRecord]:
-        ...
+    ) -> list[DeploymentDownloadRecord]: ...
 
     @abstractmethod
     def upsert_pointer_record(
@@ -275,18 +265,15 @@ class DeploymentRepository(ABC):
         gas_spend_wei: int | None = None,
         error: str | None = None,
         network_profile: str | None = None,
-    ) -> DeploymentPointerRecord:
-        ...
+    ) -> DeploymentPointerRecord: ...
 
     @abstractmethod
     def list_pointer_records_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentPointerRecord]:
-        ...
+    ) -> list[DeploymentPointerRecord]: ...
 
     @abstractmethod
-    def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]:
-        ...
+    def list_wasm_client_hostnames(self, deployment_id: int) -> list[str]: ...
 
     @abstractmethod
     def upsert_host_result(
@@ -296,30 +283,25 @@ class DeploymentRepository(ABC):
         metrics_started_at: datetime,
         metrics_ended_at: datetime,
         summary: str | None = None,
-    ) -> DeploymentHostResult:
-        ...
+    ) -> DeploymentHostResult: ...
 
     @abstractmethod
     def get_host_result_for_deployment(
         self, deployment_id: int
-    ) -> DeploymentHostResult | None:
-        ...
+    ) -> DeploymentHostResult | None: ...
 
     @abstractmethod
     def set_host_result_summary(
         self, deployment_id: int, summary: str
-    ) -> DeploymentHostResult:
-        ...
+    ) -> DeploymentHostResult: ...
 
     @abstractmethod
     def replace_host_metric_buckets(
         self, deployment_id: int, buckets: list[dict]
-    ) -> int:
-        ...
+    ) -> int: ...
 
     @abstractmethod
-    def count_host_metric_buckets(self, deployment_id: int) -> int:
-        ...
+    def count_host_metric_buckets(self, deployment_id: int) -> int: ...
 
     @abstractmethod
     def get_host_metric_window(
@@ -327,26 +309,22 @@ class DeploymentRepository(ABC):
         deployment_id: int,
         start: datetime | None = None,
         end: datetime | None = None,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
     @abstractmethod
     def get_host_metric_bucket_span(
         self, deployment_id: int
-    ) -> tuple[datetime, datetime] | None:
-        ...
+    ) -> tuple[datetime, datetime] | None: ...
 
     @abstractmethod
     def delete_host_metric_buckets_before(
         self, cutoff: datetime, deployment_id: int | None = None
-    ) -> int:
-        ...
+    ) -> int: ...
 
     @abstractmethod
     def summarize_host_metric_buckets(
         self, cutoff: datetime | None = None
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
     @abstractmethod
     def get_host_metric_buckets_in_window(
@@ -355,8 +333,7 @@ class DeploymentRepository(ABC):
         start: datetime | None = None,
         end: datetime | None = None,
         metric: str | None = None,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
     @abstractmethod
     def get_host_metric_endpoints(
@@ -365,8 +342,7 @@ class DeploymentRepository(ABC):
         metric: str,
         start: datetime | None = None,
         end: datetime | None = None,
-    ) -> list[dict]:
-        ...
+    ) -> list[dict]: ...
 
     @abstractmethod
     def upsert_derived_metric(
@@ -382,20 +358,17 @@ class DeploymentRepository(ABC):
         numerator: float | None = None,
         denominator: float | None = None,
         details: dict | None = None,
-    ) -> DeploymentDerivedMetric:
-        ...
+    ) -> DeploymentDerivedMetric: ...
 
     @abstractmethod
     def list_derived_metrics_for_deployment(
         self, deployment_id: int, window_label: str | None = None
-    ) -> list[DeploymentDerivedMetric]:
-        ...
+    ) -> list[DeploymentDerivedMetric]: ...
 
     @abstractmethod
     def delete_derived_metrics(
         self, deployment_id: int, window_label: str | None = None
-    ) -> int:
-        ...
+    ) -> int: ...
 
     @abstractmethod
     def upsert_log_event_count(
@@ -414,20 +387,17 @@ class DeploymentRepository(ABC):
         observed_end: datetime | None = None,
         source: str = SOURCE_ELASTICSEARCH,
         details: dict | None = None,
-    ) -> DeploymentLogEventCount:
-        ...
+    ) -> DeploymentLogEventCount: ...
 
     @abstractmethod
     def list_log_event_counts_for_deployment(
         self, deployment_id: int, window_label: str | None = None
-    ) -> list[DeploymentLogEventCount]:
-        ...
+    ) -> list[DeploymentLogEventCount]: ...
 
     @abstractmethod
     def delete_log_event_counts(
         self, deployment_id: int, window_label: str | None = None
-    ) -> int:
-        ...
+    ) -> int: ...
 
     @abstractmethod
     def upsert_gate_verdict(
@@ -439,14 +409,12 @@ class DeploymentRepository(ABC):
         threshold_config_version: int,
         verdict: dict,
         report_markdown: str | None = None,
-    ) -> DeploymentGateVerdict:
-        ...
+    ) -> DeploymentGateVerdict: ...
 
     @abstractmethod
     def list_gate_verdicts_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentGateVerdict]:
-        ...
+    ) -> list[DeploymentGateVerdict]: ...
 
     @abstractmethod
     def get_gate_verdict(
@@ -454,8 +422,7 @@ class DeploymentRepository(ABC):
         deployment_id: int,
         baseline_deployment_id: int | None,
         window_label: str,
-    ) -> DeploymentGateVerdict | None:
-        ...
+    ) -> DeploymentGateVerdict | None: ...
 
     @abstractmethod
     def upsert_prod_upload_result(
@@ -482,20 +449,17 @@ class DeploymentRepository(ABC):
         sha256: str | None = None,
         client_kind: str | None = None,
         client_build: str | None = None,
-    ) -> DeploymentProdUploadResult:
-        ...
+    ) -> DeploymentProdUploadResult: ...
 
     @abstractmethod
     def list_prod_upload_results_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentProdUploadResult]:
-        ...
+    ) -> list[DeploymentProdUploadResult]: ...
 
     @abstractmethod
     def list_all_prod_upload_results(
         self, failed_only: bool = False
-    ) -> list[DeploymentProdUploadResult]:
-        ...
+    ) -> list[DeploymentProdUploadResult]: ...
 
     @abstractmethod
     def upsert_prod_upload_verification(
@@ -516,14 +480,12 @@ class DeploymentRepository(ABC):
         reason: str | None = None,
         age_at_check_secs: int | None = None,
         client_build: str | None = None,
-    ) -> DeploymentProdUploadVerification:
-        ...
+    ) -> DeploymentProdUploadVerification: ...
 
     @abstractmethod
     def list_prod_upload_verifications_for_deployment(
         self, deployment_id: int, client_hostname: str | None = None
-    ) -> list[DeploymentProdUploadVerification]:
-        ...
+    ) -> list[DeploymentProdUploadVerification]: ...
 
     @abstractmethod
     def list_unverified_uploads_for_host(
@@ -531,8 +493,7 @@ class DeploymentRepository(ABC):
         deployment_id: int,
         client_hostname: str,
         limit: int | None = None,
-    ) -> list[DeploymentProdUploadResult]:
-        ...
+    ) -> list[DeploymentProdUploadResult]: ...
 
     @abstractmethod
     def upsert_prod_download_result(
@@ -550,14 +511,12 @@ class DeploymentRepository(ABC):
         finished_at: datetime,
         reason: str | None = None,
         network_profile: str | None = None,
-    ) -> DeploymentProdDownloadResult:
-        ...
+    ) -> DeploymentProdDownloadResult: ...
 
     @abstractmethod
     def list_prod_download_results_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentProdDownloadResult]:
-        ...
+    ) -> list[DeploymentProdDownloadResult]: ...
 
     @abstractmethod
     def upsert_prod_canary_upload(
@@ -574,8 +533,7 @@ class DeploymentRepository(ABC):
         storage_cost_atto: Optional[Decimal] = None,
         gas_cost_wei: Optional[Decimal] = None,
         chunk_attempts_total: Optional[int] = None,
-    ) -> DeploymentProdCanaryUpload:
-        ...
+    ) -> DeploymentProdCanaryUpload: ...
 
     @abstractmethod
     def upsert_prod_canary_chunk(
@@ -583,8 +541,7 @@ class DeploymentRepository(ABC):
         canary_id,
         chunk_address: str,
         chunk_role: ProdCanaryChunkRole,
-    ) -> DeploymentProdCanaryChunk:
-        ...
+    ) -> DeploymentProdCanaryChunk: ...
 
     @abstractmethod
     def upsert_prod_canary_probe(
@@ -596,14 +553,12 @@ class DeploymentRepository(ABC):
         missing_chunk_address: str | None,
         terminal_peer_outcomes: dict | None,
         duration_ms: int | None,
-    ) -> DeploymentProdCanaryProbe:
-        ...
+    ) -> DeploymentProdCanaryProbe: ...
 
     @abstractmethod
     def list_prod_canary_uploads_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentProdCanaryUpload]:
-        ...
+    ) -> list[DeploymentProdCanaryUpload]: ...
 
     @abstractmethod
     def list_all_prod_canary_uploads(self) -> list[DeploymentProdCanaryUpload]:
@@ -620,14 +575,12 @@ class DeploymentRepository(ABC):
     @abstractmethod
     def list_prod_canary_probes_for_canary(
         self, canary_id
-    ) -> list[DeploymentProdCanaryProbe]:
-        ...
+    ) -> list[DeploymentProdCanaryProbe]: ...
 
     @abstractmethod
     def list_prod_canary_probes_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentProdCanaryProbe]:
-        ...
+    ) -> list[DeploymentProdCanaryProbe]: ...
 
     @abstractmethod
     def upsert_prod_canary_loss(
@@ -638,30 +591,25 @@ class DeploymentRepository(ABC):
         missing_chunk_address: str,
         hours_to_first_failure: float,
         hours_to_confirmed_loss: float,
-    ) -> DeploymentProdCanaryLoss:
-        ...
+    ) -> DeploymentProdCanaryLoss: ...
 
     @abstractmethod
-    def delete_prod_canary_loss(self, canary_id) -> None:
-        ...
+    def delete_prod_canary_loss(self, canary_id) -> None: ...
 
     @abstractmethod
     def list_prod_canary_loss_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentProdCanaryLoss]:
-        ...
+    ) -> list[DeploymentProdCanaryLoss]: ...
 
     @abstractmethod
     def replace_prod_canary_unavailability(
         self, canary_id, episodes: list[dict]
-    ) -> None:
-        ...
+    ) -> None: ...
 
     @abstractmethod
     def list_prod_canary_unavailability_for_deployment(
         self, deployment_id: int
-    ) -> list[DeploymentProdCanaryUnavailability]:
-        ...
+    ) -> list[DeploymentProdCanaryUnavailability]: ...
 
     @abstractmethod
     def deployment_ids_with_results(self) -> set[int]:
@@ -735,9 +683,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
 
     def list_all(self) -> list[Deployment]:
         return (
-            self.session.query(Deployment)
-            .order_by(Deployment.created_at.desc())
-            .all()
+            self.session.query(Deployment).order_by(Deployment.created_at.desc()).all()
         )
 
     def list_active(self) -> list[Deployment]:
@@ -753,9 +699,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .all()
         )
 
-    def update_status(
-        self, deployment_id: int, status: DeploymentStatus
-    ) -> Deployment:
+    def update_status(self, deployment_id: int, status: DeploymentStatus) -> Deployment:
         deployment = self.session.get(Deployment, deployment_id)
         if deployment is None:
             raise ValueError(f"Deployment {deployment_id} not found")
@@ -764,9 +708,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         self.session.commit()
         return deployment
 
-    def merge_deploy_args(
-        self, deployment_id: int, updates: dict
-    ) -> Deployment:
+    def merge_deploy_args(self, deployment_id: int, updates: dict) -> Deployment:
         deployment = self.session.get(Deployment, deployment_id)
         if deployment is None:
             raise ValueError(f"Deployment {deployment_id} not found")
@@ -1235,9 +1177,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .one_or_none()
         )
         if existing is None:
-            raise ValueError(
-                f"No host result recorded for deployment {deployment_id}"
-            )
+            raise ValueError(f"No host result recorded for deployment {deployment_id}")
         existing.summary = summary
         existing.recorded_at = datetime.now(timezone.utc)
         self.session.commit()
@@ -1456,9 +1396,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             func.count(DeploymentHostMetricBucket.id).label("rows"),
             func.min(DeploymentHostMetricBucket.bucket_start).label("first_bucket"),
             func.max(DeploymentHostMetricBucket.bucket_start).label("last_bucket"),
-        ).join(
-            Deployment, Deployment.id == DeploymentHostMetricBucket.deployment_id
-        )
+        ).join(Deployment, Deployment.id == DeploymentHostMetricBucket.deployment_id)
         if cutoff is not None:
             query = query.where(DeploymentHostMetricBucket.bucket_start < cutoff)
         query = query.group_by(
@@ -1618,9 +1556,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             if row.bucket_start > entry["last_bucket"]:
                 entry["last_bucket"] = row.bucket_start
                 entry["last"] = float(row.avg) if row.avg is not None else None
-        return [grouped[key] for key in sorted(grouped, key=lambda k: tuple(
-            "" if part is None else part for part in k
-        ))]
+        return [
+            grouped[key]
+            for key in sorted(
+                grouped, key=lambda k: tuple("" if part is None else part for part in k)
+            )
+        ]
 
     def upsert_derived_metric(
         self,
@@ -1677,9 +1618,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             DeploymentDerivedMetric.deployment_id == deployment_id
         )
         if window_label is not None:
-            query = query.where(
-                DeploymentDerivedMetric.window_label == window_label
-            )
+            query = query.where(DeploymentDerivedMetric.window_label == window_label)
         query = query.order_by(
             DeploymentDerivedMetric.window_label,
             DeploymentDerivedMetric.metric,
@@ -1762,9 +1701,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             DeploymentLogEventCount.deployment_id == deployment_id
         )
         if window_label is not None:
-            query = query.where(
-                DeploymentLogEventCount.window_label == window_label
-            )
+            query = query.where(DeploymentLogEventCount.window_label == window_label)
         query = query.order_by(
             DeploymentLogEventCount.window_label,
             DeploymentLogEventCount.event_group,
@@ -1815,13 +1752,10 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .where(DeploymentGateVerdict.window_label == window_label)
         )
         if baseline_deployment_id is None:
-            query = query.where(
-                DeploymentGateVerdict.baseline_deployment_id.is_(None)
-            )
+            query = query.where(DeploymentGateVerdict.baseline_deployment_id.is_(None))
         else:
             query = query.where(
-                DeploymentGateVerdict.baseline_deployment_id
-                == baseline_deployment_id
+                DeploymentGateVerdict.baseline_deployment_id == baseline_deployment_id
             )
         existing = self.session.execute(query).scalar_one_or_none()
 
@@ -1866,13 +1800,10 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .where(DeploymentGateVerdict.window_label == window_label)
         )
         if baseline_deployment_id is None:
-            query = query.where(
-                DeploymentGateVerdict.baseline_deployment_id.is_(None)
-            )
+            query = query.where(DeploymentGateVerdict.baseline_deployment_id.is_(None))
         else:
             query = query.where(
-                DeploymentGateVerdict.baseline_deployment_id
-                == baseline_deployment_id
+                DeploymentGateVerdict.baseline_deployment_id == baseline_deployment_id
             )
         return self.session.execute(query).scalar_one_or_none()
 
@@ -2153,9 +2084,7 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .filter(
                 DeploymentProdUploadVerification.deployment_id == deployment_id,
                 DeploymentProdUploadVerification.client_hostname == client_hostname,
-                DeploymentProdUploadVerification.status.in_(
-                    TERMINAL_VERIFY_STATUSES
-                ),
+                DeploymentProdUploadVerification.status.in_(TERMINAL_VERIFY_STATUSES),
             )
             .scalar_subquery()
         )
@@ -2519,25 +2448,19 @@ class MigrationRepository(ABC):
         target_server_type: str,
         target_volume_size_gb: int,
         node_count_per_vm: int = 15,
-    ) -> Migration:
-        ...
+    ) -> Migration: ...
 
     @abstractmethod
-    def get_migration(self, migration_id: int) -> Migration | None:
-        ...
+    def get_migration(self, migration_id: int) -> Migration | None: ...
 
     @abstractmethod
-    def get_migration_by_name(self, name: str) -> Migration | None:
-        ...
+    def get_migration_by_name(self, name: str) -> Migration | None: ...
 
     @abstractmethod
-    def list_migrations(self) -> list[Migration]:
-        ...
+    def list_migrations(self) -> list[Migration]: ...
 
     @abstractmethod
-    def add_vms(
-        self, migration_id: int, vm_records: list[dict]
-    ) -> list[MigrationVm]:
+    def add_vms(self, migration_id: int, vm_records: list[dict]) -> list[MigrationVm]:
         """Append MigrationVm rows to a migration. Each record dict supplies
         the source_* columns; target_* columns stay null until infra runs."""
         ...
@@ -2548,8 +2471,7 @@ class MigrationRepository(ABC):
         migration_id: int,
         *,
         status: MigrationVmStatus | None = None,
-    ) -> list[MigrationVm]:
-        ...
+    ) -> list[MigrationVm]: ...
 
     @abstractmethod
     def update_vm(self, vm_id: int, **fields) -> MigrationVm:
@@ -2560,24 +2482,20 @@ class MigrationRepository(ABC):
     @abstractmethod
     def update_migration_status(
         self, migration_id: int, status: MigrationStatus
-    ) -> Migration:
-        ...
+    ) -> Migration: ...
 
     @abstractmethod
     def set_target_locations(
         self, migration_id: int, locations: dict[str, int]
-    ) -> Migration:
-        ...
+    ) -> Migration: ...
 
     @abstractmethod
     def set_soak_completed(
         self, migration_id: int, completed_at: datetime
-    ) -> Migration:
-        ...
+    ) -> Migration: ...
 
     @abstractmethod
-    def delete_migration(self, migration_id: int) -> None:
-        ...
+    def delete_migration(self, migration_id: int) -> None: ...
 
 
 class SqlAlchemyMigrationRepository(MigrationRepository):
@@ -2615,21 +2533,13 @@ class SqlAlchemyMigrationRepository(MigrationRepository):
 
     def get_migration_by_name(self, name: str) -> Migration | None:
         return (
-            self.session.query(Migration)
-            .filter(Migration.name == name)
-            .one_or_none()
+            self.session.query(Migration).filter(Migration.name == name).one_or_none()
         )
 
     def list_migrations(self) -> list[Migration]:
-        return (
-            self.session.query(Migration)
-            .order_by(Migration.created_at.desc())
-            .all()
-        )
+        return self.session.query(Migration).order_by(Migration.created_at.desc()).all()
 
-    def add_vms(
-        self, migration_id: int, vm_records: list[dict]
-    ) -> list[MigrationVm]:
+    def add_vms(self, migration_id: int, vm_records: list[dict]) -> list[MigrationVm]:
         migration = self.session.get(Migration, migration_id)
         if migration is None:
             raise ValueError(f"Migration {migration_id} not found")
@@ -2651,9 +2561,8 @@ class SqlAlchemyMigrationRepository(MigrationRepository):
         *,
         status: MigrationVmStatus | None = None,
     ) -> list[MigrationVm]:
-        query = (
-            self.session.query(MigrationVm)
-            .filter(MigrationVm.migration_id == migration_id)
+        query = self.session.query(MigrationVm).filter(
+            MigrationVm.migration_id == migration_id
         )
         if status is not None:
             query = query.filter(MigrationVm.status == status)
@@ -2711,7 +2620,6 @@ class SqlAlchemyMigrationRepository(MigrationRepository):
         self.session.commit()
 
 
-
 class ReleaseCandidateRepository(ABC):
     @abstractmethod
     def create(
@@ -2721,8 +2629,7 @@ class ReleaseCandidateRepository(ABC):
         binary_version: str,
         rc_branch: str,
         notes: Optional[str] = None,
-    ) -> ReleaseCandidate:
-        ...
+    ) -> ReleaseCandidate: ...
 
     @abstractmethod
     def add_crate(
@@ -2737,8 +2644,7 @@ class ReleaseCandidateRepository(ABC):
         since_tag: Optional[str] = None,
         since_sha: Optional[str] = None,
         head_sha: Optional[str] = None,
-    ) -> ReleaseCandidateCrate:
-        ...
+    ) -> ReleaseCandidateCrate: ...
 
     @abstractmethod
     def add_prs(
@@ -2750,20 +2656,17 @@ class ReleaseCandidateRepository(ABC):
         ...
 
     @abstractmethod
-    def get(self, release_candidate_id: int) -> Optional[ReleaseCandidate]:
-        ...
+    def get(self, release_candidate_id: int) -> Optional[ReleaseCandidate]: ...
 
     @abstractmethod
     def get_by_binary_version(
         self, binary_target: str, binary_version: str
-    ) -> Optional[ReleaseCandidate]:
-        ...
+    ) -> Optional[ReleaseCandidate]: ...
 
     @abstractmethod
     def get_crate(
         self, release_candidate_id: int, crate_name: str
-    ) -> Optional[ReleaseCandidateCrate]:
-        ...
+    ) -> Optional[ReleaseCandidateCrate]: ...
 
     @abstractmethod
     def list(
@@ -2771,12 +2674,10 @@ class ReleaseCandidateRepository(ABC):
         *,
         binary_target: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> list[ReleaseCandidate]:
-        ...
+    ) -> list[ReleaseCandidate]: ...
 
     @abstractmethod
-    def delete(self, release_candidate_id: int) -> None:
-        ...
+    def delete(self, release_candidate_id: int) -> None: ...
 
 
 class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
@@ -2816,9 +2717,7 @@ class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
     ) -> ReleaseCandidateCrate:
         rc = self.session.get(ReleaseCandidate, release_candidate_id)
         if rc is None:
-            raise ValueError(
-                f"ReleaseCandidate {release_candidate_id} not found"
-            )
+            raise ValueError(f"ReleaseCandidate {release_candidate_id} not found")
         crate = ReleaseCandidateCrate(
             release_candidate_id=release_candidate_id,
             crate_name=crate_name,
@@ -2837,9 +2736,7 @@ class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
     def add_prs(
         self, release_candidate_crate_id: int, prs: list[dict]
     ) -> list[ReleaseCandidatePR]:
-        crate = self.session.get(
-            ReleaseCandidateCrate, release_candidate_crate_id
-        )
+        crate = self.session.get(ReleaseCandidateCrate, release_candidate_crate_id)
         if crate is None:
             raise ValueError(
                 f"ReleaseCandidateCrate {release_candidate_crate_id} not found"
@@ -2891,8 +2788,7 @@ class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
         return (
             self.session.query(ReleaseCandidateCrate)
             .filter(
-                ReleaseCandidateCrate.release_candidate_id
-                == release_candidate_id,
+                ReleaseCandidateCrate.release_candidate_id == release_candidate_id,
                 ReleaseCandidateCrate.crate_name == crate_name,
             )
             .one_or_none()
@@ -2915,9 +2811,7 @@ class SqlAlchemyReleaseCandidateRepository(ReleaseCandidateRepository):
     def delete(self, release_candidate_id: int) -> None:
         rc = self.session.get(ReleaseCandidate, release_candidate_id)
         if rc is None:
-            raise ValueError(
-                f"ReleaseCandidate {release_candidate_id} not found"
-            )
+            raise ValueError(f"ReleaseCandidate {release_candidate_id} not found")
         self.session.delete(rc)
         self.session.commit()
 
@@ -3035,9 +2929,7 @@ class ReleaseRepository(ABC):
         ...
 
     @abstractmethod
-    def mark_rolled_past(
-        self, release_id: int, *, reason: str
-    ) -> Release:
+    def mark_rolled_past(self, release_id: int, *, reason: str) -> Release:
         """Record that the beta channel moved on without promoting this release.
 
         ``reason`` is required — a rolled-past row whose reason is unknown
@@ -3055,12 +2947,10 @@ class ReleaseRepository(ABC):
         ...
 
     @abstractmethod
-    def get(self, release_id: int) -> Optional[Release]:
-        ...
+    def get(self, release_id: int) -> Optional[Release]: ...
 
     @abstractmethod
-    def get_by_version(self, binary_target: str, version: str) -> Optional[Release]:
-        ...
+    def get_by_version(self, binary_target: str, version: str) -> Optional[Release]: ...
 
     @abstractmethod
     def list(
@@ -3069,19 +2959,15 @@ class ReleaseRepository(ABC):
         binary_target: Optional[str] = None,
         outcome: Optional[ReleaseOutcome] = None,
         limit: Optional[int] = None,
-    ) -> list[Release]:
-        ...
+    ) -> list[Release]: ...
 
     @abstractmethod
-    def current(
-        self, *, binary_target: Optional[str] = None
-    ) -> "list[ChannelState]":
+    def current(self, *, binary_target: Optional[str] = None) -> "list[ChannelState]":
         """Current stable + beta (+ rolled-past since that stable) per target."""
         ...
 
     @abstractmethod
-    def delete(self, release_id: int) -> None:
-        ...
+    def delete(self, release_id: int) -> None: ...
 
 
 class SqlAlchemyReleaseRepository(ReleaseRepository):
@@ -3217,9 +3103,7 @@ class SqlAlchemyReleaseRepository(ReleaseRepository):
             )
 
         release.outcome = ReleaseOutcome.ROLLED_PAST
-        release.notes = (
-            f"{release.notes}\n{reason}" if release.notes else reason
-        )
+        release.notes = f"{release.notes}\n{reason}" if release.notes else reason
         self.session.commit()
         return release
 
@@ -3257,9 +3141,7 @@ class SqlAlchemyReleaseRepository(ReleaseRepository):
     def get(self, release_id: int) -> Optional[Release]:
         return self.session.get(Release, release_id)
 
-    def get_by_version(
-        self, binary_target: str, version: str
-    ) -> Optional[Release]:
+    def get_by_version(self, binary_target: str, version: str) -> Optional[Release]:
         return (
             self.session.query(Release)
             .filter(
@@ -3286,14 +3168,10 @@ class SqlAlchemyReleaseRepository(ReleaseRepository):
             query = query.limit(limit)
         return query.all()
 
-    def current(
-        self, *, binary_target: Optional[str] = None
-    ) -> "list[ChannelState]":
+    def current(self, *, binary_target: Optional[str] = None) -> "list[ChannelState]":
         targets_query = self.session.query(Release.binary_target).distinct()
         if binary_target is not None:
-            targets_query = targets_query.filter(
-                Release.binary_target == binary_target
-            )
+            targets_query = targets_query.filter(Release.binary_target == binary_target)
         targets = sorted(row[0] for row in targets_query.all())
 
         states: list[ChannelState] = []
@@ -3321,9 +3199,7 @@ class SqlAlchemyReleaseRepository(ReleaseRepository):
                 Release.outcome == ReleaseOutcome.ROLLED_PAST,
             )
             if stable is not None and stable.promoted_at is not None:
-                rolled = rolled.filter(
-                    Release.shipped_to_beta_at > stable.promoted_at
-                )
+                rolled = rolled.filter(Release.shipped_to_beta_at > stable.promoted_at)
             rolled_past = rolled.order_by(
                 Release.shipped_to_beta_at.asc(), Release.id.asc()
             ).all()
@@ -3376,8 +3252,7 @@ class ProdFleetRepository(ABC):
         ...
 
     @abstractmethod
-    def get_disk_survey(self, survey_id: int) -> ProdDiskSurvey | None:
-        ...
+    def get_disk_survey(self, survey_id: int) -> ProdDiskSurvey | None: ...
 
     @abstractmethod
     def disk_survey_host_data_bytes(self, survey_id: int) -> dict[str, int]:
@@ -3406,8 +3281,7 @@ class ProdFleetRepository(ABC):
         occurred_at: datetime,
         size_bytes: int | None = None,
         note: str | None = None,
-    ) -> ProdServiceAudit:
-        ...
+    ) -> ProdServiceAudit: ...
 
     @abstractmethod
     def list_service_audit(
@@ -3575,6 +3449,7 @@ def locator_digest(locator: str) -> str:
     """
     return hashlib.sha256(locator.encode("utf-8")).hexdigest()
 
+
 class InsufficientPoolInventory(Exception):
     """Raised when the pool cannot satisfy a size request.
 
@@ -3655,17 +3530,13 @@ class ProdFilePoolRepository(ABC):
         ...
 
     @abstractmethod
-    def get_pool_file(self, file_id: int) -> ProdFilePool | None:
-        ...
+    def get_pool_file(self, file_id: int) -> ProdFilePool | None: ...
 
     @abstractmethod
-    def get_pool_file_by_locator(self, locator: str) -> ProdFilePool | None:
-        ...
+    def get_pool_file_by_locator(self, locator: str) -> ProdFilePool | None: ...
 
     @abstractmethod
-    def find_pool_file_by_digests(
-        self, digests: dict[str, str]
-    ) -> ProdFilePool | None:
+    def find_pool_file_by_digests(self, digests: dict[str, str]) -> ProdFilePool | None:
         """The first catalogued file sharing any (algorithm, value) supplied.
 
         Matching on *any* shared algorithm is the point: the Internet Archive
@@ -3680,8 +3551,7 @@ class ProdFilePoolRepository(ABC):
         ...
 
     @abstractmethod
-    def update_pool_file_size(self, file_id: int, size_bytes: int | None) -> None:
-        ...
+    def update_pool_file_size(self, file_id: int, size_bytes: int | None) -> None: ...
 
     @abstractmethod
     def set_pool_file_active(self, file_id: int, active: bool) -> None:
@@ -3710,8 +3580,7 @@ class ProdFilePoolRepository(ABC):
         exclude_partial: bool = False,
         min_size_bytes: int | None = None,
         max_size_bytes: int | None = None,
-    ) -> list[ProdFilePool]:
-        ...
+    ) -> list[ProdFilePool]: ...
 
     @abstractmethod
     def pool_stats(self) -> dict:
@@ -3722,7 +3591,6 @@ class ProdFilePoolRepository(ABC):
         meaningless without saying which pool it is in.
         """
         ...
-
 
     @abstractmethod
     def claim_pool_files(
@@ -4087,9 +3955,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         # (1) Which of these do we already have?
         existing_rows = (
             self.session.query(ProdFilePool)
-            .filter(
-                ProdFilePool.locator_sha256.in_([p["hash"] for p in prepared])
-            )
+            .filter(ProdFilePool.locator_sha256.in_([p["hash"] for p in prepared]))
             .all()
         )
         existing_by_hash = {row.locator_sha256: row for row in existing_rows}
@@ -4249,7 +4115,11 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
                 file_id = id_by_hash.get(locator_hash)
                 if file_id is None:
                     continue
-                resolved = id_by_hash.get(target, target) if isinstance(target, str) else target
+                resolved = (
+                    id_by_hash.get(target, target)
+                    if isinstance(target, str)
+                    else target
+                )
                 if resolved != file_id:
                     links.append({"row_id": file_id, "target": resolved})
             name_by_id = {row.id: row.name for row in created}
@@ -4269,9 +4139,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
                         for link in links
                     ],
                 )
-                link_report_ids = [
-                    (link["row_id"], link["target"]) for link in links
-                ]
+                link_report_ids = [(link["row_id"], link["target"]) for link in links]
                 link_report.extend(
                     (name_by_id.get(row_id, ""), target)
                     for row_id, target in link_report_ids
@@ -4308,9 +4176,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             .one_or_none()
         )
 
-    def find_pool_file_by_digests(
-        self, digests: dict[str, str]
-    ) -> ProdFilePool | None:
+    def find_pool_file_by_digests(self, digests: dict[str, str]) -> ProdFilePool | None:
         if not digests:
             return None
         clauses = [
@@ -4449,7 +4315,9 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
             # only be applied afterwards — 2.11s to return ten rows from a 200k
             # catalogue. Any of the given tags matches (OR), which is what the
             # Python version did.
-            wanted = [str(value).strip().lower() for value in tags if str(value).strip()]
+            wanted = [
+                str(value).strip().lower() for value in tags if str(value).strip()
+            ]
             if wanted:
                 query = query.filter(
                     select(ProdFilePoolTag.id)
@@ -4863,9 +4731,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         if not file_ids:
             return {}
         files = (
-            self.session.query(ProdFilePool)
-            .filter(ProdFilePool.id.in_(file_ids))
-            .all()
+            self.session.query(ProdFilePool).filter(ProdFilePool.id.in_(file_ids)).all()
         )
         canonical_by_file = {f.id: (f.duplicate_of or f.id) for f in files}
         canonical_ids = set(canonical_by_file.values())
@@ -4888,9 +4754,7 @@ class SqlAlchemyProdFilePoolRepository(ProdFilePoolRepository):
         if not file_ids:
             return set()
         files = (
-            self.session.query(ProdFilePool)
-            .filter(ProdFilePool.id.in_(file_ids))
-            .all()
+            self.session.query(ProdFilePool).filter(ProdFilePool.id.in_(file_ids)).all()
         )
         canonical_by_file = {f.id: (f.duplicate_of or f.id) for f in files}
         partial_canonicals = {

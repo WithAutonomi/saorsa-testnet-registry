@@ -57,9 +57,7 @@ class ClientTelegrafProvisioner:
         if not tail_globs:
             raise ValueError("tail_globs must be non-empty")
         if metric_buffer_limit < 1:
-            raise ValueError(
-                f"metric_buffer_limit must be >= 1 (got {metric_buffer_limit})"
-            )
+            raise ValueError(f"metric_buffer_limit must be >= 1 (got {metric_buffer_limit})")
         self.host_ips = host_ips
         self.ssh_key_path = ssh_key_path
         self.testnet_name = testnet_name
@@ -82,8 +80,7 @@ class ClientTelegrafProvisioner:
     def execute(self) -> None:
         """Install and configure the client Telegraf forwarder on all hosts."""
         hosts_data = [
-            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path})
-            for ip in self.host_ips
+            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
         config = Config()
@@ -92,9 +89,7 @@ class ClientTelegrafProvisioner:
             config.USE_SUDO_PASSWORD = False
         state = State(inventory=inventory, config=config)
 
-        self.console.print(
-            f"Connecting to {len(self.host_ips)} {self.role} host(s)..."
-        )
+        self.console.print(f"Connecting to {len(self.host_ips)} {self.role} host(s)...")
         connect_all(state)
 
         try:
@@ -147,9 +142,7 @@ class ClientTelegrafProvisioner:
                 state,
                 server.shell,
                 name="Write client Telegraf systemd unit",
-                commands=[
-                    f"cat > {TELEGRAF_UNIT_PATH} << 'UNIT_EOF'\n{unit_content}UNIT_EOF"
-                ],
+                commands=[f"cat > {TELEGRAF_UNIT_PATH} << 'UNIT_EOF'\n{unit_content}UNIT_EOF"],
             )
 
             add_op(
@@ -190,9 +183,7 @@ class ClientTelegrafProvisioner:
         if failed:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError(
-                f"{len(failed)} host(s) failed client Telegraf provisioning"
-            )
+            raise RuntimeError(f"{len(failed)} host(s) failed client Telegraf provisioning")
 
     def _build_env_file(self) -> str:
         testnet_name_lower = self.testnet_name.lower()
@@ -209,7 +200,8 @@ class ClientTelegrafProvisioner:
     def _build_telegraf_config(self) -> str:
         from_beginning = "true" if self.from_beginning else "false"
         files_list = ", ".join(f'"{g}"' for g in self.tail_globs)
-        return """\
+        return (
+            """\
 ###############################################################################
 #                            GLOBAL TAGS                                      #
 ###############################################################################
@@ -303,12 +295,10 @@ def apply(metric):
 
   manage_template = false
   overwrite_template = false
-""".replace("__FROM_BEGINNING__", from_beginning).replace(
-            "__FILES__", files_list
-        ).replace(
-            "__METRIC_BUFFER_LIMIT__", str(self.metric_buffer_limit)
-        ).replace(
-            "__MAX_UNDELIVERED_LINES__", str(self.max_undelivered_lines)
+""".replace("__FROM_BEGINNING__", from_beginning)
+            .replace("__FILES__", files_list)
+            .replace("__METRIC_BUFFER_LIMIT__", str(self.metric_buffer_limit))
+            .replace("__MAX_UNDELIVERED_LINES__", str(self.max_undelivered_lines))
         )
 
     def _build_unit_file(self) -> str:

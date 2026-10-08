@@ -96,9 +96,7 @@ def test_infra_contabo_creates_instances_and_records_vms():
     assert first.kwargs["target_volume_id"] is None
     assert first.kwargs["status"] == MigrationVmStatus.INFRA_PROVISIONED
 
-    repo.update_migration_status.assert_called_with(
-        42, MigrationStatus.INFRA_PROVISIONED
-    )
+    repo.update_migration_status.assert_called_with(42, MigrationStatus.INFRA_PROVISIONED)
 
 
 def test_infra_contabo_locations_count_mismatch_exits():
@@ -124,8 +122,11 @@ def test_wait_for_ssh_ready_all_ready_returns_empty():
         patch.object(mod.time, "sleep"),
     ):
         not_ready = mod._wait_for_ssh_ready(
-            ["1.1.1.1", "2.2.2.2"], MagicMock(),
-            required_consecutive=2, interval=0, timeout=60,
+            ["1.1.1.1", "2.2.2.2"],
+            MagicMock(),
+            required_consecutive=2,
+            interval=0,
+            timeout=60,
         )
     assert not_ready == []
 
@@ -144,8 +145,11 @@ def test_wait_for_ssh_ready_reports_unready_host():
         patch.object(mod.time, "monotonic", side_effect=lambda: next(clock, 999)),
     ):
         not_ready = mod._wait_for_ssh_ready(
-            ["1.1.1.1", "2.2.2.2"], MagicMock(),
-            required_consecutive=1, interval=0, timeout=30,
+            ["1.1.1.1", "2.2.2.2"],
+            MagicMock(),
+            required_consecutive=1,
+            interval=0,
+            timeout=30,
         )
     assert not_ready == ["2.2.2.2"]
 
@@ -226,8 +230,13 @@ def test_plan_contabo_allows_zero_volume():
     repo.get_migration_by_name.return_value = None
     repo.create_migration.return_value = SimpleNamespace(id=1)
     inv_vm = SimpleNamespace(
-        name="ant-prod-01-vl-ord-1", provider="vultr", provider_id="v1",
-        region="ord", ip="1.1.1.1", ssh_user="root", ssh_key="~/.ssh/ant_deploy",
+        name="ant-prod-01-vl-ord-1",
+        provider="vultr",
+        provider_id="v1",
+        region="ord",
+        ip="1.1.1.1",
+        ssh_user="root",
+        ssh_key="~/.ssh/ant_deploy",
         services=[1, 2, 3],
     )
     with (

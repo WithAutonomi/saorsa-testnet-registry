@@ -78,9 +78,7 @@ class TestShip:
 
     def test_a_respin_does_not_clear_fields_it_does_not_carry(self, repo):
         _ship(repo)
-        again = repo.ship(
-            binary_target="ant-node", version="0.17.1", rc_branch="rc-2026.8.2"
-        )
+        again = repo.ship(binary_target="ant-node", version="0.17.1", rc_branch="rc-2026.8.2")
         # The beta tag was recorded by the first ship and not re-supplied.
         assert again.beta_tag == "v0.17.1-beta.1"
 
@@ -258,9 +256,7 @@ class TestManifest:
     def test_rejects_an_incomplete_crate(self, repo):
         release = _ship(repo)
         with pytest.raises(ValueError, match="repo_slug"):
-            repo.set_crates(
-                release.id, [{"crate_name": "evmlib", "version": "0.9.1"}]
-            )
+            repo.set_crates(release.id, [{"crate_name": "evmlib", "version": "0.9.1"}])
 
     def test_deleting_a_release_takes_its_manifest(self, repo, session):
         release = _ship(repo)

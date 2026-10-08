@@ -37,10 +37,7 @@ class TestConfigAppend:
         host granted CAP_SYS_PTRACE.
         """
         config = build_telegraf_metrics_config()
-        code = [
-            line for line in config.splitlines()
-            if not line.strip().startswith("#")
-        ]
+        code = [line for line in config.splitlines() if not line.strip().startswith("#")]
         assert not any("mmap" in line for line in code)
         assert config.count('properties = ["cpu", "memory", "limits"]') == 4
 
@@ -60,8 +57,7 @@ class TestConfigAppend:
         Native procstat gets the same fields for 1.15%, so no configuration
         this builder produces should contain an exec input.
         """
-        for kwargs in ({}, {"include_node_memory": True},
-                       {"include_client_services": True}):
+        for kwargs in ({}, {"include_node_memory": True}, {"include_client_services": True}):
             assert "inputs.exec" not in build_telegraf_metrics_config(**kwargs)
 
     def test_cheap_tier_keeps_its_ten_second_resolution(self):
@@ -76,14 +72,11 @@ class TestConfigAppend:
 
     def test_mmap_tier_covers_the_same_units_as_the_base(self):
         config = build_telegraf_metrics_config(include_node_memory=True)
-        for glob in ("ant-node-*", "ant-bootstrap-*", "ant-bootstrap",
-                     "ant-genesis-node"):
+        for glob in ("ant-node-*", "ant-bootstrap-*", "ant-bootstrap", "ant-genesis-node"):
             assert config.count(f'cgroup = "system.slice/{glob}.service"') == 2
 
     def test_client_and_node_memory_appends_are_independent(self):
-        both = build_telegraf_metrics_config(
-            include_client_services=True, include_node_memory=True
-        )
+        both = build_telegraf_metrics_config(include_client_services=True, include_node_memory=True)
         assert 'properties = ["mmap"]' in both
         assert 'metric_source = "ant-client"' in both
 
@@ -147,9 +140,7 @@ class TestUnitCapabilities:
 
     def test_enabled_unit_grants_ptrace(self):
         unit = self._unit("WAN_NODE", True)
-        assert (
-            "AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE" in unit
-        )
+        assert "AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE" in unit
 
     def test_disabled_unit_keeps_the_original_capability_line(self):
         """Every host that does not opt in keeps the narrower capability set."""
@@ -182,9 +173,7 @@ def _memory_points(fields, *, host="node-1", service="ant-node-3", count=3):
 class TestRollupCapture:
     def test_composition_reaches_the_rollup_per_service(self):
         points = {
-            "ant_node_memory": _memory_points(
-                {"vm_rss": 4096, "rss_anon": 3072, "rss_file": 1024}
-            )
+            "ant_node_memory": _memory_points({"vm_rss": 4096, "rss_anon": 3072, "rss_file": 1024})
         }
         entries = aggregate_host_metrics(points)
         assert len(entries) == 1
@@ -200,19 +189,13 @@ class TestRollupCapture:
         collected and happened to be empty.
         """
         points = {"ant_node_memory": _memory_points({"vm_rss": 1})}
-        composition = aggregate_host_metrics(points)[0][
-            "memory_composition_by_service"
-        ]
+        composition = aggregate_host_metrics(points)[0]["memory_composition_by_service"]
         assert set(composition["ant-node-3"]) == {"vm_rss"}
 
     def test_unknown_field_is_ignored(self):
         """An allow-list, so a newer collector's field is not stored unread."""
-        points = {
-            "ant_node_memory": _memory_points({"vm_rss": 1, "some_new_field": 9})
-        }
-        composition = aggregate_host_metrics(points)[0][
-            "memory_composition_by_service"
-        ]
+        points = {"ant_node_memory": _memory_points({"vm_rss": 1, "some_new_field": 9})}
+        composition = aggregate_host_metrics(points)[0]["memory_composition_by_service"]
         assert set(composition["ant-node-3"]) == {"vm_rss"}
 
     def test_absent_measurement_yields_an_empty_dict(self):
@@ -245,9 +228,7 @@ class TestRollupCapture:
         }
         entry = aggregate_host_metrics(points)[0]
         assert entry["rss_by_service"]["ant-node-3"]["avg"] == 100
-        assert entry["memory_composition_by_service"]["ant-node-3"]["vm_rss"][
-            "avg"
-        ] == 4096
+        assert entry["memory_composition_by_service"]["ant-node-3"]["vm_rss"]["avg"] == 4096
 
 
 class TestBucketExclusion:
@@ -258,14 +239,8 @@ class TestBucketExclusion:
         990-node staging run, against a 10 GB disk already 76% bucket rows.
         Twenty-one of them would be ~5x the entire per-run cost, weekly.
         """
-        points = {
-            "ant_node_memory": _memory_points(
-                {"vm_rss": 4096, "rollup_pss": 2048}
-            )
-        }
-        rows = bucket_host_metric_samples(
-            normalise_host_metric_points(points), bucket_secs=300
-        )
+        points = {"ant_node_memory": _memory_points({"vm_rss": 4096, "rollup_pss": 2048})}
+        rows = bucket_host_metric_samples(normalise_host_metric_points(points), bucket_secs=300)
         assert rows == []
 
     def test_other_metrics_still_bucket_normally(self):
@@ -324,7 +299,8 @@ class TestSkipLogsBackendResolution:
         from saorsa_deploy.cmd import provision_telegraf_combined as mod
 
         monkeypatch.setattr(
-            mod, "load_elastic_state",
+            mod,
+            "load_elastic_state",
             lambda name: {
                 "elasticsearch_url": "http://es:9200",
                 "elasticsearch_username": "u",
@@ -339,7 +315,8 @@ class TestSkipLogsBackendResolution:
         from saorsa_deploy.cmd import provision_telegraf_combined as mod
 
         monkeypatch.setattr(
-            mod, "load_elastic_state",
+            mod,
+            "load_elastic_state",
             lambda name: {
                 "elasticsearch_url": "http://es:9200",
                 "elasticsearch_username": "u",
@@ -354,9 +331,7 @@ class TestSkipLogsBackendResolution:
         """The whole point: `--name` survives, so `testnet_name` is unchanged."""
         from saorsa_deploy.cmd import provision_telegraf_combined as mod
 
-        monkeypatch.setattr(
-            mod, "load_elastic_state", lambda name: {}
-        )
+        monkeypatch.setattr(mod, "load_elastic_state", lambda name: {})
         args = self._args(skip_logs=True)
         mod._resolve_backends(args, _Console())
         assert args.name == "ant-prod-01"
@@ -428,14 +403,14 @@ class TestCollectorTimerUnits:
 
     def test_default_interval_is_the_coarse_fleet_cadence(self):
         body = "\n".join(
-            str(c) for n, c in self._ops()
-            if n == "Write ant-node memory collector systemd units"
+            str(c) for n, c in self._ops() if n == "Write ant-node memory collector systemd units"
         )
         assert "OnUnitActiveSec=300s" in body
 
     def test_investigation_interval_is_configurable(self):
         body = "\n".join(
-            str(c) for n, c in self._ops(node_memory_interval_secs=60)
+            str(c)
+            for n, c in self._ops(node_memory_interval_secs=60)
             if n == "Write ant-node memory collector systemd units"
         )
         assert "OnUnitActiveSec=60s" in body
@@ -443,15 +418,13 @@ class TestCollectorTimerUnits:
     def test_timer_is_jittered(self):
         """Without jitter every node's page-table walk would land together."""
         body = "\n".join(
-            str(c) for n, c in self._ops()
-            if n == "Write ant-node memory collector systemd units"
+            str(c) for n, c in self._ops() if n == "Write ant-node memory collector systemd units"
         )
         assert "RandomizedDelaySec=30s" in body
 
     def test_service_is_hardened_and_bounded(self):
         body = "\n".join(
-            str(c) for n, c in self._ops()
-            if n == "Write ant-node memory collector systemd units"
+            str(c) for n, c in self._ops() if n == "Write ant-node memory collector systemd units"
         )
         assert "NoNewPrivileges=yes" in body
         assert "ProtectSystem=strict" in body
@@ -464,9 +437,13 @@ class TestCollectorTimerUnits:
         mod.add_op = lambda state, op, name=None, commands=None, **_: recorded.append(name)
         try:
             TelegrafMetricsProvisioner(
-                host_ips=["10.0.0.1"], ssh_key_path="/dev/null",
-                influxdb_url="u", influxdb_token="t", influxdb_org="ant",
-                influxdb_bucket="b", host_role="WAN_NODE",
+                host_ips=["10.0.0.1"],
+                ssh_key_path="/dev/null",
+                influxdb_url="u",
+                influxdb_token="t",
+                influxdb_org="ant",
+                influxdb_bucket="b",
+                host_role="WAN_NODE",
                 collect_node_memory=False,
             ).add_ops(type("S", (), {})(), install=False)
         finally:

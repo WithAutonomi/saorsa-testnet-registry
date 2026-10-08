@@ -60,8 +60,7 @@ def cmd_destroy_clients(args):
         has_persisted_state = True
     except RuntimeError:
         console.print(
-            "[yellow]No client state in S3 — scanning for orphan client tfstate "
-            "files...[/yellow]"
+            "[yellow]No client state in S3 — scanning for orphan client tfstate files...[/yellow]"
         )
         clients = _recover_clients_from_tfstate(args.name, console)
 
@@ -97,13 +96,11 @@ def cmd_destroy_clients(args):
     # drain fails we abort, leaving the VMs and state intact so the operator
     # can fix the issue and retry.
     uploaders_with_wallet = [
-        c for c in clients
-        if is_upload(c.get("role", ROLE_UPLOAD)) and c.get("wallet_secret_key")
+        c for c in clients if is_upload(c.get("role", ROLE_UPLOAD)) and c.get("wallet_secret_key")
     ]
     if uploaders_with_wallet:
-        funding_secret_key = (
-            getattr(args, "wallet_secret_key", None)
-            or os.environ.get("ANT_DEPLOY_SECRET_KEY")
+        funding_secret_key = getattr(args, "wallet_secret_key", None) or os.environ.get(
+            "ANT_DEPLOY_SECRET_KEY"
         )
         if not funding_secret_key:
             console.print(
@@ -119,14 +116,10 @@ def cmd_destroy_clients(args):
         # blindly is what made the stop step fail with an auth error when the
         # VMs were provisioned with a non-default key.
         stop_ssh_key_path = (
-            getattr(args, "ssh_key_path", None)
-            or state_ssh_key_path
-            or "~/.ssh/id_rsa"
+            getattr(args, "ssh_key_path", None) or state_ssh_key_path or "~/.ssh/id_rsa"
         )
         if getattr(args, "skip_stop_services", False):
-            console.print(
-                "[dim]Skipping ant-uploader stop step (--skip-stop-services).[/dim]"
-            )
+            console.print("[dim]Skipping ant-uploader stop step (--skip-stop-services).[/dim]")
         else:
             _stop_uploader_services(
                 uploaders_with_wallet,
@@ -162,8 +155,7 @@ def cmd_destroy_clients(args):
         info = CLIENT_PROVIDERS[spec.get("provider") or "digitalocean"]
         tf_source = resources_dir / info.tf_dir
         workspace_dir = (
-            workspace_base
-            / f"{info.name}-client-{args.name}-{role}"
+            workspace_base / f"{info.name}-client-{args.name}-{role}"
             f"-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
@@ -232,9 +224,7 @@ def cmd_destroy_clients(args):
             shutil.rmtree(config.workspace_dir, ignore_errors=True)
 
     if failures:
-        console.print(
-            f"[bold red]{len(failures)} client VM(s) failed to destroy.[/bold red]"
-        )
+        console.print(f"[bold red]{len(failures)} client VM(s) failed to destroy.[/bold red]")
         sys.exit(1)
 
     # Clean up client state
@@ -254,9 +244,7 @@ def cmd_destroy_clients(args):
                 f"s3://.../saorsa-deploy/addresses/{args.name}/[/dim]"
             )
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to delete addresses prefix: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to delete addresses prefix: {e}[/yellow]")
 
     console.print()
     console.print(
@@ -283,9 +271,7 @@ def _stop_uploader_services(
     spending — precisely the race the stop exists to avoid.
     """
     with_units = [
-        (u["ip"], unit_for_role(u.get("role", ROLE_UPLOAD)))
-        for u in uploaders
-        if u.get("ip")
+        (u["ip"], unit_for_role(u.get("role", ROLE_UPLOAD))) for u in uploaders if u.get("ip")
     ]
     host_ips = [ip for ip, _ in with_units]
     if not host_ips:
@@ -296,9 +282,7 @@ def _stop_uploader_services(
         "VM(s) before draining...[/bold]"
     )
     clear_known_hosts(host_ips, console)
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": ssh_key_path}) for ip in host_ips]
     state = State(inventory=Inventory((hosts_data, {})), config=Config())
     try:
         connect_all(state)
@@ -320,8 +304,7 @@ def _stop_uploader_services(
         run_ops(state)
     except Exception as e:  # noqa: BLE001 — stopping is best-effort
         console.print(
-            f"[yellow]Warning: could not stop uploader service(s); draining "
-            f"anyway: {e}[/yellow]"
+            f"[yellow]Warning: could not stop uploader service(s); draining anyway: {e}[/yellow]"
         )
         return
     finally:
@@ -378,20 +361,15 @@ def _drain_uploader_wallets(
             # region both read "#1" against two different wallets. This is the
             # audit trail for money coming back, so it has to name the VM.
             console.print(
-                f"  {_wallet_label(client)} {addr}: "
-                f"{ant_units} ANT-units / {eth_wei} wei"
+                f"  {_wallet_label(client)} {addr}: {ant_units} ANT-units / {eth_wei} wei"
             )
             if ant_units == 0 and eth_wei == 0:
                 continue
             txs = drain_wallet(w3, secret, token_address, funding_address)
-            console.print(
-                f"    drained ant_tx={txs['ant_tx']} eth_tx={txs['eth_tx']}"
-            )
+            console.print(f"    drained ant_tx={txs['ant_tx']} eth_tx={txs['eth_tx']}")
         except Exception as e:
             console.print(f"    [red]drain failed: {e}[/red]")
-            failures.append(
-                (_wallet_label(client), addr, str(e), ant_units, eth_wei)
-            )
+            failures.append((_wallet_label(client), addr, str(e), ant_units, eth_wei))
     if failures:
         if skip_failures:
             abandoned_ant = sum(f[3] for f in failures)
@@ -406,8 +384,7 @@ def _drain_uploader_wallets(
                     f"{ant_units} ANT-units / {eth_wei} wei  ({err})"
                 )
             console.print(
-                f"[yellow]Total abandoned: {abandoned_ant} ANT-units / "
-                f"{abandoned_wei} wei[/yellow]"
+                f"[yellow]Total abandoned: {abandoned_ant} ANT-units / {abandoned_wei} wei[/yellow]"
             )
         else:
             console.print(
@@ -452,9 +429,7 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
             )
             parts = suffix.split("-")
             if role is None or not parts[-1].isdigit() or len(parts) < 3:
-                console.print(
-                    f"[yellow]Skipping unparseable tfstate key: {key}[/yellow]"
-                )
+                console.print(f"[yellow]Skipping unparseable tfstate key: {key}[/yellow]")
                 continue
             client_index = int(parts[-1])
             region = suffix[len(role) + 1 : -(len(parts[-1]) + 1)]
@@ -485,10 +460,6 @@ def _recover_clients_from_tfstate(name: str, console: Console) -> list[dict]:
                 entry["file_size_mb"] = 0
             recovered.append(entry)
 
-    recovered.sort(
-        key=lambda c: (c["provider"], c["role"], c["region"], c["client_index"])
-    )
-    console.print(
-        f"[dim]Recovered {len(recovered)} client(s) from tfstate.[/dim]"
-    )
+    recovered.sort(key=lambda c: (c["provider"], c["role"], c["region"], c["client_index"]))
+    console.print(f"[dim]Recovered {len(recovered)} client(s) from tfstate.[/dim]")
     return recovered

@@ -29,10 +29,7 @@ def cmd_clean_nodes(args):
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
 
-        console.print(
-            f"[bold]Cleaning {len(all_ips)} host(s) from "
-            f"{args.host_ips_file}...[/bold]"
-        )
+        console.print(f"[bold]Cleaning {len(all_ips)} host(s) from {args.host_ips_file}...[/bold]")
         clear_known_hosts(all_ips, console)
         try:
             NodeCleanProvisioner(
@@ -46,9 +43,7 @@ def cmd_clean_nodes(args):
             sys.exit(1)
 
     elif args.name:
-        console.print(
-            f"[bold]Loading deployment state for '{args.name}'...[/bold]"
-        )
+        console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
         try:
             state = load_deployment_state(args.name)
         except RuntimeError as e:
@@ -65,10 +60,7 @@ def cmd_clean_nodes(args):
                 )
                 sys.exit(1)
             all_ips = list(vm_ips[args.region])
-            console.print(
-                f"[bold]Cleaning {len(all_ips)} node host(s) in "
-                f"{args.region}...[/bold]"
-            )
+            console.print(f"[bold]Cleaning {len(all_ips)} node host(s) in {args.region}...[/bold]")
         else:
             all_ips: list[str] = []
             for region_key in sorted(vm_ips.keys()):
@@ -80,10 +72,7 @@ def cmd_clean_nodes(args):
             )
 
         if not all_ips:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                "No node IPs found in deployment state."
-            )
+            console.print("[bold red]Error:[/bold red] No node IPs found in deployment state.")
             sys.exit(1)
 
         clear_known_hosts(all_ips, console)
@@ -99,12 +88,9 @@ def cmd_clean_nodes(args):
             sys.exit(1)
     else:
         console.print(
-            "[bold red]Error:[/bold red] "
-            "Either --name or --host-ips-file must be provided."
+            "[bold red]Error:[/bold red] Either --name or --host-ips-file must be provided."
         )
         sys.exit(1)
 
     console.print()
-    console.print(
-        "[bold green]Node cleanup finished.[/bold green]"
-    )
+    console.print("[bold green]Node cleanup finished.[/bold green]")

@@ -118,7 +118,12 @@ def _arm_filter(to_version: str, arm: str) -> dict:
 
 
 def measure_arm(
-    es: EsClient, start: datetime, end: datetime, to_version: str, arm: str, services: int
+    es: EsClient,
+    start: datetime,
+    end: datetime,
+    to_version: str,
+    arm: str,
+    services: int,
 ) -> ArmRate:
     body = {
         "size": 0,

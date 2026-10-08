@@ -5,6 +5,7 @@ recalibrate them without a release. That only works if a malformed config fails
 loudly: a threshold silently defaulting to zero because of a typo would turn a
 gate into a rubber stamp while still printing PASS.
 """
+
 import copy
 
 import pytest
@@ -192,9 +193,7 @@ def test_shipped_config_makes_wasm_floors_advisory_and_relatives_count():
     assert config.wasm_relative_gates_advisory is False
 
 
-@pytest.mark.parametrize(
-    "key", ["wasm_floor_gates_advisory", "wasm_relative_gates_advisory"]
-)
+@pytest.mark.parametrize("key", ["wasm_floor_gates_advisory", "wasm_relative_gates_advisory"])
 def test_missing_wasm_advisory_key_is_rejected(raw, key):
     """Absent is an error, not a default.
 
@@ -208,9 +207,7 @@ def test_missing_wasm_advisory_key_is_rejected(raw, key):
         parse_gate_config(data, "test.yaml")
 
 
-@pytest.mark.parametrize(
-    "key", ["wasm_floor_gates_advisory", "wasm_relative_gates_advisory"]
-)
+@pytest.mark.parametrize("key", ["wasm_floor_gates_advisory", "wasm_relative_gates_advisory"])
 def test_non_boolean_wasm_advisory_is_rejected(raw, key):
     data = copy.deepcopy(raw)
     data[key] = "yes"

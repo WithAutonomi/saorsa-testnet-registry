@@ -40,9 +40,7 @@ def cmd_elastic_info(args):
         f"  [bold]Node index pattern:[/bold]   {es_index}",
     ]
     if es_client_index:
-        lines.append(
-            f"  [bold]Client index pattern:[/bold] {es_client_index}"
-        )
+        lines.append(f"  [bold]Client index pattern:[/bold] {es_client_index}")
 
     console.print(
         Panel(

@@ -124,12 +124,18 @@ class TestTheWorkQueue:
         """There is nothing to fetch for an upload that did not complete."""
         _upload(repo, deployment, "ok1")
         _upload(
-            repo, deployment, "bad1",
-            status=ProdUploadStatus.PARTIAL_UPLOAD, offset=1,
+            repo,
+            deployment,
+            "bad1",
+            status=ProdUploadStatus.PARTIAL_UPLOAD,
+            offset=1,
         )
         _upload(
-            repo, deployment, "bad2",
-            status=ProdUploadStatus.DOWNLOAD_FAILED, offset=2,
+            repo,
+            deployment,
+            "bad2",
+            status=ProdUploadStatus.DOWNLOAD_FAILED,
+            offset=2,
         )
         queued = repo.list_unverified_uploads_for_host(deployment.id, "ver-1")
         assert [u.address for u in queued] == ["ok1"]
@@ -144,10 +150,7 @@ class TestTheWorkQueue:
     def test_a_limit_bounds_a_cycle(self, repo, deployment):
         for index in range(5):
             _upload(repo, deployment, f"addr{index}", offset=index)
-        assert (
-            len(repo.list_unverified_uploads_for_host(deployment.id, "ver-1", limit=2))
-            == 2
-        )
+        assert len(repo.list_unverified_uploads_for_host(deployment.id, "ver-1", limit=2)) == 2
 
     def test_a_replaced_vm_with_the_same_hostname_resumes(self, repo, deployment):
         """The queue is server-side, so nothing is lost with the VM's disk."""
@@ -182,7 +185,10 @@ class TestRecordingAVerification:
 
     def test_a_mismatch_keeps_both_hashes_as_evidence(self, repo, deployment):
         row = _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DIGEST_MISMATCH,
             expected_sha256="a" * 64,
             actual_sha256="c" * 64,
@@ -190,9 +196,7 @@ class TestRecordingAVerification:
         assert row.expected_sha256 == "a" * 64
         assert row.actual_sha256 == "c" * 64
 
-    def test_a_mismatch_is_never_overwritten_by_a_later_success(
-        self, repo, deployment
-    ):
+    def test_a_mismatch_is_never_overwritten_by_a_later_success(self, repo, deployment):
         """Bytes that came back wrong once are a permanent fact.
 
         A later OK means the network healed, not that the mismatch never
@@ -200,7 +204,10 @@ class TestRecordingAVerification:
         the evidence must not be silently replaced.
         """
         _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DIGEST_MISMATCH,
             expected_sha256="a" * 64,
             actual_sha256="c" * 64,
@@ -213,7 +220,10 @@ class TestRecordingAVerification:
     def test_an_ordinary_failure_can_be_revised(self, repo, deployment):
         """Only a mismatch is sticky; a transient failure is not."""
         _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
         )
         _verify(repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK)
@@ -232,7 +242,10 @@ class TestFailuresAreRetried:
     def test_a_failed_check_is_requeued(self, repo, deployment):
         _upload(repo, deployment, "addr1")
         _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
         )
         queued = repo.list_unverified_uploads_for_host(deployment.id, "ver-1")
@@ -241,7 +254,10 @@ class TestFailuresAreRetried:
     def test_an_inconclusive_check_is_requeued(self, repo, deployment):
         _upload(repo, deployment, "addr1")
         _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.INCONCLUSIVE,
         )
         assert len(repo.list_unverified_uploads_for_host(deployment.id, "ver-1")) == 1
@@ -255,7 +271,10 @@ class TestFailuresAreRetried:
         """Re-fetching proves nothing once the bytes are known to be wrong."""
         _upload(repo, deployment, "addr1")
         _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DIGEST_MISMATCH,
         )
         assert repo.list_unverified_uploads_for_host(deployment.id, "ver-1") == []
@@ -263,7 +282,10 @@ class TestFailuresAreRetried:
     def test_a_recovery_leaves_the_queue(self, repo, deployment):
         _upload(repo, deployment, "addr1")
         _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
         )
         _verify(repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK)
@@ -280,7 +302,10 @@ class TestAttemptTracking:
     def test_each_retry_increments(self, repo, deployment):
         for _ in range(4):
             row = _verify(
-                repo, deployment, "addr1", "ver-1",
+                repo,
+                deployment,
+                "addr1",
+                "ver-1",
                 status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
             )
         assert row.attempts == 4
@@ -296,7 +321,10 @@ class TestAttemptTracking:
         ago" is what every row would say otherwise.
         """
         first = _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
         )
         original = first.first_failed_at
@@ -314,19 +342,20 @@ class TestAttemptTracking:
         assert later.first_failed_at == original
         # Naive comparison: SQLite has no timestamptz and drops the offset on
         # the way back out. Postgres, where this actually runs, keeps it.
-        assert later.started_at.replace(tzinfo=None) == (
-            NOW + timedelta(hours=6)
-        ).replace(tzinfo=None)
+        assert later.started_at.replace(tzinfo=None) == (NOW + timedelta(hours=6)).replace(
+            tzinfo=None
+        )
 
     def test_a_recovery_keeps_the_first_failure_as_history(self, repo, deployment):
-        """"Was fine, broke, recovered" is worth more than "fine now"."""
+        """ "Was fine, broke, recovered" is worth more than "fine now"."""
         _verify(
-            repo, deployment, "addr1", "ver-1",
+            repo,
+            deployment,
+            "addr1",
+            "ver-1",
             status=ProdUploadVerifyStatus.DOWNLOAD_FAILED,
         )
-        recovered = _verify(
-            repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK
-        )
+        recovered = _verify(repo, deployment, "addr1", "ver-1", status=ProdUploadVerifyStatus.OK)
         assert recovered.status is ProdUploadVerifyStatus.OK
         assert recovered.first_failed_at is not None
         assert recovered.attempts == 2

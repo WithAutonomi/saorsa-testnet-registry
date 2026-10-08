@@ -14,6 +14,7 @@ SIGTERM, which ant-node handles by running its graceful shutdown.
 VMs are restarted in the given order with a pause between VMs (not between
 services on one VM), so the fleet sees a staggered wave rather than a cliff.
 """
+
 # ruff: noqa: E501 -- the remote bash payloads are kept verbatim from the proven scripts.
 from __future__ import annotations
 
@@ -54,7 +55,9 @@ def _utc(ts: float | None = None) -> str:
 
 
 def restart_vm(vm: hosts.Vm, services: list[str]) -> tuple[list[dict], remote.RemoteResult]:
-    res = remote.run_script(vm, RESTART_SCRIPT, [vm.ip, *services], timeout=120 * max(1, len(services)))
+    res = remote.run_script(
+        vm, RESTART_SCRIPT, [vm.ip, *services], timeout=120 * max(1, len(services))
+    )
     records = []
     for line in res.stdout.splitlines():
         line = line.strip()
@@ -87,7 +90,9 @@ def cmd_restart_nodes(args: argparse.Namespace) -> int:
         records, res = restart_vm(vm, services)
         vm_end = _utc()
         if not records:
-            console.print(f"[bold red]{vm.ip}: no service records returned[/bold red] {res.stderr.strip()}")
+            console.print(
+                f"[bold red]{vm.ip}: no service records returned[/bold red] {res.stderr.strip()}"
+            )
         for rec in records:
             rec["tag"] = args.tag
             lines.append(rec)
@@ -159,7 +164,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Service names to restart on each VM (default: every service in the inventory entry).",
     )
-    p.add_argument("--stagger-seconds", type=float, default=30, help="Pause between VMs (default 30).")
+    p.add_argument(
+        "--stagger-seconds", type=float, default=30, help="Pause between VMs (default 30)."
+    )
     p.add_argument("--tag", required=True, help="Stamped on every record.")
     p.add_argument("--out", default=None, help="JSONL output (default restart-<tag>.jsonl).")
     p.set_defaults(func=cmd_restart_nodes)

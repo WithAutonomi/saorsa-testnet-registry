@@ -40,9 +40,7 @@ def new_journal(name: str, kind: str) -> dict:
 
 def record_step(journal: dict, step: Step, status: str = STATUS_SUCCEEDED) -> None:
     """Append a completed step to the journal (in-place)."""
-    journal["steps"].append(
-        {"argv": list(step.argv), "label": step.label, "status": status}
-    )
+    journal["steps"].append({"argv": list(step.argv), "label": step.label, "status": status})
     journal["updated_at"] = _now()
 
 
@@ -50,9 +48,7 @@ def _group_argvs(group: StepGroup) -> list[list[list[str]]]:
     return [[list(s.argv) for s in lane] for lane in group.lanes]
 
 
-def record_group(
-    journal: dict, group: StepGroup, status: str = STATUS_SUCCEEDED
-) -> None:
+def record_group(journal: dict, group: StepGroup, status: str = STATUS_SUCCEEDED) -> None:
     """Append a completed parallel group to the journal as a single unit.
 
     Recorded only once every lane succeeded, so the group is resumable
@@ -72,9 +68,7 @@ def record_group(
 def _entry_matches_unit(entry: dict, unit) -> bool:
     """Whether a journal entry corresponds to the given plan unit."""
     if isinstance(unit, StepGroup):
-        return entry.get("group") == unit.name and entry.get("argvs") == _group_argvs(
-            unit
-        )
+        return entry.get("group") == unit.name and entry.get("argvs") == _group_argvs(unit)
     # A plain Step: a group entry never matches a Step unit.
     return "group" not in entry and entry.get("argv") == list(unit.argv)
 
@@ -127,8 +121,7 @@ def _render_entry(entry: dict) -> str:
     """Render a journal entry's command(s) — a plain step or a parallel group."""
     if "group" in entry:
         return "  |  ".join(
-            " && ".join(_render_argv(argv) for argv in lane)
-            for lane in entry.get("argvs", [])
+            " && ".join(_render_argv(argv) for argv in lane) for lane in entry.get("argvs", [])
         )
     return _render_argv(entry.get("argv", []))
 
@@ -154,9 +147,7 @@ def render_journal_summary(journal: dict, plan: list[Step]) -> list[str]:
     return lines
 
 
-def render_divergence(
-    journal: dict, kind: str, plan: list[Step], match: JournalMatch
-) -> list[str]:
+def render_divergence(journal: dict, kind: str, plan: list[Step], match: JournalMatch) -> list[str]:
     """Plain-text lines explaining why the journal doesn't match the plan."""
     journal_kind = journal.get("kind")
     if journal_kind != kind:
@@ -167,10 +158,7 @@ def render_divergence(
     entries = journal.get("steps", [])
     units = iter_units(plan)
     i = match.divergence
-    lines = [
-        "The journal does not match the computed plan "
-        f"(first divergence at step {i + 1}):"
-    ]
+    lines = [f"The journal does not match the computed plan (first divergence at step {i + 1}):"]
     if i >= len(units):
         lines.append(
             f"  the journal records {len(entries)} completed step(s), but the "
@@ -181,7 +169,6 @@ def render_divergence(
         lines.append(f"  journal: $ {_render_entry(entry)}")
         lines.append(f"  plan:    $ {_render_unit(units[i])}")
     lines.append(
-        "The manifest (or saorsa-deploy itself) has changed since the journal "
-        "was written."
+        "The manifest (or saorsa-deploy itself) has changed since the journal was written."
     )
     return lines

@@ -15,6 +15,7 @@ determinism guarantee untestable.
 The renderer is a pure function of the verdict payload, so a stored verdict can
 be re-rendered later without recomputing anything.
 """
+
 from __future__ import annotations
 
 from saorsa_deploy.gate_comparison import FAIL, GRAY, NOT_ASSESSED, PASS
@@ -141,29 +142,21 @@ def render_report(verdict: dict, computed_at: str | None = None) -> str:
     lines.append("")
     lines.append(f"**Overall: {verdict['overall']}**")
     lines.append("")
-    lines.append(
-        f"- Candidate: `{candidate['name']}` (deployment {candidate['deployment_id']})"
-    )
+    lines.append(f"- Candidate: `{candidate['name']}` (deployment {candidate['deployment_id']})")
     if verdict.get("new_baseline"):
         # Named explicitly rather than left blank: a reader must be able to see
         # at a glance that every relative gate below is NOT ASSESSED by design,
         # not because the data was missing.
         lines.append("- Baseline: none (new baseline)")
     else:
-        lines.append(
-            f"- Baseline: `{baseline['name']}` (deployment {baseline['deployment_id']})"
-        )
+        lines.append(f"- Baseline: `{baseline['name']}` (deployment {baseline['deployment_id']})")
     lines.append(f"- Window label: `{verdict['window_label']}`")
     if candidate.get("window_start") and candidate.get("window_end"):
         lines.append(
-            f"- Candidate window: {candidate['window_start']} to "
-            f"{candidate['window_end']}"
+            f"- Candidate window: {candidate['window_start']} to {candidate['window_end']}"
         )
     if baseline.get("window_start") and baseline.get("window_end"):
-        lines.append(
-            f"- Baseline window: {baseline['window_start']} to "
-            f"{baseline['window_end']}"
-        )
+        lines.append(f"- Baseline window: {baseline['window_start']} to {baseline['window_end']}")
     for label, run in (("Candidate", candidate), ("Baseline", baseline)):
         coverage = run.get("activity_coverage")
         if coverage is not None:
@@ -231,9 +224,7 @@ def render_report(verdict: dict, computed_at: str | None = None) -> str:
     if unassessed:
         lines.append("## Not assessed")
         lines.append("")
-        lines.append(
-            "These are **not passes**. Each names why it could not be measured."
-        )
+        lines.append("These are **not passes**. Each names why it could not be measured.")
         lines.append("")
         for gate in sorted(unassessed, key=lambda g: g["gate"]):
             lines.append(f"- **{gate['gate']}**: {_escape(gate.get('detail', ''))}")

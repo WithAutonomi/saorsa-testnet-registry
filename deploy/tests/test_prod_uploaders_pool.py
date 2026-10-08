@@ -34,9 +34,7 @@ def repo():
 @pytest.fixture
 def fake_s3(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr(
-        pool_selection, "load_pool_selection", lambda name: store.get(name)
-    )
+    monkeypatch.setattr(pool_selection, "load_pool_selection", lambda name: store.get(name))
     monkeypatch.setattr(
         pool_selection,
         "save_pool_selection",
@@ -47,9 +45,7 @@ def fake_s3(monkeypatch):
 
 @pytest.fixture
 def wired(repo, monkeypatch, fake_s3):
-    monkeypatch.setattr(
-        "saorsa_deploy.registry.get_file_pool_repository", lambda: repo
-    )
+    monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: repo)
     return repo
 
 
@@ -78,9 +74,7 @@ class TestSpecParsing:
 
     def test_both_sources_is_rejected(self):
         with pytest.raises(ValueError, match="not both"):
-            parse_prod_uploader_spec(
-                "lon1:s-4vcpu-8gb:urls=/tmp/l.txt:pool=small:1"
-            )
+            parse_prod_uploader_spec("lon1:s-4vcpu-8gb:urls=/tmp/l.txt:pool=small:1")
 
     def test_neither_source_is_rejected(self):
         with pytest.raises(ValueError, match="One of urls=PATH or pool="):
@@ -110,9 +104,7 @@ class TestSelectionAtDeploy:
 
         prod_uploaders._select_pool_files(self._args(), specs, Console())
 
-        lines = [
-            line for line in specs[0]["_urls_file_content"].splitlines() if line
-        ]
+        lines = [line for line in specs[0]["_urls_file_content"].splitlines() if line]
         assert len(lines) == 3
         assert all(line.startswith("https://archive.org/") for line in lines)
         # Downstream code path is unchanged: the same helper that reads a
@@ -159,16 +151,12 @@ class TestSelectionAtDeploy:
         assert "url pool cannot satisfy" in out
         assert "No infrastructure was created" in out
 
-    def test_missing_database_refuses_rather_than_degrading(
-        self, monkeypatch, capsys, fake_s3
-    ):
+    def test_missing_database_refuses_rather_than_degrading(self, monkeypatch, capsys, fake_s3):
         # The old name-based duplicate check warned and carried on. This cannot:
         # without the pool there is no list of files to upload at all.
         from rich.console import Console
 
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_file_pool_repository", lambda: None
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: None)
         specs = [parse_prod_uploader_spec("lon1:s-4vcpu-8gb:pool=small:1")]
         with pytest.raises(SystemExit):
             prod_uploaders._select_pool_files(self._args(), specs, Console())
@@ -178,15 +166,10 @@ class TestSelectionAtDeploy:
     def test_urls_only_specs_need_no_database(self, monkeypatch, fake_s3):
         from rich.console import Console
 
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_file_pool_repository", lambda: None
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: None)
         specs = [parse_prod_uploader_spec("lon1:s-4vcpu-8gb:urls=/tmp/l.txt")]
         assert (
-            prod_uploaders._select_pool_files(
-                argparse.Namespace(name="X"), specs, Console()
-            )
-            == []
+            prod_uploaders._select_pool_files(argparse.Namespace(name="X"), specs, Console()) == []
         )
 
     def test_claims_are_attributed_to_the_deployment_afterwards(self, wired, fake_s3):
@@ -195,16 +178,12 @@ class TestSelectionAtDeploy:
 
         _seed(wired, 50 * MIB, 3)
         specs = [parse_prod_uploader_spec("lon1:s-4vcpu-8gb:pool=small:2")]
-        selections = prod_uploaders._select_pool_files(
-            self._args(), specs, Console()
-        )
+        selections = prod_uploaders._select_pool_files(self._args(), specs, Console())
         deployment = Deployment(name="PROD-UL-05", deploy_args={})
         wired.session.add(deployment)
         wired.session.commit()
 
-        prod_uploaders._attach_pool_claims(
-            selections, deployment.id, "PROD-UL-05"
-        )
+        prod_uploaders._attach_pool_claims(selections, deployment.id, "PROD-UL-05")
         rows = wired.list_pool_claims(deployment_id=deployment.id)
         assert len(rows) == 2
         assert all(r.source is ClaimSource.PROD_UPLOADERS for r in rows)
@@ -220,17 +199,13 @@ class TestManifestMapping:
         )
         # Smallest-first regardless of mapping order: the step journal compares
         # argv, so an unstable ordering would make a resumed run look changed.
-        assert _prod_uploader_spec(uploader) == (
-            "lon1:s-4vcpu-8gb:pool=small:3,medium:2"
-        )
+        assert _prod_uploader_spec(uploader) == ("lon1:s-4vcpu-8gb:pool=small:3,medium:2")
 
     def test_urls_still_maps(self):
         from saorsa_deploy.config.models import ProdUploader
         from saorsa_deploy.orchestrator.prod import _prod_uploader_spec
 
-        uploader = ProdUploader(
-            region="lon1", vm_size="s-4vcpu-8gb", urls="/tmp/list.txt"
-        )
+        uploader = ProdUploader(region="lon1", vm_size="s-4vcpu-8gb", urls="/tmp/list.txt")
         assert _prod_uploader_spec(uploader) == "lon1:s-4vcpu-8gb:urls=/tmp/list.txt"
 
     def test_manifest_requires_exactly_one_source(self):

@@ -42,9 +42,7 @@ class TestBuildAntBinaryUpgradeCommand:
         assert "ANT_BINARY:UPGRADED" in cmd
 
     def test_raw_binary_forces_overwrite(self):
-        cmd = build_ant_binary_upgrade_command(
-            "https://example.com/ant", binary_is_archive=False
-        )
+        cmd = build_ant_binary_upgrade_command("https://example.com/ant", binary_is_archive=False)
         assert f"rm -f {ANT_INSTALL_PATH}" in cmd
         assert "test -f" not in cmd
         assert f"wget -q https://example.com/ant -O {ANT_INSTALL_PATH}" in cmd
@@ -54,13 +52,9 @@ class TestGroupHostsByUnit:
     """The grouping is where a restart could be aimed at a unit that does not
     exist on the host it is sent to, so it is pure and tested on its own."""
 
-    @pytest.mark.parametrize(
-        "kind", ["prod-downloaders", "prod-continuous-downloader"]
-    )
+    @pytest.mark.parametrize("kind", ["prod-downloaders", "prod-continuous-downloader"])
     def test_downloader_kinds_are_one_group(self, kind):
-        groups = group_hosts_by_unit(
-            kind, [{"ip": "10.0.0.1"}, {"ip": "10.0.0.2"}]
-        )
+        groups = group_hosts_by_unit(kind, [{"ip": "10.0.0.1"}, {"ip": "10.0.0.2"}])
 
         assert len(groups) == 1
         assert groups[0].service == DOWNLOADER_SERVICE
@@ -71,9 +65,7 @@ class TestGroupHostsByUnit:
         # state alone, and three of the four prod deployments are downloaders.
         groups = group_hosts_by_unit("", [{"ip": "10.0.0.1"}])
 
-        assert [(g.service, g.host_ips) for g in groups] == [
-            (DOWNLOADER_SERVICE, ["10.0.0.1"])
-        ]
+        assert [(g.service, g.host_ips) for g in groups] == [(DOWNLOADER_SERVICE, ["10.0.0.1"])]
 
     def test_native_uploader_splits_into_two_groups(self):
         groups = group_hosts_by_unit(
@@ -100,16 +92,12 @@ class TestGroupHostsByUnit:
             client_kind="wasm",
         )
 
-        assert [(g.service, g.host_ips) for g in groups] == [
-            (VERIFIER_SERVICE, ["10.0.0.2"])
-        ]
+        assert [(g.service, g.host_ips) for g in groups] == [(VERIFIER_SERVICE, ["10.0.0.2"])]
 
     def test_missing_role_reads_as_the_uploader(self):
         groups = group_hosts_by_unit("prod-continuous-uploader", [{"ip": "10.0.0.1"}])
 
-        assert [(g.service, g.host_ips) for g in groups] == [
-            (UPLOADER_SERVICE, ["10.0.0.1"])
-        ]
+        assert [(g.service, g.host_ips) for g in groups] == [(UPLOADER_SERVICE, ["10.0.0.1"])]
 
     def test_hosts_without_an_ip_are_dropped(self):
         groups = group_hosts_by_unit(
@@ -117,9 +105,7 @@ class TestGroupHostsByUnit:
             [{"role": "upload"}, {"ip": "10.0.0.2", "role": "download"}],
         )
 
-        assert [(g.service, g.host_ips) for g in groups] == [
-            (VERIFIER_SERVICE, ["10.0.0.2"])
-        ]
+        assert [(g.service, g.host_ips) for g in groups] == [(VERIFIER_SERVICE, ["10.0.0.2"])]
 
 
 class TestValidateKind:
@@ -131,9 +117,7 @@ class TestValidateKind:
         repo = MagicMock()
         repo.get_active_by_name.return_value = None
         repo.get_by_name.return_value = None
-        with patch(
-            "saorsa_deploy.cmd.upgrade_ant_binary.get_repository", return_value=repo
-        ):
+        with patch("saorsa_deploy.cmd.upgrade_ant_binary.get_repository", return_value=repo):
             _validate_kind("PROD-DL-01", console=MagicMock())
 
     @pytest.mark.parametrize(
@@ -147,9 +131,7 @@ class TestValidateKind:
     def test_accepts_valid_kinds(self, kind):
         repo = MagicMock()
         repo.get_active_by_name.return_value = SimpleNamespace(deploy_args={"kind": kind})
-        with patch(
-            "saorsa_deploy.cmd.upgrade_ant_binary.get_repository", return_value=repo
-        ):
+        with patch("saorsa_deploy.cmd.upgrade_ant_binary.get_repository", return_value=repo):
             _validate_kind("PROD-DL-01", console=MagicMock())
 
     def test_rejects_wrong_kind(self):
@@ -157,9 +139,7 @@ class TestValidateKind:
         repo.get_active_by_name.return_value = SimpleNamespace(
             deploy_args={"kind": "prod-uploaders"}
         )
-        with patch(
-            "saorsa_deploy.cmd.upgrade_ant_binary.get_repository", return_value=repo
-        ):
+        with patch("saorsa_deploy.cmd.upgrade_ant_binary.get_repository", return_value=repo):
             with pytest.raises(SystemExit):
                 _validate_kind("PROD-DL-01", console=MagicMock())
 
@@ -187,9 +167,7 @@ def upgrade_patches():
         patch("saorsa_deploy.cmd.upgrade_ant_binary.add_op") as p_add_op,
         patch("saorsa_deploy.cmd.upgrade_ant_binary.run_ops") as p_run_ops,
         patch("saorsa_deploy.cmd.upgrade_ant_binary.record_event") as p_event,
-        patch(
-            "saorsa_deploy.cmd.upgrade_ant_binary.record_deploy_args_update"
-        ) as p_deploy_args,
+        patch("saorsa_deploy.cmd.upgrade_ant_binary.record_deploy_args_update") as p_deploy_args,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -214,9 +192,7 @@ def upgrade_patches():
 
 def _ops(patches):
     """The composed command list of every op the run added, one per group."""
-    return [
-        call.kwargs.get("commands", []) for call in patches.add_op.call_args_list
-    ]
+    return [call.kwargs.get("commands", []) for call in patches.add_op.call_args_list]
 
 
 class TestCmdUpgradeAntBinary:
@@ -259,9 +235,7 @@ class TestCmdUpgradeAntBinary:
 
         cmd_upgrade_ant_binary(_args(name="PROD-UL-01"))
 
-        install = build_ant_binary_upgrade_command(
-            "https://example.com/ant.tar.gz", True
-        )
+        install = build_ant_binary_upgrade_command("https://example.com/ant.tar.gz", True)
         assert _ops(upgrade_patches) == [
             [install, f"systemctl restart {UPLOADER_SERVICE}"],
             [install, f"systemctl restart {VERIFIER_SERVICE}"],
@@ -290,9 +264,7 @@ class TestCmdUpgradeAntBinary:
         assert f"systemctl restart {VERIFIER_SERVICE}" in ops[0]
         assert UPLOADER_SERVICE not in " ".join(ops[0])
         # Nothing is sent to the browser-path VM at all.
-        assert [c.args[0] for c in upgrade_patches.clear.call_args_list] == [
-            ["10.0.0.2"]
-        ]
+        assert [c.args[0] for c in upgrade_patches.clear.call_args_list] == [["10.0.0.2"]]
 
     def test_no_restart_flag_skips_restart_on_every_group(self, upgrade_patches):
         upgrade_patches.resolve_deployment.return_value = (
@@ -312,9 +284,7 @@ class TestCmdUpgradeAntBinary:
         assert len(ops) == 2
         for commands in ops:
             assert commands == [
-                build_ant_binary_upgrade_command(
-                    "https://example.com/ant.tar.gz", True
-                )
+                build_ant_binary_upgrade_command("https://example.com/ant.tar.gz", True)
             ]
             assert "systemctl restart" not in " ".join(commands)
 
@@ -418,9 +388,7 @@ class TestCmdUpgradeAntBinary:
         ]
         assert failed == [["10.0.0.2"]]
 
-    def test_wasm_downloader_is_warned_about_but_still_upgraded(
-        self, upgrade_patches, capsys
-    ):
+    def test_wasm_downloader_is_warned_about_but_still_upgraded(self, upgrade_patches, capsys):
         """PROD-WDL-01 is wholly WASM: nothing on it runs `ant`, so the
         install is pointless — but refusing it would narrow behaviour that
         predates this command, so it warns and proceeds."""

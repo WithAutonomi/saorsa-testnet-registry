@@ -206,7 +206,10 @@ def test_upsert_upload_record_inserts_then_updates(repo):
 
     r.upsert_upload_record(
         **_upload_kwargs(
-            d.id, status=OpRecordStatus.FAILURE, duration_ms=42, finished_at=None,
+            d.id,
+            status=OpRecordStatus.FAILURE,
+            duration_ms=42,
+            finished_at=None,
         )
     )
     rows = r.list_upload_records_for_deployment(d.id)
@@ -285,4 +288,3 @@ def test_pivoted_csv_leaves_verification_absent_when_unwritten():
     point = _parse_pivoted_csv(csv_body)[0]
     assert point["verify_status"] is None
     assert point["sha256"] is None
-

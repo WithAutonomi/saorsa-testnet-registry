@@ -59,14 +59,10 @@ def cmd_destroy_bootstrap_production(args):
         for f in failures:
             console.print(f"[bold red]FAILED: {f.provider}/{f.region}[/bold red]")
             console.print(f"  stderr: {f.stderr[:500]}")
-        console.print(
-            f"[bold red]{len(failures)} region(s) failed to destroy.[/bold red]"
-        )
+        console.print(f"[bold red]{len(failures)} region(s) failed to destroy.[/bold red]")
         sys.exit(1)
 
-    console.print(
-        f"[bold green]All {len(results)} regions destroyed successfully.[/bold green]"
-    )
+    console.print(f"[bold green]All {len(results)} regions destroyed successfully.[/bold green]")
 
     console.print()
     console.print("[bold green]Production network destroyed.[/bold green]")

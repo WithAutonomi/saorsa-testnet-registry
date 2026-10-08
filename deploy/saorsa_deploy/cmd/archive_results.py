@@ -68,7 +68,6 @@ def cmd_archive_results(args):
             )
         except Exception as e:  # noqa: BLE001 — keep the loop alive
             console.print(
-                f"[yellow]archive: record-results raised ({e}); "
-                f"retrying in {interval}s.[/yellow]"
+                f"[yellow]archive: record-results raised ({e}); retrying in {interval}s.[/yellow]"
             )
         time.sleep(interval)

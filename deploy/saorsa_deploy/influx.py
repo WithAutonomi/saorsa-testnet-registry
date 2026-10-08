@@ -20,6 +20,7 @@ This module exposes two pure-ish entry points:
 Splitting them keeps the aggregation unit-testable without hitting a real
 Influx instance.
 """
+
 import csv
 import io
 import sys
@@ -164,15 +165,25 @@ def fetch_all_operation_points(
     tier existed has none — so it is tolerated and simply contributes nothing.
     """
     points = fetch_operation_points(
-        url=url, token=token, org=org, bucket=bucket,
-        start=start, stop=stop, timeout=timeout,
+        url=url,
+        token=token,
+        org=org,
+        bucket=bucket,
+        start=start,
+        stop=stop,
+        timeout=timeout,
     )
     if bucket == wasm_bucket:
         return points
     try:
         points += fetch_operation_points(
-            url=url, token=token, org=org, bucket=wasm_bucket,
-            start=start, stop=stop, timeout=timeout,
+            url=url,
+            token=token,
+            org=org,
+            bucket=wasm_bucket,
+            start=start,
+            stop=stop,
+            timeout=timeout,
         )
     except Exception:
         pass
@@ -253,11 +264,7 @@ def _iter_flux_rows(
         if keep is None:
             record = dict(zip(header, row))
         else:
-            record = {
-                name: value
-                for name, value in zip(header, row)
-                if name in keep
-            }
+            record = {name: value for name, value in zip(header, row) if name in keep}
         if intern_cols:
             for name in intern_cols:
                 value = record.get(name)
@@ -481,15 +488,11 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
         success = [p for p in pts if p.get("status") == 0]
         failure = [p for p in pts if p.get("status") == 1]
         skipped = [p for p in pts if p.get("status") == 2]
-        success_durations = [
-            p["total_ms"] for p in success if p.get("total_ms") is not None
-        ]
+        success_durations = [p["total_ms"] for p in success if p.get("total_ms") is not None]
 
         starts = [p["start_ns"] for p in pts if p.get("start_ns") is not None]
         if starts:
-            first_started_at = datetime.fromtimestamp(
-                min(starts) / 1_000_000_000, tz=timezone.utc
-            )
+            first_started_at = datetime.fromtimestamp(min(starts) / 1_000_000_000, tz=timezone.utc)
         else:
             first_started_at = min(p["_time"] for p in pts)
 
@@ -518,9 +521,7 @@ def aggregate_file_results(points: list[dict]) -> list[dict]:
             }
         )
 
-    results.sort(
-        key=lambda r: (r["client_hostname"], r["op_type"], r["file_size_bytes"])
-    )
+    results.sort(key=lambda r: (r["client_hostname"], r["op_type"], r["file_size_bytes"]))
     return results
 
 
@@ -596,15 +597,25 @@ def fetch_all_prod_upload_points(
     existed has none, so it is tolerated and simply contributes nothing.
     """
     points = fetch_prod_upload_points(
-        url=url, token=token, org=org, bucket=bucket,
-        start=start, stop=stop, timeout=timeout,
+        url=url,
+        token=token,
+        org=org,
+        bucket=bucket,
+        start=start,
+        stop=stop,
+        timeout=timeout,
     )
     if bucket == wasm_bucket:
         return points
     try:
         points += fetch_prod_upload_points(
-            url=url, token=token, org=org, bucket=wasm_bucket,
-            start=start, stop=stop, timeout=timeout,
+            url=url,
+            token=token,
+            org=org,
+            bucket=wasm_bucket,
+            start=start,
+            stop=stop,
+            timeout=timeout,
         )
     except Exception:
         pass
@@ -849,9 +860,7 @@ PROCSTAT_MMAP_FIELDS = {
 # everything stored is bytes and a consumer never has to ask.
 PROCSTAT_MMAP_SCALE = 1024
 
-ROLLUP_ONLY_METRICS = NODE_MEMORY_METRICS | frozenset(
-    PROCSTAT_MMAP_FIELDS.values()
-)
+ROLLUP_ONLY_METRICS = NODE_MEMORY_METRICS | frozenset(PROCSTAT_MMAP_FIELDS.values())
 
 # diskio counter field -> the stat name it becomes (suffixed `_per_sec`).
 DISKIO_FIELD_TARGETS = {
@@ -873,9 +882,7 @@ DISKIO_FIELD_TARGETS = {
 DEFAULT_BUCKET_SECS = 300
 
 
-def _post_flux(
-    url: str, token: str, org: str, flux: str, timeout: int = 30, stream: bool = False
-):
+def _post_flux(url: str, token: str, org: str, flux: str, timeout: int = 30, stream: bool = False):
     """POST a Flux query and return the raw response.
 
     With ``stream=True`` the body is not downloaded up front, so the caller can
@@ -936,9 +943,7 @@ def iter_response_lines(resp, chunk_size: int = 1 << 16) -> Iterator[str]:
         yield pending.rstrip("\r")
 
 
-def _stream_flux(
-    url: str, token: str, org: str, flux: str, timeout: int = 30
-) -> Iterator[str]:
+def _stream_flux(url: str, token: str, org: str, flux: str, timeout: int = 30) -> Iterator[str]:
     """Yield a Flux response line by line without materialising the body."""
     resp = _post_flux(url, token, org, flux, timeout=timeout, stream=True)
     return iter_response_lines(resp)
@@ -1022,9 +1027,7 @@ def _parse_flux_csv(
     intern_cols = _HOST_METRIC_INTERN if keep is HOST_METRIC_COLUMNS else None
     return [
         row
-        for row in _normalise_flux_rows(
-            _iter_flux_rows(body, keep=keep, intern_cols=intern_cols)
-        )
+        for row in _normalise_flux_rows(_iter_flux_rows(body, keep=keep, intern_cols=intern_cols))
     ]
 
 
@@ -1160,9 +1163,7 @@ def iter_host_metric_points(
             # Must apply the same per-row normalisation as the eager reader:
             # consumers require `_time` to be a datetime, not the raw CSV string.
             return _normalise_flux_rows(
-                _iter_flux_rows(
-                    lines, keep=HOST_METRIC_COLUMNS, intern_cols=_HOST_METRIC_INTERN
-                )
+                _iter_flux_rows(lines, keep=HOST_METRIC_COLUMNS, intern_cols=_HOST_METRIC_INTERN)
             )
 
         return _iter
@@ -1491,9 +1492,7 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
         metric = PROCSTAT_MMAP_FIELDS.get(field)
         if metric is None:
             continue
-        emit(
-            host, metric, p["_time"], val * PROCSTAT_MMAP_SCALE, service=service
-        )
+        emit(host, metric, p["_time"], val * PROCSTAT_MMAP_SCALE, service=service)
         track_time(host, p["_time"])
 
     # Resident memory composition. Gauges like RSS, so no delta stage, and keyed
@@ -1527,9 +1526,7 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
             continue
         # Only the exact marker counts, exactly as for diskio devices: never
         # infer the storage volume from the tag merely being present.
-        role = (
-            NODE_STORAGE_ROLE if p.get("volume_role") == NODE_STORAGE_ROLE else None
-        )
+        role = NODE_STORAGE_ROLE if p.get("volume_role") == NODE_STORAGE_ROLE else None
         seen = mounts.setdefault(host, {})
         if role is not None or mount not in seen:
             seen[mount] = role
@@ -1556,11 +1553,7 @@ def normalise_host_metric_points(points_by_measurement: dict) -> NormalisedHostM
 
     for (host, _interface, field), pts in net_groups.items():
         pts.sort(key=lambda p: p["_time"])
-        metric = (
-            METRIC_BYTES_IN_PER_SEC
-            if field == "bytes_recv"
-            else METRIC_BYTES_OUT_PER_SEC
-        )
+        metric = METRIC_BYTES_IN_PER_SEC if field == "bytes_recv" else METRIC_BYTES_OUT_PER_SEC
         for prev, curr in zip(pts, pts[1:]):
             prev_val = _to_float(prev.get("_value"))
             curr_val = _to_float(curr.get("_value"))
@@ -1685,9 +1678,7 @@ def aggregate_host_metrics(points_by_measurement: dict) -> list[dict]:
     :func:`aggregate_normalised_host_metrics` directly, rather than paying for
     the delta stage twice.
     """
-    return aggregate_normalised_host_metrics(
-        normalise_host_metric_points(points_by_measurement)
-    )
+    return aggregate_normalised_host_metrics(normalise_host_metric_points(points_by_measurement))
 
 
 def aggregate_normalised_host_metrics(
@@ -1718,13 +1709,9 @@ def aggregate_normalised_host_metrics(
             # Folding them into one set would invent empty entries in whichever
             # dict was missing that service.
             composition_services.setdefault(s["host"], set()).add(s["service"])
-            composition_fields.setdefault(
-                (s["host"], s["service"]), set()
-            ).add(s["metric"])
+            composition_fields.setdefault((s["host"], s["service"]), set()).add(s["metric"])
         elif s["metric"] == METRIC_DISK_USED_BYTES:
-            usage_series.setdefault((s["host"], s["device"]), []).append(
-                (s["ts"], s["value"])
-            )
+            usage_series.setdefault((s["host"], s["device"]), []).append((s["ts"], s["value"]))
 
     def stats_for(
         host: str,
@@ -1752,31 +1739,21 @@ def aggregate_normalised_host_metrics(
                     device: {
                         "volume_role": role,
                         **{
-                            f"{target}_per_sec": stats_for(
-                                host, f"{target}_per_sec", device=device
-                            )
+                            f"{target}_per_sec": stats_for(host, f"{target}_per_sec", device=device)
                             for target in DISKIO_FIELD_TARGETS.values()
                         },
                     }
-                    for device, role in sorted(
-                        normalised.devices.get(host, {}).items()
-                    )
+                    for device, role in sorted(normalised.devices.get(host, {}).items())
                 },
                 "disk_usage_by_mount": {
                     mount: {
                         "volume_role": role,
-                        "used_bytes": _usage_stats(
-                            usage_series.get((host, mount), [])
-                        ),
+                        "used_bytes": _usage_stats(usage_series.get((host, mount), [])),
                     }
-                    for mount, role in sorted(
-                        normalised.mounts.get(host, {}).items()
-                    )
+                    for mount, role in sorted(normalised.mounts.get(host, {}).items())
                 },
                 "rss_by_service": {
-                    service: stats_for(
-                        host, METRIC_RSS_BYTES, service=service
-                    )
+                    service: stats_for(host, METRIC_RSS_BYTES, service=service)
                     for service in sorted(services.get(host, ()))
                 },
                 # Only the fields actually observed for that service, so a
@@ -1786,9 +1763,7 @@ def aggregate_normalised_host_metrics(
                 "memory_composition_by_service": {
                     service: {
                         field: stats_for(host, field, service=service)
-                        for field in sorted(
-                            composition_fields.get((host, service), ())
-                        )
+                        for field in sorted(composition_fields.get((host, service), ()))
                     }
                     for service in sorted(composition_services.get(host, ()))
                 },
@@ -1799,9 +1774,7 @@ def aggregate_normalised_host_metrics(
 
 def _floor_to_bucket(ts: datetime, bucket_secs: int) -> datetime:
     epoch_secs = int(ts.timestamp())
-    return datetime.fromtimestamp(
-        epoch_secs - (epoch_secs % bucket_secs), tz=timezone.utc
-    )
+    return datetime.fromtimestamp(epoch_secs - (epoch_secs % bucket_secs), tz=timezone.utc)
 
 
 def bucket_host_metric_samples(
@@ -1840,11 +1813,7 @@ def bucket_host_metric_samples(
         # 10 GB disk that is already 76 % bucket rows.
         if s["metric"] in ROLLUP_ONLY_METRICS:
             continue
-        if (
-            node_storage_only
-            and s["device"] is not None
-            and s["volume_role"] != NODE_STORAGE_ROLE
-        ):
+        if node_storage_only and s["device"] is not None and s["volume_role"] != NODE_STORAGE_ROLE:
             continue
         key = (
             s["host"],
@@ -1939,9 +1908,7 @@ def detect_clock_offsets(
     either a backward-skewed clock or a host that stopped reporting, which is
     equally worth knowing about.
     """
-    ends = sorted(
-        a["metrics_ended_at"] for a in aggregates if a.get("metrics_ended_at")
-    )
+    ends = sorted(a["metrics_ended_at"] for a in aggregates if a.get("metrics_ended_at"))
     if len(ends) < 2:
         return []
     mid = len(ends) // 2

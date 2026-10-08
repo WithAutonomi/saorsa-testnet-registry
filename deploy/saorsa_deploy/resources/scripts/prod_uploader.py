@@ -53,6 +53,7 @@ Optional env:
                        file above it is recorded as over_cap and never uploaded.
                        Ignored on the native path, which has no such limit.
 """
+
 from __future__ import annotations
 
 import json
@@ -130,12 +131,7 @@ def _safe_filename(url: str, fallback_index: int) -> str:
 
 def _escape_tag(value: str) -> str:
     """Escape a value for use as an Influx tag (no commas, equals, spaces)."""
-    return (
-        value.replace("\\", "\\\\")
-        .replace(",", "\\,")
-        .replace("=", "\\=")
-        .replace(" ", "\\ ")
-    )
+    return value.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
 
 
 def _escape_field_string(value: str) -> str:
@@ -309,8 +305,13 @@ def _maybe_wrap_heaptrack(
 
 
 def _build_native_argv(
-    *, ant_path: str, bootstrap_args: list[str], evm_network: str,
-    file_path: Path, payment_type: str | None, log_level: str,
+    *,
+    ant_path: str,
+    bootstrap_args: list[str],
+    evm_network: str,
+    file_path: Path,
+    payment_type: str | None,
+    log_level: str,
 ) -> list[str]:
     """The native `ant` upload argv."""
     # The verbosity flag is what installs ant's tracing subscriber (no -v = no
@@ -320,16 +321,23 @@ def _build_native_argv(
     return [
         ant_path,
         *bootstrap_args,
-        "--evm-network", evm_network,
+        "--evm-network",
+        evm_network,
         "--json",
         _verbosity_flag(log_level),
-        "file", "upload", "--public", *_payment_flag(payment_type),
+        "file",
+        "upload",
+        "--public",
+        *_payment_flag(payment_type),
         str(file_path),
     ]
 
 
 def _build_wasm_argv(
-    *, ant_wasm_path: str, file_path: Path, payment_type: str | None,
+    *,
+    ant_wasm_path: str,
+    file_path: Path,
+    payment_type: str | None,
     payment_marker_path: Path,
 ) -> list[str]:
     """The `ant-wasm` upload argv.
@@ -349,17 +357,29 @@ def _build_wasm_argv(
     """
     return [
         ant_wasm_path,
-        "file", "upload", "--public", *_payment_flag(payment_type),
-        "--payment-marker", str(payment_marker_path),
+        "file",
+        "upload",
+        "--public",
+        *_payment_flag(payment_type),
+        "--payment-marker",
+        str(payment_marker_path),
         str(file_path),
     ]
 
 
 def _run_ant(
-    *, ant_path: str, bootstrap_args: list[str], evm_network: str,
-    secret_key: str, file_path: Path, payment_type: str | None,
-    log_level: str, stderr_log_path: Path, stdout_log_path: Path,
-    memory_profiling: bool = False, heaptrack_output_base: str | None = None,
+    *,
+    ant_path: str,
+    bootstrap_args: list[str],
+    evm_network: str,
+    secret_key: str,
+    file_path: Path,
+    payment_type: str | None,
+    log_level: str,
+    stderr_log_path: Path,
+    stdout_log_path: Path,
+    memory_profiling: bool = False,
+    heaptrack_output_base: str | None = None,
 ) -> tuple[int, str, str]:
     """Build the native argv and run it. See :func:`_run_transfer`."""
     cmd = _maybe_wrap_heaptrack(
@@ -383,7 +403,10 @@ def _run_ant(
 
 
 def _run_transfer(
-    *, cmd: list[str], secret_key: str, stderr_log_path: Path,
+    *,
+    cmd: list[str],
+    secret_key: str,
+    stderr_log_path: Path,
     stdout_log_path: Path,
 ) -> tuple[int, str, str]:
     """Run a transfer binary and tee its streams to log files in real time.
@@ -428,9 +451,7 @@ def _run_transfer(
 
     def _pump_stderr() -> None:
         try:
-            with open(
-                stderr_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stderr_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stderr is not None
                 for line in proc.stderr:
                     fh.write(line)
@@ -440,9 +461,7 @@ def _run_transfer(
 
     def _pump_stdout() -> None:
         try:
-            with open(
-                stdout_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stdout_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     fh.write(line)
@@ -634,18 +653,27 @@ def main() -> int:
                 # (InfluxDB server-receive time), and the `start_ns` field marks
                 # when this URL was attempted.
                 line = _build_line(
-                    host=host, region=region,
+                    host=host,
+                    region=region,
                     status=STATUS_DOWNLOAD_FAILED,
-                    total_ms=0, upload_secs=0.0,
-                    file_size=0, start_ns=download_start_ns,
-                    chunks_stored=0, chunks_failed=0, total_chunks=0,
+                    total_ms=0,
+                    upload_secs=0.0,
+                    file_size=0,
+                    start_ns=download_start_ns,
+                    chunks_stored=0,
+                    chunks_failed=0,
+                    total_chunks=0,
                     chunk_attempts_total=0,
-                    retries_round_0=0, retries_round_1=0,
-                    retries_round_2=0, retries_round_3=0,
+                    retries_round_0=0,
+                    retries_round_1=0,
+                    retries_round_2=0,
+                    retries_round_3=0,
                     store_duration_p50_ms=0,
                     store_duration_p95_ms=0,
                     store_duration_max_ms=0,
-                    address="", file_name=file_name, source_url=url,
+                    address="",
+                    file_name=file_name,
+                    source_url=url,
                     reason=str(e),
                 )
                 _post_influx(influx_url, influx_token, influx_org, influx_bucket, line)
@@ -670,18 +698,27 @@ def main() -> int:
             )
             if influx_enabled:
                 line = _build_line(
-                    host=host, region=region,
+                    host=host,
+                    region=region,
                     status=STATUS_OVER_CAP,
-                    total_ms=0, upload_secs=0.0,
-                    file_size=file_size, start_ns=download_start_ns,
-                    chunks_stored=0, chunks_failed=0, total_chunks=0,
+                    total_ms=0,
+                    upload_secs=0.0,
+                    file_size=file_size,
+                    start_ns=download_start_ns,
+                    chunks_stored=0,
+                    chunks_failed=0,
+                    total_chunks=0,
                     chunk_attempts_total=0,
-                    retries_round_0=0, retries_round_1=0,
-                    retries_round_2=0, retries_round_3=0,
+                    retries_round_0=0,
+                    retries_round_1=0,
+                    retries_round_2=0,
+                    retries_round_3=0,
                     store_duration_p50_ms=0,
                     store_duration_p95_ms=0,
                     store_duration_max_ms=0,
-                    address="", file_name=file_name, source_url=url,
+                    address="",
+                    file_name=file_name,
+                    source_url=url,
                     reason=ERROR_KIND_OVER_CAP,
                     error_kind=ERROR_KIND_OVER_CAP,
                 )
@@ -706,9 +743,7 @@ def main() -> int:
         stderr_log_path = log_dir / f"{log_basename}.stderr"
         stdout_log_path = log_dir / f"{log_basename}.stdout"
         heaptrack_output_base = (
-            str(heaptrack_dir / f"upload-{log_basename}")
-            if memory_profiling
-            else None
+            str(heaptrack_dir / f"upload-{log_basename}") if memory_profiling else None
         )
         payment_marker_path = log_dir / f"{log_basename}.paid"
         try:
@@ -796,8 +831,7 @@ def main() -> int:
             # The child resolved the file and this transport refused it. Not a
             # network failure: nothing was attempted and nothing was paid for.
             print(
-                f"  over cap: this transport refuses the file "
-                f"(log={stderr_log_path})",
+                f"  over cap: this transport refuses the file (log={stderr_log_path})",
                 flush=True,
             )
         else:
@@ -833,11 +867,15 @@ def main() -> int:
 
         if influx_enabled:
             line = _build_line(
-                host=host, region=region,
+                host=host,
+                region=region,
                 status=status,
-                total_ms=total_ms, upload_secs=upload_secs,
-                file_size=file_size, start_ns=upload_start_ns,
-                chunks_stored=chunks_stored, chunks_failed=chunks_failed,
+                total_ms=total_ms,
+                upload_secs=upload_secs,
+                file_size=file_size,
+                start_ns=upload_start_ns,
+                chunks_stored=chunks_stored,
+                chunks_failed=chunks_failed,
                 total_chunks=total_chunks,
                 chunk_attempts_total=chunk_attempts_total,
                 retries_round_0=retries_histogram[0],
@@ -847,7 +885,9 @@ def main() -> int:
                 store_duration_p50_ms=store_duration_p50_ms,
                 store_duration_p95_ms=store_duration_p95_ms,
                 store_duration_max_ms=store_duration_max_ms,
-                address=address, file_name=file_name, source_url=url,
+                address=address,
+                file_name=file_name,
+                source_url=url,
                 reason=reason,
                 storage_cost_atto=storage_cost_atto,
                 gas_cost_wei=gas_cost_wei,

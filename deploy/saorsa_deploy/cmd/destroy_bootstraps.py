@@ -45,8 +45,7 @@ def cmd_destroy_bootstraps(args):
         dependents = list_extensions_of(args.name)
     except Exception as e:
         console.print(
-            f"[bold red]Error:[/bold red] Failed to scan for extensions of "
-            f"'{args.name}': {e}"
+            f"[bold red]Error:[/bold red] Failed to scan for extensions of '{args.name}': {e}"
         )
         sys.exit(1)
     if dependents:
@@ -66,24 +65,18 @@ def cmd_destroy_bootstraps(args):
 
     bootstrap_nodes = state.get("bootstrap_nodes") or []
     if not bootstrap_nodes:
-        console.print(
-            f"[yellow]No bootstrap nodes recorded for '{args.name}'.[/yellow]"
-        )
+        console.print(f"[yellow]No bootstrap nodes recorded for '{args.name}'.[/yellow]")
         # Nothing to destroy from state; still try the S3 fallback in case
         # tfstate was left behind somehow.
         stale_keys = list_stale_bootstrap_state_keys(args.name)
         if stale_keys:
             _destroy_bootstraps_without_state(args.name, args.force, console)
             return
-        console.print(
-            f"[dim]Removing empty deployment state for '{args.name}'.[/dim]"
-        )
+        console.print(f"[dim]Removing empty deployment state for '{args.name}'.[/dim]")
         try:
             delete_deployment_state(args.name)
         except Exception as e:
-            console.print(
-                f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]"
-            )
+            console.print(f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]")
         return
 
     if not args.force:
@@ -105,9 +98,7 @@ def cmd_destroy_bootstraps(args):
     terraform_variables = state.get("terraform_variables") or {}
     volume_size = int(terraform_variables.get("attached_volume_size", "20"))
 
-    console.print(
-        f"[bold]Destroying {len(bootstrap_regions)} bootstrap VM(s)...[/bold]"
-    )
+    console.print(f"[bold]Destroying {len(bootstrap_regions)} bootstrap VM(s)...[/bold]")
     try:
         destroy_bootstrap_vms(
             args.name,
@@ -137,25 +128,19 @@ def cmd_destroy_bootstraps(args):
                 {"bootstrap_nodes": [], "bootstrap_ip": ""},
             )
         except Exception as e:
-            console.print(
-                f"[yellow]Warning: Failed to update deployment state: {e}[/yellow]"
-            )
+            console.print(f"[yellow]Warning: Failed to update deployment state: {e}[/yellow]")
     else:
         try:
             delete_deployment_state(args.name)
             console.print("[dim]Deployment state removed from S3.[/dim]")
             fully_destroyed = True
         except Exception as e:
-            console.print(
-                f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]"
-            )
+            console.print(f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]")
 
     record_event(args.name, "destroy_bootstraps_completed")
     if fully_destroyed:
         record_status(args.name, DeploymentStatus.DESTROYED)
-    console.print(
-        f"[bold green]Bootstrap VM(s) for '{args.name}' destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]Bootstrap VM(s) for '{args.name}' destroyed.[/bold green]")
 
 
 def _destroy_bootstraps_without_state(name: str, force: bool, console: Console) -> None:
@@ -163,8 +148,7 @@ def _destroy_bootstraps_without_state(name: str, force: bool, console: Console) 
     stale_keys = list_stale_bootstrap_state_keys(name)
     if not stale_keys:
         console.print(
-            f"[yellow]No bootstrap infrastructure found for '{name}'. "
-            "Nothing to destroy.[/yellow]"
+            f"[yellow]No bootstrap infrastructure found for '{name}'. Nothing to destroy.[/yellow]"
         )
         return
 
@@ -179,8 +163,7 @@ def _destroy_bootstraps_without_state(name: str, force: bool, console: Console) 
 
     if not force:
         confirm = input(
-            f"Destroy orphaned bootstrap resources for '{name}'? Type 'yes' to "
-            "confirm: "
+            f"Destroy orphaned bootstrap resources for '{name}'? Type 'yes' to confirm: "
         )
         if confirm.strip().lower() != "yes":
             console.print("[yellow]Aborted.[/yellow]")
@@ -194,6 +177,5 @@ def _destroy_bootstraps_without_state(name: str, force: bool, console: Console) 
         sys.exit(1)
 
     console.print(
-        f"[bold green]Orphaned bootstrap infrastructure for '{name}' destroyed."
-        "[/bold green]"
+        f"[bold green]Orphaned bootstrap infrastructure for '{name}' destroyed.[/bold green]"
     )

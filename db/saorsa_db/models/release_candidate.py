@@ -31,13 +31,9 @@ class ReleaseCandidate(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    binary_target: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    binary_target: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     binary_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    rc_branch: Mapped[str] = mapped_column(
-        String(128), nullable=False, index=True
-    )
+    rc_branch: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

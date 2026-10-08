@@ -5,6 +5,7 @@ Both come from the inventory, and an IP outside the inventory is refused rather
 than treated as an ad-hoc host — that is how a probe or a restart would land on
 the wrong fleet.
 """
+
 import json
 import subprocess
 from types import SimpleNamespace
@@ -20,23 +21,43 @@ def _write_inventory(tmp_path):
         "schema_version": 6,
         "node_vms": [
             {
-                "name": "DEV-01-ant-node-DE1-1", "provider": "ovh", "region": "DE1",
-                "ip": "10.0.0.1", "ssh_user": "root", "ssh_key": "~/.ssh/ant_deploy",
-                "nat_simulated": False, "services": ["ant-node-1", "ant-node-2"],
+                "name": "DEV-01-ant-node-DE1-1",
+                "provider": "ovh",
+                "region": "DE1",
+                "ip": "10.0.0.1",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/ant_deploy",
+                "nat_simulated": False,
+                "services": ["ant-node-1", "ant-node-2"],
             },
             {
-                "name": "DEV-01-ant-node-ord-1", "provider": "vultr", "region": "ord",
-                "ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/ant_deploy",
-                "nat_simulated": True, "services": ["ant-node-1"],
+                "name": "DEV-01-ant-node-ord-1",
+                "provider": "vultr",
+                "region": "ord",
+                "ip": "10.0.0.2",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/ant_deploy",
+                "nat_simulated": True,
+                "services": ["ant-node-1"],
             },
         ],
         "bootstrap_vms": [
-            {"name": "DEV-01-ant-bootstrap-1", "ip": "10.0.1.1", "ssh_user": "root",
-             "ssh_key": "~/.ssh/ant_deploy", "services": ["ant-bootstrap-1"]},
+            {
+                "name": "DEV-01-ant-bootstrap-1",
+                "ip": "10.0.1.1",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/ant_deploy",
+                "services": ["ant-bootstrap-1"],
+            },
         ],
         "client_vms": [
-            {"name": "DEV-01-ant-client-upload-1", "ip": "10.0.2.1", "ssh_user": "root",
-             "ssh_key": "~/.ssh/ant_deploy", "services": ["ant-uploader"]},
+            {
+                "name": "DEV-01-ant-client-upload-1",
+                "ip": "10.0.2.1",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/ant_deploy",
+                "services": ["ant-uploader"],
+            },
         ],
     }
     path = tmp_path / "inventory.json"
@@ -88,23 +109,36 @@ def test_the_production_inventory_shape_loads(tmp_path):
     would then divide the ES numerators by zeros.
     """
     inv = tmp_path / "prod.json"
-    inv.write_text(json.dumps({
-        "schema_version": 3, "testnet_id": "ant-prod-01",
-        "node_vms": [
+    inv.write_text(
+        json.dumps(
             {
-                "name": "ant-prod-01-hz-fsn1-1", "provider": "hetzner",
-                "provider_id": "127000688", "region": "fsn1", "ip": "10.1.0.1",
-                "ssh_user": "root", "ssh_key": "~/.ssh/ant_deploy",
-                "nodes": [{"service_name": "ant-node-2"}],
-                "services": ["ant-node-2", "ant-node-3"],
-            },
-            {
-                "name": "ant-prod-01-ovh-waw1-7", "provider": "ovh", "region": "waw1",
-                "ip": "10.1.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/ant_deploy",
-                "services": ["ant-node-1"],
-            },
-        ],
-    }))
+                "schema_version": 3,
+                "testnet_id": "ant-prod-01",
+                "node_vms": [
+                    {
+                        "name": "ant-prod-01-hz-fsn1-1",
+                        "provider": "hetzner",
+                        "provider_id": "127000688",
+                        "region": "fsn1",
+                        "ip": "10.1.0.1",
+                        "ssh_user": "root",
+                        "ssh_key": "~/.ssh/ant_deploy",
+                        "nodes": [{"service_name": "ant-node-2"}],
+                        "services": ["ant-node-2", "ant-node-3"],
+                    },
+                    {
+                        "name": "ant-prod-01-ovh-waw1-7",
+                        "provider": "ovh",
+                        "region": "waw1",
+                        "ip": "10.1.0.2",
+                        "ssh_user": "root",
+                        "ssh_key": "~/.ssh/ant_deploy",
+                        "services": ["ant-node-1"],
+                    },
+                ],
+            }
+        )
+    )
     vms = hosts.node_vms("ant-prod-01", str(inv))
     assert [v.ip for v in vms] == ["10.1.0.1", "10.1.0.2"]
     assert not any(v.nat for v in vms)

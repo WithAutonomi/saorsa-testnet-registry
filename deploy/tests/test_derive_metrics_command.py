@@ -5,6 +5,7 @@ point of the command is that everything it needs already lives in Postgres: the
 bucket rows, their endpoints, and the per-op records. The InfluxDB it came from
 is assumed gone.
 """
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -76,9 +77,7 @@ def _seed(repo, *, uploads=((1, "2026-07-01T00:10:00"),), name="DEV-03"):
     for index, minute in enumerate(("00:00", "00:05", "00:10", "00:15")):
         start = f"2026-07-01T{minute}:00"
         # 1 MB/s throughout: 300 s per bucket => 300 MB per bucket.
-        buckets.append(
-            _bucket(METRIC_BYTES_OUT_PER_SEC, start, 1024 * 1024)
-        )
+        buckets.append(_bucket(METRIC_BYTES_OUT_PER_SEC, start, 1024 * 1024))
         buckets.append(
             _bucket(
                 METRIC_DISK_USED_BYTES,
@@ -128,9 +127,7 @@ def _run(monkeypatch, repo, args=None):
 def _stored(repo, deployment, label="steady-state"):
     return {
         row.metric: row
-        for row in repo.list_derived_metrics_for_deployment(
-            deployment.id, window_label=label
-        )
+        for row in repo.list_derived_metrics_for_deployment(deployment.id, window_label=label)
     }
 
 
@@ -147,9 +144,7 @@ def test_growth_comes_from_the_bucket_endpoints(monkeypatch, repo):
     deployment = _seed(repo)
     _run(monkeypatch, repo)
     # 0 GB -> 3 GB across the four buckets.
-    assert _stored(repo, deployment)[METRIC_NODE_STORAGE_GROWTH_BYTES].value == (
-        3 * BYTES_PER_GB
-    )
+    assert _stored(repo, deployment)[METRIC_NODE_STORAGE_GROWTH_BYTES].value == (3 * BYTES_PER_GB)
 
 
 def test_a_sub_window_measures_less_than_the_whole_run(monkeypatch, repo):
@@ -206,24 +201,18 @@ def test_ratio_reconciles_with_its_own_components(monkeypatch, repo):
     assert ratio.value == pytest.approx(ratio.numerator / ratio.denominator)
 
 
-def test_rerunning_the_same_label_replaces_rather_than_accumulates(
-    monkeypatch, repo
-):
+def test_rerunning_the_same_label_replaces_rather_than_accumulates(monkeypatch, repo):
     deployment = _seed(repo)
     _run(monkeypatch, repo)
     _run(monkeypatch, repo)
-    rows = repo.list_derived_metrics_for_deployment(
-        deployment.id, window_label="steady-state"
-    )
+    rows = repo.list_derived_metrics_for_deployment(deployment.id, window_label="steady-state")
     assert len(rows) == len({row.metric for row in rows})
 
 
 def test_two_windows_coexist(monkeypatch, repo):
     deployment = _seed(repo)
-    _run(monkeypatch, repo, _args(label="warm-up",
-                                  window_end="2026-07-01T00:10:00"))
-    _run(monkeypatch, repo, _args(label="steady-state",
-                                  window_start="2026-07-01T00:10:00"))
+    _run(monkeypatch, repo, _args(label="warm-up", window_end="2026-07-01T00:10:00"))
+    _run(monkeypatch, repo, _args(label="steady-state", window_start="2026-07-01T00:10:00"))
     warm = _stored(repo, deployment, "warm-up")
     steady = _stored(repo, deployment, "steady-state")
     assert warm[METRIC_NODE_OUTBOUND_BYTES_TOTAL].value == 2 * 300 * 1024 * 1024
@@ -274,10 +263,7 @@ def test_refuses_a_window_containing_no_buckets(monkeypatch, repo):
 
 
 def test_infers_the_width_from_consecutive_buckets():
-    rows = [
-        {"bucket_start": _ts(f"2026-07-01T00:{minute:02d}:00")}
-        for minute in (0, 5, 10, 15)
-    ]
+    rows = [{"bucket_start": _ts(f"2026-07-01T00:{minute:02d}:00")} for minute in (0, 5, 10, 15)]
     assert infer_bucket_secs(rows) == 300
 
 

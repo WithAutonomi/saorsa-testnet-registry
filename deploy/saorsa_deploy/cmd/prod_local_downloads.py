@@ -83,9 +83,10 @@ def _is_immutable_cache_key(key: str) -> bool:
 
 def _download_to(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as resp, open(
-        dest, "wb"
-    ) as out:
+    with (
+        urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as resp,
+        open(dest, "wb") as out,
+    ):
         while True:
             chunk = resp.read(1 << 16)
             if not chunk:
@@ -100,9 +101,7 @@ def _extract_ant_from_tarball(tarball: Path, dest: Path) -> None:
             None,
         )
         if member is None:
-            raise RuntimeError(
-                f"Release tarball {tarball} does not contain an 'ant' binary"
-            )
+            raise RuntimeError(f"Release tarball {tarball} does not contain an 'ant' binary")
         extracted = tar.extractfile(member)
         if extracted is None:
             raise RuntimeError(f"Could not extract 'ant' from {tarball}")
@@ -153,9 +152,7 @@ def _resolve_ant_binary(
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if is_tarball:
-        with tempfile.NamedTemporaryFile(
-            dir=target.parent, suffix=".tar.gz", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".tar.gz", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
             _download_to(url, tmp_path)
@@ -194,14 +191,10 @@ def _resolve_bootstrap_args(args, console: Console) -> list[str]:
                 f"from {PROD_BOOTSTRAPS_URL}"
             )
         else:
-            console.print(
-                f"[bold]Bootstrap cache enabled:[/bold] using existing {peers_path}"
-            )
+            console.print(f"[bold]Bootstrap cache enabled:[/bold] using existing {peers_path}")
         return []
 
-    console.print(
-        f"[bold]Resolving prod bootstraps from {PROD_BOOTSTRAPS_URL}...[/bold]"
-    )
+    console.print(f"[bold]Resolving prod bootstraps from {PROD_BOOTSTRAPS_URL}...[/bold]")
     try:
         peers = fetch_prod_bootstraps()
     except ProdBootstrapsError as e:
@@ -247,10 +240,14 @@ def _run_ant(
     cmd = [
         str(ant_path),
         *bootstrap_args,
-        "--evm-network", EVM_NETWORK,
+        "--evm-network",
+        EVM_NETWORK,
         "-v",
-        "file", "download", address,
-        "-o", str(output_path),
+        "file",
+        "download",
+        address,
+        "-o",
+        str(output_path),
     ]
 
     stderr_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,9 +266,7 @@ def _run_ant(
 
     def _pump_stderr() -> None:
         try:
-            with open(
-                stderr_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stderr_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stderr is not None
                 for line in proc.stderr:
                     fh.write(line)
@@ -282,9 +277,7 @@ def _run_ant(
 
     def _pump_stdout() -> None:
         try:
-            with open(
-                stdout_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stdout_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     fh.write(line)
@@ -328,12 +321,9 @@ def _read_address_list(path: Path) -> list[str]:
 def cmd_prod_local_downloads(args) -> None:
     console = Console()
 
-    if (args.branch_name and not args.repo_owner) or (
-        args.repo_owner and not args.branch_name
-    ):
+    if (args.branch_name and not args.repo_owner) or (args.repo_owner and not args.branch_name):
         console.print(
-            "[bold red]Error:[/bold red] --branch-name and --repo-owner must be "
-            "provided together."
+            "[bold red]Error:[/bold red] --branch-name and --repo-owner must be provided together."
         )
         sys.exit(1)
     if (args.branch_name or args.repo_owner) and args.ant_version:
@@ -360,9 +350,7 @@ def cmd_prod_local_downloads(args) -> None:
         sys.exit(1)
     addresses = _read_address_list(addresses_path)
     if not addresses:
-        console.print(
-            f"[bold red]Error:[/bold red] address list {addresses_path} is empty."
-        )
+        console.print(f"[bold red]Error:[/bold red] address list {addresses_path} is empty.")
         sys.exit(1)
 
     bootstrap_args = _resolve_bootstrap_args(args, console)
@@ -379,9 +367,7 @@ def cmd_prod_local_downloads(args) -> None:
     log_dir = _LOG_ROOT / args.name
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    binary_descriptor = build_binary_descriptor(
-        args.branch_name, args.repo_owner, args.ant_version
-    )
+    binary_descriptor = build_binary_descriptor(args.branch_name, args.repo_owner, args.ant_version)
     if binary_descriptor.get("kind") == "latest" and resolved_version:
         binary_descriptor = {"kind": "release", "version": resolved_version}
 

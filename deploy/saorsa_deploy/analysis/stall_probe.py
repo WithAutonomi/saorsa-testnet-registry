@@ -24,6 +24,7 @@ then one real 3 s probe against a single peer as a smoke test).
 
 The remote payload is verbatim from V2-1059 apart from the log path.
 """
+
 # ruff: noqa: E501 -- the remote bash payloads are kept verbatim from the proven scripts.
 from __future__ import annotations
 
@@ -102,9 +103,7 @@ echo "STATUS=done LOG=$LOG"
 """
 
 
-def run_stall_probe(
-    vm: hosts.Vm, seconds: int, peers: int, tag: str, dry_run: bool
-) -> int:
+def run_stall_probe(vm: hosts.Vm, seconds: int, peers: int, tag: str, dry_run: bool) -> int:
     """Run the probe, streaming its stdout so block/lift lines appear live."""
     args = [str(seconds), str(peers), tag, "1" if dry_run else ""]
     quoted = " ".join(shlex.quote(a) for a in args)
@@ -126,8 +125,7 @@ def cmd_stall_probe(args: argparse.Namespace) -> int:
     (vm,) = hosts.select_vms(args.name, [args.ip], args.inventory)
     console.print(
         f"stall probe on {vm.ip} ({'NAT' if vm.nat else 'plain'}): "
-        f"{args.peers} peer(s) x {args.seconds}s"
-        + (" [dry-run]" if args.dry_run else "")
+        f"{args.peers} peer(s) x {args.seconds}s" + (" [dry-run]" if args.dry_run else "")
     )
     rc = run_stall_probe(vm, args.seconds, args.peers, args.tag, args.dry_run)
     if rc != 0:
@@ -147,7 +145,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     add_deployment_args(p)
     p.add_argument("--ip", required=True, help="Node VM to probe from (must be in the inventory).")
     p.add_argument("--seconds", type=int, required=True, help="Block length per peer.")
-    p.add_argument("--peers", type=int, required=True, help="How many peers to probe, sequentially.")
-    p.add_argument("--tag", required=True, help="Log tag: /var/tmp/saorsa-analysis-probe-<tag>.jsonl.")
-    p.add_argument("--dry-run", action="store_true", help="Print the iptables commands; apply nothing.")
+    p.add_argument(
+        "--peers", type=int, required=True, help="How many peers to probe, sequentially."
+    )
+    p.add_argument(
+        "--tag", required=True, help="Log tag: /var/tmp/saorsa-analysis-probe-<tag>.jsonl."
+    )
+    p.add_argument(
+        "--dry-run", action="store_true", help="Print the iptables commands; apply nothing."
+    )
     p.set_defaults(func=cmd_stall_probe)

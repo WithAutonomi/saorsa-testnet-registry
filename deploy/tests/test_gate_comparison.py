@@ -5,6 +5,7 @@ verdict, and requires the same inputs to always produce an identical report.
 These tests pin the arithmetic, the three comparability invariants, and the
 rule that a gate which cannot be measured is NOT ASSESSED rather than a pass.
 """
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -281,9 +282,7 @@ def test_percentile_against_a_baseline_without_one_degrades_to_the_shared_mean(
     baseline.host_metrics = [{"host": "n1", "cpu_percent": {"avg": 50.0, "samples": 100}}]
 
     cpu = next(
-        g
-        for g in compare_runs(candidate, baseline, config)["gates"]
-        if g["gate"] == "Node CPU"
+        g for g in compare_runs(candidate, baseline, config)["gates"] if g["gate"] == "Node CPU"
     )
     assert cpu["verdict"] != NOT_ASSESSED
     assert cpu["statistic"] == "mean"
@@ -303,9 +302,7 @@ def test_degrading_to_the_mean_still_applies_the_threshold(config):
     baseline.host_metrics = [{"host": "n1", "cpu_percent": {"avg": 50.0, "samples": 100}}]
 
     cpu = next(
-        g
-        for g in compare_runs(candidate, baseline, config)["gates"]
-        if g["gate"] == "Node CPU"
+        g for g in compare_runs(candidate, baseline, config)["gates"] if g["gate"] == "Node CPU"
     )
     assert cpu["verdict"] == FAIL  # +60% against a 15% threshold
 
@@ -314,15 +311,11 @@ def test_no_shared_statistic_is_still_refused(config):
     """Degradation needs a mean on BOTH sides; without one, refuse as before."""
     candidate = _full_run(1, "STG-01", 20.0, 1e9)
     baseline = _full_run(2, "STG-00", 20.0, 1e9)
-    candidate.host_metrics = [
-        {"host": "n1", "cpu_percent": {"p50": 50.0, "samples": 100}}
-    ]
+    candidate.host_metrics = [{"host": "n1", "cpu_percent": {"p50": 50.0, "samples": 100}}]
     baseline.host_metrics = [{"host": "n1", "cpu_percent": {"avg": 50.0, "samples": 100}}]
 
     cpu = next(
-        g
-        for g in compare_runs(candidate, baseline, config)["gates"]
-        if g["gate"] == "Node CPU"
+        g for g in compare_runs(candidate, baseline, config)["gates"] if g["gate"] == "Node CPU"
     )
     assert cpu["verdict"] == NOT_ASSESSED
 
@@ -340,8 +333,7 @@ def _rss_fleet(values):
         {
             "host": "node-1",
             "rss_by_service": {
-                f"ant-node-{i}": {"avg": float(v), "samples": 10}
-                for i, v in enumerate(values)
+                f"ant-node-{i}": {"avg": float(v), "samples": 10} for i, v in enumerate(values)
             },
         }
     ]
@@ -425,9 +417,7 @@ def test_leak_gate_uses_a_central_statistic_not_a_tail():
     config = load_gate_config()
     # 100 services spread symmetrically from -50 to +50 %/h, median ~0.
     noisy = list(range(-50, 50))
-    growth = percentile(
-        [float(v) for v in noisy], config.memory_leak.service_percentile / 100.0
-    )
+    growth = percentile([float(v) for v in noisy], config.memory_leak.service_percentile / 100.0)
     assert abs(growth) < config.memory_leak.max_growth_percent_per_hour
 
 
@@ -542,9 +532,7 @@ def test_absent_delta_is_not_assessed(config):
 
 
 def _run(deployment_id=1, name="STG-01", label="full-run", **kwargs):
-    return RunMetrics(
-        deployment_id=deployment_id, name=name, window_label=label, **kwargs
-    )
+    return RunMetrics(deployment_id=deployment_id, name=name, window_label=label, **kwargs)
 
 
 def test_mismatched_window_labels_refuse(config):
@@ -558,9 +546,7 @@ def test_mismatched_derived_source_refuses(config):
     # capture is exact; buckets is approximate. Comparing them measures the
     # method, not the release.
     candidate = _run(derived={"gb_uploaded": {"value": 1.0, "source": "capture"}})
-    baseline = _run(
-        deployment_id=2, derived={"gb_uploaded": {"value": 1.0, "source": "buckets"}}
-    )
+    baseline = _run(deployment_id=2, derived={"gb_uploaded": {"value": 1.0, "source": "buckets"}})
     problems = check_comparability(candidate, baseline, config)
     assert any("sources differ" in p for p in problems)
 
@@ -569,9 +555,7 @@ def test_materially_different_window_lengths_refuse(config):
     # Replication continues after an upload completes, so a short window
     # truncates the disk numerator while counting the full denominator.
     candidate = _run(window_start=T0, window_end=T0 + timedelta(hours=3))
-    baseline = _run(
-        deployment_id=2, window_start=T0, window_end=T0 + timedelta(hours=10)
-    )
+    baseline = _run(deployment_id=2, window_start=T0, window_end=T0 + timedelta(hours=10))
     problems = check_comparability(candidate, baseline, config)
     assert any("window lengths differ" in p for p in problems)
 
@@ -643,9 +627,7 @@ def test_a_labelled_phase_window_does_not_warn(config):
 
 def test_compare_runs_raises_on_incomparable_runs(config):
     with pytest.raises(ComparisonError):
-        compare_runs(
-            _run(label="steady-state"), _run(deployment_id=2, label="full-run"), config
-        )
+        compare_runs(_run(label="steady-state"), _run(deployment_id=2, label="full-run"), config)
 
 
 # ---------------------------------------------------------------------------
@@ -658,9 +640,9 @@ def _full_run(deployment_id, name, cpu, ratio, ok=100, fail=0, duration=1000):
     # operations all share one timestamp has a zero-length activity span.
     total = ok + fail
     step = 240 / max(total, 1)
-    records = [
-        op(duration_ms=duration, minutes=int(i * step)) for i in range(ok)
-    ] + [op(status="failure", minutes=int((ok + i) * step)) for i in range(fail)]
+    records = [op(duration_ms=duration, minutes=int(i * step)) for i in range(ok)] + [
+        op(status="failure", minutes=int((ok + i) * step)) for i in range(fail)
+    ]
     return RunMetrics(
         deployment_id=deployment_id,
         name=name,
@@ -735,18 +717,14 @@ def test_same_inputs_produce_a_byte_identical_report(config):
 
 def test_report_does_not_embed_a_generation_time_by_default(config):
     report = render_report(
-        compare_runs(
-            _full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config
-        )
+        compare_runs(_full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config)
     )
     assert "Computed at" not in report
 
 
 def test_report_names_the_threshold_config_version(config):
     report = render_report(
-        compare_runs(
-            _full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config
-        )
+        compare_runs(_full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config)
     )
     assert f"Threshold config version: {config.version}" in report
 
@@ -755,9 +733,7 @@ def test_report_flags_a_mean_standing_in_for_a_median(config):
     # The spec names node CPU *median*; a mean silently standing in for it is
     # exactly the substitution nobody notices.
     report = render_report(
-        compare_runs(
-            _full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config
-        )
+        compare_runs(_full_run(1, "STG-01", 20.0, 1e9), _full_run(2, "STG-00", 20.0, 1e9), config)
     )
     assert "[mean]" in report
 
@@ -772,11 +748,8 @@ def _integrity_gate(verdict):
 
 
 def _run_with_verifications(deployment_id, name, verify_statuses, failures=0):
-    records = [
-        op(minutes=i, verify_status=v) for i, v in enumerate(verify_statuses)
-    ] + [
-        op(status="failure", minutes=len(verify_statuses) + i)
-        for i in range(failures)
+    records = [op(minutes=i, verify_status=v) for i, v in enumerate(verify_statuses)] + [
+        op(status="failure", minutes=len(verify_statuses) + i) for i in range(failures)
     ]
     return RunMetrics(
         deployment_id=deployment_id,
@@ -850,9 +823,7 @@ def test_a_mismatch_does_not_touch_the_availability_floors(config):
         _run_with_verifications(2, "STG-00", ["ok"] * 100),
         config,
     )
-    floor = next(
-        g for g in verdict["gates"] if g["gate"].startswith("Download success floor")
-    )
+    floor = next(g for g in verdict["gates"] if g["gate"].startswith("Download success floor"))
     assert floor["verdict"] == PASS
     assert floor["candidate"] == 100.0
 
@@ -889,9 +860,7 @@ def test_failed_downloads_are_excluded_from_coverage_but_not_hidden(config):
     )
     # Eight successful downloads, all eight verified: the two failures had no
     # bytes to check and are not in the denominator.
-    assert "coverage 100.0% of 8 successful download(s)" in _integrity_gate(verdict)[
-        "detail"
-    ]
+    assert "coverage 100.0% of 8 successful download(s)" in _integrity_gate(verdict)["detail"]
 
 
 def test_data_integrity_survives_new_baseline(config):
@@ -921,4 +890,3 @@ def test_the_integrity_gate_is_rendered_in_the_hard_gate_table(config):
     # A count, so no percent suffix: "> 0 %" would read as a percentage of
     # something.
     assert "> 0 |" in report
-

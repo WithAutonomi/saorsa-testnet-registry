@@ -58,12 +58,20 @@ class TestDebugUnitFile:
         # The migration / prod-nodes unit (always/10/65536) must be byte-identical
         # whether or not the new debug params exist.
         a = _build_node_unit_file(
-            "ant-node-1", _EXEC, restart_policy="always", restart_sec=10,
+            "ant-node-1",
+            _EXEC,
+            restart_policy="always",
+            restart_sec=10,
             limit_nofile=65536,
         )
         b = _build_node_unit_file(
-            "ant-node-1", _EXEC, restart_policy="always", restart_sec=10,
-            limit_nofile=65536, rust_backtrace=None, coredumps=False,
+            "ant-node-1",
+            _EXEC,
+            restart_policy="always",
+            restart_sec=10,
+            limit_nofile=65536,
+            rust_backtrace=None,
+            coredumps=False,
             colorbt_show_hidden=False,
         )
         assert a == b
@@ -84,9 +92,7 @@ class TestDebugUnitFile:
     def test_colorbt_show_hidden_adds_environment_line(self):
         # ant-node's color-backtrace filters every frame (<empty backtrace>)
         # unless COLORBT_SHOW_HIDDEN=1 is set on the service env.
-        unit = _build_node_unit_file(
-            "ant-node-1", _EXEC, colorbt_show_hidden=True
-        )
+        unit = _build_node_unit_file("ant-node-1", _EXEC, colorbt_show_hidden=True)
         assert "Environment=COLORBT_SHOW_HIDDEN=1\n" in unit
 
     def test_debug_env_present_on_nat_variant(self):
@@ -94,8 +100,12 @@ class TestDebugUnitFile:
         # Environment= lines (so they survive the ip netns exec wrapper), not
         # inlined on ExecStart.
         unit = _build_node_unit_file(
-            "ant-node-1", _EXEC, is_nat=True, rust_backtrace="full",
-            coredumps=True, colorbt_show_hidden=True,
+            "ant-node-1",
+            _EXEC,
+            is_nat=True,
+            rust_backtrace="full",
+            coredumps=True,
+            colorbt_show_hidden=True,
         )
         assert "Environment=RUST_BACKTRACE=full\n" in unit
         assert "Environment=COLORBT_SHOW_HIDDEN=1\n" in unit
@@ -151,19 +161,25 @@ class TestContaboProvider:
 
     def test_missing_contabo_env_reports_all_when_unset(self, monkeypatch):
         for v in (
-            "CNTB_OAUTH2_CLIENT_ID", "CNTB_OAUTH2_CLIENT_SECRET",
-            "CNTB_OAUTH2_USER", "CNTB_OAUTH2_PASS",
+            "CNTB_OAUTH2_CLIENT_ID",
+            "CNTB_OAUTH2_CLIENT_SECRET",
+            "CNTB_OAUTH2_USER",
+            "CNTB_OAUTH2_PASS",
         ):
             monkeypatch.delenv(v, raising=False)
         assert set(missing_contabo_env()) == {
-            "CNTB_OAUTH2_CLIENT_ID", "CNTB_OAUTH2_CLIENT_SECRET",
-            "CNTB_OAUTH2_USER", "CNTB_OAUTH2_PASS",
+            "CNTB_OAUTH2_CLIENT_ID",
+            "CNTB_OAUTH2_CLIENT_SECRET",
+            "CNTB_OAUTH2_USER",
+            "CNTB_OAUTH2_PASS",
         }
 
     def test_missing_contabo_env_empty_when_all_set(self, monkeypatch):
         for v in (
-            "CNTB_OAUTH2_CLIENT_ID", "CNTB_OAUTH2_CLIENT_SECRET",
-            "CNTB_OAUTH2_USER", "CNTB_OAUTH2_PASS",
+            "CNTB_OAUTH2_CLIENT_ID",
+            "CNTB_OAUTH2_CLIENT_SECRET",
+            "CNTB_OAUTH2_USER",
+            "CNTB_OAUTH2_PASS",
         ):
             monkeypatch.setenv(v, "x")
         assert missing_contabo_env() == []
@@ -171,13 +187,24 @@ class TestContaboProvider:
 
 def _infra_args(**overrides):
     base = dict(
-        do_vm_count=0, hetzner_vm_count=0, vultr_vm_count=0,
-        ovh_vm_count=0, ovh_3az_vm_count=0, contabo_vm_count=0,
-        do_regions=1, hetzner_regions=1, vultr_regions=1,
-        do_regions_list=None, hetzner_regions_list=None, vultr_regions_list=None,
-        ovh_regions=1, ovh_regions_list=None,
-        ovh_3az_regions=1, ovh_3az_regions_list=None,
-        contabo_regions=1, contabo_regions_list=None,
+        do_vm_count=0,
+        hetzner_vm_count=0,
+        vultr_vm_count=0,
+        ovh_vm_count=0,
+        ovh_3az_vm_count=0,
+        contabo_vm_count=0,
+        do_regions=1,
+        hetzner_regions=1,
+        vultr_regions=1,
+        do_regions_list=None,
+        hetzner_regions_list=None,
+        vultr_regions_list=None,
+        ovh_regions=1,
+        ovh_regions_list=None,
+        ovh_3az_regions=1,
+        ovh_3az_regions_list=None,
+        contabo_regions=1,
+        contabo_regions_list=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -185,21 +212,21 @@ def _infra_args(**overrides):
 
 class TestContaboNodeInfra:
     def test_build_provider_specs_picks_up_contabo(self):
-        specs = _build_provider_specs(
-            _infra_args(contabo_vm_count=1, contabo_regions_list="EU")
-        )
+        specs = _build_provider_specs(_infra_args(contabo_vm_count=1, contabo_regions_list="EU"))
         assert [s.name for s in specs] == ["contabo"]
         assert specs[0].regions_override == ["EU"]
 
     def test_build_provider_state_records_product_id(self):
         specs = _build_provider_specs(_infra_args(contabo_vm_count=2))
         state = _build_provider_state(
-            specs, "s-2vcpu-4gb", "cpx22", "vc2-2c-4gb", "b3-16",
+            specs,
+            "s-2vcpu-4gb",
+            "cpx22",
+            "vc2-2c-4gb",
+            "b3-16",
             contabo_product_id="V45",
         )
-        assert state["contabo"] == {
-            "vm_count": 2, "regions": 1, "product_id": "V45"
-        }
+        assert state["contabo"] == {"vm_count": 2, "regions": 1, "product_id": "V45"}
 
 
 # --------------------------------------------------------------------------- #
@@ -243,8 +270,13 @@ class TestDebugNodesOrchestrator:
     def test_optional_fields_omitted_when_unset(self):
         deploy = build_deploy_steps(_debug_manifest())[1].argv
         for flag in (
-            "--provider", "--vm-size", "--coredumps", "--monitoring",
-            "--forward-logs", "--contabo-image-id", "--log-retention-days",
+            "--provider",
+            "--vm-size",
+            "--coredumps",
+            "--monitoring",
+            "--forward-logs",
+            "--contabo-image-id",
+            "--log-retention-days",
         ):
             assert flag not in deploy
 
@@ -269,19 +301,11 @@ class TestDebugNodesOrchestrator:
         assert ["--provider", "contabo"] == _pair(deploy, "--provider")
         assert ["--rust-backtrace", "full"] == _pair(deploy, "--rust-backtrace")
         assert "--coredumps" in deploy
-        assert ["--coredump-retention-days", "7"] == _pair(
-            deploy, "--coredump-retention-days"
-        )
-        assert ["--log-retention-days", "1"] == _pair(
-            deploy, "--log-retention-days"
-        )
-        assert ["--monitoring-provider", "contabo"] == _pair(
-            deploy, "--monitoring-provider"
-        )
+        assert ["--coredump-retention-days", "7"] == _pair(deploy, "--coredump-retention-days")
+        assert ["--log-retention-days", "1"] == _pair(deploy, "--log-retention-days")
+        assert ["--monitoring-provider", "contabo"] == _pair(deploy, "--monitoring-provider")
         assert ["--elastic-provider", "contabo"] == _pair(deploy, "--elastic-provider")
-        assert ["--elastic-retention-days", "3"] == _pair(
-            deploy, "--elastic-retention-days"
-        )
+        assert ["--elastic-retention-days", "3"] == _pair(deploy, "--elastic-retention-days")
         assert ["--contabo-image-id", "uuid-123"] == _pair(deploy, "--contabo-image-id")
 
     def test_bool_false_emits_no_flag(self):
@@ -293,9 +317,7 @@ class TestDebugNodesOrchestrator:
         assert "--no-forward-logs" in deploy
 
     def test_destroy_steps_and_keep_flags(self):
-        steps = build_destroy_steps(
-            _debug_manifest(keep_monitoring=True, keep_elastic=True)
-        )
+        steps = build_destroy_steps(_debug_manifest(keep_monitoring=True, keep_elastic=True))
         assert len(steps) == 1
         argv = steps[0].argv
         assert argv[:3] == ["prod", "debug-nodes", "destroy"]
@@ -355,12 +377,9 @@ class TestDebugLogPruneUnits:
         service, _ = build_debug_logprune_units(2)
         lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
         assert len(lines) == 2
-        assert lines[0] == (
-            f"ExecStart=/usr/bin/find {LOG_DIR} -type f -mtime +2 -delete"
-        )
+        assert lines[0] == (f"ExecStart=/usr/bin/find {LOG_DIR} -type f -mtime +2 -delete")
         assert lines[1] == (
-            "ExecStart=-/usr/bin/systemctl try-restart "
-            f"{TELEGRAF_SERVICE_NAME}.service"
+            f"ExecStart=-/usr/bin/systemctl try-restart {TELEGRAF_SERVICE_NAME}.service"
         )
 
     def test_restart_is_ordered_after_the_delete(self):
@@ -418,9 +437,7 @@ class TestCoredumpPruneUnits:
 class TestPruneInstallCommands:
     def test_writes_units_reloads_and_enables(self):
         service, timer = build_debug_logprune_units(2)
-        cmds = build_prune_install_commands(
-            DEBUG_LOG_PRUNE_UNIT, service, timer, run_now=True
-        )
+        cmds = build_prune_install_commands(DEBUG_LOG_PRUNE_UNIT, service, timer, run_now=True)
         assert f"/etc/systemd/system/{DEBUG_LOG_PRUNE_UNIT}.service" in cmds[0]
         assert f"/etc/systemd/system/{DEBUG_LOG_PRUNE_UNIT}.timer" in cmds[1]
         assert cmds[2] == "systemctl daemon-reload"
@@ -430,18 +447,12 @@ class TestPruneInstallCommands:
         # A disk that is already full should get relief without waiting for
         # the next scheduled run.
         service, timer = build_debug_logprune_units(2)
-        with_now = build_prune_install_commands(
-            DEBUG_LOG_PRUNE_UNIT, service, timer, run_now=True
-        )
-        without = build_prune_install_commands(
-            DEBUG_LOG_PRUNE_UNIT, service, timer
-        )
+        with_now = build_prune_install_commands(DEBUG_LOG_PRUNE_UNIT, service, timer, run_now=True)
+        without = build_prune_install_commands(DEBUG_LOG_PRUNE_UNIT, service, timer)
         assert with_now[-1] == f"systemctl start {DEBUG_LOG_PRUNE_UNIT}.service"
         assert without == with_now[:-1]
 
     def test_coredump_prune_does_not_run_immediately(self):
         service, timer = build_coredump_prune_units(7)
-        cmds = build_prune_install_commands(
-            COREDUMP_PRUNE_UNIT, service, timer
-        )
+        cmds = build_prune_install_commands(COREDUMP_PRUNE_UNIT, service, timer)
         assert not any(c.startswith("systemctl start") for c in cmds)

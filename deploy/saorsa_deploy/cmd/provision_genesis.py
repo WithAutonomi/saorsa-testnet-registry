@@ -49,8 +49,7 @@ def _resolve_binary_source(args, console):
 
     if has_branch and has_owner:
         console.print(
-            f"Checking custom build for {args.repo_owner}/ant-node "
-            f"({args.branch_name}) exists..."
+            f"Checking custom build for {args.repo_owner}/ant-node ({args.branch_name}) exists..."
         )
         if not check_custom_build_exists(args.name, args.repo_owner, args.branch_name):
             console.print(

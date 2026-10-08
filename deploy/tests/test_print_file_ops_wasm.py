@@ -21,12 +21,13 @@ from saorsa_deploy.influx import fetch_all_operation_points
 
 class TestBothBucketsAreQueried:
     def test_wasm_bucket_is_queried_alongside_the_native_one(self):
-        with patch(
-            "saorsa_deploy.influx.fetch_operation_points", return_value=[]
-        ) as fetch:
+        with patch("saorsa_deploy.influx.fetch_operation_points", return_value=[]) as fetch:
             fetch_all_operation_points(
-                url="u", token="t", org="o",
-                bucket="testnet-metrics", wasm_bucket="wasm-client-metrics",
+                url="u",
+                token="t",
+                org="o",
+                bucket="testnet-metrics",
+                wasm_bucket="wasm-client-metrics",
                 start="0",
             )
         buckets = [c.kwargs["bucket"] for c in fetch.call_args_list]
@@ -40,20 +41,24 @@ class TestBothBucketsAreQueried:
             side_effect=[[native], [wasm]],
         ):
             out = fetch_all_operation_points(
-                url="u", token="t", org="o",
-                bucket="testnet-metrics", wasm_bucket="wasm-client-metrics",
+                url="u",
+                token="t",
+                org="o",
+                bucket="testnet-metrics",
+                wasm_bucket="wasm-client-metrics",
                 start="0",
             )
         assert {p["host"] for p in out} == {"n1", "w1"}
 
     def test_querying_the_wasm_bucket_directly_does_not_double_query(self):
-        with patch(
-            "saorsa_deploy.influx.fetch_operation_points", return_value=[]
-        ) as fetch:
+        with patch("saorsa_deploy.influx.fetch_operation_points", return_value=[]) as fetch:
             fetch_all_operation_points(
-                url="u", token="t", org="o",
+                url="u",
+                token="t",
+                org="o",
                 bucket="wasm-client-metrics",
-                wasm_bucket="wasm-client-metrics", start="0",
+                wasm_bucket="wasm-client-metrics",
+                start="0",
             )
         assert fetch.call_count == 1
 
@@ -62,15 +67,20 @@ class TestTransportMap:
     """A testnet's transport is per-VM, resolved from each client's role."""
 
     def test_hosts_map_to_their_transport(self):
-        state = {"clients": [
-            {"role": "upload", "region": "UK1", "client_index": 1},
-            {"role": "wasm-upload", "region": "SBG5", "client_index": 1},
-            {"role": "wasm-download", "region": "tor1", "client_index": 1},
-        ]}
-        with patch(
-            "saorsa_deploy.cmd.print_file_ops.load_client_state",
-            return_value=state,
-        ), patch("saorsa_deploy.registry.get_repository", return_value=None):
+        state = {
+            "clients": [
+                {"role": "upload", "region": "UK1", "client_index": 1},
+                {"role": "wasm-upload", "region": "SBG5", "client_index": 1},
+                {"role": "wasm-download", "region": "tor1", "client_index": 1},
+            ]
+        }
+        with (
+            patch(
+                "saorsa_deploy.cmd.print_file_ops.load_client_state",
+                return_value=state,
+            ),
+            patch("saorsa_deploy.registry.get_repository", return_value=None),
+        ):
             out = _build_transport_map("DEV-03")
         assert out["DEV-03-ant-client-upload-UK1-1"] == "native"
         assert out["DEV-03-ant-client-wasm-upload-SBG5-1"] == "wasm"
@@ -78,10 +88,13 @@ class TestTransportMap:
 
     def test_missing_client_state_yields_no_labels(self):
         # Better to say nothing than to guess a transport.
-        with patch(
-            "saorsa_deploy.cmd.print_file_ops.load_client_state",
-            side_effect=RuntimeError("no state"),
-        ), patch("saorsa_deploy.registry.get_repository", return_value=None):
+        with (
+            patch(
+                "saorsa_deploy.cmd.print_file_ops.load_client_state",
+                side_effect=RuntimeError("no state"),
+            ),
+            patch("saorsa_deploy.registry.get_repository", return_value=None),
+        ):
             assert _build_transport_map("DEV-03") == {}
 
     def test_a_prod_download_kind_is_labelled_from_deploy_args(self):
@@ -139,11 +152,7 @@ class TestTransportTotals:
             "h-native": [{"status": 0}],
             "h-wasm": [{"status": 0}, {"status": 2}, {"status": 2}],
         }
-        out = " ".join(
-            self._render(
-                by_host, {"h-native": "native", "h-wasm": "wasm"}
-            ).split()
-        )
+        out = " ".join(self._render(by_host, {"h-native": "native", "h-wasm": "wasm"}).split())
         assert "wasm 1/1 = 100.00%, 2 skipped (over-cap)" in out
 
 

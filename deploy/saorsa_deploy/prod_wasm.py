@@ -261,11 +261,7 @@ def _pool_class_names(pool: dict) -> set[str]:
     rather than at each call site is what stopped `pool=large:1` from being
     accepted on the command line while the identical manifest was refused.
     """
-    return {
-        str(getattr(key, "value", key))
-        for key, count in pool.items()
-        if count
-    }
+    return {str(getattr(key, "value", key)) for key, count in pool.items() if count}
 
 
 def check_wasm_pool_request(pool: dict | None) -> str | None:

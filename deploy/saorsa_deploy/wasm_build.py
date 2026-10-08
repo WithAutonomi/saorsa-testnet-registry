@@ -82,7 +82,7 @@ def build_info_command(
     return (
         f"COMMIT=$(git -C {checkout_dir} rev-parse HEAD) && "
         f"cd {client_src_dir} && "
-        "ND=$(node -e \"console.log("
+        'ND=$(node -e "console.log('
         "require('./node_modules/node-datachannel/package.json').version)\") && "
         "BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ) && "
         f"cat > {dest_path} << BUILD_INFO_EOF\n"

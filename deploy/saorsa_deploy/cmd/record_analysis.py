@@ -93,9 +93,7 @@ def _warn_about_clock_offsets(aggregates: list[dict], console: Console) -> None:
     if not offsets:
         return
 
-    lines = [
-        f"  {host:38} {_fmt_offset(delta):>8}" for host, delta in offsets
-    ]
+    lines = [f"  {host:38} {_fmt_offset(delta):>8}" for host, delta in offsets]
     console.print(
         Panel(
             "These hosts' metrics are offset from the fleet median:\n\n"
@@ -224,14 +222,11 @@ def cmd_record_analysis(args):
         deployment = repo.get_by_name(args.name)
         if deployment is None:
             console.print(
-                f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
-                "in the registry."
+                f"[bold red]Error:[/bold red] No deployment named '{args.name}' in the registry."
             )
             sys.exit(1)
     else:
-        console.print(
-            "[bold red]Error:[/bold red] one of --name or --id is required."
-        )
+        console.print("[bold red]Error:[/bold red] one of --name or --id is required.")
         sys.exit(1)
 
     influx_url = args.influx_url
@@ -264,8 +259,7 @@ def cmd_record_analysis(args):
 
     window_label = "full run" if args.window == "0" else args.window
     console.print(
-        f"[bold]Querying {influx_url} (bucket={influx_bucket}, "
-        f"window={window_label})...[/bold]"
+        f"[bold]Querying {influx_url} (bucket={influx_bucket}, window={window_label})...[/bold]"
     )
     try:
         # Lazy: each measurement is fetched and parsed while it is consumed,
@@ -328,9 +322,7 @@ def cmd_record_analysis(args):
             f"at {bucket_secs}s resolution in {elapsed:.1f}s.[/bold]"
         )
 
-    table = Table(
-        title=f"Host metrics for deployment '{deployment.name}' (id={deployment.id})"
-    )
+    table = Table(title=f"Host metrics for deployment '{deployment.name}' (id={deployment.id})")
     table.add_column("Host")
     table.add_column("CPU avg/min/max %", justify="right")
     table.add_column("Mem avg/min/max %", justify="right")

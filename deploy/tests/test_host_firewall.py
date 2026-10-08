@@ -143,7 +143,6 @@ class TestEveryPlanDisablesTheFirewall:
 
 
 class TestTheCommandIsTheNatOne:
-
     def test_nat_setup_still_carries_the_identical_line(self):
         # One definition, two call sites: the NAT script interpolates the same
         # builder, so this asserts they cannot drift.

@@ -43,9 +43,7 @@ def op(status="success", size_mb=10, duration_ms=15000, minutes=0, kind=None):
 
 
 def ops(n, *, failures=0, kind=None, duration_ms=15000, start=0):
-    out = [
-        op(duration_ms=duration_ms, minutes=start + i, kind=kind) for i in range(n - failures)
-    ]
+    out = [op(duration_ms=duration_ms, minutes=start + i, kind=kind) for i in range(n - failures)]
     out += [
         op(status="failure", duration_ms=duration_ms, minutes=start + n - failures + i, kind=kind)
         for i in range(failures)
@@ -54,9 +52,7 @@ def ops(n, *, failures=0, kind=None, duration_ms=15000, start=0):
 
 
 def _run(deployment_id=1, name="STG-01", label="full-run", **kwargs):
-    return RunMetrics(
-        deployment_id=deployment_id, name=name, window_label=label, **kwargs
-    )
+    return RunMetrics(deployment_id=deployment_id, name=name, window_label=label, **kwargs)
 
 
 @pytest.fixture
@@ -207,8 +203,7 @@ class TestWasmFloorGatesAreAdvisory:
         candidate = _mixed()
         candidate = replace(
             candidate,
-            upload_records=ops(100, failures=20, kind="native")
-            + ops(38, failures=3, kind="wasm"),
+            upload_records=ops(100, failures=20, kind="native") + ops(38, failures=3, kind="wasm"),
         )
         payload = compare_runs(candidate, _mixed(2), config)
         assert payload["overall"] == "HARD FAIL"
@@ -276,9 +271,7 @@ class TestWasmBucketIsSeparate:
     def test_setup_script_creates_it(self):
         from saorsa_deploy.resources import get_resources_dir
 
-        script = (
-            get_resources_dir() / "monitoring" / "influxdb_setup.py"
-        ).read_text()
+        script = (get_resources_dir() / "monitoring" / "influxdb_setup.py").read_text()
         assert "{{INFLUXDB_WASM_BUCKET}}" in script
         # Created as a bucket, not merely mentioned in a comment.
         assert script.count('"name": "{{INFLUXDB_WASM_BUCKET}}"') == 1

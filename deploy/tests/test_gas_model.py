@@ -6,6 +6,7 @@ risen ~10x in three days. That pushed two hard gates below their floors for a
 reason unrelated to the release. These tests pin the behaviours that stop it
 recurring silently.
 """
+
 import copy
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -67,9 +68,7 @@ def test_shipped_model_reproduces_its_own_calibration(model, raw):
     for point in raw["calibration"]["points"]:
         spent = point["funded_eth"] - point["residual_eth"]
         actual_per_upload = spent / point["uploads"]
-        modelled = model.eth_per_upload(
-            point["size_gb"], model.reference_base_fee_gwei
-        )
+        modelled = model.eth_per_upload(point["size_gb"], model.reference_base_fee_gwei)
         rel = abs(modelled - actual_per_upload) / actual_per_upload
         assert rel < 0.20, (
             f"{point['client']}: model predicts {modelled:.3e} ETH/upload but "
@@ -87,9 +86,7 @@ def test_safety_factor_exceeds_the_worst_calibration_underestimate(model, raw):
     for point in raw["calibration"]["points"]:
         spent = point["funded_eth"] - point["residual_eth"]
         actual = spent / point["uploads"]
-        modelled = model.eth_per_upload(
-            point["size_gb"], model.reference_base_fee_gwei
-        )
+        modelled = model.eth_per_upload(point["size_gb"], model.reference_base_fee_gwei)
         if modelled < actual:
             worst_under = max(worst_under, (actual - modelled) / actual)
     assert model.safety_factor > 1.0 + worst_under
@@ -100,9 +97,7 @@ def test_safety_factor_exceeds_the_worst_calibration_underestimate(model, raw):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "key", ["fixed_eth_per_upload", "eth_per_gb", "reference_base_fee_gwei"]
-)
+@pytest.mark.parametrize("key", ["fixed_eth_per_upload", "eth_per_gb", "reference_base_fee_gwei"])
 def test_missing_model_coefficient_is_rejected(raw, key, tmp_path):
     bad = copy.deepcopy(raw)
     del bad["model"][key]
@@ -485,9 +480,7 @@ def test_argv_plumbing_reaches_the_handler():
     assert seen["baseline"] == 566
 
 
-def test_a_current_value_below_the_minimum_floor_is_under_funded(
-    capsys, tmp_path
-):
+def test_a_current_value_below_the_minimum_floor_is_under_funded(capsys, tmp_path):
     """The floor is a hard requirement, not a suggestion.
 
     A client funded below `minimum_eth_per_uploader` cannot afford even one
@@ -500,9 +493,7 @@ def test_a_current_value_below_the_minimum_floor_is_under_funded(
     path = tmp_path / "m.yaml"
     path.write_text(MANIFEST.replace("eth: 0.2", "eth: 0.0001"))
     with pytest.raises(SystemExit) as exc:
-        cmd_estimate_client_gas(
-            _args(config=str(path), base_fee_gwei=1e-9)
-        )
+        cmd_estimate_client_gas(_args(config=str(path), base_fee_gwei=1e-9))
     assert exc.value.code == 2
     assert "under-funded" in capsys.readouterr().out
 
@@ -559,8 +550,7 @@ def test_extension_manifest_is_sized_not_refused(capsys, extension_manifest_path
 
     with pytest.raises(SystemExit) as exc:
         cmd_estimate_client_gas(
-            _args(config=extension_manifest_path, name="TEST-01-REL",
-                  base_fee_gwei=1e-6)
+            _args(config=extension_manifest_path, name="TEST-01-REL", base_fee_gwei=1e-6)
         )
     out = capsys.readouterr().out
     assert "no wallets to fund" not in out
@@ -578,8 +568,7 @@ def test_extension_under_funding_is_reported_against_the_extension_block(
 
     with pytest.raises(SystemExit) as exc:
         cmd_estimate_client_gas(
-            _args(config=extension_manifest_path, name="TEST-01-REL",
-                  base_fee_gwei=50.0)
+            _args(config=extension_manifest_path, name="TEST-01-REL", base_fee_gwei=50.0)
         )
     assert exc.value.code == 2
     out = capsys.readouterr().out
@@ -587,9 +576,7 @@ def test_extension_under_funding_is_reported_against_the_extension_block(
     assert "testnet.clients.uploaders" not in out
 
 
-def test_a_testnet_manifest_still_reports_against_the_testnet_block(
-    capsys, manifest_path
-):
+def test_a_testnet_manifest_still_reports_against_the_testnet_block(capsys, manifest_path):
     """Guard the other side of the branch: a base manifest is unchanged."""
     from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
 
@@ -700,13 +687,15 @@ class TestWasmCostModel:
             load_gas_model(path)
 
     def test_the_plan_carries_the_transport_into_the_estimate(self):
-        m = _model(wasm_fixed_cost_multiplier=2.0, safety_factor=1.0,
-                   round_up_to_eth=1e-9, minimum_eth_per_uploader=0.0)
+        m = _model(
+            wasm_fixed_cost_multiplier=2.0,
+            safety_factor=1.0,
+            round_up_to_eth=1e-9,
+            minimum_eth_per_uploader=0.0,
+        )
         common = dict(size_gb=0.0, expected_uploads=100)
         native = estimate_uploader(UploaderPlan(name="n", **common), 0.1, m)
-        wasm = estimate_uploader(
-            UploaderPlan(name="w", transport=WASM, **common), 0.1, m
-        )
+        wasm = estimate_uploader(UploaderPlan(name="w", transport=WASM, **common), 0.1, m)
         assert wasm.modelled_eth == pytest.approx(2 * native.modelled_eth)
 
 
@@ -714,10 +703,10 @@ class TestTransportThroughput:
     def _clients(self):
         # Same file size on both tiers; WASM is the slower instrument.
         return [
-            ClientRun(host="native-1", uploads=300, active_hours=3.0,
-                      size_gb=1.0, transport=NATIVE),
-            ClientRun(host="wasm-1", uploads=45, active_hours=3.0,
-                      size_gb=1.0, transport=WASM),
+            ClientRun(
+                host="native-1", uploads=300, active_hours=3.0, size_gb=1.0, transport=NATIVE
+            ),
+            ClientRun(host="wasm-1", uploads=45, active_hours=3.0, size_gb=1.0, transport=WASM),
         ]
 
     def test_native_sizing_ignores_wasm_records(self):
@@ -752,8 +741,13 @@ class TestWasmRateResolution:
     def _native(self, sizes):
         return project_throughput(
             [
-                ClientRun(host=f"n-{s}", uploads=int(s[1] * 10), active_hours=1.0,
-                          size_gb=s[0], transport=NATIVE)
+                ClientRun(
+                    host=f"n-{s}",
+                    uploads=int(s[1] * 10),
+                    active_hours=1.0,
+                    size_gb=s[0],
+                    transport=NATIVE,
+                )
                 for s in sizes
             ],
             1.0,
@@ -762,8 +756,7 @@ class TestWasmRateResolution:
 
     def test_measured_wasm_throughput_is_preferred(self):
         wasm = project_throughput(
-            [ClientRun(host="w", uploads=15, active_hours=1.0, size_gb=0.9,
-                       transport=WASM)],
+            [ClientRun(host="w", uploads=15, active_hours=1.0, size_gb=0.9, transport=WASM)],
             1.0,
             transport=WASM,
         )
@@ -783,10 +776,8 @@ class TestWasmRateResolution:
         empty = project_throughput([], 1.0, transport=WASM)
         native = project_throughput(
             [
-                ClientRun(host="slow", uploads=10, active_hours=1.0, size_gb=0.4,
-                          transport=NATIVE),
-                ClientRun(host="fast", uploads=40, active_hours=1.0, size_gb=0.6,
-                          transport=NATIVE),
+                ClientRun(host="slow", uploads=10, active_hours=1.0, size_gb=0.4, transport=NATIVE),
+                ClientRun(host="fast", uploads=40, active_hours=1.0, size_gb=0.6, transport=NATIVE),
             ],
             1.0,
             transport=NATIVE,
@@ -820,9 +811,7 @@ class TestWasmInTheCommand:
         from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
 
         with pytest.raises(SystemExit):
-            cmd_estimate_client_gas(
-                _args(config=wasm_manifest_path, base_fee_gwei=1e-6)
-            )
+            cmd_estimate_client_gas(_args(config=wasm_manifest_path, base_fee_gwei=1e-6))
         out = capsys.readouterr().out
         assert "[wasm]" in out
         assert "two transactions" in out
@@ -847,17 +836,13 @@ class TestWasmInTheCommand:
         from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
 
         with pytest.raises(SystemExit) as exc:
-            cmd_estimate_client_gas(
-                _args(config=wasm_manifest_path, base_fee_gwei=50.0)
-            )
+            cmd_estimate_client_gas(_args(config=wasm_manifest_path, base_fee_gwei=50.0))
         assert exc.value.code == 2
         out = capsys.readouterr().out.replace("\n", "")
         assert "testnet.clients.uploaders" in out
         assert "wasm_uploaders" in out
 
-    def test_a_native_only_manifest_says_nothing_about_wasm(
-        self, capsys, manifest_path
-    ):
+    def test_a_native_only_manifest_says_nothing_about_wasm(self, capsys, manifest_path):
         from saorsa_deploy.cmd.estimate_client_gas import cmd_estimate_client_gas
 
         with pytest.raises(SystemExit):

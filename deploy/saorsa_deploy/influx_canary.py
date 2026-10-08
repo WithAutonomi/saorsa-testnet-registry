@@ -17,6 +17,7 @@ Each fetcher returns a list of dicts shaped like the corresponding
 SQLAlchemy model so the caller can pass the result straight to the upsert
 helpers in :mod:`saorsa_db.repositories`.
 """
+
 from __future__ import annotations
 
 import csv
@@ -56,9 +57,7 @@ _PROBE_FLUX = """from(bucket: "{bucket}")
 """
 
 
-def _query(
-    url: str, token: str, org: str, flux: str, timeout: int = 60
-) -> Iterator[str]:
+def _query(url: str, token: str, org: str, flux: str, timeout: int = 60) -> Iterator[str]:
     """Stream a Flux response line by line.
 
     Returns an iterator rather than the whole body so a long-lived canary's
@@ -135,8 +134,9 @@ def fetch_canary_upload_points(
         url,
         token,
         org,
-        _UPLOAD_FLUX.format(bucket=bucket, start=start, stop=FLUX_FAR_FUTURE,
-                      deployment=deployment_name),
+        _UPLOAD_FLUX.format(
+            bucket=bucket, start=start, stop=FLUX_FAR_FUTURE, deployment=deployment_name
+        ),
     )
     points: list[dict] = []
     for record in _rows(body):
@@ -149,32 +149,28 @@ def fetch_canary_upload_points(
         started_ns = _parse_int(record.get("started_at", ""))
         uploaded_at = _ns_to_dt(finished_ns) or _parse_ts(record["_time"])
         started_at = _ns_to_dt(started_ns) or uploaded_at
-        points.append({
-            "canary_id": cid,
-            "host": record.get("host", ""),
-            "region": record.get("region", ""),
-            "source_url": record.get("source_url", "") or "",
-            "file_name": record.get("file_name", "") or "",
-            "file_size_bytes": _parse_int(record.get("file_size_bytes", "")) or 0,
-            "top_address": record.get("top_address", "") or "",
-            "num_chunks": _parse_int(record.get("num_chunks", "")) or 0,
-            "uploaded_at": uploaded_at,
-            "started_at": started_at,
-            "duration_ms": _parse_int(record.get("duration_ms", "")) or 0,
-            "initial_verify_status": (
-                record.get("initial_verify_status", "") or "failed"
-            ),
-            # Cost telemetry (added 2026-05-19). String-encoded uint256 to
-            # preserve precision; empty/missing for canaries uploaded
-            # before the upload script started emitting them.
-            "storage_cost_atto": (
-                record.get("storage_cost_atto", "") or ""
-            ),
-            "gas_cost_wei": record.get("gas_cost_wei", "") or "",
-            "chunk_attempts_total": _parse_int(
-                record.get("chunk_attempts_total", "")
-            ),
-        })
+        points.append(
+            {
+                "canary_id": cid,
+                "host": record.get("host", ""),
+                "region": record.get("region", ""),
+                "source_url": record.get("source_url", "") or "",
+                "file_name": record.get("file_name", "") or "",
+                "file_size_bytes": _parse_int(record.get("file_size_bytes", "")) or 0,
+                "top_address": record.get("top_address", "") or "",
+                "num_chunks": _parse_int(record.get("num_chunks", "")) or 0,
+                "uploaded_at": uploaded_at,
+                "started_at": started_at,
+                "duration_ms": _parse_int(record.get("duration_ms", "")) or 0,
+                "initial_verify_status": (record.get("initial_verify_status", "") or "failed"),
+                # Cost telemetry (added 2026-05-19). String-encoded uint256 to
+                # preserve precision; empty/missing for canaries uploaded
+                # before the upload script started emitting them.
+                "storage_cost_atto": (record.get("storage_cost_atto", "") or ""),
+                "gas_cost_wei": record.get("gas_cost_wei", "") or "",
+                "chunk_attempts_total": _parse_int(record.get("chunk_attempts_total", "")),
+            }
+        )
     return points
 
 
@@ -191,8 +187,9 @@ def fetch_canary_chunk_points(
         url,
         token,
         org,
-        _CHUNK_FLUX.format(bucket=bucket, start=start, stop=FLUX_FAR_FUTURE,
-                      deployment=deployment_name),
+        _CHUNK_FLUX.format(
+            bucket=bucket, start=start, stop=FLUX_FAR_FUTURE, deployment=deployment_name
+        ),
     )
     points: list[dict] = []
     for record in _rows(body):
@@ -202,11 +199,13 @@ def fetch_canary_chunk_points(
         addr = record.get("chunk_address", "") or ""
         if cid is None or not addr:
             continue
-        points.append({
-            "canary_id": cid,
-            "chunk_address": addr,
-            "chunk_role": record.get("chunk_role", "") or "data",
-        })
+        points.append(
+            {
+                "canary_id": cid,
+                "chunk_address": addr,
+                "chunk_role": record.get("chunk_role", "") or "data",
+            }
+        )
     return points
 
 
@@ -223,8 +222,9 @@ def fetch_canary_probe_points(
         url,
         token,
         org,
-        _PROBE_FLUX.format(bucket=bucket, start=start, stop=FLUX_FAR_FUTURE,
-                      deployment=deployment_name),
+        _PROBE_FLUX.format(
+            bucket=bucket, start=start, stop=FLUX_FAR_FUTURE, deployment=deployment_name
+        ),
     )
     points: list[dict] = []
     for record in _rows(body):
@@ -234,17 +234,15 @@ def fetch_canary_probe_points(
         if cid is None:
             continue
         probed_at = _parse_ts(record["_time"])
-        points.append({
-            "canary_id": cid,
-            "probed_at": probed_at,
-            "probed_by_host": record.get("host", ""),
-            "status": record.get("status", "") or "inconclusive",
-            "missing_chunk_address": (
-                record.get("missing_chunk_address", "") or ""
-            ),
-            "terminal_peer_outcomes": (
-                record.get("terminal_peer_outcomes", "") or ""
-            ),
-            "duration_ms": _parse_int(record.get("duration_ms", "")),
-        })
+        points.append(
+            {
+                "canary_id": cid,
+                "probed_at": probed_at,
+                "probed_by_host": record.get("host", ""),
+                "status": record.get("status", "") or "inconclusive",
+                "missing_chunk_address": (record.get("missing_chunk_address", "") or ""),
+                "terminal_peer_outcomes": (record.get("terminal_peer_outcomes", "") or ""),
+                "duration_ms": _parse_int(record.get("duration_ms", "")),
+            }
+        )
     return points

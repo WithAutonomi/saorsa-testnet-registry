@@ -105,10 +105,7 @@ def _chunked_sections(header: str, lines: list[str]) -> list[dict]:
 def _fields_section(fields: list[tuple[str, str]]) -> dict:
     return {
         "type": "section",
-        "fields": [
-            {"type": "mrkdwn", "text": f"*{label}:*\n{value}"}
-            for label, value in fields
-        ],
+        "fields": [{"type": "mrkdwn", "text": f"*{label}:*\n{value}"} for label, value in fields],
     }
 
 
@@ -124,12 +121,8 @@ def _regions_by_provider(state: dict) -> dict[str, list[str]]:
 
 def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -> list[dict]:
     blocks: list[dict] = [
-        _section(
-            f"*Node binary:* {_format_binary(deploy_args.get('node_binary'))}"
-        ),
-        _section(
-            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-        ),
+        _section(f"*Node binary:* {_format_binary(deploy_args.get('node_binary'))}"),
+        _section(f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"),
     ]
 
     vm_count = deploy_args.get("vm_count")
@@ -167,9 +160,7 @@ def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -
     # Clock skew spans both tiers: node VMs (selected by --clock-skew-count,
     # persisted to state) and client VMs (a clock_skew duration on their spec).
     node_skew = len(state.get("clock_skew_vm_ips") or [])
-    client_skew = sum(
-        1 for c in ((client_state or {}).get("clients") or []) if c.get("clock_skew")
-    )
+    client_skew = sum(1 for c in ((client_state or {}).get("clients") or []) if c.get("clock_skew"))
     total_skew = node_skew + client_skew
     if total_skew and node_skew and client_skew:
         skew_value = f"{total_skew} ({node_skew} node, {client_skew} client)"
@@ -201,9 +192,7 @@ def _testnet_blocks(deploy_args: dict, state: dict, client_state: dict | None) -
             rc = spec.get("region_count", "?")
             actual_regions = region_map.get(provider, [])
             regions_str = ", ".join(actual_regions) if actual_regions else "_pending_"
-            lines.append(
-                f"• *{provider}*: {vmc} VM(s) × {rc} region(s) — {regions_str}"
-            )
+            lines.append(f"• *{provider}*: {vmc} VM(s) × {rc} region(s) — {regions_str}")
         blocks.append(_section("*Providers & regions:*\n" + "\n".join(lines)))
 
     node_log_level = deploy_args.get("node_log_level")
@@ -269,18 +258,12 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     # A WASM-only deployment installs no `ant` at all, so naming a client binary
     # would describe something that never ran.
     if native or not wasm:
-        blocks.append(
-            _section(
-                f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-            )
-        )
+        blocks.append(_section(f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"))
     if wasm:
         # The bundle commit is what identifies the browser-path code: the ref may
         # be a moving branch, so "built from web-support" does not say what ran.
         blocks.append(_section(f"*WASM bundle:* {_format_wasm_build(deploy_args)}"))
-        blocks.append(
-            _section(f"*Bootstraps:* {_format_wasm_bootstrap(deploy_args)}")
-        )
+        blocks.append(_section(f"*Bootstraps:* {_format_wasm_bootstrap(deploy_args)}"))
 
     if not uploaders:
         blocks.append(_section("*Uploaders:* _(none recorded)_"))
@@ -292,9 +275,7 @@ def _prod_uploaders_blocks(deploy_args: dict) -> list[dict]:
     for heading, group in (("Uploaders", native), ("WASM uploaders", wasm)):
         if not group:
             continue
-        blocks.append(_section(f"*{heading}:*\n" + "\n".join(
-            _prod_uploader_lines(group)
-        )))
+        blocks.append(_section(f"*{heading}:*\n" + "\n".join(_prod_uploader_lines(group))))
     return blocks
 
 
@@ -341,8 +322,6 @@ def _format_size(num_bytes: int | None) -> str:
     return f"{val:.1f} TB"
 
 
-
-
 def _prod_continuous_uploader_blocks(deploy_args: dict) -> list:
     """Summarise the daily write test.
 
@@ -357,9 +336,7 @@ def _prod_continuous_uploader_blocks(deploy_args: dict) -> list:
         blocks.append(_section(f"*Uploads each cycle:* {summary}"))
     interval = deploy_args.get("sleep_interval_secs")
     if interval:
-        cadence = (
-            "once a day" if interval == 86400 else f"every {interval}s"
-        )
+        cadence = "once a day" if interval == 86400 else f"every {interval}s"
         blocks.append(_section(f"*Cadence:* {cadence}"))
     verifiers = deploy_args.get("verifiers") or []
     if verifiers:
@@ -379,14 +356,12 @@ def _prod_continuous_uploader_blocks(deploy_args: dict) -> list:
         blocks.append(_section(f"*Size bounds:* {' and '.join(bounds)}"))
     if "bootstrap_cache" in deploy_args:
         blocks.append(
-            _section(
-                "*Bootstrap cache:* "
-                + ("on" if deploy_args["bootstrap_cache"] else "off")
-            )
+            _section("*Bootstrap cache:* " + ("on" if deploy_args["bootstrap_cache"] else "off"))
         )
     if deploy_args.get("rust_log"):
         blocks.append(_section(f"*RUST_LOG:* `{deploy_args['rust_log']}`"))
     return blocks
+
 
 def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
     input_path = deploy_args.get("input_path", "_unknown_")
@@ -394,19 +369,14 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
     payment = deploy_args.get("payment_type") or "default"
     file_count_str = str(file_count) if file_count is not None else "_unknown_"
     blocks: list[dict] = [
-        _section(
-            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-        ),
+        _section(f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"),
         _section(f"*Input path:* {input_path}"),
         _section(f"*File count:* {file_count_str}"),
         _section(f"*Payment:* {payment}"),
     ]
     if "bootstrap_cache" in deploy_args:
         blocks.append(
-            _section(
-                "*Bootstrap cache:* "
-                + ("on" if deploy_args["bootstrap_cache"] else "off")
-            )
+            _section("*Bootstrap cache:* " + ("on" if deploy_args["bootstrap_cache"] else "off"))
         )
     files = deploy_args.get("files") or []
     if not files and deploy_args.get("input_mode") == "local-dir":
@@ -427,17 +397,11 @@ def _prod_local_uploads_blocks(deploy_args: dict) -> list[dict]:
                         ),
                         key=lambda item: item[1],
                     )
-                    files = [
-                        {"name": rel, "size_bytes": p.stat().st_size}
-                        for p, rel in pairs
-                    ]
+                    files = [{"name": rel, "size_bytes": p.stat().st_size} for p, rel in pairs]
             except OSError:
                 files = []
     if files:
-        lines = [
-            f"• `{f.get('name', '?')}` ({_format_size(f.get('size_bytes'))})"
-            for f in files
-        ]
+        lines = [f"• `{f.get('name', '?')}` ({_format_size(f.get('size_bytes'))})" for f in files]
         blocks.extend(_chunked_sections("*Files:*", lines))
     return blocks
 
@@ -447,23 +411,16 @@ def _prod_local_downloads_blocks(deploy_args: dict) -> list[dict]:
     address_count = deploy_args.get("address_count")
     output_mode = deploy_args.get("output_mode") or "_unknown_"
     output_dir = deploy_args.get("output_dir", "_unknown_")
-    count_str = (
-        str(address_count) if address_count is not None else "_unknown_"
-    )
+    count_str = str(address_count) if address_count is not None else "_unknown_"
     blocks: list[dict] = [
-        _section(
-            f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-        ),
+        _section(f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"),
         _section(f"*Addresses path:* {addresses_path}"),
         _section(f"*Address count:* {count_str}"),
         _section(f"*Output mode:* {output_mode} ({output_dir})"),
     ]
     if "bootstrap_cache" in deploy_args:
         blocks.append(
-            _section(
-                "*Bootstrap cache:* "
-                + ("on" if deploy_args["bootstrap_cache"] else "off")
-            )
+            _section("*Bootstrap cache:* " + ("on" if deploy_args["bootstrap_cache"] else "off"))
         )
     addresses = deploy_args.get("addresses") or []
     if addresses:
@@ -502,9 +459,7 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
     # REFUSED there, so reporting a value for it would describe a knob that had
     # no effect on the run.
     if "bootstrap_cache" in deploy_args and client_kind != "wasm":
-        fields.append(
-            ("Bootstrap cache", "on" if deploy_args["bootstrap_cache"] else "off")
-        )
+        fields.append(("Bootstrap cache", "on" if deploy_args["bootstrap_cache"] else "off"))
 
     if deploy_args.get("forward_logs"):
         fields.append(("Log forwarding", "Elasticsearch 📤"))
@@ -531,9 +486,7 @@ def _prod_downloader_blocks(deploy_args: dict) -> list[dict]:
         ]
     else:
         blocks = [
-            _section(
-                f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"
-            ),
+            _section(f"*Client binary:* {_format_binary(deploy_args.get('ant_binary'))}"),
             _fields_section(fields),
         ]
 
@@ -627,10 +580,7 @@ def _client_line(c: dict) -> str:
             f"• upload — {region} ({vm_size}{size_str}) — "
             f"payment: {payment}{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
         )
-    return (
-        f"• download — {region} ({vm_size})"
-        f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
-    )
+    return f"• download — {region} ({vm_size}){cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
 
 
 def _clients_block(clients: list[dict]) -> dict:
@@ -759,8 +709,7 @@ def build_slack_blocks(
         if "bootstrap_cache" in deploy_args:
             blocks.append(
                 _section(
-                    "*Bootstrap cache:* "
-                    + ("on" if deploy_args["bootstrap_cache"] else "off")
+                    "*Bootstrap cache:* " + ("on" if deploy_args["bootstrap_cache"] else "off")
                 )
             )
         if deploy_args.get("forward_logs"):
@@ -850,16 +799,14 @@ def cmd_slack_post(args):
     repo = get_repository()
     if repo is None:
         console.print(
-            "[bold red]Error:[/bold red] DATABASE_URL is not set or the database "
-            "is unreachable."
+            "[bold red]Error:[/bold red] DATABASE_URL is not set or the database is unreachable."
         )
         sys.exit(1)
 
     deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
     if deployment is None:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
-            "found in the registry."
+            f"[bold red]Error:[/bold red] No deployment named '{args.name}' found in the registry."
         )
         sys.exit(1)
 
@@ -888,9 +835,7 @@ def cmd_slack_post(args):
     # returns no message reference (threading is then unavailable).
     bot_token = os.environ.get("ANT_DEPLOY_SLACK_BOT_TOKEN")
     if bot_token:
-        channel = getattr(args, "channel", None) or os.environ.get(
-            "ANT_DEPLOY_SLACK_CHANNEL"
-        )
+        channel = getattr(args, "channel", None) or os.environ.get("ANT_DEPLOY_SLACK_CHANNEL")
         if not channel:
             console.print(
                 "[bold red]Error:[/bold red] ANT_DEPLOY_SLACK_BOT_TOKEN is set "
@@ -934,8 +879,7 @@ def cmd_slack_post(args):
 
     if not response.ok:
         console.print(
-            f"[bold red]Slack rejected the post:[/bold red] "
-            f"{response.status_code} {response.text}"
+            f"[bold red]Slack rejected the post:[/bold red] {response.status_code} {response.text}"
         )
         sys.exit(1)
 
@@ -1008,4 +952,3 @@ def _format_network_field(network) -> str:
     if down and up:
         return f"🐌 {name} ({down} down / {up} up)"
     return f"🐌 {name}"
-

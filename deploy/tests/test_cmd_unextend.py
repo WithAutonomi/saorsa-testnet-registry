@@ -17,15 +17,9 @@ def patches():
     with (
         patch("saorsa_deploy.cmd.unextend.record_event") as p_record_event,
         patch("saorsa_deploy.cmd.unextend.record_status") as p_record_status,
-        patch(
-            "saorsa_deploy.cmd.unextend.load_deployment_state"
-        ) as p_load_state,
-        patch(
-            "saorsa_deploy.cmd.unextend.delete_deployment_state"
-        ) as p_delete_state,
-        patch(
-            "saorsa_deploy.cmd.unextend.load_client_state"
-        ) as p_load_client_state,
+        patch("saorsa_deploy.cmd.unextend.load_deployment_state") as p_load_state,
+        patch("saorsa_deploy.cmd.unextend.delete_deployment_state") as p_delete_state,
+        patch("saorsa_deploy.cmd.unextend.load_client_state") as p_load_client_state,
     ):
         # Most extensions have no client tier; absence is a RuntimeError.
         p_load_client_state.side_effect = RuntimeError("No client state")

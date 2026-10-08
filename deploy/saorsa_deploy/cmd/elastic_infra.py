@@ -32,9 +32,7 @@ def cmd_elastic_infra(args):
     provider = resolve_provider(args)
     region = getattr(args, "region", None) or default_region(provider)
     volume_size = getattr(args, "volume_size", None) or 100
-    droplet_size = (
-        getattr(args, "droplet_size", None) or default_elastic_size(provider)
-    )
+    droplet_size = getattr(args, "droplet_size", None) or default_elastic_size(provider)
     volume_type = getattr(args, "volume_type", None) or "high-speed"
     keep_on_destroy = bool(getattr(args, "keep_on_destroy", False))
     public_ingest = bool(getattr(args, "public_ingest", False))
@@ -120,9 +118,7 @@ def cmd_elastic_infra(args):
             console.print(f"  {state_key}")
             console.print("Use --force to delete and proceed.")
             sys.exit(1)
-        console.print(
-            f"[yellow]Warning: Deleting stale Terraform state: {state_key}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Deleting stale Terraform state: {state_key}[/yellow]")
         delete_terraform_state(state_key)
 
     if provider == "ovh":
@@ -187,16 +183,12 @@ def cmd_elastic_infra(args):
     results = execute_terraform_runs([config])
 
     if not results[0].success:
-        console.print(
-            "[bold red]Elasticsearch infrastructure creation failed.[/bold red]"
-        )
+        console.print("[bold red]Elasticsearch infrastructure creation failed.[/bold red]")
         console.print(results[0].stderr)
         sys.exit(1)
 
     elastic_ip = results[0].outputs.get("elastic_ip", "")
-    console.print(
-        f"[bold green]Elasticsearch VM created: {elastic_ip}[/bold green]"
-    )
+    console.print(f"[bold green]Elasticsearch VM created: {elastic_ip}[/bold green]")
 
     try:
         save_elastic_state(
@@ -229,9 +221,7 @@ def cmd_elastic_infra(args):
                 f"{args.name} --force`.[/dim]"
             )
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to save Elasticsearch state: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to save Elasticsearch state: {e}[/yellow]")
 
     if standalone:
         record_deployment_created(

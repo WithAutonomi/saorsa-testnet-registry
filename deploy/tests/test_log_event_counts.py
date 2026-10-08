@@ -11,6 +11,7 @@ rather than an error if it breaks:
 * absence being NOT ASSESSED and never zero, since no run predating this
   measurement has counts and none can be backfilled.
 """
+
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -85,9 +86,7 @@ def test_shipped_catalogue_covers_every_string_from_the_issue(patterns):
     see the test below.
     """
     by_key = {p.key: p for p in patterns.patterns}
-    connection_keys = {
-        p.key for p in patterns.patterns if p.group in _CONNECTION_GROUPS
-    }
+    connection_keys = {p.key for p in patterns.patterns if p.group in _CONNECTION_GROUPS}
     assert connection_keys == {
         "connection_attempt_failed",
         "happy_eyeballs_failed",
@@ -97,9 +96,7 @@ def test_shipped_catalogue_covers_every_string_from_the_issue(patterns):
     assert by_key["connection_attempt_failed"].phrase == "Connection attempt failed"
     assert by_key["happy_eyeballs_failed"].phrase == "connect_happy_eyeballs failed"
     assert by_key["dial_failed_all_candidates"].phrase == "dial failed for all"
-    assert (
-        by_key["identity_announce_failed"].phrase == "Failed to send identity announce"
-    )
+    assert by_key["identity_announce_failed"].phrase == "Failed to send identity announce"
 
 
 def test_the_two_unreachable_patterns_stay_retired(patterns):
@@ -139,9 +136,7 @@ def test_the_connection_failure_modules_are_not_transposed(patterns):
     wrong crate — it is how V2-1091's own investigation lost time.
     """
     by_key = {p.key: p for p in patterns.patterns}
-    assert by_key["connection_attempt_failed"].module == (
-        "saorsa_transport::happy_eyeballs"
-    )
+    assert by_key["connection_attempt_failed"].module == ("saorsa_transport::happy_eyeballs")
     assert by_key["happy_eyeballs_failed"].module == "saorsa_core::transport_handle"
 
 
@@ -351,8 +346,7 @@ def test_strftime_index_pattern_from_state_is_collapsed_to_a_glob():
         == "telegraf-ant-nodes-stg-01-*"
     )
     assert (
-        collapse_index_date_suffix("telegraf-ant-nodes-stg-01-*")
-        == "telegraf-ant-nodes-stg-01-*"
+        collapse_index_date_suffix("telegraf-ant-nodes-stg-01-*") == "telegraf-ant-nodes-stg-01-*"
     )
 
 
@@ -377,9 +371,7 @@ def _response(count: int, hosts: int = 3, levels=None, top=None, span=True) -> d
             ]
         },
         "first_seen": {"value": T0.timestamp() * 1000 if span else None},
-        "last_seen": {
-            "value": (T0 + timedelta(hours=4)).timestamp() * 1000 if span else None
-        },
+        "last_seen": {"value": (T0 + timedelta(hours=4)).timestamp() * 1000 if span else None},
     }
     return {"hits": {"total": {"value": count, "relation": "eq"}}, "aggregations": aggs}
 
@@ -441,9 +433,7 @@ def test_summarise_takes_the_max_for_a_two_layer_group(patterns):
 
 def test_summarise_omits_groups_with_no_measured_member(patterns):
     """Never queried and occurred zero times are different facts."""
-    summary = summarise_counts(
-        {"connection_attempt_failed": {"count": 5, "hosts": 1}}, patterns
-    )
+    summary = summarise_counts({"connection_attempt_failed": {"count": 5, "hosts": 1}}, patterns)
     assert {row["group"] for row in summary} == {"connection_failure"}
 
 
@@ -578,9 +568,7 @@ def test_a_baseline_with_no_counts_is_not_assessed_never_a_regression(config, pa
     """Every run predating this measurement has no counts and none can be
     backfilled — the run's Elasticsearch dies at teardown. Treating absence as
     zero would show the candidate's real counts against nothing."""
-    candidate = _run(
-        2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 50_000)]
-    )
+    candidate = _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 50_000)])
     baseline = _run(1, "STG-01", [])
     verdict = compare_runs(candidate, baseline, config, pattern_set=patterns)
     for gate in _connection_gates(verdict).values():
@@ -596,9 +584,9 @@ def test_not_assessed_names_the_missing_side_and_the_remedy(config, patterns):
         config,
         pattern_set=patterns,
     )
-    detail = _connection_gates(verdict)[
-        "Connection errors: Dial failures (all candidates)"
-    ]["detail"]
+    detail = _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"][
+        "detail"
+    ]
     assert "candidate" in detail
     assert "record-log-counts" in detail
     assert "backfilled" in detail
@@ -642,9 +630,7 @@ def test_appearing_where_the_baseline_had_none_fails(config, patterns):
     assert "undefined" in gate["detail"]
 
 
-def test_zero_on_both_runs_passes_rather_than_reading_as_unmeasurable(
-    config, patterns
-):
+def test_zero_on_both_runs_passes_rather_than_reading_as_unmeasurable(config, patterns):
     """A permanently eliminated string is a measurement, not a missing one."""
     verdict = compare_runs(
         _run(2, "STG-01", [_row("dial_failed_all_candidates", "dial_failure", 0)]),
@@ -673,9 +659,9 @@ def test_gate_detail_carries_the_rate_and_host_spread(config, patterns):
         config,
         pattern_set=patterns,
     )
-    detail = _connection_gates(verdict)[
-        "Connection errors: Dial failures (all candidates)"
-    ]["detail"]
+    detail = _connection_gates(verdict)["Connection errors: Dial failures (all candidates)"][
+        "detail"
+    ]
     assert "68 hosts" in detail
     assert "2 hosts" in detail
     assert "/h" in detail
@@ -817,9 +803,7 @@ def test_counts_are_kept_per_window_label(repo):
     )
 
     assert len(repo.list_log_event_counts_for_deployment(deployment.id)) == 2
-    windowed = repo.list_log_event_counts_for_deployment(
-        deployment.id, window_label="steady-state"
-    )
+    windowed = repo.list_log_event_counts_for_deployment(deployment.id, window_label="steady-state")
     assert [row.count for row in windowed] == [30]
 
 
@@ -828,10 +812,7 @@ def test_a_large_count_survives_the_round_trip(repo):
     32-bit count reachable."""
     deployment = repo.create(name="STG-01", deploy_args={})
     _store(repo, deployment.id, "dial_failed_all_candidates", "dial_failure", 4_000_000_000)
-    assert (
-        repo.list_log_event_counts_for_deployment(deployment.id)[0].count
-        == 4_000_000_000
-    )
+    assert repo.list_log_event_counts_for_deployment(deployment.id)[0].count == 4_000_000_000
 
 
 def test_stored_rows_drive_the_gate_end_to_end(repo, config, patterns):
@@ -910,18 +891,14 @@ def test_advisory_defaults_to_false():
 
 def test_non_boolean_advisory_is_refused():
     """'yes' would be a silent choice about whether a group decides the verdict."""
-    data = _catalogue(
-        groups=[{"key": "g", "label": "G", "aggregate": "sum", "advisory": "yes"}]
-    )
+    data = _catalogue(groups=[{"key": "g", "label": "G", "aggregate": "sum", "advisory": "yes"}])
     with pytest.raises(LogPatternError, match="advisory"):
         parse_pattern_set(data, "cat.yaml", "cat")
 
 
 def test_confounds_on_a_counted_group_is_refused():
     """A counted group IS one of the gates; it cannot also cast doubt on them."""
-    data = _catalogue(
-        groups=[{"key": "g", "label": "G", "aggregate": "sum", "confounds": "x"}]
-    )
+    data = _catalogue(groups=[{"key": "g", "label": "G", "aggregate": "sum", "confounds": "x"}])
     with pytest.raises(LogPatternError, match="confounds"):
         parse_pattern_set(data, "cat.yaml", "cat")
 
@@ -937,9 +914,7 @@ def test_bundled_catalogue_marks_the_payment_rpc_group_advisory(patterns):
     keys = {p.key for p in patterns.patterns_in_group("payment_rpc_failure")}
     assert keys == {"payment_rpc_http_429", "completed_payments_lookup_failed"}
     # Every other group still counts: this flag must not leak.
-    assert all(
-        not g.advisory for g in patterns.groups if g.key != "payment_rpc_failure"
-    )
+    assert all(not g.advisory for g in patterns.groups if g.key != "payment_rpc_failure")
 
 
 def _advisory_patterns():

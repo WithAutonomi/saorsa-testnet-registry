@@ -14,38 +14,59 @@ from saorsa_deploy.main import main
 SKILL_INVOCATIONS = [
     # ship-to-beta Step 7
     [
-        "releases", "ship",
-        "--binary-target", "ant-node",
-        "--version", "0.17.1",
-        "--rc-branch", "rc-2026.8.2",
-        "--beta-tag", "v0.17.1-beta.1",
-        "--beta-tag-sha", "a" * 40,
-        "--shipped-at", "2026-08-19",
-        "--planned-promotion", "2026-08-24",
-        "--rc-version", "0.17.1-rc.1",
+        "releases",
+        "ship",
+        "--binary-target",
+        "ant-node",
+        "--version",
+        "0.17.1",
+        "--rc-branch",
+        "rc-2026.8.2",
+        "--beta-tag",
+        "v0.17.1-beta.1",
+        "--beta-tag-sha",
+        "a" * 40,
+        "--shipped-at",
+        "2026-08-19",
+        "--planned-promotion",
+        "2026-08-24",
+        "--rc-version",
+        "0.17.1-rc.1",
     ],
     [
-        "releases", "ship",
-        "--binary-target", "ant",
-        "--version", "0.3.3",
-        "--rc-branch", "rc-2026.8.2",
-        "--beta-tag", "ant-cli-v0.3.3-beta.1",
-        "--beta-tag-sha", "b" * 40,
+        "releases",
+        "ship",
+        "--binary-target",
+        "ant",
+        "--version",
+        "0.3.3",
+        "--rc-branch",
+        "rc-2026.8.2",
+        "--beta-tag",
+        "ant-cli-v0.3.3-beta.1",
+        "--beta-tag-sha",
+        "b" * 40,
     ],
     # release-from-rc Step 10.3
     ["releases", "promote", "--from-file", "/tmp/release-manifest.json"],
     # release-from-rc Step 10.3, pre-beta-structure train / backfill
     [
-        "releases", "promote",
-        "--from-file", "/tmp/release-manifest.json",
+        "releases",
+        "promote",
+        "--from-file",
+        "/tmp/release-manifest.json",
         "--allow-missing-ship",
     ],
     # beta-health-verdict Step 7, NO-PROMOTE
     [
-        "releases", "rolled-past",
-        "--binary-target", "ant-node",
-        "--version", "0.17.1",
-        "--reason", "NO-PROMOTE: chunk loss regression",
+        "releases",
+        "rolled-past",
+        "--binary-target",
+        "ant-node",
+        "--version",
+        "0.17.1",
+        "--reason",
+        "NO-PROMOTE: chunk loss regression",
     ],
     # beta-health-verdict Step 1 / release-from-rc Step 0
     ["releases", "current"],
@@ -76,9 +97,7 @@ def test_skill_invocation_parses(argv, monkeypatch):
         ("ls_cmd", "cmd_releases_ls"),
         ("show_cmd", "cmd_releases_show"),
     ):
-        monkeypatch.setattr(
-            f"saorsa_deploy.cmd.releases.{module}.{attr}", _stub
-        )
+        monkeypatch.setattr(f"saorsa_deploy.cmd.releases.{module}.{attr}", _stub)
 
     main(argv)
     assert called["verb"] == argv[1]

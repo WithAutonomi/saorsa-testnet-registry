@@ -15,7 +15,7 @@ from saorsa_deploy.provisioning.telegraf_metrics import (
 class TestBaseConfig:
     def test_default_excludes_client_services(self):
         config = build_telegraf_metrics_config()
-        assert "metric_source = \"ant-client\"" not in config
+        assert 'metric_source = "ant-client"' not in config
         assert "inputs.cgroup" not in config
         assert "memory.peak" not in config
 

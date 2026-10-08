@@ -166,9 +166,7 @@ class TestAssess:
 class TestWarning:
     def test_silent_when_everything_is_recorded(self, capsys):
         status = ResultsStatus(expected=3, recorded=3, open_claims=0)
-        assert warn_if_unrecorded(
-            Console(), "PROD-UL-05", status, interactive=False
-        )
+        assert warn_if_unrecorded(Console(), "PROD-UL-05", status, interactive=False)
         assert capsys.readouterr().out == ""
 
     def test_warns_loudly_and_names_the_command(self, capsys):
@@ -185,16 +183,12 @@ class TestWarning:
         # Refusing here would strand billable infrastructure whenever `down`
         # runs unattended, which is how the release skills invoke it.
         status = ResultsStatus(expected=7, recorded=0, open_claims=7)
-        assert warn_if_unrecorded(
-            Console(), "PROD-UL-05", status, interactive=False
-        )
+        assert warn_if_unrecorded(Console(), "PROD-UL-05", status, interactive=False)
         assert "continuing with the teardown" in _flat(capsys.readouterr().out)
 
     def test_interactive_yes_proceeds(self):
         status = ResultsStatus(expected=7, recorded=0, open_claims=7)
-        assert warn_if_unrecorded(
-            Console(), "X", status, interactive=True, input_fn=lambda _: "y"
-        )
+        assert warn_if_unrecorded(Console(), "X", status, interactive=True, input_fn=lambda _: "y")
 
     def test_interactive_default_aborts(self, capsys):
         status = ResultsStatus(expected=7, recorded=0, open_claims=7)
@@ -228,30 +222,22 @@ class TestCheckBeforeDestroy:
 
         repo, pool_repo, _, _ = env
         monkeypatch.setattr("saorsa_deploy.registry.get_repository", lambda: repo)
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_file_pool_repository", lambda: pool_repo
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: pool_repo)
         results_guard.check_before_destroy(Console(), "NOPE", "prod-uploaders")
         assert capsys.readouterr().out == ""
 
-    def test_a_broken_registry_read_never_blocks_teardown(
-        self, env, monkeypatch, capsys
-    ):
+    def test_a_broken_registry_read_never_blocks_teardown(self, env, monkeypatch, capsys):
         # A guard that breaks teardown when it cannot read the registry would be
         # worse than the problem it exists to prevent.
         from saorsa_deploy import results_guard
 
         repo, pool_repo, _, _ = env
         monkeypatch.setattr("saorsa_deploy.registry.get_repository", lambda: repo)
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_file_pool_repository", lambda: pool_repo
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: pool_repo)
 
         def _boom(*a, **kw):
             raise RuntimeError("registry unavailable")
 
         monkeypatch.setattr(results_guard, "assess", _boom)
-        results_guard.check_before_destroy(
-            Console(), "PROD-UL-05", "prod-uploaders"
-        )
+        results_guard.check_before_destroy(Console(), "PROD-UL-05", "prod-uploaders")
         assert capsys.readouterr().out == ""

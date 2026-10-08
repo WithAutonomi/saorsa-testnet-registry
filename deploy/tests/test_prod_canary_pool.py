@@ -34,9 +34,7 @@ def repo():
 @pytest.fixture
 def fake_s3(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr(
-        pool_selection, "load_pool_selection", lambda name: store.get(name)
-    )
+    monkeypatch.setattr(pool_selection, "load_pool_selection", lambda name: store.get(name))
     monkeypatch.setattr(
         pool_selection,
         "save_pool_selection",
@@ -47,9 +45,7 @@ def fake_s3(monkeypatch):
 
 @pytest.fixture
 def wired(repo, monkeypatch, fake_s3):
-    monkeypatch.setattr(
-        "saorsa_deploy.registry.get_file_pool_repository", lambda: repo
-    )
+    monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: repo)
     return repo
 
 
@@ -76,9 +72,7 @@ class TestSelection:
         from rich.console import Console
 
         _seed(wired, 50 * MIB, 5)
-        content, selected = prod_canary._select_canary_pool_files(
-            _args(), Console()
-        )
+        content, selected = prod_canary._select_canary_pool_files(_args(), Console())
         lines = [line for line in content.splitlines() if line]
         assert len(lines) == 3
         assert all(line.startswith("https://archive.org/") for line in lines)
@@ -131,9 +125,7 @@ class TestSelection:
     def test_missing_database_exits(self, monkeypatch, capsys, fake_s3):
         from rich.console import Console
 
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_file_pool_repository", lambda: None
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: None)
         with pytest.raises(SystemExit):
             prod_canary._select_canary_pool_files(_args(), Console())
         assert "--pool needs DATABASE_URL" in _flat(capsys.readouterr().out)

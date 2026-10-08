@@ -35,6 +35,7 @@ Limits, stated so nobody over-reads the output:
   * Role inference needs >= MIN_PKTS_FOR_ROLE packets per direction; short
     flows are `ambiguous`.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict

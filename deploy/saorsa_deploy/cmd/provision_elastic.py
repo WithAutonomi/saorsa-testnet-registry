@@ -22,11 +22,16 @@ def _wait_for_ssh(ip: str, ssh_key_path: str, console: Console, timeout: int = 1
         result = subprocess.run(
             [
                 "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=5",
-                "-o", "BatchMode=yes",
-                "-i", ssh_key_path,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "BatchMode=yes",
+                "-i",
+                ssh_key_path,
                 f"root@{ip}",
                 "true",
             ],
@@ -36,9 +41,7 @@ def _wait_for_ssh(ip: str, ssh_key_path: str, console: Console, timeout: int = 1
             console.print(f"[dim]SSH ready on {ip}.[/dim]")
             return
         time.sleep(5)
-    console.print(
-        f"[yellow]Warning: SSH not ready after {timeout}s, proceeding anyway...[/yellow]"
-    )
+    console.print(f"[yellow]Warning: SSH not ready after {timeout}s, proceeding anyway...[/yellow]")
 
 
 def _resolve_all(hostname: str) -> list[str]:
@@ -64,7 +67,9 @@ def _dig(hostname: str, server: str) -> list[str] | None:
     try:
         result = subprocess.run(
             ["dig", "+short", "+time=3", "+tries=2", f"@{server}", "A", hostname],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
@@ -200,9 +205,7 @@ def cmd_provision_elastic(args):
 
     vm_ip = state.get("vm_ip")
     if not vm_ip:
-        console.print(
-            "[bold red]Error:[/bold red] No VM IP found in Elasticsearch state."
-        )
+        console.print("[bold red]Error:[/bold red] No VM IP found in Elasticsearch state.")
         sys.exit(1)
 
     console.print(f"  Elasticsearch VM: {vm_ip}")
@@ -219,9 +222,7 @@ def cmd_provision_elastic(args):
     # cannot silently provision a plaintext, anonymous-access instance onto
     # infrastructure that was firewalled for public ingest — which would leave
     # the endpoint unreachable and 9200 shut.
-    public_ingest = bool(
-        getattr(args, "public_ingest", False) or state.get("public_ingest", False)
-    )
+    public_ingest = bool(getattr(args, "public_ingest", False) or state.get("public_ingest", False))
     ingest_hostname = getattr(args, "ingest_hostname", None) or state.get(
         "elasticsearch_ingest_hostname"
     )
@@ -246,17 +247,12 @@ def cmd_provision_elastic(args):
             root_disk=root_disk,
             public_ingest=public_ingest,
             ingest_hostname=ingest_hostname,
-            letsencrypt_staging=bool(
-                getattr(args, "letsencrypt_staging", False)
-            ),
-            min_log_level=getattr(args, "min_log_level", None)
-            or DEFAULT_MIN_LEVEL,
+            letsencrypt_staging=bool(getattr(args, "letsencrypt_staging", False)),
+            min_log_level=getattr(args, "min_log_level", None) or DEFAULT_MIN_LEVEL,
         )
         connection_details = provisioner.execute()
     except Exception as e:
-        console.print(
-            f"[bold red]Elasticsearch provisioning failed:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Elasticsearch provisioning failed:[/bold red] {e}")
         sys.exit(1)
 
     # Update Elasticsearch state with connection details
@@ -264,13 +260,9 @@ def cmd_provision_elastic(args):
         update_elastic_state(args.name, connection_details)
         console.print("[dim]Elasticsearch state updated in S3.[/dim]")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to update Elasticsearch state: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to update Elasticsearch state: {e}[/yellow]")
 
     console.print()
-    console.print(
-        "[bold green]Elasticsearch provisioned successfully.[/bold green]"
-    )
+    console.print("[bold green]Elasticsearch provisioned successfully.[/bold green]")
 
     print_connection_summary(args.name, connection_details, console)

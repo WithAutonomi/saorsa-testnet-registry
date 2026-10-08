@@ -15,19 +15,11 @@ def _args(**overrides):
 @pytest.fixture
 def patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.extend.record_deployment_created"
-        ) as p_record_create,
+        patch("saorsa_deploy.cmd.extend.record_deployment_created") as p_record_create,
         patch("saorsa_deploy.cmd.extend.record_event") as p_record_event,
-        patch(
-            "saorsa_deploy.cmd.extend.load_deployment_state"
-        ) as p_load_state,
-        patch(
-            "saorsa_deploy.cmd.extend.save_deployment_state"
-        ) as p_save_state,
-        patch(
-            "saorsa_deploy.cmd.extend.update_deployment_state"
-        ) as p_update_state,
+        patch("saorsa_deploy.cmd.extend.load_deployment_state") as p_load_state,
+        patch("saorsa_deploy.cmd.extend.save_deployment_state") as p_save_state,
+        patch("saorsa_deploy.cmd.extend.update_deployment_state") as p_update_state,
     ):
         yield SimpleNamespace(
             record_create=p_record_create,
@@ -66,6 +58,7 @@ def _load_states(source=None, target=None):
                 raise RuntimeError("No deployment state")
             return target
         raise RuntimeError(f"Unexpected name: {name}")
+
     return _side
 
 
@@ -124,9 +117,7 @@ class TestSourceValidation:
         patches.save_state.assert_not_called()
 
     def test_rejects_source_with_no_bootstraps(self, patches):
-        patches.load_state.side_effect = _load_states(
-            source=_source_state(bootstrap_nodes=[])
-        )
+        patches.load_state.side_effect = _load_states(source=_source_state(bootstrap_nodes=[]))
 
         with pytest.raises(SystemExit):
             cmd_extend(_args())
@@ -143,9 +134,7 @@ class TestIdempotency:
             ],
             "regions": [],
         }
-        patches.load_state.side_effect = _load_states(
-            source=_source_state(), target=target
-        )
+        patches.load_state.side_effect = _load_states(source=_source_state(), target=target)
 
         with pytest.raises(SystemExit):
             cmd_extend(_args())
@@ -159,9 +148,7 @@ class TestIdempotency:
             "shared_bootstrap_from": "DEV-X",
             "regions": [],
         }
-        patches.load_state.side_effect = _load_states(
-            source=_source_state(), target=target
-        )
+        patches.load_state.side_effect = _load_states(source=_source_state(), target=target)
 
         with pytest.raises(SystemExit):
             cmd_extend(_args())

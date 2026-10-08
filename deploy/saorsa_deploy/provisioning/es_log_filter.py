@@ -122,12 +122,8 @@ def build_pipeline_body(min_level: str) -> dict:
         {"remove": {"field": "_sec", "ignore_missing": True}},
     ]
 
-    kept = (
-        f"keep {min_level.upper()} and above" if drop_levels else "keep all levels"
-    )
+    kept = f"keep {min_level.upper()} and above" if drop_levels else "keep all levels"
     return {
-        "description": (
-            f"Beta ingest: {kept}; strip host; stamp attribution from the API key"
-        ),
+        "description": (f"Beta ingest: {kept}; strip host; stamp attribution from the API key"),
         "processors": processors,
     }

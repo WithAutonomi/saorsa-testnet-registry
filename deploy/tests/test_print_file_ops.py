@@ -13,10 +13,7 @@ from saorsa_deploy.cmd.print_file_ops import (
 # A fixed "now" so elapsed-second assertions stay deterministic.
 NOW = datetime(2026, 4, 23, 12, 0, 0, tzinfo=timezone.utc)
 # 2026-04-23 11:00:00 UTC in nanoseconds — exactly 1h before NOW.
-START_NS = int(
-    datetime(2026, 4, 23, 11, 0, 0, tzinfo=timezone.utc).timestamp()
-    * 1_000_000_000
-)
+START_NS = int(datetime(2026, 4, 23, 11, 0, 0, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
 
 
 def _upload(start_offset_ns: int, status: int, total_ms: int | None):
@@ -50,9 +47,7 @@ def test_summarise_upload_aggregates_counts_and_avg():
 
     summary = _summarise_host(ops, op_type="upload", now=NOW)
 
-    assert summary["started_at"] == datetime(
-        2026, 4, 23, 11, 0, 0, tzinfo=timezone.utc
-    )
+    assert summary["started_at"] == datetime(2026, 4, 23, 11, 0, 0, tzinfo=timezone.utc)
     assert summary["elapsed_s"] == 3600.0
     assert summary["total"] == 5
     assert summary["successes"] == 4
@@ -104,15 +99,21 @@ def test_build_payment_map_returns_label_per_upload_host():
     state = {
         "clients": [
             {
-                "role": "upload", "region": "tor1", "client_index": 9,
+                "role": "upload",
+                "region": "tor1",
+                "client_index": 9,
                 "payment_type": "merkle",
             },
             {
-                "role": "upload", "region": "lon1", "client_index": 1,
+                "role": "upload",
+                "region": "lon1",
+                "client_index": 1,
                 "payment_type": None,
             },
             {
-                "role": "download", "region": "fra1", "client_index": 2,
+                "role": "download",
+                "region": "fra1",
+                "client_index": 2,
                 "payment_type": None,
             },
         ]
@@ -218,16 +219,22 @@ def test_build_bootstrap_cache_map_covers_both_roles():
     state = {
         "clients": [
             {
-                "role": "upload", "region": "tor1", "client_index": 9,
+                "role": "upload",
+                "region": "tor1",
+                "client_index": 9,
                 "bootstrap_cache": True,
             },
             {
-                "role": "download", "region": "fra1", "client_index": 2,
+                "role": "download",
+                "region": "fra1",
+                "client_index": 2,
                 "bootstrap_cache": False,
             },
             {
                 # predates the option — absent from the map
-                "role": "download", "region": "ams3", "client_index": 3,
+                "role": "download",
+                "region": "ams3",
+                "client_index": 3,
             },
         ]
     }

@@ -6,6 +6,7 @@ On saorsa-transport 0.36.0 they track 1:1 because every requested teardown
 destroys the tunnel under the endpoint; after PR #138 only a tunnel that
 genuinely broke should produce the error.
 """
+
 from __future__ import annotations
 
 import json

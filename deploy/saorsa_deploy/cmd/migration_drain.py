@@ -40,19 +40,23 @@ def _stop_one_service(
     ssh_key = ssh_key_path or vm.source_ssh_key
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=15",
-        "-o", "LogLevel=ERROR",
-        "-i", ssh_key,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "LogLevel=ERROR",
+        "-i",
+        ssh_key,
         f"{vm.source_ssh_user}@{vm.source_ip}",
         f"sudo -n systemctl stop {service}",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         console.print(
-            f"  [red]{vm.source_name} {service}: stop failed "
-            f"(rc={result.returncode})[/red]"
+            f"  [red]{vm.source_name} {service}: stop failed (rc={result.returncode})[/red]"
         )
         if result.stderr.strip():
             console.print(f"    [dim]{result.stderr.strip()}[/dim]")
@@ -71,14 +75,10 @@ def cmd_migration_drain(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
-    nodes_started = repo.list_vms(
-        migration.id, status=MigrationVmStatus.NODES_STARTED
-    )
+    nodes_started = repo.list_vms(migration.id, status=MigrationVmStatus.NODES_STARTED)
     if not nodes_started:
         console.print(
             "[bold red]Error:[/bold red] No VMs in 'nodes_started' state. "
@@ -135,17 +135,12 @@ def cmd_migration_drain(args):
     failed_vms: list[str] = []
     services_stopped = 0
     for vm in vms_to_drain:
-        console.print(
-            f"[bold]Draining {vm.source_name}[/bold] "
-            f"([dim]{vm.source_ip}[/dim])..."
-        )
+        console.print(f"[bold]Draining {vm.source_name}[/bold] ([dim]{vm.source_ip}[/dim])...")
         vm_failures = 0
         for i in range(1, node_count + 1):
             ok = _stop_one_service(vm, i, args.ssh_key_path, console)
             if ok:
-                console.print(
-                    f"  [green]{vm.source_name} ant-node-{i}: stopped[/green]"
-                )
+                console.print(f"  [green]{vm.source_name} ant-node-{i}: stopped[/green]")
                 services_stopped += 1
             else:
                 vm_failures += 1
@@ -182,9 +177,7 @@ def cmd_migration_drain(args):
         sys.exit(1)
 
     # If everything in the migration is now drained, transition migration → drained.
-    remaining = repo.list_vms(
-        migration.id, status=MigrationVmStatus.NODES_STARTED
-    )
+    remaining = repo.list_vms(migration.id, status=MigrationVmStatus.NODES_STARTED)
     if not remaining:
         repo.update_migration_status(migration.id, MigrationStatus.DRAINED)
         console.print(

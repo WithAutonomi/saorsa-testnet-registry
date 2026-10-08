@@ -7,6 +7,7 @@ capture path: the Flux query, the gauge normalisation keyed by mountpoint, the
 rollup's `disk_usage_by_mount` (including the endpoints that make growth
 computable), and the bucket writer's node-storage restriction.
 """
+
 from datetime import datetime, timezone
 
 from saorsa_deploy.influx import (
@@ -61,9 +62,7 @@ def test_disk_query_reads_used_from_the_disk_measurement():
 def test_disk_query_carries_an_explicit_stop():
     # Same regression guard as every other query in this module: Flux defaults
     # `stop` to now(), which silently drops forward clock-skewed hosts.
-    flux = HOST_FLUX_DISK.format(
-        bucket="b", start="0", stop=FLUX_FAR_FUTURE
-    )
+    flux = HOST_FLUX_DISK.format(bucket="b", start="0", stop=FLUX_FAR_FUTURE)
     assert f"stop: {FLUX_FAR_FUTURE}" in flux
 
 
@@ -141,15 +140,24 @@ def test_occupancy_contributes_to_the_host_observation_window():
 def _growth_run() -> list[dict]:
     return [
         _disk_point(
-            "h1", "2026-07-01T00:00:00", NODE_MOUNT, 1_000,
+            "h1",
+            "2026-07-01T00:00:00",
+            NODE_MOUNT,
+            1_000,
             volume_role=NODE_STORAGE_ROLE,
         ),
         _disk_point(
-            "h1", "2026-07-01T00:05:00", NODE_MOUNT, 5_000,
+            "h1",
+            "2026-07-01T00:05:00",
+            NODE_MOUNT,
+            5_000,
             volume_role=NODE_STORAGE_ROLE,
         ),
         _disk_point(
-            "h1", "2026-07-01T00:10:00", NODE_MOUNT, 9_000,
+            "h1",
+            "2026-07-01T00:10:00",
+            NODE_MOUNT,
+            9_000,
             volume_role=NODE_STORAGE_ROLE,
         ),
     ]
@@ -178,9 +186,9 @@ def test_growth_is_last_minus_first_not_max_minus_min():
         _disk_point("h1", "2026-07-01T00:05:00", NODE_MOUNT, 9_000),
         _disk_point("h1", "2026-07-01T00:10:00", NODE_MOUNT, 2_000),
     ]
-    usage = aggregate_host_metrics({"disk": points})[0]["disk_usage_by_mount"][
-        NODE_MOUNT
-    ]["used_bytes"]
+    usage = aggregate_host_metrics({"disk": points})[0]["disk_usage_by_mount"][NODE_MOUNT][
+        "used_bytes"
+    ]
     assert usage["growth_bytes"] == 1_000
     assert (usage["min"], usage["max"]) == (1_000, 9_000)
 
@@ -189,7 +197,10 @@ def test_rollup_keeps_every_mountpoint():
     points = [
         _disk_point("h1", "2026-07-01T00:00:00", "/", 100),
         _disk_point(
-            "h1", "2026-07-01T00:00:00", NODE_MOUNT, 200,
+            "h1",
+            "2026-07-01T00:00:00",
+            NODE_MOUNT,
+            200,
             volume_role=NODE_STORAGE_ROLE,
         ),
     ]
@@ -203,7 +214,10 @@ def test_node_storage_mount_finds_the_tagged_mountpoint():
             "disk": [
                 _disk_point("h1", "2026-07-01T00:00:00", "/", 100),
                 _disk_point(
-                    "h1", "2026-07-01T00:00:00", NODE_MOUNT, 200,
+                    "h1",
+                    "2026-07-01T00:00:00",
+                    NODE_MOUNT,
+                    200,
                     volume_role=NODE_STORAGE_ROLE,
                 ),
             ]
@@ -216,9 +230,9 @@ def test_node_storage_mount_finds_the_tagged_mountpoint():
 
 def test_node_storage_mount_is_none_without_the_tag():
     # Client VMs, and every run recorded before this capture existed.
-    entry = aggregate_host_metrics(
-        {"disk": [_disk_point("h1", "2026-07-01T00:00:00", "/", 100)]}
-    )[0]
+    entry = aggregate_host_metrics({"disk": [_disk_point("h1", "2026-07-01T00:00:00", "/", 100)]})[
+        0
+    ]
     assert node_storage_mount(entry) is None
 
 
@@ -251,7 +265,10 @@ def test_buckets_restrict_occupancy_to_the_node_storage_mount():
     points = [
         _disk_point("h1", "2026-07-01T00:00:00", "/", 100),
         _disk_point(
-            "h1", "2026-07-01T00:00:00", NODE_MOUNT, 200,
+            "h1",
+            "2026-07-01T00:00:00",
+            NODE_MOUNT,
+            200,
             volume_role=NODE_STORAGE_ROLE,
         ),
     ]
@@ -266,7 +283,10 @@ def test_buckets_can_keep_every_mountpoint_when_asked():
     points = [
         _disk_point("h1", "2026-07-01T00:00:00", "/", 100),
         _disk_point(
-            "h1", "2026-07-01T00:00:00", NODE_MOUNT, 200,
+            "h1",
+            "2026-07-01T00:00:00",
+            NODE_MOUNT,
+            200,
             volume_role=NODE_STORAGE_ROLE,
         ),
     ]
@@ -283,7 +303,10 @@ def test_buckets_keep_each_window_endpoint_recoverable():
     # each bucket must stand alone rather than being pooled across the run.
     points = [
         _disk_point(
-            "h1", f"2026-07-01T00:{minute:02d}:00", NODE_MOUNT, used,
+            "h1",
+            f"2026-07-01T00:{minute:02d}:00",
+            NODE_MOUNT,
+            used,
             volume_role=NODE_STORAGE_ROLE,
         )
         for minute, used in ((0, 1_000), (5, 5_000), (10, 9_000))

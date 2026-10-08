@@ -56,15 +56,9 @@ def deploy_patches():
     pyinfra / SSH.
     """
     with (
-        patch(
-            "saorsa_deploy.cmd.prod_continuous_downloader.record_deployment_created"
-        ) as p_create,
-        patch(
-            "saorsa_deploy.cmd.prod_continuous_downloader.record_event"
-        ) as p_event,
-        patch(
-            "saorsa_deploy.cmd.prod_continuous_downloader.record_status"
-        ) as p_status,
+        patch("saorsa_deploy.cmd.prod_continuous_downloader.record_deployment_created") as p_create,
+        patch("saorsa_deploy.cmd.prod_continuous_downloader.record_event") as p_event,
+        patch("saorsa_deploy.cmd.prod_continuous_downloader.record_status") as p_status,
         patch(
             "saorsa_deploy.cmd.prod_continuous_downloader._monitoring_stack_exists",
             return_value=False,
@@ -77,15 +71,9 @@ def deploy_patches():
             "saorsa_deploy.cmd.prod_continuous_downloader._client_stack_exists",
             return_value=False,
         ) as p_client_exists,
-        patch(
-            "saorsa_deploy.cmd.monitoring_infra.cmd_monitoring_infra"
-        ) as p_mon_infra,
-        patch(
-            "saorsa_deploy.cmd.provision_monitoring.cmd_provision_monitoring"
-        ) as p_prov_mon,
-        patch(
-            "saorsa_deploy.cmd.infra_clients.cmd_infra_clients"
-        ) as p_infra_clients,
+        patch("saorsa_deploy.cmd.monitoring_infra.cmd_monitoring_infra") as p_mon_infra,
+        patch("saorsa_deploy.cmd.provision_monitoring.cmd_provision_monitoring") as p_prov_mon,
+        patch("saorsa_deploy.cmd.infra_clients.cmd_infra_clients") as p_infra_clients,
         patch(
             "saorsa_deploy.cmd.prod_continuous_downloader._provision_prod_downloader"
         ) as p_prov_clients,
@@ -109,26 +97,17 @@ def deploy_patches():
 
 
 class TestDeployHappyPath:
-
-    def test_deploy_rejects_addresses_file_with_extra_tokens(
-        self, deploy_patches, tmp_path
-    ):
+    def test_deploy_rejects_addresses_file_with_extra_tokens(self, deploy_patches, tmp_path):
         custom_file = tmp_path / "addrs.txt"
         # User pasted a full `ant file download <addr> -o name` line.
-        custom_file.write_text(
-            "ant file download " + "a" * 64 + " -o foo.bin\n"
-        )
+        custom_file.write_text("ant file download " + "a" * 64 + " -o foo.bin\n")
 
         with pytest.raises(SystemExit):
-            cmd_prod_continuous_downloader_deploy(
-                _deploy_args(addresses_path=str(custom_file))
-            )
+            cmd_prod_continuous_downloader_deploy(_deploy_args(addresses_path=str(custom_file)))
 
 
 class TestDeployFailure:
-    def test_deploy_records_failed_status_when_underlying_stage_exits(
-        self, deploy_patches
-    ):
+    def test_deploy_records_failed_status_when_underlying_stage_exits(self, deploy_patches):
         deploy_patches.prov_clients.side_effect = SystemExit(1)
 
         with pytest.raises(SystemExit):
@@ -142,12 +121,8 @@ class TestDeployFailure:
 @pytest.fixture
 def destroy_patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.prod_continuous_downloader.record_event"
-        ) as p_event,
-        patch(
-            "saorsa_deploy.cmd.prod_continuous_downloader.record_status"
-        ) as p_status,
+        patch("saorsa_deploy.cmd.prod_continuous_downloader.record_event") as p_event,
+        patch("saorsa_deploy.cmd.prod_continuous_downloader.record_status") as p_status,
         patch(
             "saorsa_deploy.cmd.prod_continuous_downloader._client_stack_exists",
             return_value=True,
@@ -156,15 +131,9 @@ def destroy_patches():
             "saorsa_deploy.cmd.prod_continuous_downloader._monitoring_stack_exists",
             return_value=True,
         ) as p_mon_exists,
-        patch(
-            "saorsa_deploy.cmd.prod_continuous_downloader._stop_prod_downloader"
-        ) as p_stop,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.cmd_destroy_clients"
-        ) as p_destroy_clients,
-        patch(
-            "saorsa_deploy.cmd.destroy_monitoring.cmd_destroy_monitoring"
-        ) as p_destroy_mon,
+        patch("saorsa_deploy.cmd.prod_continuous_downloader._stop_prod_downloader") as p_stop,
+        patch("saorsa_deploy.cmd.destroy_clients.cmd_destroy_clients") as p_destroy_clients,
+        patch("saorsa_deploy.cmd.destroy_monitoring.cmd_destroy_monitoring") as p_destroy_mon,
     ):
         yield SimpleNamespace(
             record_event=p_event,
@@ -178,7 +147,6 @@ def destroy_patches():
 
 
 class TestDestroy:
-
     def test_destroy_records_failed_on_destroy_clients_error(self, destroy_patches):
         destroy_patches.destroy_clients.side_effect = SystemExit(1)
 

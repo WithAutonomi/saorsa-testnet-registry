@@ -94,9 +94,7 @@ def set_hostnames(entries: list[dict], console: Console) -> None:
     if not named:
         return
 
-    console.print(
-        f"[bold]Setting hostnames on {len(named)} VM(s)...[/bold]"
-    )
+    console.print(f"[bold]Setting hostnames on {len(named)} VM(s)...[/bold]")
     failed = []
     for entry in named:
         ip = entry["ip"]
@@ -111,21 +109,26 @@ def set_hostnames(entries: list[dict], console: Console) -> None:
             f'echo "HOSTNAME:SET")'
         )
         ssh_cmd = [
-            "ssh", "-i", ssh_key,
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "ConnectTimeout=10",
+            "ssh",
+            "-i",
+            ssh_key,
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=10",
             f"{ssh_user}@{ip}",
             cmd,
         ]
         try:
             result = subprocess.run(
-                ssh_cmd, capture_output=True, text=True, timeout=30,
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             output = result.stdout.strip()
             if result.returncode != 0:
-                console.print(
-                    f"  [red]Failed {ip} ({name}):[/red] {result.stderr.strip()}"
-                )
+                console.print(f"  [red]Failed {ip} ({name}):[/red] {result.stderr.strip()}")
                 failed.append(ip)
             elif "HOSTNAME:SKIP" in output:
                 console.print(f"  [dim]{ip} already has hostname {name}[/dim]")
@@ -135,10 +138,7 @@ def set_hostnames(entries: list[dict], console: Console) -> None:
             console.print(f"  [red]Timeout setting hostname on {ip}[/red]")
             failed.append(ip)
     if failed:
-        console.print(
-            f"[yellow]Warning: hostname setting failed on "
-            f"{len(failed)} host(s)[/yellow]"
-        )
+        console.print(f"[yellow]Warning: hostname setting failed on {len(failed)} host(s)[/yellow]")
     console.print()
 
 
@@ -149,9 +149,7 @@ def _resolve_es_credentials(args, console):
     es_password = args.elasticsearch_password
 
     if not es_url and args.name:
-        console.print(
-            "[dim]Loading Elasticsearch credentials from elastic state...[/dim]"
-        )
+        console.print("[dim]Loading Elasticsearch credentials from elastic state...[/dim]")
         try:
             elastic_state = load_elastic_state(args.name)
             es_url = elastic_state.get("elasticsearch_url", "")

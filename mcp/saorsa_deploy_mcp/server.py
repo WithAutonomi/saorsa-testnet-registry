@@ -250,10 +250,14 @@ def create_deployment(
     if branch_name:
         owner = repo_owner or "maidsafe"
         build_args = [
-            "build", "ant-node",
-            "--name", name,
-            "--branch-name", branch_name,
-            "--repo-owner", owner,
+            "build",
+            "ant-node",
+            "--name",
+            name,
+            "--branch-name",
+            branch_name,
+            "--repo-owner",
+            owner,
         ]
         if validation_string:
             build_args.extend(["--validation-string", validation_string])
@@ -282,14 +286,19 @@ def create_deployment(
     output_lines.append("Provisioning infrastructure...")
     rc, stdout, stderr = _run_deploy(infra_args)
     if rc != 0:
-        return f"Infrastructure provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return (
+            f"Infrastructure provisioning failed (exit code {rc}):\n{stderr}\n{stdout}"
+        )
     output_lines.append("Infrastructure ready.")
 
     # Step 3: Provision genesis
     genesis_args = [
-        "nodes", "provision-genesis",
-        "--name", name,
-        "--port", str(genesis_port),
+        "nodes",
+        "provision-genesis",
+        "--name",
+        name,
+        "--port",
+        str(genesis_port),
     ]
     if testnet:
         genesis_args.append("--testnet")
@@ -314,9 +323,12 @@ def create_deployment(
     # Step 3b: Provision additional bootstrap nodes (if bootstrap_count > 1)
     if bootstrap_count > 1:
         bootstrap_args = [
-            "bootstraps", "provision",
-            "--name", name,
-            "--port", str(genesis_port),
+            "bootstraps",
+            "provision",
+            "--name",
+            name,
+            "--port",
+            str(genesis_port),
         ]
         if testnet:
             bootstrap_args.append("--testnet")
@@ -345,8 +357,10 @@ def create_deployment(
     # Step 4: Provision remaining nodes
     provision_args = [
         "provision",
-        "--name", name,
-        "--node-count", str(node_count),
+        "--name",
+        name,
+        "--node-count",
+        str(node_count),
     ]
     if testnet:
         provision_args.append("--testnet")
@@ -375,7 +389,10 @@ def create_deployment(
         for step_name, step_args in [
             ("elastic infra", ["elastic", "infra", "--name", name]),
             ("elastic provision", ["elastic", "provision", "--name", name]),
-            ("elastic provision-telegraf", ["elastic", "provision-telegraf", "--name", name]),
+            (
+                "elastic provision-telegraf",
+                ["elastic", "provision-telegraf", "--name", name],
+            ),
         ]:
             output_lines.append(f"Running {step_name}...")
             rc, stdout, stderr = _run_deploy(step_args)
@@ -528,10 +545,14 @@ def create_clients(
     if branch_name:
         owner = repo_owner or "maidsafe"
         build_args = [
-            "build", "ant",
-            "--name", name,
-            "--branch-name", branch_name,
-            "--repo-owner", owner,
+            "build",
+            "ant",
+            "--name",
+            name,
+            "--branch-name",
+            branch_name,
+            "--repo-owner",
+            owner,
         ]
         if validation_string:
             build_args.extend(["--validation-string", validation_string])
@@ -664,7 +685,9 @@ def record_results(
 
     rc, stdout, stderr = _run_deploy(cli_args)
     if rc != 0:
-        return f"deployments record-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return (
+            f"deployments record-results failed (exit code {rc}):\n{stderr}\n{stdout}"
+        )
     return stdout or f"File results recorded for '{name}'."
 
 
@@ -723,7 +746,9 @@ def record_analysis(
 
     rc, stdout, stderr = _run_deploy(cli_args)
     if rc != 0:
-        return f"deployments record-analysis failed (exit code {rc}):\n{stderr}\n{stdout}"
+        return (
+            f"deployments record-analysis failed (exit code {rc}):\n{stderr}\n{stdout}"
+        )
     return stdout or f"Host results recorded for '{name}'."
 
 

@@ -44,8 +44,7 @@ def cmd_destroy_monitoring(args):
 
     if not args.force:
         confirm = input(
-            f"This will destroy the monitoring stack for '{args.name}'. "
-            "Type 'yes' to confirm: "
+            f"This will destroy the monitoring stack for '{args.name}'. Type 'yes' to confirm: "
         )
         if confirm.strip().lower() != "yes":
             console.print("[yellow]Aborted.[/yellow]")
@@ -108,42 +107,32 @@ def cmd_destroy_monitoring(args):
     results = execute_terraform_runs([config], action="destroy")
 
     if not results[0].success:
-        console.print(
-            "[bold red]Monitoring infrastructure destroy failed.[/bold red]"
-        )
+        console.print("[bold red]Monitoring infrastructure destroy failed.[/bold red]")
         console.print(results[0].stderr)
         sys.exit(1)
 
-    console.print(
-        "[bold green]Monitoring infrastructure destroyed successfully.[/bold green]"
-    )
+    console.print("[bold green]Monitoring infrastructure destroyed successfully.[/bold green]")
 
     # Delete Terraform state
     try:
         delete_terraform_state(state_key)
         console.print(f"[dim]Deleted Terraform state: {state_key}[/dim]")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to delete Terraform state: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to delete Terraform state: {e}[/yellow]")
 
     # Delete monitoring state
     try:
         delete_monitoring_state(args.name)
         console.print("[dim]Monitoring state removed from S3.[/dim]")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to delete monitoring state: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to delete monitoring state: {e}[/yellow]")
 
     # Clean up workspace
     if workspace_dir.exists():
         shutil.rmtree(workspace_dir)
 
     console.print()
-    console.print(
-        f"[bold green]Monitoring stack '{args.name}' fully destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]Monitoring stack '{args.name}' fully destroyed.[/bold green]")
 
 
 def _volume_size_from_tfstate(state_key: str) -> str | None:
@@ -155,9 +144,7 @@ def _volume_size_from_tfstate(state_key: str) -> str | None:
         tfstate = load_terraform_state(state_key)
     except Exception:
         return None
-    attrs = terraform_state_attributes(
-        tfstate, "digitalocean_volume", "monitoring_storage"
-    )
+    attrs = terraform_state_attributes(tfstate, "digitalocean_volume", "monitoring_storage")
     if not attrs:
         return None
     size = attrs.get("size")

@@ -27,19 +27,13 @@ def _args(**overrides):
 
 class TestOneShot:
     def test_delegates_once_to_record_results(self):
-        with patch(
-            "saorsa_deploy.cmd.archive_results.cmd_record_results"
-        ) as p_record:
+        with patch("saorsa_deploy.cmd.archive_results.cmd_record_results") as p_record:
             cmd_archive_results(_args())
         p_record.assert_called_once()
 
     def test_forwards_expected_fields(self):
-        with patch(
-            "saorsa_deploy.cmd.archive_results.cmd_record_results"
-        ) as p_record:
-            cmd_archive_results(
-                _args(window="-24h", monitoring_name="MON", update_slack=True)
-            )
+        with patch("saorsa_deploy.cmd.archive_results.cmd_record_results") as p_record:
+            cmd_archive_results(_args(window="-24h", monitoring_name="MON", update_slack=True))
         forwarded = p_record.call_args.args[0]
         assert forwarded.name == "PROD-DL-01"
         assert forwarded.window == "-24h"

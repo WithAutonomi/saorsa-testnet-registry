@@ -24,6 +24,7 @@ but the probe runs in the idle window, so eligibility is just "active before".
 Output: per-probe rows plus a summary by block length. The gate in the run
 issue is on the summary: 21 s -> survival >= 80%; 31 s -> death >= 80%.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -119,9 +120,7 @@ def register(subparsers):
     )
     p.add_argument("pcap")
     p.add_argument("--probes", required=True, help="JSONL written by `analysis stall-probe`")
-    p.add_argument(
-        "--local", required=True, help="local node-side IP as it appears in the pcap"
-    )
+    p.add_argument("--local", required=True, help="local node-side IP as it appears in the pcap")
     p.add_argument("--resume-window", type=float, default=15.0)
     p.add_argument("--active-window", type=float, default=30.0)
     add_json_out_arg(p)

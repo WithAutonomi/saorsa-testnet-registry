@@ -8,6 +8,7 @@ host could hold hundreds of samples in the bucket and contribute nothing.
 Found on DEV-03 (2026-07-25): a +3h node VM contributed 0 of 27 hosts to
 `record-analysis` while holding 460 `memory_rss` points.
 """
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -72,7 +73,8 @@ def test_file_op_query_bounds_the_future(monkeypatch):
             return iter(())
 
     monkeypatch.setattr(
-        influx.requests, "post",
+        influx.requests,
+        "post",
         lambda *a, **k: (seen.append(k.get("data")), _Resp())[1],
     )
     fetch_operation_points(url="http://x", token="t", org="ant", bucket="b")
@@ -92,7 +94,8 @@ def test_prod_upload_query_bounds_the_future(monkeypatch):
             return iter(())
 
     monkeypatch.setattr(
-        influx.requests, "post",
+        influx.requests,
+        "post",
         lambda *a, **k: (seen.append(k.get("data")), _Resp())[1],
     )
     fetch_prod_upload_points(url="http://x", token="t", org="ant", bucket="b")

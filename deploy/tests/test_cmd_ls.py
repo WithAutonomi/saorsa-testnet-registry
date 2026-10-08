@@ -242,8 +242,7 @@ def test_ls_node_version_renders_latest_and_defaults_missing_owner():
     from saorsa_deploy.cmd.ls import _derive_node_version
 
     assert (
-        _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "latest"}})
-        == "latest"
+        _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "latest"}}) == "latest"
     )
     assert (
         _derive_node_version(
@@ -338,14 +337,8 @@ def test_ls_node_version_is_na_when_descriptor_missing_or_malformed():
     assert _derive_node_version({"bootstrap_count": 3, "node_binary": None}) == "N/A"
     assert _derive_node_version({"bootstrap_count": 3, "node_binary": "0.14.2"}) == "N/A"
     assert _derive_node_version({"bootstrap_count": 3, "node_binary": {}}) == "N/A"
-    assert (
-        _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "release"}})
-        == "N/A"
-    )
-    assert (
-        _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "branch"}})
-        == "N/A"
-    )
+    assert _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "release"}}) == "N/A"
+    assert _derive_node_version({"bootstrap_count": 3, "node_binary": {"kind": "branch"}}) == "N/A"
 
 
 def test_ls_filter_status_keeps_only_matching_rows(capsys, repo):

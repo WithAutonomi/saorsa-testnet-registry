@@ -82,9 +82,7 @@ def _load_production_config(console: Console) -> tuple[list[dict], dict[str, str
     """
     ips_file = Path(__file__).parent.parent.parent / PRODUCTION_IPS_FILE
     if not ips_file.exists():
-        console.print(
-            f"[bold red]Error:[/bold red] {PRODUCTION_IPS_FILE} not found at {ips_file}"
-        )
+        console.print(f"[bold red]Error:[/bold red] {PRODUCTION_IPS_FILE} not found at {ips_file}")
         sys.exit(1)
 
     with open(ips_file) as f:
@@ -203,9 +201,7 @@ def _provision_node(
     connect_addr = ssh_ip or ip
     ssh_user = PROVIDER_SSH_USERS.get(provider, "root")
     connect_opts = {"ssh_user": ssh_user, "ssh_key": ssh_key_path}
-    inventory = Inventory(
-        ([(connect_addr, connect_opts)], {})
-    )
+    inventory = Inventory(([(connect_addr, connect_opts)], {}))
     config = Config()
     if ssh_user != "root":
         config.SUDO = True
@@ -246,10 +242,10 @@ def _provision_node(
             dhclient_hook = (
                 f"mkdir -p /etc/dhcp/dhclient-exit-hooks.d && "
                 f"cat > /etc/dhcp/dhclient-exit-hooks.d/floating-ip-source << 'HOOK'\n"
-                f"if [ \"$reason\" = \"BOUND\" ] || [ \"$reason\" = \"RENEW\" ] || "
-                f"[ \"$reason\" = \"REBIND\" ]; then\n"
+                f'if [ "$reason" = "BOUND" ] || [ "$reason" = "RENEW" ] || '
+                f'[ "$reason" = "REBIND" ]; then\n'
                 f"    GATEWAY=$(ip route show default | awk '{{print $3}}')\n"
-                f"    if [ -n \"$GATEWAY\" ]; then\n"
+                f'    if [ -n "$GATEWAY" ]; then\n'
                 f"        ip route replace default via $GATEWAY dev eth0 src {ip} "
                 f"2>/dev/null || true\n"
                 f"    fi\n"
@@ -408,9 +404,7 @@ def _resolve_hetzner_availability(nodes: list[dict], console: Console) -> None:
     token = os.environ.get("HCLOUD_TOKEN")
     if not token:
         # Already checked in the env var block, but be safe
-        console.print(
-            "[bold red]Error:[/bold red] HCLOUD_TOKEN not set"
-        )
+        console.print("[bold red]Error:[/bold red] HCLOUD_TOKEN not set")
         sys.exit(1)
 
     hetzner_nodes = [n for n in nodes if n["provider"] == "hetzner"]
@@ -419,17 +413,17 @@ def _resolve_hetzner_availability(nodes: list[dict], console: Console) -> None:
 
     result = subprocess.run(
         [
-            "curl", "-sf",
-            "-H", f"Authorization: Bearer {token}",
+            "curl",
+            "-sf",
+            "-H",
+            f"Authorization: Bearer {token}",
             "https://api.hetzner.cloud/v1/datacenters",
         ],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        console.print(
-            "[bold red]Error:[/bold red] Failed to query Hetzner datacenters API"
-        )
+        console.print("[bold red]Error:[/bold red] Failed to query Hetzner datacenters API")
         sys.exit(1)
 
     data = json.loads(result.stdout)
@@ -439,8 +433,7 @@ def _resolve_hetzner_availability(nodes: list[dict], console: Console) -> None:
     for dc in data["datacenters"]:
         loc = dc["location"]["name"]
         avail[loc] = {
-            tid: (tid in dc["server_types"]["available"])
-            for tid in dc["server_types"]["supported"]
+            tid: (tid in dc["server_types"]["available"]) for tid in dc["server_types"]["supported"]
         }
 
     for node in hetzner_nodes:
@@ -553,23 +546,17 @@ def cmd_bootstrap_production(args):
     if binary_path:
         binary_path = str(Path(binary_path).expanduser().resolve())
         if not Path(binary_path).exists():
-            console.print(
-                f"[bold red]Error:[/bold red] Binary not found at {binary_path}"
-            )
+            console.print(f"[bold red]Error:[/bold red] Binary not found at {binary_path}")
             sys.exit(1)
         if not os.access(binary_path, os.R_OK):
-            console.print(
-                f"[bold red]Error:[/bold red] Binary at {binary_path} is not readable"
-            )
+            console.print(f"[bold red]Error:[/bold red] Binary at {binary_path} is not readable")
             sys.exit(1)
         binary_url = None
         binary_is_archive = False
         console.print(f"  Using local binary: {binary_path}")
     elif args.node_version:
         if not check_release_exists(args.node_version):
-            console.print(
-                f"[bold red]Error:[/bold red] Release v{args.node_version} not found"
-            )
+            console.print(f"[bold red]Error:[/bold red] Release v{args.node_version} not found")
             sys.exit(1)
         binary_url = get_release_url(args.node_version)
         binary_is_archive = True
@@ -617,14 +604,10 @@ def cmd_bootstrap_production(args):
             console.print(f"[bold red]FAILED: {f.provider}/{f.region}[/bold red]")
             console.print(f"  stderr: {f.stderr[:500]}")
         console.print(f"[bold red]{len(failures)} region(s) failed. Aborting.[/bold red]")
-        console.print(
-            "[dim]Run 'prod bootstrap destroy' to clean up created resources.[/dim]"
-        )
+        console.print("[dim]Run 'prod bootstrap destroy' to clean up created resources.[/dim]")
         sys.exit(1)
 
-    console.print(
-        f"[bold green]All {len(results)} regions provisioned successfully.[/bold green]"
-    )
+    console.print(f"[bold green]All {len(results)} regions provisioned successfully.[/bold green]")
     console.print()
 
     # Resolve SSH IPs — for Hetzner floating IPs, we need to SSH via the
@@ -635,7 +618,8 @@ def cmd_bootstrap_production(args):
             server_name = f"ant-bootstrap-{node['region']}"
             result = subprocess.run(
                 ["hcloud", "server", "ip", server_name],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             primary_ip = result.stdout.strip()
             if primary_ip:
@@ -660,7 +644,8 @@ def cmd_bootstrap_production(args):
         label = f"{node['provider']}/{node['region']}"
         proc = subprocess.Popen(
             [
-                sys.executable, "-c",
+                sys.executable,
+                "-c",
                 "from saorsa_deploy.provisioning.hardening import "
                 "ProductionHardeningProvisioner; "
                 f"ProductionHardeningProvisioner("
@@ -778,9 +763,7 @@ def cmd_bootstrap_production(args):
             provision_errors.append(label)
 
     if provision_errors:
-        console.print(
-            f"[bold red]{len(provision_errors)} node(s) failed provisioning.[/bold red]"
-        )
+        console.print(f"[bold red]{len(provision_errors)} node(s) failed provisioning.[/bold red]")
         sys.exit(1)
     console.print()
 

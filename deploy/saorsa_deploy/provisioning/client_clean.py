@@ -48,8 +48,7 @@ class ClientCleanProvisioner:
 
     def execute(self) -> None:
         hosts_data = [
-            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path})
-            for ip in self.host_ips
+            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
         config = Config()
@@ -78,10 +77,7 @@ class ClientCleanProvisioner:
                 server.shell,
                 name="Remove client unit, script, env, data and binary files",
                 commands=[
-                    *(
-                        f"rm -f /etc/systemd/system/{unit}.service"
-                        for unit in ALL_CLIENT_UNITS
-                    ),
+                    *(f"rm -f /etc/systemd/system/{unit}.service" for unit in ALL_CLIENT_UNITS),
                     "systemctl daemon-reload",
                     f"rm -rf {SCRIPTS_DIR}",
                     f"rm -f {ENV_FILE}",
@@ -127,12 +123,8 @@ class ClientCleanProvisioner:
         failed = state.failed_hosts
         total = len(self.host_ips)
         succeeded = total - len(failed)
-        self.console.print(
-            f"Client cleanup complete: {succeeded}/{total} hosts"
-        )
+        self.console.print(f"Client cleanup complete: {succeeded}/{total} hosts")
         if failed:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError(
-                f"{len(failed)} host(s) failed client cleanup"
-            )
+            raise RuntimeError(f"{len(failed)} host(s) failed client cleanup")

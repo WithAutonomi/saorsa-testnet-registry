@@ -58,20 +58,14 @@ def cmd_migration_status(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
     vms = repo.list_vms(migration.id)
 
+    console.print(f"[bold]Migration:[/bold] {migration.name} ([dim]id={migration.id}[/dim])")
     console.print(
-        f"[bold]Migration:[/bold] {migration.name} "
-        f"([dim]id={migration.id}[/dim])"
-    )
-    console.print(
-        f"  deployment: {migration.deployment_name}"
-        f"  status: [bold]{migration.status.value}[/bold]"
+        f"  deployment: {migration.deployment_name}  status: [bold]{migration.status.value}[/bold]"
     )
     console.print(
         f"  source: {migration.source_provider}/{migration.source_region}"
@@ -79,14 +73,10 @@ def cmd_migration_status(args):
         f"{migration.target_server_type} ({migration.target_volume_size_gb} GB)"
     )
     if migration.target_locations:
-        locs = ", ".join(
-            f"{k}={v}" for k, v in migration.target_locations.items()
-        )
+        locs = ", ".join(f"{k}={v}" for k, v in migration.target_locations.items())
         console.print(f"  locations: {locs}")
     if migration.soak_completed_at is not None:
-        console.print(
-            f"  soak completed: {migration.soak_completed_at.isoformat()}"
-        )
+        console.print(f"  soak completed: {migration.soak_completed_at.isoformat()}")
     console.print()
 
     state_counts: dict[str, int] = {}

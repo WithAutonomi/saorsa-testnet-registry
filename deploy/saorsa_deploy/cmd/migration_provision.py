@@ -39,9 +39,7 @@ def cmd_migration_provision(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
     vms = repo.list_vms(migration.id, status=MigrationVmStatus.INFRA_PROVISIONED)
@@ -53,9 +51,7 @@ def cmd_migration_provision(args):
         sys.exit(1)
 
     try:
-        bootstrap_peers = load_prod_bootstraps_from_file(
-            args.bootstrap_peers_file
-        )
+        bootstrap_peers = load_prod_bootstraps_from_file(args.bootstrap_peers_file)
     except ProdBootstrapsError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -69,10 +65,7 @@ def cmd_migration_provision(args):
         f"{migration.name}...[/bold]"
     )
     console.print(f"  Bootstrap peers: {', '.join(bootstrap_peers)}")
-    console.print(
-        f"  Nodes per VM: {migration.node_count_per_vm}"
-        f"  | initial port: {args.port}"
-    )
+    console.print(f"  Nodes per VM: {migration.node_count_per_vm}  | initial port: {args.port}")
     console.print(f"  Rewards address: {args.rewards_address}")
     console.print(f"  SSH key: {args.ssh_key_path}")
     console.print()
@@ -109,13 +102,9 @@ def cmd_migration_provision(args):
     # node storage lives under /mnt/ant-node-storage on the root disk rather
     # than a mounted volume (same as OVH 3-AZ). Every other target provider
     # attaches a data volume.
-    root_disk_ips = (
-        set(target_ips) if migration.target_provider == "contabo" else None
-    )
+    root_disk_ips = set(target_ips) if migration.target_provider == "contabo" else None
     if root_disk_ips:
-        console.print(
-            f"  Root-disk storage (no volume): {len(root_disk_ips)} Contabo VM(s)"
-        )
+        console.print(f"  Root-disk storage (no volume): {len(root_disk_ips)} Contabo VM(s)")
 
     kwargs = {
         "host_ips": target_ips,

@@ -847,9 +847,7 @@ class TestServiceMainLoop:
         # transports measured several times apart.
         assert bucket == "wasm-client-metrics"
 
-    def test_a_real_ant_wasm_success_payload_is_a_success(
-        self, service, monkeypatch, tmp_path
-    ):
+    def test_a_real_ant_wasm_success_payload_is_a_success(self, service, monkeypatch, tmp_path):
         # `ant-wasm` ALWAYS emits `error`, set to null on success, where
         # `ant --json` omits the key. Keying on presence reported every healthy
         # browser-path upload as a partial — which spends the file's pool claim

@@ -24,11 +24,7 @@ def cmd_start_clients(args):
         sys.exit(1)
 
     clients = client_state.get("clients", [])
-    hosts_with_role = [
-        (c["ip"], c.get("role", "upload"))
-        for c in clients
-        if c.get("ip")
-    ]
+    hosts_with_role = [(c["ip"], c.get("role", "upload")) for c in clients if c.get("ip")]
     if not hosts_with_role:
         console.print("[bold red]Error:[/bold red] No client IPs found in state.")
         sys.exit(1)
@@ -38,9 +34,7 @@ def cmd_start_clients(args):
 
     clear_known_hosts(host_ips, console)
 
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     inventory = Inventory((hosts_data, {}))
     state = State(inventory=inventory, config=Config())
     connect_all(state)

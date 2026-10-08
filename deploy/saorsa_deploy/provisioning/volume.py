@@ -5,9 +5,9 @@ from pyinfra.operations import server
 MOUNT_POINT = "/mnt/ant-node-storage"
 LOG_DIR = f"{MOUNT_POINT}/log"
 VOLUME_DEVICE_GLOBS = [
-    "/dev/disk/by-id/scsi-0DO_Volume_*",          # Digital Ocean
-    "/dev/disk/by-id/scsi-0HC_Volume_*",          # Hetzner
-    "/dev/disk/by-id/virtio-*",                   # Vultr
+    "/dev/disk/by-id/scsi-0DO_Volume_*",  # Digital Ocean
+    "/dev/disk/by-id/scsi-0HC_Volume_*",  # Hetzner
+    "/dev/disk/by-id/virtio-*",  # Vultr
     # OVH (OpenStack/QEMU): attached Cinder volumes get a UUID-suffixed
     # SCSI VPD-83 by-id symlink with an `S` prefix; the boot disk has only
     # the `0`-prefixed alias for `drive-scsi0-0-0-0`, so this glob is
@@ -33,9 +33,7 @@ def build_root_disk_dir_command(mount_point: str = MOUNT_POINT) -> str:
     return f"mkdir -p {mount_point} && echo 'ANT_VOLUME:ROOT_DISK'"
 
 
-def build_mount_ordering_dropin_command(
-    service: str, mount_point: str = MOUNT_POINT
-) -> str:
+def build_mount_ordering_dropin_command(service: str, mount_point: str = MOUNT_POINT) -> str:
     """Build a shell command installing a systemd drop-in that stops ``service``
     starting before ``mount_point`` is mounted.
 
@@ -138,18 +136,10 @@ def add_mount_volume_op(state: State, mount_point: str = MOUNT_POINT):
 # --- Provider-specific device discovery for striped volumes ---
 
 DEVICE_DISCOVERY = {
-    "digitalocean": (
-        "ls /dev/disk/by-id/scsi-0DO_Volume_* 2>/dev/null | sort"
-    ),
-    "hetzner": (
-        "ls /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | sort"
-    ),
-    "vultr": (
-        "ls /dev/vd[b-z] 2>/dev/null | sort"
-    ),
-    "aws": (
-        "ls /dev/xvd[f-z] /dev/nvme[1-9]n1 2>/dev/null | sort"
-    ),
+    "digitalocean": ("ls /dev/disk/by-id/scsi-0DO_Volume_* 2>/dev/null | sort"),
+    "hetzner": ("ls /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | sort"),
+    "vultr": ("ls /dev/vd[b-z] 2>/dev/null | sort"),
+    "aws": ("ls /dev/xvd[f-z] /dev/nvme[1-9]n1 2>/dev/null | sort"),
 }
 
 

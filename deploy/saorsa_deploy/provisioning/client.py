@@ -1,4 +1,3 @@
-
 import base64
 from pathlib import PurePosixPath
 
@@ -144,8 +143,6 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 """
-
-
 
 
 def _build_pointer_unit() -> str:
@@ -313,9 +310,7 @@ class AntClientProvisioner:
                 or (role == "download" and "downloader" in self.heaptrack_targets)
                 else "0"
             )
-            bootstrap_cache = (
-                "true" if c.get("bootstrap_cache", True) else "false"
-            )
+            bootstrap_cache = "true" if c.get("bootstrap_cache", True) else "false"
             forward_logs = "true" if c.get("forward_logs") else "false"
             rust_log = c.get("rust_log") or ""
             # The env entry carries the client's ACTUAL role, never a
@@ -500,9 +495,7 @@ class AntClientProvisioner:
     @property
     def wasm_clients(self) -> list[dict]:
         """Clients running the WASM transport (either role), with an IP."""
-        return [
-            c for c in self.clients if c.get("ip") and is_wasm(c.get("role", "upload"))
-        ]
+        return [c for c in self.clients if c.get("ip") and is_wasm(c.get("role", "upload"))]
 
     #: Per-role aggregate log files that uploader.sh/downloader.sh append to
     #: when FORWARD_LOGS=true, and the role label tagged on forwarded lines.
@@ -541,15 +534,11 @@ class AntClientProvisioner:
         per-role aggregate stdout/stderr files. No-op unless at least one client
         has ``forward_logs`` set; raises if one does but no ES creds are known.
         """
-        forwarding = [
-            c for c in self.clients if c.get("ip") and c.get("forward_logs")
-        ]
+        forwarding = [c for c in self.clients if c.get("ip") and c.get("forward_logs")]
         if not forwarding:
             return
         if not (
-            self.elasticsearch_url
-            and self.elasticsearch_username
-            and self.elasticsearch_password
+            self.elasticsearch_url and self.elasticsearch_username and self.elasticsearch_password
         ):
             raise RuntimeError(
                 "forward_logs is set on one or more clients but no Elasticsearch "
@@ -561,16 +550,11 @@ class AntClientProvisioner:
         )
 
         for role_key, (globs, role_label) in self._FORWARD_ROLE_FILES.items():
-            ips = [
-                c["ip"]
-                for c in forwarding
-                if c.get("role", "upload") == role_key
-            ]
+            ips = [c["ip"] for c in forwarding if c.get("role", "upload") == role_key]
             if not ips:
                 continue
             self.console.print(
-                f"Installing client log forwarder on {len(ips)} {role_label} "
-                f"host(s)..."
+                f"Installing client log forwarder on {len(ips)} {role_label} host(s)..."
             )
             # Only override the forwarder's buffer when explicitly sized — leave
             # ClientTelegrafProvisioner's default in place otherwise.
@@ -642,9 +626,7 @@ class AntClientProvisioner:
         for client in self.clients:
             if not client.get("ip"):
                 continue
-            hosts_data.append(
-                (client["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path})
-            )
+            hosts_data.append((client["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path}))
 
         inventory = Inventory((hosts_data, {}))
         config = Config()
@@ -740,9 +722,7 @@ class AntClientProvisioner:
             # client makes a run's transfer percentiles incomparable to an unshaped
             # baseline, so this must not be used on a staging gate run.
             network_by_ip = {
-                c["ip"]: c["network"]
-                for c in self.clients
-                if c.get("ip") and c.get("network")
+                c["ip"]: c["network"] for c in self.clients if c.get("ip") and c.get("network")
             }
             if network_by_ip:
                 self.console.print(
@@ -827,8 +807,7 @@ class AntClientProvisioner:
                 server.shell,
                 name="Deploy uploader and downloader scripts",
                 commands=[
-                    f"cat > {SCRIPTS_DIR}/uploader.sh << 'SCRIPT_EOF'\n"
-                    f"{uploader_script}SCRIPT_EOF",
+                    f"cat > {SCRIPTS_DIR}/uploader.sh << 'SCRIPT_EOF'\n{uploader_script}SCRIPT_EOF",
                     f"chmod +x {SCRIPTS_DIR}/uploader.sh",
                     f"cat > {SCRIPTS_DIR}/downloader.sh << 'SCRIPT_EOF'\n"
                     f"{downloader_script}SCRIPT_EOF",
@@ -839,21 +818,16 @@ class AntClientProvisioner:
             # The pointer workload, targeted at the pointer VMs only: it is a
             # few hundred lines of Python that a transfer client has no use for.
             pointer_ips = {
-                c["ip"]
-                for c in self.clients
-                if c.get("ip") and is_pointer(c.get("role", ""))
+                c["ip"] for c in self.clients if c.get("ip") and is_pointer(c.get("role", ""))
             }
-            pointer_hosts = [
-                h for h in state.inventory.get_active_hosts() if h.name in pointer_ips
-            ]
+            pointer_hosts = [h for h in state.inventory.get_active_hosts() if h.name in pointer_ips]
             if pointer_hosts:
                 add_op(
                     state,
                     server.shell,
                     name="Deploy pointer client script",
                     commands=[
-                        f"mkdir -p {POINTER_DATA_DIR}/keys && "
-                        f"chmod 700 {POINTER_DATA_DIR}",
+                        f"mkdir -p {POINTER_DATA_DIR}/keys && chmod 700 {POINTER_DATA_DIR}",
                         f"cat > {SCRIPTS_DIR}/pointer_client.py << 'SCRIPT_EOF'\n"
                         f"{pointer_script}SCRIPT_EOF",
                         f"chmod +x {SCRIPTS_DIR}/pointer_client.py",
@@ -906,20 +880,20 @@ class AntClientProvisioner:
             for ip, env in ip_to_env.items():
                 case_entries.append(
                     f'    "{ip}") ROLE={env["role"]}; '
-                    f'FILE_SIZE_KB={env["file_size_kb"]}; '
-                    f'REGION={env["region"]}; '
-                    f'CLIENT_INDEX={env["client_index"]}; '
+                    f"FILE_SIZE_KB={env['file_size_kb']}; "
+                    f"REGION={env['region']}; "
+                    f"CLIENT_INDEX={env['client_index']}; "
                     f'PAYMENT_TYPE="{env["payment_type"]}"; '
                     f'SECRET_KEY="{env["secret_key"]}"; '
-                    f'HEAPTRACK={env["heaptrack"]}; '
-                    f'BOOTSTRAP_CACHE={env["bootstrap_cache"]}; '
-                    f'FORWARD_LOGS={env["forward_logs"]}; '
+                    f"HEAPTRACK={env['heaptrack']}; "
+                    f"BOOTSTRAP_CACHE={env['bootstrap_cache']}; "
+                    f"FORWARD_LOGS={env['forward_logs']}; "
                     f'RUST_LOG="{env["rust_log"]}"; '
-                    f'CREATE_INTERVAL_SECS={env.get("create_interval_secs", 0)}; '
-                    f'UPDATE_INTERVAL_SECS={env.get("update_interval_secs", 0)}; '
-                    f'SWEEP_INTERVAL_SECS={env.get("sweep_interval_secs", 0)}; '
-                    f'CHAIN_FRACTION={env.get("chain_fraction", 0)}; '
-                    f'POINTER_MAX={env.get("pointer_max", 0)}; '
+                    f"CREATE_INTERVAL_SECS={env.get('create_interval_secs', 0)}; "
+                    f"UPDATE_INTERVAL_SECS={env.get('update_interval_secs', 0)}; "
+                    f"SWEEP_INTERVAL_SECS={env.get('sweep_interval_secs', 0)}; "
+                    f"CHAIN_FRACTION={env.get('chain_fraction', 0)}; "
+                    f"POINTER_MAX={env.get('pointer_max', 0)}; "
                     f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}" ;;'
                 )
             case_block = "\n".join(case_entries)
@@ -1016,9 +990,7 @@ ENV_EOF"""
 
             # Native roles only: a WASM host's unit is written by
             # _add_wasm_ops, and must not be overwritten here.
-            native_env = {
-                ip: env for ip, env in ip_to_env.items() if not is_wasm(env["role"])
-            }
+            native_env = {ip: env for ip, env in ip_to_env.items() if not is_wasm(env["role"])}
             if native_env:
                 unit_case_entries = [
                     f'    "{ip}") ROLE={env["role"]} ;;' for ip, env in native_env.items()
@@ -1061,16 +1033,12 @@ systemctl daemon-reload"""
                 )
 
             if self.addresses_file_content is not None:
-                download_ips = [
-                    ip for ip, env in ip_to_env.items() if env["role"] == "download"
-                ]
+                download_ips = [ip for ip, env in ip_to_env.items() if env["role"] == "download"]
                 if download_ips:
-                    encoded = base64.b64encode(
-                        self.addresses_file_content.encode("utf-8")
-                    ).decode("ascii")
-                    addresses_case_entries = [
-                        f'    "{ip}") MATCH=1 ;;' for ip in download_ips
-                    ]
+                    encoded = base64.b64encode(self.addresses_file_content.encode("utf-8")).decode(
+                        "ascii"
+                    )
+                    addresses_case_entries = [f'    "{ip}") MATCH=1 ;;' for ip in download_ips]
                     addresses_case_block = "\n".join(addresses_case_entries)
                     addresses_script = f"""\
 MY_IP=$(hostname -I | awk '{{print $1}}')
@@ -1107,8 +1075,7 @@ fi"""
             f"[bold]Client provisioning complete: {succeeded}/{total} hosts succeeded[/bold]"
         )
         self.console.print(
-            "  Services created but NOT started. "
-            "Use 'clients start' to begin upload/download."
+            "  Services created but NOT started. Use 'clients start' to begin upload/download."
         )
         if failed:
             for host in failed:

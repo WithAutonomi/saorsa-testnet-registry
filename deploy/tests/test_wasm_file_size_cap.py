@@ -64,9 +64,7 @@ class TestValidation:
         # The cap is a browser-path limit; the native tier still runs 1000 MB.
         from saorsa_deploy.config.models import Uploader
 
-        assert Uploader(
-            provider="ovh", region="UK1", file_size_mb=1000
-        ).file_size_mb == 1000
+        assert Uploader(provider="ovh", region="UK1", file_size_mb=1000).file_size_mb == 1000
 
 
 class TestShippedProfiles:

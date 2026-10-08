@@ -19,27 +19,13 @@ def _args(**overrides):
 @pytest.fixture
 def patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.load_client_state"
-        ) as p_load_client,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.delete_client_state"
-        ) as p_delete_client,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.delete_terraform_state"
-        ) as p_delete_tf,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys"
-        ) as p_list_keys,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.load_terraform_state"
-        ) as p_load_tf,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.run_terraform_destroy"
-        ) as p_destroy,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.update_client_state"
-        ) as p_update_client,
+        patch("saorsa_deploy.cmd.destroy_clients.load_client_state") as p_load_client,
+        patch("saorsa_deploy.cmd.destroy_clients.delete_client_state") as p_delete_client,
+        patch("saorsa_deploy.cmd.destroy_clients.delete_terraform_state") as p_delete_tf,
+        patch("saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys") as p_list_keys,
+        patch("saorsa_deploy.cmd.destroy_clients.load_terraform_state") as p_load_tf,
+        patch("saorsa_deploy.cmd.destroy_clients.run_terraform_destroy") as p_destroy,
+        patch("saorsa_deploy.cmd.destroy_clients.update_client_state") as p_update_client,
     ):
         p_list_keys.return_value = []
         p_destroy.return_value = TerraformResult(
@@ -57,7 +43,6 @@ def patches():
 
 
 class TestFallbackWhenNoClientState:
-
     def test_no_op_when_no_state_and_no_tfstate(self, patches):
         patches.load_client.side_effect = RuntimeError("no client state")
         patches.list_keys.return_value = []
@@ -79,9 +64,7 @@ class TestRecoverClientsFromTfstate:
         with (
             patch(
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
-                side_effect=lambda prefix: [
-                    k for k in keys if k.startswith(prefix)
-                ],
+                side_effect=lambda prefix: [k for k in keys if k.startswith(prefix)],
             ),
             patch(
                 "saorsa_deploy.cmd.destroy_clients.load_terraform_state",
@@ -129,9 +112,7 @@ class TestRecoverClientsFromTfstate:
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
                 side_effect=lambda prefix: [
                     k
-                    for k in [
-                        "saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"
-                    ]
+                    for k in ["saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"]
                     if k.startswith(prefix)
                 ],
             ),
@@ -142,9 +123,7 @@ class TestRecoverClientsFromTfstate:
                         {
                             "type": "digitalocean_droplet",
                             "name": "client_vm",
-                            "instances": [
-                                {"attributes": {"size": "s-2vcpu-4gb-intel"}}
-                            ],
+                            "instances": [{"attributes": {"size": "s-2vcpu-4gb-intel"}}],
                         }
                     ]
                 },
@@ -163,9 +142,7 @@ class TestRecoverClientsFromTfstate:
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
                 side_effect=lambda prefix: [
                     k
-                    for k in [
-                        "saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"
-                    ]
+                    for k in ["saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"]
                     if k.startswith(prefix)
                 ],
             ),
@@ -205,12 +182,8 @@ class TestStopUploaderSshKeyResolution:
     def _run(self, patches, args, ssh_key_path):
         patches.load_client.return_value = self._uploader_state(ssh_key_path)
         with (
-            patch(
-                "saorsa_deploy.cmd.destroy_clients._stop_uploader_services"
-            ) as p_stop,
-            patch(
-                "saorsa_deploy.cmd.destroy_clients._drain_uploader_wallets"
-            ),
+            patch("saorsa_deploy.cmd.destroy_clients._stop_uploader_services") as p_stop,
+            patch("saorsa_deploy.cmd.destroy_clients._drain_uploader_wallets"),
         ):
             cmd_destroy_clients(args)
         return p_stop

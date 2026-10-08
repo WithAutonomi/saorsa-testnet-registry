@@ -18,6 +18,7 @@ The model and its calibration live in
 after a price regime change does not need a release. See that file for the
 measured basis and the known limits.
 """
+
 from __future__ import annotations
 
 import math
@@ -94,9 +95,7 @@ class GasModel:
         if size_gb < 0:
             raise GasModelError(f"size_gb must be >= 0, got {size_gb}")
         if base_fee_gwei <= 0:
-            raise GasModelError(
-                f"base_fee_gwei must be > 0, got {base_fee_gwei}"
-            )
+            raise GasModelError(f"base_fee_gwei must be > 0, got {base_fee_gwei}")
         if transport == POINTER:
             # A pointer record is a fixed ~5 KB, so there is no payload term:
             # `size_gb` is 0 for every pointer plan and multiplying it by
@@ -118,9 +117,7 @@ def _require(data: dict, key: str, path: Path, kind=float) -> float:
     try:
         value = kind(value)
     except (TypeError, ValueError):
-        raise GasModelError(
-            f"{path}: key '{key}' must be a number, got {value!r}"
-        )
+        raise GasModelError(f"{path}: key '{key}' must be a number, got {value!r}")
     if value <= 0:
         raise GasModelError(
             f"{path}: key '{key}' must be > 0, got {value!r}. A zero or "
@@ -153,20 +150,12 @@ def load_gas_model(path: Optional[Path] = None) -> GasModel:
         version=int(raw["version"]),
         fixed_eth_per_upload=_require(model, "fixed_eth_per_upload", path),
         eth_per_gb=_require(model, "eth_per_gb", path),
-        reference_base_fee_gwei=_require(
-            model, "reference_base_fee_gwei", path
-        ),
+        reference_base_fee_gwei=_require(model, "reference_base_fee_gwei", path),
         safety_factor=_require(raw, "safety_factor", path),
         round_up_to_eth=_require(raw, "round_up_to_eth", path),
-        minimum_eth_per_uploader=_require(
-            raw, "minimum_eth_per_uploader", path
-        ),
-        wasm_fixed_cost_multiplier=_require(
-            raw, "wasm_fixed_cost_multiplier", path
-        ),
-        fixed_eth_per_pointer_write=_require(
-            model, "fixed_eth_per_pointer_write", path
-        ),
+        minimum_eth_per_uploader=_require(raw, "minimum_eth_per_uploader", path),
+        wasm_fixed_cost_multiplier=_require(raw, "wasm_fixed_cost_multiplier", path),
+        fixed_eth_per_pointer_write=_require(model, "fixed_eth_per_pointer_write", path),
     )
 
 
@@ -229,8 +218,7 @@ def estimate_uploader(
     """Estimate one uploader's funding requirement."""
     if plan.expected_uploads < 0:
         raise GasModelError(
-            f"{plan.name}: expected_uploads must be >= 0, "
-            f"got {plan.expected_uploads}"
+            f"{plan.name}: expected_uploads must be >= 0, got {plan.expected_uploads}"
         )
     per_upload = model.eth_per_upload(plan.size_gb, base_fee_gwei, plan.transport)
     modelled = per_upload * plan.expected_uploads * model.safety_factor
@@ -293,9 +281,7 @@ class FundingEstimate:
             u
             for u in self.uploaders
             if u.current_eth is None
-            or not math.isclose(
-                u.current_eth, u.recommended_eth, rel_tol=0, abs_tol=1e-9
-            )
+            or not math.isclose(u.current_eth, u.recommended_eth, rel_tol=0, abs_tol=1e-9)
         ]
 
 

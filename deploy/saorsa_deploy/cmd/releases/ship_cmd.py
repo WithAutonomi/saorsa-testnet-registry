@@ -24,12 +24,8 @@ def cmd_releases_ship(args):
     console = Console(width=140)
     repo = require_release_repository()
 
-    shipped_at = parse_timestamp(
-        getattr(args, "shipped_at", None), field="--shipped-at"
-    )
-    planned = parse_timestamp(
-        getattr(args, "planned_promotion", None), field="--planned-promotion"
-    )
+    shipped_at = parse_timestamp(getattr(args, "shipped_at", None), field="--shipped-at")
+    planned = parse_timestamp(getattr(args, "planned_promotion", None), field="--planned-promotion")
 
     rc_id = resolve_release_candidate_id(
         repo, args.binary_target, getattr(args, "rc_version", None)
@@ -64,8 +60,7 @@ def cmd_releases_ship(args):
     )
     if release.planned_promotion_at is not None:
         console.print(
-            f"  [cyan]Planned promotion[/cyan] "
-            f"{release.planned_promotion_at.date().isoformat()}"
+            f"  [cyan]Planned promotion[/cyan] {release.planned_promotion_at.date().isoformat()}"
         )
     if rc_id is not None:
         console.print(f"  [cyan]Release candidate[/cyan] id={rc_id}")

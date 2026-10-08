@@ -380,8 +380,7 @@ def update_client_wallet(
             break
     if not matched:
         raise RuntimeError(
-            f"No {role} client with client_index={client_index} found in "
-            f"client state for '{name}'."
+            f"No {role} client with client_index={client_index} found in client state for '{name}'."
         )
     client = _get_s3_client()
     client.put_object(
@@ -526,9 +525,7 @@ def list_extensions_of(source_name: str) -> list[str]:
     client = _get_s3_client()
     paginator = client.get_paginator("list_objects_v2")
     extensions = []
-    for page in paginator.paginate(
-        Bucket=S3_BUCKET, Prefix=f"{S3_KEY_PREFIX}/"
-    ):
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{S3_KEY_PREFIX}/"):
         for obj in page.get("Contents", []):
             key = obj["Key"]
             try:

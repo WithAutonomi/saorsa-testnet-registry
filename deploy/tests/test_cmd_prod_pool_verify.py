@@ -46,9 +46,7 @@ def _flat(text):
 
 class TestUrlEntries:
     def test_unchanged_url_is_ok(self, wired, monkeypatch, capsys):
-        wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=10 * MIB
-        )
+        wired.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", size_bytes=10 * MIB)
         monkeypatch.setattr(prod_pool, "probe_url_size", lambda url: 10 * MIB)
         prod_pool.cmd_prod_pool_verify(_args())
         out = _flat(capsys.readouterr().out)
@@ -64,14 +62,10 @@ class TestUrlEntries:
         assert "size updated" in _flat(capsys.readouterr().out)
         assert wired.get_pool_file(pool_file.id).size_bytes == 11 * MIB
 
-    def test_a_size_change_that_moves_class_is_called_out(
-        self, wired, monkeypatch, capsys
-    ):
+    def test_a_size_change_that_moves_class_is_called_out(self, wired, monkeypatch, capsys):
         # Moving between classes changes which requests can ever draw the file,
         # so it is worth more than a silent update.
-        wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=9 * MIB
-        )
+        wired.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", size_bytes=9 * MIB)
         monkeypatch.setattr(prod_pool, "probe_url_size", lambda url: 50 * MIB)
         prod_pool.cmd_prod_pool_verify(_args())
         out = _flat(capsys.readouterr().out)
@@ -87,9 +81,7 @@ class TestUrlEntries:
         assert "retired" in _flat(capsys.readouterr().out)
         assert wired.get_pool_file(pool_file.id).active is False
 
-    def test_reachable_url_without_content_length_is_kept(
-        self, wired, monkeypatch, capsys
-    ):
+    def test_reachable_url_without_content_length_is_kept(self, wired, monkeypatch, capsys):
         # The distinction that matters: silent about its size, but alive and
         # usable. Retiring it would shrink the pool for no reason.
         pool_file, _ = wired.add_pool_file(
@@ -134,9 +126,7 @@ class TestLocalEntries:
     def test_no_rehash_skips_hashing(self, wired, tmp_path):
         target = tmp_path / "a.bin"
         target.write_bytes(b"a" * 10)
-        pool_file, _ = wired.add_pool_file(
-            PoolFileKind.LOCAL, str(target), "a.bin", size_bytes=999
-        )
+        pool_file, _ = wired.add_pool_file(PoolFileKind.LOCAL, str(target), "a.bin", size_bytes=999)
         prod_pool.cmd_prod_pool_verify(_args(rehash=False))
         assert wired.get_pool_file(pool_file.id).digests == []
 
@@ -145,9 +135,7 @@ class TestResidualRisk:
     def test_undigested_entries_are_reported(self, wired, monkeypatch, capsys):
         # Not hidden: these cannot be recognised as the same content as anything
         # else, so a URL and a local copy of one file could both be handed out.
-        wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=MIB
-        )
+        wired.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", size_bytes=MIB)
         monkeypatch.setattr(prod_pool, "probe_url_size", lambda url: MIB)
         prod_pool.cmd_prod_pool_verify(_args())
         out = _flat(capsys.readouterr().out)
@@ -173,12 +161,8 @@ class TestScoping:
         assert "Nothing to verify" in capsys.readouterr().out
 
     def test_kind_filter_applies(self, wired, tmp_path, monkeypatch, capsys):
-        wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=MIB
-        )
-        wired.add_pool_file(
-            PoolFileKind.LOCAL, str(tmp_path / "b.bin"), "b.bin", size_bytes=MIB
-        )
+        wired.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", size_bytes=MIB)
+        wired.add_pool_file(PoolFileKind.LOCAL, str(tmp_path / "b.bin"), "b.bin", size_bytes=MIB)
         monkeypatch.setattr(prod_pool, "probe_url_size", lambda url: MIB)
         prod_pool.cmd_prod_pool_verify(_args(kind="url"))
         out = _flat(capsys.readouterr().out)

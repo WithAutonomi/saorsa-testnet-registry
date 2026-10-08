@@ -98,9 +98,7 @@ def _build_systemd_unit(one_shot: bool = False) -> str:
     # One-shot mode: the script walks the address list once then exits 0.
     # `Restart=no` so systemd lets the service terminate naturally.
     description = (
-        "Ant Production One-Shot Downloader"
-        if one_shot
-        else "Ant Production Continuous Downloader"
+        "Ant Production One-Shot Downloader" if one_shot else "Ant Production Continuous Downloader"
     )
     restart_line = "Restart=no" if one_shot else "Restart=on-failure\nRestartSec=30"
     return f"""\
@@ -221,9 +219,7 @@ class ProdDownloaderProvisioner:
             progress._live.start()
 
         try:
-            self.console.print(
-                f"Connecting to {len(host_ips)} prod-downloader host(s) as root..."
-            )
+            self.console.print(f"Connecting to {len(host_ips)} prod-downloader host(s) as root...")
             connect_all(state)
 
             add_operator_authorized_keys_op(state)
@@ -277,15 +273,12 @@ class ProdDownloaderProvisioner:
             f"hosts succeeded[/bold]"
         )
         self.console.print(
-            "  Service installed but NOT started. Use the start helper to "
-            "begin downloading."
+            "  Service installed but NOT started. Use the start helper to begin downloading."
         )
         if failed:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError(
-                f"{len(failed)} host(s) failed prod-downloader provisioning"
-            )
+            raise RuntimeError(f"{len(failed)} host(s) failed prod-downloader provisioning")
 
     def _add_clock_skew_ops(self, state: State) -> None:
         """Inject clock skew on any downloader whose spec sets a clock_skew duration.
@@ -325,9 +318,7 @@ class ProdDownloaderProvisioner:
         of a home connection that is also busy shipping its own logs.
         """
         by_ip = {
-            d["ip"]: d["network"]
-            for d in self.downloaders
-            if d.get("ip") and d.get("network")
+            d["ip"]: d["network"] for d in self.downloaders if d.get("ip") and d.get("network")
         }
         if not by_ip:
             return
@@ -337,8 +328,7 @@ class ProdDownloaderProvisioner:
             if not profile:
                 continue
             self.console.print(
-                f"[cyan]Network impairment on {host.name}: "
-                f"{format_network_label(profile)}[/cyan]"
+                f"[cyan]Network impairment on {host.name}: {format_network_label(profile)}[/cyan]"
             )
             add_op(
                 state,
@@ -417,9 +407,7 @@ class ProdDownloaderProvisioner:
             server.shell,
             name="Install WASM client bundle",
             commands=[
-                build_bundle_install_command(
-                    self.wasm_bundle_url, data_dirs=(), require_cli=True
-                )
+                build_bundle_install_command(self.wasm_bundle_url, data_dirs=(), require_cli=True)
             ],
         )
         add_op(
@@ -435,6 +423,7 @@ class ProdDownloaderProvisioner:
             self.console.print(f"Using binary URL: {download_url}")
         else:
             from saorsa_deploy.binary_source import get_ant_release_url
+
             self.console.print("Fetching latest ant release from GitHub...")
             download_url = get_ant_release_url()
             self.console.print(f"  Release URL: {download_url}")
@@ -476,21 +465,19 @@ class ProdDownloaderProvisioner:
         )
 
     def _add_env_and_addresses_op(self, state: State) -> None:
-        bootstrap_args = " ".join(
-            f"--bootstrap {peer}" for peer in self.bootstrap_peers
-        )
+        bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
 
         case_entries = []
         for d in self.downloaders:
             if not d.get("ip"):
                 continue
-            addrs_b64 = base64.b64encode(
-                d["addresses_file_content"].encode("utf-8")
-            ).decode("ascii")
+            addrs_b64 = base64.b64encode(d["addresses_file_content"].encode("utf-8")).decode(
+                "ascii"
+            )
             bootstrap_cache = "true" if d.get("bootstrap_cache", True) else "false"
             case_entries.append(
                 f'    "{d["ip"]}") '
-                f'REGION={d["region"]}; '
+                f"REGION={d['region']}; "
                 f'ADDRS_B64="{addrs_b64}"; '
                 f"BOOTSTRAP_CACHE={bootstrap_cache} ;;"
             )
@@ -551,10 +538,10 @@ ADDRESSES_FILE={ADDRESSES_PATH}
 DOWNLOAD_DIR={DOWNLOAD_DIR}
 EVM_NETWORK={self.evm_network}
 SLEEP_INTERVAL_SECS={self.sleep_interval_secs}
-ONE_SHOT={'true' if self.one_shot else 'false'}
-RUST_LOG={self.rust_log or ''}
-MEMORY_PROFILING={'true' if self.memory_profiling else 'false'}
-DOWNLOAD_DIAGNOSTICS={'true' if self.download_diagnostics else 'false'}
+ONE_SHOT={"true" if self.one_shot else "false"}
+RUST_LOG={self.rust_log or ""}
+MEMORY_PROFILING={"true" if self.memory_profiling else "false"}
+DOWNLOAD_DIAGNOSTICS={"true" if self.download_diagnostics else "false"}
 HEAPTRACK_DIR={HEAPTRACK_DIR}
 {wasm_lines}{influx_lines}ENV_EOF"""
 
@@ -567,11 +554,7 @@ HEAPTRACK_DIR={HEAPTRACK_DIR}
 
     def _add_systemd_unit_op(self, state: State) -> None:
         unit = _build_systemd_unit(one_shot=self.one_shot)
-        cmd = (
-            f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n"
-            f"{unit}UNIT_EOF\n"
-            f"systemctl daemon-reload"
-        )
+        cmd = f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n{unit}UNIT_EOF\nsystemctl daemon-reload"
         add_op(
             state,
             server.shell,
@@ -598,9 +581,7 @@ HEAPTRACK_DIR={HEAPTRACK_DIR}
         )
 
 
-def build_ant_binary_upgrade_command(
-    download_url: str, binary_is_archive: bool = True
-) -> str:
+def build_ant_binary_upgrade_command(download_url: str, binary_is_archive: bool = True) -> str:
     """Return the shell command that force-installs the ``ant`` binary.
 
     Unlike :meth:`ProdDownloaderProvisioner._add_install_ant_op`, this always

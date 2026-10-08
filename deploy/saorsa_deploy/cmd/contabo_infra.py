@@ -49,8 +49,7 @@ def _create_or_adopt(
     if inst is not None:
         instance_id = int(inst["instanceId"])
         console.print(
-            f"[dim]Adopting existing Contabo instance {instance_id} "
-            f"({display_name}).[/dim]"
+            f"[dim]Adopting existing Contabo instance {instance_id} ({display_name}).[/dim]"
         )
     else:
         instance_id = client.create_instance(
@@ -79,9 +78,7 @@ def ensure_contabo_node_infra(args, console: Console) -> None:
     except RuntimeError:
         state = {}
     if state.get("vm_ips"):
-        console.print(
-            f"[dim]Node VMs for '{args.name}' already recorded — skipping.[/dim]"
-        )
+        console.print(f"[dim]Node VMs for '{args.name}' already recorded — skipping.[/dim]")
         return
 
     require_contabo_env(console)
@@ -97,10 +94,13 @@ def ensure_contabo_node_infra(args, console: Console) -> None:
     ids: list[str] = []
     for i in range(args.vm_count):
         instance_id, ip = _create_or_adopt(
-            client, console,
+            client,
+            console,
             display_name=f"{args.name}-ant-node-{region}-{i + 1}",
-            product_id=product, image_id=args.contabo_image_id,
-            region=region, ssh_secret_id=secret_id,
+            product_id=product,
+            image_id=args.contabo_image_id,
+            region=region,
+            ssh_secret_id=secret_id,
         )
         ips.append(ip)
         ids.append(str(instance_id))
@@ -132,15 +132,22 @@ def ensure_contabo_monitoring_infra(args, console: Console) -> None:
         args.contabo_ssh_public_key_path,
     )
     instance_id, ip = _create_or_adopt(
-        client, console,
+        client,
+        console,
         display_name=f"{args.name}-ant-monitoring-{region}",
-        product_id=product, image_id=args.contabo_image_id,
-        region=region, ssh_secret_id=secret_id,
+        product_id=product,
+        image_id=args.contabo_image_id,
+        region=region,
+        ssh_secret_id=secret_id,
     )
     # Grafana is off for this kind — InfluxDB only.
     save_monitoring_state(
-        name=args.name, region=region, vm_ip=ip, grafana_ip="",
-        provider="contabo", grafana_enabled=False,
+        name=args.name,
+        region=region,
+        vm_ip=ip,
+        grafana_ip="",
+        provider="contabo",
+        grafana_enabled=False,
     )
     update_monitoring_state(
         args.name,
@@ -159,10 +166,13 @@ def ensure_contabo_elastic_infra(args, console: Console) -> None:
         args.contabo_ssh_public_key_path,
     )
     instance_id, ip = _create_or_adopt(
-        client, console,
+        client,
+        console,
         display_name=f"{args.name}-ant-elastic-{region}",
-        product_id=product, image_id=args.contabo_image_id,
-        region=region, ssh_secret_id=secret_id,
+        product_id=product,
+        image_id=args.contabo_image_id,
+        region=region,
+        ssh_secret_id=secret_id,
     )
     save_elastic_state(name=args.name, region=region, vm_ip=ip, provider="contabo")
     update_elastic_state(
@@ -219,13 +229,19 @@ def _destroy_contabo_obs(name: str, console: Console, *, load, delete, label: st
 
 def destroy_contabo_monitoring(name: str, console: Console) -> bool:
     return _destroy_contabo_obs(
-        name, console, load=load_monitoring_state,
-        delete=delete_monitoring_state, label="monitoring",
+        name,
+        console,
+        load=load_monitoring_state,
+        delete=delete_monitoring_state,
+        label="monitoring",
     )
 
 
 def destroy_contabo_elastic(name: str, console: Console) -> bool:
     return _destroy_contabo_obs(
-        name, console, load=load_elastic_state,
-        delete=delete_elastic_state, label="elastic",
+        name,
+        console,
+        load=load_elastic_state,
+        delete=delete_elastic_state,
+        label="elastic",
     )

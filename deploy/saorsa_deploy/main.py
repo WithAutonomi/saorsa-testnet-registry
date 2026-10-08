@@ -99,10 +99,7 @@ def main(argv=None):
             "--monitoring-name",
             type=str,
             default=None,
-            help=(
-                "Monitoring stack name to load Influx credentials from "
-                "(defaults to --name)."
-            ),
+            help=("Monitoring stack name to load Influx credentials from (defaults to --name)."),
         )
         p.add_argument(
             "--influx-url",
@@ -126,10 +123,7 @@ def main(argv=None):
             "--influx-bucket",
             type=str,
             default=None,
-            help=(
-                "InfluxDB bucket (default: from monitoring state, else "
-                "'testnet-metrics')"
-            ),
+            help=("InfluxDB bucket (default: from monitoring state, else 'testnet-metrics')"),
         )
         p.add_argument(
             "--window",
@@ -344,9 +338,7 @@ def main(argv=None):
         "build",
         help="Build ant / ant-node binaries from source and upload to S3.",
     )
-    build_subparsers = build_parser.add_subparsers(
-        dest="build_subcommand", required=True
-    )
+    build_subparsers = build_parser.add_subparsers(dest="build_subcommand", required=True)
 
     # build ant
     build_ant_parser = build_subparsers.add_parser(
@@ -520,9 +512,7 @@ def main(argv=None):
         "clients",
         help="Client-VM lifecycle: clean, destroy, infra, provision, start, stop.",
     )
-    clients_subparsers = clients_parser.add_subparsers(
-        dest="clients_subcommand", required=True
-    )
+    clients_subparsers = clients_parser.add_subparsers(dest="clients_subcommand", required=True)
 
     # clients clean
     clients_clean_parser = clients_subparsers.add_parser(
@@ -692,10 +682,7 @@ def main(argv=None):
     clients_estimate_gas_parser.add_argument(
         "--funder-balance-eth",
         type=float,
-        help=(
-            "Funding wallet balance, instead of deriving it from "
-            "ANT_DEPLOY_SECRET_KEY."
-        ),
+        help=("Funding wallet balance, instead of deriving it from ANT_DEPLOY_SECRET_KEY."),
     )
     clients_estimate_gas_parser.add_argument(
         "--model-path",
@@ -705,8 +692,7 @@ def main(argv=None):
     # clients infra
     clients_infra_parser = clients_subparsers.add_parser(
         "infra",
-        help="Create client VMs on a cloud provider "
-        "(digital_ocean, vultr, hetzner, ovh)",
+        help="Create client VMs on a cloud provider (digital_ocean, vultr, hetzner, ovh)",
     )
     clients_infra_parser.add_argument(
         "--name",
@@ -1128,9 +1114,7 @@ def main(argv=None):
         "--output",
         type=str,
         default=None,
-        help=(
-            "Output file path (default: ~/.autonomi/testnets/<name>/inventory.json)"
-        ),
+        help=("Output file path (default: ~/.autonomi/testnets/<name>/inventory.json)"),
     )
     deployments_generate_inventory_parser.add_argument(
         "--ssh-key-path",
@@ -1353,8 +1337,7 @@ def main(argv=None):
         "--name",
         type=str,
         default=None,
-        help="Show only deployments whose name contains this substring "
-        "(case-insensitive).",
+        help="Show only deployments whose name contains this substring (case-insensitive).",
     )
     deployments_ls_parser.add_argument(
         "--recent",
@@ -1452,9 +1435,7 @@ def main(argv=None):
             "InfluxDB feed; --id reads the recorded Postgres table."
         ),
     )
-    pointer_source = deployments_print_pointers_parser.add_mutually_exclusive_group(
-        required=True
-    )
+    pointer_source = deployments_print_pointers_parser.add_mutually_exclusive_group(required=True)
     pointer_source.add_argument(
         "--name",
         type=str,
@@ -1507,24 +1488,27 @@ def main(argv=None):
         "--monitoring-name",
         type=str,
         default=None,
-        help=(
-            "Monitoring stack name to load Influx credentials from "
-            "(defaults to --name)."
-        ),
+        help=("Monitoring stack name to load Influx credentials from (defaults to --name)."),
     )
     deployments_print_pointers_parser.add_argument(
-        "--influx-url", type=str, default=None,
+        "--influx-url",
+        type=str,
+        default=None,
         help="InfluxDB URL (overrides the monitoring state lookup)",
     )
     deployments_print_pointers_parser.add_argument(
-        "--influx-token", type=str, default=None,
+        "--influx-token",
+        type=str,
+        default=None,
         help="InfluxDB API token (overrides the monitoring state lookup)",
     )
     deployments_print_pointers_parser.add_argument(
         "--influx-org", type=str, default=None, help="InfluxDB org (default ant)"
     )
     deployments_print_pointers_parser.add_argument(
-        "--influx-bucket", type=str, default=None,
+        "--influx-bucket",
+        type=str,
+        default=None,
         help="InfluxDB bucket (default testnet-metrics)",
     )
 
@@ -1586,10 +1570,7 @@ def main(argv=None):
         "--monitoring-name",
         type=str,
         default=None,
-        help=(
-            "Monitoring stack name to load Influx credentials from "
-            "(defaults to --name)."
-        ),
+        help=("Monitoring stack name to load Influx credentials from (defaults to --name)."),
     )
     deployments_record_analysis_parser.add_argument(
         "--influx-url",
@@ -1613,10 +1594,7 @@ def main(argv=None):
         "--influx-bucket",
         type=str,
         default=None,
-        help=(
-            "InfluxDB bucket (default: from monitoring state, else "
-            "'testnet-metrics')"
-        ),
+        help=("InfluxDB bucket (default: from monitoring state, else 'testnet-metrics')"),
     )
     deployments_record_analysis_parser.add_argument(
         "--window",
@@ -1714,10 +1692,7 @@ def main(argv=None):
         "--window-end",
         type=str,
         default=None,
-        help=(
-            "ISO-8601 UTC end of the window (exclusive). Defaults to the last "
-            "stored bucket."
-        ),
+        help=("ISO-8601 UTC end of the window (exclusive). Defaults to the last stored bucket."),
     )
     deployments_derive_metrics_parser.add_argument(
         "--label",
@@ -1759,18 +1734,13 @@ def main(argv=None):
     # Same --id/--name split as derive-metrics, and for the same reason: staging
     # names are reused every train, so only --id can address an earlier run.
     deployments_record_log_counts_target = (
-        deployments_record_log_counts_parser.add_mutually_exclusive_group(
-            required=True
-        )
+        deployments_record_log_counts_parser.add_mutually_exclusive_group(required=True)
     )
     deployments_record_log_counts_target.add_argument(
         "--id",
         type=int,
         default=None,
-        help=(
-            "Deployment id. Prefer this for any run that is not the latest of "
-            "its name."
-        ),
+        help=("Deployment id. Prefer this for any run that is not the latest of its name."),
     )
     deployments_record_log_counts_target.add_argument(
         "--name",
@@ -1902,8 +1872,8 @@ def main(argv=None):
             "resolve to whichever run was most recent."
         ),
     )
-    deployments_compare_baseline = (
-        deployments_compare_parser.add_mutually_exclusive_group(required=True)
+    deployments_compare_baseline = deployments_compare_parser.add_mutually_exclusive_group(
+        required=True
     )
     deployments_compare_baseline.add_argument(
         "--baseline-id",
@@ -2025,9 +1995,7 @@ def main(argv=None):
         "--name",
         type=str,
         default=None,
-        help=(
-            "Restrict the prune to one deployment (default: every deployment)."
-        ),
+        help=("Restrict the prune to one deployment (default: every deployment)."),
     )
     deployments_prune_buckets_parser.add_argument(
         "--dry-run",
@@ -2057,10 +2025,7 @@ def main(argv=None):
         "--monitoring-name",
         type=str,
         default=None,
-        help=(
-            "Monitoring stack name to load Influx credentials from "
-            "(defaults to --name)."
-        ),
+        help=("Monitoring stack name to load Influx credentials from (defaults to --name)."),
     )
     deployments_record_results_parser.add_argument(
         "--influx-url",
@@ -2084,10 +2049,7 @@ def main(argv=None):
         "--influx-bucket",
         type=str,
         default=None,
-        help=(
-            "InfluxDB bucket (default: from monitoring state, else "
-            "'testnet-metrics')"
-        ),
+        help=("InfluxDB bucket (default: from monitoring state, else 'testnet-metrics')"),
     )
     deployments_record_results_parser.add_argument(
         "--window",
@@ -2120,15 +2082,21 @@ def main(argv=None):
         ),
     )
     deployments_archive_parser.add_argument(
-        "--name", type=str, required=True,
+        "--name",
+        type=str,
+        required=True,
         help="Deployment name (must match a row in the registry).",
     )
     deployments_archive_parser.add_argument(
-        "--monitoring-name", type=str, default=None,
+        "--monitoring-name",
+        type=str,
+        default=None,
         help="Monitoring stack name to load Influx creds from (defaults to --name).",
     )
     deployments_archive_parser.add_argument(
-        "--window", type=str, default="-7d",
+        "--window",
+        type=str,
+        default="-7d",
         help=(
             "Flux range start for the aggregate rollup (default: -7d, matching "
             "the default Influx retention). Per-op records are always pulled "
@@ -2136,7 +2104,8 @@ def main(argv=None):
         ),
     )
     deployments_archive_parser.add_argument(
-        "--loop", action="store_true",
+        "--loop",
+        action="store_true",
         help=(
             "Keep archiving forever, sleeping --interval-secs between runs, "
             "instead of doing a single pass and exiting. A transient failure in "
@@ -2144,27 +2113,38 @@ def main(argv=None):
         ),
     )
     deployments_archive_parser.add_argument(
-        "--interval-secs", type=int, default=21600,
+        "--interval-secs",
+        type=int,
+        default=21600,
         help="With --loop: seconds to sleep between archive runs (default: 21600 = 6h).",
     )
     deployments_archive_parser.add_argument(
-        "--influx-url", type=str, default=None,
+        "--influx-url",
+        type=str,
+        default=None,
         help="InfluxDB URL (overrides monitoring state lookup).",
     )
     deployments_archive_parser.add_argument(
-        "--influx-token", type=str, default=None,
+        "--influx-token",
+        type=str,
+        default=None,
         help="InfluxDB API token (overrides monitoring state lookup).",
     )
     deployments_archive_parser.add_argument(
-        "--influx-org", type=str, default=None,
+        "--influx-org",
+        type=str,
+        default=None,
         help="InfluxDB organization (default: from monitoring state, else 'ant').",
     )
     deployments_archive_parser.add_argument(
-        "--influx-bucket", type=str, default=None,
+        "--influx-bucket",
+        type=str,
+        default=None,
         help="InfluxDB bucket (default: from monitoring state, else 'testnet-metrics').",
     )
     deployments_archive_parser.add_argument(
-        "--update-slack", action="store_true",
+        "--update-slack",
+        action="store_true",
         help="Forwarded to record-results: thread a results summary onto the "
         "deployment's Slack message after each archive run (best-effort).",
     )
@@ -2266,8 +2246,7 @@ def main(argv=None):
     deployments_upgrade_ant_binary_parser.add_argument(
         "--ant-version",
         type=str,
-        help="Specific release version of ant to install (e.g., 0.3.0). "
-        "Default: latest release.",
+        help="Specific release version of ant to install (e.g., 0.3.0). Default: latest release.",
     )
     deployments_upgrade_ant_binary_parser.add_argument(
         "--ssh-key-path",
@@ -2379,9 +2358,7 @@ def main(argv=None):
         "elastic",
         help="Elasticsearch (log forwarding) lifecycle.",
     )
-    elastic_subparsers = elastic_parser.add_subparsers(
-        dest="elastic_subcommand", required=True
-    )
+    elastic_subparsers = elastic_parser.add_subparsers(dest="elastic_subcommand", required=True)
 
     # elastic clean
     elastic_clean_parser = elastic_subparsers.add_parser(
@@ -2501,8 +2478,7 @@ def main(argv=None):
         "--region",
         type=str,
         default=None,
-        help="Region for the Elasticsearch VM (default: lon1 for "
-        "digitalocean, GRA9 for ovh)",
+        help="Region for the Elasticsearch VM (default: lon1 for digitalocean, GRA9 for ovh)",
     )
     elastic_infra_parser.add_argument(
         "--volume-size",
@@ -2871,8 +2847,7 @@ def main(argv=None):
         "--region",
         type=str,
         default=None,
-        help="Region for the monitoring VMs (default: lon1 for digitalocean, "
-        "GRA9 for ovh)",
+        help="Region for the monitoring VMs (default: lon1 for digitalocean, GRA9 for ovh)",
     )
     monitoring_infra_parser.add_argument(
         "--volume-size",
@@ -2953,10 +2928,7 @@ def main(argv=None):
     # =========================================================================
     migration_parser = subparsers.add_parser(
         "migration",
-        help=(
-            "Migrate the node VMs of an existing prod deployment to a "
-            "different cloud provider."
-        ),
+        help=("Migrate the node VMs of an existing prod deployment to a different cloud provider."),
     )
     migration_subparsers = migration_parser.add_subparsers(
         dest="migration_subcommand", required=True
@@ -3041,9 +3013,7 @@ def main(argv=None):
             "hetzner/ovh; the Contabo REST API for contabo)."
         ),
     )
-    migration_infra_parser.add_argument(
-        "--name", type=str, required=True, help="Migration name."
-    )
+    migration_infra_parser.add_argument("--name", type=str, required=True, help="Migration name.")
     migration_infra_parser.add_argument(
         "--locations",
         type=str,
@@ -3144,10 +3114,7 @@ def main(argv=None):
         "--bootstrap-peers-file",
         type=str,
         default=None,
-        help=(
-            "Path to bootstrap_peers.toml (default: "
-            "~/.config/ant/bootstrap_peers.toml)."
-        ),
+        help=("Path to bootstrap_peers.toml (default: ~/.config/ant/bootstrap_peers.toml)."),
     )
     migration_provision_parser.add_argument(
         "--port",
@@ -3200,9 +3167,7 @@ def main(argv=None):
         "drain",
         help="systemctl stop ant-node services on the migration's source VMs in waves.",
     )
-    migration_drain_parser.add_argument(
-        "--name", type=str, required=True, help="Migration name."
-    )
+    migration_drain_parser.add_argument("--name", type=str, required=True, help="Migration name.")
     migration_drain_parser.add_argument(
         "--interval-secs",
         type=int,
@@ -3255,9 +3220,7 @@ def main(argv=None):
     migration_destroy_source_parser.add_argument(
         "--force",
         action="store_true",
-        help=(
-            "Destroy even if some VMs are not yet drained (skips the safety check)."
-        ),
+        help=("Destroy even if some VMs are not yet drained (skips the safety check)."),
     )
 
     # migration complete
@@ -3288,9 +3251,7 @@ def main(argv=None):
         "status",
         help="Print per-VM status for a migration.",
     )
-    migration_status_parser.add_argument(
-        "--name", type=str, required=True, help="Migration name."
-    )
+    migration_status_parser.add_argument("--name", type=str, required=True, help="Migration name.")
 
     # migration list
     migration_list_parser = migration_subparsers.add_parser(
@@ -3306,16 +3267,13 @@ def main(argv=None):
         "nodes",
         help="Node-VM lifecycle: clean, destroy, infra, provision, provision-genesis, start.",
     )
-    nodes_subparsers = nodes_parser.add_subparsers(
-        dest="nodes_subcommand", required=True
-    )
+    nodes_subparsers = nodes_parser.add_subparsers(dest="nodes_subcommand", required=True)
 
     # nodes clean
     nodes_clean_parser = nodes_subparsers.add_parser(
         "clean",
         help=(
-            "Remove ant-node-* services + data/log/binary from node VMs "
-            "without destroying the VMs"
+            "Remove ant-node-* services + data/log/binary from node VMs without destroying the VMs"
         ),
     )
     nodes_clean_parser.add_argument(
@@ -3331,10 +3289,7 @@ def main(argv=None):
         "--region",
         type=str,
         default=None,
-        help=(
-            "Clean only one region (e.g., digitalocean/lon1). "
-            "Only used with --name."
-        ),
+        help=("Clean only one region (e.g., digitalocean/lon1). Only used with --name."),
     )
     nodes_clean_parser.add_argument(
         "--host-ips-file",
@@ -3398,8 +3353,7 @@ def main(argv=None):
             f"--{_p}-attached-volume-size",
             type=int,
             default=None,
-            help=f"Attached-volume size in GB for {_p} nodes "
-            "(overrides --attached-volume-size).",
+            help=f"Attached-volume size in GB for {_p} nodes (overrides --attached-volume-size).",
         )
     nodes_infra_parser.add_argument(
         "--name",
@@ -3477,8 +3431,7 @@ def main(argv=None):
         "--vultr-regions",
         type=int,
         default=3,
-        help="Number of Vultr regions to use (default: 3). "
-        "Ignored if --vultr-regions-list is set.",
+        help="Number of Vultr regions to use (default: 3). Ignored if --vultr-regions-list is set.",
     )
     nodes_infra_parser.add_argument(
         "--vultr-regions-list",
@@ -3504,8 +3457,7 @@ def main(argv=None):
         "--ovh-regions",
         type=int,
         default=3,
-        help="Number of OVH regions to use (default: 3). "
-        "Ignored if --ovh-regions-list is set.",
+        help="Number of OVH regions to use (default: 3). Ignored if --ovh-regions-list is set.",
     )
     nodes_infra_parser.add_argument(
         "--ovh-regions-list",
@@ -3523,8 +3475,7 @@ def main(argv=None):
         "--ovh-3az-vm-count",
         type=int,
         default=0,
-        help="Number of VMs per region on OVH 3-AZ regions "
-        "(default: 0, provider not used)",
+        help="Number of VMs per region on OVH 3-AZ regions (default: 0, provider not used)",
     )
     nodes_infra_parser.add_argument(
         "--ovh-3az-flavor",
@@ -3891,9 +3842,7 @@ def main(argv=None):
         "prod",
         help="Production-network operations (e.g. prod continuous-downloader deploy).",
     )
-    prod_subparsers = prod_parser.add_subparsers(
-        dest="prod_subcommand", required=True
-    )
+    prod_subparsers = prod_parser.add_subparsers(dest="prod_subcommand", required=True)
 
     # --- prod bootstrap (deploy / destroy / upgrade / status /
     #     webrtc-addresses / set-peers) ---
@@ -3923,9 +3872,7 @@ def main(argv=None):
         default="ant-production",
         help="Deployment name (default: ant-production)",
     )
-    prod_bootstrap_deploy_binary = (
-        prod_bootstrap_deploy_parser.add_mutually_exclusive_group()
-    )
+    prod_bootstrap_deploy_binary = prod_bootstrap_deploy_parser.add_mutually_exclusive_group()
     prod_bootstrap_deploy_binary.add_argument(
         "--node-version",
         type=str,
@@ -3978,8 +3925,7 @@ def main(argv=None):
         "--inventory-path",
         type=str,
         default=PROD_BOOTSTRAP_INVENTORY_PATH,
-        help=f"Path to the bootstrap inventory JSON "
-        f"(default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
+        help=f"Path to the bootstrap inventory JSON (default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
     )
     prod_bootstrap_upgrade_parser.add_argument(
         "--webrtc-port",
@@ -4030,8 +3976,7 @@ def main(argv=None):
         "--inventory-path",
         type=str,
         default=PROD_BOOTSTRAP_INVENTORY_PATH,
-        help=f"Path to the bootstrap inventory JSON "
-        f"(default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
+        help=f"Path to the bootstrap inventory JSON (default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
     )
     prod_bootstrap_status_parser.add_argument(
         "--limit-to",
@@ -4061,8 +4006,7 @@ def main(argv=None):
         "--inventory-path",
         type=str,
         default=PROD_BOOTSTRAP_INVENTORY_PATH,
-        help=f"Path to the bootstrap inventory JSON "
-        f"(default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
+        help=f"Path to the bootstrap inventory JSON (default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
     )
     prod_bootstrap_webrtc_parser.add_argument(
         "--out",
@@ -4086,8 +4030,7 @@ def main(argv=None):
         "--inventory-path",
         type=str,
         default=PROD_BOOTSTRAP_INVENTORY_PATH,
-        help=f"Path to the bootstrap inventory JSON "
-        f"(default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
+        help=f"Path to the bootstrap inventory JSON (default: {PROD_BOOTSTRAP_INVENTORY_PATH}).",
     )
     prod_bootstrap_set_peers_parser.add_argument(
         "--peer-port",
@@ -4136,12 +4079,9 @@ def main(argv=None):
     # --- prod continuous-downloader ---
     prod_cd_parser = prod_subparsers.add_parser(
         "continuous-downloader",
-        help="Continuously download from the Autonomi production network "
-        "to measure performance.",
+        help="Continuously download from the Autonomi production network to measure performance.",
     )
-    prod_cd_subparsers = prod_cd_parser.add_subparsers(
-        dest="prod_cd_action", required=True
-    )
+    prod_cd_subparsers = prod_cd_parser.add_subparsers(dest="prod_cd_action", required=True)
 
     prod_cd_deploy_parser = prod_cd_subparsers.add_parser(
         "deploy",
@@ -4263,8 +4203,7 @@ def main(argv=None):
         "--grafana",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Also create a Grafana VM for dashboards (default: off — "
-        "InfluxDB only).",
+        help="Also create a Grafana VM for dashboards (default: off — InfluxDB only).",
     )
     prod_cd_deploy_parser.add_argument(
         "--ssh-key-path",
@@ -4447,105 +4386,128 @@ def main(argv=None):
         help="Daily production write test: upload a few pool files every day "
         "and have other regions read them back and verify the contents.",
     )
-    prod_cu_subparsers = prod_cu_parser.add_subparsers(
-        dest="prod_cu_action", required=True
-    )
+    prod_cu_subparsers = prod_cu_parser.add_subparsers(dest="prod_cu_action", required=True)
     prod_cu_deploy_parser = prod_cu_subparsers.add_parser(
         "deploy",
         help="Deploy the uploader VM, the verifier VMs and their monitoring.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--name", type=str, required=True,
+        "--name",
+        type=str,
+        required=True,
         help="Deployment name (also names the paired monitoring stack).",
     )
     prod_cu_deploy_parser.add_argument(
-        "--spec", type=str, required=True,
+        "--spec",
+        type=str,
+        required=True,
         help="Uploader VM as 'region[:vm_size]'.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--verifier", type=str, action="append", default=[], metavar="SPEC",
+        "--verifier",
+        type=str,
+        action="append",
+        default=[],
+        metavar="SPEC",
         help="A read-back verifier VM as '[provider:]region[:vm_size]'. "
         "Repeatable. Every verifier checks EVERY address — they do not divide "
         "the work, because a second region confirming the same file is the "
         "point.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--pool", type=str, required=True, metavar="REQUEST",
+        "--pool",
+        type=str,
+        required=True,
+        metavar="REQUEST",
         help="Files to claim and upload each cycle, as 'class:count' pairs, "
         "e.g. 'tiny:2,small:1'. Claimed from the production pool by the VM as "
         "each upload happens, so a file is never uploaded twice.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--pool-min-size", type=str, default=None,
-        help="Narrow every requested class to files at least this big "
-        "(inclusive), e.g. '5MB'.",
+        "--pool-min-size",
+        type=str,
+        default=None,
+        help="Narrow every requested class to files at least this big (inclusive), e.g. '5MB'.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--pool-max-size", type=str, default=None,
-        help="Narrow every requested class to files below this size "
-        "(exclusive), e.g. '50MB'.",
+        "--pool-max-size",
+        type=str,
+        default=None,
+        help="Narrow every requested class to files below this size (exclusive), e.g. '50MB'.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--sleep-interval-secs", type=int, default=86400,
-        help="Seconds to sleep at the end of each upload cycle "
-        "(default: 86400 = once a day).",
+        "--sleep-interval-secs",
+        type=int,
+        default=86400,
+        help="Seconds to sleep at the end of each upload cycle (default: 86400 = once a day).",
     )
     prod_cu_deploy_parser.add_argument(
-        "--verify-interval-secs", type=int, default=3600,
+        "--verify-interval-secs",
+        type=int,
+        default=3600,
         help="How often each verifier looks for addresses it has not checked "
         "(default: 3600). Cycles are epoch-aligned so vantages line up.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--readback-verify", action=argparse.BooleanOptionalAction, default=True,
-        help="Have the uploader download each file straight back after "
-        "uploading it (default: on).",
+        "--readback-verify",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Have the uploader download each file straight back after uploading it (default: on).",
     )
     prod_cu_deploy_parser.add_argument(
-        "--pool-database-url-env", type=str, default="POOL_DATABASE_URL",
+        "--pool-database-url-env",
+        type=str,
+        default="POOL_DATABASE_URL",
         help="Environment variable holding the scoped registry connection "
         "string the VMs use (default: POOL_DATABASE_URL). Create one with "
         "`prod pool client-role`.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--secret-key", type=str, default=None,
-        help="Arbitrum One wallet key (or set ARBITRUM_ONE_SECRET_KEY). "
-        "Uploads spend real ETH.",
+        "--secret-key",
+        type=str,
+        default=None,
+        help="Arbitrum One wallet key (or set ARBITRUM_ONE_SECRET_KEY). Uploads spend real ETH.",
     )
     prod_cu_deploy_parser.add_argument("--branch-name", type=str, default=None)
     prod_cu_deploy_parser.add_argument("--repo-owner", type=str, default=None)
     prod_cu_deploy_parser.add_argument("--ant-version", type=str, default=None)
     prod_cu_deploy_parser.add_argument(
-        "--debug", action="store_true",
+        "--debug",
+        action="store_true",
         help="Record that the branch binary is a debug build.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--provider", type=str, default="digitalocean",
+        "--provider",
+        type=str,
+        default="digitalocean",
         choices=["digitalocean", "hetzner", "vultr", "ovh"],
         help="Cloud provider for the uploader VM (default: digitalocean).",
     )
     prod_cu_deploy_parser.add_argument(
-        "--monitoring-provider", type=str, default="digitalocean",
+        "--monitoring-provider",
+        type=str,
+        default="digitalocean",
         choices=["digitalocean", "ovh"],
         help="Cloud provider for the monitoring VM (default: digitalocean).",
     )
     prod_cu_deploy_parser.add_argument("--monitoring-region", type=str, default=None)
-    prod_cu_deploy_parser.add_argument(
-        "--monitoring-droplet-size", type=str, default=None
-    )
+    prod_cu_deploy_parser.add_argument("--monitoring-droplet-size", type=str, default=None)
     prod_cu_deploy_parser.add_argument("--monitoring-volume-type", type=str, default=None)
-    prod_cu_deploy_parser.add_argument(
-        "--monitoring-volume-size", type=int, default=50
-    )
+    prod_cu_deploy_parser.add_argument("--monitoring-volume-size", type=int, default=50)
     prod_cu_deploy_parser.add_argument(
         "--grafana", action=argparse.BooleanOptionalAction, default=False
     )
     prod_cu_deploy_parser.add_argument(
-        "--influx-retention-days", type=int, default=7,
+        "--influx-retention-days",
+        type=int,
+        default=7,
         help="InfluxDB bucket retention (default: 7; 0 = infinite). Results "
         "live in Postgres, so this only bounds the dashboard data.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--log-retention-days", type=int, default=7,
+        "--log-retention-days",
+        type=int,
+        default=7,
         help="Days to keep per-op logs before the daily prune timer "
         "(default: 7; 0 = keep forever).",
     )
@@ -4559,13 +4521,19 @@ def main(argv=None):
     # --log-level rather than silently ignoring it. Every consumer already
     # resolves None to "info", so the native path is unchanged.
     prod_cu_deploy_parser.add_argument(
-        "--log-level", type=str, default=None, choices=["info", "debug", "trace"],
+        "--log-level",
+        type=str,
+        default=None,
+        choices=["info", "debug", "trace"],
         help="ant verbosity on the uploader service (default: info). Refused "
         "with --client-kind wasm, which has no verbosity flag — use --rust-log.",
     )
     prod_cu_deploy_parser.add_argument("--rust-log", type=str, default=None)
     prod_cu_deploy_parser.add_argument(
-        "--client-kind", type=str, default="native", choices=["native", "wasm"],
+        "--client-kind",
+        type=str,
+        default="native",
+        choices=["native", "wasm"],
         help="Transport for the UPLOADER VM: `native` (default) runs the `ant` "
         "binary over QUIC; `wasm` runs ant-core compiled to WASM over "
         "WebRTC-Direct via the `ant-wasm` CLI, measuring what a browser client "
@@ -4574,33 +4542,40 @@ def main(argv=None):
         "--no-bootstrap-cache and --log-level are refused.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--wasm-branch-name", type=str, default=None,
+        "--wasm-branch-name",
+        type=str,
+        default=None,
         help="ant-client branch OR TAG to build the WASM bundle from (e.g. "
         "ant-cli-v0.3.8-rc.1). Required with --client-kind wasm: no ant-core "
         "WASM package is published as a release, so there is no version form.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--wasm-repo-owner", type=str, default=None,
+        "--wasm-repo-owner",
+        type=str,
+        default=None,
         help="GitHub owner of the ant-client repo the WASM bundle was built "
         "from (default: maidsafe).",
     )
     prod_cu_deploy_parser.add_argument(
-        "--wasm-bootstrap-multiaddrs-file", type=str, default=None,
+        "--wasm-bootstrap-multiaddrs-file",
+        type=str,
+        default=None,
         help="Override the committed production bootstrap WebRTC multiaddr "
         "list (resources/prod_bootstrap_webrtc_multiaddrs.txt). There is no URL "
         "form — nothing publishes these addresses at a URL.",
     )
     prod_cu_deploy_parser.add_argument(
-        "--skip-bootstrap-probe", action="store_true",
+        "--skip-bootstrap-probe",
+        action="store_true",
         help="Skip the preflight ICE probe of the bootstrap WebRTC listeners. "
         "Use after a bootstrap restart: ant-node 0.20.0 opens the listener "
         "2-15 minutes later, so a just-upgraded tier is legitimately silent.",
     )
+    prod_cu_deploy_parser.add_argument("--ssh-key-path", type=str, default="~/.ssh/id_rsa")
     prod_cu_deploy_parser.add_argument(
-        "--ssh-key-path", type=str, default="~/.ssh/id_rsa"
-    )
-    prod_cu_deploy_parser.add_argument(
-        "--purpose", type=str, required=True,
+        "--purpose",
+        type=str,
+        required=True,
         help="Free text describing why this deployment exists.",
     )
 
@@ -4609,12 +4584,11 @@ def main(argv=None):
     )
     prod_cu_destroy_parser.add_argument("--name", type=str, required=True)
     prod_cu_destroy_parser.add_argument(
-        "--keep-monitoring", action="store_true",
+        "--keep-monitoring",
+        action="store_true",
         help="Keep the InfluxDB stack after teardown.",
     )
-    prod_cu_destroy_parser.add_argument(
-        "--ssh-key-path", type=str, default="~/.ssh/id_rsa"
-    )
+    prod_cu_destroy_parser.add_argument("--ssh-key-path", type=str, default="~/.ssh/id_rsa")
 
     # --- prod downloaders (one-shot) ---
     prod_dl_parser = prod_subparsers.add_parser(
@@ -4622,9 +4596,7 @@ def main(argv=None):
         help="One-shot variant of continuous-downloader: walks the address "
         "list a single time and then exits.",
     )
-    prod_dl_subparsers = prod_dl_parser.add_subparsers(
-        dest="prod_dl_action", required=True
-    )
+    prod_dl_subparsers = prod_dl_parser.add_subparsers(dest="prod_dl_action", required=True)
 
     prod_dl_deploy_parser = prod_dl_subparsers.add_parser(
         "deploy",
@@ -4783,8 +4755,7 @@ def main(argv=None):
         "--grafana",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Also create a Grafana VM for dashboards (default: off — "
-        "InfluxDB only).",
+        help="Also create a Grafana VM for dashboards (default: off — InfluxDB only).",
     )
     prod_dl_deploy_parser.add_argument(
         "--ssh-key-path",
@@ -4845,8 +4816,7 @@ def main(argv=None):
 
     prod_dl_destroy_parser = prod_dl_subparsers.add_parser(
         "destroy",
-        help="Destroy a prod downloaders deployment "
-        "(clients and, optionally, monitoring).",
+        help="Destroy a prod downloaders deployment (clients and, optionally, monitoring).",
     )
     prod_dl_destroy_parser.add_argument(
         "--name",
@@ -4962,8 +4932,7 @@ def main(argv=None):
         "--grafana",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="With --monitoring, also create a Grafana VM (default: off — "
-        "InfluxDB only).",
+        help="With --monitoring, also create a Grafana VM (default: off — InfluxDB only).",
     )
     prod_nodes_deploy_parser.add_argument(
         "--monitoring-volume-size",
@@ -5040,8 +5009,7 @@ def main(argv=None):
         "--port",
         type=int,
         default=10000,
-        help="Initial ant-node listen port; services use port..port+node_count-1 "
-        "(default: 10000).",
+        help="Initial ant-node listen port; services use port..port+node_count-1 (default: 10000).",
     )
     prod_nodes_deploy_parser.add_argument(
         "--branch-name",
@@ -5053,8 +5021,7 @@ def main(argv=None):
     prod_nodes_deploy_parser.add_argument(
         "--repo-owner",
         type=str,
-        help="GitHub repo owner for the custom-built ant-node binary "
-        "(requires --branch-name).",
+        help="GitHub repo owner for the custom-built ant-node binary (requires --branch-name).",
     )
     prod_nodes_deploy_parser.add_argument(
         "--node-version",
@@ -5132,53 +5099,102 @@ def main(argv=None):
         help="Create node VM(s) joining production configured for crash "
         "debugging, provision the ant-node services, and start them.",
     )
-    prod_dbg_deploy.add_argument("--name", type=str, required=True,
-        help="Deployment name (also used for the paired monitoring/ES stacks).")
     prod_dbg_deploy.add_argument(
-        "--provider", type=str, default="digitalocean",
+        "--name",
+        type=str,
+        required=True,
+        help="Deployment name (also used for the paired monitoring/ES stacks).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--provider",
+        type=str,
+        default="digitalocean",
         choices=["digitalocean", "hetzner", "vultr", "ovh", "contabo"],
-        help="Cloud provider for the node VM(s) (default: digitalocean).")
-    prod_dbg_deploy.add_argument("--region", type=str, required=True,
-        help="Provider region for the node VM(s) (e.g. lon1, fsn1, GRA9, EU).")
-    prod_dbg_deploy.add_argument("--vm-size", type=str, default=None,
+        help="Cloud provider for the node VM(s) (default: digitalocean).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--region",
+        type=str,
+        required=True,
+        help="Provider region for the node VM(s) (e.g. lon1, fsn1, GRA9, EU).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--vm-size",
+        type=str,
+        default=None,
         help="Provider VM size/plan/flavor/product-id. Defaults per provider "
         "(DO s-4vcpu-8gb, Hetzner cpx42, Vultr vhf-4c-16gb, OVH b3-16, "
-        "Contabo V10 VDS).")
-    prod_dbg_deploy.add_argument("--vm-count", type=int, default=1,
-        help="Number of node VMs to create in the region (default: 1).")
-    prod_dbg_deploy.add_argument("--node-count", type=int, default=4,
+        "Contabo V10 VDS).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--vm-count",
+        type=int,
+        default=1,
+        help="Number of node VMs to create in the region (default: 1).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--node-count",
+        type=int,
+        default=4,
         help="ant-node services per VM (default: 4). Deliberately NOT the prod "
         "fleet's 15: at --log-level debug each service emits ~758 log lines/s, "
         "and one telegraf forwarder tops out around 2700 lines/s, so 15 (or "
         "even 10) services produce far more than can reach Elasticsearch. "
         "Measured on ant-prod-debug-01 2026-08-02: 10 services produced 7577 "
         "lines/s of which only ~36% was forwarded. Raise it only if you accept "
-        "that ES holds a partial sample and the on-disk logs are the record.")
-    prod_dbg_deploy.add_argument("--volume-size", type=int, default=100,
+        "that ES holds a partial sample and the on-disk logs are the record.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--volume-size",
+        type=int,
+        default=100,
         help="Attached data-volume size in GB per node VM (default: 100). "
-        "Ignored on providers with no attachable volume (Contabo: root disk).")
-    prod_dbg_deploy.add_argument("--log-level", type=str, default="debug",
+        "Ignored on providers with no attachable volume (Contabo: root disk).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--log-level",
+        type=str,
+        default="debug",
         help="ant-node --log-level (single level: info/debug/trace; default "
         "debug). ant-node has no per-module env filter, so one global level "
-        "applies — the requested per-module targeting is not achievable.")
-    prod_dbg_deploy.add_argument("--rust-backtrace", type=str, default="full",
+        "applies — the requested per-module targeting is not achievable.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--rust-backtrace",
+        type=str,
+        default="full",
         help="RUST_BACKTRACE value set on every service (default: full; use '1' "
         "for a terser trace, or '' to disable). Services also always get "
         "COLORBT_SHOW_HIDDEN=1 so ant-node's color-backtrace prints real frames "
-        "instead of <empty backtrace>.")
-    prod_dbg_deploy.add_argument("--node-memory-metrics", action="store_true",
+        "instead of <empty backtrace>.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--node-memory-metrics",
+        action="store_true",
         help="Also collect per-process RSS composition (/proc/<pid>/status) and "
         "smaps_rollup for each node service, as the ant_node_memory measurement. "
         "Requires --monitoring. Off by default: the smaps_rollup scrape costs "
-        "~105ms per process and holds each target's mmap_lock for that long.")
-    prod_dbg_deploy.add_argument("--coredumps", action=argparse.BooleanOptionalAction,
-        default=True, help="Enable core dumps (LimitCORE=infinity + a global "
+        "~105ms per process and holds each target's mmap_lock for that long.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--coredumps",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable core dumps (LimitCORE=infinity + a global "
         "kernel.core_pattern under the data path) so a panic leaves an "
-        "inspectable core (default: on).")
-    prod_dbg_deploy.add_argument("--coredump-retention-days", type=int, default=7,
+        "inspectable core (default: on).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--coredump-retention-days",
+        type=int,
+        default=7,
         help="Install a daily timer deleting core dumps older than N days "
-        "(default: 7). 0 keeps them forever.")
-    prod_dbg_deploy.add_argument("--log-retention-days", type=int, default=2,
+        "(default: 7). 0 keeps them forever.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--log-retention-days",
+        type=int,
+        default=2,
         help="Install a daily timer deleting rotated ant-node debug logs "
         "under /mnt/ant-node-storage/log older than N days (default: 2). "
         "Do NOT assume Elasticsearch is a complete copy: forwarding is "
@@ -5186,89 +5202,191 @@ def main(argv=None):
         "forwarder, so the on-disk logs are the authoritative record and "
         "this timer is what discards them. 2 days is what the disk affords "
         "at the default --node-count alongside the chunk store. 0 keeps "
-        "them forever.")
-    prod_dbg_deploy.add_argument("--heaptrack", action=argparse.BooleanOptionalAction,
-        default=False, help="Also wrap services in heaptrack memory profiling "
-        "(default: off — use `prod nodes` for the heaptrack-focused kind).")
-    prod_dbg_deploy.add_argument("--monitoring", action=argparse.BooleanOptionalAction,
-        default=True, help="Stand up a dedicated small InfluxDB VM and forward "
-        "host/per-service metrics (default: on).")
-    prod_dbg_deploy.add_argument("--monitoring-provider", type=str,
-        default="digitalocean", choices=["digitalocean", "ovh", "contabo"],
-        help="Provider for the monitoring VM (default: digitalocean).")
-    prod_dbg_deploy.add_argument("--monitoring-region", type=str, default=None,
-        help="Region for the monitoring VM (default: per-provider default).")
-    prod_dbg_deploy.add_argument("--monitoring-droplet-size", type=str, default=None,
-        help="VM size for the InfluxDB box (default: per-provider default).")
-    prod_dbg_deploy.add_argument("--monitoring-volume-size", type=int, default=50,
-        help="Monitoring VM attached volume size in GB (default: 50; ignored on "
-        "Contabo).")
-    prod_dbg_deploy.add_argument("--grafana", action=argparse.BooleanOptionalAction,
-        default=False, help="With --monitoring, also create a Grafana VM "
-        "(default: off — InfluxDB only).")
-    prod_dbg_deploy.add_argument("--influx-retention-days", type=int, default=7,
-        help="InfluxDB bucket retention in days (default: 7; 0 = infinite).")
-    prod_dbg_deploy.add_argument("--forward-logs", action=argparse.BooleanOptionalAction,
-        default=True, help="Stand up a dedicated Elasticsearch VM and forward the "
+        "them forever.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--heaptrack",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also wrap services in heaptrack memory profiling "
+        "(default: off — use `prod nodes` for the heaptrack-focused kind).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--monitoring",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stand up a dedicated small InfluxDB VM and forward "
+        "host/per-service metrics (default: on).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--monitoring-provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "ovh", "contabo"],
+        help="Provider for the monitoring VM (default: digitalocean).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--monitoring-region",
+        type=str,
+        default=None,
+        help="Region for the monitoring VM (default: per-provider default).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--monitoring-droplet-size",
+        type=str,
+        default=None,
+        help="VM size for the InfluxDB box (default: per-provider default).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--monitoring-volume-size",
+        type=int,
+        default=50,
+        help="Monitoring VM attached volume size in GB (default: 50; ignored on Contabo).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--grafana",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="With --monitoring, also create a Grafana VM (default: off — InfluxDB only).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--influx-retention-days",
+        type=int,
+        default=7,
+        help="InfluxDB bucket retention in days (default: 7; 0 = infinite).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--forward-logs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stand up a dedicated Elasticsearch VM and forward the "
         "node JSON logs to it (default: on). Keeps verbose debug logs off the "
-        "always-on prod ES.")
-    prod_dbg_deploy.add_argument("--elastic-provider", type=str,
-        default="digitalocean", choices=["digitalocean", "ovh", "contabo"],
-        help="Provider for the Elasticsearch VM (default: digitalocean).")
-    prod_dbg_deploy.add_argument("--elastic-region", type=str, default=None,
-        help="Region for the Elasticsearch VM (default: per-provider default).")
-    prod_dbg_deploy.add_argument("--elastic-droplet-size", type=str, default=None,
-        help="VM size for the Elasticsearch box (default: per-provider default).")
-    prod_dbg_deploy.add_argument("--elastic-volume-size", type=int, default=100,
-        help="Data-volume size in GB for the Elasticsearch VM (default: 100; "
-        "ignored on Contabo).")
-    prod_dbg_deploy.add_argument("--elastic-retention-days", type=int, default=3,
-        help="ILM retention for the dedicated Elasticsearch index (default: 3).")
-    prod_dbg_deploy.add_argument("--elastic-shards", type=int, default=1,
-        help="Primary shard count for the Elasticsearch index (default: 1).")
-    prod_dbg_deploy.add_argument("--elastic-drop-log-levels", type=str, default=None,
+        "always-on prod ES.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--elastic-provider",
+        type=str,
+        default="digitalocean",
+        choices=["digitalocean", "ovh", "contabo"],
+        help="Provider for the Elasticsearch VM (default: digitalocean).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--elastic-region",
+        type=str,
+        default=None,
+        help="Region for the Elasticsearch VM (default: per-provider default).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--elastic-droplet-size",
+        type=str,
+        default=None,
+        help="VM size for the Elasticsearch box (default: per-provider default).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--elastic-volume-size",
+        type=int,
+        default=100,
+        help="Data-volume size in GB for the Elasticsearch VM (default: 100; ignored on Contabo).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--elastic-retention-days",
+        type=int,
+        default=3,
+        help="ILM retention for the dedicated Elasticsearch index (default: 3).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--elastic-shards",
+        type=int,
+        default=1,
+        help="Primary shard count for the Elasticsearch index (default: 1).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--elastic-drop-log-levels",
+        type=str,
+        default=None,
         help="Override the node→ES level drop filter. Default: derived from "
-        "--log-level (debug drops only TRACE so DEBUG reaches ES).")
-    prod_dbg_deploy.add_argument("--rewards-address", type=str,
+        "--log-level (debug drops only TRACE so DEBUG reaches ES).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--rewards-address",
+        type=str,
         default="0x03B770D9cD32077cC0bF330c13C114a87643B124",
-        help="EVM rewards address for the prod node services.")
-    prod_dbg_deploy.add_argument("--port", type=int, default=10000,
-        help="Initial ant-node listen port (default: 10000).")
-    prod_dbg_deploy.add_argument("--branch-name", type=str,
+        help="EVM rewards address for the prod node services.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--port", type=int, default=10000, help="Initial ant-node listen port (default: 10000)."
+    )
+    prod_dbg_deploy.add_argument(
+        "--branch-name",
+        type=str,
         help="Use a custom-built ant-node binary from this branch (requires "
-        "--repo-owner). Build it first with `build ant-node --debug`.")
-    prod_dbg_deploy.add_argument("--repo-owner", type=str,
-        help="GitHub repo owner for the custom-built ant-node binary.")
-    prod_dbg_deploy.add_argument("--node-version", type=str,
-        help="Specific release version of ant-node to install (e.g. 0.11.6).")
-    prod_dbg_deploy.add_argument("--debug", action="store_true",
+        "--repo-owner). Build it first with `build ant-node --debug`.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--repo-owner", type=str, help="GitHub repo owner for the custom-built ant-node binary."
+    )
+    prod_dbg_deploy.add_argument(
+        "--node-version",
+        type=str,
+        help="Specific release version of ant-node to install (e.g. 0.11.6).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--debug",
+        action="store_true",
         help="Informational: record that the resolved branch binary is a debug "
-        "build. The actual debug build comes from `build ant-node --debug`.")
-    prod_dbg_deploy.add_argument("--purpose", type=str, required=True,
-        help="Free-text description of what this debug run is for.")
-    prod_dbg_deploy.add_argument("--ssh-key-path", type=str, default="~/.ssh/id_rsa",
-        help="Path to SSH private key for provisioning (default: ~/.ssh/id_rsa).")
-    prod_dbg_deploy.add_argument("--contabo-image-id", type=str, default=None,
+        "build. The actual debug build comes from `build ant-node --debug`.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--purpose",
+        type=str,
+        required=True,
+        help="Free-text description of what this debug run is for.",
+    )
+    prod_dbg_deploy.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH private key for provisioning (default: ~/.ssh/id_rsa).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--contabo-image-id",
+        type=str,
+        default=None,
         help="Ubuntu image UUID for Contabo VMs (required when any Contabo "
-        "provider is used; resolve via `cntb get images`).")
-    prod_dbg_deploy.add_argument("--contabo-ssh-public-key-path", type=str,
+        "provider is used; resolve via `cntb get images`).",
+    )
+    prod_dbg_deploy.add_argument(
+        "--contabo-ssh-public-key-path",
+        type=str,
         default="~/.ssh/id_rsa.pub",
         help="Operator SSH PUBLIC key path registered as a Contabo secret "
-        "(default: ~/.ssh/id_rsa.pub; the .pub of --ssh-key-path).")
+        "(default: ~/.ssh/id_rsa.pub; the .pub of --ssh-key-path).",
+    )
 
     prod_dbg_destroy = prod_dbg_subparsers.add_parser(
         "destroy",
         help="Destroy a prod debug-nodes deployment (node VMs and, by default, "
         "the paired monitoring + Elasticsearch stacks).",
     )
-    prod_dbg_destroy.add_argument("--name", type=str, required=True,
-        help="Deployment name to tear down.")
-    prod_dbg_destroy.add_argument("--keep-monitoring", action="store_true",
-        help="Leave the monitoring VM running (default: destroyed with nodes).")
-    prod_dbg_destroy.add_argument("--keep-elastic", action="store_true",
-        help="Leave the Elasticsearch VM running (default: destroyed with nodes).")
-    prod_dbg_destroy.add_argument("--ssh-key-path", type=str, default="~/.ssh/id_rsa",
-        help="Path to SSH key (default: ~/.ssh/id_rsa).")
+    prod_dbg_destroy.add_argument(
+        "--name", type=str, required=True, help="Deployment name to tear down."
+    )
+    prod_dbg_destroy.add_argument(
+        "--keep-monitoring",
+        action="store_true",
+        help="Leave the monitoring VM running (default: destroyed with nodes).",
+    )
+    prod_dbg_destroy.add_argument(
+        "--keep-elastic",
+        action="store_true",
+        help="Leave the Elasticsearch VM running (default: destroyed with nodes).",
+    )
+    prod_dbg_destroy.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
 
     # --- prod uploaders ---
     prod_up_parser = prod_subparsers.add_parser(
@@ -5278,9 +5396,7 @@ def main(argv=None):
             "Autonomi production network."
         ),
     )
-    prod_up_subparsers = prod_up_parser.add_subparsers(
-        dest="prod_up_action", required=True
-    )
+    prod_up_subparsers = prod_up_parser.add_subparsers(dest="prod_up_action", required=True)
 
     prod_up_deploy_parser = prod_up_subparsers.add_parser(
         "deploy",
@@ -5418,8 +5534,7 @@ def main(argv=None):
         "--grafana",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Also create a Grafana VM for dashboards (default: off — "
-        "InfluxDB only).",
+        help="Also create a Grafana VM for dashboards (default: off — InfluxDB only).",
     )
     prod_up_deploy_parser.add_argument(
         "--ssh-key-path",
@@ -5436,10 +5551,7 @@ def main(argv=None):
     )
     prod_up_destroy_parser = prod_up_subparsers.add_parser(
         "destroy",
-        help=(
-            "Destroy a prod uploaders deployment "
-            "(uploader VMs and, optionally, monitoring)."
-        ),
+        help=("Destroy a prod uploaders deployment (uploader VMs and, optionally, monitoring)."),
     )
     prod_up_destroy_parser.add_argument(
         "--name",
@@ -5617,10 +5729,7 @@ def main(argv=None):
         "--purpose",
         type=str,
         required=True,
-        help=(
-            "Free-text description of what this canary is for. "
-            "Persisted into deploy_args."
-        ),
+        help=("Free-text description of what this canary is for. Persisted into deploy_args."),
     )
 
     prod_canary_destroy_parser = prod_canary_subparsers.add_parser(
@@ -5724,10 +5833,7 @@ def main(argv=None):
         "--slack-webhook-url",
         type=str,
         default=None,
-        help=(
-            "Slack incoming webhook URL. Falls back to SLACK_WEBHOOK_URL "
-            "in the environment."
-        ),
+        help=("Slack incoming webhook URL. Falls back to SLACK_WEBHOOK_URL in the environment."),
     )
     prod_canary_pr_parser.add_argument(
         "--on-calendar",
@@ -5770,7 +5876,9 @@ def main(argv=None):
         ),
     )
     prod_canary_upr_parser.add_argument(
-        "--name", type=str, required=True,
+        "--name",
+        type=str,
+        required=True,
         help="Canary deployment name.",
     )
     prod_canary_upr_parser.add_argument(
@@ -6072,7 +6180,8 @@ def main(argv=None):
         help="Continue past per-VM failures instead of stopping at the first error.",
     )
     prod_euv_parser.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         help="Skip the interactive confirmation prompt.",
     )
@@ -6122,7 +6231,8 @@ def main(argv=None):
         help="Continue past per-VM failures instead of stopping at the first error.",
     )
     prod_svr_parser.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         help="Skip the interactive confirmation prompt.",
     )
@@ -6167,8 +6277,7 @@ def main(argv=None):
     prod_rt_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Probe and report what would be reclaimed, then stop without "
-        "restarting anything.",
+        help="Probe and report what would be reclaimed, then stop without restarting anything.",
     )
     prod_rt_parser.add_argument(
         "--ssh-key-path",
@@ -6191,7 +6300,8 @@ def main(argv=None):
         "the restart itself is cheap and touches nothing but the forwarder.",
     )
     prod_rt_parser.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         help="Skip the interactive confirmation prompt.",
     )
@@ -6348,8 +6458,7 @@ def main(argv=None):
         "--retry-backoff-secs",
         type=float,
         default=5.0,
-        help="Base backoff before each retry, multiplied by the attempt number "
-        "(default: 5).",
+        help="Base backoff before each retry, multiplied by the attempt number (default: 5).",
     )
     prod_services_survey_parser.add_argument(
         "--max-parallel",
@@ -6383,9 +6492,7 @@ def main(argv=None):
         "public URLs for remote uploader VMs, local paths for local uploads "
         "and the desktop application. A pooled file is never handed out twice.",
     )
-    prod_pool_subparsers = prod_pool_parser.add_subparsers(
-        dest="prod_pool_action", required=True
-    )
+    prod_pool_subparsers = prod_pool_parser.add_subparsers(dest="prod_pool_action", required=True)
 
     prod_pool_add_parser = prod_pool_subparsers.add_parser(
         "add",
@@ -6473,8 +6580,7 @@ def main(argv=None):
         "--max-size",
         type=str,
         metavar="SIZE",
-        help="With --from-listing, take only files below this size (exclusive), "
-        "e.g. 1GB.",
+        help="With --from-listing, take only files below this size (exclusive), e.g. 1GB.",
     )
     prod_pool_add_parser.add_argument(
         "--limit",
@@ -6561,9 +6667,7 @@ def main(argv=None):
         "show",
         help="Show one file in full, including its upload result if it has one.",
     )
-    prod_pool_show_parser.add_argument(
-        "file_id", type=int, nargs="?", help="Pool file id."
-    )
+    prod_pool_show_parser.add_argument("file_id", type=int, nargs="?", help="Pool file id.")
     prod_pool_show_parser.add_argument(
         "--address",
         type=str,
@@ -6606,8 +6710,7 @@ def main(argv=None):
     prod_pool_checkout_parser.add_argument(
         "--reuse-open",
         action="store_true",
-        help="Show the claims this consumer already holds instead of spending "
-        "another file.",
+        help="Show the claims this consumer already holds instead of spending another file.",
     )
 
     prod_pool_claims_parser = prod_pool_subparsers.add_parser(
@@ -6714,11 +6817,15 @@ def main(argv=None):
         "claim pool files and record results (prod-continuous-uploader).",
     )
     prod_pool_client_role_parser.add_argument(
-        "--role", type=str, default=None,
+        "--role",
+        type=str,
+        default=None,
         help="Role name (default: ant_pool_client).",
     )
     prod_pool_client_role_parser.add_argument(
-        "--password", type=str, default=None,
+        "--password",
+        type=str,
+        default=None,
         help="Set a known password instead of generating one. Re-running "
         "without it rotates the password.",
     )
@@ -6726,7 +6833,8 @@ def main(argv=None):
         "--revoke", action="store_true", help="Drop the role instead."
     )
     prod_pool_client_role_parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Print the statements without running them.",
     )
     prod_pool_history_parser = prod_pool_subparsers.add_parser(
@@ -6828,9 +6936,7 @@ def main(argv=None):
             "skill (per-crate PR history)."
         ),
     )
-    rc_sub = rc_parser.add_subparsers(
-        dest="release_candidates_verb", required=True
-    )
+    rc_sub = rc_parser.add_subparsers(dest="release_candidates_verb", required=True)
 
     rc_new = rc_sub.add_parser(
         "new",
@@ -6854,11 +6960,16 @@ def main(argv=None):
         ),
     )
     rc_ls.add_argument(
-        "--binary-target", dest="binary_target", type=str, default=None,
+        "--binary-target",
+        dest="binary_target",
+        type=str,
+        default=None,
         help="Filter by binary target (e.g. ant, ant-node).",
     )
     rc_ls.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Cap the number of release candidates returned.",
     )
 
@@ -6867,15 +6978,22 @@ def main(argv=None):
         help="Show a single release candidate with all its crates + PRs.",
     )
     rc_show.add_argument(
-        "--id", type=int, default=None,
+        "--id",
+        type=int,
+        default=None,
         help="Look up by release-candidate id (preferred).",
     )
     rc_show.add_argument(
-        "--binary-target", dest="binary_target", type=str, default=None,
+        "--binary-target",
+        dest="binary_target",
+        type=str,
+        default=None,
         help="Look up by binary target (combine with --version).",
     )
     rc_show.add_argument(
-        "--version", type=str, default=None,
+        "--version",
+        type=str,
+        default=None,
         help="Look up by binary version (combine with --binary-target).",
     )
 
@@ -6899,48 +7017,74 @@ def main(argv=None):
         ),
     )
     rel_ship.add_argument(
-        "--binary-target", dest="binary_target", type=str, required=True,
+        "--binary-target",
+        dest="binary_target",
+        type=str,
+        required=True,
         help="Binary target (e.g. ant, ant-node).",
     )
     rel_ship.add_argument(
-        "--version", type=str, required=True,
+        "--version",
+        type=str,
+        required=True,
         help=(
             "The FINAL, suffix-free version (e.g. 0.17.1) — not the beta "
             "version. The beta suffix belongs in --beta-tag."
         ),
     )
     rel_ship.add_argument(
-        "--rc-branch", dest="rc_branch", type=str, required=True,
+        "--rc-branch",
+        dest="rc_branch",
+        type=str,
+        required=True,
         help="The rc branch this shipped from (e.g. rc-2026.8.2).",
     )
     rel_ship.add_argument(
-        "--beta-tag", dest="beta_tag", type=str, default=None,
+        "--beta-tag",
+        dest="beta_tag",
+        type=str,
+        default=None,
         help="Beta tag (e.g. v0.17.1-beta.1, ant-cli-v0.3.3-beta.1).",
     )
     rel_ship.add_argument(
-        "--beta-tag-sha", dest="beta_tag_sha", type=str, default=None,
+        "--beta-tag-sha",
+        dest="beta_tag_sha",
+        type=str,
+        default=None,
         help="The commit SHA the beta tag points at (the rc-branch head).",
     )
     rel_ship.add_argument(
-        "--shipped-at", dest="shipped_at", type=str, default=None,
+        "--shipped-at",
+        dest="shipped_at",
+        type=str,
+        default=None,
         help="Ship time, ISO-8601 or YYYY-MM-DD. Defaults to now.",
     )
     rel_ship.add_argument(
-        "--planned-promotion", dest="planned_promotion", type=str, default=None,
+        "--planned-promotion",
+        dest="planned_promotion",
+        type=str,
+        default=None,
         help=(
             "Planned promotion date (the following Monday), ISO-8601 or "
             "YYYY-MM-DD. This is the soak deadline `releases current` reports."
         ),
     )
     rel_ship.add_argument(
-        "--rc-version", dest="rc_version", type=str, default=None,
+        "--rc-version",
+        dest="rc_version",
+        type=str,
+        default=None,
         help=(
             "The rc version (e.g. 0.17.1-rc.1) used to link the "
             "release-candidates row. A miss warns rather than failing."
         ),
     )
     rel_ship.add_argument(
-        "--notes", type=str, default=None, help="Free-text notes.",
+        "--notes",
+        type=str,
+        default=None,
+        help="Free-text notes.",
     )
 
     rel_promote = rel_sub.add_parser(
@@ -6951,11 +7095,15 @@ def main(argv=None):
         ),
     )
     rel_promote.add_argument(
-        "--from-file", dest="from_file", type=str, default=None,
+        "--from-file",
+        dest="from_file",
+        type=str,
+        default=None,
         help="Path to a JSON payload file. Use '-' or omit to read stdin.",
     )
     rel_promote.add_argument(
-        "--allow-missing-ship", dest="allow_missing_ship",
+        "--allow-missing-ship",
+        dest="allow_missing_ship",
         action="store_true",
         help=(
             "Record a promotion with no ship record — for releases promoted "
@@ -6973,19 +7121,28 @@ def main(argv=None):
         ),
     )
     rel_rolled.add_argument(
-        "--id", type=int, default=None,
+        "--id",
+        type=int,
+        default=None,
         help="Look up by release id (preferred).",
     )
     rel_rolled.add_argument(
-        "--binary-target", dest="binary_target", type=str, default=None,
+        "--binary-target",
+        dest="binary_target",
+        type=str,
+        default=None,
         help="Look up by binary target (combine with --version).",
     )
     rel_rolled.add_argument(
-        "--version", type=str, default=None,
+        "--version",
+        type=str,
+        default=None,
         help="Look up by version (combine with --binary-target).",
     )
     rel_rolled.add_argument(
-        "--reason", type=str, required=True,
+        "--reason",
+        type=str,
+        required=True,
         help="Why the train died unpromoted. Required.",
     )
 
@@ -6997,28 +7154,37 @@ def main(argv=None):
         ),
     )
     rel_current.add_argument(
-        "--binary-target", dest="binary_target", type=str, default=None,
+        "--binary-target",
+        dest="binary_target",
+        type=str,
+        default=None,
         help="Limit to one binary target.",
     )
 
     rel_ls = rel_sub.add_parser(
         "ls",
         help=(
-            "List recorded releases (parent rows with their manifest crates "
-            "indented underneath)."
+            "List recorded releases (parent rows with their manifest crates indented underneath)."
         ),
     )
     rel_ls.add_argument(
-        "--binary-target", dest="binary_target", type=str, default=None,
+        "--binary-target",
+        dest="binary_target",
+        type=str,
+        default=None,
         help="Filter by binary target (e.g. ant, ant-node).",
     )
     rel_ls.add_argument(
-        "--outcome", type=str, default=None,
+        "--outcome",
+        type=str,
+        default=None,
         choices=["shipped_to_beta", "promoted", "rolled_past"],
         help="Filter by outcome.",
     )
     rel_ls.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Cap the number of releases returned.",
     )
 
@@ -7027,15 +7193,22 @@ def main(argv=None):
         help="Show a single release with its full manifest.",
     )
     rel_show.add_argument(
-        "--id", type=int, default=None,
+        "--id",
+        type=int,
+        default=None,
         help="Look up by release id (preferred).",
     )
     rel_show.add_argument(
-        "--binary-target", dest="binary_target", type=str, default=None,
+        "--binary-target",
+        dest="binary_target",
+        type=str,
+        default=None,
         help="Look up by binary target (combine with --version).",
     )
     rel_show.add_argument(
-        "--version", type=str, default=None,
+        "--version",
+        type=str,
+        default=None,
         help="Look up by version (combine with --binary-target).",
     )
 
@@ -7051,9 +7224,7 @@ def main(argv=None):
         "utils",
         help="Provider/region introspection helpers.",
     )
-    utils_subparsers = utils_parser.add_subparsers(
-        dest="utils_subcommand", required=True
-    )
+    utils_subparsers = utils_parser.add_subparsers(dest="utils_subcommand", required=True)
 
     # utils hetzner-availability
     utils_hetzner_avail_parser = utils_subparsers.add_parser(
@@ -7431,187 +7602,123 @@ def main(argv=None):
             from saorsa_deploy.cmd.bootstrap_production import cmd_bootstrap_production
 
             cmd_bootstrap_production(args)
-        elif (
-            args.prod_subcommand == "bootstrap"
-            and args.prod_bootstrap_action == "destroy"
-        ):
+        elif args.prod_subcommand == "bootstrap" and args.prod_bootstrap_action == "destroy":
             from saorsa_deploy.cmd.destroy_bootstrap_production import (
                 cmd_destroy_bootstrap_production,
             )
 
             cmd_destroy_bootstrap_production(args)
-        elif (
-            args.prod_subcommand == "bootstrap"
-            and args.prod_bootstrap_action == "upgrade"
-        ):
+        elif args.prod_subcommand == "bootstrap" and args.prod_bootstrap_action == "upgrade":
             from saorsa_deploy.cmd.prod_bootstrap_upgrade import (
                 cmd_prod_bootstrap_upgrade,
             )
 
             cmd_prod_bootstrap_upgrade(args)
-        elif (
-            args.prod_subcommand == "bootstrap"
-            and args.prod_bootstrap_action == "status"
-        ):
+        elif args.prod_subcommand == "bootstrap" and args.prod_bootstrap_action == "status":
             from saorsa_deploy.cmd.prod_bootstrap_upgrade import (
                 cmd_prod_bootstrap_status,
             )
 
             cmd_prod_bootstrap_status(args)
-        elif (
-            args.prod_subcommand == "bootstrap"
-            and args.prod_bootstrap_action == "set-peers"
-        ):
+        elif args.prod_subcommand == "bootstrap" and args.prod_bootstrap_action == "set-peers":
             from saorsa_deploy.cmd.prod_bootstrap_upgrade import (
                 cmd_prod_bootstrap_set_peers,
             )
 
             cmd_prod_bootstrap_set_peers(args)
         elif (
-            args.prod_subcommand == "bootstrap"
-            and args.prod_bootstrap_action == "webrtc-addresses"
+            args.prod_subcommand == "bootstrap" and args.prod_bootstrap_action == "webrtc-addresses"
         ):
             from saorsa_deploy.cmd.prod_bootstrap_upgrade import (
                 cmd_prod_bootstrap_webrtc_addresses,
             )
 
             cmd_prod_bootstrap_webrtc_addresses(args)
-        elif (
-            args.prod_subcommand == "continuous-downloader"
-            and args.prod_cd_action == "deploy"
-        ):
+        elif args.prod_subcommand == "continuous-downloader" and args.prod_cd_action == "deploy":
             from saorsa_deploy.cmd.prod_continuous_downloader import (
                 cmd_prod_continuous_downloader_deploy,
             )
 
             cmd_prod_continuous_downloader_deploy(args)
-        elif (
-            args.prod_subcommand == "continuous-downloader"
-            and args.prod_cd_action == "destroy"
-        ):
+        elif args.prod_subcommand == "continuous-downloader" and args.prod_cd_action == "destroy":
             from saorsa_deploy.cmd.prod_continuous_downloader import (
                 cmd_prod_continuous_downloader_destroy,
             )
 
             cmd_prod_continuous_downloader_destroy(args)
-        elif (
-            args.prod_subcommand == "continuous-uploader"
-            and args.prod_cu_action == "deploy"
-        ):
+        elif args.prod_subcommand == "continuous-uploader" and args.prod_cu_action == "deploy":
             from saorsa_deploy.cmd.prod_continuous_uploader import (
                 cmd_prod_continuous_uploader_deploy,
             )
 
             cmd_prod_continuous_uploader_deploy(args)
-        elif (
-            args.prod_subcommand == "continuous-uploader"
-            and args.prod_cu_action == "destroy"
-        ):
+        elif args.prod_subcommand == "continuous-uploader" and args.prod_cu_action == "destroy":
             from saorsa_deploy.cmd.prod_continuous_uploader import (
                 cmd_prod_continuous_uploader_destroy,
             )
 
             cmd_prod_continuous_uploader_destroy(args)
-        elif (
-            args.prod_subcommand == "downloaders"
-            and args.prod_dl_action == "deploy"
-        ):
+        elif args.prod_subcommand == "downloaders" and args.prod_dl_action == "deploy":
             from saorsa_deploy.cmd.prod_downloaders import (
                 cmd_prod_downloaders_deploy,
             )
 
             cmd_prod_downloaders_deploy(args)
-        elif (
-            args.prod_subcommand == "downloaders"
-            and args.prod_dl_action == "destroy"
-        ):
+        elif args.prod_subcommand == "downloaders" and args.prod_dl_action == "destroy":
             from saorsa_deploy.cmd.prod_downloaders import (
                 cmd_prod_downloaders_destroy,
             )
 
             cmd_prod_downloaders_destroy(args)
-        elif (
-            args.prod_subcommand == "nodes"
-            and args.prod_nodes_action == "deploy"
-        ):
+        elif args.prod_subcommand == "nodes" and args.prod_nodes_action == "deploy":
             from saorsa_deploy.cmd.prod_nodes import cmd_prod_nodes_deploy
 
             cmd_prod_nodes_deploy(args)
-        elif (
-            args.prod_subcommand == "nodes"
-            and args.prod_nodes_action == "destroy"
-        ):
+        elif args.prod_subcommand == "nodes" and args.prod_nodes_action == "destroy":
             from saorsa_deploy.cmd.prod_nodes import cmd_prod_nodes_destroy
 
             cmd_prod_nodes_destroy(args)
-        elif (
-            args.prod_subcommand == "debug-nodes"
-            and args.prod_debug_nodes_action == "deploy"
-        ):
+        elif args.prod_subcommand == "debug-nodes" and args.prod_debug_nodes_action == "deploy":
             from saorsa_deploy.cmd.prod_debug_nodes import (
                 cmd_prod_debug_nodes_deploy,
             )
 
             cmd_prod_debug_nodes_deploy(args)
-        elif (
-            args.prod_subcommand == "debug-nodes"
-            and args.prod_debug_nodes_action == "destroy"
-        ):
+        elif args.prod_subcommand == "debug-nodes" and args.prod_debug_nodes_action == "destroy":
             from saorsa_deploy.cmd.prod_debug_nodes import (
                 cmd_prod_debug_nodes_destroy,
             )
 
             cmd_prod_debug_nodes_destroy(args)
-        elif (
-            args.prod_subcommand == "uploaders"
-            and args.prod_up_action == "deploy"
-        ):
+        elif args.prod_subcommand == "uploaders" and args.prod_up_action == "deploy":
             from saorsa_deploy.cmd.prod_uploaders import cmd_prod_uploaders_deploy
 
             cmd_prod_uploaders_deploy(args)
-        elif (
-            args.prod_subcommand == "uploaders"
-            and args.prod_up_action == "destroy"
-        ):
+        elif args.prod_subcommand == "uploaders" and args.prod_up_action == "destroy":
             from saorsa_deploy.cmd.prod_uploaders import cmd_prod_uploaders_destroy
 
             cmd_prod_uploaders_destroy(args)
-        elif (
-            args.prod_subcommand == "canary"
-            and args.prod_canary_action == "deploy"
-        ):
+        elif args.prod_subcommand == "canary" and args.prod_canary_action == "deploy":
             from saorsa_deploy.cmd.prod_canary import cmd_prod_canary_deploy
 
             cmd_prod_canary_deploy(args)
-        elif (
-            args.prod_subcommand == "canary"
-            and args.prod_canary_action == "destroy"
-        ):
+        elif args.prod_subcommand == "canary" and args.prod_canary_action == "destroy":
             from saorsa_deploy.cmd.prod_canary import cmd_prod_canary_destroy
 
             cmd_prod_canary_destroy(args)
-        elif (
-            args.prod_subcommand == "canary"
-            and args.prod_canary_action == "report"
-        ):
+        elif args.prod_subcommand == "canary" and args.prod_canary_action == "report":
             from saorsa_deploy.cmd.prod_canary_report import (
                 cmd_prod_canary_report,
             )
 
             cmd_prod_canary_report(args)
-        elif (
-            args.prod_subcommand == "canary"
-            and args.prod_canary_action == "provision-reporter"
-        ):
+        elif args.prod_subcommand == "canary" and args.prod_canary_action == "provision-reporter":
             from saorsa_deploy.cmd.prod_canary_reporter import (
                 cmd_prod_canary_provision_reporter,
             )
 
             cmd_prod_canary_provision_reporter(args)
-        elif (
-            args.prod_subcommand == "canary"
-            and args.prod_canary_action == "unprovision-reporter"
-        ):
+        elif args.prod_subcommand == "canary" and args.prod_canary_action == "unprovision-reporter":
             from saorsa_deploy.cmd.prod_canary_reporter import (
                 cmd_prod_canary_unprovision_reporter,
             )
@@ -7657,31 +7764,19 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_add
 
             cmd_prod_services_add(args)
-        elif (
-            args.prod_subcommand == "services"
-            and args.prod_services_action == "reset-data"
-        ):
+        elif args.prod_subcommand == "services" and args.prod_services_action == "reset-data":
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_reset_data
 
             cmd_prod_services_reset_data(args)
-        elif (
-            args.prod_subcommand == "services"
-            and args.prod_services_action == "disk-survey"
-        ):
+        elif args.prod_subcommand == "services" and args.prod_services_action == "disk-survey":
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_disk_survey
 
             cmd_prod_services_disk_survey(args)
-        elif (
-            args.prod_subcommand == "services"
-            and args.prod_services_action == "survey-report"
-        ):
+        elif args.prod_subcommand == "services" and args.prod_services_action == "survey-report":
             from saorsa_deploy.cmd.prod_services import cmd_prod_services_survey_report
 
             cmd_prod_services_survey_report(args)
-        elif (
-            args.prod_subcommand == "pool"
-            and args.prod_pool_action == "client-role"
-        ):
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "client-role":
             from saorsa_deploy.cmd.pool_client_role import cmd_pool_client_role
 
             cmd_pool_client_role(args)
@@ -7709,10 +7804,7 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_claims
 
             cmd_prod_pool_claims(args)
-        elif (
-            args.prod_subcommand == "pool"
-            and args.prod_pool_action == "import-history"
-        ):
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "import-history":
             from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_import_history
 
             cmd_prod_pool_import_history(args)
@@ -7728,10 +7820,7 @@ def main(argv=None):
             from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_release
 
             cmd_prod_pool_release(args)
-        elif (
-            args.prod_subcommand == "pool"
-            and args.prod_pool_action == "mark-uploaded"
-        ):
+        elif args.prod_subcommand == "pool" and args.prod_pool_action == "mark-uploaded":
             from saorsa_deploy.cmd.prod_pool import cmd_prod_pool_mark_uploaded
 
             cmd_prod_pool_mark_uploaded(args)
@@ -7747,27 +7836,33 @@ def main(argv=None):
         verb = args.releases_verb
         if verb == "ship":
             from saorsa_deploy.cmd.releases.ship_cmd import cmd_releases_ship
+
             cmd_releases_ship(args)
         elif verb == "promote":
             from saorsa_deploy.cmd.releases.promote_cmd import (
                 cmd_releases_promote,
             )
+
             cmd_releases_promote(args)
         elif verb == "rolled-past":
             from saorsa_deploy.cmd.releases.rolled_past_cmd import (
                 cmd_releases_rolled_past,
             )
+
             cmd_releases_rolled_past(args)
         elif verb == "current":
             from saorsa_deploy.cmd.releases.current_cmd import (
                 cmd_releases_current,
             )
+
             cmd_releases_current(args)
         elif verb == "ls":
             from saorsa_deploy.cmd.releases.ls_cmd import cmd_releases_ls
+
             cmd_releases_ls(args)
         elif verb == "show":
             from saorsa_deploy.cmd.releases.show_cmd import cmd_releases_show
+
             cmd_releases_show(args)
     elif args.command == "release-candidates":
         verb = args.release_candidates_verb
@@ -7775,16 +7870,19 @@ def main(argv=None):
             from saorsa_deploy.cmd.release_candidates.new_cmd import (
                 cmd_release_candidates_new,
             )
+
             cmd_release_candidates_new(args)
         elif verb == "ls":
             from saorsa_deploy.cmd.release_candidates.ls_cmd import (
                 cmd_release_candidates_ls,
             )
+
             cmd_release_candidates_ls(args)
         elif verb == "show":
             from saorsa_deploy.cmd.release_candidates.show_cmd import (
                 cmd_release_candidates_show,
             )
+
             cmd_release_candidates_show(args)
     elif args.command == "analysis":
         from saorsa_deploy.cmd.analysis import dispatch_analysis

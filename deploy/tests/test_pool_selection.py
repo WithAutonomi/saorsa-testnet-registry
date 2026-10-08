@@ -39,9 +39,7 @@ def repo():
 def fake_s3(monkeypatch):
     """In-memory stand-in for the S3 selection store."""
     store: dict = {}
-    monkeypatch.setattr(
-        pool_selection, "load_pool_selection", lambda name: store.get(name)
-    )
+    monkeypatch.setattr(pool_selection, "load_pool_selection", lambda name: store.get(name))
     monkeypatch.setattr(
         pool_selection,
         "save_pool_selection",
@@ -154,12 +152,20 @@ class TestSelection:
         # The behaviour that stops a retried deploy burning inventory.
         _seed(repo, PoolFileKind.URL, 50 * MIB, 10)
         first = select_for_deployment(
-            repo, name="PROD-UL-05", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 3}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-05",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 3},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         second = select_for_deployment(
-            repo, name="PROD-UL-05", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 3}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-05",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 3},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         assert [e.file_id for e in first] == [e.file_id for e in second]
         assert len(repo.list_pool_claims()) == 3
@@ -169,19 +175,25 @@ class TestSelection:
         # One uploader VM per slot; each keeps its own files across a resume.
         _seed(repo, PoolFileKind.URL, 50 * MIB, 10)
         first = select_for_deployment(
-            repo, name="PROD-UL-05", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-05",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         second = select_for_deployment(
-            repo, name="PROD-UL-05", slot="uploader-2", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-05",
+            slot="uploader-2",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         assert not {e.file_id for e in first} & {e.file_id for e in second}
         assert len(repo.list_pool_claims()) == 4
 
-    def test_a_spent_draw_is_not_reused_by_the_next_run_of_the_same_name(
-        self, repo, fake_s3
-    ):
+    def test_a_spent_draw_is_not_reused_by_the_next_run_of_the_same_name(self, repo, fake_s3):
         """The STG-UL-01 regression (2026-08-18).
 
         Prod deployment names are reused every release train, and the draw is
@@ -192,16 +204,24 @@ class TestSelection:
         """
         _seed(repo, PoolFileKind.URL, 50 * MIB, 10)
         first = select_for_deployment(
-            repo, name="STG-UL-01", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="STG-UL-01",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         # The run completes: record-results resolves every claim.
         for entry in first:
             repo.resolve_pool_claim(entry.claim_id, address=f"addr-{entry.file_id}")
 
         second = select_for_deployment(
-            repo, name="STG-UL-01", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="STG-UL-01",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
 
         assert not {e.file_id for e in first} & {e.file_id for e in second}
@@ -212,20 +232,27 @@ class TestSelection:
         # drawn by someone else, so this run cannot assume it still holds it.
         _seed(repo, PoolFileKind.URL, 50 * MIB, 10)
         first = select_for_deployment(
-            repo, name="STG-UL-01", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="STG-UL-01",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         for entry in first:
             repo.release_pool_claim(entry.claim_id)
 
         second = select_for_deployment(
-            repo, name="STG-UL-01", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="STG-UL-01",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         assert len(second) == 2
         assert all(
-            repo.blocking_claims_for_files([e.file_id])[e.file_id].id == e.claim_id
-            for e in second
+            repo.blocking_claims_for_files([e.file_id])[e.file_id].id == e.claim_id for e in second
         )
 
     def test_a_stale_draw_does_not_leave_the_slot_behind(self, repo, fake_s3):
@@ -234,14 +261,22 @@ class TestSelection:
         # be valid.
         _seed(repo, PoolFileKind.URL, 50 * MIB, 10)
         first = select_for_deployment(
-            repo, name="STG-UL-01", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="STG-UL-01",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         for entry in first:
             repo.resolve_pool_claim(entry.claim_id, address="a")
         second = select_for_deployment(
-            repo, name="STG-UL-01", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="STG-UL-01",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         stored = fake_s3["STG-UL-01"]["slots"]["uploader-1"]["files"]
         stored_ids = [e["file_id"] for e in stored]
@@ -261,15 +296,23 @@ class TestSelection:
                     "min_size_bytes": None,
                     "max_size_bytes": None,
                     "files": [
-                        {"file_id": 1, "name": "f0.bin",
-                         "locator": "https://example.org/f0", "size_bytes": 50 * MIB},
+                        {
+                            "file_id": 1,
+                            "name": "f0.bin",
+                            "locator": "https://example.org/f0",
+                            "size_bytes": 50 * MIB,
+                        },
                     ],
                 }
             }
         }
         selected = select_for_deployment(
-            repo, name="STG-UL-01", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="STG-UL-01",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         assert len(selected) == 2
         assert all(e.claim_id is not None for e in selected)
@@ -278,16 +321,26 @@ class TestSelection:
         # A duplicate group can hold both a local path and a URL; a remote
         # uploader needs the one it can actually fetch.
         repo.add_pool_file(
-            PoolFileKind.LOCAL, "/data/film.mkv", "film.mkv",
-            size_bytes=50 * MIB, digests={"sha1": "aaa"},
+            PoolFileKind.LOCAL,
+            "/data/film.mkv",
+            "film.mkv",
+            size_bytes=50 * MIB,
+            digests={"sha1": "aaa"},
         )
         repo.add_pool_file(
-            PoolFileKind.URL, "https://archive.org/download/i/film.mkv", "film.mkv",
-            size_bytes=50 * MIB, digests={"sha1": "aaa"},
+            PoolFileKind.URL,
+            "https://archive.org/download/i/film.mkv",
+            "film.mkv",
+            size_bytes=50 * MIB,
+            digests={"sha1": "aaa"},
         )
         selected = select_for_deployment(
-            repo, name="PROD-UL-05", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 1}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-05",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 1},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         assert selected[0].locator.startswith("https://archive.org/")
 
@@ -300,8 +353,12 @@ class TestShortfall:
         _seed(repo, PoolFileKind.URL, 2 * GIB, 1, "url")
         with pytest.raises(PoolSelectionError) as exc:
             select_for_deployment(
-                repo, name="PROD-CANARY-04", slot="upload", kind=PoolFileKind.URL,
-                request={SizeClass.LARGE: 2}, source=ClaimSource.PROD_CANARY,
+                repo,
+                name="PROD-CANARY-04",
+                slot="upload",
+                kind=PoolFileKind.URL,
+                request={SizeClass.LARGE: 2},
+                source=ClaimSource.PROD_CANARY,
             )
         message = str(exc.value)
         assert "url pool" in message
@@ -314,7 +371,10 @@ class TestShortfall:
         _seed(repo, PoolFileKind.URL, 2 * GIB, 1, "lg")
         with pytest.raises(PoolSelectionError):
             select_for_deployment(
-                repo, name="PROD-CANARY-04", slot="upload", kind=PoolFileKind.URL,
+                repo,
+                name="PROD-CANARY-04",
+                slot="upload",
+                kind=PoolFileKind.URL,
                 request={SizeClass.TINY: 5, SizeClass.LARGE: 2},
                 source=ClaimSource.PROD_CANARY,
             )
@@ -328,24 +388,30 @@ class TestAttachDeployment:
 
         _seed(repo, PoolFileKind.URL, 50 * MIB, 3)
         selected = select_for_deployment(
-            repo, name="PROD-UL-05", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-05",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         deployment = Deployment(name="PROD-UL-05", deploy_args={})
         repo.session.add(deployment)
         repo.session.commit()
 
-        pool_selection.attach_deployment(
-            repo, [selected], deployment.id, "PROD-UL-05"
-        )
+        pool_selection.attach_deployment(repo, [selected], deployment.id, "PROD-UL-05")
         rows = repo.list_pool_claims(deployment_id=deployment.id)
         assert len(rows) == 2
 
     def test_no_deployment_id_is_a_noop(self, repo, fake_s3):
         _seed(repo, PoolFileKind.URL, 50 * MIB, 2)
         selected = select_for_deployment(
-            repo, name="X", slot="s", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 1}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="X",
+            slot="s",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 1},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         pool_selection.attach_deployment(repo, [selected], None, "X")
         assert repo.list_pool_claims()[0].deployment_id is None
@@ -357,8 +423,12 @@ class TestRendering:
 
         _seed(repo, PoolFileKind.URL, 50 * MIB, 3)
         selected = select_for_deployment(
-            repo, name="X", slot="s", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 3}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="X",
+            slot="s",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 3},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         pool_selection.render_selection(
             Console(), "uploader #1 (lon1)", {SizeClass.SMALL: 3}, selected
@@ -372,12 +442,14 @@ class TestRendering:
 
         _seed(repo, PoolFileKind.URL, 50 * MIB, 30)
         selected = select_for_deployment(
-            repo, name="X", slot="s", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 30}, source=ClaimSource.PROD_CANARY,
+            repo,
+            name="X",
+            slot="s",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 30},
+            source=ClaimSource.PROD_CANARY,
         )
-        pool_selection.render_selection(
-            Console(), "upload", {SizeClass.SMALL: 30}, selected
-        )
+        pool_selection.render_selection(Console(), "upload", {SizeClass.SMALL: 30}, selected)
         out = capsys.readouterr().out
         assert "30 file(s)" in out
         assert out.count("\n") < 10

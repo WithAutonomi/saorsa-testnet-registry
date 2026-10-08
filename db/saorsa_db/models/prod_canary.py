@@ -44,9 +44,7 @@ class ProdCanaryChunkRole(enum.Enum):
 class DeploymentProdCanaryUpload(Base):
     __tablename__ = "prod_canary_uploads"
 
-    canary_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(), primary_key=True
-    )
+    canary_id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True)
     deployment_id: Mapped[int] = mapped_column(
         ForeignKey("deployments.id", ondelete="CASCADE"),
         nullable=False,
@@ -71,12 +69,8 @@ class DeploymentProdCanaryUpload(Base):
     storage_cost_atto: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(), nullable=True
     )
-    gas_cost_wei: Mapped[Optional[Decimal]] = mapped_column(
-        Numeric(), nullable=True
-    )
-    chunk_attempts_total: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True
-    )
+    gas_cost_wei: Mapped[Optional[Decimal]] = mapped_column(Numeric(), nullable=True)
+    chunk_attempts_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -100,11 +94,11 @@ class DeploymentProdCanaryUpload(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
-    unavailability_episodes: Mapped[
-        list["DeploymentProdCanaryUnavailability"]
-    ] = relationship(
-        back_populates="upload",
-        cascade="all, delete-orphan",
+    unavailability_episodes: Mapped[list["DeploymentProdCanaryUnavailability"]] = (
+        relationship(
+            back_populates="upload",
+            cascade="all, delete-orphan",
+        )
     )
 
     def to_dict(self):
@@ -139,9 +133,7 @@ class DeploymentProdCanaryChunk(Base):
         ForeignKey("prod_canary_uploads.canary_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    chunk_address: Mapped[str] = mapped_column(
-        String(128), primary_key=True
-    )
+    chunk_address: Mapped[str] = mapped_column(String(128), primary_key=True)
     chunk_role: Mapped[ProdCanaryChunkRole] = mapped_column(
         Enum(
             ProdCanaryChunkRole,
@@ -151,9 +143,7 @@ class DeploymentProdCanaryChunk(Base):
         nullable=False,
     )
 
-    upload: Mapped["DeploymentProdCanaryUpload"] = relationship(
-        back_populates="chunks"
-    )
+    upload: Mapped["DeploymentProdCanaryUpload"] = relationship(back_populates="chunks")
 
     def to_dict(self):
         return {
@@ -208,9 +198,7 @@ class DeploymentProdCanaryProbe(Base):
         nullable=False,
     )
 
-    upload: Mapped["DeploymentProdCanaryUpload"] = relationship(
-        back_populates="probes"
-    )
+    upload: Mapped["DeploymentProdCanaryUpload"] = relationship(back_populates="probes")
 
     def to_dict(self):
         return {
@@ -240,15 +228,11 @@ class DeploymentProdCanaryLoss(Base):
     confirmed_lost_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    missing_chunk_address: Mapped[str] = mapped_column(
-        String(128), nullable=False
-    )
+    missing_chunk_address: Mapped[str] = mapped_column(String(128), nullable=False)
     hours_to_first_failure: Mapped[float] = mapped_column(Float, nullable=False)
     hours_to_confirmed_loss: Mapped[float] = mapped_column(Float, nullable=False)
 
-    upload: Mapped["DeploymentProdCanaryUpload"] = relationship(
-        back_populates="loss"
-    )
+    upload: Mapped["DeploymentProdCanaryUpload"] = relationship(back_populates="loss")
 
     def to_dict(self):
         return {
@@ -296,9 +280,7 @@ class DeploymentProdCanaryUnavailability(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "canary_id", "episode_no", name="uq_canary_unavail_episode"
-        ),
+        UniqueConstraint("canary_id", "episode_no", name="uq_canary_unavail_episode"),
     )
 
     def to_dict(self):

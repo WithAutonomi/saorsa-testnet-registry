@@ -112,18 +112,12 @@ def _parse_pool_request(raw: str, console: Console) -> dict:
 
     raw = (raw or "").strip()
     if not raw:
-        console.print(
-            "[bold red]Error:[/bold red] --pool is required, e.g. "
-            "--pool tiny:2,small:1"
-        )
+        console.print("[bold red]Error:[/bold red] --pool is required, e.g. --pool tiny:2,small:1")
         sys.exit(1)
     try:
         if raw.startswith("{"):
             return {k: int(v) for k, v in json.loads(raw).items()}
-        return {
-            size_class.value: count
-            for size_class, count in parse_request_token(raw).items()
-        }
+        return {size_class.value: count for size_class, count in parse_request_token(raw).items()}
     except Exception as exc:  # noqa: BLE001
         console.print(f"[bold red]Error:[/bold red] invalid --pool: {exc}")
         sys.exit(1)
@@ -177,8 +171,7 @@ def _apply_wasm_pool_cap(args, request: dict, console: Console) -> None:
     problem = check_wasm_pool_request(request)
     if problem:
         console.print(
-            f"[bold red]Error:[/bold red] --pool: {problem}.\n\n"
-            "No infrastructure was created."
+            f"[bold red]Error:[/bold red] --pool: {problem}.\n\nNo infrastructure was created."
         )
         sys.exit(1)
     if wasm_pool_max_size_is_clamped(request, getattr(args, "pool_max_size", None)):
@@ -221,14 +214,10 @@ def _preflight_pool(args, request: dict, console: Console) -> None:
 
     if shortfalls:
         console.print(
-            "[bold red]Error:[/bold red] the url pool cannot serve even one "
-            "cycle of this request:"
+            "[bold red]Error:[/bold red] the url pool cannot serve even one cycle of this request:"
         )
         for class_name, wanted, available in shortfalls:
-            console.print(
-                f"  {class_name}: {wanted} requested per cycle, "
-                f"{available} available"
-            )
+            console.print(f"  {class_name}: {wanted} requested per cycle, {available} available")
         console.print(
             "\nAdd more with [bold]saorsa-deploy prod pool add "
             "--from-listing internet-archive:<item>[/bold], or free a stale "
@@ -260,10 +249,7 @@ def _ensure_monitoring(args, console: Console) -> None:
     retention_days = getattr(args, "influx_retention_days", 0) or 0
     if _monitoring_stack_exists(args.name):
         if _monitoring_has_influx(args.name):
-            console.print(
-                f"[dim]Monitoring stack '{args.name}' already exists — "
-                "skipping.[/dim]"
-            )
+            console.print(f"[dim]Monitoring stack '{args.name}' already exists — skipping.[/dim]")
             return
         console.print(
             f"[yellow]Monitoring VM for '{args.name}' exists but has no "
@@ -320,9 +306,7 @@ def _ensure_client_infra(args, console: Console) -> None:
     from saorsa_deploy.cmd.infra_clients import cmd_infra_clients
 
     if _client_stack_exists(args.name):
-        console.print(
-            f"[dim]Client stack '{args.name}' already exists — skipping.[/dim]"
-        )
+        console.print(f"[dim]Client stack '{args.name}' already exists — skipping.[/dim]")
         return
 
     provider = getattr(args, "provider", None) or "digitalocean"
@@ -368,9 +352,7 @@ def build_uploader_infra_spec(provider: str, spec: str, cache_token: str) -> str
     return ":".join(parts)
 
 
-def build_verifier_infra_spec(
-    default_provider: str, verifier: str, cache_token: str
-) -> str:
+def build_verifier_infra_spec(default_provider: str, verifier: str, cache_token: str) -> str:
     """Turn a `[provider:]region[:vm_size]` verifier into a downloader spec.
 
     The provider is optional per verifier and falls back to the uploader's, so
@@ -388,9 +370,7 @@ def build_verifier_infra_spec(
     except ValueError:
         provider, rest = default_provider, verifier
     if not rest:
-        raise ValueError(
-            f"verifier spec {verifier!r} names a provider but no region"
-        )
+        raise ValueError(f"verifier spec {verifier!r} names a provider but no region")
     return f"{provider}:{rest}:{cache_token}"
 
 
@@ -398,16 +378,13 @@ def _load_influx(name: str, console: Console) -> dict:
     try:
         state = load_monitoring_state(name)
     except RuntimeError:
-        console.print(
-            "[yellow]No monitoring state found — metric emission disabled.[/yellow]"
-        )
+        console.print("[yellow]No monitoring state found — metric emission disabled.[/yellow]")
         return {}
     return {
         "influx_url": state.get("influxdb_url", "") or "",
         "influx_token": state.get("influxdb_token", "") or "",
         "influx_org": state.get("influxdb_org", "ant") or "ant",
-        "influx_bucket": state.get("influxdb_bucket", "testnet-metrics")
-        or "testnet-metrics",
+        "influx_bucket": state.get("influxdb_bucket", "testnet-metrics") or "testnet-metrics",
     }
 
 
@@ -502,9 +479,7 @@ def _provision(
         # attributable to the upload rather than to the read-back.
         client_kind="wasm" if wasm_context else "native",
         wasm_bundle_url=wasm_context.bundle_url if wasm_context else None,
-        bootstrap_multiaddrs=(
-            wasm_context.bootstrap_multiaddrs if wasm_context else None
-        ),
+        bootstrap_multiaddrs=(wasm_context.bootstrap_multiaddrs if wasm_context else None),
         **shared,
     ).execute()
 
@@ -545,7 +520,9 @@ def _start(args, console: Console) -> None:
     console.print("[bold cyan]Step 5/5: starting services[/bold cyan]")
     uploaders, verifiers = _split_clients(args.name, console)
     _systemctl(
-        args.name, uploaders, args.ssh_key_path,
+        args.name,
+        uploaders,
+        args.ssh_key_path,
         "Start the uploader service",
         [
             f"systemctl enable {UPLOADER_SERVICE}",
@@ -553,7 +530,9 @@ def _start(args, console: Console) -> None:
         ],
     )
     _systemctl(
-        args.name, verifiers, args.ssh_key_path,
+        args.name,
+        verifiers,
+        args.ssh_key_path,
         "Start the verifier services",
         [
             f"systemctl enable {VERIFIER_SERVICE}",
@@ -616,9 +595,7 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
     apply_wasm_vm_size(args, console)
     args.pool_database_url = _resolve_pool_database_url(args, console)
 
-    secret_key = getattr(args, "secret_key", None) or os.environ.get(
-        "ARBITRUM_ONE_SECRET_KEY", ""
-    )
+    secret_key = getattr(args, "secret_key", None) or os.environ.get("ARBITRUM_ONE_SECRET_KEY", "")
     if not secret_key:
         console.print(
             "[bold red]Error:[/bold red] no wallet key. Pass --secret-key or "
@@ -645,8 +622,7 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
         "sleep_interval_secs": getattr(args, "sleep_interval_secs", 86400),
         "verify_interval_secs": getattr(args, "verify_interval_secs", 3600),
         "provider": getattr(args, "provider", None) or "digitalocean",
-        "monitoring_provider": getattr(args, "monitoring_provider", None)
-        or "digitalocean",
+        "monitoring_provider": getattr(args, "monitoring_provider", None) or "digitalocean",
         "influx_retention_days": getattr(args, "influx_retention_days", 7),
         "log_retention_days": getattr(args, "log_retention_days", 7),
         "bootstrap_cache": getattr(args, "bootstrap_cache", True),
@@ -656,7 +632,9 @@ def cmd_prod_continuous_uploader_deploy(args) -> None:
         "readback_verify": getattr(args, "readback_verify", True),
         "purpose": args.purpose,
         "ant_binary": build_binary_descriptor(
-            args.branch_name, args.repo_owner, args.ant_version,
+            args.branch_name,
+            args.repo_owner,
+            args.ant_version,
             debug=getattr(args, "debug", False),
         ),
         # client_kind (always), plus the bundle provenance and what the
@@ -738,7 +716,9 @@ def cmd_prod_continuous_uploader_destroy(args) -> None:
     try:
         uploaders, verifiers = _split_clients(args.name, console)
         _systemctl(
-            args.name, uploaders + verifiers, args.ssh_key_path,
+            args.name,
+            uploaders + verifiers,
+            args.ssh_key_path,
             "Stop the write-test services",
             [
                 f"systemctl stop {UPLOADER_SERVICE} || true",
@@ -749,8 +729,7 @@ def cmd_prod_continuous_uploader_destroy(args) -> None:
         )
     except (SystemExit, RuntimeError) as exc:
         console.print(
-            f"[yellow]Could not stop services cleanly ({exc}) — continuing "
-            "with teardown.[/yellow]"
+            f"[yellow]Could not stop services cleanly ({exc}) — continuing with teardown.[/yellow]"
         )
 
     _warn_about_open_claims(args.name, console)
@@ -763,7 +742,8 @@ def cmd_prod_continuous_uploader_destroy(args) -> None:
             console.print("[dim]Keeping the monitoring stack.[/dim]")
     except Exception as exc:  # noqa: BLE001
         record_event(
-            args.name, "prod_continuous_uploader_destroy_failed",
+            args.name,
+            "prod_continuous_uploader_destroy_failed",
             {"error": str(exc)},
         )
         record_status(args.name, DeploymentStatus.FAILED)

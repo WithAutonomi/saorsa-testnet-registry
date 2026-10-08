@@ -79,8 +79,7 @@ class AntWasmBuilder:
             f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_ARCHIVE_NAME}"
         )
         self.build_info_s3_key = (
-            f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/"
-            f"{ANT_WASM_BUILD_INFO_NAME}"
+            f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_BUILD_INFO_NAME}"
         )
 
     def execute(self) -> str:
@@ -174,9 +173,7 @@ class AntWasmBuilder:
                     # Remove any leftover checkout first: a reused build droplet
                     # already has /root/ant-client and a bare clone aborts on it.
                     f"rm -rf {BUILD_DIR} && "
-                    + shell(
-                        clone_argv(self.repo_owner, self.branch_name, BUILD_DIR)
-                    )
+                    + shell(clone_argv(self.repo_owner, self.branch_name, BUILD_DIR))
                 ],
             )
             add_op(
@@ -184,8 +181,7 @@ class AntWasmBuilder:
                 server.shell,
                 name="Build ant-core to WASM",
                 commands=[
-                    f"cd {BUILD_DIR} && "
-                    "PATH=/root/.cargo/bin:$PATH " + shell(WASM_PACK_ARGV)
+                    f"cd {BUILD_DIR} && PATH=/root/.cargo/bin:$PATH " + shell(WASM_PACK_ARGV)
                 ],
             )
 
@@ -244,8 +240,7 @@ class AntWasmBuilder:
                     # A wasm-bindgen glue/crate mismatch only shows up at load
                     # time, so catch it here rather than on a client VM after the
                     # infrastructure is already up and billing.
-                    f"cd {STAGE_DIR} && "
-                    + shell(["node", "-e", bundle_load_check_source("./pkg")])
+                    f"cd {STAGE_DIR} && " + shell(["node", "-e", bundle_load_check_source("./pkg")])
                 ],
             )
             add_op(

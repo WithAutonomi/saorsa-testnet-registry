@@ -61,18 +61,10 @@ def patches():
         patch("saorsa_deploy.cmd.infra_nodes.record_event") as p_record_event,
         patch("saorsa_deploy.cmd.infra_nodes.record_status") as p_record_status,
         patch("saorsa_deploy.cmd.infra_nodes.load_deployment_state") as p_load_state,
-        patch(
-            "saorsa_deploy.cmd.infra_nodes.update_deployment_state"
-        ) as p_update_state,
-        patch(
-            "saorsa_deploy.cmd.infra_nodes.check_terraform_state_exists"
-        ) as p_check_state,
-        patch(
-            "saorsa_deploy.cmd.infra_nodes.delete_terraform_state"
-        ) as p_delete_state,
-        patch(
-            "saorsa_deploy.cmd.infra_nodes.execute_terraform_runs"
-        ) as p_execute,
+        patch("saorsa_deploy.cmd.infra_nodes.update_deployment_state") as p_update_state,
+        patch("saorsa_deploy.cmd.infra_nodes.check_terraform_state_exists") as p_check_state,
+        patch("saorsa_deploy.cmd.infra_nodes.delete_terraform_state") as p_delete_state,
+        patch("saorsa_deploy.cmd.infra_nodes.execute_terraform_runs") as p_execute,
     ):
         p_check_state.return_value = False
         p_execute.return_value = [
@@ -113,7 +105,6 @@ class TestRefusesWithoutBootstraps:
 
 
 class TestRegionsOverride:
-
     def test_unknown_region_in_override_errors_out(self, patches):
         patches.load_state.return_value = _state_with_bootstraps()
 
@@ -143,8 +134,6 @@ class TestOvhProvider:
             monkeypatch.delenv(var, raising=False)
 
         with pytest.raises(SystemExit):
-            cmd_infra_nodes(
-                _args(do_vm_count=0, ovh_vm_count=2, ovh_regions_list="GRA9,UK1")
-            )
+            cmd_infra_nodes(_args(do_vm_count=0, ovh_vm_count=2, ovh_regions_list="GRA9,UK1"))
 
         patches.execute.assert_not_called()

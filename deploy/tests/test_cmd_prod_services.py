@@ -157,9 +157,7 @@ class TestCmdProdServicesLs:
         services_patches.add_op.return_value = _op_result(
             services_patches.host, ["ANT_SVC:LIST:NONE"]
         )
-        cmd_prod_services_ls(
-            _args(inventory_path=str(inv_path), ssh_key_path=ssh_key)
-        )
+        cmd_prod_services_ls(_args(inventory_path=str(inv_path), ssh_key_path=ssh_key))
         assert "No ant-node-* services found" in capsys.readouterr().out
 
     def test_lists_discovered_services(self, services_patches, tmp_path, capsys):
@@ -172,9 +170,7 @@ class TestCmdProdServicesLs:
                 "ANT_SVC:LIST:ant-node-2:inactive:disabled:0",
             ],
         )
-        cmd_prod_services_ls(
-            _args(inventory_path=str(inv_path), ssh_key_path=ssh_key)
-        )
+        cmd_prod_services_ls(_args(inventory_path=str(inv_path), ssh_key_path=ssh_key))
         out = capsys.readouterr().out
         assert "ant-node-1" in out
         assert "ant-node-2" in out
@@ -183,9 +179,7 @@ class TestCmdProdServicesLs:
     def test_rejects_invalid_service_name_filter(self, services_patches, tmp_path):
         inv_path = _write_inventory(tmp_path, [_entry("host-a")])
         with pytest.raises(SystemExit):
-            cmd_prod_services_ls(
-                _args(inventory_path=str(inv_path), service_name="not-valid")
-            )
+            cmd_prod_services_ls(_args(inventory_path=str(inv_path), service_name="not-valid"))
         services_patches.add_op.assert_not_called()
 
 
@@ -193,9 +187,7 @@ class TestCmdProdServicesRm:
     def test_invalid_service_name_exits_before_any_ssh(self, services_patches, tmp_path):
         inv_path = _write_inventory(tmp_path, [_entry("host-a")])
         with pytest.raises(SystemExit):
-            cmd_prod_services_rm(
-                _args(inventory_path=str(inv_path), service_name="bogus")
-            )
+            cmd_prod_services_rm(_args(inventory_path=str(inv_path), service_name="bogus"))
         services_patches.connect.assert_not_called()
 
     def test_service_not_on_host_exits(self, services_patches, tmp_path):
@@ -272,9 +264,7 @@ class TestResetData:
     def test_invalid_service_name_exits_before_any_ssh(self, services_patches, tmp_path):
         inv_path = _write_inventory(tmp_path, [_entry("host-a")])
         with pytest.raises(SystemExit):
-            cmd_prod_services_reset_data(
-                _args(inventory_path=str(inv_path), service_name="node-1")
-            )
+            cmd_prod_services_reset_data(_args(inventory_path=str(inv_path), service_name="node-1"))
         services_patches.add_op.assert_not_called()
 
     def test_service_not_on_host_exits(self, services_patches, tmp_path):
@@ -395,8 +385,11 @@ class TestDiskSurveyRetry:
             "vm": vm,
             "services": [
                 {
-                    "service_name": "ant-node-1", "index": 1,
-                    "active": "active", "enabled": "enabled", "size_bytes": size,
+                    "service_name": "ant-node-1",
+                    "index": 1,
+                    "active": "active",
+                    "enabled": "enabled",
+                    "size_bytes": size,
                 }
             ],
             "disk": {"total_bytes": 400, "used_bytes": 300, "free_bytes": 100},
@@ -536,9 +529,7 @@ class TestDiskSurveyRetry:
 
         assert calls == ["host-a"]
 
-    def test_dropped_host_is_called_out_against_the_previous_survey(
-        self, tmp_path, capsys
-    ):
+    def test_dropped_host_is_called_out_against_the_previous_survey(self, tmp_path, capsys):
         """The V2-1147 signature: the raw total falls because a host dropped
         out, while the hosts measured by both runs actually grew."""
         inv_path = _write_inventory(
@@ -555,7 +546,8 @@ class TestDiskSurveyRetry:
             SimpleNamespace(id=39, surveyed_at=datetime(2026, 9, 1, tzinfo=timezone.utc))
         ]
         fake_repo.disk_survey_host_data_bytes.return_value = {
-            "host-a": 100, "host-b": 900,
+            "host-a": 100,
+            "host-b": 900,
         }
 
         with (
@@ -614,9 +606,7 @@ class TestSurveyReport:
             return_value=None,
         ):
             with pytest.raises(SystemExit):
-                cmd_prod_services_survey_report(
-                    SimpleNamespace(inventory_path=str(inv_path))
-                )
+                cmd_prod_services_survey_report(SimpleNamespace(inventory_path=str(inv_path)))
 
     def test_compares_two_latest_and_reads_audit(self, tmp_path):
         from datetime import datetime, timezone
@@ -630,25 +620,40 @@ class TestSurveyReport:
         inv_path = _write_inventory(tmp_path, [_entry("host-a")])
         t1 = datetime(2026, 7, 24, 12, tzinfo=timezone.utc)
         t2 = datetime(2026, 7, 25, 12, tzinfo=timezone.utc)
+
         def _hd(free, used):
             return {
                 "host-a": {
-                    "provider": "hetzner", "total_bytes": 400,
-                    "used_bytes": used, "free_bytes": free,
+                    "provider": "hetzner",
+                    "total_bytes": 400,
+                    "used_bytes": used,
+                    "free_bytes": free,
                 }
             }
 
         prev = ProdDiskSurvey(
-            inventory_name="inventory", surveyed_at=t1, host_disk=_hd(10, 390),
-            host_count=1, service_count=3, total_data_bytes=90,
+            inventory_name="inventory",
+            surveyed_at=t1,
+            host_disk=_hd(10, 390),
+            host_count=1,
+            service_count=3,
+            total_data_bytes=90,
         )
         latest = ProdDiskSurvey(
-            inventory_name="inventory", surveyed_at=t2, host_disk=_hd(40, 360),
-            host_count=1, service_count=2, total_data_bytes=60,
+            inventory_name="inventory",
+            surveyed_at=t2,
+            host_disk=_hd(40, 360),
+            host_count=1,
+            service_count=2,
+            total_data_bytes=60,
         )
         event = ProdServiceAudit(
-            inventory_name="inventory", host="host-a", service_name="ant-node-3",
-            action=ProdServiceAuditAction.REMOVED, occurred_at=t2, size_bytes=30,
+            inventory_name="inventory",
+            host="host-a",
+            service_name="ant-node-3",
+            action=ProdServiceAuditAction.REMOVED,
+            occurred_at=t2,
+            size_bytes=30,
         )
         fake_repo = MagicMock()
         fake_repo.latest_disk_surveys.return_value = [latest, prev]
@@ -661,9 +666,7 @@ class TestSurveyReport:
             cmd_prod_services_survey_report(SimpleNamespace(inventory_path=str(inv_path)))
 
         fake_repo.latest_disk_surveys.assert_called_once()
-        fake_repo.list_service_audit.assert_called_once_with(
-            "inventory", since=t1, until=t2
-        )
+        fake_repo.list_service_audit.assert_called_once_with("inventory", since=t1, until=t2)
 
 
 def _dewrap(text: str) -> str:
@@ -681,17 +684,33 @@ class TestSurveyReportLikeForLike:
 
         t1 = datetime(2026, 8, 31, 12, tzinfo=timezone.utc)
         t2 = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
-        hd = {"host-a": {"provider": "contabo", "total_bytes": 400,
-                         "used_bytes": 300, "free_bytes": 100}}
+        hd = {
+            "host-a": {
+                "provider": "contabo",
+                "total_bytes": 400,
+                "used_bytes": 300,
+                "free_bytes": 100,
+            }
+        }
         prev = ProdDiskSurvey(
-            inventory_name="inventory", surveyed_at=t1, host_disk=hd,
-            host_count=2, service_count=2, total_data_bytes=1000,
-            failed_hosts=prev_failed, attempted_host_count=2,
+            inventory_name="inventory",
+            surveyed_at=t1,
+            host_disk=hd,
+            host_count=2,
+            service_count=2,
+            total_data_bytes=1000,
+            failed_hosts=prev_failed,
+            attempted_host_count=2,
         )
         latest = ProdDiskSurvey(
-            inventory_name="inventory", surveyed_at=t2, host_disk=hd,
-            host_count=1, service_count=1, total_data_bytes=110,
-            failed_hosts=latest_failed, attempted_host_count=2,
+            inventory_name="inventory",
+            surveyed_at=t2,
+            host_disk=hd,
+            host_count=1,
+            service_count=1,
+            total_data_bytes=110,
+            failed_hosts=latest_failed,
+            attempted_host_count=2,
         )
         prev.id, latest.id = 38, 39
         return prev, latest
@@ -705,9 +724,9 @@ class TestSurveyReportLikeForLike:
             cmd_prod_services_survey_report(SimpleNamespace(inventory_path=str(inv_path)))
 
     def test_delta_is_computed_over_the_common_hosts(self, tmp_path, capsys):
-        prev, latest = self._surveys(latest_failed={
-            "host-b": {"kind": "timeout", "message": "ssh timed out", "attempts": 2}
-        })
+        prev, latest = self._surveys(
+            latest_failed={"host-b": {"kind": "timeout", "message": "ssh timed out", "attempts": 2}}
+        )
         repo = MagicMock()
         repo.latest_disk_surveys.return_value = [latest, prev]
         # host-b dropped out; host-a actually grew 100 -> 110.
@@ -741,9 +760,7 @@ class TestSurveyReportLikeForLike:
         assert "Like-for-like" not in out
         assert "Coverage dropped" not in out
 
-    def test_pre_migration_survey_reads_as_unknown_not_as_no_failures(
-        self, tmp_path, capsys
-    ):
+    def test_pre_migration_survey_reads_as_unknown_not_as_no_failures(self, tmp_path, capsys):
         # failed_hosts is NULL on every survey recorded before V2-1147. That
         # must never render as "all hosts reached".
         prev, latest = self._surveys(prev_failed=None, latest_failed=None)
@@ -768,7 +785,9 @@ class TestSurveyReportLikeForLike:
             prev_failed={},
             latest_failed={
                 "cntb-US-central-1": {
-                    "kind": "timeout", "message": "ssh timed out", "attempts": 2,
+                    "kind": "timeout",
+                    "message": "ssh timed out",
+                    "attempts": 2,
                 }
             },
         )

@@ -38,10 +38,7 @@ def get_release_repository() -> ReleaseRepository | None:
 def require_release_repository() -> ReleaseRepository:
     repo = get_release_repository()
     if repo is None:
-        sys.stderr.write(
-            "releases: DATABASE_URL is not set or the database "
-            "is unreachable.\n"
-        )
+        sys.stderr.write("releases: DATABASE_URL is not set or the database is unreachable.\n")
         sys.exit(1)
     return repo
 
@@ -81,8 +78,7 @@ def parse_timestamp(value: Optional[str], *, field: str) -> Optional[datetime]:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         sys.stderr.write(
-            f"releases: {field} is not a valid ISO-8601 timestamp or "
-            f"YYYY-MM-DD date: {value!r}\n"
+            f"releases: {field} is not a valid ISO-8601 timestamp or YYYY-MM-DD date: {value!r}\n"
         )
         sys.exit(2)
     if parsed.tzinfo is None:

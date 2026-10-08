@@ -26,10 +26,7 @@ def cmd_unextend(args):
     try:
         state = load_deployment_state(name)
     except RuntimeError:
-        console.print(
-            f"[bold red]Error:[/bold red] No deployment state found for "
-            f"'{name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No deployment state found for '{name}'.")
         sys.exit(1)
 
     source = state.get("shared_bootstrap_from")
@@ -83,9 +80,7 @@ def cmd_unextend(args):
     try:
         delete_deployment_state(name)
     except Exception as e:
-        console.print(
-            f"[bold red]Failed to delete deployment state:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Failed to delete deployment state:[/bold red] {e}")
         record_event(name, "unextend_failed", {"source": source})
         record_status(name, DeploymentStatus.FAILED)
         sys.exit(1)
@@ -93,6 +88,5 @@ def cmd_unextend(args):
     record_event(name, "unextend_completed", {"source": source})
     record_status(name, DeploymentStatus.DESTROYED)
     console.print(
-        f"[bold green]Extension '{name}' removed (source '{source}' "
-        "untouched).[/bold green]"
+        f"[bold green]Extension '{name}' removed (source '{source}' untouched).[/bold green]"
     )

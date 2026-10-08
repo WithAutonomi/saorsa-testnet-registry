@@ -268,16 +268,12 @@ def test_the_sample_only_draws_new_arm_services():
     assert restricted[0].services == ("ant-node-2",)
     assert restricted[1].services == ()
     chosen = webrtc_coverage.select_sample(restricted, sample=10)
-    assert [(vm.name, vm.services[0]) for vm in chosen] == [
-        ("ant-prod-01-hz-fsn1-1", "ant-node-2")
-    ]
+    assert [(vm.name, vm.services[0]) for vm in chosen] == [("ant-prod-01-hz-fsn1-1", "ant-node-2")]
 
 
 def test_new_arm_matching_does_not_confuse_service_1_with_service_12():
     vm = _vm("ant-prod-01-ovh-GRA9-7", "10.0.2.7", "ovh", ("ant-node-1", "ant-node-12"))
-    assert webrtc_coverage.new_arm_services(vm, {"ANT-PROD-01-OVH-GRA9-7/12"}) == (
-        "ant-node-12",
-    )
+    assert webrtc_coverage.new_arm_services(vm, {"ANT-PROD-01-OVH-GRA9-7/12"}) == ("ant-node-12",)
 
 
 def test_warn_family_threshold_is_five_percent_of_the_new_arm():
@@ -721,9 +717,7 @@ def test_the_shipped_address_list_has_a_usable_first_entry():
 # ==========================================================================
 audit_v2 = _load(ROLLOUT_DIR / "audit_protocol_v2.py", "rw_audit_protocol_v2")
 pointer_signals = _load(ROLLOUT_DIR / "pointer_signals.py", "rw_pointer_signals")
-sctp_errors = _load(
-    ROLLOUT_DIR / "sctp_association_errors.py", "rw_sctp_association_errors"
-)
+sctp_errors = _load(ROLLOUT_DIR / "sctp_association_errors.py", "rw_sctp_association_errors")
 
 
 def audit_page(entries, after=None):
@@ -734,6 +728,7 @@ def audit_page(entries, after=None):
     """
     buckets = []
     for host, service, first, last in entries:
+
         def hit(values):
             if values is None:
                 return {"_source": {}}

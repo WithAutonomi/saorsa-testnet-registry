@@ -49,13 +49,17 @@ def api(method, path, data=None, token=None):
 
 
 # Step 1: Initial setup (creates the org + the node-tier bucket)
-setup = api("POST", "/api/v2/setup", {
-    "username": "{{INFLUXDB_ADMIN_USER}}",
-    "password": "{{INFLUXDB_ADMIN_PASSWORD}}",
-    "org": "{{INFLUXDB_ORG}}",
-    "bucket": "{{INFLUXDB_BUCKET}}",
-    "retentionPeriodSeconds": RETENTION_SECONDS,
-})
+setup = api(
+    "POST",
+    "/api/v2/setup",
+    {
+        "username": "{{INFLUXDB_ADMIN_USER}}",
+        "password": "{{INFLUXDB_ADMIN_PASSWORD}}",
+        "org": "{{INFLUXDB_ORG}}",
+        "bucket": "{{INFLUXDB_BUCKET}}",
+        "retentionPeriodSeconds": RETENTION_SECONDS,
+    },
+)
 admin_token = setup["auth"]["token"]
 org_id = setup["org"]["id"]
 
@@ -65,37 +69,50 @@ org_id = setup["org"]["id"]
 # RETENTION_SECONDS installs an expire rule so the client bucket ages out on
 # the same schedule as the node-tier bucket.
 client_retention_rules = (
-    []
-    if RETENTION_SECONDS == 0
-    else [{"type": "expire", "everySeconds": RETENTION_SECONDS}]
+    [] if RETENTION_SECONDS == 0 else [{"type": "expire", "everySeconds": RETENTION_SECONDS}]
 )
-api("POST", "/api/v2/buckets", {
-    "orgID": org_id,
-    "name": "{{INFLUXDB_CLIENT_BUCKET}}",
-    "retentionRules": client_retention_rules,
-}, token=admin_token)
+api(
+    "POST",
+    "/api/v2/buckets",
+    {
+        "orgID": org_id,
+        "name": "{{INFLUXDB_CLIENT_BUCKET}}",
+        "retentionRules": client_retention_rules,
+    },
+    token=admin_token,
+)
 
 # Step 2b: Create the WASM client bucket. WASM clients emit the same
 # `upload`/`download` measurements as the native ones, so keeping them in a
 # bucket of their own is what stops a dashboard panel or an ad-hoc query
 # averaging two transports that are ~2-4x apart.
-api("POST", "/api/v2/buckets", {
-    "orgID": org_id,
-    "name": "{{INFLUXDB_WASM_BUCKET}}",
-    "retentionRules": client_retention_rules,
-}, token=admin_token)
+api(
+    "POST",
+    "/api/v2/buckets",
+    {
+        "orgID": org_id,
+        "name": "{{INFLUXDB_WASM_BUCKET}}",
+        "retentionRules": client_retention_rules,
+    },
+    token=admin_token,
+)
 
 # Step 3: Create a read/write token for Telegraf. Scoped at the org level so it
 # covers both buckets (and any added later) — InfluxDB v2 tokens are immutable,
 # so a per-bucket token would have to be reminted whenever a bucket is added.
-auth = api("POST", "/api/v2/authorizations", {
-    "orgID": org_id,
-    "description": "Telegraf write token",
-    "permissions": [
-        {"action": "read", "resource": {"type": "buckets", "orgID": org_id}},
-        {"action": "write", "resource": {"type": "buckets", "orgID": org_id}},
-    ],
-}, token=admin_token)
+auth = api(
+    "POST",
+    "/api/v2/authorizations",
+    {
+        "orgID": org_id,
+        "description": "Telegraf write token",
+        "permissions": [
+            {"action": "read", "resource": {"type": "buckets", "orgID": org_id}},
+            {"action": "write", "resource": {"type": "buckets", "orgID": org_id}},
+        ],
+    },
+    token=admin_token,
+)
 telegraf_token = auth["token"]
 
 # Step 3: Save tokens

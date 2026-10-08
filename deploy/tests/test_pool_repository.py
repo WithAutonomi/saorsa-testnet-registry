@@ -121,9 +121,7 @@ class TestDuplicateLinking:
         assert mirror.duplicate_of == local.id
 
     def test_digest_matching_is_case_insensitive(self, repo):
-        repo.add_pool_file(
-            PoolFileKind.LOCAL, "/data/a", "a", digests={"sha1": "AbC"}
-        )
+        repo.add_pool_file(PoolFileKind.LOCAL, "/data/a", "a", digests={"sha1": "AbC"})
         mirror, _ = repo.add_pool_file(
             PoolFileKind.URL, "https://example.org/a", "a", digests={"SHA1": "aBc"}
         )
@@ -132,9 +130,7 @@ class TestDuplicateLinking:
     def test_no_shared_algorithm_means_no_link(self, repo):
         # The honest residual: a URL published with only md5 and a local file
         # hashed only with sha256 cannot be recognised as the same content.
-        repo.add_pool_file(
-            PoolFileKind.LOCAL, "/data/a", "a", digests={"sha256": "aaa"}
-        )
+        repo.add_pool_file(PoolFileKind.LOCAL, "/data/a", "a", digests={"sha256": "aaa"})
         mirror, _ = repo.add_pool_file(
             PoolFileKind.URL, "https://example.org/a", "a", digests={"md5": "bbb"}
         )
@@ -270,16 +266,12 @@ class TestListFiltering:
 
 class TestStats:
     def test_counts_split_by_kind_and_class(self, repo):
-        repo.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=50 * MIB
-        )
+        repo.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", size_bytes=50 * MIB)
         taken, _ = repo.add_pool_file(
             PoolFileKind.URL, "https://example.org/b", "b", size_bytes=50 * MIB
         )
         _claim(repo, taken.id, ClaimStatus.UPLOADED)
-        repo.add_pool_file(
-            PoolFileKind.LOCAL, "/data/c", "c", size_bytes=5 * MIB
-        )
+        repo.add_pool_file(PoolFileKind.LOCAL, "/data/c", "c", size_bytes=5 * MIB)
 
         stats = repo.pool_stats()
         assert stats["url"]["by_class"]["small"] == {"available": 1, "total": 2}
@@ -289,14 +281,10 @@ class TestStats:
         assert stats["url"]["by_class"]["tiny"] == {"available": 0, "total": 0}
 
     def test_unknown_size_counted_separately(self, repo):
-        repo.add_pool_file(
-            PoolFileKind.URL, "https://example.org/s", "s", size_bytes=None
-        )
+        repo.add_pool_file(PoolFileKind.URL, "https://example.org/s", "s", size_bytes=None)
         stats = repo.pool_stats()
         assert stats["url"]["unknown_size"] == 1
-        assert all(
-            entry["total"] == 0 for entry in stats["url"]["by_class"].values()
-        )
+        assert all(entry["total"] == 0 for entry in stats["url"]["by_class"].values())
 
 
 class TestDigests:
@@ -406,9 +394,7 @@ class TestTagStorage:
         assert pool_file.tags == ["prc", "video"]
 
     def test_lookup_is_case_insensitive(self, repo):
-        repo.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", tags=["Video"]
-        )
+        repo.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", tags=["Video"])
         assert len(repo.list_pool_files(tags=["VIDEO"])) == 1
 
     def test_readding_merges_tags_without_duplicating(self, repo):
@@ -424,12 +410,8 @@ class TestTagStorage:
 
     def test_any_tag_matches(self, repo):
         # OR, matching what the JSON implementation did.
-        repo.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", tags=["video"]
-        )
-        repo.add_pool_file(
-            PoolFileKind.URL, "https://example.org/b", "b", tags=["audio"]
-        )
+        repo.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", tags=["video"])
+        repo.add_pool_file(PoolFileKind.URL, "https://example.org/b", "b", tags=["audio"])
         assert len(repo.list_pool_files(tags=["video", "audio"])) == 2
 
     def test_deleting_a_file_removes_its_tags(self, repo):

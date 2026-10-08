@@ -28,6 +28,7 @@ Two things it is careful about:
   because counting them as short-lived would manufacture exactly the
   idle-timeout signature this run is looking for.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -109,8 +110,8 @@ def _parse_ipv6(buf, off):
     nxt = buf[off + 6]
     if nxt != 17:  # no extension-header walking; QUIC traffic has none
         return None
-    src = ":".join(f"{buf[off+8+i]:02x}{buf[off+9+i]:02x}" for i in range(0, 16, 2))
-    dst = ":".join(f"{buf[off+24+i]:02x}{buf[off+25+i]:02x}" for i in range(0, 16, 2))
+    src = ":".join(f"{buf[off + 8 + i]:02x}{buf[off + 9 + i]:02x}" for i in range(0, 16, 2))
+    dst = ":".join(f"{buf[off + 24 + i]:02x}{buf[off + 25 + i]:02x}" for i in range(0, 16, 2))
     return src, dst, off + 40
 
 
@@ -245,9 +246,7 @@ def analyse(paths, start=None, end=None, host_label=""):
     flows = {}
     for (src, sport, dst, dport), d in dirs.items():
         key = tuple(sorted([(src, sport), (dst, dport)]))
-        f = flows.setdefault(
-            key, {"first": d[0], "last": d[1], "pkts": 0, "bytes": 0, "dirs": []}
-        )
+        f = flows.setdefault(key, {"first": d[0], "last": d[1], "pkts": 0, "bytes": 0, "dirs": []})
         f["first"] = min(f["first"], d[0])
         f["last"] = max(f["last"], d[1])
         f["pkts"] += d[2]
@@ -308,9 +307,7 @@ def analyse(paths, start=None, end=None, host_label=""):
         "flows_died_in_window": len(died),
         "flows_fully_observed": len(observed),
         "flows_censored": len(flows) - len(observed),
-        "new_flows_per_minute": (
-            round(len(born) / (duration / 60), 2) if duration else None
-        ),
+        "new_flows_per_minute": (round(len(born) / (duration / 60), 2) if duration else None),
         "concurrent_flows_median": _percentile(conc_values, 0.5),
         "concurrent_flows_max": conc_values[-1] if conc_values else None,
         "concurrent_flows_per_minute": concurrency,

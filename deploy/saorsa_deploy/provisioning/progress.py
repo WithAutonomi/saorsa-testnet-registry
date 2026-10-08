@@ -211,8 +211,7 @@ def print_op_timing_summary(console, handler, *, title, connect_seconds=None):
     console.rule(f"[bold]Operation timings — {title}[/bold]")
     if connect_seconds is not None:
         console.print(
-            f"  [cyan]{_format_op_duration(connect_seconds):>9}[/cyan]  "
-            "[dim](SSH connect)[/dim]"
+            f"  [cyan]{_format_op_duration(connect_seconds):>9}[/cyan]  [dim](SSH connect)[/dim]"
         )
     for name, dur in sorted(handler.timings, key=lambda t: t[1], reverse=True):
         console.print(f"  [cyan]{_format_op_duration(dur):>9}[/cyan]  {name}")

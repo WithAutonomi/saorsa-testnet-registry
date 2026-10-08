@@ -77,8 +77,7 @@ class TestProdUploaderSpecParsing:
         urls = tmp_path / "u.txt"
         urls.write_text("https://example.com/a.bin\n")
         spec = parse_prod_uploader_spec(
-            f"lon1:s-2vcpu-4gb:urls={urls}:forward_logs=true"
-            f":rust_log={RUST_LOG_WITH_COLONS}"
+            f"lon1:s-2vcpu-4gb:urls={urls}:forward_logs=true:rust_log={RUST_LOG_WITH_COLONS}"
         )
         assert spec["forward_logs"] is True
         assert spec["rust_log"] == RUST_LOG_WITH_COLONS
@@ -89,9 +88,7 @@ class TestProdUploaderSpecParsing:
 # --------------------------------------------------------------------------- #
 def _testnet(elastic_enabled: bool, forward_logs: bool):
     return _TestnetSpec(
-        binaries=_TestnetBinaries(
-            ant_node=Binary(version="0.1"), ant=Binary(version="0.1")
-        ),
+        binaries=_TestnetBinaries(ant_node=Binary(version="0.1"), ant=Binary(version="0.1")),
         nodes=Nodes(per_vm=1, providers={"digital_ocean": {"vm_count": 1}}),
         clients=Clients(
             uploaders=[
@@ -160,9 +157,7 @@ class TestOrchestratorEmission:
         assert f"rust_log={RUST_LOG_WITH_COLONS}" in clients_infra
         assert "forward_logs=true" in clients_infra
         # node log_level -> --log-level on genesis + nodes provision (NOT rust-log)
-        node_steps = [
-            a for a in argvs if "nodes provision" in a or "provision-genesis" in a
-        ]
+        node_steps = [a for a in argvs if "nodes provision" in a or "provision-genesis" in a]
         assert node_steps
         for step in node_steps:
             assert "--log-level debug" in step
@@ -284,9 +279,7 @@ class TestElasticClientTemplate:
     def test_setup_script_has_client_template(self):
         from saorsa_deploy.provisioning.elastic import ElasticProvisioner
 
-        p = ElasticProvisioner(
-            host_ip="1.2.3.4", ssh_key_path="/x", testnet_name="DEV-01"
-        )
+        p = ElasticProvisioner(host_ip="1.2.3.4", ssh_key_path="/x", testnet_name="DEV-01")
         script = p._build_setup_script()
         compile(script, "es_setup.py", "exec")  # valid python
         assert "ant-client-logs" in script
@@ -331,8 +324,6 @@ class TestSlackMarkers:
         from saorsa_deploy.cmd.slack_post import _testnet_blocks
 
         blocks = _testnet_blocks({"node_log_level": "debug"}, {}, None)
-        joined = "\n".join(
-            b.get("text", {}).get("text", "") for b in blocks if "text" in b
-        )
+        joined = "\n".join(b.get("text", {}).get("text", "") for b in blocks if "text" in b)
         assert "Node log level" in joined
         assert "debug" in joined

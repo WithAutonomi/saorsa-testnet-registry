@@ -23,24 +23,12 @@ def _args(**overrides):
 @pytest.fixture
 def patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.infra_clients.check_terraform_state_exists"
-        ) as p_check,
-        patch(
-            "saorsa_deploy.cmd.infra_clients.delete_terraform_state"
-        ) as p_delete,
-        patch(
-            "saorsa_deploy.cmd.infra_clients.save_client_state"
-        ) as p_save,
-        patch(
-            "saorsa_deploy.cmd.infra_clients.update_client_state"
-        ) as p_update,
-        patch(
-            "saorsa_deploy.cmd.infra_clients.execute_terraform_runs"
-        ) as p_execute,
-        patch(
-            "saorsa_deploy.cmd.infra_clients.load_client_state"
-        ) as p_load,
+        patch("saorsa_deploy.cmd.infra_clients.check_terraform_state_exists") as p_check,
+        patch("saorsa_deploy.cmd.infra_clients.delete_terraform_state") as p_delete,
+        patch("saorsa_deploy.cmd.infra_clients.save_client_state") as p_save,
+        patch("saorsa_deploy.cmd.infra_clients.update_client_state") as p_update,
+        patch("saorsa_deploy.cmd.infra_clients.execute_terraform_runs") as p_execute,
+        patch("saorsa_deploy.cmd.infra_clients.load_client_state") as p_load,
     ):
         p_check.return_value = False
         # Simulate a fresh deployment with no pre-existing client state, so the
@@ -193,10 +181,7 @@ class TestPartialFailureResume:
         upfront = {c["region"]: c["ip"] for c in patches.save.call_args.args[1]}
         assert upfront == {"lon1": "10.0.0.1", "nyc3": ""}
 
-        final = {
-            c["region"]: c["ip"]
-            for c in patches.update.call_args.args[1]["clients"]
-        }
+        final = {c["region"]: c["ip"] for c in patches.update.call_args.args[1]["clients"]}
         assert final == {"lon1": "10.0.0.1", "nyc3": "10.0.0.2"}
 
     def test_resume_does_not_treat_own_state_as_stale(self, patches):

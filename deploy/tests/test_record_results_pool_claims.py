@@ -48,9 +48,7 @@ def env(monkeypatch):
     session = Session(engine)
     pool_repo = SqlAlchemyProdFilePoolRepository(session)
     deployment_repo = SqlAlchemyDeploymentRepository(session)
-    monkeypatch.setattr(
-        "saorsa_deploy.registry.get_file_pool_repository", lambda: pool_repo
-    )
+    monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: pool_repo)
     deployment = Deployment(name="PROD-UL-05", deploy_args={})
     session.add(deployment)
     session.commit()
@@ -103,9 +101,7 @@ class TestProdUploaders:
         )
         session.commit()
 
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
 
         resolved = pool_repo.list_pool_claims()[0]
         assert resolved.status is ClaimStatus.UPLOADED
@@ -121,9 +117,7 @@ class TestProdUploaders:
         pool_repo, deployment_repo, session, deployment = env
         _pooled_claim(pool_repo, deployment)
 
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
 
         assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
         out = _flat(capsys.readouterr().out)
@@ -156,9 +150,7 @@ class TestProdUploaders:
         )
         session.commit()
 
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
 
         claim = pool_repo.list_pool_claims()[0]
         assert claim.status is ClaimStatus.PARTIAL
@@ -189,9 +181,7 @@ class TestProdUploaders:
             )
         )
         session.commit()
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
         available = pool_repo.list_pool_files(status=POOL_STATUS_AVAILABLE)
         assert pool_file.id in {f.id for f in available}
 
@@ -221,9 +211,7 @@ class TestProdUploaders:
             )
         session.commit()
 
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
         assert pool_repo.list_pool_claims()[0].status is ClaimStatus.UPLOADED
 
     def test_rerunning_is_idempotent_and_can_revise(self, env):
@@ -302,18 +290,14 @@ class TestScoping:
 
         pool_repo, deployment_repo, session, deployment = env
         _pooled_claim(pool_repo, deployment)
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-downloaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-downloaders", Console())
         assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
 
     def test_no_claims_is_a_noop(self, env, capsys):
         from rich.console import Console
 
         _, deployment_repo, _, deployment = env
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
         assert capsys.readouterr().out == ""
 
     def test_no_pool_repository_is_a_noop(self, env, monkeypatch):
@@ -321,12 +305,8 @@ class TestScoping:
 
         pool_repo, deployment_repo, _, deployment = env
         _pooled_claim(pool_repo, deployment)
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_file_pool_repository", lambda: None
-        )
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: None)
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
         assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
 
 
@@ -344,9 +324,7 @@ class TestPercentEncodedNames:
     """
 
     def _claim_for(self, pool_repo, deployment, *, locator, name):
-        pool_repo.add_pool_file(
-            PoolFileKind.URL, locator, name, size_bytes=50 * MIB
-        )
+        pool_repo.add_pool_file(PoolFileKind.URL, locator, name, size_bytes=50 * MIB)
         return pool_repo.claim_pool_files(
             PoolFileKind.URL,
             {SizeClass.SMALL: 1},
@@ -386,18 +364,12 @@ class TestPercentEncodedNames:
 
         pool_repo, deployment_repo, session, deployment = env
         locator = f"https://archive.org/download/item/{encoded_name}"
-        self._claim_for(
-            pool_repo, deployment, locator=locator, name=decoded_name
-        )
+        self._claim_for(pool_repo, deployment, locator=locator, name=decoded_name)
         # The uploader records the encoded basename, never the pool's name.
-        session.add(
-            self._upload_row(deployment, locator=locator, file_name=encoded_name)
-        )
+        session.add(self._upload_row(deployment, locator=locator, file_name=encoded_name))
         session.commit()
 
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
 
         claim = pool_repo.list_pool_claims()[0]
         assert claim.status is ClaimStatus.UPLOADED
@@ -427,9 +399,7 @@ class TestPercentEncodedNames:
         )
         session.commit()
 
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
 
         assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
         assert "no matching upload result" in _flat(capsys.readouterr().out)
@@ -448,13 +418,9 @@ class TestPercentEncodedNames:
         )
         session.get(ProdFilePoolClaim, claim.id).locator_used = fetched
         session.add(
-            self._upload_row(
-                deployment, locator=fetched, file_name="NBC%20Atlanta1%2083.avi"
-            )
+            self._upload_row(deployment, locator=fetched, file_name="NBC%20Atlanta1%2083.avi")
         )
         session.commit()
 
-        _resolve_pool_claims(
-            deployment_repo, deployment, "prod-uploaders", Console()
-        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-uploaders", Console())
         assert pool_repo.list_pool_claims()[0].status is ClaimStatus.UPLOADED

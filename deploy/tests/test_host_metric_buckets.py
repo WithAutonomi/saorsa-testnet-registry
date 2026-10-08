@@ -4,6 +4,7 @@ The load-bearing property under test is that a window re-derived from buckets
 reproduces what the whole-run rollup would have said, so a run can be sliced
 after its InfluxDB is destroyed.
 """
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -102,9 +103,7 @@ def test_normalise_emits_gauges_unchanged():
     normalised = normalise_host_metric_points(
         {"cpu": [_cpu_point("h1", "2026-07-01T00:00:00", 90.0)]}
     )
-    assert [(s["metric"], s["value"]) for s in normalised.samples] == [
-        ("cpu_percent", 10.0)
-    ]
+    assert [(s["metric"], s["value"]) for s in normalised.samples] == [("cpu_percent", 10.0)]
 
 
 def test_normalise_timestamps_a_rate_at_the_end_of_its_interval():
@@ -144,11 +143,7 @@ def test_normalise_drops_counter_resets_across_the_split():
 def test_normalise_registers_a_device_that_produced_no_rate():
     """One point yields no delta, but the device exists and must be reported."""
     normalised = normalise_host_metric_points(
-        {
-            "diskio": [
-                _diskio_point("h1", "2026-07-01T00:00:00", "sdb", "read_bytes", 1)
-            ]
-        }
+        {"diskio": [_diskio_point("h1", "2026-07-01T00:00:00", "sdb", "read_bytes", 1)]}
     )
     assert normalised.samples == []
     assert normalised.devices == {"h1": {"sdb": None}}
@@ -159,11 +154,19 @@ def test_normalise_keeps_the_node_storage_role_on_each_sample():
         {
             "diskio": [
                 _diskio_point(
-                    "h1", "2026-07-01T00:00:00", "sda", "read_bytes", 0,
+                    "h1",
+                    "2026-07-01T00:00:00",
+                    "sda",
+                    "read_bytes",
+                    0,
                     volume_role=NODE_STORAGE_ROLE,
                 ),
                 _diskio_point(
-                    "h1", "2026-07-01T00:00:10", "sda", "read_bytes", 100,
+                    "h1",
+                    "2026-07-01T00:00:10",
+                    "sda",
+                    "read_bytes",
+                    100,
                     volume_role=NODE_STORAGE_ROLE,
                 ),
             ]
@@ -186,9 +189,7 @@ def test_buckets_floor_to_the_bucket_boundary():
             _cpu_point("h1", "2026-07-01T00:05:05", 70.0),
         ]
     }
-    rows = bucket_host_metric_samples(
-        normalise_host_metric_points(points), bucket_secs=300
-    )
+    rows = bucket_host_metric_samples(normalise_host_metric_points(points), bucket_secs=300)
     assert [(r["bucket_start"], r["samples"]) for r in rows] == [
         (_ts("2026-07-01T00:00:00"), 2),
         (_ts("2026-07-01T00:05:00"), 1),
@@ -208,9 +209,7 @@ def test_buckets_carry_their_own_min_and_max():
             _cpu_point("h1", "2026-07-01T00:02:00", 95.0),
         ]
     }
-    rows = bucket_host_metric_samples(
-        normalise_host_metric_points(points), bucket_secs=300
-    )
+    rows = bucket_host_metric_samples(normalise_host_metric_points(points), bucket_secs=300)
     assert len(rows) == 1
     assert rows[0]["min"] == pytest.approx(5.0)
     assert rows[0]["max"] == pytest.approx(90.0)
@@ -221,11 +220,19 @@ def test_buckets_restrict_disk_to_the_node_storage_device():
     points = {
         "diskio": [
             _diskio_point(
-                "h1", "2026-07-01T00:00:00", "sda", "read_bytes", 0,
+                "h1",
+                "2026-07-01T00:00:00",
+                "sda",
+                "read_bytes",
+                0,
                 volume_role=NODE_STORAGE_ROLE,
             ),
             _diskio_point(
-                "h1", "2026-07-01T00:00:10", "sda", "read_bytes", 100,
+                "h1",
+                "2026-07-01T00:00:10",
+                "sda",
+                "read_bytes",
+                100,
                 volume_role=NODE_STORAGE_ROLE,
             ),
             _diskio_point("h1", "2026-07-01T00:00:00", "vda1", "read_bytes", 0),
@@ -264,9 +271,7 @@ def test_buckets_keep_rss_per_service():
             _procstat_point("h1", "2026-07-01T00:00:00", "ant-node-2", 900),
         ]
     }
-    rows = bucket_host_metric_samples(
-        normalise_host_metric_points(points), bucket_secs=300
-    )
+    rows = bucket_host_metric_samples(normalise_host_metric_points(points), bucket_secs=300)
     by_service = {r["service"]: r for r in rows}
     assert set(by_service) == {"ant-node-1", "ant-node-2"}
     assert by_service["ant-node-1"]["avg"] == pytest.approx(150.0)
@@ -275,9 +280,7 @@ def test_buckets_keep_rss_per_service():
 
 def test_buckets_reject_a_non_positive_width():
     with pytest.raises(ValueError):
-        bucket_host_metric_samples(
-            normalise_host_metric_points({}), bucket_secs=0
-        )
+        bucket_host_metric_samples(normalise_host_metric_points({}), bucket_secs=0)
 
 
 # ---------------------------------------------------------------------------
@@ -326,9 +329,7 @@ def test_aggregate_ignores_procstat_points_without_a_service_tag():
 
 
 def test_aggregate_absent_rss_yields_an_empty_service_map():
-    entry = aggregate_host_metrics(
-        {"cpu": [_cpu_point("h1", "2026-07-01T00:00:00", 90.0)]}
-    )[0]
+    entry = aggregate_host_metrics({"cpu": [_cpu_point("h1", "2026-07-01T00:00:00", 90.0)]})[0]
     assert entry["rss_by_service"] == {}
 
 
@@ -486,11 +487,24 @@ def test_window_keeps_disk_devices_separate(repo):
         deployment.id,
         [
             _bucket(
-                "h1", "read_bytes_per_sec", "2026-07-01T00:00:00", 10, 10, 10, 1,
-                device="sda", volume_role=NODE_STORAGE_ROLE,
+                "h1",
+                "read_bytes_per_sec",
+                "2026-07-01T00:00:00",
+                10,
+                10,
+                10,
+                1,
+                device="sda",
+                volume_role=NODE_STORAGE_ROLE,
             ),
             _bucket(
-                "h1", "read_bytes_per_sec", "2026-07-01T00:00:00", 90, 90, 90, 1,
+                "h1",
+                "read_bytes_per_sec",
+                "2026-07-01T00:00:00",
+                90,
+                90,
+                90,
+                1,
                 device="vda",
             ),
         ],
@@ -509,11 +523,23 @@ def test_window_keeps_rss_per_service(repo):
         deployment.id,
         [
             _bucket(
-                "h1", "rss_bytes", "2026-07-01T00:00:00", 100, 100, 100, 1,
+                "h1",
+                "rss_bytes",
+                "2026-07-01T00:00:00",
+                100,
+                100,
+                100,
+                1,
                 service="ant-node-1",
             ),
             _bucket(
-                "h1", "rss_bytes", "2026-07-01T00:00:00", 900, 900, 900, 1,
+                "h1",
+                "rss_bytes",
+                "2026-07-01T00:00:00",
+                900,
+                900,
+                900,
+                1,
                 service="ant-node-2",
             ),
         ],
@@ -571,19 +597,25 @@ def _round_trip_points() -> dict:
         net.append(_net_point("h1", stamp, "eth0", "bytes_sent", counters["sent"]))
         diskio.append(
             _diskio_point(
-                "h1", stamp, "sda", "read_bytes", counters["read"],
+                "h1",
+                stamp,
+                "sda",
+                "read_bytes",
+                counters["read"],
                 volume_role=NODE_STORAGE_ROLE,
             )
         )
         diskio.append(
             _diskio_point(
-                "h1", stamp, "sda", "write_bytes", counters["write"],
+                "h1",
+                stamp,
+                "sda",
+                "write_bytes",
+                counters["write"],
                 volume_role=NODE_STORAGE_ROLE,
             )
         )
-        procstat.append(
-            _procstat_point("h1", stamp, "ant-node-1", 1_000_000 + i * 4_096)
-        )
+        procstat.append(_procstat_point("h1", stamp, "ant-node-1", 1_000_000 + i * 4_096))
         procstat.append(_procstat_point("h1", stamp, "ant-node-2", 2_000_000 - i * 512))
     return {
         "cpu": cpu,
@@ -620,9 +652,9 @@ def test_full_window_from_buckets_matches_the_rollup(repo, bucket_secs):
         "bytes_out_per_sec",
     ):
         for stat in ("avg", "min", "max", "samples"):
-            assert derived[metric][stat] == pytest.approx(
-                rollup[metric][stat]
-            ), f"{metric}.{stat} at {bucket_secs}s buckets"
+            assert derived[metric][stat] == pytest.approx(rollup[metric][stat]), (
+                f"{metric}.{stat} at {bucket_secs}s buckets"
+            )
 
     for stat in ("avg", "min", "max", "samples"):
         for series in ("read_bytes_per_sec", "write_bytes_per_sec"):
@@ -644,14 +676,12 @@ def test_a_sub_window_differs_from_the_full_run(repo):
     points = _round_trip_points()
     r.replace_host_metric_buckets(
         deployment.id,
-        bucket_host_metric_samples(
-            normalise_host_metric_points(points), bucket_secs=60
-        ),
+        bucket_host_metric_samples(normalise_host_metric_points(points), bucket_secs=60),
     )
     full = r.get_host_metric_window(deployment.id)[0]["cpu_percent"]
-    tail = r.get_host_metric_window(
-        deployment.id, start=_ts("2026-07-01T00:08:00")
-    )[0]["cpu_percent"]
+    tail = r.get_host_metric_window(deployment.id, start=_ts("2026-07-01T00:08:00"))[0][
+        "cpu_percent"
+    ]
     assert tail["samples"] < full["samples"]
     assert tail["samples"] > 0
 
@@ -791,9 +821,7 @@ def test_prune_can_be_scoped_to_one_deployment(repo):
     r.replace_host_metric_buckets(a.id, old)
     r.replace_host_metric_buckets(b.id, old)
 
-    r.delete_host_metric_buckets_before(
-        cutoff=_ts("2026-06-01T00:00:00"), deployment_id=a.id
-    )
+    r.delete_host_metric_buckets_before(cutoff=_ts("2026-06-01T00:00:00"), deployment_id=a.id)
     assert r.count_host_metric_buckets(a.id) == 0
     assert r.count_host_metric_buckets(b.id) == 1
 
@@ -836,9 +864,7 @@ def test_bucket_rows_carry_percentiles():
             for s, v in zip(range(0, 50, 10), [10, 20, 30, 40, 50])
         ]
     }
-    rows = bucket_host_metric_samples(
-        normalise_host_metric_points(points), bucket_secs=300
-    )
+    rows = bucket_host_metric_samples(normalise_host_metric_points(points), bucket_secs=300)
     # `_cpu_point` takes idle, and cpu_percent is 100 - idle, so the series is
     # 90, 80, 70, 60, 50.
     row = next(r for r in rows if r["metric"] == "cpu_percent")
@@ -905,7 +931,5 @@ def test_normalised_samples_are_stored_columnar_not_as_dicts():
 
     # The view must still yield ordinary sample dicts to its consumers.
     first = next(iter(normalised.samples))
-    assert set(first) == {
-        "host", "metric", "device", "volume_role", "service", "ts", "value"
-    }
+    assert set(first) == {"host", "metric", "device", "volume_role", "service", "ts", "value"}
     assert first["ts"].tzinfo is not None

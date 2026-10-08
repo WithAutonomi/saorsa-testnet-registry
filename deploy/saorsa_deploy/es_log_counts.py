@@ -28,6 +28,7 @@ fleet-wide regression -- and a string emitted only at DEBUG may be absent from
 Elasticsearch entirely because the node-tier forwarder drops DEBUG and TRACE by
 default, which is indistinguishable from the string not occurring.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -66,9 +67,7 @@ def collapse_index_date_suffix(index_pattern: str) -> str:
     return index_pattern
 
 
-def _range_filter(
-    start: datetime | None, end: datetime | None
-) -> list[dict]:
+def _range_filter(start: datetime | None, end: datetime | None) -> list[dict]:
     if start is None and end is None:
         return []
     bounds: dict[str, str] = {}
@@ -121,9 +120,7 @@ def build_count_query(
     }
 
 
-def build_total_query(
-    start: datetime | None = None, end: datetime | None = None
-) -> dict:
+def build_total_query(start: datetime | None = None, end: datetime | None = None) -> dict:
     """The search body counting every forwarded node log line in the same scope.
 
     Recorded alongside each pattern so "more errors" can be told apart from
@@ -135,9 +132,7 @@ def build_total_query(
     return {
         "size": 0,
         "track_total_hits": True,
-        "query": (
-            {"bool": {"filter": filters}} if filters else {"match_all": {}}
-        ),
+        "query": ({"bool": {"filter": filters}} if filters else {"match_all": {}}),
         "aggs": {
             "first_seen": {"min": {"field": TIMESTAMP_FIELD}},
             "last_seen": {"max": {"field": TIMESTAMP_FIELD}},
@@ -164,7 +159,7 @@ def _parse_timestamp(agg: dict | None) -> datetime | None:
 def parse_count_response(response: dict) -> dict:
     """Read a count query's response into the fields recorded per pattern."""
     aggs = response.get("aggregations") or {}
-    total = ((response.get("hits") or {}).get("total") or {})
+    total = (response.get("hits") or {}).get("total") or {}
     # `hits.total` is an object in modern Elasticsearch and a bare integer in
     # very old ones. Accept both rather than crashing on an unexpected shape at
     # the end of a five-hour run.
@@ -300,8 +295,7 @@ def parse_rpc_latency_response(response: dict, event: str) -> dict:
     total = (response.get("hits") or {}).get("total") or {}
     count = total.get("value") if isinstance(total, dict) else total
     buckets = {
-        bucket["key"]: bucket
-        for bucket in ((aggs.get("outcomes") or {}).get("buckets") or [])
+        bucket["key"]: bucket for bucket in ((aggs.get("outcomes") or {}).get("buckets") or [])
     }
     by_outcome = {}
     for outcome in POINTER_RPC_EVENTS.get(event, tuple(buckets)):
@@ -361,9 +355,7 @@ def summarise_counts(
     summary = []
     for group in pattern_set.groups:
         members = [
-            results[p.key]
-            for p in pattern_set.patterns_in_group(group.key)
-            if p.key in results
+            results[p.key] for p in pattern_set.patterns_in_group(group.key) if p.key in results
         ]
         if not members:
             continue
@@ -377,10 +369,12 @@ def summarise_counts(
                 "aggregate": group.aggregate,
                 "count": value,
                 "hosts": max(hosts) if hosts else None,
-                "members": {m_key: results[m_key]["count"] for m_key in (
-                    p.key for p in pattern_set.patterns_in_group(group.key)
-                    if p.key in results
-                )},
+                "members": {
+                    m_key: results[m_key]["count"]
+                    for m_key in (
+                        p.key for p in pattern_set.patterns_in_group(group.key) if p.key in results
+                    )
+                },
             }
         )
     return summary

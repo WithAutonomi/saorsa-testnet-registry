@@ -154,9 +154,7 @@ def test_prints_per_step_time_and_summary(monkeypatch):
 
 def test_group_elapsed_is_reported(monkeypatch):
     _patch_runner(monkeypatch, {})
-    monkeypatch.setattr(
-        parallel_infra, "run_parallel_group", lambda console, group: None
-    )
+    monkeypatch.setattr(parallel_infra, "run_parallel_group", lambda console, group: None)
     console, buf = _capture_console()
     steps = [
         Step(["bootstraps", "infra"], "Bootstraps", group="infra", lane="bn"),

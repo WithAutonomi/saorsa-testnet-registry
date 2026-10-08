@@ -211,6 +211,4 @@ def destroy_build_vm(droplet_id: int, wait: bool = True, timeout: int = 120) -> 
             return
         check.raise_for_status()
         time.sleep(5)
-    raise TimeoutError(
-        f"Droplet {droplet_id} still exists {timeout}s after delete request"
-    )
+    raise TimeoutError(f"Droplet {droplet_id} still exists {timeout}s after delete request")

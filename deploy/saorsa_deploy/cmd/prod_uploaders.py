@@ -96,8 +96,7 @@ def _parse_bootstrap_cache_token(spec: str, value: str) -> bool:
     if value == "false":
         return False
     raise ValueError(
-        f"Invalid uploader spec '{spec}': bootstrap_cache must be 'true' or "
-        f"'false', got '{value}'."
+        f"Invalid uploader spec '{spec}': bootstrap_cache must be 'true' or 'false', got '{value}'."
     )
 
 
@@ -108,8 +107,7 @@ def _parse_forward_logs_token(spec: str, value: str) -> bool:
     if value == "false":
         return False
     raise ValueError(
-        f"Invalid uploader spec '{spec}': forward_logs must be 'true' or "
-        f"'false', got '{value}'."
+        f"Invalid uploader spec '{spec}': forward_logs must be 'true' or 'false', got '{value}'."
     )
 
 
@@ -146,6 +144,7 @@ def _parse_network_token(spec: str, value: str) -> str:
         raise ValueError(f"Invalid spec '{spec}': {e}")
     return value
 
+
 def _parse_clock_skew_token(spec: str, value: str) -> int:
     """Validate a ``clock_skew=`` uploader-spec token into signed seconds.
 
@@ -181,18 +180,12 @@ def _parse_spec_options(
     options: dict[str, str] = {}
     for token in tail_tokens:
         if "=" not in token:
-            raise ValueError(
-                f"Invalid {label} spec '{spec}': '{token}' is not key=value."
-            )
+            raise ValueError(f"Invalid {label} spec '{spec}': '{token}' is not key=value.")
         key, value = token.split("=", 1)
         if key not in known_keys:
-            raise ValueError(
-                f"Invalid {label} spec '{spec}': unknown key '{key}'."
-            )
+            raise ValueError(f"Invalid {label} spec '{spec}': unknown key '{key}'.")
         if key in options:
-            raise ValueError(
-                f"Invalid {label} spec '{spec}': duplicate key '{key}'."
-            )
+            raise ValueError(f"Invalid {label} spec '{spec}': duplicate key '{key}'.")
         options[key] = value
     return options
 
@@ -209,8 +202,7 @@ def _parse_file_source(spec: str, options: dict, label: str) -> dict:
     has_pool = bool(options.get("pool"))
     if has_urls and has_pool:
         raise ValueError(
-            f"Invalid {label} spec '{spec}': set either urls=PATH or "
-            "pool=CLASS:COUNT, not both."
+            f"Invalid {label} spec '{spec}': set either urls=PATH or pool=CLASS:COUNT, not both."
         )
     if not has_urls and not has_pool:
         raise ValueError(
@@ -296,15 +288,11 @@ def parse_prod_uploader_spec(spec: str) -> dict:
         )
 
     log_level = (
-        _parse_log_level_token(spec, options["log_level"])
-        if "log_level" in options
-        else None
+        _parse_log_level_token(spec, options["log_level"]) if "log_level" in options else None
     )
     network = _parse_network_token(spec, options["network"]) if "network" in options else None
     clock_skew = (
-        _parse_clock_skew_token(spec, options["clock_skew"])
-        if "clock_skew" in options
-        else None
+        _parse_clock_skew_token(spec, options["clock_skew"]) if "clock_skew" in options else None
     )
     bootstrap_cache = (
         _parse_bootstrap_cache_token(spec, options["bootstrap_cache"])
@@ -370,9 +358,7 @@ def parse_prod_wasm_uploader_spec(spec: str) -> dict:
     parts = spec.split(":")
     region = parts[0]
     if not region:
-        raise ValueError(
-            f"Invalid wasm uploader spec '{spec}': region cannot be empty."
-        )
+        raise ValueError(f"Invalid wasm uploader spec '{spec}': region cannot be empty.")
     if len(parts) < 2:
         raise ValueError(
             f"Invalid wasm uploader spec '{spec}'. Expected format: "
@@ -414,18 +400,14 @@ def parse_prod_wasm_uploader_spec(spec: str) -> dict:
     problem = check_wasm_pool_request(source["pool_request"])
     if problem:
         raise ValueError(f"Invalid wasm uploader spec '{spec}': {problem}")
-    if wasm_pool_max_size_is_clamped(
-        source["pool_request"], source["pool_max_size_bytes"]
-    ):
+    if wasm_pool_max_size_is_clamped(source["pool_request"], source["pool_max_size_bytes"]):
         # ant-core refuses a file above the browser cap before touching the
         # network, so a drawn over-cap file is a permanently-spent pool entry
         # that could never be uploaded. Narrow the draw instead. Only `medium`
         # straddles the cap, so only `medium` gains a bound — writing one onto a
         # tiny/small request would put a value in the persisted draw that
         # narrowed nothing.
-        source["pool_max_size_bytes"] = clamp_wasm_pool_max_size(
-            source["pool_max_size_bytes"]
-        )
+        source["pool_max_size_bytes"] = clamp_wasm_pool_max_size(source["pool_max_size_bytes"])
 
     if vm_size is None:
         vm_size = default_wasm_vm_size("digitalocean")
@@ -461,9 +443,7 @@ def parse_prod_wasm_uploader_spec(spec: str) -> dict:
             else None
         ),
         "network": (
-            _parse_network_token(spec, options["network"])
-            if "network" in options
-            else None
+            _parse_network_token(spec, options["network"]) if "network" in options else None
         ),
         "bootstrap_cache": None,
         "forward_logs": (
@@ -504,9 +484,7 @@ def _paying_address(args) -> str:
     """
     from eth_account import Account
 
-    key = getattr(args, "secret_key", None) or os.environ.get(
-        "ARBITRUM_ONE_SECRET_KEY"
-    )
+    key = getattr(args, "secret_key", None) or os.environ.get("ARBITRUM_ONE_SECRET_KEY")
     if not key:
         return "unknown (no wallet key resolved yet)"
     try:
@@ -664,6 +642,7 @@ def _resolve_ant_binary(args, console: Console):
             check_ant_custom_build_exists,
             get_ant_custom_build_url,
         )
+
         if not check_ant_custom_build_exists(args.name, repo_owner, args.branch_name):
             console.print(
                 f"[bold red]Error:[/bold red] No custom ant build found for "
@@ -671,9 +650,7 @@ def _resolve_ant_binary(args, console: Console):
             )
             sys.exit(1)
         url = get_ant_custom_build_url(args.name, repo_owner, args.branch_name)
-        console.print(
-            f"  Ant binary: custom build ({repo_owner}/{args.branch_name})"
-        )
+        console.print(f"  Ant binary: custom build ({repo_owner}/{args.branch_name})")
         return url, False
 
     if args.ant_version:
@@ -681,10 +658,9 @@ def _resolve_ant_binary(args, console: Console):
             check_ant_release_exists,
             get_ant_release_url,
         )
+
         if not check_ant_release_exists(args.ant_version):
-            console.print(
-                f"[bold red]Error:[/bold red] Ant release v{args.ant_version} not found."
-            )
+            console.print(f"[bold red]Error:[/bold red] Ant release v{args.ant_version} not found.")
             sys.exit(1)
         url = get_ant_release_url(args.ant_version)
         console.print(f"  Ant binary: release v{args.ant_version}")
@@ -745,29 +721,35 @@ def _ensure_monitoring(args, console: Console) -> None:
             "InfluxDB creds (a prior provision didn't finish) — "
             "re-provisioning.[/yellow]"
         )
-        cmd_provision_monitoring(SimpleNamespace(
-            name=args.name,
-            ssh_key_path=args.ssh_key_path,
-        ))
+        cmd_provision_monitoring(
+            SimpleNamespace(
+                name=args.name,
+                ssh_key_path=args.ssh_key_path,
+            )
+        )
         return
 
     console.print("[bold cyan]Step 1/5: creating monitoring VM[/bold cyan]")
-    cmd_monitoring_infra(SimpleNamespace(
-        name=args.name,
-        region=MONITORING_REGION,
-        volume_size=args.monitoring_volume_size,
-        # A single client VM forwards little; keep the InfluxDB box small
-        # rather than the larger testnet default.
-        droplet_size="s-2vcpu-4gb",
-        force=False,
-        grafana=getattr(args, "grafana", False),
-    ))
+    cmd_monitoring_infra(
+        SimpleNamespace(
+            name=args.name,
+            region=MONITORING_REGION,
+            volume_size=args.monitoring_volume_size,
+            # A single client VM forwards little; keep the InfluxDB box small
+            # rather than the larger testnet default.
+            droplet_size="s-2vcpu-4gb",
+            force=False,
+            grafana=getattr(args, "grafana", False),
+        )
+    )
 
     console.print("[bold cyan]Step 2/5: provisioning InfluxDB + Grafana[/bold cyan]")
-    cmd_provision_monitoring(SimpleNamespace(
-        name=args.name,
-        ssh_key_path=args.ssh_key_path,
-    ))
+    cmd_provision_monitoring(
+        SimpleNamespace(
+            name=args.name,
+            ssh_key_path=args.ssh_key_path,
+        )
+    )
 
 
 def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> None:
@@ -784,8 +766,7 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
 
     if _client_stack_exists(args.name):
         console.print(
-            f"[dim]Client stack '{args.name}' already exists — skipping "
-            "clients infra.[/dim]"
+            f"[dim]Client stack '{args.name}' already exists — skipping clients infra.[/dim]"
         )
         return
 
@@ -813,19 +794,19 @@ def _ensure_client_infra(args, parsed_specs: list[dict], console: Console) -> No
         f"{len(synth_uploader_specs) + len(synth_wasm_specs)} "
         f"uploader VM(s)[/bold cyan]"
     )
-    cmd_infra_clients(SimpleNamespace(
-        name=args.name,
-        uploader=synth_uploader_specs,
-        downloader=[],
-        wasm_uploader=synth_wasm_specs,
-        wasm_downloader=[],
-        force=False,
-    ))
+    cmd_infra_clients(
+        SimpleNamespace(
+            name=args.name,
+            uploader=synth_uploader_specs,
+            downloader=[],
+            wasm_uploader=synth_wasm_specs,
+            wasm_downloader=[],
+            force=False,
+        )
+    )
 
 
-def _pair_specs_with_vms(
-    name: str, parsed_specs: list[dict], console: Console
-) -> list[dict]:
+def _pair_specs_with_vms(name: str, parsed_specs: list[dict], console: Console) -> list[dict]:
     """Match each uploader spec to the VM `clients infra` created for it.
 
     Pairing is per ROLE by ascending ``client_index``: `clients infra` indexes
@@ -861,21 +842,23 @@ def _pair_specs_with_vms(
                     "— VM creation failed."
                 )
                 sys.exit(1)
-            out.append({
-                "ip": client["ip"],
-                "region": spec["region"],
-                "client_index": client["client_index"],
-                "client_kind": spec.get("client_kind") or "native",
-                "urls_file_content": spec["_urls_file_content"],
-                "payment_type": spec.get("payment_type"),
-                "log_level": spec.get("log_level"),
-                "clock_skew": spec.get("clock_skew", False),
-                "network": resolve_network(spec.get("network")),
-                "bootstrap_cache": spec.get("bootstrap_cache", True),
-                "forward_logs": spec.get("forward_logs"),
-                "memory_profiling": spec.get("memory_profiling"),
-                "rust_log": spec.get("rust_log"),
-            })
+            out.append(
+                {
+                    "ip": client["ip"],
+                    "region": spec["region"],
+                    "client_index": client["client_index"],
+                    "client_kind": spec.get("client_kind") or "native",
+                    "urls_file_content": spec["_urls_file_content"],
+                    "payment_type": spec.get("payment_type"),
+                    "log_level": spec.get("log_level"),
+                    "clock_skew": spec.get("clock_skew", False),
+                    "network": resolve_network(spec.get("network")),
+                    "bootstrap_cache": spec.get("bootstrap_cache", True),
+                    "forward_logs": spec.get("forward_logs"),
+                    "memory_profiling": spec.get("memory_profiling"),
+                    "rust_log": spec.get("rust_log"),
+                }
+            )
     return out
 
 
@@ -902,9 +885,7 @@ def _provision_uploaders(
 ) -> None:
     from saorsa_deploy.state import load_monitoring_state as _load_mon
 
-    uploaders_for_provisioner = _pair_specs_with_vms(
-        args.name, parsed_specs, console
-    )
+    uploaders_for_provisioner = _pair_specs_with_vms(args.name, parsed_specs, console)
 
     secret_key = _resolve_secret_key(args, console)
     if _native_specs(parsed_specs):
@@ -915,9 +896,7 @@ def _provision_uploaders(
         # deploy whose only `--branch-name` build is the WASM bundle.
         binary_url, binary_is_archive = None, True
 
-    console.print(
-        "[bold cyan]Step 4a/5: fetching production bootstrap peers[/bold cyan]"
-    )
+    console.print("[bold cyan]Step 4a/5: fetching production bootstrap peers[/bold cyan]")
     try:
         bootstrap_peers = fetch_prod_bootstraps()
     except ProdBootstrapsError as e:
@@ -942,15 +921,11 @@ def _provision_uploaders(
 
     not_ready = wait_for_ssh(host_ips, args.ssh_key_path, console=console)
     if not_ready:
-        console.print(
-            f"[bold red]Error:[/bold red] SSH never came up on: "
-            f"{', '.join(not_ready)}"
-        )
+        console.print(f"[bold red]Error:[/bold red] SSH never came up on: {', '.join(not_ready)}")
         sys.exit(1)
 
     console.print(
-        "[bold cyan]Step 4b/5: provisioning ant-prod-uploader on uploader "
-        "VMs[/bold cyan]"
+        "[bold cyan]Step 4b/5: provisioning ant-prod-uploader on uploader VMs[/bold cyan]"
     )
     provisioner = ProdUploaderProvisioner(
         uploaders=uploaders_for_provisioner,
@@ -964,9 +939,7 @@ def _provision_uploaders(
         influx_org=influx_org,
         influx_bucket=influx_bucket,
         wasm_bundle_url=wasm_context.bundle_url if wasm_context else None,
-        bootstrap_multiaddrs=(
-            wasm_context.bootstrap_multiaddrs if wasm_context else None
-        ),
+        bootstrap_multiaddrs=(wasm_context.bootstrap_multiaddrs if wasm_context else None),
         console=console,
     )
     provisioner.execute()
@@ -980,14 +953,11 @@ def _start_uploaders(args, console: Console) -> None:
 
     host_ips = [c["ip"] for c in clients]
     console.print(
-        f"[bold cyan]Step 5/5: starting ant-prod-uploader on "
-        f"{len(host_ips)} VM(s)[/bold cyan]"
+        f"[bold cyan]Step 5/5: starting ant-prod-uploader on {len(host_ips)} VM(s)[/bold cyan]"
     )
     clear_known_hosts(host_ips, console)
 
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     inventory = Inventory((hosts_data, {}))
     state_obj = State(inventory=inventory, config=Config())
     connect_all(state_obj)
@@ -1048,9 +1018,7 @@ def cmd_prod_uploaders_deploy(args):
             client_kind="wasm" if wasm_raw else "native",
             wasm_branch_name=getattr(args, "wasm_branch_name", None),
             wasm_repo_owner=getattr(args, "wasm_repo_owner", None),
-            wasm_bootstrap_multiaddrs_file=getattr(
-                args, "wasm_bootstrap_multiaddrs_file", None
-            ),
+            wasm_bootstrap_multiaddrs_file=getattr(args, "wasm_bootstrap_multiaddrs_file", None),
             skip_bootstrap_probe=getattr(args, "skip_bootstrap_probe", False),
         ),
         console,
@@ -1078,7 +1046,8 @@ def cmd_prod_uploaders_deploy(args):
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
     for i, spec in enumerate(parsed_specs, start=1):
         url_count = sum(
-            1 for line in spec["_urls_file_content"].splitlines()
+            1
+            for line in spec["_urls_file_content"].splitlines()
             if line.strip() and not line.strip().startswith("#")
         )
         source = "pool" if spec.get("pool_request") else "urls"
@@ -1109,9 +1078,7 @@ def cmd_prod_uploaders_deploy(args):
                 # transport. It has to survive teardown, which the S3 client
                 # state does not.
                 "client_kind": s.get("client_kind") or "native",
-                "hostname": _uploader_hostname(
-                    args.name, s, _role_index(parsed_specs, s)
-                ),
+                "hostname": _uploader_hostname(args.name, s, _role_index(parsed_specs, s)),
                 "urls_file": s["urls_file"],
                 "pool_request": (
                     {k.value: v for k, v in s["pool_request"].items()}
@@ -1132,16 +1099,16 @@ def cmd_prod_uploaders_deploy(args):
                 # keeps a past run interpretable after the profile file moves on,
                 # and it is what `slack-post` renders the rates from.
                 "network": (
-                    resolve_network(s.get("network")).to_dict()
-                    if s.get("network")
-                    else None
+                    resolve_network(s.get("network")).to_dict() if s.get("network") else None
                 ),
             }
             for s in parsed_specs
         ],
         "purpose": args.purpose,
         "ant_binary": build_binary_descriptor(
-            args.branch_name, args.repo_owner, args.ant_version,
+            args.branch_name,
+            args.repo_owner,
+            args.ant_version,
             debug=getattr(args, "debug", False),
         ),
     }
@@ -1171,9 +1138,8 @@ def cmd_prod_uploaders_deploy(args):
         from saorsa_deploy.cmd.provision_telegraf_metrics import (
             provision_client_telegraf_best_effort,
         )
-        provision_client_telegraf_best_effort(
-            args.name, args.ssh_key_path, console=console
-        )
+
+        provision_client_telegraf_best_effort(args.name, args.ssh_key_path, console=console)
         # Client log forwarding (opt-in per uploader): stand up a dedicated ES
         # and install the forwarder on the uploader VMs.
         if any(s.get("forward_logs") for s in parsed_specs):
@@ -1183,9 +1149,7 @@ def cmd_prod_uploaders_deploy(args):
                 install_client_forwarder,
             )
 
-            es_creds = ensure_client_elastic(
-                args.name, args.ssh_key_path, console
-            )
+            es_creds = ensure_client_elastic(args.name, args.ssh_key_path, console)
             # forward_logs is per-uploader; only install on the opted-in VMs.
             # Paired per role, since each role is indexed from 1 independently.
             up_ips = [
@@ -1218,9 +1182,7 @@ def cmd_prod_uploaders_deploy(args):
     record_event(args.name, "prod_uploaders_deploy_completed")
     record_status(args.name, DeploymentStatus.RUNNING)
     console.print()
-    console.print(
-        f"[bold green]prod uploaders '{args.name}' is running.[/bold green]"
-    )
+    console.print(f"[bold green]prod uploaders '{args.name}' is running.[/bold green]")
     console.print(
         f"[dim]Tail upload progress: saorsa-deploy deployments print-uploads "
         f"--name {args.name}[/dim]"
@@ -1279,16 +1241,14 @@ def cmd_prod_uploaders_destroy(args):
                 # cleanly. Either way we must still proceed to clients destroy
                 # so the Terraform-managed VMs get torn down.
                 console.print(
-                    f"[yellow]stop reported a failure ({e!s}); continuing "
-                    "with destroy.[/yellow]"
+                    f"[yellow]stop reported a failure ({e!s}); continuing with destroy.[/yellow]"
                 )
 
             console.print("[bold cyan]Destroying uploader VMs...[/bold cyan]")
             cmd_destroy_clients(SimpleNamespace(name=args.name, force=True))
         else:
             console.print(
-                f"[dim]No client stack found for '{args.name}' — skipping "
-                "uploader destroy.[/dim]"
+                f"[dim]No client stack found for '{args.name}' — skipping uploader destroy.[/dim]"
             )
 
         if args.keep_monitoring:
@@ -1300,16 +1260,11 @@ def cmd_prod_uploaders_destroy(args):
             console.print("[bold cyan]Destroying monitoring stack...[/bold cyan]")
             cmd_destroy_monitoring(SimpleNamespace(name=args.name, force=True))
         else:
-            console.print(
-                f"[dim]No monitoring stack found for '{args.name}' — "
-                "skipping.[/dim]"
-            )
+            console.print(f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]")
 
         from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
 
-        destroy_client_elastic(
-            args.name, getattr(args, "keep_elastic", False), console
-        )
+        destroy_client_elastic(args.name, getattr(args, "keep_elastic", False), console)
     except SystemExit:
         record_event(args.name, "prod_uploaders_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
@@ -1325,9 +1280,7 @@ def cmd_prod_uploaders_destroy(args):
     record_event(args.name, "prod_uploaders_destroy_completed")
     record_status(args.name, DeploymentStatus.DESTROYED)
     console.print()
-    console.print(
-        f"[bold green]prod uploaders '{args.name}' destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]prod uploaders '{args.name}' destroyed.[/bold green]")
 
 
 def _stop_uploaders(args, console: Console) -> None:
@@ -1336,15 +1289,10 @@ def _stop_uploaders(args, console: Console) -> None:
         return
 
     host_ips = [c["ip"] for c in clients]
-    console.print(
-        f"[bold cyan]Stopping {SERVICE_NAME} on {len(host_ips)} "
-        f"VM(s)...[/bold cyan]"
-    )
+    console.print(f"[bold cyan]Stopping {SERVICE_NAME} on {len(host_ips)} VM(s)...[/bold cyan]")
     clear_known_hosts(host_ips, console)
 
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     inventory = Inventory((hosts_data, {}))
     state_obj = State(inventory=inventory, config=Config())
     connect_all(state_obj)
@@ -1431,8 +1379,7 @@ def _select_pool_files(args, parsed_specs: list[dict], console: Console) -> list
 
     total = sum(len(s) for s in selections)
     console.print(
-        f"    {total} file(s) claimed; selection persisted to S3 state "
-        "(a resume reuses it)."
+        f"    {total} file(s) claimed; selection persisted to S3 state (a resume reuses it)."
     )
     return selections
 

@@ -5,6 +5,7 @@ Revises: add_canary_unavail
 Create Date: 2026-06-15 23:05:00.000000
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -12,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'add_prod_upload_cost'
-down_revision: Union[str, Sequence[str], None] = 'add_canary_unavail'
+revision: str = "add_prod_upload_cost"
+down_revision: Union[str, Sequence[str], None] = "add_canary_unavail"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

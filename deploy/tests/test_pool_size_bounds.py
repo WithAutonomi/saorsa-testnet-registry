@@ -92,9 +92,9 @@ class TestBoundedByteRange:
         assert bounded_byte_range(SizeClass.TINY, 5 * MIB, None) == (5 * MIB, 10 * MIB)
 
     def test_max_is_exclusive_so_bounds_can_name_a_class_exactly(self):
-        assert bounded_byte_range(
-            SizeClass.SMALL, 10 * MIB, 100 * MIB
-        ) == bounded_byte_range(SizeClass.SMALL)
+        assert bounded_byte_range(SizeClass.SMALL, 10 * MIB, 100 * MIB) == bounded_byte_range(
+            SizeClass.SMALL
+        )
 
     def test_a_bound_wider_than_the_class_is_inert(self):
         assert bounded_byte_range(SizeClass.SMALL, 1 * MIB, 1 * GIB) == (
@@ -235,9 +235,7 @@ class TestClaimingWithBounds:
         assert sorted(sizes) == [6 * MIB, 6 * MIB, 20 * MIB, 20 * MIB, 20 * MIB]
 
     def test_unknown_size_entries_can_never_satisfy_a_bound(self, repo):
-        repo.add_pool_file(
-            PoolFileKind.URL, "https://example.org/mystery", "mystery.bin"
-        )
+        repo.add_pool_file(PoolFileKind.URL, "https://example.org/mystery", "mystery.bin")
         _seed(repo, 6 * MIB, 1, "chunky")
 
         with pytest.raises(InsufficientPoolInventory) as excinfo:
@@ -263,14 +261,9 @@ class TestListingWithBounds:
         _seed(repo, 1 * MIB, 2, "sliver")
         _seed(repo, 6 * MIB, 2, "chunky")
 
-        rows = repo.list_pool_files(
-            size_class=SizeClass.TINY, min_size_bytes=5 * MIB
-        )
+        rows = repo.list_pool_files(size_class=SizeClass.TINY, min_size_bytes=5 * MIB)
         assert {r.size_bytes for r in rows} == {6 * MIB}
 
     def test_a_class_the_bounds_exclude_returns_nothing(self, repo):
         _seed(repo, 50 * MIB, 3, "small")
-        assert (
-            repo.list_pool_files(size_class=SizeClass.SMALL, max_size_bytes=5 * MIB)
-            == []
-        )
+        assert repo.list_pool_files(size_class=SizeClass.SMALL, max_size_bytes=5 * MIB) == []

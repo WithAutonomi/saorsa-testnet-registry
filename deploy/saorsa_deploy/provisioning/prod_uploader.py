@@ -188,9 +188,7 @@ class ProdUploaderProvisioner:
             progress._live.start()
 
         try:
-            self.console.print(
-                f"Connecting to {len(host_ips)} prod-uploader host(s) as root..."
-            )
+            self.console.print(f"Connecting to {len(host_ips)} prod-uploader host(s) as root...")
             connect_all(state)
 
             add_operator_authorized_keys_op(state)
@@ -237,19 +235,15 @@ class ProdUploaderProvisioner:
         succeeded = total - len(failed)
         self.console.print()
         self.console.print(
-            f"[bold]Prod uploader provisioning complete: {succeeded}/{total} "
-            f"hosts succeeded[/bold]"
+            f"[bold]Prod uploader provisioning complete: {succeeded}/{total} hosts succeeded[/bold]"
         )
         self.console.print(
-            "  Service installed but NOT started. Use the start helper to "
-            "begin uploads."
+            "  Service installed but NOT started. Use the start helper to begin uploads."
         )
         if failed:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError(
-                f"{len(failed)} host(s) failed prod-uploader provisioning"
-            )
+            raise RuntimeError(f"{len(failed)} host(s) failed prod-uploader provisioning")
 
     def _add_network_impairment_ops(self, state: State) -> None:
         """Shape any uploader whose spec sets a `network` profile.
@@ -259,11 +253,7 @@ class ProdUploaderProvisioner:
         is what dominates an upload. One op per host — each VM carries its own
         profile, so a run can compare a shaped uploader against an unshaped control.
         """
-        by_ip = {
-            u["ip"]: u["network"]
-            for u in self.uploaders
-            if u.get("ip") and u.get("network")
-        }
+        by_ip = {u["ip"]: u["network"] for u in self.uploaders if u.get("ip") and u.get("network")}
         if not by_ip:
             return
         for host in state.inventory.get_active_hosts():
@@ -271,8 +261,7 @@ class ProdUploaderProvisioner:
             if not profile:
                 continue
             self.console.print(
-                f"[cyan]Network impairment on {host.name}: "
-                f"{format_network_label(profile)}[/cyan]"
+                f"[cyan]Network impairment on {host.name}: {format_network_label(profile)}[/cyan]"
             )
             add_op(
                 state,
@@ -289,9 +278,7 @@ class ProdUploaderProvisioner:
         per host.
         """
         skew_by_ip = {
-            u["ip"]: u["clock_skew"]
-            for u in self.uploaders
-            if u.get("ip") and u.get("clock_skew")
+            u["ip"]: u["clock_skew"] for u in self.uploaders if u.get("ip") and u.get("clock_skew")
         }
         if not skew_by_ip:
             return
@@ -346,11 +333,7 @@ class ProdUploaderProvisioner:
         return [h for h in state.inventory.get_active_hosts() if h.name in wanted]
 
     def _add_install_ant_op(self, state: State) -> None:
-        native_hosts = (
-            self._hosts_for(state, self._native_uploaders())
-            if self.any_wasm
-            else None
-        )
+        native_hosts = self._hosts_for(state, self._native_uploaders()) if self.any_wasm else None
         if self.any_wasm and not native_hosts:
             return
         if self.binary_url:
@@ -358,6 +341,7 @@ class ProdUploaderProvisioner:
             self.console.print(f"Using binary URL: {download_url}")
         else:
             from saorsa_deploy.binary_source import get_ant_release_url
+
             self.console.print("Fetching latest ant release from GitHub...")
             download_url = get_ant_release_url()
             self.console.print(f"  Release URL: {download_url}")
@@ -417,9 +401,7 @@ class ProdUploaderProvisioner:
             server.shell,
             name="Install WASM client bundle",
             commands=[
-                build_bundle_install_command(
-                    self.wasm_bundle_url, data_dirs=(), require_cli=True
-                )
+                build_bundle_install_command(self.wasm_bundle_url, data_dirs=(), require_cli=True)
             ],
             host=wasm_hosts,
         )
@@ -439,16 +421,13 @@ class ProdUploaderProvisioner:
             server.shell,
             name="Deploy prod_uploader.py service script",
             commands=[
-                f"cat > {SCRIPTS_DIR}/prod_uploader.py << 'SCRIPT_EOF'\n"
-                f"{service_script}SCRIPT_EOF",
+                f"cat > {SCRIPTS_DIR}/prod_uploader.py << 'SCRIPT_EOF'\n{service_script}SCRIPT_EOF",
                 f"chmod +x {SCRIPTS_DIR}/prod_uploader.py",
             ],
         )
 
     def _add_env_and_urls_op(self, state: State) -> None:
-        bootstrap_args = " ".join(
-            f"--bootstrap {peer}" for peer in self.bootstrap_peers
-        )
+        bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
         secret_key = self.wallet_secret_key
         if secret_key and not secret_key.startswith("0x"):
             secret_key = "0x" + secret_key
@@ -460,9 +439,7 @@ class ProdUploaderProvisioner:
         for u in self.uploaders:
             if not u.get("ip"):
                 continue
-            urls_b64 = base64.b64encode(
-                u["urls_file_content"].encode("utf-8")
-            ).decode("ascii")
+            urls_b64 = base64.b64encode(u["urls_file_content"].encode("utf-8")).decode("ascii")
             payment_type = u.get("payment_type") or ""
             log_level = u.get("log_level") or "info"
             bootstrap_cache = "true" if u.get("bootstrap_cache", True) else "false"
@@ -470,8 +447,8 @@ class ProdUploaderProvisioner:
             memory_profiling = "true" if u.get("memory_profiling") else "false"
             entry = (
                 f'    "{u["ip"]}") '
-                f'REGION={u["region"]}; '
-                f'CLIENT_INDEX={u["client_index"]}; '
+                f"REGION={u['region']}; "
+                f"CLIENT_INDEX={u['client_index']}; "
                 f'URLS_B64="{urls_b64}"; '
                 f'PAYMENT_TYPE="{payment_type}"; '
                 f'LOG_LEVEL="{log_level}"; '
@@ -500,9 +477,7 @@ class ProdUploaderProvisioner:
 
         influx_lines = ""
         if self.influx_url and self.influx_token:
-            bucket_value = (
-                "$HOST_INFLUX_BUCKET" if self.any_wasm else self.influx_bucket
-            )
+            bucket_value = "$HOST_INFLUX_BUCKET" if self.any_wasm else self.influx_bucket
             influx_lines = (
                 f"INFLUX_URL={self.influx_url}\n"
                 f"INFLUX_TOKEN={self.influx_token}\n"
@@ -584,11 +559,7 @@ HEAPTRACK_DIR={HEAPTRACK_DIR}
 
     def _add_systemd_unit_op(self, state: State) -> None:
         unit = _build_systemd_unit()
-        cmd = (
-            f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n"
-            f"{unit}UNIT_EOF\n"
-            f"systemctl daemon-reload"
-        )
+        cmd = f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n{unit}UNIT_EOF\nsystemctl daemon-reload"
         add_op(
             state,
             server.shell,

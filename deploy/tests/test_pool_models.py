@@ -45,8 +45,15 @@ def session():
         yield s
 
 
-def _file(session, *, locator="https://example.org/a.bin", kind=PoolFileKind.URL,
-          name="a.bin", size_bytes=42 * 1024 * 1024, **kwargs) -> ProdFilePool:
+def _file(
+    session,
+    *,
+    locator="https://example.org/a.bin",
+    kind=PoolFileKind.URL,
+    name="a.bin",
+    size_bytes=42 * 1024 * 1024,
+    **kwargs,
+) -> ProdFilePool:
     pool_file = ProdFilePool(
         kind=kind,
         locator=locator,
@@ -61,8 +68,9 @@ def _file(session, *, locator="https://example.org/a.bin", kind=PoolFileKind.URL
     return pool_file
 
 
-def _claim(session, pool_file, *, status=ClaimStatus.CLAIMED,
-           source=ClaimSource.MANUAL, **kwargs) -> ProdFilePoolClaim:
+def _claim(
+    session, pool_file, *, status=ClaimStatus.CLAIMED, source=ClaimSource.MANUAL, **kwargs
+) -> ProdFilePoolClaim:
     claim = ProdFilePoolClaim(
         file_id=pool_file.id,
         source=source,

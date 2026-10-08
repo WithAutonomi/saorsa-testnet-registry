@@ -25,9 +25,7 @@ def _fetch(path: str, token: str) -> dict:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        raise RuntimeError(
-            f"Vultr API {path} returned HTTP {e.code}: {e.reason}"
-        ) from e
+        raise RuntimeError(f"Vultr API {path} returned HTTP {e.code}: {e.reason}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Vultr API {path} request failed: {e.reason}") from e
 
@@ -105,27 +103,20 @@ def resolve_vultr_regions(
 
     availability = fetch_plan_availability_map(token)
 
-    regions_offering_plan = {
-        region for region, plans in availability.items() if plan in plans
-    }
+    regions_offering_plan = {region for region, plans in availability.items() if plan in plans}
     if not regions_offering_plan:
         known_plans = {p for plans in availability.values() for p in plans}
         hint = ""
         if known_plans:
             hint = (
-                " Check `saorsa-deploy utils vultr-availability` for the full "
-                "plan/region matrix."
+                " Check `saorsa-deploy utils vultr-availability` for the full plan/region matrix."
             )
-        raise RuntimeError(
-            f"Vultr plan '{plan}' is not offered in any region.{hint}"
-        )
+        raise RuntimeError(f"Vultr plan '{plan}' is not offered in any region.{hint}")
 
     resolved: list[str] = []
     notes: list[str] = []
     seen: set[str] = set()
-    candidates = list(preferred) + [
-        r for r in (fallback_pool or []) if r not in preferred
-    ]
+    candidates = list(preferred) + [r for r in (fallback_pool or []) if r not in preferred]
     preferred_set = set(preferred[:count])
 
     for region in candidates:

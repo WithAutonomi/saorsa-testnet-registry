@@ -46,6 +46,7 @@ each one silently produces a wrong verdict if dropped:
    numerator while still counting the full denominator -- measured at 7.75 vs
    3.85 GB/GB on the same DEV-03 run.
 """
+
 from __future__ import annotations
 
 import math
@@ -293,9 +294,7 @@ def verification_counts(records: list) -> dict:
     }
 
 
-def duration_percentiles_by_bucket(
-    records: list, edges_mb: tuple[float, ...]
-) -> dict[str, dict]:
+def duration_percentiles_by_bucket(records: list, edges_mb: tuple[float, ...]) -> dict[str, dict]:
     """p50/p95 transfer duration per file-size bucket, in milliseconds.
 
     Only **successful** operations contribute. A failed transfer's duration
@@ -378,9 +377,7 @@ def node_rss_by_service(host_metrics: list[dict]) -> dict[str, dict]:
     return result
 
 
-def node_rss_statistic(
-    host_metrics: list[dict], service_percentile: float = 95.0
-) -> dict | None:
+def node_rss_statistic(host_metrics: list[dict], service_percentile: float = 95.0) -> dict | None:
     """A percentile of per-service RSS across the fleet.
 
     Never a fleet *mean*: the signal worth catching is a subset of services
@@ -405,9 +402,7 @@ def node_rss_statistic(
     worst_key = max(services, key=lambda k: services[k]["value"])
     # Same percentile across services, taken over their means -- the fallback for
     # a baseline that predates percentile capture. Same shape, shared statistic.
-    mean_values = [
-        v["mean_value"] for v in services.values() if v.get("mean_value") is not None
-    ]
+    mean_values = [v["mean_value"] for v in services.values() if v.get("mean_value") is not None]
     return {
         "value": percentile(values, service_percentile / 100.0),
         "statistic": statistic,
@@ -747,8 +742,7 @@ def apply_noise_rule(
                 "history_runs": len(values),
                 "criterion": "percentage only",
                 "reason": (
-                    f"fewer than {config.noise_rule.min_history_runs} accepted runs "
-                    "of history"
+                    f"fewer than {config.noise_rule.min_history_runs} accepted runs of history"
                 ),
             },
         )
@@ -841,9 +835,7 @@ def _compare_scalar(
         cand_mean = candidate.get("mean_value") if isinstance(candidate, dict) else None
         base_mean = baseline.get("mean_value") if isinstance(baseline, dict) else None
         can_degrade = (
-            "mean" in {cand_stat, base_stat}
-            and cand_mean is not None
-            and base_mean is not None
+            "mean" in {cand_stat, base_stat} and cand_mean is not None and base_mean is not None
         )
         if not can_degrade:
             return GateResult(
@@ -860,9 +852,7 @@ def _compare_scalar(
                     "comparing them would measure the statistic, not the release"
                 ),
             )
-        degraded = (
-            f"degraded to mean: candidate reported {cand_stat}, baseline {base_stat}"
-        )
+        degraded = f"degraded to mean: candidate reported {cand_stat}, baseline {base_stat}"
         cand_value, base_value = float(cand_mean), float(base_mean)
         cand_stat = base_stat = "mean"
 
@@ -880,9 +870,7 @@ def _compare_scalar(
         statistic=cand_stat or base_stat,
         noise=noise,
         detail=(
-            "baseline is zero, so a relative change is undefined"
-            if delta is None
-            else degraded
+            "baseline is zero, so a relative change is undefined" if delta is None else degraded
         ),
     )
 
@@ -944,9 +932,7 @@ def _records_for(records: list, transport: str) -> list:
 
 
 def _has_wasm(run: RunMetrics) -> bool:
-    return bool(
-        _records_for(run.upload_records, WASM) or _records_for(run.download_records, WASM)
-    )
+    return bool(_records_for(run.upload_records, WASM) or _records_for(run.download_records, WASM))
 
 
 def _transport_view(run: RunMetrics, transport: str) -> RunMetrics:
@@ -988,6 +974,7 @@ def _client_gates(
     release made the WASM tier worse than the baseline did, needs no absolute
     calibration, and counts. Which is which is config, not code.
     """
+
     def floor_gates(run_c):
         return _hard_success_floors(run_c, config)
 
@@ -1019,9 +1006,7 @@ def _client_gates(
                         detail=(
                             f"{gate.detail} — advisory, not blocking"
                             if advisory and gate.detail
-                            else (
-                                "advisory, not blocking" if advisory else gate.detail
-                            )
+                            else ("advisory, not blocking" if advisory else gate.detail)
                         ),
                     )
                 )
@@ -1079,9 +1064,7 @@ def compare_runs(
     if new_baseline:
         baseline = empty_baseline(candidate)
     elif baseline is None:
-        raise ComparisonError(
-            "a baseline run is required unless new_baseline is set."
-        )
+        raise ComparisonError("a baseline run is required unless new_baseline is set.")
     else:
         problems = check_comparability(candidate, baseline, config)
         if problems:
@@ -1096,9 +1079,7 @@ def compare_runs(
     results.extend(_soft_host_metrics(candidate, baseline, config, history))
     results.append(_soft_memory_leak(candidate, config))
     results.extend(_soft_derived_ratios(candidate, baseline, config, history))
-    results.extend(
-        _soft_log_event_counts(candidate, baseline, config, history, pattern_set)
-    )
+    results.extend(_soft_log_event_counts(candidate, baseline, config, history, pattern_set))
 
     if new_baseline:
         # Every soft gate in this module is relative to the baseline (the leak
@@ -1122,9 +1103,7 @@ def compare_runs(
         ]
 
     warnings: list[str] = (
-        []
-        if new_baseline
-        else list(log_count_warnings(candidate, baseline, pattern_set))
+        [] if new_baseline else list(log_count_warnings(candidate, baseline, pattern_set))
     )
 
     # Neither comparability guard inspects what the windows CONTAIN.
@@ -1165,9 +1144,7 @@ def compare_runs(
     cand_coverage = candidate.activity_coverage()
     base_coverage = baseline.activity_coverage()
     if cand_coverage and base_coverage and not new_baseline:
-        coverage_ratio = max(cand_coverage, base_coverage) / min(
-            cand_coverage, base_coverage
-        )
+        coverage_ratio = max(cand_coverage, base_coverage) / min(cand_coverage, base_coverage)
         if coverage_ratio > config.max_activity_coverage_ratio:
             warnings.append(
                 f"Activity coverage differs by {coverage_ratio:.2f}x "
@@ -1280,8 +1257,7 @@ def _hard_success_floors(run: RunMetrics, config: GateConfig) -> list[GateResult
                     threshold=floor,
                     unit="%",
                     detail=(
-                        "every operation was skipped by the transport; no rate "
-                        "to assess"
+                        "every operation was skipped by the transport; no rate to assess"
                         if rate is not None
                         else "no per-op records for this run. Run `deployments "
                         "record-results` while the monitoring stack is still up."
@@ -1416,8 +1392,7 @@ def _soft_success_rates(
                 unit="pp",
                 noise=noise,
                 detail=(
-                    f"{cand['successes']}/{cand['total']} vs "
-                    f"{base['successes']}/{base['total']}"
+                    f"{cand['successes']}/{cand['total']} vs {base['successes']}/{base['total']}"
                 ),
             )
         )
@@ -1461,16 +1436,13 @@ def _soft_transfer_durations(
                             unit="ms",
                             statistic=stat_key[:3],
                             detail=(
-                                f"no successful transfers in this size bucket on the "
-                                f"{missing} run"
+                                f"no successful transfers in this size bucket on the {missing} run"
                             ),
                         )
                     )
                     continue
                 delta = _relative_change(cand_value, base_value)
-                verdict, noise = apply_noise_rule(
-                    delta, threshold, history.get(gate), config
-                )
+                verdict, noise = apply_noise_rule(delta, threshold, history.get(gate), config)
                 results.append(
                     GateResult(
                         gate=gate,
@@ -1483,9 +1455,7 @@ def _soft_transfer_durations(
                         unit="ms",
                         statistic=stat_key[:3],
                         noise=noise,
-                        detail=(
-                            f"n={cand[bucket]['count']} vs {base[bucket]['count']}"
-                        ),
+                        detail=(f"n={cand[bucket]['count']} vs {base[bucket]['count']}"),
                     )
                 )
     return results
@@ -1613,9 +1583,7 @@ def _soft_memory_leak(run: RunMetrics, config: GateConfig) -> GateResult:
     # a tail percentile measures how noisy RSS is rather than whether it leaks.
     # A real leak shifts the centre; symmetric fit noise does not.
     growth = percentile(growths, config.memory_leak.service_percentile / 100.0)
-    asymmetry = tail_asymmetry(
-        growths, config.memory_leak.tail_threshold_percent_per_hour
-    )
+    asymmetry = tail_asymmetry(growths, config.memory_leak.tail_threshold_percent_per_hour)
     worst_key = max(slopes, key=lambda k: slopes[k]["growth_percent_per_hour"])
     worst = slopes[worst_key]
 
@@ -1624,19 +1592,13 @@ def _soft_memory_leak(run: RunMetrics, config: GateConfig) -> GateResult:
         f"{config.memory_leak.tail_threshold_percent_per_hour:g}%/h = "
         f"{asymmetry['above_percent']:.1f}% up vs {asymmetry['below_percent']:.1f}% "
         f"down (ratio "
-        + (
-            f"{asymmetry['ratio']:.2f}"
-            if asymmetry["ratio"] is not None
-            else "n/a"
-        )
+        + (f"{asymmetry['ratio']:.2f}" if asymmetry["ratio"] is not None else "n/a")
         + f"); worst {worst_key} at {worst['slope_bytes_per_hour'] / 1024**2:.1f} MB/h"
     )
     return GateResult(
         gate="Memory leak (RSS slope)",
         kind="soft",
-        verdict=(
-            FAIL if growth > config.memory_leak.max_growth_percent_per_hour else PASS
-        ),
+        verdict=(FAIL if growth > config.memory_leak.max_growth_percent_per_hour else PASS),
         candidate=growth,
         threshold=config.memory_leak.max_growth_percent_per_hour,
         unit="%/h",
@@ -1733,9 +1695,7 @@ def _pointer_gates(
                 unit="%",
                 advisory=advisory_floor,
                 single_run=True,
-                detail=(
-                    f"{detail} — advisory, not blocking" if advisory_floor else detail
-                ),
+                detail=(f"{detail} — advisory, not blocking" if advisory_floor else detail),
             )
         )
 
@@ -1819,15 +1779,11 @@ def _pointer_gates(
             unit=unit,
             history=history.get(label),
             missing_detail=(
-                POINTER_NO_BASELINE_REASON
-                if base is None
-                else "no measurement on one or both runs"
+                POINTER_NO_BASELINE_REASON if base is None else "no measurement on one or both runs"
             ),
         )
         if detail and result.verdict != NOT_ASSESSED:
-            result = replace(
-                result, detail=f"{result.detail} {detail}".strip()
-            )
+            result = replace(result, detail=f"{result.detail} {detail}".strip())
         results.append(result)
     return results
 
@@ -1859,9 +1815,7 @@ def _group_definitions(
     seen = set()
     if pattern_set is not None:
         for group in pattern_set.groups:
-            known.append(
-                (group.key, group.label, group.aggregate, bool(group.advisory))
-            )
+            known.append((group.key, group.label, group.aggregate, bool(group.advisory)))
             seen.add(group.key)
     extra = sorted(
         {
@@ -1873,9 +1827,7 @@ def _group_definitions(
     return known + [(key, key, "max", False) for key in extra]
 
 
-def log_event_group_values(
-    rows: list[dict], key: str, aggregate: str
-) -> dict | None:
+def log_event_group_values(rows: list[dict], key: str, aggregate: str) -> dict | None:
     """Combine one group's per-pattern rows into the single value it gates on.
 
     ``max`` when the members are the same event logged at several layers --
@@ -1896,20 +1848,10 @@ def log_event_group_values(
 
     hosts = [row["hosts"] for row in members if row.get("hosts") is not None]
     starts = [
-        _as_utc(row["observed_start"])
-        for row in members
-        if row.get("observed_start") is not None
+        _as_utc(row["observed_start"]) for row in members if row.get("observed_start") is not None
     ]
-    ends = [
-        _as_utc(row["observed_end"])
-        for row in members
-        if row.get("observed_end") is not None
-    ]
-    totals = [
-        row["total_documents"]
-        for row in members
-        if row.get("total_documents") is not None
-    ]
+    ends = [_as_utc(row["observed_end"]) for row in members if row.get("observed_end") is not None]
+    totals = [row["total_documents"] for row in members if row.get("total_documents") is not None]
 
     span_hours = None
     if starts and ends:
@@ -2059,9 +2001,7 @@ def _soft_log_event_counts(
             # Naming the members keeps the "one phenomenon, two layers"
             # decision visible in the report rather than buried in a YAML file.
             detail += (
-                "; one phenomenon from "
-                + ", ".join(sorted(cand["members"]))
-                + " (max, not sum)"
+                "; one phenomenon from " + ", ".join(sorted(cand["members"])) + " (max, not sum)"
             )
         results.append(
             GateResult(
@@ -2091,9 +2031,7 @@ def _soft_log_event_counts(
 CONFOUNDER_RISE_FACTOR = 2.0
 
 
-def _confounder_warnings(
-    candidate: RunMetrics, baseline: RunMetrics, pattern_set
-) -> list[str]:
+def _confounder_warnings(candidate: RunMetrics, baseline: RunMetrics, pattern_set) -> list[str]:
     """One warning per advisory group whose rate is well above the baseline's.
 
     The catalogue says which gates the group casts doubt on (`confounds`);
@@ -2109,14 +2047,10 @@ def _confounder_warnings(
     for group in pattern_set.groups:
         if not group.advisory or not group.confounds:
             continue
-        cand = log_event_group_values(
-            candidate.log_event_counts, group.key, group.aggregate
-        )
+        cand = log_event_group_values(candidate.log_event_counts, group.key, group.aggregate)
         if cand is None or cand["value"] <= 0:
             continue
-        base = log_event_group_values(
-            baseline.log_event_counts, group.key, group.aggregate
-        )
+        base = log_event_group_values(baseline.log_event_counts, group.key, group.aggregate)
         cand_rate = cand.get("rate_per_hour") or cand["value"]
         if base is None:
             comparison = (
@@ -2129,8 +2063,7 @@ def _confounder_warnings(
             if base_rate > 0 and cand_rate < CONFOUNDER_RISE_FACTOR * base_rate:
                 continue
             comparison = (
-                f"{cand_rate:,.0f}/h on the candidate vs {base_rate:,.0f}/h on the "
-                f"baseline"
+                f"{cand_rate:,.0f}/h on the candidate vs {base_rate:,.0f}/h on the baseline"
             )
         warnings.append(
             f"{group.label}: {comparison}. This group is advisory and measures "
@@ -2141,9 +2074,7 @@ def _confounder_warnings(
     return warnings
 
 
-def log_count_warnings(
-    candidate: RunMetrics, baseline: RunMetrics, pattern_set=None
-) -> list[str]:
+def log_count_warnings(candidate: RunMetrics, baseline: RunMetrics, pattern_set=None) -> list[str]:
     """Caveats a reader needs before acting on a count delta.
 
     Three things a count comparison cannot see for itself. The first is the
@@ -2166,9 +2097,7 @@ def log_count_warnings(
     if not candidate.log_event_counts or not baseline.log_event_counts:
         return warnings
 
-    cand_versions = {
-        row.get("pattern_version") for row in candidate.log_event_counts
-    }
+    cand_versions = {row.get("pattern_version") for row in candidate.log_event_counts}
     base_versions = {row.get("pattern_version") for row in baseline.log_event_counts}
     if cand_versions != base_versions:
         warnings.append(
@@ -2199,15 +2128,9 @@ def log_count_warnings(
 
 def _observed_span_hours(rows: list[dict]) -> float | None:
     starts = [
-        _as_utc(row["observed_start"])
-        for row in rows
-        if row.get("observed_start") is not None
+        _as_utc(row["observed_start"]) for row in rows if row.get("observed_start") is not None
     ]
-    ends = [
-        _as_utc(row["observed_end"])
-        for row in rows
-        if row.get("observed_end") is not None
-    ]
+    ends = [_as_utc(row["observed_end"]) for row in rows if row.get("observed_end") is not None]
     if not starts or not ends:
         return None
     seconds = (max(ends) - min(starts)).total_seconds()

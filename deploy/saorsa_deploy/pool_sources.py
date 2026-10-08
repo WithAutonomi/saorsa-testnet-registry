@@ -107,9 +107,7 @@ def fetch_candidates(
     spec: str, originals_only: bool = False, path_prefix: str | None = None
 ) -> list[PoolCandidate]:
     kind, identifier = parse_source_spec(spec)
-    return SOURCES[kind](
-        identifier, originals_only=originals_only, path_prefix=path_prefix
-    )
+    return SOURCES[kind](identifier, originals_only=originals_only, path_prefix=path_prefix)
 
 
 def fetch_internet_archive_item(

@@ -58,9 +58,7 @@ def _post(token: str, payload: dict) -> SlackMessageRef:
         raise SlackApiError(f"Slack request failed: {e}") from e
 
     if not response.ok:
-        raise SlackApiError(
-            f"Slack returned HTTP {response.status_code}: {response.text}"
-        )
+        raise SlackApiError(f"Slack returned HTTP {response.status_code}: {response.text}")
 
     try:
         body = response.json()

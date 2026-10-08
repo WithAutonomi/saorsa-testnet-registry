@@ -4,6 +4,7 @@ Each fixture generator in `analysis_fixtures/pcap_synth.py` states what it
 built; these tests assert the analysers read it back. They are the same checks
 the scripts were verified against before the V2-996/V2-988/V2-1059 runs.
 """
+
 import json
 import subprocess
 import sys
@@ -62,8 +63,14 @@ def test_flowstat_short_capture_exits_two(flowstat_pcap, tmp_path, capsys):
     path, _ = flowstat_pcap
     out = tmp_path / "out.json"
     args = SimpleNamespace(
-        pcaps=[str(path)], start=None, end=None, label="x", json_out=str(out),
-        lifetimes_out=None, expect_seconds=1200, expect_tolerance=0.95,
+        pcaps=[str(path)],
+        start=None,
+        end=None,
+        label="x",
+        json_out=str(out),
+        lifetimes_out=None,
+        expect_seconds=1200,
+        expect_tolerance=0.95,
     )
     assert flowstat.run(args) == 2
     assert json.loads(out.read_text())["window_complete"] is False
@@ -75,9 +82,19 @@ def test_flowstat_standalone_script(flowstat_pcap, tmp_path):
     path, _ = flowstat_pcap
     lifetimes = tmp_path / "lifetimes.txt"
     proc = subprocess.run(
-        [sys.executable, "-I", str(FLOWSTAT_PATH), str(path), "--expect-seconds", "300",
-         "--lifetimes-out", str(lifetimes)],
-        capture_output=True, text=True, check=False,
+        [
+            sys.executable,
+            "-I",
+            str(FLOWSTAT_PATH),
+            str(path),
+            "--expect-seconds",
+            "300",
+            "--lifetimes-out",
+            str(lifetimes),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["window_complete"] is True
@@ -88,7 +105,9 @@ def test_flowstat_streams_from_stdin(flowstat_pcap):
     path, _ = flowstat_pcap
     proc = subprocess.run(
         [sys.executable, "-I", str(FLOWSTAT_PATH), "-"],
-        input=path.read_bytes(), capture_output=True, check=False,
+        input=path.read_bytes(),
+        capture_output=True,
+        check=False,
     )
     assert proc.returncode == 0
     assert json.loads(proc.stdout)["flows_total"] == 5
@@ -119,7 +138,11 @@ def test_probe_score(backstop_pcap):
     assert by_peer["10.0.1.2"]["result"] == "DIED" and by_peer["10.0.1.2"]["replaced"] is True
     assert r["summary_by_seconds"]["21"]["survival_pct"] == 50.0
     assert r["summary_by_seconds"]["31"] == {
-        "eligible": 1, "survived": 0, "died": 1, "replaced": 1, "survival_pct": 0.0
+        "eligible": 1,
+        "survived": 0,
+        "died": 1,
+        "replaced": 1,
+        "survival_pct": 0.0,
     }
 
 
@@ -131,9 +154,7 @@ def test_close_delivery_epoch_timestamps(close_pcap, tmp_path):
     path, truth = close_pcap
     jsonl = tmp_path / "teardowns.jsonl"
     _write_jsonl(jsonl, truth["teardowns"])
-    r = close_delivery.analyse(
-        str(path), close_delivery.load_teardowns(jsonl), pcap_synth.LOCAL
-    )
+    r = close_delivery.analyse(str(path), close_delivery.load_teardowns(jsonl), pcap_synth.LOCAL)
     assert (r["scored"], r["told"], r["untold"]) == (3, 2, 1)
     assert r["told_fraction"] == pytest.approx(2 / 3, abs=0.001)
     assert r["unscored_outside_window"] == 1
@@ -160,9 +181,7 @@ def test_close_delivery_iso_timestamps(close_pcap, tmp_path):
         rows.append({**t, "ts": iso})
     jsonl = tmp_path / "teardowns-iso.jsonl"
     _write_jsonl(jsonl, rows)
-    r = close_delivery.analyse(
-        str(path), close_delivery.load_teardowns(jsonl), pcap_synth.LOCAL
-    )
+    r = close_delivery.analyse(str(path), close_delivery.load_teardowns(jsonl), pcap_synth.LOCAL)
     assert (r["scored"], r["told"], r["untold"]) == (3, 2, 1)
 
 
@@ -172,8 +191,12 @@ def test_close_delivery_command_writes_json(close_pcap, tmp_path, capsys):
     _write_jsonl(jsonl, truth["teardowns"])
     out = tmp_path / "close.json"
     args = SimpleNamespace(
-        pcap=str(path), teardowns=str(jsonl), local=pcap_synth.LOCAL,
-        before=5.0, after=60.0, json_out=str(out),
+        pcap=str(path),
+        teardowns=str(jsonl),
+        local=pcap_synth.LOCAL,
+        before=5.0,
+        after=60.0,
+        json_out=str(out),
     )
     assert close_delivery.cmd_close_delivery(args) == 0
     assert json.loads(out.read_text())["told"] == 2

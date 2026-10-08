@@ -236,15 +236,11 @@ class TestAntNodeBuilderValidation:
             ):
                 builder.execute()
 
-            op_names = [
-                c.kwargs["name"] for c in mock_add_op.call_args_list
-            ]
+            op_names = [c.kwargs["name"] for c in mock_add_op.call_args_list]
             assert "Validate binary" in op_names
 
             validate_call = [
-                c
-                for c in mock_add_op.call_args_list
-                if c.kwargs.get("name") == "Validate binary"
+                c for c in mock_add_op.call_args_list if c.kwargs.get("name") == "Validate binary"
             ][0]
             cmd = validate_call.kwargs["commands"][0]
             assert "strings /root/ant-node/target/release/ant-node" in cmd
@@ -288,9 +284,7 @@ class TestAntNodeBuilderValidation:
             ):
                 builder.execute()
 
-            op_names = [
-                c.kwargs["name"] for c in mock_add_op.call_args_list
-            ]
+            op_names = [c.kwargs["name"] for c in mock_add_op.call_args_list]
             assert "Validate binary" not in op_names
         finally:
             os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)

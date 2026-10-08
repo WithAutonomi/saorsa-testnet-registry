@@ -6,6 +6,7 @@ average, the denominator counts only successful ops that finished inside the
 window, and a metric that cannot be measured is omitted rather than
 fabricated.
 """
+
 from datetime import datetime, timezone
 
 from saorsa_db.models.derived_metric import (
@@ -139,7 +140,8 @@ def test_outbound_window_counts_a_delta_at_the_end_of_its_interval():
         _net("h1", "2026-07-01T00:00:20", "eth0", "bytes_sent", 5_000),
     ]
     windowed = sum_net_counter_deltas(
-        points, "bytes_sent",
+        points,
+        "bytes_sent",
         start=_ts("2026-07-01T00:00:15"),
         end=_ts("2026-07-01T00:00:25"),
     )
@@ -284,12 +286,18 @@ def _rows(**overrides):
             "peak_growth": 7 * BYTES_PER_GB,
         },
         "uploaded": {
-            "bytes": 2 * BYTES_PER_GB, "gb": 2.0, "ops": 2,
-            "failed_bytes": 0, "failed_ops": 0,
+            "bytes": 2 * BYTES_PER_GB,
+            "gb": 2.0,
+            "ops": 2,
+            "failed_bytes": 0,
+            "failed_ops": 0,
         },
         "downloaded": {
-            "bytes": 3 * BYTES_PER_GB, "gb": 3.0, "ops": 3,
-            "failed_bytes": 0, "failed_ops": 0,
+            "bytes": 3 * BYTES_PER_GB,
+            "gb": 3.0,
+            "ops": 3,
+            "failed_bytes": 0,
+            "failed_ops": 0,
         },
         "window_start": _ts("2026-07-01T00:00:00"),
         "window_end": _ts("2026-07-01T04:00:00"),
@@ -328,10 +336,18 @@ def test_a_run_that_uploaded_nothing_omits_the_ratios():
     # baseline comparison. Absent means "not measured".
     rows = _rows(
         uploaded={
-            "bytes": 0, "gb": 0.0, "ops": 0, "failed_bytes": 0, "failed_ops": 0,
+            "bytes": 0,
+            "gb": 0.0,
+            "ops": 0,
+            "failed_bytes": 0,
+            "failed_ops": 0,
         },
         downloaded={
-            "bytes": 0, "gb": 0.0, "ops": 0, "failed_bytes": 0, "failed_ops": 0,
+            "bytes": 0,
+            "gb": 0.0,
+            "ops": 0,
+            "failed_bytes": 0,
+            "failed_ops": 0,
         },
     )
     assert METRIC_OUTBOUND_BYTES_PER_GB_UPLOADED not in rows
@@ -345,7 +361,11 @@ def test_a_run_that_uploaded_nothing_omits_the_ratios():
 def test_downloads_alone_still_produce_the_traffic_ratio():
     rows = _rows(
         uploaded={
-            "bytes": 0, "gb": 0.0, "ops": 0, "failed_bytes": 0, "failed_ops": 0,
+            "bytes": 0,
+            "gb": 0.0,
+            "ops": 0,
+            "failed_bytes": 0,
+            "failed_ops": 0,
         }
     )
     assert METRIC_OUTBOUND_BYTES_PER_GB_UPLOADED not in rows
@@ -357,8 +377,11 @@ def test_no_node_storage_series_omits_the_disk_metrics():
     # deployment. Reporting a growth of zero would read as "nothing was stored".
     rows = _rows(
         storage_growth={
-            "total": 0, "by_host": {}, "hosts": 0,
-            "hosts_without_series": 4, "peak_growth": 0,
+            "total": 0,
+            "by_host": {},
+            "hosts": 0,
+            "hosts_without_series": 4,
+            "peak_growth": 0,
         }
     )
     assert METRIC_NODE_STORAGE_GROWTH_BYTES not in rows

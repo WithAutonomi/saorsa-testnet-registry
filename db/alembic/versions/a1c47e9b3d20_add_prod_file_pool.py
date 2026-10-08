@@ -29,6 +29,7 @@ Revises: e4a7b2c91d05
 Create Date: 2026-07-30
 
 """
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -91,11 +92,11 @@ def upgrade() -> None:
         sa.Column("file_id", sa.Integer(), nullable=False),
         sa.Column("algo", sa.String(length=16), nullable=False),
         sa.Column("value", sa.String(length=128), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["file_id"], ["prod_file_pool.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["file_id"], ["prod_file_pool.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("file_id", "algo", name="uq_prod_file_pool_digests_file_algo"),
+        sa.UniqueConstraint(
+            "file_id", "algo", name="uq_prod_file_pool_digests_file_algo"
+        ),
     )
     op.create_index(
         "ix_prod_file_pool_digests_file_id", "prod_file_pool_digests", ["file_id"]
@@ -128,9 +129,7 @@ def upgrade() -> None:
         sa.Column("note", sa.Text(), nullable=True),
         sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["file_id"], ["prod_file_pool.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["file_id"], ["prod_file_pool.id"], ondelete="CASCADE"),
         # SET NULL, not CASCADE: deleting a deployment row must not delete the
         # evidence that its files were uploaded and are therefore spent.
         sa.ForeignKeyConstraint(

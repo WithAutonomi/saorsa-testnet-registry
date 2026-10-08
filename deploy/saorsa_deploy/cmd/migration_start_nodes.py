@@ -34,9 +34,7 @@ def cmd_migration_start_nodes(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
     vms = repo.list_vms(migration.id, status=MigrationVmStatus.NODES_PROVISIONED)
@@ -51,8 +49,7 @@ def cmd_migration_start_nodes(args):
     node_count = migration.node_count_per_vm
 
     console.print(
-        f"[bold]Starting {node_count} ant-node service(s) on "
-        f"{len(target_ips)} VM(s)...[/bold]"
+        f"[bold]Starting {node_count} ant-node service(s) on {len(target_ips)} VM(s)...[/bold]"
     )
 
     clear_known_hosts(target_ips, console)
@@ -64,10 +61,7 @@ def cmd_migration_start_nodes(args):
         f"echo 'ANT_NODES:STARTED'"
     )
 
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path})
-        for ip in target_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in target_ips]
     inventory = Inventory((hosts_data, {}))
     pyinfra_state = State(inventory=inventory, config=Config())
     connect_all(pyinfra_state)
@@ -100,9 +94,7 @@ def cmd_migration_start_nodes(args):
 
     if failed:
         console.print()
-        console.print(
-            f"[bold red]Failed to start nodes on {len(failed)} host(s):[/bold red]"
-        )
+        console.print(f"[bold red]Failed to start nodes on {len(failed)} host(s):[/bold red]")
         for host in failed:
             console.print(f"  [red]{host.name}[/red]")
         # Don't transition migration status to SOAKING if there are failures —
@@ -113,8 +105,7 @@ def cmd_migration_start_nodes(args):
 
     console.print()
     console.print(
-        f"[bold green]Started {node_count} services on {started_count} "
-        "host(s).[/bold green]"
+        f"[bold green]Started {node_count} services on {started_count} host(s).[/bold green]"
     )
     console.print(
         "[dim]Migration is now soaking. Wait at least 2 hours before "

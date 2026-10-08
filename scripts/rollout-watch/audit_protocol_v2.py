@@ -315,9 +315,7 @@ def evaluate_key_absent(summaries: dict[str, ArmTotals], arms: Arms) -> Check:
         return guard
     absent = new.totals[ABSENT_FIELD]
     if absent:
-        offenders = {
-            k: v for k, v in new.offenders.items() if v.get(ABSENT_FIELD)
-        }
+        offenders = {k: v for k, v in new.offenders.items() if v.get(ABSENT_FIELD)}
         return Check(
             name=name,
             status=FAIL,
@@ -376,9 +374,7 @@ def evaluate_digest_mismatch(
             return Check(
                 name=name,
                 status=status,
-                detail=(
-                    f"{shown}; old arm 0/service-hour, so no ratio is defined"
-                ),
+                detail=(f"{shown}; old arm 0/service-hour, so no ratio is defined"),
                 passed_on_zero=(status == PASS),
                 data={"new_rate": new_rate, "old_rate": old_rate},
             )
@@ -484,8 +480,9 @@ def render_totals(summaries: dict[str, ArmTotals]) -> str:
         new = summaries["new"].totals[name]
         old = summaries["old"].totals[name]
         rows.append([f"`{name}`", f"{new:,}", f"{old:,}"])
-    return markdown_table(["counter (delta over window)", "new arm", "old arm"], rows,
-                          align="lrr")
+    return markdown_table(
+        ["counter (delta over window)", "new arm", "old arm"], rows, align="lrr"
+    )
 
 
 def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:

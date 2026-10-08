@@ -17,6 +17,7 @@ Within each successful section, rows are deduplicated by datamap address
 sections if the file was uploaded across more than one run. With
 ``--failed``, every non-success row is printed verbatim with no dedup.
 """
+
 from rich.console import Console
 from saorsa_db.models.prod_upload_result import ProdUploadStatus
 
@@ -27,9 +28,7 @@ def cmd_prod_files(args) -> None:
     console = Console()
     repo = get_repository()
     if repo is None:
-        console.print(
-            "[yellow]No DATABASE_URL configured — nothing to read.[/yellow]"
-        )
+        console.print("[yellow]No DATABASE_URL configured — nothing to read.[/yellow]")
         return
 
     rows = list(repo.list_all_prod_upload_results(failed_only=args.failed))

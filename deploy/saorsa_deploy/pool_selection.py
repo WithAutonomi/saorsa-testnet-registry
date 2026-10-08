@@ -93,15 +93,11 @@ def parse_request(raw: dict) -> dict:
                 f"pool request for '{key}' must be a whole number, got {value!r}"
             ) from exc
         if count < 0:
-            raise PoolSelectionError(
-                f"pool request for '{key}' cannot be negative ({count})"
-            )
+            raise PoolSelectionError(f"pool request for '{key}' cannot be negative ({count})")
         if count:
             request[size_class] = request.get(size_class, 0) + count
     if not request:
-        raise PoolSelectionError(
-            "the pool request asks for zero files in every size class"
-        )
+        raise PoolSelectionError("the pool request asks for zero files in every size class")
     return request
 
 
@@ -114,8 +110,7 @@ def parse_request_token(token: str) -> dict:
             continue
         if ":" not in part:
             raise PoolSelectionError(
-                f"invalid pool request '{part}'. Expected class:count, "
-                "e.g. small:3,medium:2"
+                f"invalid pool request '{part}'. Expected class:count, e.g. small:3,medium:2"
             )
         name, count = part.split(":", 1)
         raw[name.strip()] = count.strip()
@@ -152,9 +147,7 @@ def parse_size_bounds(
     return min_bytes, max_bytes
 
 
-def validate_bounds(
-    request: dict, min_size_bytes: int | None, max_size_bytes: int | None
-) -> None:
+def validate_bounds(request: dict, min_size_bytes: int | None, max_size_bytes: int | None) -> None:
     """Refuse a request whose bounds exclude one of its own size classes.
 
     ``max_size: 5MB`` alongside ``small: 3`` can never be satisfied, and the
@@ -271,9 +264,7 @@ def select_for_deployment(
             # testing whether an upload can be *sustained* over a slow link
             # learns nothing from a file that is 85% uploaded already, because
             # ant skips the chunks that are stored and only sends the rest.
-            exclude_partial=(
-                exclude_partial or source is ClaimSource.PROD_CANARY
-            ),
+            exclude_partial=(exclude_partial or source is ClaimSource.PROD_CANARY),
             min_size_bytes=min_size_bytes,
             max_size_bytes=max_size_bytes,
         )
@@ -291,8 +282,7 @@ def select_for_deployment(
                 # The locator the claim recorded, not the canonical row's:
                 # a duplicate group can hold both a local path and a URL, and
                 # this run needs the one its kind can actually reach.
-                locator=claim.locator_used
-                or (pool_file.locator if pool_file else ""),
+                locator=claim.locator_used or (pool_file.locator if pool_file else ""),
                 size_bytes=pool_file.size_bytes if pool_file else None,
             )
         )
@@ -315,8 +305,7 @@ def _shortfall_message(exc: InsufficientPoolInventory) -> str:
     parts = []
     for size_class, detail in sorted(exc.shortfall.items()):
         parts.append(
-            f"{size_class} {detail['requested']} requested, "
-            f"{detail['available']} available"
+            f"{size_class} {detail['requested']} requested, {detail['available']} available"
         )
     within = f" within {exc.bounds}" if getattr(exc, "bounds", "") else ""
     return (
@@ -357,23 +346,17 @@ def render_selection(
     full list is always recoverable from `prod pool claims`.
     """
     console.print(
-        f"    {slot_label}:   "
-        f"{describe_request(request, min_size_bytes, max_size_bytes)}"
+        f"    {slot_label}:   {describe_request(request, min_size_bytes, max_size_bytes)}"
     )
     by_class: dict[str, list] = {}
     for entry in selected:
-        key = (
-            classify(entry.size_bytes).value
-            if entry.size_bytes is not None
-            else "unknown"
-        )
+        key = classify(entry.size_bytes).value if entry.size_bytes is not None else "unknown"
         by_class.setdefault(key, []).append(entry)
 
     if len(selected) <= 8:
         for entry in selected:
             console.print(
-                f"      #{entry.file_id}  {format_size(entry.size_bytes):>11}  "
-                f"{entry.name}"
+                f"      #{entry.file_id}  {format_size(entry.size_bytes):>11}  {entry.name}"
             )
         return
     for size_class in size_class_ordered():
@@ -382,8 +365,7 @@ def render_selection(
             continue
         total = sum(e.size_bytes or 0 for e in entries)
         console.print(
-            f"      {size_class.value:<7} {len(entries):>4} file(s), "
-            f"{format_size(total)} total"
+            f"      {size_class.value:<7} {len(entries):>4} file(s), {format_size(total)} total"
         )
     unknown = by_class.get("unknown")
     if unknown:

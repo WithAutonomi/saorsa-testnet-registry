@@ -85,7 +85,7 @@ def _build_binary_field(state: dict) -> dict:
 
 def _build_firewalls_field(state: dict, clients: list[dict] | None = None) -> dict:
     providers_used = set()
-    for key in (state.get("vm_ips") or {}):
+    for key in state.get("vm_ips") or {}:
         providers_used.add(key.split("/", 1)[0])
     if state.get("bootstrap_nodes"):
         providers_used.add("digitalocean")
@@ -167,9 +167,7 @@ def _build_bootstrap_vms_field(state: dict, ssh_key: str) -> list[dict]:
     return entries
 
 
-def _build_client_vms_field(
-    name: str, clients: list[dict] | None, ssh_key: str
-) -> list[dict]:
+def _build_client_vms_field(name: str, clients: list[dict] | None, ssh_key: str) -> list[dict]:
     if not clients:
         return []
 
@@ -199,10 +197,7 @@ def _build_client_vms_field(
                 "paths": {
                     "owner_keys": f"{POINTER_DATA_DIR}/keys",
                     "ledger": f"{POINTER_DATA_DIR}/ledger.json",
-                    "published_addresses": (
-                        f"{POINTER_DATA_DIR}/pointer-"
-                        f"{region}-{index}.txt"
-                    ),
+                    "published_addresses": (f"{POINTER_DATA_DIR}/pointer-{region}-{index}.txt"),
                 },
             }
             if is_pointer(role)
@@ -245,39 +240,45 @@ def _build_observability_vms_field(
     entries: list[dict] = []
     if monitoring_state and monitoring_state.get("vm_ip"):
         region = monitoring_state.get("region", "")
-        entries.append({
-            "name": f"{name}-ant-monitoring-{region}",
-            "provider": monitoring_state.get("provider", ""),
-            "region": region,
-            "ip": monitoring_state["vm_ip"],
-            "role": "influxdb",
-            "ssh_user": DEFAULT_SSH_USER,
-            "ssh_key": ssh_key,
-            "services": ["influxdb"],
-        })
-        if monitoring_state.get("grafana_ip"):
-            entries.append({
-                "name": f"{name}-ant-grafana-{region}",
+        entries.append(
+            {
+                "name": f"{name}-ant-monitoring-{region}",
                 "provider": monitoring_state.get("provider", ""),
                 "region": region,
-                "ip": monitoring_state["grafana_ip"],
-                "role": "grafana",
+                "ip": monitoring_state["vm_ip"],
+                "role": "influxdb",
                 "ssh_user": DEFAULT_SSH_USER,
                 "ssh_key": ssh_key,
-                "services": ["grafana"],
-            })
+                "services": ["influxdb"],
+            }
+        )
+        if monitoring_state.get("grafana_ip"):
+            entries.append(
+                {
+                    "name": f"{name}-ant-grafana-{region}",
+                    "provider": monitoring_state.get("provider", ""),
+                    "region": region,
+                    "ip": monitoring_state["grafana_ip"],
+                    "role": "grafana",
+                    "ssh_user": DEFAULT_SSH_USER,
+                    "ssh_key": ssh_key,
+                    "services": ["grafana"],
+                }
+            )
     if elastic_state and elastic_state.get("vm_ip"):
         region = elastic_state.get("region", "")
-        entries.append({
-            "name": f"{name}-ant-elastic-{region}",
-            "provider": elastic_state.get("provider", ""),
-            "region": region,
-            "ip": elastic_state["vm_ip"],
-            "role": "elasticsearch",
-            "ssh_user": DEFAULT_SSH_USER,
-            "ssh_key": ssh_key,
-            "services": ["elasticsearch"],
-        })
+        entries.append(
+            {
+                "name": f"{name}-ant-elastic-{region}",
+                "provider": elastic_state.get("provider", ""),
+                "region": region,
+                "ip": elastic_state["vm_ip"],
+                "role": "elasticsearch",
+                "ssh_user": DEFAULT_SSH_USER,
+                "ssh_key": ssh_key,
+                "services": ["elasticsearch"],
+            }
+        )
     return entries
 
 
@@ -404,9 +405,7 @@ def _build_write_test_config(deploy_args: dict) -> dict:
             # None on the browser path: the peer cache and the `ant` verbosity
             # flag are both refused there, so a value would describe a knob that
             # had no effect on the run.
-            "bootstrap_cache": (
-                None if is_wasm else deploy_args.get("bootstrap_cache")
-            ),
+            "bootstrap_cache": (None if is_wasm else deploy_args.get("bootstrap_cache")),
             "payment_type": deploy_args.get("payment_type"),
             "log_level": None if is_wasm else deploy_args.get("log_level"),
             "rust_log": deploy_args.get("rust_log"),
@@ -513,9 +512,7 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
             # --download-diagnostics are all refused there (they act on `ant`,
             # which never runs), so a value would describe a knob that had no
             # effect on the run.
-            "bootstrap_cache": (
-                None if is_wasm else deploy_args.get("bootstrap_cache")
-            ),
+            "bootstrap_cache": (None if is_wasm else deploy_args.get("bootstrap_cache")),
             "download_diagnostics": diagnostics,
             "memory_profiling": bool(deploy_args.get("memory_profiling", False)),
             "forward_logs": bool(deploy_args.get("forward_logs", False)),
@@ -549,9 +546,7 @@ def _build_download_config(deploy_args: dict | None) -> dict | None:
                 f"{PROD_DOWNLOADER_LOG_DIR}/*.diag.jsonl" if diagnostics else None
             ),
             "heaptrack_dir": (
-                PROD_DOWNLOADER_HEAPTRACK_DIR
-                if deploy_args.get("memory_profiling")
-                else None
+                PROD_DOWNLOADER_HEAPTRACK_DIR if deploy_args.get("memory_profiling") else None
             ),
         },
     }
@@ -603,13 +598,10 @@ def build_elasticsearch_config(elastic_state: dict, ssh_key: str) -> dict:
         # --- reading (us, and the beta-health-verdict skill) ----------------
         "read": {
             "api_key": elastic_state.get("elasticsearch_api_key", ""),
-            "index_patterns": [
-                elastic_state.get("elasticsearch_index_pattern", "")
-            ],
+            "index_patterns": [elastic_state.get("elasticsearch_index_pattern", "")],
             "url": "http://localhost:9200",
             "tunnel_command": (
-                f"ssh -i {ssh_key_path} -L 9200:localhost:9200 "
-                f"{DEFAULT_SSH_USER}@{vm_ip}"
+                f"ssh -i {ssh_key_path} -L 9200:localhost:9200 {DEFAULT_SSH_USER}@{vm_ip}"
             ),
             "note": (
                 "Elasticsearch binds to loopback and 9200 is firewalled, so "
@@ -648,9 +640,7 @@ def build_elasticsearch_inventory(
         "node_vms": [],
         "bootstrap_vms": [],
         "client_vms": [],
-        "observability_vms": _build_observability_vms_field(
-            name, ssh_key, None, elastic_state
-        ),
+        "observability_vms": _build_observability_vms_field(name, ssh_key, None, elastic_state),
         "client_config": None,
         "elasticsearch_config": build_elasticsearch_config(elastic_state, ssh_key),
     }
@@ -776,9 +766,7 @@ def _resolve_wallet_secret_key(args) -> str:
 
     Priority: --wallet-secret-key > ANT_DEPLOY_SECRET_KEY. Exits on miss.
     """
-    key = getattr(args, "wallet_secret_key", None) or os.environ.get(
-        "ANT_DEPLOY_SECRET_KEY"
-    )
+    key = getattr(args, "wallet_secret_key", None) or os.environ.get("ANT_DEPLOY_SECRET_KEY")
     if not key:
         Console().print(
             "[bold red]Error:[/bold red] No wallet secret key provided. "
@@ -820,8 +808,7 @@ def _write_inventory_file(args, inventory: dict, console: Console) -> Path:
     if config:
         for vm in inventory["observability_vms"]:
             console.print(
-                f"  {vm['role']} VM {vm['name']} — {vm['provider']}/"
-                f"{vm['region']} {vm['ip']}"
+                f"  {vm['role']} VM {vm['name']} — {vm['provider']}/{vm['region']} {vm['ip']}"
             )
         console.print(f"  ingest:    {config['ingest']['url']} (write-only)")
         console.print(f"  index:     {config['ingest']['index_pattern']}")
@@ -913,10 +900,7 @@ def _write_client_inventory(
 
     console.print(f"[bold green]Wrote inventory to {output_path}[/bold green]")
     for vm in inventory["client_vms"]:
-        console.print(
-            f"  client VM {vm['name']} — {vm['provider']}/{vm['region']} "
-            f"{vm['ip']}"
-        )
+        console.print(f"  client VM {vm['name']} — {vm['provider']}/{vm['region']} {vm['ip']}")
     console.print(f"  {len(inventory['observability_vms'])} observability VM(s)")
 
     config = inventory["client_config"]
@@ -1000,9 +984,7 @@ def cmd_generate_inventory(args):
     # The devnet manifest describes a self-hosted network (our own genesis +
     # bootstraps). prod-* kinds JOIN production (bootstraps tagged region "prod"),
     # where it — and its wallet key — is meaningless, so skip it for those.
-    prod_seeded = any(
-        n.get("region") == "prod" for n in (state.get("bootstrap_nodes") or [])
-    )
+    prod_seeded = any(n.get("region") == "prod" for n in (state.get("bootstrap_nodes") or []))
     manifest = None
     if not prod_seeded:
         wallet_secret_key = _resolve_wallet_secret_key(args)
@@ -1043,9 +1025,7 @@ def cmd_generate_inventory(args):
     if manifest is not None:
         manifest_path = output_path.parent / DEVNET_MANIFEST_FILENAME
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-        console.print(
-            f"[bold green]Wrote devnet manifest to {manifest_path}[/bold green]"
-        )
+        console.print(f"[bold green]Wrote devnet manifest to {manifest_path}[/bold green]")
         console.print(
             f"  {len(manifest['bootstrap'])} bootstrap multiaddr(s), "
             f"{manifest['node_count']} nodes total, "

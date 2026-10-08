@@ -153,5 +153,13 @@ class TestDigitalOceanAllowlistCoversSameMetroReplacements:
         from saorsa_deploy.providers import PROVIDERS
 
         assert PROVIDERS["digitalocean"].regions[:9] == [
-            "lon1", "nyc1", "ams3", "sfo3", "sgp1", "blr1", "fra1", "tor1", "syd1",
+            "lon1",
+            "nyc1",
+            "ams3",
+            "sfo3",
+            "sgp1",
+            "blr1",
+            "fra1",
+            "tor1",
+            "syd1",
         ]

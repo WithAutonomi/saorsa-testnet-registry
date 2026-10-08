@@ -41,9 +41,7 @@ class TestProvisionCombined:
     @patch("saorsa_deploy.provisioning.telegraf_combined.connect_all")
     @patch("saorsa_deploy.provisioning.telegraf_combined.State")
     @patch("saorsa_deploy.provisioning.telegraf_combined.Inventory")
-    def test_noop_when_no_active_provisioners(
-        self, _inv, _state, mock_connect, mock_run
-    ):
+    def test_noop_when_no_active_provisioners(self, _inv, _state, mock_connect, mock_run):
         tc.provision_combined(["10.0.0.1"], "~/.ssh/k", [None], console=MagicMock())
         mock_connect.assert_not_called()
         mock_run.assert_not_called()
@@ -53,9 +51,7 @@ class TestProvisionCombined:
     @patch("saorsa_deploy.provisioning.telegraf_combined.connect_all")
     @patch("saorsa_deploy.provisioning.telegraf_combined.State")
     @patch("saorsa_deploy.provisioning.telegraf_combined.Inventory")
-    def test_raises_on_failed_hosts(
-        self, _inv, mock_state, _connect, _run, mock_disc
-    ):
+    def test_raises_on_failed_hosts(self, _inv, mock_state, _connect, _run, mock_disc):
         failed = MagicMock()
         failed.name = "10.0.0.9"
         st = MagicMock()
@@ -63,9 +59,7 @@ class TestProvisionCombined:
         mock_state.return_value = st
 
         with pytest.raises(RuntimeError, match="1 host"):
-            tc.provision_combined(
-                ["10.0.0.9"], "~/.ssh/k", [MagicMock()], console=MagicMock()
-            )
+            tc.provision_combined(["10.0.0.9"], "~/.ssh/k", [MagicMock()], console=MagicMock())
         mock_disc.assert_called_once_with(st)
 
     @patch("saorsa_deploy.provisioning.telegraf_combined.disconnect_all")
@@ -73,9 +67,7 @@ class TestProvisionCombined:
     @patch("saorsa_deploy.provisioning.telegraf_combined.connect_all")
     @patch("saorsa_deploy.provisioning.telegraf_combined.State")
     @patch("saorsa_deploy.provisioning.telegraf_combined.Inventory")
-    def test_single_provisioner_installs(
-        self, _inv, mock_state, _connect, _run, _disc
-    ):
+    def test_single_provisioner_installs(self, _inv, mock_state, _connect, _run, _disc):
         st = MagicMock()
         st.failed_hosts = set()
         mock_state.return_value = st
@@ -207,8 +199,14 @@ class TestResolveBackends:
         args = _args()
         es, influx = ptc._resolve_backends(args, MagicMock())
         prov = ptc._make_es_provisioner(
-            args, es, host_ips=["1.1.1.1"], host_role="WAN_NODE", ssh_key="k",
-            ssh_user="root", name="DEV-01", console=MagicMock(),
+            args,
+            es,
+            host_ips=["1.1.1.1"],
+            host_role="WAN_NODE",
+            ssh_key="k",
+            ssh_user="root",
+            name="DEV-01",
+            console=MagicMock(),
         )
         assert prov.influx_output_enabled
         assert prov.influxdb_bucket == "testnet-metrics"
@@ -216,9 +214,7 @@ class TestResolveBackends:
 
     @patch.object(ptc, "load_monitoring_state")
     @patch.object(ptc, "load_elastic_state")
-    def test_es_provisioner_without_monitoring_has_no_influx_output(
-        self, mock_es, mock_mon
-    ):
+    def test_es_provisioner_without_monitoring_has_no_influx_output(self, mock_es, mock_mon):
         mock_es.return_value = {
             "elasticsearch_url": "http://es:9200",
             "elasticsearch_username": "u",
@@ -229,8 +225,14 @@ class TestResolveBackends:
         es, influx = ptc._resolve_backends(args, MagicMock())
         assert influx is None
         prov = ptc._make_es_provisioner(
-            args, es, host_ips=["1.1.1.1"], host_role="WAN_NODE", ssh_key="k",
-            ssh_user="root", name="DEV-01", console=MagicMock(),
+            args,
+            es,
+            host_ips=["1.1.1.1"],
+            host_role="WAN_NODE",
+            ssh_key="k",
+            ssh_user="root",
+            name="DEV-01",
+            console=MagicMock(),
         )
         assert not prov.influx_output_enabled
         assert "influxdb_v2" not in prov._build_telegraf_config()
@@ -252,9 +254,7 @@ class TestProvisionByName:
     @patch.object(ptc, "provision_combined")
     @patch.object(ptc, "clear_known_hosts")
     @patch.object(ptc, "load_deployment_state")
-    def test_node_groups_get_combined_pass_with_both(
-        self, mock_dep, _ckh, mock_combined, _client
-    ):
+    def test_node_groups_get_combined_pass_with_both(self, mock_dep, _ckh, mock_combined, _client):
         mock_dep.return_value = {
             "node_count": 15,
             "bootstrap_nodes": [
@@ -309,9 +309,7 @@ class TestProvisionByName:
     @patch.object(ptc, "provision_combined")
     @patch.object(ptc, "clear_known_hosts")
     @patch.object(ptc, "load_deployment_state")
-    def test_no_node_or_client_exits(
-        self, mock_dep, _ckh, mock_combined, mock_client
-    ):
+    def test_no_node_or_client_exits(self, mock_dep, _ckh, mock_combined, mock_client):
         mock_dep.side_effect = RuntimeError("no deployment state")
         influx = {
             "influxdb_url": "http://mon:8086",
@@ -327,9 +325,7 @@ class TestProvisionByName:
     @patch.object(ptc, "provision_combined")
     @patch.object(ptc, "clear_known_hosts")
     @patch.object(ptc, "load_deployment_state")
-    def test_metrics_only_passes_no_es_provisioner(
-        self, mock_dep, _ckh, mock_combined, _client
-    ):
+    def test_metrics_only_passes_no_es_provisioner(self, mock_dep, _ckh, mock_combined, _client):
         mock_dep.return_value = {"node_count": 5, "vm_ips": {"lon1": ["10.0.1.1"]}}
         influx = {
             "influxdb_url": "http://mon:8086",

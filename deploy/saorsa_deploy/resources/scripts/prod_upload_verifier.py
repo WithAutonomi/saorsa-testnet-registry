@@ -62,8 +62,7 @@ def _env_int(name: str, default: int) -> int:
 
 def _escape_tag(value: str) -> str:
     return (
-        str(value).replace("\\", "\\\\").replace(" ", "\\ ").replace(",", "\\,")
-        .replace("=", "\\=")
+        str(value).replace("\\", "\\\\").replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=")
     )
 
 
@@ -92,9 +91,7 @@ def _post_influx(url: str, token: str, org: str, bucket: str, line: str) -> None
 
 
 def _build_line(measurement: str, tags: dict, fields: dict) -> str:
-    tag_part = ",".join(
-        f"{_escape_tag(k)}={_escape_tag(v)}" for k, v in tags.items() if v != ""
-    )
+    tag_part = ",".join(f"{_escape_tag(k)}={_escape_tag(v)}" for k, v in tags.items() if v != "")
     field_parts = []
     for key, value in fields.items():
         if isinstance(value, bool):
@@ -219,9 +216,7 @@ def main() -> int:
         try:
             session = session_factory()
             repo = SqlAlchemyDeploymentRepository(session)
-            pending = repo.list_unverified_uploads_for_host(
-                deployment_id, host, limit=batch_limit
-            )
+            pending = repo.list_unverified_uploads_for_host(deployment_id, host, limit=batch_limit)
             if pending:
                 _log(f"{len(pending)} address(es) to check")
             for upload in pending:
@@ -274,14 +269,18 @@ def _check_one(
     start_ns = time.time_ns()
     # Timestamped so a re-check keeps the failed attempt's log rather than
     # overwriting the very evidence worth reading.
-    log_base = Path(LOG_DIR) / (
-        f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-{address[:16]}"
-    )
+    log_base = Path(LOG_DIR) / (f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-{address[:16]}")
 
     cmd = [
-        ant_path, "--evm-network", evm_network,
+        ant_path,
+        "--evm-network",
+        evm_network,
         "-" + ("v" * _LOG_LEVEL_VERBOSITY.get(log_level, 1)),
-        "file", "download", address, "-o", str(output_path),
+        "file",
+        "download",
+        address,
+        "-o",
+        str(output_path),
     ]
     rc, _stdout, stderr = _run_ant(cmd, log_base, timeout)
     finished_at = datetime.now(timezone.utc)
@@ -339,14 +338,23 @@ def _check_one(
 
     influx_url, influx_token, influx_org, influx_bucket = influx
     _post_influx(
-        influx_url, influx_token, influx_org, influx_bucket,
+        influx_url,
+        influx_token,
+        influx_org,
+        influx_bucket,
         _build_line(
             MEASUREMENT,
             {"host": host, "region": region, "deployment_name": deployment_name},
-            {"status": status.value, "ok": status is ProdUploadVerifyStatus.OK,
-             "duration_ms": duration_ms, "bytes_downloaded": bytes_downloaded or 0,
-             "age_secs": age, "address": address,
-             "file_name": upload.file_name, "reason": reason or ""},
+            {
+                "status": status.value,
+                "ok": status is ProdUploadVerifyStatus.OK,
+                "duration_ms": duration_ms,
+                "bytes_downloaded": bytes_downloaded or 0,
+                "age_secs": age,
+                "address": address,
+                "file_name": upload.file_name,
+                "reason": reason or "",
+            },
         ),
     )
     output_path.unlink(missing_ok=True)

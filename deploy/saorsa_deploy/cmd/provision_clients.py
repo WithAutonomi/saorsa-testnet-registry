@@ -111,10 +111,7 @@ def _resolve_elastic_config(clients, name, console):
             f"'{name}' is missing connection details — run elastic provision."
         )
         sys.exit(1)
-    console.print(
-        f"  Client log forwarding: {url} (index telegraf-ant-clients-"
-        f"{name.lower()}-*)"
-    )
+    console.print(f"  Client log forwarding: {url} (index telegraf-ant-clients-{name.lower()}-*)")
     return url, username, password
 
 
@@ -142,9 +139,7 @@ def _resolve_ant_binary(args, console):
         from saorsa_deploy.binary_source import check_ant_release_exists, get_ant_release_url
 
         if not check_ant_release_exists(args.ant_version):
-            console.print(
-                f"[bold red]Error:[/bold red] Ant release v{args.ant_version} not found."
-            )
+            console.print(f"[bold red]Error:[/bold red] Ant release v{args.ant_version} not found.")
             sys.exit(1)
         url = get_ant_release_url(args.ant_version)
         console.print(f"  Ant binary: release v{args.ant_version}")
@@ -216,23 +211,17 @@ def _resolve_addresses_file_content(args, console) -> str | None:
     try:
         content = open(path).read()
     except OSError as e:
-        console.print(
-            f"[bold red]Error:[/bold red] Cannot read --addresses-file {path}: {e}"
-        )
+        console.print(f"[bold red]Error:[/bold red] Cannot read --addresses-file {path}: {e}")
         sys.exit(1)
     stripped = content.strip()
     if not stripped:
-        console.print(
-            f"[bold red]Error:[/bold red] --addresses-file {path} is empty."
-        )
+        console.print(f"[bold red]Error:[/bold red] --addresses-file {path} is empty.")
         sys.exit(1)
     # Comment lines are not addresses. The service skips them and so does
     # `parse_addresses`; counting them here reported an 11-comment, 6-address
     # file as holding 17 addresses.
     line_count = sum(
-        1
-        for line in stripped.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+        1 for line in stripped.splitlines() if line.strip() and not line.strip().startswith("#")
     )
     console.print(f"  Addresses file: {path} ({line_count} address(es))")
     return stripped + "\n"
@@ -268,36 +257,24 @@ def parse_addresses(content: str | None) -> list[str]:
             continue
         tokens = stripped.split()
         if len(tokens) > 2:
-            bad.append(
-                (lineno, raw, f"expected '<address> [bytes]', got {len(tokens)} tokens")
-            )
+            bad.append((lineno, raw, f"expected '<address> [bytes]', got {len(tokens)} tokens"))
             continue
         token = tokens[0]
-        if len(token) != _ADDRESS_LEN or any(
-            c not in "0123456789abcdefABCDEF" for c in token
-        ):
-            bad.append(
-                (lineno, raw, f"not a {_ADDRESS_LEN}-char hex address")
-            )
+        if len(token) != _ADDRESS_LEN or any(c not in "0123456789abcdefABCDEF" for c in token):
+            bad.append((lineno, raw, f"not a {_ADDRESS_LEN}-char hex address"))
             continue
         if len(tokens) == 2:
             size = tokens[1]
             if not size.isdigit():
-                bad.append(
-                    (lineno, raw, f"size {size!r} is not a whole number of bytes")
-                )
+                bad.append((lineno, raw, f"size {size!r} is not a whole number of bytes"))
                 continue
             out.append(f"{token.lower()} {int(size)}")
             continue
         out.append(token.lower())
     if bad:
-        sample = "\n".join(
-            f"  line {ln}: {reason} — {raw!r}" for ln, raw, reason in bad[:5]
-        )
+        sample = "\n".join(f"  line {ln}: {reason} — {raw!r}" for ln, raw, reason in bad[:5])
         more = f"\n  ... and {len(bad) - 5} more" if len(bad) > 5 else ""
-        raise ValueError(
-            f"Addresses file has {len(bad)} invalid line(s):\n{sample}{more}"
-        )
+        raise ValueError(f"Addresses file has {len(bad)} invalid line(s):\n{sample}{more}")
     return out
 
 
@@ -351,10 +328,7 @@ def _ensure_uploader_wallets(
     # Phase 1: ensure every uploader has a wallet recorded in state.
     needs_wallet = [c for c in uploaders if not c.get("wallet_secret_key")]
     if needs_wallet:
-        console.print(
-            f"  Per-uploader wallets: creating {len(needs_wallet)} new "
-            f"wallet(s)"
-        )
+        console.print(f"  Per-uploader wallets: creating {len(needs_wallet)} new wallet(s)")
         for client in needs_wallet:
             wallet_obj = create_wallet()
             # The role, not a literal "Uploader". `client_index` restarts at 1
@@ -362,10 +336,7 @@ def _ensure_uploader_wallets(
             # region both print "#1" — two identical lines against two different
             # wallet addresses, in the one place an operator reads to see which
             # wallet belongs to which VM.
-            console.print(
-                f"    {_wallet_label(client)} ({client['region']}): "
-                f"{wallet_obj.address}"
-            )
+            console.print(f"    {_wallet_label(client)} ({client['region']}): {wallet_obj.address}")
             update_client_wallet(
                 name=name,
                 client_index=client["client_index"],
@@ -383,21 +354,15 @@ def _ensure_uploader_wallets(
     )
     for client in uploaders:
         addr = client["wallet_address"]
-        target_ant_units = to_token_units(
-            client.get("ant_funding", "100"), decimals
-        )
-        target_eth_wei = Web3.to_wei(
-            Decimal(str(client.get("eth_funding", "0.5"))), "ether"
-        )
+        target_ant_units = to_token_units(client.get("ant_funding", "100"), decimals)
+        target_eth_wei = Web3.to_wei(Decimal(str(client.get("eth_funding", "0.5"))), "ether")
         cur_ant = get_token_balance(w3, token_address, addr)
         cur_eth = get_eth_balance(w3, addr)
         deficit_ant = max(target_ant_units - cur_ant, 0)
         deficit_eth = max(target_eth_wei - cur_eth, 0)
 
         if deficit_ant == 0 and deficit_eth == 0:
-            console.print(
-                f"    {_wallet_label(client)} ({addr}): already funded, skipping"
-            )
+            console.print(f"    {_wallet_label(client)} ({addr}): already funded, skipping")
             continue
 
         console.print(
@@ -410,9 +375,7 @@ def _ensure_uploader_wallets(
             tx = transfer_eth(w3, funding_secret_key, addr, deficit_eth)
             console.print(f"      eth_tx={tx}")
         if deficit_ant > 0:
-            tx = transfer_token(
-                w3, token_address, funding_secret_key, addr, deficit_ant
-            )
+            tx = transfer_token(w3, token_address, funding_secret_key, addr, deficit_ant)
             console.print(f"      ant_tx={tx}")
 
     return clients
@@ -477,8 +440,7 @@ def cmd_provision_clients(args):
         update_client_state(args.name, {"ssh_key_path": args.ssh_key_path})
     except Exception as e:  # noqa: BLE001 — recording is best-effort
         console.print(
-            f"[yellow]Warning: failed to record ssh_key_path in client "
-            f"state: {e}[/yellow]"
+            f"[yellow]Warning: failed to record ssh_key_path in client state: {e}[/yellow]"
         )
 
     has_uploaders = any(is_upload(c.get("role", "upload")) for c in clients)
@@ -504,13 +466,10 @@ def cmd_provision_clients(args):
     # synthesis entirely.
     if has_uploaders and not prod_mode:
         try:
-            clients = _ensure_uploader_wallets(
-                args.name, clients, wallet_secret_key, console
-            )
+            clients = _ensure_uploader_wallets(args.name, clients, wallet_secret_key, console)
         except Exception as e:
             console.print(
-                f"[bold red]Error:[/bold red] Failed to create or fund "
-                f"per-uploader wallets: {e}"
+                f"[bold red]Error:[/bold red] Failed to create or fund per-uploader wallets: {e}"
             )
             sys.exit(1)
     addresses_file_content = _resolve_addresses_file_content(args, console)
@@ -578,9 +537,7 @@ def cmd_provision_clients(args):
     if prod_mode:
         es_url, es_username, es_password = "", "", ""
     else:
-        es_url, es_username, es_password = _resolve_elastic_config(
-            clients, args.name, console
-        )
+        es_url, es_username, es_password = _resolve_elastic_config(clients, args.name, console)
 
     # The client state stores `network` as its unresolved token (a profile name or
     # an inline set), exactly as clock_skew stores its duration string. Resolve it
@@ -605,8 +562,7 @@ def cmd_provision_clients(args):
             )
         else:
             console.print(
-                f"    Downloader #{c['client_index']}: {c.get('ip', 'N/A')} "
-                f"({c['region']})"
+                f"    Downloader #{c['client_index']}: {c.get('ip', 'N/A')} ({c['region']})"
             )
     console.print()
 
@@ -629,9 +585,7 @@ def cmd_provision_clients(args):
         # client with a slice of the node tier that production could never
         # supply, and hide exactly the discovery failure this is meant to
         # expose.
-        bootstrap_webrtc_multiaddrs = (
-            deploy_state.get("bootstrap_webrtc_multiaddrs") or []
-        )
+        bootstrap_webrtc_multiaddrs = deploy_state.get("bootstrap_webrtc_multiaddrs") or []
         if not bootstrap_webrtc_multiaddrs:
             console.print(
                 "[bold red]Error:[/bold red] this deployment has WASM clients but "
