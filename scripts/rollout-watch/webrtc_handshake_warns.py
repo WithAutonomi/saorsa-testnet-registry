@@ -358,7 +358,12 @@ def evaluate(
     # 0 new-version services is the expected state of a pre-rollout baseline
     # run, and must not read as success.
     if not arms.new:
-        return Check(name=name, status=NOT_APPLICABLE, detail=not_applicable(arms))
+        return Check(
+            name=name,
+            status=NOT_APPLICABLE,
+            detail=not_applicable(arms),
+            data=data,
+        )
 
     if new_cnr is None:
         return Check(
@@ -379,6 +384,22 @@ def evaluate(
     new_share, old_share = arms.share("new"), arms.share("old")
 
     if min(new_share, old_share) >= SUSPEND_BELOW_SHARE:
+        # An undefined old-arm normaliser and a target silent on the old arm
+        # are unrelated states, and only the second one is a comparison. The
+        # first takes a telemetry fault -- all three controls are emitted by
+        # every service at 0.7-1.2M/day -- so treating it as "the target
+        # logged none" would FAIL every high-volume target on an artefact.
+        if old_cnr is None:
+            return Check(
+                name=name,
+                status=NOT_APPLICABLE,
+                detail=(
+                    f"{shown}; the three control targets logged nothing on the old "
+                    "arm, so that arm has no normaliser and no comparison is "
+                    "possible. That is a telemetry fault, not a quiet fleet."
+                ),
+                data=data,
+            )
         if not old_cnr:
             status = FAIL if new.docs else PASS
             return Check(
@@ -403,6 +424,8 @@ def evaluate(
             data={**data, "ratio": ratio, "compared_against": "old arm"},
         )
 
+    # `> 0` is only a division guard; `parse_baseline_cnr` refuses a
+    # non-positive ratio at the CLI rather than letting it fall through here.
     if baseline_cnr is not None and baseline_cnr > 0:
         ratio = new_cnr / baseline_cnr
         status = PASS if ratio <= RATIO_LIMIT else FAIL
@@ -437,7 +460,9 @@ def parse_baseline_cnr(values: list[str] | None) -> dict[str, float]:
     """`--baseline-cnr agent_internal=0.63` -> {"agent_internal": 0.63}.
 
     An unknown key is an error rather than a silent no-op: a typo there would
-    quietly withdraw the baseline and turn a comparison into NOT APPLICABLE.
+    quietly withdraw the baseline and turn a comparison into NOT APPLICABLE. A
+    non-positive ratio is refused for the same reason -- it cannot be a
+    denominator, so it would be dropped just as silently.
     """
     out: dict[str, float] = {}
     for raw in values or []:
@@ -454,11 +479,17 @@ def parse_baseline_cnr(values: list[str] | None) -> dict[str, float]:
                 f"Known keys: {known}."
             )
         try:
-            out[key] = float(number.strip())
+            ratio = float(number.strip())
         except ValueError:
             raise RolloutCheckError(
                 f"--baseline-cnr {key} must be a number. Got {number.strip()!r}."
             ) from None
+        if ratio <= 0:
+            raise RolloutCheckError(
+                f"--baseline-cnr {key} must be greater than zero, since it is the "
+                f"denominator of a ratio. Got {ratio}."
+            )
+        out[key] = ratio
     return out
 
 

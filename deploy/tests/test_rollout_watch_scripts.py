@@ -1208,6 +1208,49 @@ def test_warn_cnr_is_none_when_the_controls_logged_nothing():
     assert "normaliser is undefined" in check.detail
 
 
+def test_warn_silent_old_arm_controls_are_not_a_target_that_logged_nothing():
+    """The old-arm twin: an undefined normaliser must not read as a FAIL.
+
+    `cnr` is None when the controls are silent and 0.0 when the target is, and
+    only the second is a comparison. Conflating them FAILs every high-volume
+    target whenever the old arm's telemetry breaks, since `new.docs` is then
+    always non-zero.
+    """
+    arms = _arms(new=tuple(f"n/{i}" for i in range(50)), old=tuple(f"o/{i}" for i in range(50)))
+    controls = {t: 1_000_000 for t in handshake_warns.CONTROL_TARGETS}
+
+    # Controls silent on the old arm: no normaliser, so no comparison.
+    measurement = warn_measurement(
+        {"new": {"webrtc::mux": 500_000, **controls}, "old": {"webrtc::mux": 100_000}},
+        {"new": 50, "old": 50},
+    )
+    assert measurement.cnr("webrtc::mux", "old") is None
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, None)
+    assert check.status == common.NOT_APPLICABLE
+    assert "control targets logged nothing on the old arm" in check.detail
+
+    # Target silent on the old arm, controls fine: that IS the zero case, and
+    # a non-zero new arm against it is a real FAIL.
+    measurement = warn_measurement(
+        {"new": {"webrtc::mux": 500_000, **controls}, "old": controls},
+        {"new": 50, "old": 50},
+    )
+    assert measurement.cnr("webrtc::mux", "old") == 0.0
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, None)
+    assert check.status == common.FAIL
+    assert "old arm logged none" in check.detail
+
+
+def test_warn_no_new_arm_services_carries_the_figures_into_json():
+    """`--json-out` must not lose the figures on the pre-rollout path."""
+    measurement = warn_measurement({"old": WARN_DAYS["10-07"]}, {"old": 774})
+    check = handshake_warns.evaluate(
+        "mux", "webrtc::mux", measurement, _arms(old=("h/1",)), baseline_cnr=None
+    )
+    assert check.data["old"]["docs"] == WARN_DAYS["10-07"]["webrtc::mux"]
+    assert check.data["old_cnr"] == pytest.approx(0.5537, abs=0.0005)
+
+
 def test_warn_no_new_arm_services_is_not_applicable_not_a_pass():
     """0 new-version services is the expected pre-rollout state."""
     measurement = warn_measurement({"old": WARN_DAYS["10-07"]}, {"old": 774})
@@ -1345,4 +1388,11 @@ def test_warn_baseline_cnr_rejects_an_unknown_target():
     assert handshake_warns.parse_baseline_cnr(["mux=0.23"]) == {"mux": 0.23}
     for bad in (["webrtc::mux=0.23"], ["mux"], ["mux=high"]):
         with pytest.raises(common.RolloutCheckError):
+            handshake_warns.parse_baseline_cnr(bad)
+
+
+def test_warn_baseline_cnr_rejects_a_non_positive_ratio():
+    """A zero denominator would be dropped as silently as a mistyped key."""
+    for bad in (["mux=0"], ["mux=0.0"], ["mux=-1.5"]):
+        with pytest.raises(common.RolloutCheckError, match="greater than zero"):
             handshake_warns.parse_baseline_cnr(bad)
