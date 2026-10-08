@@ -17,6 +17,7 @@ from saorsa_deploy.cmd.upgrade_wasm_client import (
     _resolve_targets,
     cmd_upgrade_wasm_client,
 )
+from saorsa_deploy.resources import get_resources_dir
 
 MODULE = "saorsa_deploy.cmd.upgrade_wasm_client"
 
@@ -193,15 +194,19 @@ class TestOneBuildForEveryDeployment:
 
 
 class TestSshSequence:
-    def test_install_then_cli_then_restart(self, upgrade_patches):
+    def test_install_then_cli_then_script_then_restart(self, upgrade_patches):
         cmd_upgrade_wasm_client(_args())
 
-        install, cli, restart = _commands(upgrade_patches.add_op.call_args)
+        install, cli, script, chmod, restart = _commands(upgrade_patches.add_op.call_args)
         assert "rm -rf /opt/ant-wasm-client" in install
         # require_cli: a bundle with no dist/cli.js installs cleanly and then
         # fails every transfer.
         assert "test -f /opt/ant-wasm-client/dist/cli.js" in install
         assert "/usr/local/bin/ant-wasm" in cli
+        assert script.startswith(
+            "cat > /root/ant-prod-downloader/prod_downloader.py << 'SCRIPT_EOF'"
+        )
+        assert chmod == "chmod +x /root/ant-prod-downloader/prod_downloader.py"
         assert restart == f"systemctl restart {DOWNLOADER_SERVICE}"
 
     def test_the_uploader_kind_restarts_its_own_unit(self, upgrade_patches):
@@ -218,6 +223,44 @@ class TestSshSequence:
             cmd_upgrade_wasm_client(_args(names=("PROD-WUL-01",)))
         hosts = p_inv.call_args.args[0][0]
         assert [ip for ip, _ in hosts] == ["10.0.0.2"]
+
+
+class TestServiceScriptGoesWithTheBundle:
+    """The bundle performs a transfer; the service script records it (V2-1460).
+
+    PROD-WUL-01 was provisioned a day before the `client_build` plumbing landed
+    and had its bundle upgraded 78 minutes after, which left every upload row
+    with an empty `client_build` while the host's own per-op log carried the
+    value. Redeploying the script is what makes that pairing unbreakable.
+    """
+
+    def test_uploader_kind_redeploys_its_own_script(self, upgrade_patches):
+        cmd_upgrade_wasm_client(_args(names=("PROD-WUL-01",)))
+
+        commands = _commands(upgrade_patches.add_op.call_args)
+        script = commands[2]
+        assert script.startswith(
+            "cat > /root/ant-prod-continuous-uploader/prod_continuous_uploader.py << 'SCRIPT_EOF'"
+        )
+        assert commands[3] == (
+            "chmod +x /root/ant-prod-continuous-uploader/prod_continuous_uploader.py"
+        )
+
+    def test_the_redeployed_script_is_the_one_in_this_tree(self, upgrade_patches):
+        cmd_upgrade_wasm_client(_args(names=("PROD-WUL-01",)))
+
+        script = _commands(upgrade_patches.add_op.call_args)[2]
+        expected = (get_resources_dir() / "scripts" / "prod_continuous_uploader.py").read_text()
+        assert expected in script
+        # The specific regression: the recording half must now reach the host.
+        assert "client_build=" in script
+
+    def test_script_is_written_before_the_restart(self, upgrade_patches):
+        cmd_upgrade_wasm_client(_args(names=("PROD-WUL-01",)))
+
+        commands = _commands(upgrade_patches.add_op.call_args)
+        assert commands[-1].startswith("systemctl restart")
+        assert any("prod_continuous_uploader.py" in c for c in commands[:-1])
 
 
 class TestRecording:

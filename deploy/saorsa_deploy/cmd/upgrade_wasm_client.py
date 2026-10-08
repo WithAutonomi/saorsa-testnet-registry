@@ -45,9 +45,22 @@ from saorsa_deploy.binary_source import (
     fetch_ant_wasm_build_info,
     get_ant_wasm_build_url,
 )
-from saorsa_deploy.provisioning.prod_continuous_uploader import UPLOADER_SERVICE
+from saorsa_deploy.provisioning.prod_continuous_uploader import (
+    UPLOADER_SCRIPT_NAME,
+    UPLOADER_SCRIPTS_DIR,
+    UPLOADER_SERVICE,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    SCRIPT_NAME as PROD_DOWNLOADER_SCRIPT_NAME,
+)
+from saorsa_deploy.provisioning.prod_downloader import (
+    SCRIPTS_DIR as PROD_DOWNLOADER_SCRIPTS_DIR,
+)
 from saorsa_deploy.provisioning.prod_downloader import (
     SERVICE_NAME as PROD_DOWNLOADER_SERVICE_NAME,
+)
+from saorsa_deploy.provisioning.service_script import (
+    build_service_script_commands,
 )
 from saorsa_deploy.provisioning.wasm_client import (
     build_ant_wasm_cli_command,
@@ -68,6 +81,21 @@ from saorsa_deploy.state import load_client_state
 SERVICE_BY_KIND = {
     "prod-continuous-downloader": PROD_DOWNLOADER_SERVICE_NAME,
     "prod-continuous-uploader": UPLOADER_SERVICE,
+}
+
+#: The host-side service script each kind's WASM client VM runs, as
+#: ``(scripts_dir, script_name)``. Redeployed alongside the bundle, because the
+#: bundle is only the half of the path that *performs* a transfer: the script is
+#: the half that records it. PROD-WUL-01 was provisioned a day before
+#: `client_build` plumbing existed and upgraded to a bundle that emits it 78
+#: minutes after, which left every one of its upload rows with an empty
+#: `client_build` while the per-op log on the host carried the value (V2-1460).
+SCRIPT_BY_KIND = {
+    "prod-continuous-downloader": (
+        PROD_DOWNLOADER_SCRIPTS_DIR,
+        PROD_DOWNLOADER_SCRIPT_NAME,
+    ),
+    "prod-continuous-uploader": (UPLOADER_SCRIPTS_DIR, UPLOADER_SCRIPT_NAME),
 }
 
 #: Where a deployment's run manifest is looked for, to warn that the next `up`
@@ -315,8 +343,9 @@ def _install_on_target(
     """
     console.print()
     console.print(
-        f"[bold]{target.name}[/bold] ({target.kind}): installing on "
-        f"{len(target.host_ips)} host(s), then restarting {target.service}"
+        f"[bold]{target.name}[/bold] ({target.kind}): installing the bundle and "
+        f"{SCRIPT_BY_KIND[target.kind][1]} on {len(target.host_ips)} host(s), "
+        f"then restarting {target.service}"
     )
     clear_known_hosts(target.host_ips, console)
     hosts_data = [(ip, {"ssh_user": "root", "ssh_key": ssh_key_path}) for ip in target.host_ips]
@@ -332,6 +361,11 @@ def _install_on_target(
                 # install cleanly and then fail every single transfer.
                 build_bundle_install_command(bundle_url, require_cli=True),
                 build_ant_wasm_cli_command(),
+                # The service script goes with the bundle: the bundle performs
+                # the transfer and the script records it, so upgrading one
+                # without the other leaves the recording half behind — see
+                # SCRIPT_BY_KIND.
+                *build_service_script_commands(*SCRIPT_BY_KIND[target.kind]),
                 f"systemctl restart {target.service}",
             ],
         )

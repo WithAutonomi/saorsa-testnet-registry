@@ -2240,10 +2240,11 @@ def main(argv=None):
     deployments_upgrade_ant_binary_parser = deployments_subparsers.add_parser(
         "upgrade-ant-binary",
         help=(
-            "Force-install the ant binary in place on a running prod "
-            "downloader deployment's VM(s) and restart the service. "
-            "Supports prod-downloaders and prod-continuous-downloader only; "
-            "no infrastructure is touched."
+            "Force-install the native ant binary in place on a running prod "
+            "client deployment's VM(s) and restart the matching service on "
+            "each. Supports prod-downloaders, prod-continuous-downloader and "
+            "prod-continuous-uploader (uploader + verifier VMs, skipping the "
+            "uploader VM on a WASM deployment); no infrastructure is touched."
         ),
     )
     deployments_upgrade_ant_binary_parser.add_argument(
@@ -2279,8 +2280,10 @@ def main(argv=None):
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Restart the ant-prod-downloader service after swapping the "
-            "binary (default: on). --no-restart leaves the new binary on "
+            "Restart each host's own service after swapping the binary "
+            "(default: on) — ant-prod-downloader on the downloader kinds, "
+            "ant-prod-continuous-uploader and ant-prod-upload-verifier on a "
+            "prod-continuous-uploader. --no-restart leaves the new binary on "
             "disk without restarting — useful for a completed one-shot "
             "'prod-downloaders' run, since restarting it re-walks the "
             "entire address list from scratch (no checkpointing)."

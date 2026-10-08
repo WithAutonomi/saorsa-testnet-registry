@@ -433,16 +433,34 @@ What is specific to the download kinds:
 
 See `deploy/README.md` §"The browser path on the production download kinds".
 
-### Upgrading the `ant` binary in place on a running prod downloader
+### Upgrading the native `ant` binary in place on a running prod client
 
 `deployments upgrade-ant-binary --name <n>` force-installs `ant` on an
-already-running `prod-downloaders` / `prod-continuous-downloader` client VM over
-SSH and restarts the service. No infrastructure is touched.
+already-running `prod-downloaders` / `prod-continuous-downloader` /
+`prod-continuous-uploader` client VM over SSH and restarts the service. No
+infrastructure is touched.
 
-It exists because the deploy-time install op is **presence-gated**
+It exists because the deploy-time install ops are **presence-gated**
 (`test -f /root/.local/bin/ant && SKIP`), so a plain re-`deploy` never picks up a
-new release on an existing deployment. VM IPs come from S3 client state.
+new release on an existing deployment — and for `prod-continuous-uploader` a
+`down`/`up` is not a way round it either, since `deploy` deliberately reuses the
+existing registry row and a fresh one would break the deployment's continuous
+history. VM IPs come from S3 client state.
 
+- **Hosts are grouped by the unit they actually run, and each group restarts its
+  own.** `prod-continuous-uploader` is the only multi-role kind:
+  `role: upload` → `ant-prod-continuous-uploader`, every other role (the
+  verifiers) → `ant-prod-upload-verifier`. **Both roles execute the native `ant`
+  binary**, so both want the upgrade; one hard-coded unit name restarted a
+  service that exists on neither.
+- **A WASM uploader VM is skipped entirely** — `--name PROD-WUL-01` installs on
+  its NATIVE verifier VMs only. The transport is read from `deploy_args.client_kind`
+  (absent = native, as the provisioner defaults), never probed on the host.
+  `PROD-WDL-01` is wholly WASM, so the command warns and names
+  `upgrade-wasm-client` instead of installing a binary nothing there executes.
+- **One unreachable host does not stop the others** — groups are upgraded
+  independently, failures accumulate, the summary reports per role, and the
+  `ant_binary_upgrade_failed` event names the hosts.
 - **`--no-restart` matters for a completed `prod-downloaders` run**: the service
   has no checkpoint, so restarting re-walks the whole address list from scratch
   and duplicates the metrics.
@@ -473,7 +491,15 @@ the common WASM rules above.)
   different commit of a branch that moved in between.
 - **The continuous uploader's verifier VMs are deliberately untouched** (they are
   native, so a `digest_mismatch` stays attributable to the upload rather than to
-  a browser read path).
+  a browser read path). Their `ant` binary is `upgrade-ant-binary`'s job.
+- **The host-side service script is redeployed with the bundle.** The bundle is
+  the half that *performs* a transfer; `prod_downloader.py` /
+  `prod_continuous_uploader.py` is the half that *records* it, so upgrading one
+  alone leaves the recording half behind. PROD-WUL-01 proved it: provisioned
+  2026-09-26, `client_build` plumbing landed 2026-09-27 17:43, bundle upgraded
+  78 minutes later — and from then on its per-op log carried `client_build` while
+  **every** `deployment_prod_upload_results` row had the column empty. One
+  definition (`provisioning/service_script.py`) shared with both provisioners.
 - Timing is the operator's — run it outside the daily window. A failure on one
   deployment is reported and the rest still upgrade, exiting non-zero at the end.
 - On success `deploy_args.wasm_build` is replaced and a `wasm_client_upgraded`
