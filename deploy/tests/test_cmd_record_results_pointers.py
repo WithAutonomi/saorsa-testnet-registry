@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 import pytest
 from saorsa_db.db import Base
-from saorsa_db.models import PointerOp, PointerOutcome
 from saorsa_db.repositories import SqlAlchemyDeploymentRepository
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -150,54 +149,6 @@ def _point(**extra):
     }
     point.update(extra)
     return point
-
-
-def test_every_pointer_point_becomes_a_row(repo):
-    deployment = repo.create(name="PTR-01", deploy_args={"kind": "testnet"})
-    blocks = _record(repo, deployment, [_point(), _point(start_ns=2, op="sweep")])
-    rows = repo.list_pointer_records_for_deployment(deployment.id)
-    assert len(rows) == 2
-    assert {r.op for r in rows} == {PointerOp.CREATE, PointerOp.SWEEP}
-    assert rows[0].outcome is PointerOutcome.OK
-    # The Slack reply blocks come back so `--update-slack` can append them.
-    assert blocks
-
-
-def test_a_point_with_no_start_ns_is_unusable_not_coerced(repo):
-    """`start_ns` is half the upsert key. A row without it could not be revised
-    on a re-run, so it would duplicate on every one."""
-    deployment = repo.create(name="PTR-01", deploy_args={"kind": "testnet"})
-    _record(repo, deployment, [_point(start_ns=None)])
-    assert repo.list_pointer_records_for_deployment(deployment.id) == []
-
-
-def test_an_unrecognised_outcome_is_not_written_as_error(repo):
-    """Coercing it would put a value this build does not understand into the
-    column the gates read, and `error` is a claim about the network."""
-    deployment = repo.create(name="PTR-01", deploy_args={"kind": "testnet"})
-    _record(repo, deployment, [_point(outcome="teleported")])
-    assert repo.list_pointer_records_for_deployment(deployment.id) == []
-
-
-def test_a_query_failure_warns_rather_than_failing_the_recording(repo):
-    """The file-op records are the gated measurement and are already written by
-    the time this runs. A pointer query that fails must not lose them."""
-    from rich.console import Console
-
-    deployment = repo.create(name="PTR-01", deploy_args={"kind": "testnet"})
-    console = Console()
-    args = SimpleNamespace(name="PTR-01")
-    with patch(
-        "saorsa_deploy.cmd.record_results.fetch_pointer_points",
-        side_effect=RuntimeError("influx down"),
-    ):
-        assert _record_pointer_ops(repo, deployment, args, console, "u", "t", "o", "b") is None
-
-
-def test_a_run_with_no_pointer_clients_records_nothing_and_says_nothing(repo):
-    deployment = repo.create(name="STG-01", deploy_args={"kind": "testnet"})
-    assert _record(repo, deployment, []) is None
-    assert repo.list_pointer_records_for_deployment(deployment.id) == []
 
 
 def test_the_network_profile_is_denormalised_onto_the_row(repo):

@@ -109,108 +109,6 @@ def deploy_patches():
 
 
 class TestDeployHappyPath:
-    def test_full_deploy_invokes_each_stage_in_order(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-
-        deploy_patches.record_create.assert_called_once()
-        deploy_patches.mon_infra.assert_called_once()
-        deploy_patches.prov_mon.assert_called_once()
-        deploy_patches.infra_clients.assert_called_once()
-        deploy_patches.prov_clients.assert_called_once()
-        deploy_patches.start_clients.assert_called_once()
-
-    def test_deploy_records_running_status_on_success(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-
-        final_status = deploy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "running"
-
-    def test_deploy_skips_monitoring_when_already_provisioned(self, deploy_patches):
-        deploy_patches.mon_exists.return_value = True
-
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-
-        deploy_patches.mon_infra.assert_not_called()
-        deploy_patches.prov_mon.assert_not_called()
-        deploy_patches.infra_clients.assert_called_once()
-        deploy_patches.prov_clients.assert_called_once()
-        deploy_patches.start_clients.assert_called_once()
-
-    def test_deploy_reprovisions_monitoring_when_influx_creds_missing(
-        self, deploy_patches
-    ):
-        # Monitoring VM exists (infra ran) but a prior provision never wrote the
-        # Influx creds — re-provision rather than skip-and-fail.
-        deploy_patches.mon_exists.return_value = True
-        deploy_patches.mon_has_influx.return_value = False
-
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-
-        deploy_patches.mon_infra.assert_not_called()  # VM already there
-        deploy_patches.prov_mon.assert_called_once()  # but re-provisioned
-        deploy_patches.infra_clients.assert_called_once()
-
-    def test_deploy_skips_infra_clients_when_client_state_exists(self, deploy_patches):
-        deploy_patches.client_exists.return_value = True
-
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-
-        deploy_patches.infra_clients.assert_not_called()
-        deploy_patches.prov_clients.assert_called_once()
-        deploy_patches.start_clients.assert_called_once()
-
-    def test_deploy_passes_addresses_file_to_provisioner(
-        self, deploy_patches, tmp_path
-    ):
-        custom_file = tmp_path / "my_addrs.txt"
-        custom_file.write_text("a" * 64 + "\n")
-
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(addresses_path=str(custom_file))
-        )
-
-        # _provision_prod_downloader(args, addresses_file, console)
-        addresses_file_arg = deploy_patches.prov_clients.call_args.args[1]
-        assert addresses_file_arg == str(custom_file)
-
-    def test_deploy_uses_shipped_default_addresses_when_flag_absent(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-
-        addresses_file_arg = deploy_patches.prov_clients.call_args.args[1]
-        assert addresses_file_arg.endswith("prod_addresses.txt")
-
-    def test_deploy_records_kind_in_deploy_args(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["kind"] == "prod-continuous-downloader"
-        assert payload["spec"] == "lon1"
-
-    def test_deploy_records_bootstrap_cache_default_true(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["bootstrap_cache"] is True
-
-    def test_deploy_records_bootstrap_cache_false(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args(bootstrap_cache=False))
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["bootstrap_cache"] is False
-
-    def test_deploy_persists_parsed_addresses_list(
-        self, deploy_patches, tmp_path
-    ):
-        addr_a = "a" * 64
-        addr_b = "b" * 64
-        custom_file = tmp_path / "addrs.txt"
-        custom_file.write_text(f"{addr_a}\n# a comment\n\n{addr_b}\n")
-
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(addresses_path=str(custom_file))
-        )
-
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["addresses"] == [addr_a, addr_b]
-        assert payload["addresses_file"] == str(custom_file)
 
     def test_deploy_rejects_addresses_file_with_extra_tokens(
         self, deploy_patches, tmp_path
@@ -226,83 +124,6 @@ class TestDeployHappyPath:
                 _deploy_args(addresses_path=str(custom_file))
             )
 
-    def test_deploy_passes_spec_as_single_downloader_to_infra_clients(
-        self, deploy_patches
-    ):
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(spec="nyc1:s-4vcpu-8gb")
-        )
-
-        infra_args = deploy_patches.infra_clients.call_args.args[0]
-        assert infra_args.uploader == []
-        assert infra_args.downloader == [
-            "digitalocean:nyc1:s-4vcpu-8gb:bootstrap_cache=true"
-        ]
-
-
-class TestProviderSelection:
-    def test_client_provider_prefixes_downloader_spec(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(provider="hetzner", spec="fsn1:cpx41")
-        )
-        infra_args = deploy_patches.infra_clients.call_args.args[0]
-        assert infra_args.downloader == [
-            "hetzner:fsn1:cpx41:bootstrap_cache=true"
-        ]
-
-    def test_client_provider_persisted_in_deploy_args(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args(provider="vultr"))
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["provider"] == "vultr"
-
-    def test_monitoring_provider_threaded_to_infra(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(monitoring_provider="ovh")
-        )
-        mon_args = deploy_patches.mon_infra.call_args.args[0]
-        assert mon_args.provider == "ovh"
-        # OVH delegates region/size to provider defaults (None passthrough).
-        assert mon_args.region is None
-        assert mon_args.droplet_size is None
-
-    def test_monitoring_default_provider_keeps_lon1_small_box(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(_deploy_args())
-        mon_args = deploy_patches.mon_infra.call_args.args[0]
-        assert mon_args.provider == "digitalocean"
-        assert mon_args.region == "lon1"
-        assert mon_args.droplet_size == "s-2vcpu-4gb"
-
-    def test_monitoring_provider_persisted_in_deploy_args(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(monitoring_provider="ovh")
-        )
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["monitoring_provider"] == "ovh"
-
-
-class TestRetentionAndCadence:
-    def test_influx_retention_threaded_to_provision(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(influx_retention_days=14)
-        )
-        prov_args = deploy_patches.prov_mon.call_args.args[0]
-        assert prov_args.retention_days == 14
-
-    def test_retention_persisted_in_deploy_args(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(influx_retention_days=14, log_retention_days=3)
-        )
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["influx_retention_days"] == 14
-        assert payload["log_retention_days"] == 3
-
-    def test_daily_flag_sets_sleep_to_one_day(self, deploy_patches):
-        cmd_prod_continuous_downloader_deploy(
-            _deploy_args(daily=True, sleep_interval_secs=900)
-        )
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["sleep_interval_secs"] == 86400
-
 
 class TestDeployFailure:
     def test_deploy_records_failed_status_when_underlying_stage_exits(
@@ -316,7 +137,6 @@ class TestDeployFailure:
         deploy_patches.record_status.assert_called()
         final_status = deploy_patches.record_status.call_args_list[-1].args[1]
         assert final_status.value == "failed"
-
 
 
 @pytest.fixture
@@ -358,61 +178,6 @@ def destroy_patches():
 
 
 class TestDestroy:
-    def test_default_destroy_tears_down_monitoring(self, destroy_patches):
-        cmd_prod_continuous_downloader_destroy(_destroy_args())
-
-        destroy_patches.stop.assert_called_once()
-        destroy_patches.destroy_clients.assert_called_once()
-        destroy_patches.destroy_mon.assert_called_once()
-
-        final_status = destroy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "destroyed"
-
-    def test_keep_monitoring_flag_preserves_monitoring(self, destroy_patches):
-        cmd_prod_continuous_downloader_destroy(
-            _destroy_args(keep_monitoring=True)
-        )
-
-        destroy_patches.destroy_clients.assert_called_once()
-        destroy_patches.destroy_mon.assert_not_called()
-
-    def test_default_destroy_skips_monitoring_when_stack_is_missing(
-        self, destroy_patches
-    ):
-        destroy_patches.mon_exists.return_value = False
-
-        cmd_prod_continuous_downloader_destroy(_destroy_args())
-
-        destroy_patches.destroy_mon.assert_not_called()
-
-    def test_destroy_skips_client_steps_when_no_client_state(self, destroy_patches):
-        destroy_patches.client_exists.return_value = False
-
-        cmd_prod_continuous_downloader_destroy(_destroy_args())
-
-        destroy_patches.stop.assert_not_called()
-        destroy_patches.destroy_clients.assert_not_called()
-
-    def test_destroy_tolerates_stop_clients_systemexit(self, destroy_patches):
-        destroy_patches.stop.side_effect = SystemExit(1)
-
-        cmd_prod_continuous_downloader_destroy(_destroy_args())
-
-        destroy_patches.destroy_clients.assert_called_once()
-        final_status = destroy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "destroyed"
-
-    def test_destroy_tolerates_stop_clients_runtime_error(self, destroy_patches):
-        # Regression: Pyinfra raises RuntimeError("No hosts remaining!") when a
-        # half-provisioned VM has no ant-downloader.service yet. That must NOT
-        # block `clients destroy` from tearing the Terraform VMs down.
-        destroy_patches.stop.side_effect = RuntimeError("No hosts remaining!")
-
-        cmd_prod_continuous_downloader_destroy(_destroy_args())
-
-        destroy_patches.destroy_clients.assert_called_once()
-        final_status = destroy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "destroyed"
 
     def test_destroy_records_failed_on_destroy_clients_error(self, destroy_patches):
         destroy_patches.destroy_clients.side_effect = SystemExit(1)

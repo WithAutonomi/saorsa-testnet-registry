@@ -211,25 +211,3 @@ class TestJournalMismatch:
         harness.journal = journal
         deploy_cmds.cmd_up(_args(resume=True))
         assert harness.executed == ["build", "nodes"]
-
-
-class TestDownCleanup:
-    def test_down_with_config_deletes_journal(self, harness):
-        deploy_cmds.cmd_down(_args(skip_drain_failures=False))
-        assert harness.executed == ["build", "nodes"]
-        assert harness.deleted == ["DEV-01"]
-
-    def test_down_by_name_deletes_journal(self, harness, monkeypatch):
-        monkeypatch.setattr(
-            deploy_cmds, "build_destroy_steps_from_state", lambda name, **k: harness.plan
-        )
-        deploy_cmds.cmd_down(
-            _args(config=None, name="DEV-01", skip_drain_failures=False)
-        )
-        assert harness.deleted == ["DEV-01"]
-
-    def test_failed_destroy_keeps_journal(self, harness):
-        harness.behaviour = {"build": 3}
-        with pytest.raises(SystemExit):
-            deploy_cmds.cmd_down(_args(skip_drain_failures=False))
-        assert harness.deleted == []

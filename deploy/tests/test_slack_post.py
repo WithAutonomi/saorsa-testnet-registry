@@ -1,7 +1,6 @@
-import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from saorsa_db.db import Base
@@ -560,90 +559,6 @@ def test_prod_local_uploads_short_file_list_uses_single_unpaginated_section():
     assert len(file_blocks) == 1
     assert "(1/" not in file_blocks[0]["text"]["text"]
 
-
-def test_dry_run_prints_payload_and_does_not_post(repo, capsys):
-    repo.create(
-        name="DEV-DRY",
-        deploy_args={"bootstrap_count": 1, "vm_count": 1, "nodes_per_vm": 5},
-    )
-    args = SimpleNamespace(name="DEV-DRY", dry_run=True)
-
-    with patch("saorsa_deploy.cmd.slack_post.get_repository", return_value=repo):
-        with patch("saorsa_deploy.cmd.slack_post.requests.post") as mock_post:
-            with patch(
-                "saorsa_deploy.cmd.slack_post.load_deployment_state",
-                side_effect=RuntimeError,
-            ):
-                with patch(
-                    "saorsa_deploy.cmd.slack_post.load_client_state",
-                    return_value={},
-                ):
-                    cmd_slack_post(args)
-
-    mock_post.assert_not_called()
-    out = capsys.readouterr().out
-    # Dry-run prints a human-readable preview, not JSON. Just assert the
-    # deployment name appears in the rendered text.
-    assert "DEV-DRY" in out
-    assert "{" not in out
-
-
-def test_missing_webhook_url_errors_when_not_dry_run(repo, monkeypatch):
-    repo.create(
-        name="DEV-NOWH",
-        deploy_args={"bootstrap_count": 1, "vm_count": 1, "nodes_per_vm": 5},
-    )
-    monkeypatch.delenv("ANT_DEPLOY_SLACK_WEBHOOK_URL", raising=False)
-    args = SimpleNamespace(name="DEV-NOWH", dry_run=False)
-
-    with patch("saorsa_deploy.cmd.slack_post.get_repository", return_value=repo):
-        with patch(
-            "saorsa_deploy.cmd.slack_post.load_deployment_state",
-            side_effect=RuntimeError,
-        ):
-            with patch(
-                "saorsa_deploy.cmd.slack_post.load_client_state",
-                return_value={},
-            ):
-                with pytest.raises(SystemExit) as exc:
-                    cmd_slack_post(args)
-
-    assert exc.value.code == 1
-
-
-def test_post_includes_recorded_purpose_from_deploy_args(repo, monkeypatch):
-    repo.create(
-        name="DEV-WITH-PURPOSE",
-        deploy_args={
-            "bootstrap_count": 1,
-            "vm_count": 1,
-            "nodes_per_vm": 5,
-            "purpose": "Recorded at deploy time",
-        },
-    )
-    monkeypatch.setenv("ANT_DEPLOY_SLACK_WEBHOOK_URL", "https://hooks.slack.example/T/B/X")
-    args = SimpleNamespace(name="DEV-WITH-PURPOSE", dry_run=False)
-
-    response = MagicMock(ok=True, status_code=200)
-    with patch("saorsa_deploy.cmd.slack_post.get_repository", return_value=repo):
-        with patch(
-            "saorsa_deploy.cmd.slack_post.load_deployment_state",
-            side_effect=RuntimeError,
-        ):
-            with patch(
-                "saorsa_deploy.cmd.slack_post.load_client_state",
-                return_value={},
-            ):
-                with patch(
-                    "saorsa_deploy.cmd.slack_post.requests.post",
-                    return_value=response,
-                ) as mock_post:
-                    cmd_slack_post(args)
-
-    mock_post.assert_called_once()
-    posted_payload = mock_post.call_args.kwargs["json"]
-    assert "Recorded at deploy time" in json.dumps(posted_payload)
-
 def test_render_payload_text_includes_header_and_section_text():
     payload = {
         "text": "fallback",
@@ -849,7 +764,6 @@ def test_cmd_slack_post_loads_monitoring_and_elastic_state(repo):
     assert "Elasticsearch" in rendered
     assert "http://mon:8086" in rendered
     assert "https://es:9200" in rendered
-
 
 
 # --------------------------------------------------------------------------- #

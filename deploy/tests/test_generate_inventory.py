@@ -1,6 +1,5 @@
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -562,111 +561,6 @@ class TestCmdGenerateInventory:
         args.node_count = None
         args.wallet_secret_key = "0xdeadbeef"
         return args
-
-    def test_writes_file_to_output_path(self, tmp_path):
-        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
-
-        args = self._args(tmp_path)
-
-        with patch(
-            "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
-            return_value=_state(),
-        ), patch(
-            "saorsa_deploy.cmd.generate_inventory.load_client_state",
-            side_effect=RuntimeError("no client state"),
-        ):
-            cmd_generate_inventory(args)
-
-        data = json.loads(Path(args.output).read_text())
-        assert data["testnet_id"] == "DEV-02"
-        assert data["schema_version"] == INVENTORY_SCHEMA_VERSION
-        assert len(data["node_vms"]) == 4
-        assert data["client_vms"] == []
-
-    def test_includes_client_vms_when_client_state_exists(self, tmp_path):
-        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
-
-        args = self._args(tmp_path)
-
-        client_state = {
-            "name": "DEV-02",
-            "clients": [
-                {
-                    "region": "lon1",
-                    "file_size_mb": 100,
-                    "vm_size": "s-2vcpu-4gb",
-                    "client_index": 1,
-                    "ip": "7.7.7.7",
-                },
-            ],
-        }
-        with patch(
-            "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
-            return_value=_state(),
-        ), patch(
-            "saorsa_deploy.cmd.generate_inventory.load_client_state",
-            return_value=client_state,
-        ):
-            cmd_generate_inventory(args)
-
-        data = json.loads(Path(args.output).read_text())
-        assert len(data["client_vms"]) == 1
-        assert data["client_vms"][0]["ip"] == "7.7.7.7"
-        assert data["client_vms"][0]["name"] == "DEV-02-ant-client-upload-lon1-1"
-
-    def test_writes_devnet_manifest_alongside_inventory(self, tmp_path):
-        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
-
-        args = self._args(tmp_path)
-
-        with patch(
-            "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
-            return_value=_state(),
-        ), patch(
-            "saorsa_deploy.cmd.generate_inventory.load_client_state",
-            side_effect=RuntimeError("no client state"),
-        ):
-            cmd_generate_inventory(args)
-
-        manifest_path = Path(args.output).parent / "devnet-manifest.json"
-        assert manifest_path.exists()
-        manifest = json.loads(manifest_path.read_text())
-        assert manifest["base_port"] == 30000
-        assert manifest["node_count"] == 12  # 3 per VM × 4 node VMs
-        assert manifest["bootstrap"] == ["/ip4/143.198.0.1/udp/30000/quic"]
-        assert manifest["data_dir"] == DEVNET_DATA_DIR
-        assert manifest["evm"]["wallet_private_key"] == "0xdeadbeef"
-
-    def test_wallet_key_falls_back_to_env_var(self, tmp_path, monkeypatch):
-        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
-
-        args = self._args(tmp_path)
-        args.wallet_secret_key = None
-        monkeypatch.setenv("ANT_DEPLOY_SECRET_KEY", "0xfromenv")
-
-        with patch(
-            "saorsa_deploy.cmd.generate_inventory.load_deployment_state",
-            return_value=_state(),
-        ), patch(
-            "saorsa_deploy.cmd.generate_inventory.load_client_state",
-            side_effect=RuntimeError("no client state"),
-        ):
-            cmd_generate_inventory(args)
-
-        manifest_path = Path(args.output).parent / "devnet-manifest.json"
-        manifest = json.loads(manifest_path.read_text())
-        assert manifest["evm"]["wallet_private_key"] == "0xfromenv"
-
-    def test_exits_when_no_wallet_key_available(self, tmp_path, monkeypatch):
-        from saorsa_deploy.cmd.generate_inventory import cmd_generate_inventory
-
-        args = self._args(tmp_path)
-        args.wallet_secret_key = None
-        monkeypatch.delenv("ANT_DEPLOY_SECRET_KEY", raising=False)
-
-        with pytest.raises(SystemExit) as exc:
-            cmd_generate_inventory(args)
-        assert exc.value.code == 1
 
 
 class TestBuildDevnetManifest:

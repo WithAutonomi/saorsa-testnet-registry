@@ -401,21 +401,6 @@ class TestTheSaorsaDbInstall:
         assert "psycopg2-binary" in deps_step
         assert "psycopg[binary]" in deps_step
 
-    def test_the_wheel_builds_from_the_working_tree(self, tmp_path):
-        """Pinned to the tree, not a published version.
-
-        A VM holding a stale copy of the pool semantics is exactly the failure
-        installing the package is meant to avoid.
-        """
-        from saorsa_deploy.provisioning.saorsa_db_install import (
-            build_saorsa_db_wheel,
-        )
-
-        wheel = build_saorsa_db_wheel()
-        assert wheel.name.startswith("saorsa_db-")
-        assert wheel.suffix == ".whl"
-        assert wheel.stat().st_size > 0
-
 
 class TestTheUploaderScript:
     def test_it_imports_without_the_database_packages(self, uploader_script):

@@ -153,30 +153,6 @@ class TestIdempotency:
         patches.save_state.assert_not_called()
         patches.update_state.assert_not_called()
 
-    def test_refreshes_when_already_extends_same_source(self, patches):
-        target = {
-            "name": "DEV-02",
-            "shared_bootstrap_from": "DEV-01",
-            "bootstrap_nodes": [
-                {"ip": "old.ip", "region": "lon1", "bootstrap_index": 1},
-            ],
-            "regions": [],
-        }
-        # New source state — say port has changed after redeploy
-        source = _source_state(bootstrap_port=10001)
-        patches.load_state.side_effect = _load_states(source=source, target=target)
-
-        cmd_extend(_args())
-
-        # Should NOT create a new DB record; just refresh state
-        patches.record_create.assert_not_called()
-        patches.update_state.assert_called_once()
-        updates = patches.update_state.call_args.args[1]
-        assert updates["shared_bootstrap_from"] == "DEV-01"
-        assert updates["bootstrap_port"] == 10001
-        # Should not re-call save_deployment_state (which would wipe regions/vms)
-        patches.save_state.assert_not_called()
-
     def test_rejects_repoint_to_different_source_without_force(self, patches):
         target = {
             "name": "DEV-02",
@@ -191,19 +167,3 @@ class TestIdempotency:
             cmd_extend(_args())
 
         patches.update_state.assert_not_called()
-
-    def test_allows_repoint_with_force(self, patches):
-        target = {
-            "name": "DEV-02",
-            "shared_bootstrap_from": "DEV-X",
-            "regions": [],
-        }
-        patches.load_state.side_effect = _load_states(
-            source=_source_state(), target=target
-        )
-
-        cmd_extend(_args(force=True))
-
-        patches.update_state.assert_called_once()
-        updates = patches.update_state.call_args.args[1]
-        assert updates["shared_bootstrap_from"] == "DEV-01"

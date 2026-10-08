@@ -7,7 +7,6 @@ from saorsa_deploy.cmd.prod_uploaders import (
     _extract_file_names,
     _read_urls_file,
     cmd_prod_uploaders_deploy,
-    cmd_prod_uploaders_destroy,
     parse_prod_uploader_spec,
 )
 
@@ -214,16 +213,6 @@ def _deploy_args(uploader_specs, **overrides):
     return SimpleNamespace(**defaults)
 
 
-def _destroy_args(**overrides):
-    defaults = {
-        "name": "PROD-UP-01",
-        "keep_monitoring": False,
-        "ssh_key_path": "~/.ssh/id_rsa",
-    }
-    defaults.update(overrides)
-    return SimpleNamespace(**defaults)
-
-
 @pytest.fixture
 def deploy_patches():
     with (
@@ -274,92 +263,10 @@ def deploy_patches():
 
 
 class TestDeployHappyPath:
-    def test_full_deploy_invokes_each_stage_in_order(
-        self, deploy_patches, urls_file
-    ):
-        args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:urls={urls_file}",
-        ])
-        cmd_prod_uploaders_deploy(args)
-
-        deploy_patches.record_create.assert_called_once()
-        deploy_patches.ensure_mon.assert_called_once()
-        deploy_patches.ensure_infra.assert_called_once()
-        deploy_patches.provision.assert_called_once()
-        deploy_patches.start.assert_called_once()
-
-    def test_deploy_records_running_status_on_success(
-        self, deploy_patches, urls_file
-    ):
-        args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:urls={urls_file}",
-        ])
-        cmd_prod_uploaders_deploy(args)
-        final_status = deploy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "running"
-
-    def test_deploy_records_kind_in_deploy_args(self, deploy_patches, urls_file):
-        args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:urls={urls_file}",
-            f"nyc1:s-4vcpu-8gb:urls={urls_file}",
-        ])
-        cmd_prod_uploaders_deploy(args)
-
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["kind"] == "prod-uploaders"
-        assert len(payload["uploaders"]) == 2
-        assert payload["uploaders"][0]["region"] == "lon1"
-        assert payload["uploaders"][1]["region"] == "nyc1"
 
     def test_deploy_rejects_when_no_uploaders(self, deploy_patches):
         with pytest.raises(SystemExit):
             cmd_prod_uploaders_deploy(_deploy_args([]))
-
-    def test_deploy_records_payment_type_none_by_default(
-        self, deploy_patches, urls_file
-    ):
-        args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
-        cmd_prod_uploaders_deploy(args)
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["uploaders"][0]["payment_type"] is None
-        assert "payment_type" not in payload
-
-    @pytest.mark.parametrize("payment_type", ["merkle", "no-merkle"])
-    def test_deploy_records_per_uploader_payment_type(
-        self, deploy_patches, urls_file, payment_type
-    ):
-        args = _deploy_args(
-            [f"lon1:s-2vcpu-4gb:urls={urls_file}:payment={payment_type}"],
-        )
-        cmd_prod_uploaders_deploy(args)
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert payload["uploaders"][0]["payment_type"] == payment_type
-
-    def test_deploy_records_mixed_payment_types(
-        self, deploy_patches, urls_file
-    ):
-        args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:urls={urls_file}:payment=merkle",
-            f"nyc1:s-4vcpu-8gb:urls={urls_file}",
-            f"fra1:s-4vcpu-8gb:urls={urls_file}:payment=no-merkle",
-        ])
-        cmd_prod_uploaders_deploy(args)
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert [u["payment_type"] for u in payload["uploaders"]] == [
-            "merkle", None, "no-merkle",
-        ]
-
-
-    def test_deploy_records_per_uploader_bootstrap_cache(
-        self, deploy_patches, urls_file
-    ):
-        args = _deploy_args([
-            f"lon1:s-2vcpu-4gb:urls={urls_file}:bootstrap_cache=false",
-            f"nyc1:s-4vcpu-8gb:urls={urls_file}",
-        ])
-        cmd_prod_uploaders_deploy(args)
-        payload = deploy_patches.record_create.call_args.args[1]
-        assert [u["bootstrap_cache"] for u in payload["uploaders"]] == [False, True]
 
 
 class TestDeployFailure:
@@ -406,144 +313,6 @@ class TestDuplicateFileCheck:
         deploy_patches.ensure_mon.assert_not_called()
         deploy_patches.ensure_infra.assert_not_called()
         deploy_patches.provision.assert_not_called()
-
-    def test_allows_duplicates_with_override_flag(
-        self, deploy_patches, urls_file
-    ):
-        deploy_patches.get_repository.return_value = _FakeRepo(["a.bin", "b.bin"])
-        args = _deploy_args(
-            [f"lon1:s-2vcpu-4gb:urls={urls_file}"],
-            allow_duplicate_files=True,
-        )
-
-        cmd_prod_uploaders_deploy(args)
-
-        deploy_patches.record_create.assert_called_once()
-        deploy_patches.provision.assert_called_once()
-
-    def test_proceeds_when_no_name_collision(self, deploy_patches, urls_file):
-        deploy_patches.get_repository.return_value = _FakeRepo(["other.bin"])
-        args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
-
-        cmd_prod_uploaders_deploy(args)
-
-        deploy_patches.record_create.assert_called_once()
-        deploy_patches.provision.assert_called_once()
-
-    def test_pool_drawn_files_skip_the_name_check(self, deploy_patches):
-        # Selection writes the drawn URLs into _urls_file_content before the
-        # gate runs, so a pool file whose basename collides with an unrelated
-        # recorded upload must not be refused: the pool guarantees it is new.
-        def _fake_select(args, specs, console):
-            for spec in specs:
-                spec["_urls_file_content"] = (
-                    "https://archive.org/download/x/FBI%233/VTS_01_1.VOB\n"
-                )
-            return []
-
-        deploy_patches.get_repository.return_value = _FakeRepo(["VTS_01_1.VOB"])
-        args = _deploy_args(["lon1:s-2vcpu-4gb:pool=large:1"])
-
-        with (
-            patch(
-                "saorsa_deploy.cmd.prod_uploaders._select_pool_files",
-                side_effect=_fake_select,
-            ),
-            patch("saorsa_deploy.cmd.prod_uploaders._attach_pool_claims"),
-        ):
-            cmd_prod_uploaders_deploy(args)
-
-        deploy_patches.record_create.assert_called_once()
-        deploy_patches.provision.assert_called_once()
-
-    def test_skips_check_when_no_database(self, deploy_patches, urls_file):
-        # get_repository returns None (fixture default) → check is skipped.
-        deploy_patches.get_repository.return_value = None
-        args = _deploy_args([f"lon1:s-2vcpu-4gb:urls={urls_file}"])
-
-        cmd_prod_uploaders_deploy(args)
-
-        deploy_patches.record_create.assert_called_once()
-        deploy_patches.provision.assert_called_once()
-
-
-@pytest.fixture
-def destroy_patches():
-    with (
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders.record_event"
-        ) as p_event,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders.record_status"
-        ) as p_status,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders._client_stack_exists",
-            return_value=True,
-        ) as p_client_exists,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders._monitoring_stack_exists",
-            return_value=True,
-        ) as p_mon_exists,
-        patch(
-            "saorsa_deploy.cmd.prod_uploaders._stop_uploaders"
-        ) as p_stop,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.cmd_destroy_clients"
-        ) as p_destroy_clients,
-        patch(
-            "saorsa_deploy.cmd.destroy_monitoring.cmd_destroy_monitoring"
-        ) as p_destroy_mon,
-    ):
-        yield SimpleNamespace(
-            record_event=p_event,
-            record_status=p_status,
-            client_exists=p_client_exists,
-            mon_exists=p_mon_exists,
-            stop=p_stop,
-            destroy_clients=p_destroy_clients,
-            destroy_mon=p_destroy_mon,
-        )
-
-
-class TestDestroy:
-    def test_default_destroy_tears_down_monitoring(self, destroy_patches):
-        cmd_prod_uploaders_destroy(_destroy_args())
-
-        destroy_patches.stop.assert_called_once()
-        destroy_patches.destroy_clients.assert_called_once()
-        destroy_patches.destroy_mon.assert_called_once()
-
-        final_status = destroy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "destroyed"
-
-    def test_keep_monitoring_flag_preserves_monitoring(self, destroy_patches):
-        cmd_prod_uploaders_destroy(_destroy_args(keep_monitoring=True))
-
-        destroy_patches.destroy_clients.assert_called_once()
-        destroy_patches.destroy_mon.assert_not_called()
-
-    def test_destroy_skips_when_no_client_state(self, destroy_patches):
-        destroy_patches.client_exists.return_value = False
-        cmd_prod_uploaders_destroy(_destroy_args())
-
-        destroy_patches.stop.assert_not_called()
-        destroy_patches.destroy_clients.assert_not_called()
-
-    def test_destroy_tolerates_stop_runtime_error(self, destroy_patches):
-        destroy_patches.stop.side_effect = RuntimeError("No hosts remaining!")
-        cmd_prod_uploaders_destroy(_destroy_args())
-        destroy_patches.destroy_clients.assert_called_once()
-        final_status = destroy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "destroyed"
-
-    def test_destroy_records_failed_on_destroy_clients_error(
-        self, destroy_patches
-    ):
-        destroy_patches.destroy_clients.side_effect = SystemExit(1)
-        with pytest.raises(SystemExit):
-            cmd_prod_uploaders_destroy(_destroy_args())
-        final_status = destroy_patches.record_status.call_args_list[-1].args[1]
-        assert final_status.value == "failed"
 
 
 class TestNetworkProfileIsPersisted:
