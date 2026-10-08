@@ -791,8 +791,21 @@ def _compare_scalar(
     unit: str,
     history: list[float] | None = None,
     missing_detail: str = "",
+    zero_is_a_value: bool = False,
 ) -> GateResult:
-    """Compare one scalar against its baseline under the noise rule."""
+    """Compare one scalar against its baseline under the noise rule.
+
+    ``zero_is_a_value`` says a zero baseline is a real measurement rather than a
+    missing one, and makes the gate read a zero baseline exactly as the
+    connection-error count gates do: 0 vs 0 is PASS (the phenomenon occurred on
+    neither run) and 0 -> anything is FAIL (it appeared where it never did).
+    That is right for a RATE whose zero is the hoped-for steady state -- the
+    pointer stale-read and lost-write rates were 0.000% on both STG-01 #655 and
+    #627 and read NOT ASSESSED, next to count gates reading PASS for the same
+    0 vs 0. It is wrong for a node metric: a zero CPU or disk ratio is a broken
+    capture, and PASS would paper over it, so the default keeps the undefined
+    delta as NOT ASSESSED.
+    """
     cand_stat = candidate.get("statistic") if isinstance(candidate, dict) else None
     base_stat = baseline.get("statistic") if isinstance(baseline, dict) else None
     cand_value = candidate.get("value") if isinstance(candidate, dict) else candidate
@@ -855,6 +868,25 @@ def _compare_scalar(
         degraded = f"degraded to mean: candidate reported {cand_stat}, baseline {base_stat}"
         cand_value, base_value = float(cand_mean), float(base_mean)
         cand_stat = base_stat = "mean"
+
+    if zero_is_a_value and base_value == 0:
+        appeared = cand_value > 0
+        return GateResult(
+            gate=gate,
+            kind="soft",
+            verdict=FAIL if appeared else PASS,
+            candidate=cand_value,
+            baseline=base_value,
+            threshold=threshold,
+            unit=unit,
+            statistic=cand_stat or base_stat,
+            detail=(
+                "The baseline never recorded this, so a relative change is "
+                "undefined — but it appeared on the candidate."
+                if appeared
+                else "neither run recorded this at all"
+            ),
+        )
 
     delta = _relative_change(cand_value, base_value)
     verdict, noise = apply_noise_rule(delta, threshold, history, config)
@@ -1713,6 +1745,7 @@ def _pointer_gates(
             config.pointer_stale_read_rate_increase_percent,
             "%",
             f"{cand.stale_reads}/{cand.read_attempts} reads served a stale state",
+            True,
         ),
         (
             f"Pointer lost-write rate [{POINTER}]",
@@ -1721,6 +1754,7 @@ def _pointer_gates(
             config.pointer_lost_write_rate_increase_percent,
             "%",
             f"{cand.lost_writes}/{cand.write_attempts} writes did not land",
+            True,
         ),
         (
             f"Pointer write latency p50 [{POINTER}]",
@@ -1729,6 +1763,7 @@ def _pointer_gates(
             config.pointer_write_latency_p50_increase_percent,
             "ms",
             "",
+            False,
         ),
         (
             f"Pointer write latency p95 [{POINTER}]",
@@ -1737,6 +1772,7 @@ def _pointer_gates(
             config.pointer_write_latency_p95_increase_percent,
             "ms",
             "",
+            False,
         ),
         (
             f"Pointer read latency p50 [{POINTER}]",
@@ -1745,6 +1781,7 @@ def _pointer_gates(
             config.pointer_read_latency_p50_increase_percent,
             "ms",
             "",
+            False,
         ),
         (
             f"Pointer read latency p95 [{POINTER}]",
@@ -1753,6 +1790,7 @@ def _pointer_gates(
             config.pointer_read_latency_p95_increase_percent,
             "ms",
             "",
+            False,
         ),
         (
             f"Pointer ANT cost per write [{POINTER}]",
@@ -1767,9 +1805,14 @@ def _pointer_gates(
             config.pointer_cost_per_write_increase_percent,
             "atto",
             f"over {cand.paid_write_count} paid write(s)",
+            False,
         ),
     )
-    for label, cand_value, base_value, threshold, unit, detail in relative:
+    # The two RATES carry zero_is_a_value: 0.000% on both runs is the tier
+    # behaving, not a missing measurement, and must read PASS the way a count
+    # gate's "neither run logged this" does. The latencies and the cost do not:
+    # a zero there is an empty sample.
+    for label, cand_value, base_value, threshold, unit, detail, zero_is_a_value in relative:
         result = _compare_scalar(
             gate=label,
             candidate=cand_value,
@@ -1781,6 +1824,7 @@ def _pointer_gates(
             missing_detail=(
                 POINTER_NO_BASELINE_REASON if base is None else "no measurement on one or both runs"
             ),
+            zero_is_a_value=zero_is_a_value,
         )
         if detail and result.verdict != NOT_ASSESSED:
             result = replace(result, detail=f"{result.detail} {detail}".strip())
