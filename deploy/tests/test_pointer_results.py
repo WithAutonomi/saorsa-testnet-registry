@@ -448,6 +448,55 @@ def test_a_falling_stale_rate_passes():
     assert _gates(payload)["Pointer stale-read rate [pointer]"]["verdict"] == "PASS"
 
 
+def test_a_zero_stale_rate_on_both_runs_passes_rather_than_reading_not_assessed():
+    """0.000% on both runs is the tier behaving on both, not a missing
+    measurement. STG-01 #655 vs #627 read NOT ASSESSED ('baseline is zero, so a
+    relative change is undefined') for both rates while the count gates beside
+    them read PASS for the same 0 vs 0; the two must agree."""
+    baseline = _run(
+        2, "b", [_op("sweep", "ok") for _ in range(50)] + [_op("update", "ok", paid_attempts=1)]
+    )
+    candidate = _run(
+        1, "c", [_op("sweep", "ok") for _ in range(50)] + [_op("update", "ok", paid_attempts=1)]
+    )
+    gates = _gates(compare_runs(candidate, baseline, load_gate_config()))
+    for name in ("Pointer stale-read rate [pointer]", "Pointer lost-write rate [pointer]"):
+        gate = gates[name]
+        assert gate["verdict"] == "PASS", name
+        assert gate["candidate"] == 0 and gate["baseline"] == 0
+        assert gate["detail"].startswith("neither run recorded this at all")
+
+
+def test_a_stale_rate_appearing_from_a_zero_baseline_fails():
+    """Mirrors the count gates: no percentage expresses 0 -> 10%, but it is the
+    clearest rise the gate can see, so it is FAIL, never NOT ASSESSED."""
+    baseline = _run(2, "b", [_op("sweep", "ok") for _ in range(100)])
+    candidate = _run(1, "c", [_op("sweep", "ok") for _ in range(90)] + [_op("sweep", "stale")] * 10)
+    gate = _gates(compare_runs(candidate, baseline, load_gate_config()))[
+        "Pointer stale-read rate [pointer]"
+    ]
+    assert gate["verdict"] == "FAIL"
+    assert gate["baseline"] == 0 and gate["candidate"] == pytest.approx(10.0)
+    assert "appeared on the candidate" in gate["detail"]
+
+
+def test_a_zero_latency_baseline_is_still_not_assessed():
+    """The opt-in is for the two rates only: a zero write latency is an empty
+    sample, and PASS would hide a broken capture."""
+    from saorsa_deploy.gate_comparison import _compare_scalar
+
+    result = _compare_scalar(
+        gate="Pointer write latency p50 [pointer]",
+        candidate=100.0,
+        baseline=0.0,
+        threshold=20.0,
+        config=load_gate_config(),
+        unit="ms",
+    )
+    assert result.verdict == NOT_ASSESSED
+    assert "relative change is undefined" in result.detail
+
+
 def test_no_pointer_gate_reaches_the_exit_code():
     """`compare` exits 2 only on a HARD fail. Every pointer gate is soft, so the
     worst a pointer regression can produce is SOFT FAIL."""
