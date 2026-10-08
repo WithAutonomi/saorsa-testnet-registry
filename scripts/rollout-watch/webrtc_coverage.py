@@ -559,7 +559,9 @@ def build_report(es: EsClient, args: argparse.Namespace, now: datetime) -> dict:
 
     records: list[Advertised] = []
     if args.sample and arms.new:
-        vms = new_arm_vms(hosts.node_vms(DEPLOYMENT_NAME, args.inventory), set(arms.new))
+        vms = new_arm_vms(
+            hosts.node_vms(DEPLOYMENT_NAME, args.inventory), set(arms.new)
+        )
         for vm in select_sample(vms, args.sample):
             records.append(read_advertised(vm, vm.services[0]))
     sample_check = evaluate_advertised(records, arms, args.sample)

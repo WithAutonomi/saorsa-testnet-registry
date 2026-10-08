@@ -129,7 +129,7 @@ def summarise(records: list[dict]) -> dict:
 def render(result: dict) -> str:
     summary = result["summary"]
     lines = [
-        f"### Node RSS slope — ant-prod-01 (record-only, no pass rule)",
+        "### Node RSS slope — ant-prod-01 (record-only, no pass rule)",
         "",
         f"Window {result['window']}, `{MEASUREMENT}.{FIELD}`, "
         f"{summary.get('measured', 0)} service(s).",

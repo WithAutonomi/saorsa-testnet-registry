@@ -1,11 +1,9 @@
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pyinfra.operations import files, server, systemd
 
 from saorsa_deploy.binary_source import get_release_url
-from saorsa_deploy.cmd.provision_genesis import cmd_provision_genesis
 from saorsa_deploy.provisioning.bootstrap import (
     BINARY_INSTALL_PATH,
     DEFAULT_REWARDS_ADDRESS,
@@ -41,9 +39,7 @@ class TestBuildExecStart:
         assert "--bootstrap" not in result
 
     def test_non_genesis_has_bootstrap_flag(self):
-        result = _build_exec_start(
-            bootstrap_index=2, bootstrap_peers=["10.0.0.1:5000"]
-        )
+        result = _build_exec_start(bootstrap_index=2, bootstrap_peers=["10.0.0.1:5000"])
         assert "--bootstrap 10.0.0.1:5000" in result
 
     def test_non_genesis_multiple_peers(self):
@@ -55,9 +51,7 @@ class TestBuildExecStart:
         assert "--bootstrap 10.0.0.2:5000" in result
 
     def test_all_flags(self):
-        result = _build_exec_start(
-            bootstrap_index=1, port=10000, log_level="debug", testnet=True
-        )
+        result = _build_exec_start(bootstrap_index=1, port=10000, log_level="debug", testnet=True)
         assert "--port 10000" in result
         assert "--log-level debug" in result
         assert "--network-mode testnet" in result
@@ -141,9 +135,7 @@ class TestGetReleaseUrl:
             "assets": [
                 {
                     "name": "ant-node-cli-linux-x64.tar.gz",
-                    "browser_download_url": (
-                        "https://github.com/download/v1.0.0/asset.tar.gz"
-                    ),
+                    "browser_download_url": ("https://github.com/download/v1.0.0/asset.tar.gz"),
                 },
             ],
         }
@@ -164,9 +156,7 @@ class TestGetReleaseUrl:
             "assets": [
                 {
                     "name": "ant-node-cli-linux-x64.tar.gz",
-                    "browser_download_url": (
-                        "https://github.com/download/v0.2.0/asset.tar.gz"
-                    ),
+                    "browser_download_url": ("https://github.com/download/v0.2.0/asset.tar.gz"),
                 },
             ],
         }
@@ -184,9 +174,7 @@ class TestGetReleaseUrl:
     def test_raises_when_asset_not_found(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
-            "assets": [
-                {"name": "other-asset.tar.gz", "browser_download_url": "https://x"}
-            ],
+            "assets": [{"name": "other-asset.tar.gz", "browser_download_url": "https://x"}],
         }
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
@@ -258,13 +246,9 @@ class TestAntBootstrapNodeProvisioner:
         mock_run_ops,
         mock_disconnect,
     ):
-        mock_release_url.return_value = (
-            "https://github.com/download/v1.0.0/asset.tar.gz"
-        )
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = AntBootstrapNodeProvisioner(
-            ip="10.0.0.1", bootstrap_index=1, port=10000
-        )
+        node = AntBootstrapNodeProvisioner(ip="10.0.0.1", bootstrap_index=1, port=10000)
         node.execute()
 
         mock_connect.assert_called_once()
@@ -291,9 +275,7 @@ class TestAntBootstrapNodeProvisioner:
         _mock_run_ops,
         _mock_disconnect,
     ):
-        mock_release_url.return_value = (
-            "https://github.com/download/v1.0.0/asset.tar.gz"
-        )
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
         node = AntBootstrapNodeProvisioner(
             ip="10.0.0.1",
@@ -335,9 +317,7 @@ class TestAntBootstrapNodeProvisioner:
         mock_run_ops,
         mock_disconnect,
     ):
-        mock_release_url.return_value = (
-            "https://github.com/download/v1.0.0/asset.tar.gz"
-        )
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
         mock_run_ops.side_effect = RuntimeError("connection failed")
 
         node = AntBootstrapNodeProvisioner(ip="10.0.0.1", bootstrap_index=1)
@@ -363,9 +343,7 @@ class TestAntBootstrapNodeProvisioner:
         _mock_run_ops,
         _mock_disconnect,
     ):
-        mock_release_url.return_value = (
-            "https://github.com/download/v1.0.0/asset.tar.gz"
-        )
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
         node = AntBootstrapNodeProvisioner(
             ip="192.168.1.100", bootstrap_index=1, ssh_key_path="/tmp/mykey"
@@ -396,13 +374,9 @@ class TestAntBootstrapNodeProvisioner:
         _mock_run_ops,
         _mock_disconnect,
     ):
-        mock_release_url.return_value = (
-            "https://github.com/download/v1.0.0/asset.tar.gz"
-        )
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
-        node = AntBootstrapNodeProvisioner(
-            ip="10.0.0.1", bootstrap_index=1, port=10000
-        )
+        node = AntBootstrapNodeProvisioner(ip="10.0.0.1", bootstrap_index=1, port=10000)
         node.execute()
 
         op_types = [call[0][1] for call in mock_add_op.call_args_list]
@@ -434,9 +408,7 @@ class TestAntBootstrapNodeProvisioner:
         _mock_run_ops,
         _mock_disconnect,
     ):
-        mock_release_url.return_value = (
-            "https://github.com/download/v1.0.0/asset.tar.gz"
-        )
+        mock_release_url.return_value = "https://github.com/download/v1.0.0/asset.tar.gz"
 
         node = AntBootstrapNodeProvisioner(ip="10.0.0.1", bootstrap_index=1)
         node.execute()
@@ -447,75 +419,3 @@ class TestAntBootstrapNodeProvisioner:
         commands = download_call.kwargs.get("commands", [])
         assert len(commands) == 1
         assert commands[0].startswith("test -f /usr/local/bin/ant-node")
-
-
-class TestCmdProvisionGenesisClearsKnownHosts:
-    @patch("saorsa_deploy.cmd.provision_genesis.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision_genesis.AntBootstrapNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision_genesis.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision_genesis.load_deployment_state")
-    def test_clears_known_hosts_for_bootstrap_ip(
-        self,
-        mock_load_state,
-        mock_clear_known_hosts,
-        mock_provisioner_cls,
-        mock_update_state,
-    ):
-        mock_load_state.return_value = {
-            "bootstrap_nodes": [
-                {"ip": "10.0.0.1", "region": "lon1", "bootstrap_index": 1}
-            ],
-        }
-        mock_provisioner_cls.return_value.execute.return_value = None
-
-        args = SimpleNamespace(
-            name="test-deploy",
-            ssh_key_path="~/.ssh/id_rsa",
-            port=None,
-            log_level=None,
-            testnet=False,
-            upgrade_channel=None,
-            rewards_address=DEFAULT_REWARDS_ADDRESS,
-        )
-        cmd_provision_genesis(args)
-
-        mock_clear_known_hosts.assert_called_once()
-        called_ips = mock_clear_known_hosts.call_args[0][0]
-        assert called_ips == ["10.0.0.1"]
-
-    @patch("saorsa_deploy.cmd.provision_genesis.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision_genesis.AntBootstrapNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision_genesis.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision_genesis.load_deployment_state")
-    def test_clears_known_hosts_before_provisioner_executes(
-        self,
-        mock_load_state,
-        mock_clear_known_hosts,
-        mock_provisioner_cls,
-        mock_update_state,
-    ):
-        mock_load_state.return_value = {
-            "bootstrap_nodes": [
-                {"ip": "10.0.0.1", "region": "lon1", "bootstrap_index": 1}
-            ],
-        }
-        call_order = []
-        mock_clear_known_hosts.side_effect = (
-            lambda *a, **kw: call_order.append("clear_known_hosts")
-        )
-        mock_provisioner_cls.return_value.execute.side_effect = (
-            lambda: call_order.append("execute")
-        )
-
-        args = SimpleNamespace(
-            name="test-deploy",
-            ssh_key_path="~/.ssh/id_rsa",
-            port=None,
-            log_level=None,
-            testnet=False,
-            upgrade_channel=None,
-            rewards_address=DEFAULT_REWARDS_ADDRESS,
-        )
-        cmd_provision_genesis(args)
-
-        assert call_order == ["clear_known_hosts", "execute"]

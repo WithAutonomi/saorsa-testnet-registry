@@ -10,17 +10,13 @@ from saorsa_deploy.hetzner_availability import (
 )
 
 
-def _filter_types(
-    server_types: list[dict], requested: str | None
-) -> list[dict]:
+def _filter_types(server_types: list[dict], requested: str | None) -> list[dict]:
     if requested is None:
         return sorted(server_types, key=lambda st: st.get("name", ""))
     matches = [st for st in server_types if st.get("name") == requested]
     if not matches:
         names = sorted(st.get("name", "") for st in server_types)
-        raise ValueError(
-            f"Unknown Hetzner server type '{requested}'. Known: {', '.join(names)}"
-        )
+        raise ValueError(f"Unknown Hetzner server type '{requested}'. Known: {', '.join(names)}")
     return matches
 
 
@@ -34,8 +30,7 @@ def _resolve_regions(
     unknown = [r for r in requested_regions if r not in availability]
     if unknown:
         raise ValueError(
-            f"Unknown Hetzner region(s): {', '.join(unknown)}. "
-            f"Known: {', '.join(all_regions)}"
+            f"Unknown Hetzner region(s): {', '.join(unknown)}. Known: {', '.join(all_regions)}"
         )
     return [r for r in all_regions if r in requested_regions]
 

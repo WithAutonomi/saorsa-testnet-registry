@@ -13,7 +13,7 @@ def _resp(status, body=None, text=None):
     return SimpleNamespace(
         status_code=status,
         text=text if text is not None else ("" if body is None else "{}"),
-        json=lambda: (body or {}),
+        json=lambda: body or {},
     )
 
 
@@ -29,8 +29,8 @@ def test_request_refreshes_token_and_retries_on_401():
         out = client._request("GET", "/v1/compute/instances/123")
 
     assert out == {"data": {"ok": 1}}
-    assert req.call_count == 2                       # original + one retry
-    assert gt.call_count == 2                        # token refreshed once
+    assert req.call_count == 2  # original + one retry
+    assert gt.call_count == 2  # token refreshed once
     # The retry carried the refreshed bearer token.
     assert req.call_args_list[1].kwargs["headers"]["Authorization"] == "Bearer tok2"
 

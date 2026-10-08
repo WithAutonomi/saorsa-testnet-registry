@@ -12,6 +12,7 @@ existed, rather than losing its analysis. What is lost is the ability to
 re-slice that run to a narrower window — and that is unrecoverable, since the
 source InfluxDB is destroyed with the monitoring stack.
 """
+
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -39,9 +40,7 @@ def cmd_prune_host_buckets(args) -> None:
         sys.exit(1)
 
     if args.older_than < 0:
-        console.print(
-            "[bold red]Error:[/bold red] --older-than must be zero or positive."
-        )
+        console.print("[bold red]Error:[/bold red] --older-than must be zero or positive.")
         sys.exit(1)
 
     deployment_id = None
@@ -49,8 +48,7 @@ def cmd_prune_host_buckets(args) -> None:
         deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
         if deployment is None:
             console.print(
-                f"[bold red]Error:[/bold red] No deployment named "
-                f"'{args.name}' in the registry."
+                f"[bold red]Error:[/bold red] No deployment named '{args.name}' in the registry."
             )
             sys.exit(1)
         deployment_id = deployment.id
@@ -98,9 +96,7 @@ def cmd_prune_host_buckets(args) -> None:
         )
         return
 
-    deleted = repo.delete_host_metric_buckets_before(
-        cutoff=cutoff, deployment_id=deployment_id
-    )
+    deleted = repo.delete_host_metric_buckets_before(cutoff=cutoff, deployment_id=deployment_id)
     console.print(
         f"[bold green]Deleted {deleted:,} bucket row(s).[/bold green] "
         "The deployment_host_results rollup rows are untouched — those "

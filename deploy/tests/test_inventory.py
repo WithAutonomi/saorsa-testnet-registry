@@ -14,9 +14,7 @@ from saorsa_deploy.inventory import (
 
 def _write_inventory(tmp_path, node_vms, schema_version=3):
     path = tmp_path / "inventory.json"
-    path.write_text(
-        json.dumps({"schema_version": schema_version, "node_vms": node_vms})
-    )
+    path.write_text(json.dumps({"schema_version": schema_version, "node_vms": node_vms}))
     return path
 
 
@@ -75,9 +73,7 @@ def test_load_inventory_accepts_supported_schema_versions(tmp_path, version):
 
 
 def test_load_inventory_rejects_unsupported_schema_version(tmp_path):
-    path = _write_inventory(
-        tmp_path, [_entry("x", "vultr", "nrt")], schema_version=99
-    )
+    path = _write_inventory(tmp_path, [_entry("x", "vultr", "nrt")], schema_version=99)
     with pytest.raises(ValueError, match="Unsupported inventory schema_version"):
         load_node_inventory(path)
 
@@ -99,7 +95,8 @@ class TestUpdateServiceInInventory:
         updated = raw["node_vms"][0]
         assert updated["services"] == ["ant-node-1", "ant-node-10"]
         assert [n["service_name"] for n in updated["nodes"]] == [
-            "ant-node-1", "ant-node-10",
+            "ant-node-1",
+            "ant-node-10",
         ]
 
     def test_remove_only_touches_the_matching_host(self, tmp_path):
@@ -140,7 +137,9 @@ class TestUpdateServiceInInventory:
         assert updated["services"] == ["ant-node-1", "ant-node-4"]
         new_node = next(n for n in updated["nodes"] if n["service_name"] == "ant-node-4")
         assert new_node == {
-            "service_name": "ant-node-4", "nat_simulated": False, "storage_full": False,
+            "service_name": "ant-node-4",
+            "nat_simulated": False,
+            "storage_full": False,
         }
 
     def test_add_with_no_existing_nodes_array_uses_minimal_shape(self, tmp_path):

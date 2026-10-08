@@ -83,9 +83,7 @@ def generate_password(length: int = 40) -> str:
     return secrets.token_urlsafe(length)[:length]
 
 
-def build_grant_statements(
-    role: str, password: str = "", create_role: bool = True
-) -> list[str]:
+def build_grant_statements(role: str, password: str = "", create_role: bool = True) -> list[str]:
     """Statements that grant exactly the role's set, optionally creating it.
 
     ``create_role=False`` for a managed cluster (DigitalOcean, RDS…), where the
@@ -171,6 +169,4 @@ def build_client_url(admin_url: str, role: str, password: str) -> str:
     netloc = f"{quote(role, safe='')}:{quote(password, safe='')}@{parts.hostname}"
     if parts.port:
         netloc += f":{parts.port}"
-    return urlunsplit(
-        (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
-    )
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))

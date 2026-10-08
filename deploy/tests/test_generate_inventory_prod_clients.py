@@ -73,9 +73,7 @@ class TestClientConfig:
 
     def test_records_the_binary_the_run_used(self):
         config = build_client_config(_deploy_args())
-        assert config["binary"]["branch"] == (
-            "diagnostics/v2-903-download-request-timing"
-        )
+        assert config["binary"]["branch"] == ("diagnostics/v2-903-download-request-timing")
         assert config["binary"]["repo_owner"] == "WithAutonomi"
 
     def test_one_shot_is_derived_from_the_kind(self):
@@ -127,8 +125,11 @@ class TestClientConfig:
 class TestClientInventory:
     def test_has_the_vm_ip_and_ssh_details(self):
         inv = build_client_inventory(
-            "PROD-DL-02", _clients(), ssh_key="/k",
-            deploy_args=_deploy_args(), created_at="2026-08-11T00:00:00Z",
+            "PROD-DL-02",
+            _clients(),
+            ssh_key="/k",
+            deploy_args=_deploy_args(),
+            created_at="2026-08-11T00:00:00Z",
         )
         vm = inv["client_vms"][0]
         assert vm["ip"] == "203.0.113.10"
@@ -144,7 +145,9 @@ class TestClientInventory:
         tried to SSH into them.
         """
         inv = build_client_inventory(
-            "PROD-DL-02", _clients(), deploy_args=_deploy_args(),
+            "PROD-DL-02",
+            _clients(),
+            deploy_args=_deploy_args(),
             created_at="2026-08-11T00:00:00Z",
         )
         assert inv["node_vms"] == []
@@ -152,7 +155,9 @@ class TestClientInventory:
 
     def test_observability_vms_are_included(self):
         inv = build_client_inventory(
-            "PROD-DL-02", _clients(), ssh_key="/k",
+            "PROD-DL-02",
+            _clients(),
+            ssh_key="/k",
             deploy_args=_deploy_args(),
             monitoring_state={"vm_ip": "203.0.113.20", "region": "UK1"},
             created_at="2026-08-11T00:00:00Z",
@@ -162,19 +167,30 @@ class TestClientInventory:
 
     def test_firewalls_reflect_the_client_provider(self):
         inv = build_client_inventory(
-            "PROD-DL-02", _clients(), deploy_args=_deploy_args(),
+            "PROD-DL-02",
+            _clients(),
+            deploy_args=_deploy_args(),
             created_at="2026-08-11T00:00:00Z",
         )
         assert set(inv["firewalls"]) == {"hetzner"}
 
     def test_top_level_shape_matches_the_node_inventory(self):
         inv = build_client_inventory(
-            "PROD-DL-02", _clients(), deploy_args=_deploy_args(),
+            "PROD-DL-02",
+            _clients(),
+            deploy_args=_deploy_args(),
             created_at="2026-08-11T00:00:00Z",
         )
         assert set(inv.keys()) == {
-            "schema_version", "testnet_id", "created_at", "binary", "firewalls",
-            "bootstrap_vms", "node_vms", "client_vms", "observability_vms",
+            "schema_version",
+            "testnet_id",
+            "created_at",
+            "binary",
+            "firewalls",
+            "bootstrap_vms",
+            "node_vms",
+            "client_vms",
+            "observability_vms",
             "client_config",
         }
         assert inv["schema_version"] == INVENTORY_SCHEMA_VERSION
@@ -182,7 +198,9 @@ class TestClientInventory:
     def test_config_is_none_without_registry_args(self):
         """An unreachable registry degrades the inventory, never fails it."""
         inv = build_client_inventory(
-            "PROD-DL-02", _clients(), deploy_args=None,
+            "PROD-DL-02",
+            _clients(),
+            deploy_args=None,
             created_at="2026-08-11T00:00:00Z",
         )
         assert inv["client_config"] is None
@@ -194,7 +212,9 @@ class TestClientInventory:
 
     def test_is_json_serialisable(self):
         inv = build_client_inventory(
-            "PROD-DL-02", _clients(), deploy_args=_deploy_args(),
+            "PROD-DL-02",
+            _clients(),
+            deploy_args=_deploy_args(),
             created_at="2026-08-11T00:00:00Z",
         )
         assert json.loads(json.dumps(inv))["client_config"]["address_count"] == 3
@@ -210,32 +230,33 @@ class TestTheCommandFallsBackToTheClientPath:
             raise RuntimeError(f"No deployment state found for '{name}'")
 
         monkeypatch.setattr(mod, "load_deployment_state", kind_state or _no_state)
+        monkeypatch.setattr(mod, "load_client_state", lambda name: {"clients": clients})
         monkeypatch.setattr(
-            mod, "load_client_state", lambda name: {"clients": clients}
-        )
-        monkeypatch.setattr(
-            mod, "load_monitoring_state",
+            mod,
+            "load_monitoring_state",
             lambda name: (_ for _ in ()).throw(RuntimeError("none")),
         )
         monkeypatch.setattr(
-            mod, "load_elastic_state",
+            mod,
+            "load_elastic_state",
             lambda name: (_ for _ in ()).throw(RuntimeError("none")),
         )
         monkeypatch.setattr(mod, "_load_deploy_args", lambda name: deploy_args)
 
         out = tmp_path / "inventory.json"
-        mod.cmd_generate_inventory(SimpleNamespace(
-            name="PROD-DL-02", ssh_key_path="/k", node_count=None,
-            output=str(out), wallet_secret_key=None,
-        ))
+        mod.cmd_generate_inventory(
+            SimpleNamespace(
+                name="PROD-DL-02",
+                ssh_key_path="/k",
+                node_count=None,
+                output=str(out),
+                wallet_secret_key=None,
+            )
+        )
         return json.loads(out.read_text())
 
-    def test_writes_an_inventory_for_a_prod_downloader(
-        self, monkeypatch, tmp_path
-    ):
-        inv = self._run(
-            monkeypatch, tmp_path, clients=_clients(), deploy_args=_deploy_args()
-        )
+    def test_writes_an_inventory_for_a_prod_downloader(self, monkeypatch, tmp_path):
+        inv = self._run(monkeypatch, tmp_path, clients=_clients(), deploy_args=_deploy_args())
         assert inv["client_vms"][0]["ip"] == "203.0.113.10"
         assert inv["client_config"]["address_count"] == 3
 
@@ -243,7 +264,9 @@ class TestTheCommandFallsBackToTheClientPath:
         """client_config's on-VM paths are downloader-specific, so drop it —
         but the VM sections are still accurate and worth writing."""
         inv = self._run(
-            monkeypatch, tmp_path, clients=_clients(),
+            monkeypatch,
+            tmp_path,
+            clients=_clients(),
             deploy_args=_deploy_args(kind="prod-uploaders"),
         )
         assert inv["client_config"] is None
@@ -252,9 +275,7 @@ class TestTheCommandFallsBackToTheClientPath:
     def test_no_state_and_no_clients_still_errors(self, monkeypatch, tmp_path):
         """A genuinely absent deployment must not yield an empty inventory."""
         with pytest.raises(SystemExit):
-            self._run(
-                monkeypatch, tmp_path, clients=[], deploy_args=_deploy_args()
-            )
+            self._run(monkeypatch, tmp_path, clients=[], deploy_args=_deploy_args())
 
 
 def test_node_inventory_loader_accepts_the_new_schema_version():
@@ -274,10 +295,14 @@ class TestUpGeneratesTheInventory:
         from saorsa_deploy.config.models import Manifest
         from saorsa_deploy.orchestrator import build_deploy_steps
 
-        m = Manifest.model_validate({
-            "name": "PROD-DL-02", "kind": kind, "purpose": "test",
-            spec_key: spec,
-        })
+        m = Manifest.model_validate(
+            {
+                "name": "PROD-DL-02",
+                "kind": kind,
+                "purpose": "test",
+                spec_key: spec,
+            }
+        )
         return build_deploy_steps(m)
 
     def _labels(self, steps):
@@ -285,14 +310,16 @@ class TestUpGeneratesTheInventory:
 
     def test_one_shot_downloaders_get_an_inventory_step(self):
         steps = self._steps(
-            "prod-downloaders", "prod_downloaders",
+            "prod-downloaders",
+            "prod_downloaders",
             {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
         )
         assert "Generate inventory snapshot" in self._labels(steps)
 
     def test_continuous_downloader_gets_an_inventory_step(self):
         steps = self._steps(
-            "prod-continuous-downloader", "prod_continuous_downloader",
+            "prod-continuous-downloader",
+            "prod_continuous_downloader",
             {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
         )
         assert "Generate inventory snapshot" in self._labels(steps)
@@ -300,7 +327,8 @@ class TestUpGeneratesTheInventory:
     def test_it_runs_after_the_deploy(self):
         """The inventory reads client state, which the deploy step creates."""
         steps = self._steps(
-            "prod-downloaders", "prod_downloaders",
+            "prod-downloaders",
+            "prod_downloaders",
             {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
         )
         labels = self._labels(steps)
@@ -310,12 +338,11 @@ class TestUpGeneratesTheInventory:
 
     def test_the_argv_carries_name_and_ssh_key(self):
         steps = self._steps(
-            "prod-downloaders", "prod_downloaders",
+            "prod-downloaders",
+            "prod_downloaders",
             {"spec": "fsn1:cpx32", "binary": {"version": "0.2.7"}},
         )
-        argv = next(
-            s.argv for s in steps if s.label == "Generate inventory snapshot"
-        )
+        argv = next(s.argv for s in steps if s.label == "Generate inventory snapshot")
         assert argv[:2] == ["deployments", "generate-inventory"]
         assert argv[argv.index("--name") + 1] == "PROD-DL-02"
         assert "--ssh-key-path" in argv
@@ -327,7 +354,8 @@ class TestUpGeneratesTheInventory:
         fail the run at its final step, after all the infrastructure is up.
         """
         steps = self._steps(
-            "prod-canary", "prod_canary",
+            "prod-canary",
+            "prod_canary",
             {
                 "binary": {"version": "0.2.7"},
                 "upload_spec": "lon1",

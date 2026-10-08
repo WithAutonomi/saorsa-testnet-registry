@@ -116,14 +116,8 @@ def test_from_beginning_does_not_disturb_other_config(mock_es, mock_mon):
     mock_mon.side_effect = RuntimeError("no monitoring state")
     default_cfg = _build()[0]._build_telegraf_config()
     debug_cfg = _build(from_beginning=False)[0]._build_telegraf_config()
-    differing = [
-        (a, b)
-        for a, b in zip(default_cfg.splitlines(), debug_cfg.splitlines())
-        if a != b
-    ]
-    assert differing == [
-        ("  from_beginning = true", "  from_beginning = false")
-    ]
+    differing = [(a, b) for a, b in zip(default_cfg.splitlines(), debug_cfg.splitlines()) if a != b]
+    assert differing == [("  from_beginning = true", "  from_beginning = false")]
 
 
 @patch.object(tf, "load_monitoring_state")
@@ -146,8 +140,10 @@ def test_es_forwarder_gets_influx_creds_when_monitoring_exists(mock_es, mock_mon
     es, metrics = _build()
     assert es.influx_output_enabled
     assert (es.influxdb_url, es.influxdb_token, es.influxdb_org, es.influxdb_bucket) == (
-        metrics.influxdb_url, metrics.influxdb_token,
-        metrics.influxdb_org, metrics.influxdb_bucket,
+        metrics.influxdb_url,
+        metrics.influxdb_token,
+        metrics.influxdb_org,
+        metrics.influxdb_bucket,
     )
     assert "[[outputs.influxdb_v2]]" in es._build_telegraf_config()
 

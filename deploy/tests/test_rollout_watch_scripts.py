@@ -268,16 +268,12 @@ def test_the_sample_only_draws_new_arm_services():
     assert restricted[0].services == ("ant-node-2",)
     assert restricted[1].services == ()
     chosen = webrtc_coverage.select_sample(restricted, sample=10)
-    assert [(vm.name, vm.services[0]) for vm in chosen] == [
-        ("ant-prod-01-hz-fsn1-1", "ant-node-2")
-    ]
+    assert [(vm.name, vm.services[0]) for vm in chosen] == [("ant-prod-01-hz-fsn1-1", "ant-node-2")]
 
 
 def test_new_arm_matching_does_not_confuse_service_1_with_service_12():
     vm = _vm("ant-prod-01-ovh-GRA9-7", "10.0.2.7", "ovh", ("ant-node-1", "ant-node-12"))
-    assert webrtc_coverage.new_arm_services(vm, {"ANT-PROD-01-OVH-GRA9-7/12"}) == (
-        "ant-node-12",
-    )
+    assert webrtc_coverage.new_arm_services(vm, {"ANT-PROD-01-OVH-GRA9-7/12"}) == ("ant-node-12",)
 
 
 def test_warn_family_threshold_is_five_percent_of_the_new_arm():
@@ -721,9 +717,7 @@ def test_the_shipped_address_list_has_a_usable_first_entry():
 # ==========================================================================
 audit_v2 = _load(ROLLOUT_DIR / "audit_protocol_v2.py", "rw_audit_protocol_v2")
 pointer_signals = _load(ROLLOUT_DIR / "pointer_signals.py", "rw_pointer_signals")
-sctp_errors = _load(
-    ROLLOUT_DIR / "sctp_association_errors.py", "rw_sctp_association_errors"
-)
+sctp_errors = _load(ROLLOUT_DIR / "sctp_association_errors.py", "rw_sctp_association_errors")
 
 
 def audit_page(entries, after=None):
@@ -734,6 +728,7 @@ def audit_page(entries, after=None):
     """
     buckets = []
     for host, service, first, last in entries:
+
         def hit(values):
             if values is None:
                 return {"_source": {}}
@@ -822,7 +817,18 @@ def test_a_counter_reset_is_decided_per_field_not_per_service():
 def test_key_absent_is_zero_tolerance():
     arms = _arms(new=("h/1",))
     summaries = audit_v2.summarise(
-        [audit_page([("h", "1", {"subtree_audit_pass": 1}, {"subtree_audit_pass": 9, "subtree_audit_fail_key_absent": 2})])],
+        [
+            audit_page(
+                [
+                    (
+                        "h",
+                        "1",
+                        {"subtree_audit_pass": 1},
+                        {"subtree_audit_pass": 9, "subtree_audit_fail_key_absent": 2},
+                    )
+                ]
+            )
+        ],
         arms,
     )
     check = audit_v2.evaluate_key_absent(summaries, arms)
@@ -849,10 +855,24 @@ def test_digest_mismatch_is_a_ratio_against_the_old_arm_not_zero_tolerance():
     entries = []
     for key in new:
         host, service = key.split("/")
-        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1}))
+        entries.append(
+            (
+                host,
+                service,
+                {"subtree_audit_pass": 0},
+                {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1},
+            )
+        )
     for key in old:
         host, service = key.split("/")
-        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1}))
+        entries.append(
+            (
+                host,
+                service,
+                {"subtree_audit_pass": 0},
+                {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1},
+            )
+        )
     summaries = audit_v2.summarise([audit_page(entries)], arms)
     check = audit_v2.evaluate_digest_mismatch(summaries, arms, hours=1.0, baseline_rate=None)
     # Same rate on both arms -> ratio 1.0 -> pass, despite being non-zero.
@@ -867,10 +887,24 @@ def test_digest_mismatch_fails_above_the_ratio_limit():
     entries = []
     for key in new:
         host, service = key.split("/")
-        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 5}))
+        entries.append(
+            (
+                host,
+                service,
+                {"subtree_audit_pass": 0},
+                {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 5},
+            )
+        )
     for key in old:
         host, service = key.split("/")
-        entries.append((host, service, {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1}))
+        entries.append(
+            (
+                host,
+                service,
+                {"subtree_audit_pass": 0},
+                {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1},
+            )
+        )
     summaries = audit_v2.summarise([audit_page(entries)], arms)
     check = audit_v2.evaluate_digest_mismatch(summaries, arms, hours=1.0, baseline_rate=None)
     assert check.status == common.FAIL
@@ -881,7 +915,12 @@ def test_digest_mismatch_falls_back_to_the_baseline_once_the_old_arm_drains():
     new = tuple(f"n/{i}" for i in range(20))
     arms = _arms(new=new)
     entries = [
-        (key.split("/")[0], key.split("/")[1], {"subtree_audit_pass": 0}, {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1})
+        (
+            key.split("/")[0],
+            key.split("/")[1],
+            {"subtree_audit_pass": 0},
+            {"subtree_audit_pass": 10, "subtree_audit_fail_digest_mismatch": 1},
+        )
         for key in new
     ]
     summaries = audit_v2.summarise([audit_page(entries)], arms)

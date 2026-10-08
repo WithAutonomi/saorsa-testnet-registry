@@ -44,8 +44,7 @@ def cmd_destroy_elastic(args):
 
     if not args.force:
         confirm = input(
-            f"This will destroy the Elasticsearch stack for '{args.name}'. "
-            "Type 'yes' to confirm: "
+            f"This will destroy the Elasticsearch stack for '{args.name}'. Type 'yes' to confirm: "
         )
         if confirm.strip().lower() != "yes":
             console.print("[yellow]Aborted.[/yellow]")
@@ -101,42 +100,32 @@ def cmd_destroy_elastic(args):
     results = execute_terraform_runs([config], action="destroy")
 
     if not results[0].success:
-        console.print(
-            "[bold red]Elasticsearch infrastructure destroy failed.[/bold red]"
-        )
+        console.print("[bold red]Elasticsearch infrastructure destroy failed.[/bold red]")
         console.print(results[0].stderr)
         sys.exit(1)
 
-    console.print(
-        "[bold green]Elasticsearch infrastructure destroyed successfully.[/bold green]"
-    )
+    console.print("[bold green]Elasticsearch infrastructure destroyed successfully.[/bold green]")
 
     # Delete Terraform state
     try:
         delete_terraform_state(state_key)
         console.print(f"[dim]Deleted Terraform state: {state_key}[/dim]")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to delete Terraform state: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to delete Terraform state: {e}[/yellow]")
 
     # Delete Elasticsearch state
     try:
         delete_elastic_state(args.name)
         console.print("[dim]Elasticsearch state removed from S3.[/dim]")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Failed to delete Elasticsearch state: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Failed to delete Elasticsearch state: {e}[/yellow]")
 
     # Clean up workspace
     if workspace_dir.exists():
         shutil.rmtree(workspace_dir)
 
     console.print()
-    console.print(
-        f"[bold green]Elasticsearch stack '{args.name}' fully destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]Elasticsearch stack '{args.name}' fully destroyed.[/bold green]")
 
 
 def _destroy_vars_from_tfstate(state_key: str) -> dict:
@@ -150,15 +139,11 @@ def _destroy_vars_from_tfstate(state_key: str) -> dict:
         return {}
 
     out: dict = {}
-    vol = terraform_state_attributes(
-        tfstate, "digitalocean_volume", "elastic_storage"
-    )
+    vol = terraform_state_attributes(tfstate, "digitalocean_volume", "elastic_storage")
     if vol and vol.get("size") is not None:
         out["volume_size"] = str(vol["size"])
 
-    droplet = terraform_state_attributes(
-        tfstate, "digitalocean_droplet", "elastic"
-    )
+    droplet = terraform_state_attributes(tfstate, "digitalocean_droplet", "elastic")
     if droplet and droplet.get("size"):
         out["droplet_size"] = droplet["size"]
 

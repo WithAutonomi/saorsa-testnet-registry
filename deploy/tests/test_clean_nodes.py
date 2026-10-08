@@ -29,7 +29,13 @@ class TestNodeCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.node_clean.State")
     @patch("saorsa_deploy.provisioning.node_clean.Inventory")
     def test_adds_three_operations(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -46,7 +52,13 @@ class TestNodeCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.node_clean.State")
     @patch("saorsa_deploy.provisioning.node_clean.Inventory")
     def test_stop_and_disable_commands_are_idempotent(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -67,7 +79,13 @@ class TestNodeCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.node_clean.State")
     @patch("saorsa_deploy.provisioning.node_clean.Inventory")
     def test_removes_unit_data_log_and_binary(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -89,7 +107,13 @@ class TestNodeCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.node_clean.State")
     @patch("saorsa_deploy.provisioning.node_clean.Inventory")
     def test_does_not_touch_bootstrap_services(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -98,8 +122,7 @@ class TestNodeCleanProvisionerExecute:
         _make_provisioner().execute()
 
         all_cmds = " ".join(
-            " ".join(c.kwargs.get("commands", []))
-            for c in mock_add_op.call_args_list
+            " ".join(c.kwargs.get("commands", [])) for c in mock_add_op.call_args_list
         )
         assert "ant-bootstrap" not in all_cmds
 
@@ -110,7 +133,13 @@ class TestNodeCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.node_clean.State")
     @patch("saorsa_deploy.provisioning.node_clean.Inventory")
     def test_does_not_unmount_volume_or_edit_fstab(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -119,8 +148,7 @@ class TestNodeCleanProvisionerExecute:
         _make_provisioner().execute()
 
         all_cmds = " ".join(
-            " ".join(c.kwargs.get("commands", []))
-            for c in mock_add_op.call_args_list
+            " ".join(c.kwargs.get("commands", [])) for c in mock_add_op.call_args_list
         )
         assert "umount" not in all_cmds
         assert "/etc/fstab" not in all_cmds
@@ -132,7 +160,13 @@ class TestNodeCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.node_clean.State")
     @patch("saorsa_deploy.provisioning.node_clean.Inventory")
     def test_raises_on_failed_hosts(
-        self, _mi, mock_state, _mc, _ma, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        _ma,
+        _mr,
+        _md,
     ):
         failed_host = MagicMock()
         failed_host.name = "10.0.0.1"
@@ -149,7 +183,10 @@ class TestCmdCleanNodes:
     @patch("saorsa_deploy.cmd.clean_nodes.clear_known_hosts")
     @patch("saorsa_deploy.cmd.clean_nodes.load_deployment_state")
     def test_name_mode_merges_all_regions(
-        self, mock_load_state, _mock_clear, mock_provisioner_cls,
+        self,
+        mock_load_state,
+        _mock_clear,
+        mock_provisioner_cls,
     ):
         from saorsa_deploy.cmd.clean_nodes import cmd_clean_nodes
 
@@ -177,7 +214,10 @@ class TestCmdCleanNodes:
     @patch("saorsa_deploy.cmd.clean_nodes.clear_known_hosts")
     @patch("saorsa_deploy.cmd.clean_nodes.load_deployment_state")
     def test_region_filter(
-        self, mock_load_state, _mock_clear, mock_provisioner_cls,
+        self,
+        mock_load_state,
+        _mock_clear,
+        mock_provisioner_cls,
     ):
         from saorsa_deploy.cmd.clean_nodes import cmd_clean_nodes
 
@@ -222,7 +262,10 @@ class TestCmdCleanNodes:
     @patch("saorsa_deploy.cmd.clean_nodes.NodeCleanProvisioner")
     @patch("saorsa_deploy.cmd.clean_nodes.clear_known_hosts")
     def test_host_ips_file_mode(
-        self, _mock_clear, mock_provisioner_cls, tmp_path,
+        self,
+        _mock_clear,
+        mock_provisioner_cls,
+        tmp_path,
     ):
         from saorsa_deploy.cmd.clean_nodes import cmd_clean_nodes
 

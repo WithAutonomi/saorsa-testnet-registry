@@ -4,6 +4,7 @@ The script lives at ``deploy/saorsa_deploy/resources/scripts/prod_uploader.py``
 — it isn't a regular Python module, so we load it by path and exercise its
 internal helpers directly.
 """
+
 import importlib.util
 import json
 from pathlib import Path
@@ -11,8 +12,7 @@ from pathlib import Path
 import pytest
 
 SERVICE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "saorsa_deploy/resources/scripts/prod_uploader.py"
+    Path(__file__).resolve().parents[1] / "saorsa_deploy/resources/scripts/prod_uploader.py"
 )
 
 
@@ -26,23 +26,18 @@ def service():
 
 class TestSafeFilename:
     def test_strips_url_path(self, service):
-        assert service._safe_filename(
-            "https://example.com/dir/file.bin?x=1", 7
-        ) == "file.bin"
+        assert service._safe_filename("https://example.com/dir/file.bin?x=1", 7) == "file.bin"
 
     def test_falls_back_when_no_path(self, service):
         assert service._safe_filename("https://example.com/", 3) == "download-3.bin"
 
     def test_safe_dotdot(self, service):
-        assert (
-            service._safe_filename("https://example.com/..", 9)
-            == "download-9.bin"
-        )
+        assert service._safe_filename("https://example.com/..", 9) == "download-9.bin"
 
 
 class TestJsonParsing:
     def test_picks_last_json_line(self, service):
-        out = "preamble\n  \n{\"address\":\"abc\",\"mode\":\"public\"}\n"
+        out = 'preamble\n  \n{"address":"abc","mode":"public"}\n'
         parsed = service._parse_ant_json(out)
         assert parsed == {"address": "abc", "mode": "public"}
 
@@ -50,24 +45,28 @@ class TestJsonParsing:
         assert service._parse_ant_json("just text\n") is None
 
     def test_partial_upload_recognised(self, service):
-        out = json.dumps({
-            "error": "partial_upload",
-            "total_chunks": 42,
-            "chunks_stored": 40,
-            "chunks_failed": 2,
-        })
+        out = json.dumps(
+            {
+                "error": "partial_upload",
+                "total_chunks": 42,
+                "chunks_stored": 40,
+                "chunks_failed": 2,
+            }
+        )
         parsed = service._parse_ant_json(out)
         assert service._classify(parsed) == service.STATUS_PARTIAL_UPLOAD
 
     def test_success_recognised(self, service):
         parsed = json.loads(
-            json.dumps({
-                "address": "abc",
-                "mode": "public",
-                "chunks_stored": 42,
-                "total_chunks": 42,
-                "chunks_failed": 0,
-            })
+            json.dumps(
+                {
+                    "address": "abc",
+                    "mode": "public",
+                    "chunks_stored": 42,
+                    "total_chunks": 42,
+                    "chunks_failed": 0,
+                }
+            )
         )
         assert service._classify(parsed) == service.STATUS_SUCCESS
 
@@ -129,7 +128,7 @@ class TestInfluxLine:
         assert "store_duration_p95_ms=340i" in line
 
     def test_string_fields_quoted(self, service):
-        line = self._line(service, address="abc \"x\"")
+        line = self._line(service, address='abc "x"')
         assert 'address="abc \\"x\\""' in line
 
     def test_special_chars_in_tags_escaped(self, service):
@@ -141,11 +140,7 @@ class TestReadUrls:
     def test_filters_blanks_and_comments(self, service, tmp_path):
         p = tmp_path / "urls.txt"
         p.write_text(
-            "# top\n"
-            "https://example.com/a\n"
-            "\n"
-            "  # indented comment\n"
-            "https://example.com/b\n"
+            "# top\nhttps://example.com/a\n\n  # indented comment\nhttps://example.com/b\n"
         )
         urls = service._read_urls(str(p))
         assert urls == ["https://example.com/a", "https://example.com/b"]
@@ -203,9 +198,7 @@ class TestVerbosityFlag:
 
 class TestInfluxLineReason:
     def test_reason_field_appears_in_line(self, service):
-        line = TestInfluxLine()._line(
-            service, status=1, reason="wave store failed after retries"
-        )
+        line = TestInfluxLine()._line(service, status=1, reason="wave store failed after retries")
         assert 'reason="wave store failed after retries"' in line
 
     def test_empty_reason_emits_empty_string(self, service):
@@ -262,8 +255,13 @@ class TestHeaptrackWrap:
             cmd, memory_profiling=True, output_base="/var/log/ant-heaptrack/upload-1"
         )
         assert out == [
-            "heaptrack", "-o", "/var/log/ant-heaptrack/upload-1",
-            "/root/.local/bin/ant", "file", "upload", "x",
+            "heaptrack",
+            "-o",
+            "/var/log/ant-heaptrack/upload-1",
+            "/root/.local/bin/ant",
+            "file",
+            "upload",
+            "x",
         ]
 
     def test_noop_when_disabled(self, service):
@@ -275,9 +273,7 @@ class TestHeaptrackWrap:
 
     def test_noop_when_no_output_base(self, service):
         cmd = ["/root/.local/bin/ant", "file", "upload", "x"]
-        out = service._maybe_wrap_heaptrack(
-            cmd, memory_profiling=True, output_base=None
-        )
+        out = service._maybe_wrap_heaptrack(cmd, memory_profiling=True, output_base=None)
         assert out == cmd
 
 

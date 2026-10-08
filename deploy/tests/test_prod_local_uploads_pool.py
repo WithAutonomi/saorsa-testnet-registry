@@ -34,9 +34,7 @@ def repo():
 @pytest.fixture
 def fake_s3(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr(
-        pool_selection, "load_pool_selection", lambda name: store.get(name)
-    )
+    monkeypatch.setattr(pool_selection, "load_pool_selection", lambda name: store.get(name))
     monkeypatch.setattr(
         pool_selection,
         "save_pool_selection",
@@ -47,9 +45,7 @@ def fake_s3(monkeypatch):
 
 @pytest.fixture
 def wired(repo, monkeypatch, fake_s3):
-    monkeypatch.setattr(
-        "saorsa_deploy.registry.get_file_pool_repository", lambda: repo
-    )
+    monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: repo)
     return repo
 
 
@@ -92,9 +88,7 @@ class TestSelection:
         # able to draw one — there is deliberately no flag to make it try.
         from rich.console import Console
 
-        wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=5 * MIB
-        )
+        wired.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", size_bytes=5 * MIB)
         with pytest.raises(SystemExit):
             prod_local_uploads._select_from_pool(_args(), Console())
 
@@ -125,9 +119,7 @@ class TestSelection:
     def test_missing_database_exits(self, monkeypatch, capsys, fake_s3):
         from rich.console import Console
 
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_file_pool_repository", lambda: None
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: None)
         with pytest.raises(SystemExit):
             prod_local_uploads._select_from_pool(_args(), Console())
         assert "--from-pool needs DATABASE_URL" in _flat(capsys.readouterr().out)
@@ -207,9 +199,7 @@ class TestInlineResolution:
     def test_no_claims_is_a_noop(self):
         from rich.console import Console
 
-        prod_local_uploads._resolve_pool_claim(
-            [], "a", ProdUploadStatus.SUCCESS, Console()
-        )
+        prod_local_uploads._resolve_pool_claim([], "a", ProdUploadStatus.SUCCESS, Console())
 
 
 class TestManifest:
@@ -272,8 +262,10 @@ class TestCommandLineSurface:
         real = mod.cmd_prod_local_uploads
         mod.cmd_prod_local_uploads = _spy
         try:
-            with contextlib.redirect_stdout(io.StringIO()), \
-                 contextlib.redirect_stderr(io.StringIO()):
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 with pytest.raises(SystemExit):
                     main(argv)
         finally:
@@ -281,21 +273,39 @@ class TestCommandLineSurface:
         return captured.get("args")
 
     def test_from_pool_alone_is_accepted(self):
-        args = self._parse([
-            "prod", "local-uploads", "--name", "LOCAL-UL-MED",
-            "--purpose", "test", "--from-pool", "medium:1", "--exclude-partial",
-            "--ant-version", "0.3.2",
-        ])
+        args = self._parse(
+            [
+                "prod",
+                "local-uploads",
+                "--name",
+                "LOCAL-UL-MED",
+                "--purpose",
+                "test",
+                "--from-pool",
+                "medium:1",
+                "--exclude-partial",
+                "--ant-version",
+                "0.3.2",
+            ]
+        )
         assert args is not None, "--from-pool alone must satisfy the parser"
         assert args.from_pool == "medium:1"
         assert args.exclude_partial is True
         assert args.urls is None and args.local_dir_path is None
 
     def test_urls_alone_still_accepted(self):
-        args = self._parse([
-            "prod", "local-uploads", "--name", "X", "--purpose", "t",
-            "--urls", "/tmp/list.txt",
-        ])
+        args = self._parse(
+            [
+                "prod",
+                "local-uploads",
+                "--name",
+                "X",
+                "--purpose",
+                "t",
+                "--urls",
+                "/tmp/list.txt",
+            ]
+        )
         assert args is not None
         assert args.urls == "/tmp/list.txt"
         assert args.from_pool is None
@@ -303,12 +313,35 @@ class TestCommandLineSurface:
     def test_from_pool_with_urls_is_rejected(self):
         # Three input sources, exactly one required — the same rule the
         # manifest validator enforces.
-        assert self._parse([
-            "prod", "local-uploads", "--name", "X", "--purpose", "t",
-            "--from-pool", "tiny:1", "--urls", "/tmp/list.txt",
-        ]) is None
+        assert (
+            self._parse(
+                [
+                    "prod",
+                    "local-uploads",
+                    "--name",
+                    "X",
+                    "--purpose",
+                    "t",
+                    "--from-pool",
+                    "tiny:1",
+                    "--urls",
+                    "/tmp/list.txt",
+                ]
+            )
+            is None
+        )
 
     def test_no_input_source_is_rejected(self):
-        assert self._parse([
-            "prod", "local-uploads", "--name", "X", "--purpose", "t",
-        ]) is None
+        assert (
+            self._parse(
+                [
+                    "prod",
+                    "local-uploads",
+                    "--name",
+                    "X",
+                    "--purpose",
+                    "t",
+                ]
+            )
+            is None
+        )

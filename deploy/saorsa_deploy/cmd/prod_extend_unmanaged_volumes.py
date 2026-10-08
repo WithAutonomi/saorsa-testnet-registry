@@ -36,7 +36,7 @@ from saorsa_deploy.provisioning.extend_volume import (
 )
 from saorsa_deploy.ssh import clear_known_hosts
 
-GIB_BYTES = 1024 ** 3
+GIB_BYTES = 1024**3
 
 
 def _resolve_ssh_key(vm: NodeVm, override: str | None) -> str:
@@ -49,10 +49,14 @@ def _post_resize_size_bytes(vm: NodeVm, ssh_key: str) -> int:
     result = subprocess.run(
         [
             "ssh",
-            "-i", ssh_key,
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=15",
+            "-i",
+            ssh_key,
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=15",
             f"{vm.ssh_user}@{vm.ip}",
             f"df -B1 --output=size {MOUNT_POINT} | tail -1 | tr -dc '0-9'",
         ],
@@ -61,9 +65,7 @@ def _post_resize_size_bytes(vm: NodeVm, ssh_key: str) -> int:
         timeout=60,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Post-resize df probe on {vm.name} failed: {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"Post-resize df probe on {vm.name} failed: {result.stderr.strip()}")
     raw = result.stdout.strip()
     if not raw:
         raise RuntimeError(f"Post-resize df probe on {vm.name} returned no output")
@@ -86,9 +88,7 @@ def _run_in_vm_resize(vm: NodeVm, ssh_key: str, target_gb: int) -> None:
     pyinfra_state = State(inventory=inventory, config=Config())
     connect_all(pyinfra_state)
     try:
-        add_extend_volume_op(
-            pyinfra_state, services=list(vm.services), target_gb=target_gb
-        )
+        add_extend_volume_op(pyinfra_state, services=list(vm.services), target_gb=target_gb)
         run_ops(pyinfra_state)
     finally:
         disconnect_all(pyinfra_state)
@@ -110,15 +110,10 @@ def _extend_one_vm(
     """Run all three phases for a single VM. Returns
     (volume_before, volume_after, post_resize_bytes).
     """
-    console.print(
-        f"[bold cyan]→ {vm.name}[/bold cyan] "
-        f"({vm.provider}/{vm.region}, {vm.ip})"
-    )
+    console.print(f"[bold cyan]→ {vm.name}[/bold cyan] ({vm.provider}/{vm.region}, {vm.ip})")
 
     volume = get_attached_data_volume(vm)
-    console.print(
-        f"  [dim]Attached volume {volume.id} currently {volume.size_gb} GB[/dim]"
-    )
+    console.print(f"  [dim]Attached volume {volume.id} currently {volume.size_gb} GB[/dim]")
 
     if volume.size_gb >= target_gb:
         console.print(
@@ -127,14 +122,9 @@ def _extend_one_vm(
         )
         resized = volume
     else:
-        console.print(
-            f"  Cloud-side: resizing {volume.size_gb} → {target_gb} GB…"
-        )
+        console.print(f"  Cloud-side: resizing {volume.size_gb} → {target_gb} GB…")
         resized = resize_volume(volume, target_gb)
-        console.print(
-            f"  [green]Cloud-side resize complete[/green] "
-            f"(now {resized.size_gb} GB)"
-        )
+        console.print(f"  [green]Cloud-side resize complete[/green] (now {resized.size_gb} GB)")
 
     clear_known_hosts([vm.ip], console)
 
@@ -170,15 +160,11 @@ def cmd_prod_extend_unmanaged_volumes(args):
 
     inventory_path = Path(args.inventory_path).expanduser()
     if not inventory_path.is_file():
-        console.print(
-            f"[bold red]Error:[/bold red] inventory not found: {inventory_path}"
-        )
+        console.print(f"[bold red]Error:[/bold red] inventory not found: {inventory_path}")
         sys.exit(1)
 
     try:
-        vms = load_node_inventory(
-            inventory_path, provider_filter=args.provider
-        )
+        vms = load_node_inventory(inventory_path, provider_filter=args.provider)
     except (ValueError, OSError) as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -188,14 +174,12 @@ def cmd_prod_extend_unmanaged_volumes(args):
         vms = [vm for vm in vms if vm.name in wanted]
         if not vms:
             console.print(
-                f"[bold red]Error:[/bold red] --limit-to matched no VMs "
-                f"({sorted(wanted)})"
+                f"[bold red]Error:[/bold red] --limit-to matched no VMs ({sorted(wanted)})"
             )
             sys.exit(1)
 
     console.print(
-        f"[bold]prod extend-unmanaged-volumes[/bold] — "
-        f"{len(vms)} VM(s), target {target_gb} GB"
+        f"[bold]prod extend-unmanaged-volumes[/bold] — {len(vms)} VM(s), target {target_gb} GB"
     )
     if args.provider:
         console.print(f"  Provider filter: {args.provider}")
@@ -219,8 +203,7 @@ def cmd_prod_extend_unmanaged_volumes(args):
         ssh_key = _resolve_ssh_key(vm, args.ssh_key_path)
         if not os.path.isfile(ssh_key):
             console.print(
-                f"[bold red]Error:[/bold red] SSH key for {vm.name} does not "
-                f"exist: {ssh_key}"
+                f"[bold red]Error:[/bold red] SSH key for {vm.name} does not exist: {ssh_key}"
             )
             failed.append((vm.name, f"missing ssh key {ssh_key}"))
             if not args.keep_going:

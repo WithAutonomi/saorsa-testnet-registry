@@ -13,12 +13,15 @@ def test_wait_for_ssh_succeeds_when_all_hosts_respond():
         return SimpleNamespace(returncode=0)
 
     with patch.object(ssh.subprocess, "run", side_effect=fake_run):
-        assert ssh.wait_for_ssh(
-            ["1.1.1.1", "2.2.2.2"],
-            "/key",
-            timeout=5,
-            poll_interval=0,
-        ) == []
+        assert (
+            ssh.wait_for_ssh(
+                ["1.1.1.1", "2.2.2.2"],
+                "/key",
+                timeout=5,
+                poll_interval=0,
+            )
+            == []
+        )
 
 
 def test_wait_for_ssh_returns_unreachable_hosts_after_timeout():

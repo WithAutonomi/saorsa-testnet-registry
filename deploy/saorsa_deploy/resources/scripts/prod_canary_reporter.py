@@ -11,6 +11,7 @@ than a sticky "lost" count — chunks go unreachable then mostly recover.
 Only the Python standard library is used — no third-party deps need to be
 installed on the monitoring VM.
 """
+
 from __future__ import annotations
 
 import csv
@@ -81,9 +82,7 @@ _PROBE_FLUX = """from(bucket: "{bucket}")
 """
 
 
-def _flux_query(
-    *, url: str, token: str, org: str, flux: str
-) -> str:
+def _flux_query(*, url: str, token: str, org: str, flux: str) -> str:
     req = urllib.request.Request(
         f"{url.rstrip('/')}/api/v2/query?org={org}",
         data=flux.encode("utf-8"),
@@ -155,7 +154,9 @@ def fetch_uploads(
     """Return ``{canary_id: {file_name, source_url, uploaded_at, num_chunks,
     top_address, ...}}``."""
     body = _flux_query(
-        url=url, token=token, org=org,
+        url=url,
+        token=token,
+        org=org,
         flux=_UPLOAD_FLUX.format(bucket=bucket, deployment=deployment_name),
     )
     out: dict[str, dict] = {}
@@ -176,9 +177,7 @@ def fetch_uploads(
             "uploaded_at": uploaded_at,
             "num_chunks": _parse_int(record.get("num_chunks", "")) or 0,
             "top_address": record.get("top_address", "") or "",
-            "initial_verify_status": (
-                record.get("initial_verify_status", "") or "failed"
-            ),
+            "initial_verify_status": (record.get("initial_verify_status", "") or "failed"),
             "host": record.get("host", ""),
         }
     return out
@@ -188,7 +187,9 @@ def fetch_probes(
     *, url: str, token: str, org: str, bucket: str, deployment_name: str
 ) -> list[dict]:
     body = _flux_query(
-        url=url, token=token, org=org,
+        url=url,
+        token=token,
+        org=org,
         flux=_PROBE_FLUX.format(bucket=bucket, deployment=deployment_name),
     )
     out: list[dict] = []
@@ -201,15 +202,15 @@ def fetch_probes(
         probed_at = _parse_ts(record.get("_time", ""))
         if probed_at is None:
             continue
-        out.append({
-            "canary_id": cid,
-            "probed_at": probed_at,
-            "probed_by_host": record.get("host", ""),
-            "status": record.get("status", "") or "inconclusive",
-            "missing_chunk_address": (
-                record.get("missing_chunk_address", "") or ""
-            ),
-        })
+        out.append(
+            {
+                "canary_id": cid,
+                "probed_at": probed_at,
+                "probed_by_host": record.get("host", ""),
+                "status": record.get("status", "") or "inconclusive",
+                "missing_chunk_address": (record.get("missing_chunk_address", "") or ""),
+            }
+        )
     return out
 
 
@@ -218,9 +219,7 @@ def fetch_probes(
 # ---------------------------------------------------------------------------
 
 
-def derive_state(
-    uploads: dict[str, dict], probes: list[dict]
-) -> dict[str, dict]:
+def derive_state(uploads: dict[str, dict], probes: list[dict]) -> dict[str, dict]:
     """Return ``{canary_id: {...}}`` with per-canary availability *episodes*.
 
     Mirrors ``derive_unavailability_episodes`` in prod_canary_results.py: walk
@@ -258,9 +257,7 @@ def derive_state(
                 if open_ep is not None:
                     open_ep["recovered_at"] = p["probed_at"]
                     open_ep["recovered"] = True
-                    open_ep["unavailable_hours"] = _hrs(
-                        open_ep["confirmed_at"], p["probed_at"]
-                    )
+                    open_ep["unavailable_hours"] = _hrs(open_ep["confirmed_at"], p["probed_at"])
                     episodes.append(open_ep)
                     open_ep = None
                 pending_chunk = None
@@ -293,9 +290,7 @@ def derive_state(
             "last_host": last_host,
             "episodes": episodes,
             "current": (
-                "unavailable"
-                if episodes and not episodes[-1]["recovered"]
-                else "available"
+                "unavailable" if episodes and not episodes[-1]["recovered"] else "available"
             ),
         }
     return state
@@ -371,23 +366,18 @@ def build_blocks(
     all_episodes = [e for s in state.values() for e in s["episodes"]]
     recovered_eps = [e for e in all_episodes if e["recovered"]]
     ongoing_eps = [
-        (cid, s["episodes"][-1], s)
-        for cid, s in state.items()
-        if s["current"] == "unavailable"
+        (cid, s["episodes"][-1], s) for cid, s in state.items() if s["current"] == "unavailable"
     ]
 
-    prev_unavail_ids = {
-        cid for cid, s in prev_state.items()
-        if s.get("current") == "unavailable"
-    }
+    prev_unavail_ids = {cid for cid, s in prev_state.items() if s.get("current") == "unavailable"}
     newly_unavailable = [
-        (cid, s) for cid, s in state.items()
+        (cid, s)
+        for cid, s in state.items()
         if s["current"] == "unavailable" and cid not in prev_unavail_ids
     ]
     newly_unavailable.sort(key=lambda x: x[1]["episodes"][-1]["confirmed_at"])
     newly_recovered = [
-        cid for cid, s in state.items()
-        if s["current"] == "available" and cid in prev_unavail_ids
+        cid for cid, s in state.items() if s["current"] == "available" and cid in prev_unavail_ids
     ]
 
     last_probes = last_probe_per_host(probes)
@@ -396,76 +386,80 @@ def build_blocks(
 
     blocks: list[dict] = []
 
-    blocks.append({
-        "type": "header",
-        "text": {
-            "type": "plain_text",
-            "text": f"📊 {deployment_name} — canary daily report",
-        },
-    })
-    blocks.append({
-        "type": "context",
-        "elements": [{
-            "type": "mrkdwn",
-            "text": f"_{now.strftime('%Y-%m-%d %H:%M UTC')}_",
-        }],
-    })
+    blocks.append(
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"📊 {deployment_name} — canary daily report",
+            },
+        }
+    )
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"_{now.strftime('%Y-%m-%d %H:%M UTC')}_",
+                }
+            ],
+        }
+    )
 
     # Probe-staleness warning: any *probe* host whose last record is >6h old.
     # The upload VM also writes prod_canary_probe records (one per uploaded
     # canary's immediate verification) but it stops emitting once the URL
     # list is exhausted — that's by design, not a fault, so exclude it from
     # the warning.
-    probe_last = {
-        h: t for h, t in last_probes.items()
-        if "-ant-client-upload-" not in h
-    }
-    stale_hosts = [
-        h for h, t in probe_last.items()
-        if (now - t).total_seconds() > 6 * 3600
-    ]
+    probe_last = {h: t for h, t in last_probes.items() if "-ant-client-upload-" not in h}
+    stale_hosts = [h for h, t in probe_last.items() if (now - t).total_seconds() > 6 * 3600]
     no_recent_probes = (
         all((now - t).total_seconds() > 6 * 3600 for t in probe_last.values())
-        if probe_last else True
+        if probe_last
+        else True
     )
     if not last_probes:
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    "⚠️ *No probe data yet.* The probe service may not be "
-                    "running, or no probes have been emitted."
-                ),
-            },
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "⚠️ *No probe data yet.* The probe service may not be "
+                        "running, or no probes have been emitted."
+                    ),
+                },
+            }
+        )
     elif no_recent_probes:
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    "⚠️ *No probes in the last 6h on any vantage.* "
-                    "Probe service is likely dead."
-                ),
-            },
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "⚠️ *No probes in the last 6h on any vantage.* Probe service is likely dead."
+                    ),
+                },
+            }
+        )
     elif stale_hosts:
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"⚠️ *Stale vantage(s):* {', '.join(stale_hosts)} "
-                    "have not probed in the last 6h."
-                ),
-            },
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"⚠️ *Stale vantage(s):* {', '.join(stale_hosts)} "
+                        "have not probed in the last 6h."
+                    ),
+                },
+            }
+        )
 
     # Status — availability now + episode tallies
-    delta_unavail = unavailable - sum(
-        1 for cid in prev_unavail_ids if cid in state
-    )
+    delta_unavail = unavailable - sum(1 for cid in prev_unavail_ids if cid in state)
     delta_text = f" (+{delta_unavail})" if delta_unavail > 0 else ""
     status_lines = [
         f"• Uploaded: *{total}*",
@@ -474,15 +468,16 @@ def build_blocks(
         f"• Episodes — total *{len(all_episodes)}*, "
         f"recovered *{len(recovered_eps)}*, ongoing *{len(ongoing_eps)}*",
     ]
-    blocks.append({
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": "*Status*\n" + "\n".join(status_lines)},
-    })
+    blocks.append(
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Status*\n" + "\n".join(status_lines)},
+        }
+    )
 
     # Recovered-episode unavailability-duration distribution.
     durs = sorted(
-        e["unavailable_hours"] for e in recovered_eps
-        if e["unavailable_hours"] is not None
+        e["unavailable_hours"] for e in recovered_eps if e["unavailable_hours"] is not None
     )
     if durs:
         n = len(durs)
@@ -495,17 +490,19 @@ def build_blocks(
                     counts[label] += 1
                     break
         hist = " ".join(f"{label}:{counts[label]}" for label, *_ in DURATION_BUCKETS)
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    "*Recovered unavailability windows*\n"
-                    f"• median {median:.1f}h, p95 {p95:.1f}h, "
-                    f"max {durs[-1]:.1f}h (n={n})\n• {hist}"
-                ),
-            },
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Recovered unavailability windows*\n"
+                        f"• median {median:.1f}h, p95 {p95:.1f}h, "
+                        f"max {durs[-1]:.1f}h (n={n})\n• {hist}"
+                    ),
+                },
+            }
+        )
 
     # Currently-unavailable (ongoing) episodes — the genuine concern.
     if ongoing_eps:
@@ -521,13 +518,15 @@ def build_blocks(
             )
         if len(ongoing_eps) > 20:
             items.append(f"_…and {len(ongoing_eps) - 20} more_")
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "*Currently unavailable*\n" + "\n".join(items),
-            },
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Currently unavailable*\n" + "\n".join(items),
+                },
+            }
+        )
 
     # Per-vantage
     if all_hosts:
@@ -536,23 +535,21 @@ def build_blocks(
             last = last_probes.get(h)
             last_txt = _fmt_age(now, last) if last else "never"
             u = host_unavail.get(h, 0)
-            vant_lines.append(
-                f"• `{h}` — last probe {last_txt} — unavailable now: {u}"
-            )
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "*Per-vantage*\n" + "\n".join(vant_lines),
-            },
-        })
+            vant_lines.append(f"• `{h}` — last probe {last_txt} — unavailable now: {u}")
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Per-vantage*\n" + "\n".join(vant_lines),
+                },
+            }
+        )
 
     # Deltas since last report
     delta_lines = []
     if newly_unavailable:
-        delta_lines.append(
-            f"*Newly unavailable since last report* ({len(newly_unavailable)})"
-        )
+        delta_lines.append(f"*Newly unavailable since last report* ({len(newly_unavailable)})")
         for cid, s in newly_unavailable[:15]:
             ep = s["episodes"][-1]
             role = "DataMap" if ep.get("is_data_map") else "data"
@@ -564,22 +561,26 @@ def build_blocks(
         if len(newly_unavailable) > 15:
             delta_lines.append(f"_…and {len(newly_unavailable) - 15} more_")
     if newly_recovered:
-        delta_lines.append(
-            f"*Recovered since last report:* {len(newly_recovered)}"
-        )
+        delta_lines.append(f"*Recovered since last report:* {len(newly_recovered)}")
     if delta_lines:
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(delta_lines)},
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(delta_lines)},
+            }
+        )
     else:
-        blocks.append({
-            "type": "context",
-            "elements": [{
-                "type": "mrkdwn",
-                "text": "_No availability changes since last report._",
-            }],
-        })
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "_No availability changes since last report._",
+                    }
+                ],
+            }
+        )
 
     return blocks
 
@@ -667,66 +668,80 @@ def main() -> int:
 
     try:
         uploads = fetch_uploads(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=influx_bucket, deployment_name=deployment,
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            deployment_name=deployment,
         )
         probes = fetch_probes(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=influx_bucket, deployment_name=deployment,
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            deployment_name=deployment,
         )
     except urllib.error.URLError as e:
         # Connection failure to Influx — post a degraded message rather than
         # silently dying, so the operator sees something in Slack.
         print(f"ERROR: Influx query failed: {e}", file=sys.stderr)
-        post_to_slack(webhook, [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": f"⚠️ {deployment} — reporter degraded",
+        post_to_slack(
+            webhook,
+            [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"⚠️ {deployment} — reporter degraded",
+                    },
                 },
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        f"Influx query failed at {now.isoformat()}: `{e}`. "
-                        "Reporter could not compute today's digest."
-                    ),
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"Influx query failed at {now.isoformat()}: `{e}`. "
+                            "Reporter could not compute today's digest."
+                        ),
+                    },
                 },
-            },
-        ])
+            ],
+        )
         return 4
 
     if not uploads:
-        post_to_slack(webhook, [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": f"📊 {deployment} — canary daily report",
+        post_to_slack(
+            webhook,
+            [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"📊 {deployment} — canary daily report",
+                    },
                 },
-            },
-            {
-                "type": "context",
-                "elements": [{
-                    "type": "mrkdwn",
-                    "text": f"_{now.strftime('%Y-%m-%d %H:%M UTC')}_",
-                }],
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "No `prod_canary_upload` points yet. "
-                        "Upload service may not have started, or no URLs "
-                        "have been processed."
-                    ),
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"_{now.strftime('%Y-%m-%d %H:%M UTC')}_",
+                        }
+                    ],
                 },
-            },
-        ])
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "No `prod_canary_upload` points yet. "
+                            "Upload service may not have started, or no URLs "
+                            "have been processed."
+                        ),
+                    },
+                },
+            ],
+        )
         write_state(state_path, {}, now)
         return 0
 

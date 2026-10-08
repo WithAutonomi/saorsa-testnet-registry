@@ -53,8 +53,7 @@ def _run_in_vm(vm: NodeVm, ssh_key: str, reserve_percent: int) -> None:
     if pyinfra_state.failed_hosts:
         names = ", ".join(host.name for host in pyinfra_state.failed_hosts)
         raise RuntimeError(
-            f"tune2fs failed on {names}. Inspect the host for the "
-            "ANT_RESERVE marker."
+            f"tune2fs failed on {names}. Inspect the host for the ANT_RESERVE marker."
         )
 
 
@@ -64,16 +63,12 @@ def cmd_set_volume_reserve(args):
 
     reserve_percent = int(args.reserve_percent)
     if not (0 <= reserve_percent <= 50):
-        console.print(
-            "[bold red]Error:[/bold red] --reserve-percent must be between 0 and 50"
-        )
+        console.print("[bold red]Error:[/bold red] --reserve-percent must be between 0 and 50")
         sys.exit(1)
 
     inventory_path = Path(args.inventory_path).expanduser()
     if not inventory_path.is_file():
-        console.print(
-            f"[bold red]Error:[/bold red] inventory not found: {inventory_path}"
-        )
+        console.print(f"[bold red]Error:[/bold red] inventory not found: {inventory_path}")
         sys.exit(1)
 
     try:
@@ -87,14 +82,12 @@ def cmd_set_volume_reserve(args):
         vms = [vm for vm in vms if vm.name in wanted]
         if not vms:
             console.print(
-                f"[bold red]Error:[/bold red] --limit-to matched no VMs "
-                f"({sorted(wanted)})"
+                f"[bold red]Error:[/bold red] --limit-to matched no VMs ({sorted(wanted)})"
             )
             sys.exit(1)
 
     console.print(
-        f"[bold]prod set-volume-reserve[/bold] — "
-        f"{len(vms)} VM(s), reserve {reserve_percent}%"
+        f"[bold]prod set-volume-reserve[/bold] — {len(vms)} VM(s), reserve {reserve_percent}%"
     )
     if args.provider:
         console.print(f"  Provider filter: {args.provider}")
@@ -114,15 +107,11 @@ def cmd_set_volume_reserve(args):
     failed: list[tuple[str, str]] = []
 
     for vm in vms:
-        console.print(
-            f"[bold cyan]→ {vm.name}[/bold cyan] "
-            f"({vm.provider}/{vm.region}, {vm.ip})"
-        )
+        console.print(f"[bold cyan]→ {vm.name}[/bold cyan] ({vm.provider}/{vm.region}, {vm.ip})")
         ssh_key = _resolve_ssh_key(vm, args.ssh_key_path)
         if not os.path.isfile(ssh_key):
             console.print(
-                f"[bold red]Error:[/bold red] SSH key for {vm.name} does not "
-                f"exist: {ssh_key}"
+                f"[bold red]Error:[/bold red] SSH key for {vm.name} does not exist: {ssh_key}"
             )
             failed.append((vm.name, f"missing ssh key {ssh_key}"))
             if not args.keep_going:
@@ -140,17 +129,14 @@ def cmd_set_volume_reserve(args):
             failed.append((vm.name, str(e)))
             if not args.keep_going:
                 console.print(
-                    "[yellow]Stopping (use --keep-going to continue past "
-                    "failures).[/yellow]"
+                    "[yellow]Stopping (use --keep-going to continue past failures).[/yellow]"
                 )
                 break
         console.print()
 
     console.print()
     console.print(f"[bold]Summary[/bold] — reserve {reserve_percent}%")
-    console.print(
-        f"  [green]OK:[/green] {len(succeeded)} ({', '.join(succeeded) or '-'})"
-    )
+    console.print(f"  [green]OK:[/green] {len(succeeded)} ({', '.join(succeeded) or '-'})")
     if failed:
         console.print(f"  [red]FAILED:[/red] {len(failed)}")
         for name, err in failed:

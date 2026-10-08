@@ -66,8 +66,7 @@ def _print_plan(
     """
     units = iter_units(steps)
     console.print(
-        f"[bold]{verb} plan for {name}[/bold] "
-        f"([bold]{kind}[/bold]) — {len(steps)} step(s):"
+        f"[bold]{verb} plan for {name}[/bold] ([bold]{kind}[/bold]) — {len(steps)} step(s):"
     )
     n = 0
     for unit_idx, unit in enumerate(units):
@@ -82,8 +81,7 @@ def _print_plan(
                 for step in lane:
                     n += 1
                     console.print(
-                        f"  [cyan]{n:>2}.[/cyan] {step.label} "
-                        f"[magenta](parallel)[/magenta]{marker}"
+                        f"  [cyan]{n:>2}.[/cyan] {step.label} [magenta](parallel)[/magenta]{marker}"
                     )
                     console.print(f"      [dim]$ {step.render()}[/dim]")
         else:
@@ -119,9 +117,7 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m {secs:02d}s"
 
 
-def _print_timing_summary(
-    console: Console, timings: list[tuple[str, float]]
-) -> None:
+def _print_timing_summary(console: Console, timings: list[tuple[str, float]]) -> None:
     """Print per-step durations, slowest first, plus a total — to spotlight the
     slow steps when a deploy feels sluggish."""
     if not timings:
@@ -232,9 +228,7 @@ def _resolve_step_journal(
         console.print(line)
     if not match.matches:
         console.print()
-        for line in step_journal.render_divergence(
-            existing, manifest.kind, steps, match
-        ):
+        for line in step_journal.render_divergence(existing, manifest.kind, steps, match):
             console.print(f"[yellow]{line}[/yellow]")
 
     def _resume() -> tuple[dict, int]:
@@ -255,8 +249,7 @@ def _resolve_step_journal(
 
     if resume:
         console.print(
-            f"[green]--resume:[/green] skipping {match.resume_index} previously "
-            "completed step(s)."
+            f"[green]--resume:[/green] skipping {match.resume_index} previously completed step(s)."
         )
         return _resume()
 
@@ -314,9 +307,7 @@ def _prepare_secret_env(manifest, console: Console) -> None:
 def cmd_up(args):
     console = Console()
     manifest = _load(args, console)
-    steps = build_deploy_steps(
-        manifest, skip_builds=getattr(args, "skip_builds", False)
-    )
+    steps = build_deploy_steps(manifest, skip_builds=getattr(args, "skip_builds", False))
     if getattr(args, "dry_run", False):
         _print_plan(console, manifest.name, manifest.kind, steps, "Deploy")
         return
@@ -324,9 +315,7 @@ def cmd_up(args):
         console, manifest, steps, getattr(args, "resume", False)
     )
     _prepare_secret_env(manifest, console)
-    _print_plan(
-        console, manifest.name, manifest.kind, steps, "Deploy", done=resume_index
-    )
+    _print_plan(console, manifest.name, manifest.kind, steps, "Deploy", done=resume_index)
     console.print()
     _execute(console, steps, journal=journal, start=resume_index)
     # The run completed: the journal has served its purpose. Leaving it around
@@ -392,18 +381,14 @@ def cmd_down(args):
     if getattr(args, "config", None):
         manifest = _load(args, console)
         name, kind = manifest.name, manifest.kind
-        steps = build_destroy_steps(
-            manifest, skip_drain_failures=skip_drain_failures
-        )
+        steps = build_destroy_steps(manifest, skip_drain_failures=skip_drain_failures)
         # The manifest — not the stored flag — decided the destroy steps above, so
         # it must also decide the retained report, or the two can disagree (a
         # manifest that gained keep_on_destroy after `up` ran without it).
         keep_overrides = _manifest_keep_overrides(manifest)
     elif getattr(args, "name", None):
         name, kind = args.name, "from state"
-        steps = build_destroy_steps_from_state(
-            name, skip_drain_failures=skip_drain_failures
-        )
+        steps = build_destroy_steps_from_state(name, skip_drain_failures=skip_drain_failures)
         if not steps:
             # An all-kept observability stack also yields no steps, so check that
             # before claiming there is nothing here — otherwise the operator is
@@ -417,8 +402,7 @@ def cmd_down(args):
                 _print_retained(console, retained)
                 return
             console.print(
-                f"[yellow]No resources found in state for '{name}'. "
-                "Nothing to destroy.[/yellow]"
+                f"[yellow]No resources found in state for '{name}'. Nothing to destroy.[/yellow]"
             )
             console.print(
                 "[dim]If this is a prod-* deployment, tear it down with its "
@@ -427,8 +411,7 @@ def cmd_down(args):
             return
     else:
         console.print(
-            "[bold red]Error:[/bold red] provide --config <manifest> or "
-            "--name <deployment>."
+            "[bold red]Error:[/bold red] provide --config <manifest> or --name <deployment>."
         )
         sys.exit(1)
 
@@ -450,8 +433,7 @@ def cmd_down(args):
     if retained:
         # "has been destroyed" would be a lie with an ES/Influx VM still up.
         console.print(
-            f"\n[bold green]{name} has been torn down "
-            "(observability stacks retained).[/bold green]"
+            f"\n[bold green]{name} has been torn down (observability stacks retained).[/bold green]"
         )
     else:
         console.print(f"\n[bold green]{name} has been destroyed.[/bold green]")

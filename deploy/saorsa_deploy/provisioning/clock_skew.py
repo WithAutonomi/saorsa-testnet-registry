@@ -86,13 +86,9 @@ def parse_skew_duration(value) -> int:
             f"'2h', '-2h', '30m' or '1h30m' (units h/m/s, optional leading '-')."
         )
 
-    total = sum(
-        int(n) * _UNIT_SECONDS[u] for n, u in _DURATION_TOKEN_RE.findall(body)
-    )
+    total = sum(int(n) * _UNIT_SECONDS[u] for n, u in _DURATION_TOKEN_RE.findall(body))
     if total == 0:
-        raise ValueError(
-            f"Invalid clock_skew '{value}': the duration must be non-zero."
-        )
+        raise ValueError(f"Invalid clock_skew '{value}': the duration must be non-zero.")
     return -total if negative else total
 
 
@@ -124,9 +120,7 @@ def skew_direction_for_ip(ip: str) -> int:
     return 1 if digest[0] % 2 == 0 else -1
 
 
-def select_skew_ips(
-    vm_ips_by_region: dict[str, list[str]], count: int
-) -> list[str]:
+def select_skew_ips(vm_ips_by_region: dict[str, list[str]], count: int) -> list[str]:
     """Select up to ``count`` VM IPs to skew, spread across regions.
 
     Strategy mirrors :func:`saorsa_deploy.provisioning.nat.select_nat_ips`:

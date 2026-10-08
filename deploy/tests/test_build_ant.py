@@ -77,9 +77,7 @@ class TestCmdBuildAnt:
 
     @patch("saorsa_deploy.cmd.build_ant.create_build_vm")
     @patch("saorsa_deploy.cmd.build_ant.validate_branch_exists")
-    def test_exits_before_validation_without_aws_credentials(
-        self, mock_validate, mock_create
-    ):
+    def test_exits_before_validation_without_aws_credentials(self, mock_validate, mock_create):
         os.environ.pop("ANT_BUILD_AWS_ACCESS_KEY_ID", None)
         os.environ.pop("ANT_BUILD_AWS_SECRET_ACCESS_KEY", None)
 

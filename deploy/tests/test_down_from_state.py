@@ -38,15 +38,11 @@ def _patch_state(
     monkeypatch.setattr(state, "load_client_state", maker(client))
     monkeypatch.setattr(state, "load_deployment_state", maker(deployment))
     monkeypatch.setattr(state, "load_elastic_state", maker(elastic, elastic_extra))
-    monkeypatch.setattr(
-        state, "load_monitoring_state", maker(monitoring, monitoring_extra)
-    )
+    monkeypatch.setattr(state, "load_monitoring_state", maker(monitoring, monitoring_extra))
 
 
 def test_full_testnet_teardown_order(monkeypatch):
-    _patch_state(
-        monkeypatch, client=True, deployment=True, elastic=True, monitoring=True
-    )
+    _patch_state(monkeypatch, client=True, deployment=True, elastic=True, monitoring=True)
     steps = build_destroy_steps_from_state("DEV-01")
     assert _argvs(steps) == [
         ["clients", "destroy", "--name", "DEV-01", "--force"],
@@ -59,9 +55,7 @@ def test_full_testnet_teardown_order(monkeypatch):
 
 def test_only_existing_components_are_torn_down(monkeypatch):
     # Nodes + bootstraps + monitoring, but no clients and no elastic.
-    _patch_state(
-        monkeypatch, client=False, deployment=True, elastic=False, monitoring=True
-    )
+    _patch_state(monkeypatch, client=False, deployment=True, elastic=False, monitoring=True)
     cmds = [s.argv[:2] for s in build_destroy_steps_from_state("DEV-02")]
     assert cmds == [
         ["nodes", "destroy"],
@@ -71,16 +65,12 @@ def test_only_existing_components_are_torn_down(monkeypatch):
 
 
 def test_no_state_yields_no_steps(monkeypatch):
-    _patch_state(
-        monkeypatch, client=False, deployment=False, elastic=False, monitoring=False
-    )
+    _patch_state(monkeypatch, client=False, deployment=False, elastic=False, monitoring=False)
     assert build_destroy_steps_from_state("GONE-01") == []
 
 
 def test_skip_drain_failures_appended_to_clients_destroy(monkeypatch):
-    _patch_state(
-        monkeypatch, client=True, deployment=True, elastic=False, monitoring=True
-    )
+    _patch_state(monkeypatch, client=True, deployment=True, elastic=False, monitoring=True)
     steps = build_destroy_steps_from_state("DEV-02", skip_drain_failures=True)
     # Only the clients-destroy step carries the flag; the rest are untouched.
     assert _argvs(steps) == [
@@ -92,9 +82,7 @@ def test_skip_drain_failures_appended_to_clients_destroy(monkeypatch):
 
 
 def test_skip_drain_failures_defaults_off(monkeypatch):
-    _patch_state(
-        monkeypatch, client=True, deployment=False, elastic=False, monitoring=False
-    )
+    _patch_state(monkeypatch, client=True, deployment=False, elastic=False, monitoring=False)
     steps = build_destroy_steps_from_state("DEV-02")
     assert _argvs(steps) == [
         ["clients", "destroy", "--name", "DEV-02", "--force"],
@@ -191,13 +179,9 @@ def test_retained_observability_reports_endpoints_and_cleanup(monkeypatch):
     assert [r["component"] for r in retained] == ["Elasticsearch", "InfluxDB"]
     assert retained[0]["endpoint"] == "https://10.0.0.1:9200"
     assert retained[1]["endpoint"] == "http://10.0.0.2:8086"
+    assert retained[0]["destroy_command"] == "saorsa-deploy elastic destroy --name DEV-01 --force"
     assert (
-        retained[0]["destroy_command"]
-        == "saorsa-deploy elastic destroy --name DEV-01 --force"
-    )
-    assert (
-        retained[1]["destroy_command"]
-        == "saorsa-deploy monitoring destroy --name DEV-01 --force"
+        retained[1]["destroy_command"] == "saorsa-deploy monitoring destroy --name DEV-01 --force"
     )
 
 
@@ -216,9 +200,7 @@ def test_retained_observability_falls_back_to_vm_ip(monkeypatch):
 
 
 def test_retained_observability_empty_when_nothing_kept(monkeypatch):
-    _patch_state(
-        monkeypatch, client=True, deployment=True, elastic=True, monitoring=True
-    )
+    _patch_state(monkeypatch, client=True, deployment=True, elastic=True, monitoring=True)
     assert retained_observability("DEV-01") == []
 
 
@@ -230,9 +212,7 @@ def test_retained_observability_empty_when_nothing_kept(monkeypatch):
 def _down_args(name="DEV-01"):
     from types import SimpleNamespace
 
-    return SimpleNamespace(
-        config=None, name=name, skip_drain_failures=False, dry_run=False
-    )
+    return SimpleNamespace(config=None, name=name, skip_drain_failures=False, dry_run=False)
 
 
 def test_down_reports_retained_instead_of_nothing_to_destroy(monkeypatch, capsys):
@@ -316,9 +296,7 @@ def test_manifest_keep_overrides_the_stored_flag(monkeypatch):
         monitoring_extra={"keep_on_destroy": False, "vm_ip": "10.0.0.2"},
     )
     assert retained_observability("DEV-01") == []
-    overridden = retained_observability(
-        "DEV-01", elastic_kept=True, monitoring_kept=False
-    )
+    overridden = retained_observability("DEV-01", elastic_kept=True, monitoring_kept=False)
     assert [r["component"] for r in overridden] == ["Elasticsearch"]
 
 

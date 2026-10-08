@@ -81,9 +81,7 @@ def parse_upload_spec(spec: str) -> dict:
     if not region:
         raise ValueError(f"Invalid upload spec '{spec}': region cannot be empty.")
     if len(parts) > 2:
-        raise ValueError(
-            f"Invalid upload spec '{spec}'. Expected REGION[:VM_SIZE]."
-        )
+        raise ValueError(f"Invalid upload spec '{spec}'. Expected REGION[:VM_SIZE].")
     vm_size = parts[1] if len(parts) == 2 and parts[1] else DEFAULT_VM_SIZE
     return {"region": region, "vm_size": vm_size}
 
@@ -96,9 +94,7 @@ def parse_probe_spec(spec: str) -> dict:
     """
     parts = spec.split(":")
     if len(parts) < 2:
-        raise ValueError(
-            f"Invalid probe spec '{spec}'. Expected REGION[:VM_SIZE]:count=N."
-        )
+        raise ValueError(f"Invalid probe spec '{spec}'. Expected REGION[:VM_SIZE]:count=N.")
     region = parts[0]
     if not region:
         raise ValueError(f"Invalid probe spec '{spec}': region cannot be empty.")
@@ -109,41 +105,27 @@ def parse_probe_spec(spec: str) -> dict:
         if "=" in token:
             key, val = token.split("=", 1)
             if key in options:
-                raise ValueError(
-                    f"Invalid probe spec '{spec}': duplicate key '{key}'."
-                )
+                raise ValueError(f"Invalid probe spec '{spec}': duplicate key '{key}'.")
             options[key] = val
         else:
             if vm_size != DEFAULT_PROBE_VM_SIZE:
-                raise ValueError(
-                    f"Invalid probe spec '{spec}': vm_size already set."
-                )
+                raise ValueError(f"Invalid probe spec '{spec}': vm_size already set.")
             if not token:
-                raise ValueError(
-                    f"Invalid probe spec '{spec}': vm_size cannot be empty."
-                )
+                raise ValueError(f"Invalid probe spec '{spec}': vm_size cannot be empty.")
             vm_size = token
 
     if "count" not in options:
-        raise ValueError(
-            f"Invalid probe spec '{spec}': count=N is required."
-        )
+        raise ValueError(f"Invalid probe spec '{spec}': count=N is required.")
     try:
         count = int(options["count"])
     except ValueError as e:
-        raise ValueError(
-            f"Invalid probe spec '{spec}': count must be an integer."
-        ) from e
+        raise ValueError(f"Invalid probe spec '{spec}': count must be an integer.") from e
     if count < 1:
-        raise ValueError(
-            f"Invalid probe spec '{spec}': count must be >= 1."
-        )
+        raise ValueError(f"Invalid probe spec '{spec}': count must be >= 1.")
 
     extras = set(options) - {"count"}
     if extras:
-        raise ValueError(
-            f"Invalid probe spec '{spec}': unknown keys {sorted(extras)}."
-        )
+        raise ValueError(f"Invalid probe spec '{spec}': unknown keys {sorted(extras)}.")
 
     return {"region": region, "vm_size": vm_size, "count": count}
 
@@ -153,10 +135,7 @@ def _read_urls_file(path: str) -> str:
         content = Path(path).read_text(encoding="utf-8")
     except OSError as e:
         raise ValueError(f"Cannot read --urls-file {path}: {e}") from e
-    has = any(
-        line.strip() and not line.strip().startswith("#")
-        for line in content.splitlines()
-    )
+    has = any(line.strip() and not line.strip().startswith("#") for line in content.splitlines())
     if not has:
         raise ValueError(f"--urls-file {path} contains no URLs.")
     return content
@@ -213,29 +192,35 @@ def _ensure_monitoring(args, console: Console) -> None:
             "InfluxDB creds (a prior provision didn't finish) — "
             "re-provisioning.[/yellow]"
         )
-        cmd_provision_monitoring(SimpleNamespace(
-            name=args.name,
-            ssh_key_path=args.ssh_key_path,
-        ))
+        cmd_provision_monitoring(
+            SimpleNamespace(
+                name=args.name,
+                ssh_key_path=args.ssh_key_path,
+            )
+        )
         return
 
     console.print("[bold cyan]Step 1/5: creating monitoring VM[/bold cyan]")
-    cmd_monitoring_infra(SimpleNamespace(
-        name=args.name,
-        region=MONITORING_REGION,
-        volume_size=args.monitoring_volume_size,
-        # A single client VM forwards little; keep the InfluxDB box small
-        # rather than the larger testnet default.
-        droplet_size="s-2vcpu-4gb",
-        force=False,
-        grafana=getattr(args, "grafana", False),
-    ))
+    cmd_monitoring_infra(
+        SimpleNamespace(
+            name=args.name,
+            region=MONITORING_REGION,
+            volume_size=args.monitoring_volume_size,
+            # A single client VM forwards little; keep the InfluxDB box small
+            # rather than the larger testnet default.
+            droplet_size="s-2vcpu-4gb",
+            force=False,
+            grafana=getattr(args, "grafana", False),
+        )
+    )
 
     console.print("[bold cyan]Step 2/5: provisioning InfluxDB + Grafana[/bold cyan]")
-    cmd_provision_monitoring(SimpleNamespace(
-        name=args.name,
-        ssh_key_path=args.ssh_key_path,
-    ))
+    cmd_provision_monitoring(
+        SimpleNamespace(
+            name=args.name,
+            ssh_key_path=args.ssh_key_path,
+        )
+    )
 
 
 def _ensure_client_infra(
@@ -251,8 +236,7 @@ def _ensure_client_infra(
 
     if _client_stack_exists(args.name):
         console.print(
-            f"[dim]Client stack '{args.name}' already exists — skipping "
-            "clients infra.[/dim]"
+            f"[dim]Client stack '{args.name}' already exists — skipping clients infra.[/dim]"
         )
         return
 
@@ -261,30 +245,27 @@ def _ensure_client_infra(
     # provider that parse_uploader_spec / parse_downloader_spec now require.
     # bootstrap_cache is carried through so client_state records the real
     # per-VM cache mode (the print/slack surfaces read it from there).
-    cache_token = (
-        f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
-    )
+    cache_token = f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
     synth_uploader = [
-        f"digital_ocean:{upload_spec['region']}:0:{upload_spec['vm_size']}"
-        f":{cache_token}"
+        f"digital_ocean:{upload_spec['region']}:0:{upload_spec['vm_size']}:{cache_token}"
     ]
     synth_downloaders: list[str] = []
     for ps in probe_specs:
         for _ in range(ps["count"]):
-            synth_downloaders.append(
-                f"digital_ocean:{ps['region']}:{ps['vm_size']}:{cache_token}"
-            )
+            synth_downloaders.append(f"digital_ocean:{ps['region']}:{ps['vm_size']}:{cache_token}")
 
     console.print(
         f"[bold cyan]Step 3/5: creating 1 upload VM + "
         f"{len(synth_downloaders)} probe VM(s)[/bold cyan]"
     )
-    cmd_infra_clients(SimpleNamespace(
-        name=args.name,
-        uploader=synth_uploader,
-        downloader=synth_downloaders,
-        force=False,
-    ))
+    cmd_infra_clients(
+        SimpleNamespace(
+            name=args.name,
+            uploader=synth_uploader,
+            downloader=synth_downloaders,
+            force=False,
+        )
+    )
 
 
 def _load_monitoring_creds(args, console: Console) -> dict:
@@ -314,14 +295,8 @@ def _partition_clients(name: str, console: Console) -> tuple[dict, list[dict]]:
     state = load_client_state(name)
     clients = state.get("clients", [])
 
-    uploads = [
-        c for c in clients
-        if c.get("ip") and c.get("role", "upload") == "upload"
-    ]
-    probes = [
-        c for c in clients
-        if c.get("ip") and c.get("role") == "download"
-    ]
+    uploads = [c for c in clients if c.get("ip") and c.get("role", "upload") == "upload"]
+    probes = [c for c in clients if c.get("ip") and c.get("role") == "download"]
 
     if len(uploads) != 1:
         console.print(
@@ -330,9 +305,7 @@ def _partition_clients(name: str, console: Console) -> tuple[dict, list[dict]]:
         )
         sys.exit(1)
     if not probes:
-        console.print(
-            "[bold red]Error:[/bold red] no probe VMs found in client state."
-        )
+        console.print("[bold red]Error:[/bold red] no probe VMs found in client state.")
         sys.exit(1)
 
     probes_sorted = sorted(probes, key=lambda c: c["client_index"])
@@ -344,9 +317,7 @@ def _provision_canary(args, urls_content: str, console: Console) -> None:
     secret_key = _resolve_secret_key(args, console)
     binary_url, binary_is_archive = _resolve_ant_binary(args, console)
 
-    console.print(
-        "[bold cyan]Step 4a/5: fetching production bootstrap peers[/bold cyan]"
-    )
+    console.print("[bold cyan]Step 4a/5: fetching production bootstrap peers[/bold cyan]")
     try:
         bootstrap_peers = fetch_prod_bootstraps()
     except ProdBootstrapsError as e:
@@ -360,15 +331,10 @@ def _provision_canary(args, urls_content: str, console: Console) -> None:
     clear_known_hosts(all_ips, console)
     not_ready = wait_for_ssh(all_ips, args.ssh_key_path, console=console)
     if not_ready:
-        console.print(
-            f"[bold red]Error:[/bold red] SSH never came up on: "
-            f"{', '.join(not_ready)}"
-        )
+        console.print(f"[bold red]Error:[/bold red] SSH never came up on: {', '.join(not_ready)}")
         sys.exit(1)
 
-    console.print(
-        "[bold cyan]Step 4b/5: provisioning canary upload VM[/bold cyan]"
-    )
+    console.print("[bold cyan]Step 4b/5: provisioning canary upload VM[/bold cyan]")
     upload_provisioner = ProdCanaryUploadProvisioner(
         host_ip=upload_client["ip"],
         region=upload_client.get("region", "unknown"),
@@ -388,16 +354,17 @@ def _provision_canary(args, urls_content: str, console: Console) -> None:
     upload_provisioner.execute()
 
     console.print(
-        f"[bold cyan]Step 5/5: provisioning {len(probe_clients)} canary probe "
-        "VM(s)[/bold cyan]"
+        f"[bold cyan]Step 5/5: provisioning {len(probe_clients)} canary probe VM(s)[/bold cyan]"
     )
     probes_for_provisioner: list[dict] = []
     for shard_index, client in enumerate(probe_clients):
-        probes_for_provisioner.append({
-            "ip": client["ip"],
-            "region": client.get("region", "unknown"),
-            "shard_index": shard_index,
-        })
+        probes_for_provisioner.append(
+            {
+                "ip": client["ip"],
+                "region": client.get("region", "unknown"),
+                "shard_index": shard_index,
+            }
+        )
     probe_provisioner = ProdCanaryProbeProvisioner(
         probes=probes_for_provisioner,
         shard_count=len(probe_clients),
@@ -426,9 +393,7 @@ def _stop_canary_services(args, console: Console) -> None:
     if not host_ips:
         return
     clear_known_hosts(host_ips, console)
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     state_obj = State(inventory=Inventory((hosts_data, {})), config=Config())
     connect_all(state_obj)
     try:
@@ -455,14 +420,10 @@ def cmd_prod_canary_deploy(args):
     console = Console()
 
     if not args.upload_spec:
-        console.print(
-            "[bold red]Error:[/bold red] --upload-spec is required."
-        )
+        console.print("[bold red]Error:[/bold red] --upload-spec is required.")
         sys.exit(1)
     if not args.probe_spec:
-        console.print(
-            "[bold red]Error:[/bold red] At least one --probe-spec is required."
-        )
+        console.print("[bold red]Error:[/bold red] At least one --probe-spec is required.")
         sys.exit(1)
     if bool(args.urls_file) == bool(getattr(args, "pool", None)):
         console.print(
@@ -480,22 +441,16 @@ def cmd_prod_canary_deploy(args):
         )
         sys.exit(1)
     if args.upload_sleep_secs < 0:
-        console.print(
-            "[bold red]Error:[/bold red] --upload-sleep-secs must be >= 0."
-        )
+        console.print("[bold red]Error:[/bold red] --upload-sleep-secs must be >= 0.")
         sys.exit(1)
     if args.probe_concurrency < 1:
-        console.print(
-            "[bold red]Error:[/bold red] --probe-concurrency must be >= 1."
-        )
+        console.print("[bold red]Error:[/bold red] --probe-concurrency must be >= 1.")
         sys.exit(1)
 
     try:
         upload_spec = parse_upload_spec(args.upload_spec)
         probe_specs = [parse_probe_spec(s) for s in args.probe_spec]
-        urls_content = (
-            _read_urls_file(args.urls_file) if args.urls_file else None
-        )
+        urls_content = _read_urls_file(args.urls_file) if args.urls_file else None
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -519,18 +474,13 @@ def cmd_prod_canary_deploy(args):
 
     total_probes = sum(p["count"] for p in probe_specs)
     url_count = sum(
-        1 for line in urls_content.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+        1 for line in urls_content.splitlines() if line.strip() and not line.strip().startswith("#")
     )
     console.print(f"[bold]prod canary deploy: {args.name}[/bold]")
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
-    console.print(
-        f"  Upload VM: {upload_spec['region']} ({upload_spec['vm_size']})"
-    )
+    console.print(f"  Upload VM: {upload_spec['region']} ({upload_spec['vm_size']})")
     for ps in probe_specs:
-        console.print(
-            f"  Probe spec: {ps['region']} ({ps['vm_size']}) x {ps['count']}"
-        )
+        console.print(f"  Probe spec: {ps['region']} ({ps['vm_size']}) x {ps['count']}")
     console.print(f"  URL count: {url_count}")
     console.print(f"  Probe shard count: {total_probes}")
     console.print(f"  Upload sleep secs: {args.upload_sleep_secs}")
@@ -552,9 +502,7 @@ def cmd_prod_canary_deploy(args):
         "forward_logs": getattr(args, "forward_logs", False),
         "rust_log": getattr(args, "rust_log", None),
         "purpose": getattr(args, "purpose", None),
-        "ant_binary": build_binary_descriptor(
-            args.branch_name, args.repo_owner, args.ant_version
-        ),
+        "ant_binary": build_binary_descriptor(args.branch_name, args.repo_owner, args.ant_version),
     }
     deployment_id = record_deployment_created(args.name, deploy_args_payload)
     if pool_selection_result:
@@ -563,9 +511,7 @@ def cmd_prod_canary_deploy(args):
 
         pool_repo = get_file_pool_repository()
         if pool_repo is not None and deployment_id:
-            attach_deployment(
-                pool_repo, [pool_selection_result], deployment_id, args.name
-            )
+            attach_deployment(pool_repo, [pool_selection_result], deployment_id, args.name)
     record_event(args.name, "prod_canary_deploy_started", deploy_args_payload)
 
     try:
@@ -575,9 +521,8 @@ def cmd_prod_canary_deploy(args):
         from saorsa_deploy.cmd.provision_telegraf_metrics import (
             provision_client_telegraf_best_effort,
         )
-        provision_client_telegraf_best_effort(
-            args.name, args.ssh_key_path, console=console
-        )
+
+        provision_client_telegraf_best_effort(args.name, args.ssh_key_path, console=console)
         if getattr(args, "forward_logs", False):
             from saorsa_deploy.cmd.prod_log_forwarding import (
                 PROD_CANARY_GLOBS,
@@ -585,9 +530,7 @@ def cmd_prod_canary_deploy(args):
                 install_client_forwarder,
             )
 
-            es_creds = ensure_client_elastic(
-                args.name, args.ssh_key_path, console
-            )
+            es_creds = ensure_client_elastic(args.name, args.ssh_key_path, console)
             can_state = load_client_state(args.name)
             up_ips = [
                 c["ip"]
@@ -630,9 +573,7 @@ def cmd_prod_canary_deploy(args):
     record_event(args.name, "prod_canary_deploy_completed")
     record_status(args.name, DeploymentStatus.RUNNING)
     console.print()
-    console.print(
-        f"[bold green]prod canary '{args.name}' is running.[/bold green]"
-    )
+    console.print(f"[bold green]prod canary '{args.name}' is running.[/bold green]")
     console.print(
         f"[dim]Persist canary metrics: saorsa-deploy deployments record-results "
         f"--name {args.name}[/dim]"
@@ -676,8 +617,7 @@ def cmd_prod_canary_destroy(args):
             cmd_destroy_clients(SimpleNamespace(name=args.name, force=True))
         else:
             console.print(
-                f"[dim]No client stack found for '{args.name}' — skipping "
-                "canary destroy.[/dim]"
+                f"[dim]No client stack found for '{args.name}' — skipping canary destroy.[/dim]"
             )
 
         if args.keep_monitoring:
@@ -689,15 +629,11 @@ def cmd_prod_canary_destroy(args):
             console.print("[bold cyan]Destroying monitoring stack...[/bold cyan]")
             cmd_destroy_monitoring(SimpleNamespace(name=args.name, force=True))
         else:
-            console.print(
-                f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
-            )
+            console.print(f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]")
 
         from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
 
-        destroy_client_elastic(
-            args.name, getattr(args, "keep_elastic", False), console
-        )
+        destroy_client_elastic(args.name, getattr(args, "keep_elastic", False), console)
     except SystemExit:
         record_event(args.name, "prod_canary_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
@@ -711,9 +647,7 @@ def cmd_prod_canary_destroy(args):
     record_event(args.name, "prod_canary_destroy_completed")
     record_status(args.name, DeploymentStatus.DESTROYED)
     console.print()
-    console.print(
-        f"[bold green]prod canary '{args.name}' destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]prod canary '{args.name}' destroyed.[/bold green]")
 
 
 # Re-exported for external use (kept here so tests can import without depending
@@ -785,9 +719,7 @@ def _select_canary_pool_files(args, console: Console):
         sys.exit(1)
 
     console.print("  Pool selection")
-    render_selection(
-        console, "canary upload", request, selected, min_size_bytes, max_size_bytes
-    )
+    render_selection(console, "canary upload", request, selected, min_size_bytes, max_size_bytes)
     console.print(
         f"    {len(selected)} file(s) claimed; selection persisted to S3 state "
         "(a resume reuses it)."

@@ -97,14 +97,10 @@ def group_hosts_by_unit(
 
     groups: list[HostGroup] = []
     uploader_ips = [
-        c["ip"]
-        for c in clients
-        if c.get("ip") and c.get("role", ROLE_UPLOAD) == ROLE_UPLOAD
+        c["ip"] for c in clients if c.get("ip") and c.get("role", ROLE_UPLOAD) == ROLE_UPLOAD
     ]
     verifier_ips = [
-        c["ip"]
-        for c in clients
-        if c.get("ip") and c.get("role", ROLE_UPLOAD) != ROLE_UPLOAD
+        c["ip"] for c in clients if c.get("ip") and c.get("role", ROLE_UPLOAD) != ROLE_UPLOAD
     ]
     if uploader_ips and client_kind != "wasm":
         groups.append(HostGroup("uploader", UPLOADER_SERVICE, uploader_ips))
@@ -180,13 +176,10 @@ def _upgrade_group(
     """
     console.print()
     console.print(
-        f"[bold]{group.label}[/bold]: {len(group.host_ips)} host(s), "
-        f"unit {group.service}"
+        f"[bold]{group.label}[/bold]: {len(group.host_ips)} host(s), unit {group.service}"
     )
     clear_known_hosts(group.host_ips, console)
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": ssh_key_path}) for ip in group.host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": ssh_key_path}) for ip in group.host_ips]
     state = State(inventory=Inventory((hosts_data, {})), config=Config())
     try:
         connect_all(state)
@@ -268,8 +261,7 @@ def cmd_upgrade_ant_binary(args) -> None:
     failed = [h for g in groups for h in g.failed_hosts]
     console.print()
     console.print(
-        f"[bold]ant binary upgrade complete: {total - len(failed)}/{total} "
-        f"host(s) succeeded[/bold]"
+        f"[bold]ant binary upgrade complete: {total - len(failed)}/{total} host(s) succeeded[/bold]"
     )
     for group in groups:
         took = len(group.host_ips) - len(group.failed_hosts)
@@ -278,14 +270,9 @@ def cmd_upgrade_ant_binary(args) -> None:
             if args.restart
             else f"{group.service} NOT restarted (--no-restart)"
         )
-        console.print(
-            f"  {group.label}: {took}/{len(group.host_ips)} host(s) — {state_note}"
-        )
+        console.print(f"  {group.label}: {took}/{len(group.host_ips)} host(s) — {state_note}")
     if not args.restart:
-        console.print(
-            "  Binary is updated on disk; restart each unit above manually to "
-            "run it."
-        )
+        console.print("  Binary is updated on disk; restart each unit above manually to run it.")
 
     if failed:
         for host in failed:

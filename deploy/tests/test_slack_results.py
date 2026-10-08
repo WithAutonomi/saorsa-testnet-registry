@@ -1,4 +1,5 @@
 """Tests for the per-kind result-block builders (saorsa_deploy.slack_results)."""
+
 from datetime import datetime
 
 from saorsa_deploy.slack_results import (
@@ -120,12 +121,33 @@ def test_file_ops_per_op_detail_is_capped_with_note():
 
 def test_prod_upload_blocks_summarise_and_detail():
     points = [
-        {"host": "h1", "status": 0, "chunks_stored": 42, "chunks_failed": 0,
-         "total_chunks": 42, "file_name": "a.bin", "source_url": "ua"},
-        {"host": "h1", "status": 1, "chunks_stored": 40, "chunks_failed": 2,
-         "total_chunks": 42, "file_name": "b.bin", "source_url": "ub"},
-        {"host": "h2", "status": 2, "chunks_stored": 0, "chunks_failed": 0,
-         "total_chunks": 0, "file_name": "c.bin", "source_url": "uc"},
+        {
+            "host": "h1",
+            "status": 0,
+            "chunks_stored": 42,
+            "chunks_failed": 0,
+            "total_chunks": 42,
+            "file_name": "a.bin",
+            "source_url": "ua",
+        },
+        {
+            "host": "h1",
+            "status": 1,
+            "chunks_stored": 40,
+            "chunks_failed": 2,
+            "total_chunks": 42,
+            "file_name": "b.bin",
+            "source_url": "ub",
+        },
+        {
+            "host": "h2",
+            "status": 2,
+            "chunks_stored": 0,
+            "chunks_failed": 0,
+            "total_chunks": 0,
+            "file_name": "c.bin",
+            "source_url": "uc",
+        },
     ]
     blocks = prod_upload_result_blocks(points)
     text = _text(blocks)
@@ -145,15 +167,29 @@ def test_prod_upload_ignores_unknown_status():
 
 def test_prod_upload_blocks_sum_and_render_costs():
     points = [
-        {"host": "h1", "status": 0, "chunks_stored": 42, "chunks_failed": 0,
-         "total_chunks": 42, "file_name": "a.bin", "source_url": "ua",
-         # 1.5 ANT and 0.001 ETH expressed in atto/wei.
-         "storage_cost_atto": "1500000000000000000",
-         "gas_cost_wei": "1000000000000000"},
-        {"host": "h1", "status": 0, "chunks_stored": 10, "chunks_failed": 0,
-         "total_chunks": 10, "file_name": "b.bin", "source_url": "ub",
-         "storage_cost_atto": "500000000000000000",
-         "gas_cost_wei": "2000000000000000"},
+        {
+            "host": "h1",
+            "status": 0,
+            "chunks_stored": 42,
+            "chunks_failed": 0,
+            "total_chunks": 42,
+            "file_name": "a.bin",
+            "source_url": "ua",
+            # 1.5 ANT and 0.001 ETH expressed in atto/wei.
+            "storage_cost_atto": "1500000000000000000",
+            "gas_cost_wei": "1000000000000000",
+        },
+        {
+            "host": "h1",
+            "status": 0,
+            "chunks_stored": 10,
+            "chunks_failed": 0,
+            "total_chunks": 10,
+            "file_name": "b.bin",
+            "source_url": "ub",
+            "storage_cost_atto": "500000000000000000",
+            "gas_cost_wei": "2000000000000000",
+        },
     ]
     text = _text(prod_upload_result_blocks(points))
     # Grand total: 2 ANT storage / 0.003 ETH gas.
@@ -165,8 +201,15 @@ def test_prod_upload_blocks_sum_and_render_costs():
 
 def test_prod_upload_blocks_omit_cost_when_absent():
     points = [
-        {"host": "h1", "status": 0, "chunks_stored": 1, "chunks_failed": 0,
-         "total_chunks": 1, "file_name": "a.bin", "source_url": "ua"},
+        {
+            "host": "h1",
+            "status": 0,
+            "chunks_stored": 1,
+            "chunks_failed": 0,
+            "total_chunks": 1,
+            "file_name": "a.bin",
+            "source_url": "ua",
+        },
     ]
     text = _text(prod_upload_result_blocks(points))
     # Totals still render (as "-"), and no spurious ANT/ETH amounts appear in

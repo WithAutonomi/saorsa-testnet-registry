@@ -26,9 +26,7 @@ def cmd_provision_bootstraps(args):
 
     bootstrap_nodes = state.get("bootstrap_nodes", [])
     if len(bootstrap_nodes) < 2:
-        console.print(
-            "[yellow]Only one bootstrap node configured — nothing to provision.[/yellow]"
-        )
+        console.print("[yellow]Only one bootstrap node configured — nothing to provision.[/yellow]")
         return
 
     # Genesis must already be provisioned (bootstrap_port in state)

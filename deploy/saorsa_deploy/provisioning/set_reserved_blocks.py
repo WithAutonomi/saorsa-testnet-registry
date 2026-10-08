@@ -45,9 +45,7 @@ def build_set_reserved_blocks_command(reserve_percent: int) -> str:
       ANT_RESERVE:NOT_EXT4 fstype=<t> — not an ext4 filesystem — skipped
     """
     if not isinstance(reserve_percent, int) or not (0 <= reserve_percent <= 50):
-        raise ValueError(
-            f"reserve_percent must be an int in 0..50, got {reserve_percent!r}"
-        )
+        raise ValueError(f"reserve_percent must be an int in 0..50, got {reserve_percent!r}")
 
     mount = MOUNT_POINT
     return f"""set -euo pipefail

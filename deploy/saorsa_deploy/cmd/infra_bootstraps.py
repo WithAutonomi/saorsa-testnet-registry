@@ -46,8 +46,7 @@ def cmd_infra_bootstraps(args):
     if bootstrap_count < 1 or bootstrap_count > 7:
         flag = "--do-regions-list" if regions_override is not None else "--bootstrap-count"
         console.print(
-            f"[bold red]Error:[/bold red] {flag} must resolve to between 1 and 7 "
-            "bootstrap node(s)."
+            f"[bold red]Error:[/bold red] {flag} must resolve to between 1 and 7 bootstrap node(s)."
         )
         sys.exit(1)
 
@@ -68,9 +67,7 @@ def cmd_infra_bootstraps(args):
         bootstrap_nodes = existing_state["bootstrap_nodes"]
         if len(bootstrap_nodes) != bootstrap_count:
             mismatch_flag = (
-                "--do-regions-list"
-                if regions_override is not None
-                else "--bootstrap-count"
+                "--do-regions-list" if regions_override is not None else "--bootstrap-count"
             )
             console.print(
                 f"[bold red]Error:[/bold red] Deployment '{args.name}' already has "
@@ -91,8 +88,7 @@ def cmd_infra_bootstraps(args):
                 )
                 sys.exit(1)
         console.print(
-            f"[bold]Reusing {len(bootstrap_nodes)} existing bootstrap VM(s) "
-            f"for {args.name}.[/bold]"
+            f"[bold]Reusing {len(bootstrap_nodes)} existing bootstrap VM(s) for {args.name}.[/bold]"
         )
         for node in bootstrap_nodes:
             console.print(
@@ -123,14 +119,10 @@ def cmd_infra_bootstraps(args):
                 console=console,
             )
         except Exception as e:
-            console.print(
-                f"[bold red]Failed to purge stale bootstrap state:[/bold red] {e}"
-            )
+            console.print(f"[bold red]Failed to purge stale bootstrap state:[/bold red] {e}")
             sys.exit(1)
 
-    console.print(
-        f"[bold]Creating {bootstrap_count} bootstrap VM(s) for {args.name}...[/bold]"
-    )
+    console.print(f"[bold]Creating {bootstrap_count} bootstrap VM(s) for {args.name}...[/bold]")
     try:
         bootstrap_nodes = create_bootstrap_vms(
             args.name,
@@ -174,9 +166,7 @@ def cmd_infra_bootstraps(args):
                 },
             )
     except Exception as e:
-        console.print(
-            f"[bold red]Failed to save deployment state after bootstraps:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Failed to save deployment state after bootstraps:[/bold red] {e}")
         console.print(
             "[bold red]Aborting — without saved state, bootstraps destroy "
             "cannot clean these up.[/bold red]"

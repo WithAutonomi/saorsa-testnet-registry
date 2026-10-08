@@ -52,16 +52,16 @@ def repos():
 def wired(repos, monkeypatch):
     pool_repo, deployment_repo, session = repos
     monkeypatch.setattr(prod_pool, "get_file_pool_repository", lambda: pool_repo)
-    monkeypatch.setattr(
-        "saorsa_deploy.registry.get_repository", lambda: deployment_repo
-    )
+    monkeypatch.setattr("saorsa_deploy.registry.get_repository", lambda: deployment_repo)
     return pool_repo, deployment_repo, session
 
 
 def _args(dry_run=False, catalogue_missing=False, deployment=None, tag=None):
     return argparse.Namespace(
-        dry_run=dry_run, catalogue_missing=catalogue_missing,
-        deployment=deployment, tag=tag,
+        dry_run=dry_run,
+        catalogue_missing=catalogue_missing,
+        deployment=deployment,
+        tag=tag,
     )
 
 
@@ -184,12 +184,8 @@ class TestAttribution:
 
     def test_local_uploads_are_not_labelled_prod_uploaders(self, wired):
         pool_repo, _, session = wired
-        pool_repo.add_pool_file(
-            PoolFileKind.LOCAL, "/data/a.bin", "a.bin", size_bytes=50 * MIB
-        )
-        deployment = self._deployment(
-            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
-        )
+        pool_repo.add_pool_file(PoolFileKind.LOCAL, "/data/a.bin", "a.bin", size_bytes=50 * MIB)
+        deployment = self._deployment(session, "PROD-LOCAL-UL-01", "prod-local-uploads")
         _upload_result(session, deployment, "a.bin")
 
         prod_pool.cmd_prod_pool_import_history(_args())
@@ -234,9 +230,7 @@ class TestAttribution:
         pool_file, _ = pool_repo.add_pool_file(
             PoolFileKind.LOCAL, "/data/a.bin", "a.bin", size_bytes=50 * MIB
         )
-        deployment = self._deployment(
-            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
-        )
+        deployment = self._deployment(session, "PROD-LOCAL-UL-01", "prod-local-uploads")
         _upload_result(session, deployment, "a.bin")
         # Simulate what the buggy version left behind.
         pool_repo.seed_uploaded_claim(
@@ -262,9 +256,7 @@ class TestAttribution:
         pool_file, _ = pool_repo.add_pool_file(
             PoolFileKind.LOCAL, "/data/a.bin", "a.bin", size_bytes=50 * MIB
         )
-        deployment = self._deployment(
-            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
-        )
+        deployment = self._deployment(session, "PROD-LOCAL-UL-01", "prod-local-uploads")
         _upload_result(session, deployment, "a.bin")
         pool_repo.seed_uploaded_claim(
             pool_file.id,
@@ -393,9 +385,7 @@ class TestCatalogueMissing:
         deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
         _canary_upload(session, deployment, "clip.avi")
 
-        prod_pool.cmd_prod_pool_import_history(
-            _args(catalogue_missing=True, tag=["nsia-911"])
-        )
+        prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True, tag=["nsia-911"]))
 
         rows = pool_repo.list_pool_files(active=None)
         assert len(rows) == 1
@@ -442,9 +432,7 @@ class TestCatalogueMissing:
         deployment = self._deployment(session, "PROD-CANARY-03", "prod-canary")
         _canary_upload(session, deployment, "clip.avi")
 
-        prod_pool.cmd_prod_pool_import_history(
-            _args(catalogue_missing=True, dry_run=True)
-        )
+        prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True, dry_run=True))
         assert pool_repo.list_pool_files(active=None) == []
         assert "catalogued" in _flat(capsys.readouterr().out)
 
@@ -468,24 +456,26 @@ class TestCatalogueMissing:
         _canary_upload(session, deployment, "clip.avi")
 
         with pytest.raises(SystemExit):
-            prod_pool.cmd_prod_pool_import_history(
-                _args(catalogue_missing=True, deployment="NOPE")
-            )
+            prod_pool.cmd_prod_pool_import_history(_args(catalogue_missing=True, deployment="NOPE"))
         assert "no deployment named" in _flat(capsys.readouterr().out)
 
     def test_a_local_upload_becomes_a_local_entry(self, wired):
         # prod-local-uploads records an absolute path as its source_url, so the
         # kind must follow the locator rather than being assumed.
         pool_repo, _, session = wired
-        deployment = self._deployment(
-            session, "PROD-LOCAL-UL-01", "prod-local-uploads"
-        )
+        deployment = self._deployment(session, "PROD-LOCAL-UL-01", "prod-local-uploads")
         session.add(
             DeploymentProdUploadResult(
-                deployment_id=deployment.id, client_hostname="h", region="r",
-                source_url="/mnt/data/movie.wmv", file_name="movie.wmv",
-                file_size_bytes=50 * MIB, status=ProdUploadStatus.SUCCESS,
-                address="a", started_at=NOW, finished_at=NOW,
+                deployment_id=deployment.id,
+                client_hostname="h",
+                region="r",
+                source_url="/mnt/data/movie.wmv",
+                file_name="movie.wmv",
+                file_size_bytes=50 * MIB,
+                status=ProdUploadStatus.SUCCESS,
+                address="a",
+                started_at=NOW,
+                finished_at=NOW,
             )
         )
         session.commit()
@@ -517,9 +507,7 @@ class TestPercentEncodedNames:
     leaving the duplicate available for a canary to draw.
     """
 
-    def test_an_encoded_name_matches_the_existing_entry_by_locator(
-        self, wired, capsys
-    ):
+    def test_an_encoded_name_matches_the_existing_entry_by_locator(self, wired, capsys):
         pool_repo, _, session = wired
         locator = "https://example.org/NBC%20Atlanta1%2083.avi"
         pool_file, _ = pool_repo.add_pool_file(
@@ -538,9 +526,7 @@ class TestPercentEncodedNames:
         assert "imported 1" in out
         assert "unmatched 0" in out
 
-    def test_catalogue_missing_does_not_duplicate_an_encoded_name(
-        self, wired, capsys
-    ):
+    def test_catalogue_missing_does_not_duplicate_an_encoded_name(self, wired, capsys):
         # The regression that matters: one file must not become two rows.
         pool_repo, _, session = wired
         locator = "https://example.org/NBC%20Atlanta1%2083.avi"

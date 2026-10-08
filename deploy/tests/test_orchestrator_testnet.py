@@ -302,8 +302,14 @@ def test_stg01_destroy_skip_drain_failures():
     manifest = Manifest.model_validate(STG_01)
     steps = _argvs(build_destroy_steps(manifest, skip_drain_failures=True))
     assert steps[0] == [
-        "clients", "destroy", "--name", "STG-01", "--force",
-        "--ssh-key-path", SSH, "--skip-drain-failures",
+        "clients",
+        "destroy",
+        "--name",
+        "STG-01",
+        "--force",
+        "--ssh-key-path",
+        SSH,
+        "--skip-drain-failures",
     ]
     assert steps[1:] == [
         ["nodes", "destroy", "--name", "STG-01", "--force"],
@@ -454,9 +460,7 @@ def test_clients_clock_skew_token_in_specs():
             "uploaders": [
                 {"provider": "vultr", "region": "syd", "file_size_mb": 100, "clock_skew": "2h"}
             ],
-            "downloaders": [
-                {"provider": "digital_ocean", "region": "lon1", "clock_skew": "-2h"}
-            ],
+            "downloaders": [{"provider": "digital_ocean", "region": "lon1", "clock_skew": "-2h"}],
         },
     )
     steps = build_deploy_steps(m)
@@ -501,9 +505,7 @@ def test_skip_builds_omits_branch_build_steps():
 def test_skip_builds_noop_when_no_branch_binaries():
     # Version-pinned binaries emit no build steps, so the flag changes nothing.
     m = _minimal()
-    assert _argvs(build_deploy_steps(m, skip_builds=True)) == _argvs(
-        build_deploy_steps(m)
-    )
+    assert _argvs(build_deploy_steps(m, skip_builds=True)) == _argvs(build_deploy_steps(m))
 
 
 def test_both_branch_builds_run_as_parallel_group():
@@ -618,9 +620,7 @@ def test_grafana_off_by_default():
 
 
 def test_grafana_opt_in_appends_flag():
-    steps = build_deploy_steps(
-        _minimal(monitoring={"enabled": True, "grafana": True})
-    )
+    steps = build_deploy_steps(_minimal(monitoring={"enabled": True, "grafana": True}))
     assert _monitoring_infra_argv(steps) == [
         "monitoring",
         "infra",
@@ -733,9 +733,7 @@ def _extension_with_clients():
                     "providers": {"digital_ocean": {"vm_count": 2, "regions": 3}},
                 },
                 "clients": {
-                    "uploaders": [
-                        {"provider": "vultr", "region": "syd", "file_size_mb": 100}
-                    ],
+                    "uploaders": [{"provider": "vultr", "region": "syd", "file_size_mb": 100}],
                     "downloaders": [{"provider": "digital_ocean", "region": "lon1"}],
                 },
             },
@@ -852,9 +850,7 @@ def test_ovh_nodes_provider_emits_ovh_flags():
 
 def test_unknown_nodes_provider_rejected():
     with pytest.raises(ValueError, match="unknown provider"):
-        _minimal(
-            nodes={"per_vm": 5, "providers": {"linode": {"vm_count": 1, "regions": 1}}}
-        )
+        _minimal(nodes={"per_vm": 5, "providers": {"linode": {"vm_count": 1, "regions": 1}}})
 
 
 # --------------------------------------------------------------------------- #
@@ -888,18 +884,14 @@ def test_es_drop_log_levels_omitted_for_info_or_unset():
 def test_es_drop_log_levels_empty_for_trace():
     # nodes.log_level: trace -> forward EVERYTHING (drop nothing) so the trace
     # the operator asked for actually reaches Elasticsearch.
-    step = _es_telegraf_step(
-        _minimal(elastic={"enabled": True}, nodes=_nodes(log_level="trace"))
-    )
+    step = _es_telegraf_step(_minimal(elastic={"enabled": True}, nodes=_nodes(log_level="trace")))
     assert "--drop-log-levels" in step.argv
     assert step.argv[step.argv.index("--drop-log-levels") + 1] == ""
 
 
 def test_es_drop_log_levels_trace_only_for_debug():
     # nodes.log_level: debug -> keep DEBUG, drop only the noisier TRACE.
-    step = _es_telegraf_step(
-        _minimal(elastic={"enabled": True}, nodes=_nodes(log_level="debug"))
-    )
+    step = _es_telegraf_step(_minimal(elastic={"enabled": True}, nodes=_nodes(log_level="debug")))
     assert step.argv[step.argv.index("--drop-log-levels") + 1] == "TRACE"
 
 
@@ -918,9 +910,7 @@ def test_es_explicit_drop_log_levels_overrides_log_level():
 def test_es_explicit_empty_drop_log_levels_is_kept():
     # drop_log_levels: "" with an info node level still emits the empty flag
     # (force-keep everything), distinct from the omit-the-flag default case.
-    step = _es_telegraf_step(
-        _minimal(elastic={"enabled": True, "drop_log_levels": ""})
-    )
+    step = _es_telegraf_step(_minimal(elastic={"enabled": True, "drop_log_levels": ""}))
     assert "--drop-log-levels" in step.argv
     assert step.argv[step.argv.index("--drop-log-levels") + 1] == ""
 
@@ -930,8 +920,7 @@ def test_es_explicit_empty_drop_log_levels_is_kept():
 # --------------------------------------------------------------------------- #
 _CLIENTS = {
     "uploaders": [
-        {"provider": "digital_ocean", "region": "lon1", "file_size_mb": 100,
-         "forward_logs": True}
+        {"provider": "digital_ocean", "region": "lon1", "file_size_mb": 100, "forward_logs": True}
     ],
     "downloaders": [{"provider": "digital_ocean", "region": "tor1"}],
 }
@@ -1023,9 +1012,7 @@ def test_monitoring_keep_on_destroy_flags_infra_and_omits_destroy():
 
 def test_keep_on_destroy_composes_with_grafana():
     # Both flags on the same step; --grafana stays first so the argv is stable.
-    m = _minimal(
-        monitoring={"enabled": True, "grafana": True, "keep_on_destroy": True}
-    )
+    m = _minimal(monitoring={"enabled": True, "grafana": True, "keep_on_destroy": True})
     assert _monitoring_infra_argv(build_deploy_steps(m)) == [
         "monitoring",
         "infra",

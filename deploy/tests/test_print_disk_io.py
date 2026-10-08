@@ -67,10 +67,12 @@ class TestBackwardsCompatibility:
         assert _render([{"host": "node-1", "disk_io_by_device": {}}]) == ""
 
     def test_mixed_rows_still_render_the_section(self):
-        output = _render([
-            {"host": "legacy-host", "cpu_percent": _stat(20.0, 10.0, 30.0)},
-            _entry("new-host"),
-        ])
+        output = _render(
+            [
+                {"host": "legacy-host", "cpu_percent": _stat(20.0, 10.0, 30.0)},
+                _entry("new-host"),
+            ]
+        )
         assert "Disk I/O" in output
         assert "new-host" in output
 

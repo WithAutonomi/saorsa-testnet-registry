@@ -2,6 +2,7 @@
 derivation. Sharding hash and probe stderr parsing are tested by importing
 the runtime scripts directly via importlib so the *actual* code that ships
 on the VM is exercised."""
+
 from __future__ import annotations
 
 import enum
@@ -200,14 +201,15 @@ class TestDeriveLoss:
         cid = uuid.uuid4()
         uploads = {cid: _ts(0)}
         timeout_dominated = {
-            "queried": 7, "not_found": 1, "timeout": 6, "network_err": 0,
+            "queried": 7,
+            "not_found": 1,
+            "timeout": 6,
+            "network_err": 0,
         }
         probes = {
             cid: [
-                _probe(_ts(2), "failed", missing="ADDR1",
-                       peer_outcomes=timeout_dominated),
-                _probe(_ts(3), "failed", missing="ADDR1",
-                       peer_outcomes=timeout_dominated),
+                _probe(_ts(2), "failed", missing="ADDR1", peer_outcomes=timeout_dominated),
+                _probe(_ts(3), "failed", missing="ADDR1", peer_outcomes=timeout_dominated),
             ]
         }
         losses = derive_loss(uploads, probes)
@@ -251,7 +253,7 @@ class TestDeriveUnavailabilityEpisodes:
             _probe(_ts(1), "ok"),
             _probe(_ts(2), "failed", missing="A"),
             _probe(_ts(3), "failed", missing="A"),  # confirmed at hour 3
-            _probe(_ts(8), "ok"),                     # recovered at hour 8
+            _probe(_ts(8), "ok"),  # recovered at hour 8
         ]
         eps = derive_unavailability_episodes(up, probes)
         assert len(eps) == 1
@@ -280,10 +282,10 @@ class TestDeriveUnavailabilityEpisodes:
         probes = [
             _probe(_ts(1), "failed", missing="A"),
             _probe(_ts(2), "failed", missing="A"),  # episode 1 confirmed
-            _probe(_ts(3), "ok"),                     # episode 1 recovered
+            _probe(_ts(3), "ok"),  # episode 1 recovered
             _probe(_ts(5), "failed", missing="A"),
             _probe(_ts(6), "failed", missing="A"),  # episode 2 confirmed
-            _probe(_ts(7), "ok"),                     # episode 2 recovered
+            _probe(_ts(7), "ok"),  # episode 2 recovered
         ]
         eps = derive_unavailability_episodes(up, probes)
         assert len(eps) == 2
@@ -310,12 +312,7 @@ class TestDeriveUnavailabilityEpisodes:
 # ---------------------------------------------------------------------------
 
 
-_RESOURCES = (
-    Path(__file__).resolve().parent.parent
-    / "saorsa_deploy"
-    / "resources"
-    / "scripts"
-)
+_RESOURCES = Path(__file__).resolve().parent.parent / "saorsa_deploy" / "resources" / "scripts"
 
 
 def _import_script(stem: str):
@@ -348,9 +345,7 @@ class TestSharding:
         cids = [str(uuid.uuid4()) for _ in range(1000)]
         ownership = [0] * 4
         for cid in cids:
-            owners = [
-                probe_mod._owns(cid, i, 4) for i in range(4)
-            ]
+            owners = [probe_mod._owns(cid, i, 4) for i in range(4)]
             assert sum(owners) == 1
             ownership[owners.index(True)] += 1
         # Allow a generous tolerance (uniform expected ≈ 250 each).
@@ -412,7 +407,8 @@ class TestProbeOutcomeParsing:
 
     def test_failure_without_chunk_addr_is_inconclusive(self, probe_mod):
         status, missing, peer = probe_mod._parse_probe_outcome(
-            exit_code=1, stderr_text="random network glitch\n",
+            exit_code=1,
+            stderr_text="random network glitch\n",
             downloaded_bytes=0,
         )
         assert status == probe_mod.PROBE_INCONCLUSIVE
@@ -431,6 +427,7 @@ class TestProbeOutcomeParsing:
         assert status == probe_mod.PROBE_FAILED
         assert missing == "ADDRX"
         import json as _json
+
         outcomes = _json.loads(peer)
         assert outcomes["queried"] == 20
         assert outcomes["not_found"] == 18
@@ -454,6 +451,7 @@ class TestProbeOutcomeParsing:
         assert status == probe_mod.PROBE_INCONCLUSIVE
         assert missing == "ADDRY"
         import json as _json
+
         assert _json.loads(peer)["timeout"] == 6
 
     def test_not_found_majority_failure_is_failed(self, probe_mod):
@@ -480,17 +478,21 @@ class TestProbeLocalTwoStrike:
         probe_mod._insert_state(conn, cid, "topaddr")
         return conn, cid
 
-    def test_failed_then_failed_same_chunk_marks_unavailable(
-        self, probe_mod, tmp_path
-    ):
+    def test_failed_then_failed_same_chunk_marks_unavailable(self, probe_mod, tmp_path):
         conn, cid = self._setup(probe_mod, tmp_path)
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t1",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t1",
         )
         t = probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t2",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t2",
         )
         row = probe_mod._state_row(conn, cid)
         assert row[2] == probe_mod.STATUS_UNAVAILABLE
@@ -501,17 +503,26 @@ class TestProbeLocalTwoStrike:
     def test_unavailable_then_ok_recovers(self, probe_mod, tmp_path):
         conn, cid = self._setup(probe_mod, tmp_path)
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t1",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t1",
         )
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t2",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t2",
         )
         # recovery: an OK probe after being unavailable returns it to alive
         t = probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_OK,
-            missing_chunk="", probed_at_iso="t3",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_OK,
+            missing_chunk="",
+            probed_at_iso="t3",
         )
         row = probe_mod._state_row(conn, cid)
         assert row[2] == probe_mod.STATUS_ALIVE
@@ -521,12 +532,18 @@ class TestProbeLocalTwoStrike:
     def test_unavailable_canary_still_probeable(self, probe_mod, tmp_path):
         conn, cid = self._setup(probe_mod, tmp_path)
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t1",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t1",
         )
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t2",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t2",
         )
         # An unavailable canary must remain in the probe set (so we can see
         # recovery) — the old design dropped it here.
@@ -536,29 +553,39 @@ class TestProbeLocalTwoStrike:
     def test_failed_then_ok_resets(self, probe_mod, tmp_path):
         conn, cid = self._setup(probe_mod, tmp_path)
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t1",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t1",
         )
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_OK,
-            missing_chunk="", probed_at_iso="t2",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_OK,
+            missing_chunk="",
+            probed_at_iso="t2",
         )
         row = probe_mod._state_row(conn, cid)
         assert row[2] == probe_mod.STATUS_ALIVE
         assert row[3] is None
         assert row[4] is None
 
-    def test_failed_then_failed_different_chunks_does_not_lose(
-        self, probe_mod, tmp_path
-    ):
+    def test_failed_then_failed_different_chunks_does_not_lose(self, probe_mod, tmp_path):
         conn, cid = self._setup(probe_mod, tmp_path)
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="A", probed_at_iso="t1",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="A",
+            probed_at_iso="t1",
         )
         probe_mod._apply_two_strike(
-            conn, canary_id=cid, status=probe_mod.PROBE_FAILED,
-            missing_chunk="B", probed_at_iso="t2",
+            conn,
+            canary_id=cid,
+            status=probe_mod.PROBE_FAILED,
+            missing_chunk="B",
+            probed_at_iso="t2",
         )
         row = probe_mod._state_row(conn, cid)
         assert row[2] == probe_mod.STATUS_ALIVE
@@ -570,27 +597,21 @@ class TestProbeLocalTwoStrike:
 
 class TestResolveBootstrapArgs:
     @pytest.mark.parametrize("fixture_name", ["probe_mod", "upload_mod"])
-    def test_cache_enabled_by_default_returns_empty(
-        self, fixture_name, request, monkeypatch
-    ):
+    def test_cache_enabled_by_default_returns_empty(self, fixture_name, request, monkeypatch):
         mod = request.getfixturevalue(fixture_name)
         monkeypatch.delenv("BOOTSTRAP_CACHE", raising=False)
         monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
         assert mod._resolve_bootstrap_args() == []
 
     @pytest.mark.parametrize("fixture_name", ["probe_mod", "upload_mod"])
-    def test_cache_disabled_splits_bootstrap_args(
-        self, fixture_name, request, monkeypatch
-    ):
+    def test_cache_disabled_splits_bootstrap_args(self, fixture_name, request, monkeypatch):
         mod = request.getfixturevalue(fixture_name)
         monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
         monkeypatch.setenv("BOOTSTRAP_ARGS", "--bootstrap 1.2.3.4:10000")
         assert mod._resolve_bootstrap_args() == ["--bootstrap", "1.2.3.4:10000"]
 
     @pytest.mark.parametrize("fixture_name", ["probe_mod", "upload_mod"])
-    def test_cache_disabled_requires_bootstrap_args(
-        self, fixture_name, request, monkeypatch
-    ):
+    def test_cache_disabled_requires_bootstrap_args(self, fixture_name, request, monkeypatch):
         mod = request.getfixturevalue(fixture_name)
         monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
         monkeypatch.delenv("BOOTSTRAP_ARGS", raising=False)

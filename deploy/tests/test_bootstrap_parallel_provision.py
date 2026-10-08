@@ -54,18 +54,14 @@ def _patched_execute(provisioner, *, active_ips, failed_ips=None):
         patch("saorsa_deploy.provisioning.bootstrap.run_ops"),
         patch("saorsa_deploy.provisioning.bootstrap.disconnect_all"),
         patch("saorsa_deploy.provisioning.bootstrap.get_release_url") as mock_release,
-        patch(
-            "saorsa_deploy.provisioning.bootstrap.create_progress_handler"
-        ) as mock_handler,
+        patch("saorsa_deploy.provisioning.bootstrap.create_progress_handler") as mock_handler,
     ):
         mock_release.return_value = "https://example/ant-node.tar.gz"
         # A plain MagicMock is not a RichLiveProgressHandler, so the Live
         # start/stop/mark_all_done branches are skipped.
         mock_handler.return_value = MagicMock()
         state = mock_state_cls.return_value
-        state.inventory.get_active_hosts.return_value = [
-            _fake_host(ip) for ip in active_ips
-        ]
+        state.inventory.get_active_hosts.return_value = [_fake_host(ip) for ip in active_ips]
         state.failed_hosts = [_fake_host(ip) for ip in failed_ips]
         provisioner.execute()
         return mock_add_op, mock_inventory
@@ -96,9 +92,7 @@ class TestAntBootstrapNodesProvisioner:
 
     def test_single_inventory_holds_all_hosts(self):
         prov = self._provisioner()
-        _, mock_inventory = _patched_execute(
-            prov, active_ips=["10.0.0.2", "10.0.0.3"]
-        )
+        _, mock_inventory = _patched_execute(prov, active_ips=["10.0.0.2", "10.0.0.3"])
         # Exactly one Inventory built (one pyinfra session, not one per host).
         assert mock_inventory.call_count == 1
         hosts_data = mock_inventory.call_args[0][0][0]
@@ -107,9 +101,7 @@ class TestAntBootstrapNodesProvisioner:
 
     def test_shared_ops_added_once_without_host_targeting(self):
         prov = self._provisioner()
-        mock_add_op, _ = _patched_execute(
-            prov, active_ips=["10.0.0.2", "10.0.0.3"]
-        )
+        mock_add_op, _ = _patched_execute(prov, active_ips=["10.0.0.2", "10.0.0.3"])
         by_name = _ops_by_name(mock_add_op)
         for shared in (
             "Disable Ubuntu unattended-upgrades",
@@ -123,9 +115,7 @@ class TestAntBootstrapNodesProvisioner:
 
     def test_per_host_config_op_targets_each_host(self):
         prov = self._provisioner()
-        mock_add_op, _ = _patched_execute(
-            prov, active_ips=["10.0.0.2", "10.0.0.3"]
-        )
+        mock_add_op, _ = _patched_execute(prov, active_ips=["10.0.0.2", "10.0.0.3"])
         by_name = _ops_by_name(mock_add_op)
         for ip, idx in (("10.0.0.2", 2), ("10.0.0.3", 3)):
             name = f"Configure ant-bootstrap-{idx}"
@@ -142,9 +132,7 @@ class TestAntBootstrapNodesProvisioner:
 
     def test_per_host_service_op_enables_and_starts_correct_service(self):
         prov = self._provisioner()
-        mock_add_op, _ = _patched_execute(
-            prov, active_ips=["10.0.0.2", "10.0.0.3"]
-        )
+        mock_add_op, _ = _patched_execute(prov, active_ips=["10.0.0.2", "10.0.0.3"])
         by_name = _ops_by_name(mock_add_op)
         for ip, idx in (("10.0.0.2", 2), ("10.0.0.3", 3)):
             name = f"Enable and start ant-bootstrap-{idx}"
@@ -165,17 +153,11 @@ class TestAntBootstrapNodesProvisioner:
 
     def test_op_order_daemon_reload_between_config_and_service(self):
         prov = self._provisioner()
-        mock_add_op, _ = _patched_execute(
-            prov, active_ips=["10.0.0.2", "10.0.0.3"]
-        )
+        mock_add_op, _ = _patched_execute(prov, active_ips=["10.0.0.2", "10.0.0.3"])
         names = [c.kwargs.get("name") for c in mock_add_op.call_args_list]
-        last_config = max(
-            i for i, n in enumerate(names) if n.startswith("Configure ")
-        )
+        last_config = max(i for i, n in enumerate(names) if n.startswith("Configure "))
         reload_idx = names.index("Reload systemd daemon")
-        first_service = min(
-            i for i, n in enumerate(names) if n.startswith("Enable and start ")
-        )
+        first_service = min(i for i, n in enumerate(names) if n.startswith("Enable and start "))
         assert last_config < reload_idx < first_service
 
     def test_binary_url_skips_release_fetch(self):
@@ -187,12 +169,8 @@ class TestAntBootstrapNodesProvisioner:
             patch("saorsa_deploy.provisioning.bootstrap.add_op") as mock_add_op,
             patch("saorsa_deploy.provisioning.bootstrap.run_ops"),
             patch("saorsa_deploy.provisioning.bootstrap.disconnect_all"),
-            patch(
-                "saorsa_deploy.provisioning.bootstrap.get_release_url"
-            ) as mock_release,
-            patch(
-                "saorsa_deploy.provisioning.bootstrap.create_progress_handler"
-            ) as mock_handler,
+            patch("saorsa_deploy.provisioning.bootstrap.get_release_url") as mock_release,
+            patch("saorsa_deploy.provisioning.bootstrap.create_progress_handler") as mock_handler,
         ):
             mock_handler.return_value = MagicMock()
             state = mock_state_cls.return_value

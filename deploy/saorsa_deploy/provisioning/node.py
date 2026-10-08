@@ -196,9 +196,7 @@ def _build_node_unit_file(
     ExecStart.
     """
     description_suffix = " (port-restricted NAT)" if is_nat else ""
-    wrapped_exec_start = (
-        f"{NAT_IP_EXEC_PREFIX}{exec_start}" if is_nat else exec_start
-    )
+    wrapped_exec_start = f"{NAT_IP_EXEC_PREFIX}{exec_start}" if is_nat else exec_start
     env_lines = ""
     if rust_backtrace:
         env_lines += f"\nEnvironment=RUST_BACKTRACE={rust_backtrace}"
@@ -314,9 +312,7 @@ class AntNodeProvisioner:
             node_port = (self.initial_port + i) if self.initial_port is not None else None
             root_dir = f"{MOUNT_POINT}/data/{service_name}"
             log_dir = f"{LOG_DIR}/{service_name}"
-            heaptrack_base = (
-                f"{self.heaptrack_dir}/{service_name}" if self.heaptrack else None
-            )
+            heaptrack_base = f"{self.heaptrack_dir}/{service_name}" if self.heaptrack else None
             exec_start = _build_node_exec_start(
                 bootstrap_peers=self.bootstrap_peers,
                 root_dir=root_dir,

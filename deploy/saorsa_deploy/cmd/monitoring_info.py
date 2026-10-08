@@ -54,8 +54,7 @@ def cmd_monitoring_info(args):
     ]
     if influxdb_client_bucket:
         lines.append(
-            f"  [bold]Client Bucket:[/bold] {influxdb_client_bucket}"
-            "  (client host metrics)"
+            f"  [bold]Client Bucket:[/bold] {influxdb_client_bucket}  (client host metrics)"
         )
     lines.append(f"  [bold]API Token:[/bold] {influxdb_token}")
 

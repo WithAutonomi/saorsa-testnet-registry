@@ -40,10 +40,14 @@ from saorsa_deploy.webrtc_addresses import (
 )
 
 _SSH_OPTS = [
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=15",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=15",
 ]
 
 #: A listener binds a moment after its service starts, so a read taken straight
@@ -106,15 +110,11 @@ def cmd_webrtc_addresses(args):
     state = load_deployment_state(args.name)
     boot_ips = _bootstrap_vm_ips(state)
     if not boot_ips:
-        console.print(
-            f"[bold red]Error:[/bold red] no bootstrap VMs in state for "
-            f"'{args.name}'"
-        )
+        console.print(f"[bold red]Error:[/bold red] no bootstrap VMs in state for '{args.name}'")
         sys.exit(1)
 
     console.print(
-        f"[bold]Collecting WebRTC-Direct addresses from {len(boot_ips)} "
-        f"bootstrap VM(s)...[/bold]"
+        f"[bold]Collecting WebRTC-Direct addresses from {len(boot_ips)} bootstrap VM(s)...[/bold]"
     )
 
     with ThreadPoolExecutor(max_workers=min(32, len(boot_ips))) as pool:
@@ -128,9 +128,7 @@ def cmd_webrtc_addresses(args):
     bootstrap_addrs = [a for ip in boot_ips for a in results.get(ip, [])]
     silent = [ip for ip, found in results.items() if not found]
 
-    console.print(
-        f"  [green]{len(bootstrap_addrs)}[/green] bootstrap address(es) collected"
-    )
+    console.print(f"  [green]{len(bootstrap_addrs)}[/green] bootstrap address(es) collected")
     if silent:
         # Every bootstrap is polled to the deadline, so a silent one here is a
         # real failure to advertise, not a race.
@@ -152,6 +150,5 @@ def cmd_webrtc_addresses(args):
         {"bootstrap_webrtc_multiaddrs": bootstrap_addrs},
     )
     console.print(
-        f"[green]Saved {len(bootstrap_addrs)} bootstrap address(es) to "
-        f"deployment state.[/green]"
+        f"[green]Saved {len(bootstrap_addrs)} bootstrap address(es) to deployment state.[/green]"
     )

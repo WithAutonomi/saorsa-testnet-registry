@@ -42,9 +42,7 @@ class AntNodeBuilder:
         self.debug = debug
         self.s3_key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/ant-node"
         profile = "debug" if debug else "release"
-        self._target_subdir = (
-            f"x86_64-unknown-linux-musl/{profile}" if musl else profile
-        )
+        self._target_subdir = f"x86_64-unknown-linux-musl/{profile}" if musl else profile
         self._cargo_target_flag = " --target x86_64-unknown-linux-musl" if musl else ""
         self._cargo_release_flag = "" if debug else " --release"
 
@@ -97,9 +95,7 @@ class AntNodeBuilder:
                 state,
                 server.shell,
                 name="Install build dependencies",
-                commands=[
-                    f"apt-get update -qq && apt-get install -y -qq {apt_packages}"
-                ],
+                commands=[f"apt-get update -qq && apt-get install -y -qq {apt_packages}"],
             )
 
             add_op(
@@ -129,9 +125,7 @@ class AntNodeBuilder:
                     state,
                     server.shell,
                     name="Install Rust musl target",
-                    commands=[
-                        "/root/.cargo/bin/rustup target add x86_64-unknown-linux-musl"
-                    ],
+                    commands=["/root/.cargo/bin/rustup target add x86_64-unknown-linux-musl"],
                 )
 
             add_op(
@@ -167,10 +161,7 @@ class AntNodeBuilder:
                     state,
                     server.shell,
                     name="Validate binary",
-                    commands=[
-                        f"strings {binary_path} "
-                        f"| grep -q '{self.validation_string}'"
-                    ],
+                    commands=[f"strings {binary_path} | grep -q '{self.validation_string}'"],
                 )
 
             add_op(

@@ -7,16 +7,11 @@ from saorsa_deploy.cmd import obs_provider
 
 def test_default_provider_is_digitalocean():
     assert obs_provider.resolve_provider(SimpleNamespace()) == "digitalocean"
-    assert (
-        obs_provider.resolve_provider(SimpleNamespace(provider=None))
-        == "digitalocean"
-    )
+    assert obs_provider.resolve_provider(SimpleNamespace(provider=None)) == "digitalocean"
 
 
 def test_ovh_provider_resolves():
-    assert (
-        obs_provider.resolve_provider(SimpleNamespace(provider="ovh")) == "ovh"
-    )
+    assert obs_provider.resolve_provider(SimpleNamespace(provider="ovh")) == "ovh"
 
 
 def test_unknown_provider_raises():

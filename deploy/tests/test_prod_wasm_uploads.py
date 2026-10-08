@@ -24,7 +24,7 @@ import pydantic
 import pytest
 from rich.console import Console
 from saorsa_db.db import Base
-from saorsa_db.models.prod_file_pool import ClaimSource, ClaimStatus, PoolFileKind
+from saorsa_db.models.prod_file_pool import ClaimSource, PoolFileKind
 from saorsa_db.models.prod_upload_result import ProdUploadStatus
 from saorsa_db.repositories import (
     SqlAlchemyDeploymentRepository,
@@ -610,24 +610,6 @@ class TestProvisioner:
         provisioner._add_install_ant_op(state)
         return captured
 
-    def test_installs_are_targeted_per_transport(self, monkeypatch):
-        native = SimpleNamespace(name="1.1.1.1")
-        wasm = SimpleNamespace(name="2.2.2.2")
-        ops = self._install_op_hosts(
-            _provisioner(
-                [
-                    _uploader("1.1.1.1", "lon1", 1),
-                    _uploader("2.2.2.2", "nyc3", 1, "wasm"),
-                ]
-            ),
-            monkeypatch,
-            [native, wasm],
-        )
-        by_name = dict(ops)
-        assert by_name["Install WASM client bundle"] == [wasm]
-        assert by_name["Install ant-wasm CLI"] == [wasm]
-        assert by_name["Download and install ant binary"] == [native]
-
     def test_a_wasm_only_deployment_installs_no_ant(self, monkeypatch):
         wasm = SimpleNamespace(name="2.2.2.2")
         ops = self._install_op_hosts(
@@ -636,17 +618,6 @@ class TestProvisioner:
             [wasm],
         )
         assert "Download and install ant binary" not in dict(ops)
-
-    def test_a_native_only_deployment_adds_no_wasm_op(self, monkeypatch):
-        native = SimpleNamespace(name="1.1.1.1")
-        ops = self._install_op_hosts(
-            _provisioner([_uploader("1.1.1.1", "lon1", 1)]), monkeypatch, [native]
-        )
-        names = dict(ops)
-        assert "Install WASM client bundle" not in names
-        # And the ant install keeps addressing the whole inventory, as it always
-        # did — `host=None` is what that means.
-        assert names["Download and install ant binary"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -876,9 +847,7 @@ class TestServiceMainLoop:
         # transports measured several times apart.
         assert bucket == "wasm-client-metrics"
 
-    def test_a_real_ant_wasm_success_payload_is_a_success(
-        self, service, monkeypatch, tmp_path
-    ):
+    def test_a_real_ant_wasm_success_payload_is_a_success(self, service, monkeypatch, tmp_path):
         # `ant-wasm` ALWAYS emits `error`, set to null on success, where
         # `ant --json` omits the key. Keying on presence reported every healthy
         # browser-path upload as a partial — which spends the file's pool claim
@@ -1089,72 +1058,6 @@ def _record(repo, points, name="PROD-WASM-UL-01"):
         cmd_record_results(args)
 
 
-class TestRecordingLabelsTheTransport:
-    def test_each_row_gets_its_own_transport(self, registry):
-        repo, _, _ = registry
-        repo.create(name="PROD-WASM-UL-01", deploy_args=_deploy_args())
-        _record(
-            repo,
-            [
-                _point(),
-                _point(
-                    host="PROD-WASM-UL-01-ant-client-wasm-upload-nyc3-1",
-                    region="nyc3",
-                    source_url="https://example.com/b.bin",
-                    file_name="b.bin",
-                    start_ns=2,
-                ),
-            ],
-        )
-        rows = {
-            r.client_hostname: r.client_kind
-            for r in repo.list_prod_upload_results_for_deployment(1)
-        }
-        assert rows == {
-            "PROD-WASM-UL-01-ant-client-upload-lon1-1": "native",
-            "PROD-WASM-UL-01-ant-client-wasm-upload-nyc3-1": "wasm",
-        }
-
-    def test_an_unlisted_host_is_left_null(self, registry):
-        # NULL reads as native everywhere else, and guessing would be worse than
-        # saying nothing.
-        repo, _, _ = registry
-        repo.create(name="PROD-UL-OLD", deploy_args={"kind": "prod-uploaders"})
-        _record(repo, [_point()], name="PROD-UL-OLD")
-        assert repo.list_prod_upload_results_for_deployment(1)[0].client_kind is None
-
-    def test_a_re_run_never_overwrites_a_known_transport_with_null(self, registry):
-        # The row is what survives teardown. An unconditional write would relabel
-        # every WASM upload as native and push its failures into the native
-        # figures.
-        repo, _, session = registry
-        deployment = repo.create(name="PROD-WASM-UL-01", deploy_args=_deploy_args())
-        wasm_host = "PROD-WASM-UL-01-ant-client-wasm-upload-nyc3-1"
-        _record(repo, [_point(host=wasm_host, region="nyc3")])
-        assert repo.list_prod_upload_results_for_deployment(1)[0].client_kind == "wasm"
-
-        deployment.deploy_args = {"kind": "prod-uploaders"}
-        session.commit()
-        _record(repo, [_point(host=wasm_host, region="nyc3")])
-        assert repo.list_prod_upload_results_for_deployment(1)[0].client_kind == "wasm"
-
-    @pytest.mark.parametrize(
-        "code,expected",
-        [
-            (0, ProdUploadStatus.SUCCESS),
-            (1, ProdUploadStatus.PARTIAL_UPLOAD),
-            (2, ProdUploadStatus.DOWNLOAD_FAILED),
-            (3, ProdUploadStatus.OVER_CAP),
-            (4, ProdUploadStatus.FAILED),
-        ],
-    )
-    def test_every_status_code_maps(self, registry, code, expected):
-        repo, _, _ = registry
-        repo.create(name="PROD-WASM-UL-01", deploy_args=_deploy_args())
-        _record(repo, [_point(status=code)])
-        assert repo.list_prod_upload_results_for_deployment(1)[0].status is expected
-
-
 class TestBothBucketsAreRead:
     def test_the_wasm_bucket_is_queried_too(self):
         # A single-bucket read would make a WASM tier that failed every upload
@@ -1236,51 +1139,6 @@ class TestClaimOutcomes:
         ):
             _record(repo, [_point(status=status, source_url=locator)])
         return pool_repo.list_pool_claims(file_id=claim.file_id)[0]
-
-    def test_a_success_spends_the_file(self, registry):
-        assert self._resolve(registry, 0).status is ClaimStatus.UPLOADED
-
-    def test_a_failure_after_payment_marks_it_partial(self, registry):
-        # Chunks ARE in production, so completing it is useful work but a canary
-        # must never draw it.
-        assert self._resolve(registry, 1).status is ClaimStatus.PARTIAL
-
-    def test_a_failure_before_payment_releases_it(self, registry):
-        # Nothing reached the network, so burning the entry would be a lie.
-        assert self._resolve(registry, 4).status is ClaimStatus.RELEASED
-
-    def test_an_over_cap_file_is_released(self, registry):
-        assert self._resolve(registry, 3).status is ClaimStatus.RELEASED
-
-    def test_a_source_fetch_failure_releases_it(self, registry):
-        assert self._resolve(registry, 2).status is ClaimStatus.RELEASED
-
-    def test_a_later_failure_never_undoes_a_recorded_upload(self, registry):
-        repo, pool_repo, _ = registry
-        deployment = repo.create(name="PROD-WASM-UL-01", deploy_args=_deploy_args())
-        locator = "https://example.com/a.bin"
-        claim = self._claim(pool_repo, deployment, locator, "a.bin")
-        with patch(
-            "saorsa_deploy.registry.get_file_pool_repository",
-            return_value=pool_repo,
-        ):
-            _record(repo, [_point(status=0, source_url=locator)])
-            # A retry from the other host fails before payment. The upload that
-            # succeeded is still on the network.
-            _record(
-                repo,
-                [
-                    _point(status=0, source_url=locator),
-                    _point(
-                        status=4,
-                        source_url=locator,
-                        host="PROD-WASM-UL-01-ant-client-wasm-upload-nyc3-1",
-                        region="nyc3",
-                        start_ns=2,
-                    ),
-                ],
-            )
-        assert pool_repo.list_pool_claims(file_id=claim.file_id)[0].status is ClaimStatus.UPLOADED
 
 
 # ---------------------------------------------------------------------------

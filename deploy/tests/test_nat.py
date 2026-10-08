@@ -51,9 +51,7 @@ class TestSelectNatIps:
 
     def test_one_per_region_first(self):
         # 4 regions, 10 VMs each. At 10% (= 4 NAT VMs), expect one from each region.
-        vm_ips = {
-            f"prov/reg{i}": [f"{i}.0.0.{j}" for j in range(1, 11)] for i in range(4)
-        }
+        vm_ips = {f"prov/reg{i}": [f"{i}.0.0.{j}" for j in range(1, 11)] for i in range(4)}
         result = select_nat_ips(vm_ips, 10)
         assert len(result) == 4
         # Each selected IP starts with a different region-prefix

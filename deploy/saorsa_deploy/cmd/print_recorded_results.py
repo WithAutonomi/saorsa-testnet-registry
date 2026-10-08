@@ -22,6 +22,7 @@ If a section's table is empty, a friendly "nothing recorded" line is
 printed in its place rather than skipped silently — the absence is
 itself useful information.
 """
+
 from __future__ import annotations
 
 import sys
@@ -104,8 +105,7 @@ def cmd_print_recorded_results(args) -> None:
     repo = get_repository()
     if repo is None:
         console.print(
-            "[bold red]Error:[/bold red] DATABASE_URL is not set or the "
-            "database is unreachable."
+            "[bold red]Error:[/bold red] DATABASE_URL is not set or the database is unreachable."
         )
         sys.exit(1)
 
@@ -125,14 +125,13 @@ def cmd_print_recorded_results(args) -> None:
 
     host_result = repo.get_host_result_for_deployment(deployment.id)
     _print_analysis_section(host_result, deployment.name, console)
-    _print_derived_metrics_section(
-        repo.list_derived_metrics_for_deployment(deployment.id), console
-    )
+    _print_derived_metrics_section(repo.list_derived_metrics_for_deployment(deployment.id), console)
 
     if kind == "prod-canary":
         from saorsa_deploy.cmd.prod_canary_results import (
             print_prod_canary_status,
         )
+
         print_prod_canary_status(repo, deployment, args, console)
     elif kind == "prod-continuous-uploader":
         rows = repo.list_prod_upload_results_for_deployment(deployment.id)
@@ -155,9 +154,7 @@ def cmd_print_recorded_results(args) -> None:
         upload_records = repo.list_upload_records_for_deployment(deployment.id)
         download_records = repo.list_download_records_for_deployment(deployment.id)
         if args.details:
-            _print_op_records_section(
-                upload_records, download_records, deployment.name, console
-            )
+            _print_op_records_section(upload_records, download_records, deployment.name, console)
         else:
             # The per-ROW dump stays behind --details, but the counts do not:
             # `deployment_file_results` has no skipped column, so a group that is
@@ -230,10 +227,7 @@ def _print_analysis_section(
 
     metrics = host_result.host_metrics or []
     if not metrics:
-        console.print(
-            "[yellow]Host result row exists but contains no per-host "
-            "metrics.[/yellow]"
-        )
+        console.print("[yellow]Host result row exists but contains no per-host metrics.[/yellow]")
         return
 
     for entry in metrics:
@@ -296,11 +290,7 @@ def _print_disk_usage_table(metrics: list[dict], console: Console) -> None:
             used = (stats or {}).get("used_bytes") or {}
             role = (stats or {}).get("volume_role")
             minimum, maximum = used.get("min"), used.get("max")
-            spread = (
-                maximum - minimum
-                if minimum is not None and maximum is not None
-                else None
-            )
+            spread = maximum - minimum if minimum is not None and maximum is not None else None
             table.add_row(
                 host,
                 mount,
@@ -609,9 +599,7 @@ def _print_transport_totals(uploads: list, downloads: list, console: Console) ->
     this pipeline.
     """
     rows = [("upload", uploads), ("download", downloads)]
-    if not any(
-        (r.client_kind or "native") == "wasm" for _, group in rows for r in group
-    ):
+    if not any((r.client_kind or "native") == "wasm" for _, group in rows for r in group):
         return
     for op_label, group in rows:
         if not group:
@@ -619,9 +607,7 @@ def _print_transport_totals(uploads: list, downloads: list, console: Console) ->
         console.print()
         console.print(f"[bold]{op_label} totals by transport[/bold]")
         for transport in ("native", "wasm"):
-            subset = [
-                r for r in group if (r.client_kind or "native") == transport
-            ]
+            subset = [r for r in group if (r.client_kind or "native") == transport]
             if not subset:
                 continue
             colour = "green" if transport == "native" else "cyan"
@@ -633,15 +619,9 @@ def _print_transport_totals(uploads: list, downloads: list, console: Console) ->
                 # A skip never enters the denominator: the content is on the
                 # network and healthy, and this transport simply will not carry
                 # it.
-                skipped = sum(
-                    1 for r in build_rows if r.status == OpRecordStatus.SKIPPED
-                )
-                attempted = [
-                    r for r in build_rows if r.status != OpRecordStatus.SKIPPED
-                ]
-                ok = sum(
-                    1 for r in attempted if r.status == OpRecordStatus.SUCCESS
-                )
+                skipped = sum(1 for r in build_rows if r.status == OpRecordStatus.SKIPPED)
+                attempted = [r for r in build_rows if r.status != OpRecordStatus.SKIPPED]
+                ok = sum(1 for r in attempted if r.status == OpRecordStatus.SUCCESS)
                 total = len(attempted)
                 rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
                 extra = f", {skipped} skipped (over-cap)" if skipped else ""
@@ -679,10 +659,7 @@ def _print_op_records_tables(
         host_rows = sorted(by_host[host], key=lambda r: r.start_ns)
         build_note = f" — {build_label}" if build_label else ""
         table = Table(
-            title=(
-                f"{op_label} — {host}{build_note} "
-                f"({len(host_rows)} record(s)) — '{name}'"
-            ),
+            title=(f"{op_label} — {host}{build_note} ({len(host_rows)} record(s)) — '{name}'"),
             title_style="bold",
             show_lines=False,
         )
@@ -693,9 +670,7 @@ def _print_op_records_tables(
         # Uploads have no verification verdict at all, and a download only has
         # one when its uploader published a hash. Omitted when nothing in the
         # table carries one, so a historical run renders as it did.
-        show_verify = any(
-            getattr(r, "verify_status", None) for r in host_rows
-        )
+        show_verify = any(getattr(r, "verify_status", None) for r in host_rows)
         table.add_column("#", justify="right")
         table.add_column("Region")
         if show_address:
@@ -722,9 +697,7 @@ def _print_op_records_tables(
                 _OP_STATUS_LABELS.get(row.status, "-"),
             ]
             if show_verify:
-                cells.append(
-                    _VERIFY_LABELS.get(getattr(row, "verify_status", None), "-")
-                )
+                cells.append(_VERIFY_LABELS.get(getattr(row, "verify_status", None), "-"))
             cells += [
                 _fmt_duration(row.duration_ms),
                 _fmt_dt(row.started_at),
@@ -813,12 +786,8 @@ def _print_prod_upload_transport_totals(rows: list, console: Console) -> None:
         # And by build within the transport: an in-place upgrade is done to see
         # whether the new bundle reads differently, which one pooled rate hides.
         for build_label, build_rows in _split_by_build(subset):
-            over_cap = sum(
-                1 for r in build_rows if r.status is ProdUploadStatus.OVER_CAP
-            )
-            attempted = [
-                r for r in build_rows if r.status is not ProdUploadStatus.OVER_CAP
-            ]
+            over_cap = sum(1 for r in build_rows if r.status is ProdUploadStatus.OVER_CAP)
+            attempted = [r for r in build_rows if r.status is not ProdUploadStatus.OVER_CAP]
             ok = sum(1 for r in attempted if r.status is ProdUploadStatus.SUCCESS)
             total = len(attempted)
             rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
@@ -826,8 +795,7 @@ def _print_prod_upload_transport_totals(rows: list, console: Console) -> None:
             # Escaped for Rich, which would otherwise read it as a style tag.
             build_note = f" \\[{build_label}]" if build_label else ""
             console.print(
-                f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = "
-                f"{rate}{extra}{build_note}"
+                f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = {rate}{extra}{build_note}"
             )
 
 
@@ -878,7 +846,13 @@ def _print_prod_upload_tables(
             )
         table.add_section()
         table.add_row(
-            "", "[bold]Total[/bold]", "", "", "", "", "",
+            "",
+            "[bold]Total[/bold]",
+            "",
+            "",
+            "",
+            "",
+            "",
             f"[bold]{_fmt_token(host_ant, 'ANT')}[/bold]",
             f"[bold]{_fmt_token(host_gas, 'ETH')}[/bold]",
         )
@@ -911,12 +885,9 @@ def _print_prod_upload_details(
             console.print(f"  File:              {row.file_name or '-'}")
             console.print(f"  Source:            {row.source_url or '-'}")
             console.print(f"  Size (bytes):      {row.file_size_bytes or 0}")
+            console.print(f"  Status:            {_PROD_STATUS_TEXT.get(row.status, '-')}")
             console.print(
-                f"  Status:            {_PROD_STATUS_TEXT.get(row.status, '-')}"
-            )
-            console.print(
-                f"  Chunks uploaded:   {row.chunks_stored or 0} / "
-                f"{row.total_chunks or 0}"
+                f"  Chunks uploaded:   {row.chunks_stored or 0} / {row.total_chunks or 0}"
             )
             console.print(f"  Chunks failed:     {row.chunks_failed or 0}")
             console.print(f"  Address:           {row.address or '-'}")
@@ -1006,10 +977,7 @@ def _print_prod_download_details(
             console.print(f"  Started (UTC):     {_fmt_dt(row.started_at)}")
             console.print(f"  Finished (UTC):    {_fmt_dt(row.finished_at)}")
             console.print(f"  Address:           {row.address}")
-            console.print(
-                f"  Status:            "
-                f"{_PROD_DOWNLOAD_STATUS_TEXT.get(row.status, '-')}"
-            )
+            console.print(f"  Status:            {_PROD_DOWNLOAD_STATUS_TEXT.get(row.status, '-')}")
             console.print(f"  Size (bytes):      {row.file_size_bytes or '-'}")
             console.print(f"  Duration (ms):     {row.duration_ms or '-'}")
             console.print(f"  Download secs:     {row.download_secs or '-'}")
@@ -1025,18 +993,12 @@ def _print_prod_download_details(
 
 def _fmt_triple(stat: dict) -> str:
     return (
-        f"{_fmt_num(stat.get('avg'))} / "
-        f"{_fmt_num(stat.get('min'))} / "
-        f"{_fmt_num(stat.get('max'))}"
+        f"{_fmt_num(stat.get('avg'))} / {_fmt_num(stat.get('min'))} / {_fmt_num(stat.get('max'))}"
     )
 
 
 def _fmt_triple_bw(stat: dict) -> str:
-    return (
-        f"{_fmt_bw(stat.get('avg'))} / "
-        f"{_fmt_bw(stat.get('min'))} / "
-        f"{_fmt_bw(stat.get('max'))}"
-    )
+    return f"{_fmt_bw(stat.get('avg'))} / {_fmt_bw(stat.get('min'))} / {_fmt_bw(stat.get('max'))}"
 
 
 def _fmt_triple_bytes(stat: dict) -> str:
@@ -1094,8 +1056,8 @@ def _fmt_token(value, symbol: str) -> str:
 def _fmt_size(num_bytes) -> str:
     if num_bytes is None:
         return "-"
-    gb = num_bytes / (1024 ** 3)
-    mb = num_bytes / (1024 ** 2)
+    gb = num_bytes / (1024**3)
+    mb = num_bytes / (1024**2)
     kb = num_bytes / 1024
     if gb >= 1:
         return f"{gb:.2f} GB"
@@ -1203,15 +1165,13 @@ def _print_verification_table(rows, details: bool, console) -> None:
         # one seen once, and the retry overwrites the row — so the longest
         # standing failure is surfaced rather than just a count.
         failing = [
-            r for r in host_rows
-            if r.status is ProdUploadVerifyStatus.DOWNLOAD_FAILED
-            and r.first_failed_at is not None
+            r
+            for r in host_rows
+            if r.status is ProdUploadVerifyStatus.DOWNLOAD_FAILED and r.first_failed_at is not None
         ]
         if failing:
             oldest = min(failing, key=lambda r: r.first_failed_at)
-            failing_for = int(
-                (oldest.finished_at - oldest.first_failed_at).total_seconds()
-            )
+            failing_for = int((oldest.finished_at - oldest.first_failed_at).total_seconds())
             worst = f"{_format_age(failing_for)} / {oldest.attempts}x"
         else:
             worst = "-"

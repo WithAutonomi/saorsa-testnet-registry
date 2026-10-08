@@ -18,6 +18,7 @@ Revises: b2d58f0c4a11
 Create Date: 2026-07-31
 
 """
+
 import json
 
 import sqlalchemy as sa
@@ -35,9 +36,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("file_id", sa.Integer(), nullable=False),
         sa.Column("tag", sa.String(length=64), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["file_id"], ["prod_file_pool.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["file_id"], ["prod_file_pool.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("file_id", "tag", name="uq_prod_file_pool_tags_file_tag"),
     )
@@ -75,8 +74,7 @@ def upgrade() -> None:
     if unique:
         bind.execute(
             sa.text(
-                "INSERT INTO prod_file_pool_tags (file_id, tag) "
-                "VALUES (:file_id, :tag)"
+                "INSERT INTO prod_file_pool_tags (file_id, tag) VALUES (:file_id, :tag)"
             ),
             unique,
         )
@@ -88,9 +86,7 @@ def downgrade() -> None:
     op.add_column("prod_file_pool", sa.Column("tags", sa.JSON(), nullable=True))
     bind = op.get_bind()
     rows = bind.execute(
-        sa.text(
-            "SELECT file_id, tag FROM prod_file_pool_tags ORDER BY file_id, tag"
-        )
+        sa.text("SELECT file_id, tag FROM prod_file_pool_tags ORDER BY file_id, tag")
     ).fetchall()
     by_file: dict = {}
     for file_id, tag in rows:

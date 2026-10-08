@@ -953,9 +953,7 @@ def test_prod_nodes_debug_build_then_deploy():
 
 
 def test_prod_nodes_release_has_no_build_step():
-    m = _prod_nodes_manifest(
-        {"binary": {"version": "0.11.6"}, "region": "lon1"}
-    )
+    m = _prod_nodes_manifest({"binary": {"version": "0.11.6"}, "region": "lon1"})
     steps = _argvs(build_deploy_steps(m))
     # A pinned release ships prebuilt — no build step, just the deploy.
     assert len(steps) == 1
@@ -987,9 +985,7 @@ def test_prod_nodes_destroy_default_and_keep_monitoring():
 
 def test_prod_nodes_debug_requires_branch():
     with pytest.raises(ValidationError):
-        _prod_nodes_manifest(
-            {"binary": {"version": "0.11.6", "debug": True}, "region": "lon1"}
-        )
+        _prod_nodes_manifest({"binary": {"version": "0.11.6", "debug": True}, "region": "lon1"})
 
 
 def test_prod_nodes_elastic_emits_forward_logs_and_sizing():

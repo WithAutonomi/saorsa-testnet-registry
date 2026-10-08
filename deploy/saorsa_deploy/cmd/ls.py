@@ -152,8 +152,7 @@ def cmd_ls(args):
     repo = get_repository()
     if repo is None:
         console.print(
-            "[bold red]Error:[/bold red] DATABASE_URL is not set or the database "
-            "is unreachable."
+            "[bold red]Error:[/bold red] DATABASE_URL is not set or the database is unreachable."
         )
         sys.exit(1)
 
@@ -204,9 +203,7 @@ def cmd_ls(args):
     for d in deployments:
         style = _STATUS_STYLES.get(d.status, "")
         status_cell = f"[{style}]{d.status.value}[/]" if style else d.status.value
-        has_results = (
-            "[green]yes[/green]" if d.id in ids_with_results else "[dim]no[/dim]"
-        )
+        has_results = "[green]yes[/green]" if d.id in ids_with_results else "[dim]no[/dim]"
         table.add_row(
             str(d.id),
             d.name,

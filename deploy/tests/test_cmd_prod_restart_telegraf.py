@@ -94,12 +94,8 @@ class _FakeSsh:
 class TestDryRun:
     def test_probes_but_restarts_nothing(self, tmp_path):
         inv = _write_inventory(tmp_path, [("host-a", "10.0.0.1")])
-        ssh = _FakeSsh(
-            {"10.0.0.1": {"probe": _probe_out(13 * GIB, 685, 3 * GIB), "restart": []}}
-        )
-        with patch(
-            "saorsa_deploy.cmd.prod_restart_telegraf._ssh_capture", ssh
-        ):
+        ssh = _FakeSsh({"10.0.0.1": {"probe": _probe_out(13 * GIB, 685, 3 * GIB), "restart": []}})
+        with patch("saorsa_deploy.cmd.prod_restart_telegraf._ssh_capture", ssh):
             cmd_prod_restart_telegraf(_args(inv, dry_run=True))
         assert ssh.restarted == []
         assert all("systemctl restart" not in c for _, c in ssh.commands)
@@ -107,9 +103,7 @@ class TestDryRun:
 
 class TestRestart:
     def test_restarts_every_probed_host_by_default(self, tmp_path):
-        inv = _write_inventory(
-            tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")]
-        )
+        inv = _write_inventory(tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")])
         ssh = _FakeSsh(
             {
                 "10.0.0.1": {
@@ -127,9 +121,7 @@ class TestRestart:
         assert sorted(ssh.restarted) == ["host-a", "host-b"]
 
     def test_min_held_gb_filters_which_hosts_are_restarted(self, tmp_path):
-        inv = _write_inventory(
-            tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")]
-        )
+        inv = _write_inventory(tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")])
         ssh = _FakeSsh(
             {
                 "10.0.0.1": {
@@ -147,9 +139,7 @@ class TestRestart:
         assert ssh.restarted == ["host-a"]
 
     def test_a_probe_failure_does_not_stop_the_other_hosts(self, tmp_path):
-        inv = _write_inventory(
-            tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")]
-        )
+        inv = _write_inventory(tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")])
 
         def fake(vm, ssh_key, command, timeout):
             if vm.ip == "10.0.0.1":
@@ -180,9 +170,7 @@ class TestRestart:
 
 class TestSelection:
     def test_limit_to_restricts_the_hosts(self, tmp_path):
-        inv = _write_inventory(
-            tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")]
-        )
+        inv = _write_inventory(tmp_path, [("host-a", "10.0.0.1"), ("host-b", "10.0.0.2")])
         ssh = _FakeSsh(
             {
                 "10.0.0.1": {
@@ -209,9 +197,7 @@ class TestSelection:
 class TestConfirmation:
     def test_declining_the_prompt_aborts_without_restarting(self, tmp_path):
         inv = _write_inventory(tmp_path, [("host-a", "10.0.0.1")])
-        ssh = _FakeSsh(
-            {"10.0.0.1": {"probe": _probe_out(13 * GIB, 685, 3 * GIB), "restart": []}}
-        )
+        ssh = _FakeSsh({"10.0.0.1": {"probe": _probe_out(13 * GIB, 685, 3 * GIB), "restart": []}})
         with patch("saorsa_deploy.cmd.prod_restart_telegraf._ssh_capture", ssh):
             with patch("builtins.input", return_value="n"):
                 with pytest.raises(SystemExit):

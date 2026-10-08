@@ -1,10 +1,8 @@
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pyinfra.operations import server
 
-from saorsa_deploy.cmd.provision_nodes import cmd_provision_nodes
 from saorsa_deploy.provisioning.bootstrap import DEFAULT_REWARDS_ADDRESS
 from saorsa_deploy.provisioning.node import (
     AntNodeProvisioner,
@@ -107,9 +105,7 @@ class TestBuildNodeExecStart:
         assert "--enable-logging" in result
 
     def test_enable_logging_precedes_other_log_flags(self):
-        result = _build_node_exec_start(
-            ["10.0.0.1:5000"], self.ROOT, log_dir="/var/log/ant-node-1"
-        )
+        result = _build_node_exec_start(["10.0.0.1:5000"], self.ROOT, log_dir="/var/log/ant-node-1")
         assert result.index("--enable-logging") < result.index("--log-format")
         assert result.index("--enable-logging") < result.index("--log-dir")
 
@@ -538,128 +534,3 @@ class TestAntNodeProvisioner:
         assert "systemctl enable ant-node-1" in script
         assert "systemctl is-enabled --quiet ant-node-2" in script
         assert "--now" not in script
-
-
-class TestCmdProvisionClearsKnownHosts:
-    @patch("saorsa_deploy.cmd.provision_nodes.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision_nodes.AntNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision_nodes.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision_nodes.load_deployment_state")
-    def test_clears_known_hosts_for_all_vm_ips(
-        self,
-        mock_load_state,
-        mock_clear_known_hosts,
-        mock_provisioner_cls,
-        _mock_update_state,
-    ):
-        mock_load_state.return_value = {
-            "bootstrap_nodes": [
-                {"ip": "10.0.0.100", "region": "lon1", "bootstrap_index": 1, "port": 5000},
-            ],
-            "bootstrap_port": 5000,
-            "bootstrap_ip": "10.0.0.100",
-            "vm_ips": {
-                "lon1": ["10.0.0.1", "10.0.0.2"],
-                "nyc1": ["10.0.0.3"],
-            },
-        }
-        mock_provisioner_cls.return_value.execute.return_value = None
-
-        args = SimpleNamespace(
-            name="test-deploy",
-            ssh_key_path="~/.ssh/id_rsa",
-            node_count=1,
-            port=None,
-
-            log_level=None,
-            testnet=False,
-            region=None,
-            upgrade_channel=None,
-            rewards_address=DEFAULT_REWARDS_ADDRESS,
-        )
-        cmd_provision_nodes(args)
-
-        mock_clear_known_hosts.assert_called_once()
-        called_ips = mock_clear_known_hosts.call_args[0][0]
-        assert sorted(called_ips) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-
-    @patch("saorsa_deploy.cmd.provision_nodes.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision_nodes.AntNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision_nodes.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision_nodes.load_deployment_state")
-    def test_clears_known_hosts_for_single_region(
-        self,
-        mock_load_state,
-        mock_clear_known_hosts,
-        mock_provisioner_cls,
-        _mock_update_state,
-    ):
-        mock_load_state.return_value = {
-            "bootstrap_nodes": [
-                {"ip": "10.0.0.100", "region": "lon1", "bootstrap_index": 1, "port": 5000},
-            ],
-            "bootstrap_port": 5000,
-            "bootstrap_ip": "10.0.0.100",
-            "vm_ips": {
-                "lon1": ["10.0.0.1", "10.0.0.2"],
-                "nyc1": ["10.0.0.3"],
-            },
-        }
-        mock_provisioner_cls.return_value.execute.return_value = None
-
-        args = SimpleNamespace(
-            name="test-deploy",
-            ssh_key_path="~/.ssh/id_rsa",
-            node_count=1,
-            port=None,
-
-            log_level=None,
-            testnet=False,
-            region="lon1",
-            upgrade_channel=None,
-            rewards_address=DEFAULT_REWARDS_ADDRESS,
-        )
-        cmd_provision_nodes(args)
-
-        mock_clear_known_hosts.assert_called_once()
-        called_ips = mock_clear_known_hosts.call_args[0][0]
-        assert called_ips == ["10.0.0.1", "10.0.0.2"]
-
-    @patch("saorsa_deploy.cmd.provision_nodes.update_deployment_state")
-    @patch("saorsa_deploy.cmd.provision_nodes.AntNodeProvisioner")
-    @patch("saorsa_deploy.cmd.provision_nodes.clear_known_hosts")
-    @patch("saorsa_deploy.cmd.provision_nodes.load_deployment_state")
-    def test_clears_known_hosts_before_provisioner_executes(
-        self,
-        mock_load_state,
-        mock_clear_known_hosts,
-        mock_provisioner_cls,
-        _mock_update_state,
-    ):
-        mock_load_state.return_value = {
-            "bootstrap_nodes": [
-                {"ip": "10.0.0.100", "region": "lon1", "bootstrap_index": 1, "port": 5000},
-            ],
-            "bootstrap_port": 5000,
-            "bootstrap_ip": "10.0.0.100",
-            "vm_ips": {"lon1": ["10.0.0.1"]},
-        }
-        call_order = []
-        mock_clear_known_hosts.side_effect = lambda *a, **kw: call_order.append("clear_known_hosts")
-        mock_provisioner_cls.return_value.execute.side_effect = lambda: call_order.append("execute")
-
-        args = SimpleNamespace(
-            name="test-deploy",
-            ssh_key_path="~/.ssh/id_rsa",
-            node_count=1,
-            port=None,
-
-            log_level=None,
-            testnet=False,
-            region=None,
-            upgrade_channel=None,
-            rewards_address=DEFAULT_REWARDS_ADDRESS,
-        )
-        cmd_provision_nodes(args)
-
-        assert call_order == ["clear_known_hosts", "execute"]

@@ -67,12 +67,10 @@ class TestEquivalenceWithPerFilePath:
     """The two paths must agree. This is the whole safety argument."""
 
     ENTRIES = [
-        _entry("/data/a.bin", "a.bin", digests={"sha1": "AAA", "sha256": "111"},
-               tags=["corpus"]),
+        _entry("/data/a.bin", "a.bin", digests={"sha1": "AAA", "sha256": "111"}, tags=["corpus"]),
         _entry("/data/b.bin", "b.bin", digests={"sha1": "BBB"}, tags=["corpus"]),
         # Same content as a.bin, arriving in the same batch.
-        _entry("/data/a-copy.bin", "a-copy.bin", digests={"sha1": "aaa"},
-               tags=["corpus"]),
+        _entry("/data/a-copy.bin", "a-copy.bin", digests={"sha1": "aaa"}, tags=["corpus"]),
         _entry("/data/c.bin", "c.bin", size=50 * MIB, tags=["corpus", "video"]),
     ]
 
@@ -80,8 +78,12 @@ class TestEquivalenceWithPerFilePath:
         per_file = _repo()
         for e in self.ENTRIES:
             per_file.add_pool_file(
-                e["kind"], e["locator"], e["name"], size_bytes=e["size_bytes"],
-                digests=e["digests"], tags=e["tags"],
+                e["kind"],
+                e["locator"],
+                e["name"],
+                size_bytes=e["size_bytes"],
+                digests=e["digests"],
+                tags=e["tags"],
             )
         bulk = _repo()
         bulk.add_pool_files_bulk(list(self.ENTRIES))
@@ -104,39 +106,43 @@ class TestDuplicateLinking:
     def test_two_copies_in_one_batch_are_linked(self, repo):
         # The pre-flight digest query cannot see the first copy, because it is
         # not committed when the second is processed.
-        repo.add_pool_files_bulk([
-            _entry("/data/first.bin", "first.bin", digests={"sha1": "aaa"}),
-            _entry("/data/second.bin", "second.bin", digests={"sha1": "aaa"}),
-        ])
+        repo.add_pool_files_bulk(
+            [
+                _entry("/data/first.bin", "first.bin", digests={"sha1": "aaa"}),
+                _entry("/data/second.bin", "second.bin", digests={"sha1": "aaa"}),
+            ]
+        )
         rows = {f.name: f for f in repo.list_pool_files()}
         assert rows["second.bin"].duplicate_of == rows["first.bin"].id
 
     def test_links_to_a_file_from_an_earlier_batch(self, repo):
-        repo.add_pool_files_bulk([
-            _entry("/data/first.bin", "first.bin", digests={"sha1": "aaa"})
-        ])
-        repo.add_pool_files_bulk([
-            _entry("/data/second.bin", "second.bin", digests={"sha1": "aaa"})
-        ])
+        repo.add_pool_files_bulk([_entry("/data/first.bin", "first.bin", digests={"sha1": "aaa"})])
+        repo.add_pool_files_bulk(
+            [_entry("/data/second.bin", "second.bin", digests={"sha1": "aaa"})]
+        )
         rows = {f.name: f for f in repo.list_pool_files()}
         assert rows["second.bin"].duplicate_of == rows["first.bin"].id
 
     def test_links_stay_flat(self, repo):
-        repo.add_pool_files_bulk([
-            _entry("/data/1.bin", "1.bin", digests={"sha1": "aaa"}),
-            _entry("/data/2.bin", "2.bin", digests={"sha1": "aaa"}),
-            _entry("/data/3.bin", "3.bin", digests={"sha1": "aaa"}),
-        ])
+        repo.add_pool_files_bulk(
+            [
+                _entry("/data/1.bin", "1.bin", digests={"sha1": "aaa"}),
+                _entry("/data/2.bin", "2.bin", digests={"sha1": "aaa"}),
+                _entry("/data/3.bin", "3.bin", digests={"sha1": "aaa"}),
+            ]
+        )
         rows = {f.name: f for f in repo.list_pool_files()}
         # Never a chain: availability resolves with one COALESCE.
         assert rows["2.bin"].duplicate_of == rows["1.bin"].id
         assert rows["3.bin"].duplicate_of == rows["1.bin"].id
 
     def test_reported_links_are_returned(self, repo):
-        result = repo.add_pool_files_bulk([
-            _entry("/data/1.bin", "1.bin", digests={"sha1": "aaa"}),
-            _entry("/data/2.bin", "2.bin", digests={"sha1": "aaa"}),
-        ])
+        result = repo.add_pool_files_bulk(
+            [
+                _entry("/data/1.bin", "1.bin", digests={"sha1": "aaa"}),
+                _entry("/data/2.bin", "2.bin", digests={"sha1": "aaa"}),
+            ]
+        )
         assert [name for name, _ in result["linked"]] == ["2.bin"]
 
 
@@ -153,9 +159,7 @@ class TestReRuns:
         # Re-running a section with an extra tag must still take effect, exactly
         # as the per-file path did.
         repo.add_pool_files_bulk([_entry("/data/a.bin", "a.bin", tags=["corpus"])])
-        repo.add_pool_files_bulk(
-            [_entry("/data/a.bin", "a.bin", tags=["corpus", "photos"])]
-        )
+        repo.add_pool_files_bulk([_entry("/data/a.bin", "a.bin", tags=["corpus", "photos"])])
         assert repo.list_pool_files()[0].tags == ["corpus", "photos"]
 
     def test_a_rerun_fills_in_a_previously_unknown_size(self, repo):
@@ -187,8 +191,7 @@ class TestRoundTrips:
 
     def _entries(self, n):
         return [
-            _entry(f"/data/{i}.bin", f"{i}.bin", digests={"sha1": f"{i:040d}"},
-                   tags=["corpus"])
+            _entry(f"/data/{i}.bin", f"{i}.bin", digests={"sha1": f"{i:040d}"}, tags=["corpus"])
             for i in range(n)
         ]
 
@@ -219,14 +222,10 @@ class TestRoundTrips:
         )
         # Same file count, but every one after the first is a duplicate.
         duplicated = self._statements(
-            [
-                _entry(f"/data/d{i}.bin", f"d{i}.bin", digests={"sha1": "a" * 40})
-                for i in range(100)
-            ]
+            [_entry(f"/data/d{i}.bin", f"d{i}.bin", digests={"sha1": "a" * 40}) for i in range(100)]
         )
         assert duplicated <= unique + 2, (
-            f"{duplicated} statements with 99 duplicate links "
-            f"vs {unique} with none"
+            f"{duplicated} statements with 99 duplicate links vs {unique} with none"
         )
 
     def test_returned_records_can_be_read_without_touching_the_database(self):
@@ -247,8 +246,7 @@ class TestRoundTrips:
             seen.append(statement)
 
         for record in result["created"]:
-            _ = (record.id, record.name, record.size_bytes, record.kind,
-                 record.duplicate_of)
+            _ = (record.id, record.name, record.size_bytes, record.kind, record.duplicate_of)
         repo.session.close()
 
         assert seen == [], f"reading {len(result['created'])} records cost {len(seen)}"
@@ -273,10 +271,21 @@ class TestRoundTrips:
 class TestCommandIntegration:
     def _args(self, directory, **kwargs):
         base = dict(
-            url=None, urls_file=None, dir=str(directory), path=None,
-            tag=["corpus"], provenance=None, allow_unknown_size=False,
-            hash=True, materialise=None, from_listing=None, size=None,
-            limit=None, dry_run=False, originals_only=False, verbose=False,
+            url=None,
+            urls_file=None,
+            dir=str(directory),
+            path=None,
+            tag=["corpus"],
+            provenance=None,
+            allow_unknown_size=False,
+            hash=True,
+            materialise=None,
+            from_listing=None,
+            size=None,
+            limit=None,
+            dry_run=False,
+            originals_only=False,
+            verbose=False,
         )
         base.update(kwargs)
         return argparse.Namespace(**base)
@@ -297,9 +306,7 @@ class TestCommandIntegration:
         assert digests["sha1"] == hashlib.sha1(b"a" * 100).hexdigest()
         assert rows["a.bin"].tags == ["corpus"]
 
-    def test_an_unreadable_file_does_not_lose_the_batch(
-        self, repo, tmp_path, monkeypatch, capsys
-    ):
+    def test_an_unreadable_file_does_not_lose_the_batch(self, repo, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(prod_pool, "get_file_pool_repository", lambda: repo)
         for name in ("a.bin", "bad.bin", "c.bin"):
             (tmp_path / name).write_bytes(b"x" * 10)

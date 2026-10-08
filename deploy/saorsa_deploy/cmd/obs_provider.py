@@ -38,8 +38,7 @@ def resolve_provider(args) -> str:
     provider = getattr(args, "provider", None) or "digitalocean"
     if provider not in OBS_PROVIDERS:
         raise ValueError(
-            f"Unknown provider '{provider}'. Choose one of: "
-            f"{', '.join(OBS_PROVIDERS)}."
+            f"Unknown provider '{provider}'. Choose one of: {', '.join(OBS_PROVIDERS)}."
         )
     return provider
 

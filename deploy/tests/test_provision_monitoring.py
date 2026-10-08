@@ -45,9 +45,7 @@ class TestInfluxdbStartOrdering:
                 captured.extend(op_adders)
 
         with patch.object(provisioner, "_run_session", side_effect=fake_run_session):
-            with patch.object(
-                provisioner, "_retrieve_telegraf_token", return_value="tok"
-            ):
+            with patch.object(provisioner, "_retrieve_telegraf_token", return_value="tok"):
                 provisioner.execute()
         return [a.__name__ for a in captured]
 
@@ -58,15 +56,11 @@ class TestInfluxdbStartOrdering:
         p = _make_provisioner(grafana_ip=None)
         names = self._adders(p)
         assert "_add_mount_ordering_op" in names
-        assert names.index("_add_mount_ordering_op") < names.index(
-            "_add_setup_influxdb_ops"
-        )
+        assert names.index("_add_mount_ordering_op") < names.index("_add_setup_influxdb_ops")
 
     def test_dropin_is_installed_after_the_volume_is_mounted(self):
         # RequiresMountsFor resolves against a real mount unit; installing it
         # before the volume exists would order against nothing.
         p = _make_provisioner(grafana_ip=None)
         names = self._adders(p)
-        assert names.index("_add_mount_volume_op") < names.index(
-            "_add_mount_ordering_op"
-        )
+        assert names.index("_add_mount_volume_op") < names.index("_add_mount_ordering_op")

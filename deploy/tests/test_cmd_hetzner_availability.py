@@ -79,9 +79,7 @@ class TestResolveRegions:
 
 class TestBuildAvailabilityTable:
     def test_row_per_type_and_column_per_region(self):
-        table = _build_availability_table(
-            SERVER_TYPES[:2], ["fsn1", "nbg1"], AVAILABILITY
-        )
+        table = _build_availability_table(SERVER_TYPES[:2], ["fsn1", "nbg1"], AVAILABILITY)
         # 6 metadata columns + 2 region columns
         assert len(table.columns) == 8
         assert [c.header for c in table.columns[:6]] == [

@@ -27,9 +27,7 @@ def _load_collector():
     It lives under `resources/scripts/` because it is shipped to hosts as a
     file rather than imported by the package, so it is not on the import path.
     """
-    spec = importlib.util.spec_from_file_location(
-        "node_memory_collector", _MODULE_PATH
-    )
+    spec = importlib.util.spec_from_file_location("node_memory_collector", _MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -120,9 +118,7 @@ class TestParseSystemctlShow:
 
     def test_final_record_without_trailing_blank_line_is_kept(self):
         output = "Id=ant-node-1.service\nMainPID=42\nActiveState=active"
-        assert collector.parse_systemctl_show(output) == [
-            ("ant-node-1.service", 42)
-        ]
+        assert collector.parse_systemctl_show(output) == [("ant-node-1.service", 42)]
 
 
 class TestParseProcFields:
@@ -133,9 +129,7 @@ class TestParseProcFields:
         unit varies between writes is rejected by InfluxDB for the life of the
         shard.
         """
-        values = collector.parse_proc_fields(
-            STATUS_TEXT, collector.STATUS_FIELDS
-        )
+        values = collector.parse_proc_fields(STATUS_TEXT, collector.STATUS_FIELDS)
         assert values["vm_rss"] == 416304 * 1024
         assert values["rss_anon"] == 389688 * 1024
         assert values["rss_file"] == 26616 * 1024
@@ -143,9 +137,7 @@ class TestParseProcFields:
         assert values["vm_swap"] == 0
 
     def test_status_ignores_unwanted_keys(self):
-        values = collector.parse_proc_fields(
-            STATUS_TEXT, collector.STATUS_FIELDS
-        )
+        values = collector.parse_proc_fields(STATUS_TEXT, collector.STATUS_FIELDS)
         assert set(values) == set(collector.STATUS_FIELDS.values())
         assert "VmSize" not in values
 
@@ -155,9 +147,7 @@ class TestParseProcFields:
         assert v["rss_anon"] + v["rss_file"] + v["rss_shmem"] == v["vm_rss"]
 
     def test_rollup_values_are_converted_to_bytes(self):
-        values = collector.parse_proc_fields(
-            ROLLUP_TEXT, collector.ROLLUP_FIELDS
-        )
+        values = collector.parse_proc_fields(ROLLUP_TEXT, collector.ROLLUP_FIELDS)
         assert values["rollup_rss"] == 416260 * 1024
         assert values["rollup_pss"] == 408915 * 1024
         assert values["rollup_private_dirty"] == 389688 * 1024
@@ -176,12 +166,9 @@ class TestParseProcFields:
         said.
         """
         without_pss_shmem = "\n".join(
-            line for line in ROLLUP_TEXT.splitlines()
-            if not line.startswith("Pss_Shmem")
+            line for line in ROLLUP_TEXT.splitlines() if not line.startswith("Pss_Shmem")
         )
-        values = collector.parse_proc_fields(
-            without_pss_shmem, collector.ROLLUP_FIELDS
-        )
+        values = collector.parse_proc_fields(without_pss_shmem, collector.ROLLUP_FIELDS)
         assert "rollup_pss_shmem" not in values
 
     def test_malformed_value_is_skipped(self):
@@ -202,16 +189,17 @@ class TestReadProc:
         PID 1 exists; a PID that cannot exist stands in for a process that
         exited between the systemctl call and the /proc read.
         """
-        assert collector.read_proc(
-            2**30, "status", collector.STATUS_FIELDS
-        ) is None
+        assert collector.read_proc(2**30, "status", collector.STATUS_FIELDS) is None
 
 
 class TestBuildLine:
     def test_shape_is_valid_line_protocol(self):
         line = collector.build_line(
-            "ant-node-3", 1234, {"vm_rss": 4096, "rss_anon": 2048},
-            1700000000000000000, {"host": "node-a"},
+            "ant-node-3",
+            1234,
+            {"vm_rss": 4096, "rss_anon": 2048},
+            1700000000000000000,
+            {"host": "node-a"},
         )
         assert line == (
             "ant_node_memory,host=node-a,node_service=ant-node-3 "
@@ -235,9 +223,7 @@ class TestBuildLine:
         assert "vm_rss=4096.0" not in line
 
     def test_fields_are_ordered_deterministically(self):
-        line = collector.build_line(
-            "n", 1, {"z_last": 1, "a_first": 2, "m_mid": 3}, 1
-        )
+        line = collector.build_line("n", 1, {"z_last": 1, "a_first": 2, "m_mid": 3}, 1)
         assert line.index("a_first") < line.index("m_mid") < line.index("z_last")
 
     @pytest.mark.parametrize(
@@ -257,11 +243,13 @@ class TestBuildLine:
 class TestCollect:
     def test_emits_one_line_per_readable_service(self, monkeypatch):
         monkeypatch.setattr(
-            collector, "list_units",
+            collector,
+            "list_units",
             lambda timeout: [("ant-node-1.service", 11), ("ant-node-2.service", 22)],
         )
         monkeypatch.setattr(
-            collector, "read_proc",
+            collector,
+            "read_proc",
             lambda pid, filename, wanted: {"vm_rss": pid * 1024},
         )
         lines = collector.collect("status", 10.0, now_ns=7).lines
@@ -271,7 +259,8 @@ class TestCollect:
     def test_unreadable_process_does_not_abort_the_scrape(self, monkeypatch):
         """One failed read must not cost the other services their metrics."""
         monkeypatch.setattr(
-            collector, "list_units",
+            collector,
+            "list_units",
             lambda timeout: [
                 ("ant-node-1.service", 11),
                 ("ant-node-2.service", 22),
@@ -279,22 +268,17 @@ class TestCollect:
             ],
         )
         monkeypatch.setattr(
-            collector, "read_proc",
-            lambda pid, filename, wanted: (
-                None if pid == 22 else {"vm_rss": 1}
-            ),
+            collector,
+            "read_proc",
+            lambda pid, filename, wanted: None if pid == 22 else {"vm_rss": 1},
         )
         lines = collector.collect("status", 10.0, now_ns=1).lines
         assert len(lines) == 2
         assert not any("ant-node-2" in line for line in lines)
 
     def test_process_with_no_readable_fields_emits_nothing(self, monkeypatch):
-        monkeypatch.setattr(
-            collector, "list_units", lambda timeout: [("ant-node-1.service", 11)]
-        )
-        monkeypatch.setattr(
-            collector, "read_proc", lambda pid, filename, wanted: {}
-        )
+        monkeypatch.setattr(collector, "list_units", lambda timeout: [("ant-node-1.service", 11)])
+        monkeypatch.setattr(collector, "read_proc", lambda pid, filename, wanted: {})
         assert collector.collect("status", 10.0, now_ns=1).lines == []
 
     def test_no_services_is_not_an_error(self, monkeypatch):
@@ -303,11 +287,13 @@ class TestCollect:
 
     def test_all_points_in_a_scrape_share_one_timestamp(self, monkeypatch):
         monkeypatch.setattr(
-            collector, "list_units",
+            collector,
+            "list_units",
             lambda timeout: [(f"ant-node-{i}.service", i) for i in range(1, 4)],
         )
         monkeypatch.setattr(
-            collector, "read_proc",
+            collector,
+            "read_proc",
             lambda pid, filename, wanted: {"vm_rss": 1},
         )
         lines = collector.collect("status", 10.0, now_ns=42).lines
@@ -321,13 +307,15 @@ class TestCollect:
         a scrape that stacks up behind its successor.
         """
         monkeypatch.setattr(
-            collector, "list_units",
+            collector,
+            "list_units",
             lambda timeout: [(f"ant-node-{i}.service", i) for i in range(1, 6)],
         )
         ticks = iter([0.0, 0.0, 1.0, 99.0, 99.0, 99.0, 99.0])
         monkeypatch.setattr(collector.time, "monotonic", lambda: next(ticks))
         monkeypatch.setattr(
-            collector, "read_proc",
+            collector,
+            "read_proc",
             lambda pid, filename, wanted: {"vm_rss": 1},
         )
         lines = collector.collect("status", 10.0, now_ns=1).lines
@@ -335,9 +323,7 @@ class TestCollect:
 
     def test_rollup_source_reads_smaps_rollup(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(
-            collector, "list_units", lambda timeout: [("ant-node-1.service", 11)]
-        )
+        monkeypatch.setattr(collector, "list_units", lambda timeout: [("ant-node-1.service", 11)])
 
         def fake_read(pid, filename, wanted):
             seen["filename"] = filename
@@ -362,12 +348,14 @@ class TestTotalFailureIsLoud:
 
     def _result(self, monkeypatch, *, units, readable):
         monkeypatch.setattr(
-            collector, "list_units",
+            collector,
+            "list_units",
             lambda timeout: [(f"ant-node-{i}.service", i) for i in range(units)],
         )
         monkeypatch.setattr(
-            collector, "read_proc",
-            lambda pid, filename, wanted: ({"vm_rss": 1} if readable else None),
+            collector,
+            "read_proc",
+            lambda pid, filename, wanted: {"vm_rss": 1} if readable else None,
         )
         return collector.collect("rollup", 10.0, now_ns=1)
 
@@ -389,23 +377,21 @@ class TestTotalFailureIsLoud:
     def test_partial_failure_is_not_a_total_failure(self, monkeypatch):
         """One service exiting mid-scrape must stay quiet."""
         monkeypatch.setattr(
-            collector, "list_units",
+            collector,
+            "list_units",
             lambda timeout: [("ant-node-1.service", 1), ("ant-node-2.service", 2)],
         )
         monkeypatch.setattr(
-            collector, "read_proc",
-            lambda pid, filename, wanted: (None if pid == 2 else {"vm_rss": 1}),
+            collector,
+            "read_proc",
+            lambda pid, filename, wanted: None if pid == 2 else {"vm_rss": 1},
         )
         result = collector.collect("rollup", 10.0, now_ns=1)
         assert not result.total_failure
 
     def test_main_exits_non_zero_and_explains(self, monkeypatch, capsys):
-        monkeypatch.setattr(
-            collector, "list_units", lambda timeout: [("ant-node-1.service", 1)]
-        )
-        monkeypatch.setattr(
-            collector, "read_proc", lambda pid, filename, wanted: None
-        )
+        monkeypatch.setattr(collector, "list_units", lambda timeout: [("ant-node-1.service", 1)])
+        monkeypatch.setattr(collector, "read_proc", lambda pid, filename, wanted: None)
         code = collector.main(["--source", "rollup"])
         captured = capsys.readouterr()
         assert code == 1
@@ -476,25 +462,24 @@ class TestGlobalTags:
 
     def test_tags_reach_every_emitted_line(self, monkeypatch):
         monkeypatch.setattr(
-            collector, "list_units",
+            collector,
+            "list_units",
             lambda timeout: [("ant-node-1.service", 11), ("ant-node-2.service", 22)],
         )
-        monkeypatch.setattr(
-            collector, "read_proc", lambda pid, filename, wanted: {"vm_rss": 1}
-        )
-        lines = collector.collect(
-            "status", 10.0, now_ns=1, tags={"host": "node-a"}
-        ).lines
+        monkeypatch.setattr(collector, "read_proc", lambda pid, filename, wanted: {"vm_rss": 1})
+        lines = collector.collect("status", 10.0, now_ns=1, tags={"host": "node-a"}).lines
         assert len(lines) == 2
         assert all("host=node-a," in line for line in lines)
 
     def test_tag_order_is_deterministic(self):
         line = collector.build_line(
-            "svc", 1, {"vm_rss": 1}, 1,
+            "svc",
+            1,
+            {"vm_rss": 1},
+            1,
             {"host": "h", "testnet_name": "t", "host_role": "WAN_NODE"},
         )
         tag_text = line.split(" ")[0]
         assert tag_text == (
-            "ant_node_memory,host=h,host_role=WAN_NODE,"
-            "node_service=svc,testnet_name=t"
+            "ant_node_memory,host=h,host_role=WAN_NODE,node_service=svc,testnet_name=t"
         )

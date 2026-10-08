@@ -27,10 +27,7 @@ def cmd_clean_clients(args):
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
 
-        console.print(
-            f"[bold]Cleaning {len(all_ips)} host(s) from "
-            f"{args.host_ips_file}...[/bold]"
-        )
+        console.print(f"[bold]Cleaning {len(all_ips)} host(s) from {args.host_ips_file}...[/bold]")
         clear_known_hosts(all_ips, console)
         try:
             ClientCleanProvisioner(
@@ -44,9 +41,7 @@ def cmd_clean_clients(args):
             sys.exit(1)
 
     elif args.name:
-        console.print(
-            f"[bold]Loading client state for '{args.name}'...[/bold]"
-        )
+        console.print(f"[bold]Loading client state for '{args.name}'...[/bold]")
         try:
             client_state = load_client_state(args.name)
         except RuntimeError as e:
@@ -57,10 +52,7 @@ def cmd_clean_clients(args):
         all_ips = [c["ip"] for c in clients if c.get("ip")]
 
         if not all_ips:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                "No client IPs found in client state."
-            )
+            console.print("[bold red]Error:[/bold red] No client IPs found in client state.")
             sys.exit(1)
 
         console.print(
@@ -80,12 +72,9 @@ def cmd_clean_clients(args):
             sys.exit(1)
     else:
         console.print(
-            "[bold red]Error:[/bold red] "
-            "Either --name or --host-ips-file must be provided."
+            "[bold red]Error:[/bold red] Either --name or --host-ips-file must be provided."
         )
         sys.exit(1)
 
     console.print()
-    console.print(
-        "[bold green]Client cleanup finished.[/bold green]"
-    )
+    console.print("[bold green]Client cleanup finished.[/bold green]")

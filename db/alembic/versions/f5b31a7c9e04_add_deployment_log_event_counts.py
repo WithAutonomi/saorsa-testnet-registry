@@ -19,6 +19,7 @@ Revises: c3e691d47b82
 Create Date: 2026-08-11 20:40:00.000000
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op

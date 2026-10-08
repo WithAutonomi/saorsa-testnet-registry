@@ -17,6 +17,7 @@ Renderer behaviour (``--summary`` / ``--recent`` / ``--details``) varies
 per kind; flags that don't apply to the resolved kind are silently
 ignored.
 """
+
 import sys
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -92,8 +93,7 @@ def _dispatch(args, op_type: str) -> None:
     if kind in ("prod-continuous-downloader", "prod-downloaders"):
         if op_type == "upload":
             console.print(
-                f"[yellow]'{args.name}' is a {kind} deployment and has no "
-                f"upload records.[/yellow]"
+                f"[yellow]'{args.name}' is a {kind} deployment and has no upload records.[/yellow]"
             )
             return
         _run_file_ops(args, op_type, console)
@@ -158,9 +158,7 @@ def _resolve_influx(args, console: Console):
         influx_url = influx_url or state.get("influxdb_url")
         influx_token = influx_token or state.get("influxdb_token")
         influx_org = influx_org or state.get("influxdb_org") or "ant"
-        influx_bucket = (
-            influx_bucket or state.get("influxdb_bucket") or "testnet-metrics"
-        )
+        influx_bucket = influx_bucket or state.get("influxdb_bucket") or "testnet-metrics"
 
     if not (influx_url and influx_token):
         console.print(
@@ -191,10 +189,7 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
     buckets = influx_bucket
     if influx_bucket != INFLUXDB_WASM_BUCKET:
         buckets = f"{influx_bucket} + {INFLUXDB_WASM_BUCKET}"
-    console.print(
-        f"[bold]Querying {influx_url} "
-        f"(bucket={buckets}, window={args.window})...[/bold]"
-    )
+    console.print(f"[bold]Querying {influx_url} (bucket={buckets}, window={args.window})...[/bold]")
     try:
         # Both buckets: WASM clients write the same upload/download
         # measurements to a bucket of their own, so querying only the native
@@ -228,16 +223,12 @@ def _run_file_ops(args, op_type: str, console: Console) -> None:
         _print_summary(op_type, by_host, console)
         return
 
-    payment_by_host = (
-        _build_payment_map(args.name) if op_type == "upload" else {}
-    )
+    payment_by_host = _build_payment_map(args.name) if op_type == "upload" else {}
     cache_by_host = _build_bootstrap_cache_map(args.name)
     transport_by_host = _build_transport_map(args.name)
 
     for host in sorted(by_host.keys()):
-        ops = sorted(
-            by_host[host], key=lambda p: p.get("start_ns") or 0
-        )
+        ops = sorted(by_host[host], key=lambda p: p.get("start_ns") or 0)
         total = len(ops)
         skew_label = _clock_skew_label(ops)
         if args.recent:
@@ -340,9 +331,7 @@ def _print_transport_totals(
             extra += f", {skipped} skipped (over-cap)"
         if crashes:
             extra += f", {crashes} crashed"
-        console.print(
-            f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}{extra}"
-        )
+        console.print(f"  [{colour}]{tier:<7}[/{colour}] {ok}/{total} = {rate}{extra}")
 
 
 def _build_payment_map(name: str) -> dict[str, str]:
@@ -361,9 +350,7 @@ def _build_payment_map(name: str) -> dict[str, str]:
     for c in state.get("clients", []):
         if c.get("role") != "upload":
             continue
-        host = (
-            f"{name}-ant-client-{c['role']}-{c['region']}-{c['client_index']}"
-        )
+        host = f"{name}-ant-client-{c['role']}-{c['region']}-{c['client_index']}"
         out[host] = c.get("payment_type") or "default"
     return out
 
@@ -387,9 +374,7 @@ def _build_transport_map(name: str) -> dict[str, str]:
         if repo is not None:
             deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
             if deployment is not None:
-                scoped = deployment_scoped_transport(
-                    getattr(deployment, "deploy_args", None)
-                )
+                scoped = deployment_scoped_transport(getattr(deployment, "deploy_args", None))
                 if scoped is not None:
                     # One transport for the whole deployment; every host it wrote
                     # points from ran it.
@@ -436,10 +421,7 @@ def _build_bootstrap_cache_map(name: str) -> dict[str, bool]:
     for c in state.get("clients", []):
         if c.get("bootstrap_cache") is None:
             continue
-        host = (
-            f"{name}-ant-client-{c.get('role', 'upload')}-"
-            f"{c['region']}-{c['client_index']}"
-        )
+        host = f"{name}-ant-client-{c.get('role', 'upload')}-{c['region']}-{c['client_index']}"
         out[host] = bool(c["bootstrap_cache"])
     return out
 
@@ -461,9 +443,7 @@ def _build_prod_payment_map(name: str) -> dict[str, str]:
     if deployment is None:
         return {}
     deploy_args = deployment.deploy_args or {}
-    uploader_specs = (
-        deploy_args.get("uploaders") if isinstance(deploy_args, dict) else None
-    )
+    uploader_specs = deploy_args.get("uploaders") if isinstance(deploy_args, dict) else None
     if not uploader_specs:
         return {}
 
@@ -472,10 +452,7 @@ def _build_prod_payment_map(name: str) -> dict[str, str]:
     except RuntimeError:
         return {}
     upload_clients = sorted(
-        (
-            c for c in state.get("clients", [])
-            if c.get("role", "upload") == "upload"
-        ),
+        (c for c in state.get("clients", []) if c.get("role", "upload") == "upload"),
         key=lambda c: c.get("client_index") or 0,
     )
     if len(upload_clients) != len(uploader_specs):
@@ -483,9 +460,7 @@ def _build_prod_payment_map(name: str) -> dict[str, str]:
 
     out: dict[str, str] = {}
     for spec, client in zip(uploader_specs, upload_clients):
-        host = (
-            f"{name}-ant-client-upload-{client['region']}-{client['client_index']}"
-        )
+        host = f"{name}-ant-client-upload-{client['region']}-{client['client_index']}"
         out[host] = spec.get("payment_type") or "default"
     return out
 
@@ -509,9 +484,7 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
 
     starts = [o["start_ns"] for o in ops if o.get("start_ns") is not None]
     if starts:
-        started_at = datetime.fromtimestamp(
-            min(starts) / 1_000_000_000, tz=timezone.utc
-        )
+        started_at = datetime.fromtimestamp(min(starts) / 1_000_000_000, tz=timezone.utc)
         elapsed_s = (now - started_at).total_seconds()
     else:
         started_at = None
@@ -527,13 +500,9 @@ def _summarise_host(ops: list[dict], op_type: str, now=None) -> dict:
     crashes = sum(1 for o in ops if o.get("error_kind") == "crash")
 
     success_durations = [
-        o["total_ms"] for o in ops
-        if o.get("status") == 0 and o.get("total_ms") is not None
+        o["total_ms"] for o in ops if o.get("status") == 0 and o.get("total_ms") is not None
     ]
-    overall_avg_ms = (
-        sum(success_durations) / len(success_durations)
-        if success_durations else None
-    )
+    overall_avg_ms = sum(success_durations) / len(success_durations) if success_durations else None
 
     return {
         "started_at": started_at,
@@ -551,15 +520,10 @@ def _print_summary(op_type: str, by_host: dict, console: Console) -> None:
     label = op_type.capitalize() + "s"
 
     all_starts = [
-        o["start_ns"]
-        for ops in by_host.values()
-        for o in ops
-        if o.get("start_ns") is not None
+        o["start_ns"] for ops in by_host.values() for o in ops if o.get("start_ns") is not None
     ]
     if all_starts:
-        started_at = datetime.fromtimestamp(
-            min(all_starts) / 1_000_000_000, tz=timezone.utc
-        )
+        started_at = datetime.fromtimestamp(min(all_starts) / 1_000_000_000, tz=timezone.utc)
         elapsed_s = (datetime.now(timezone.utc) - started_at).total_seconds()
     else:
         started_at = None
@@ -631,9 +595,7 @@ def _run_prod_uploads(args, console: Console) -> None:
         return
     influx_url, influx_token, influx_org, influx_bucket = creds
 
-    console.print(
-        f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]"
-    )
+    console.print(f"[bold]Querying {influx_url} (bucket={influx_bucket})...[/bold]")
     # Both buckets: a browser-path uploader writes the same `prod_upload`
     # measurement into its own, so a single-bucket read would make a WASM tier
     # that failed every upload look like one that was never configured.
@@ -645,9 +607,7 @@ def _run_prod_uploads(args, console: Console) -> None:
         wasm_bucket=INFLUXDB_WASM_BUCKET,
     )
     if not points:
-        console.print(
-            f"[yellow]No prod_upload records yet for '{args.name}'.[/yellow]"
-        )
+        console.print(f"[yellow]No prod_upload records yet for '{args.name}'.[/yellow]")
         return
 
     by_host: dict[str, list[dict]] = {}
@@ -659,13 +619,9 @@ def _run_prod_uploads(args, console: Console) -> None:
     transport_by_host = _build_prod_upload_transport_map(args.name)
 
     if getattr(args, "details", False):
-        _prod_print_details(
-            by_host, payment_by_host, cache_by_host, transport_by_host, console
-        )
+        _prod_print_details(by_host, payment_by_host, cache_by_host, transport_by_host, console)
     else:
-        _prod_print_table(
-            by_host, payment_by_host, cache_by_host, transport_by_host, console
-        )
+        _prod_print_table(by_host, payment_by_host, cache_by_host, transport_by_host, console)
     _prod_print_transport_totals(by_host, transport_by_host, console)
 
 
@@ -732,9 +688,7 @@ def _prod_print_transport_totals(
         rate = f"{100.0 * ok / total:.2f}%" if total else "n/a"
         colour = "green" if transport == "native" else "cyan"
         extra = f", {over_cap} over-cap (not uploaded)" if over_cap else ""
-        console.print(
-            f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = {rate}{extra}"
-        )
+        console.print(f"  [{colour}]{transport:<7}[/{colour}] {ok}/{total} = {rate}{extra}")
 
 
 def _bootstrap_cache_segment(cache_by_host: dict[str, bool], host: str) -> str:
@@ -822,9 +776,7 @@ def _prod_print_details(
             console.print(f"  File:              {op.get('file_name') or '-'}")
             console.print(f"  Source URL:        {op.get('source_url') or '-'}")
             console.print(f"  Size (bytes):      {op.get('file_size') or 0}")
-            console.print(
-                f"  Status:            {_PROD_STATUS_TEXT.get(op.get('status'), '-')}"
-            )
+            console.print(f"  Status:            {_PROD_STATUS_TEXT.get(op.get('status'), '-')}")
             console.print(
                 f"  Chunks uploaded:   {op.get('chunks_stored') or 0} / "
                 f"{op.get('total_chunks') or 0}"
@@ -859,8 +811,8 @@ def _fmt_elapsed(seconds) -> str:
 def _fmt_size(num_bytes) -> str:
     if num_bytes is None:
         return "-"
-    gb = num_bytes / (1024 ** 3)
-    mb = num_bytes / (1024 ** 2)
+    gb = num_bytes / (1024**3)
+    mb = num_bytes / (1024**2)
     kb = num_bytes / 1024
     if gb >= 1:
         return f"{gb:.2f} GB"

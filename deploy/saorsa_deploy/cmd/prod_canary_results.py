@@ -7,6 +7,7 @@ Two entry points:
   with the global two-strike rule. Idempotent + cron-safe.
 * :func:`print_prod_canary_status` — read-only summary from Postgres.
 """
+
 from __future__ import annotations
 
 import json
@@ -128,8 +129,7 @@ def derive_loss(
                 first_failed_at = p.probed_at
                 first_failed_chunk = missing
             if confirmed and (
-                best is None
-                or confirmed["confirmed_lost_at"] < best["confirmed_lost_at"]
+                best is None or confirmed["confirmed_lost_at"] < best["confirmed_lost_at"]
             ):
                 best = confirmed
 
@@ -154,9 +154,7 @@ def derive_loss(
     return losses
 
 
-def derive_unavailability_episodes(
-    uploaded_at, probes: list
-) -> list[dict]:
+def derive_unavailability_episodes(uploaded_at, probes: list) -> list[dict]:
     """Walk a single canary's probe stream and return its unavailability
     *episodes* (windows). Each episode is a maximal run during which the chunk
     was confirmed unreachable (two consecutive same-chunk failures) and then
@@ -238,21 +236,29 @@ def record_prod_canary_results(
     influx_bucket: str,
 ) -> list[dict] | None:
     console.print(
-        f"[bold]Querying canary measurements from {influx_url} "
-        f"(bucket={influx_bucket})...[/bold]"
+        f"[bold]Querying canary measurements from {influx_url} (bucket={influx_bucket})...[/bold]"
     )
     try:
         upload_points = fetch_canary_upload_points(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=influx_bucket, deployment_name=args.name,
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            deployment_name=args.name,
         )
         chunk_points = fetch_canary_chunk_points(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=influx_bucket, deployment_name=args.name,
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            deployment_name=args.name,
         )
         probe_points = fetch_canary_probe_points(
-            url=influx_url, token=influx_token, org=influx_org,
-            bucket=influx_bucket, deployment_name=args.name,
+            url=influx_url,
+            token=influx_token,
+            org=influx_org,
+            bucket=influx_bucket,
+            deployment_name=args.name,
         )
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
@@ -266,8 +272,7 @@ def record_prod_canary_results(
         return None
 
     console.print(
-        f"  uploads={len(upload_points)} chunks={len(chunk_points)} "
-        f"probes={len(probe_points)}"
+        f"  uploads={len(upload_points)} chunks={len(chunk_points)} probes={len(probe_points)}"
     )
 
     def _to_decimal(v):
@@ -348,8 +353,7 @@ def record_prod_canary_results(
 
     losses = derive_loss(uploads_map, probes_by_canary)
     existing_loss = {
-        loss.canary_id: loss
-        for loss in repo.list_prod_canary_loss_for_deployment(deployment.id)
+        loss.canary_id: loss for loss in repo.list_prod_canary_loss_for_deployment(deployment.id)
     }
     for cid, loss in losses.items():
         repo.upsert_prod_canary_loss(
@@ -373,33 +377,30 @@ def record_prod_canary_results(
     episode_total = 0
     ongoing_total = 0
     for cid in uploads_map:
-        episodes = derive_unavailability_episodes(
-            uploads_map[cid], probes_by_canary.get(cid, [])
-        )
+        episodes = derive_unavailability_episodes(uploads_map[cid], probes_by_canary.get(cid, []))
         repo.replace_prod_canary_unavailability(cid, episodes)
         episode_total += len(episodes)
         ongoing_total += sum(1 for e in episodes if not e["recovered"])
 
-    table = Table(
-        title=f"Canary results recorded for '{args.name}' (id={deployment.id})"
-    )
+    table = Table(title=f"Canary results recorded for '{args.name}' (id={deployment.id})")
     table.add_column("Uploads", justify="right")
     table.add_column("Chunks", justify="right")
     table.add_column("Probes", justify="right")
     table.add_column("Unavail. episodes", justify="right")
     table.add_column("Ongoing now", justify="right")
     table.add_row(
-        str(upload_count), str(chunk_count), str(probe_count),
-        str(episode_total), str(ongoing_total),
+        str(upload_count),
+        str(chunk_count),
+        str(probe_count),
+        str(episode_total),
+        str(ongoing_total),
     )
     console.print(table)
 
     # Build the Slack results summary (alive/pending/confirmed + histogram),
     # mirroring print_prod_canary_status. Returned for an optional threaded
     # reply when record-results was invoked with --update-slack.
-    alive, pending = _alive_pending_counts(
-        db_uploads, probes_by_canary, set(losses.keys())
-    )
+    alive, pending = _alive_pending_counts(db_uploads, probes_by_canary, set(losses.keys()))
     histogram = _hours_to_loss_histogram(losses.values())
     from saorsa_deploy.slack_results import canary_result_blocks
 
@@ -476,13 +477,12 @@ _BUCKETS = [
 
 def print_prod_canary_status(repo, deployment, args, console: Console) -> None:  # noqa: ARG001
     name = deployment.name
-    uploads: list[DeploymentProdCanaryUpload] = (
-        repo.list_prod_canary_uploads_for_deployment(deployment.id)
+    uploads: list[DeploymentProdCanaryUpload] = repo.list_prod_canary_uploads_for_deployment(
+        deployment.id
     )
     if not uploads:
         console.print(
-            f"[yellow]No canary uploads recorded for '{name}'. "
-            "Run record-results first.[/yellow]"
+            f"[yellow]No canary uploads recorded for '{name}'. Run record-results first.[/yellow]"
         )
         return
 
@@ -520,9 +520,7 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
         else:
             alive += 1
 
-    summary = Table(
-        title=f"Canary status for '{name}' (id={deployment.id})"
-    )
+    summary = Table(title=f"Canary status for '{name}' (id={deployment.id})")
     summary.add_column("Total uploads", justify="right")
     summary.add_column("Alive", justify="right")
     summary.add_column("Pending failure", justify="right")
@@ -540,12 +538,8 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
     # silently aggregating zero.
     cost_rows = [u for u in uploads if u.storage_cost_atto is not None]
     if cost_rows:
-        total_ant_atto = sum(
-            (u.storage_cost_atto or Decimal(0)) for u in cost_rows
-        )
-        total_gas_wei = sum(
-            (u.gas_cost_wei or Decimal(0)) for u in cost_rows
-        )
+        total_ant_atto = sum((u.storage_cost_atto or Decimal(0)) for u in cost_rows)
+        total_gas_wei = sum((u.gas_cost_wei or Decimal(0)) for u in cost_rows)
         # atto = 10^-18; mainnet ANT and ETH both use 18 decimals.
         ant_total = total_ant_atto / Decimal(10) ** 18
         eth_total = total_gas_wei / Decimal(10) ** 18
@@ -623,9 +617,7 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
             # we don't have a chunk row recorded (older runs may only have
             # the data_map chunk recorded).
             addr = loss.missing_chunk_address
-            upload = next(
-                (u for u in uploads if u.canary_id == loss.canary_id), None
-            )
+            upload = next((u for u in uploads if u.canary_id == loss.canary_id), None)
             if upload and addr == upload.top_address:
                 role_counts["data_map"] += 1
             else:
@@ -638,9 +630,7 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
                 roles_table.add_row(role, str(role_counts[role]))
             console.print(roles_table)
     else:
-        console.print(
-            "[dim]No confirmed losses yet — keep probing.[/dim]"
-        )
+        console.print("[dim]No confirmed losses yet — keep probing.[/dim]")
 
     # Unavailability windows — the richer view: chunks go unreachable then
     # mostly recover, so report episode counts + how long they stayed down,
@@ -665,10 +655,7 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
         console.print(ep_summary)
 
         if recovered:
-            durs = sorted(
-                e.unavailable_hours for e in recovered
-                if e.unavailable_hours is not None
-            )
+            durs = sorted(e.unavailable_hours for e in recovered if e.unavailable_hours is not None)
             if durs:
                 n = len(durs)
                 median = durs[n // 2]
@@ -679,8 +666,11 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
                     f"max {durs[-1]:.1f}h (n={n}).[/dim]"
                 )
             dur_buckets = [
-                ("<6h", 0, 6), ("6-24h", 6, 24), ("1-3d", 24, 72),
-                ("3-7d", 72, 168), (">7d", 168, float("inf")),
+                ("<6h", 0, 6),
+                ("6-24h", 6, 24),
+                ("1-3d", 24, 72),
+                ("3-7d", 72, 168),
+                (">7d", 168, float("inf")),
             ]
             counts = {lbl: 0 for lbl, *_ in dur_buckets}
             for e in recovered:
@@ -711,8 +701,7 @@ def print_prod_canary_status(repo, deployment, args, console: Console) -> None: 
             console.print(ot)
     else:
         console.print(
-            "[dim]No unavailability episodes recorded — nothing has gone "
-            "unreachable.[/dim]"
+            "[dim]No unavailability episodes recorded — nothing has gone unreachable.[/dim]"
         )
 
     # Quick-look: when did the first / last upload land?

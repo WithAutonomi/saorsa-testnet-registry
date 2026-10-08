@@ -89,9 +89,7 @@ class TestRecordStep:
 
     def test_records_best_effort_failure_status(self):
         journal = step_journal.new_journal("DEV-01", "testnet")
-        step_journal.record_step(
-            journal, _plan()[0], step_journal.STATUS_BEST_EFFORT_FAILED
-        )
+        step_journal.record_step(journal, _plan()[0], step_journal.STATUS_BEST_EFFORT_FAILED)
         assert journal["steps"][0]["status"] == step_journal.STATUS_BEST_EFFORT_FAILED
 
 
@@ -161,9 +159,7 @@ class TestRendering:
         journal = _journal_with(plan, 2)
         journal["steps"][1]["argv"] = ["bootstraps", "infra", "--name", "OTHER"]
         match = step_journal.match_journal(journal, "testnet", plan)
-        text = "\n".join(
-            step_journal.render_divergence(journal, "testnet", plan, match)
-        )
+        text = "\n".join(step_journal.render_divergence(journal, "testnet", plan, match))
         assert "step 2" in text
         assert "--name OTHER" in text
         assert "--name DEV-01" in text
@@ -172,9 +168,7 @@ class TestRendering:
         plan = _plan()
         journal = _journal_with(plan, 1)
         match = step_journal.match_journal(journal, "testnet-extension", plan)
-        text = "\n".join(
-            step_journal.render_divergence(journal, "testnet-extension", plan, match)
-        )
+        text = "\n".join(step_journal.render_divergence(journal, "testnet-extension", plan, match))
         assert "testnet-extension" in text
         assert "'testnet'" in text
 
@@ -182,9 +176,7 @@ class TestRendering:
         plan = _plan()
         journal = _journal_with(plan, 3)
         match = step_journal.match_journal(journal, "testnet", plan[:2])
-        text = "\n".join(
-            step_journal.render_divergence(journal, "testnet", plan[:2], match)
-        )
+        text = "\n".join(step_journal.render_divergence(journal, "testnet", plan[:2], match))
         assert "3 completed step(s)" in text
         assert "2 step(s)" in text
 
@@ -287,8 +279,6 @@ class TestParallelGroupJournal:
         _record_units(journal, plan, 2)
         journal["steps"][1]["argvs"][0][1] = ["nodes", "infra", "--name", "OTHER"]
         match = step_journal.match_journal(journal, "testnet", plan)
-        text = "\n".join(
-            step_journal.render_divergence(journal, "testnet", plan, match)
-        )
+        text = "\n".join(step_journal.render_divergence(journal, "testnet", plan, match))
         assert "--name OTHER" in text  # journal side
         assert "--name DEV-01" in text  # plan side

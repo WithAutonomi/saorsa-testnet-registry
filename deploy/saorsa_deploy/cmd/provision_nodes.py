@@ -56,9 +56,7 @@ def cmd_provision_nodes(args):
         # Backwards compat: old state format with single bootstrap_ip
         bootstrap_ip = state.get("bootstrap_ip")
         if not bootstrap_ip:
-            console.print(
-                "[bold red]Error:[/bold red] No bootstrap IP found in deployment state."
-            )
+            console.print("[bold red]Error:[/bold red] No bootstrap IP found in deployment state.")
             sys.exit(1)
         bootstrap_peers = [f"{bootstrap_ip}:{bootstrap_port}"]
 
@@ -88,9 +86,7 @@ def cmd_provision_nodes(args):
 
     root_disk_ips = _resolve_root_disk_ips(vm_ips, all_ips)
     if root_disk_ips:
-        console.print(
-            f"  Root-disk storage (no volume): {len(root_disk_ips)} OVH 3-AZ VM(s)"
-        )
+        console.print(f"  Root-disk storage (no volume): {len(root_disk_ips)} OVH 3-AZ VM(s)")
 
     console.print(f"  Bootstrap peers: {', '.join(bootstrap_peers)}")
     console.print(f"  Node count per VM: {args.node_count}")
@@ -257,8 +253,7 @@ def _resolve_nat_ips(args, state, vm_ips_by_region, console) -> set[str]:
                 )
         if new_list:
             console.print(
-                f"  NAT VMs: {len(new_list)} selected at {nat_percent}% "
-                "(persisted to state)"
+                f"  NAT VMs: {len(new_list)} selected at {nat_percent}% (persisted to state)"
             )
         return set(new_list)
 
@@ -291,9 +286,7 @@ def _resolve_full_ips(args, state, vm_ips_by_region, nat_ips, console) -> set[st
 
     if existing is None or force_reselect:
         new_list = (
-            select_full_ips(
-                vm_ips_by_region, full_percent, exclude=nat_ips, seed=args.name
-            )
+            select_full_ips(vm_ips_by_region, full_percent, exclude=nat_ips, seed=args.name)
             if full_percent > 0
             else []
         )

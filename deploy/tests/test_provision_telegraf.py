@@ -348,6 +348,7 @@ class TestTelegrafProvisionerInit:
 
     def test_ant_log_dir_defaults_to_production(self):
         from saorsa_deploy.provisioning.volume import LOG_DIR
+
         p = _make_provisioner()
         assert p.ant_log_dir == LOG_DIR
 
@@ -641,12 +642,16 @@ class TestReadInventory:
         from saorsa_deploy.cmd.provision_telegraf import read_inventory
 
         inv = tmp_path / "inventory.json"
-        inv.write_text(json.dumps({
-            "node_vms": [
-                {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"},
-                {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"},
-            ]
-        }))
+        inv.write_text(
+            json.dumps(
+                {
+                    "node_vms": [
+                        {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/key"},
+                        {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id_rsa"},
+                    ]
+                }
+            )
+        )
         entries = read_inventory(str(inv))
         assert len(entries) == 2
         assert entries[0] == {
@@ -680,25 +685,29 @@ class TestReadInventory:
         from saorsa_deploy.cmd.provision_telegraf import read_inventory
 
         inv = tmp_path / "inventory.json"
-        inv.write_text(json.dumps({
-            "bootstrap_vms": [
+        inv.write_text(
+            json.dumps(
                 {
-                    "name": "t-bs-1",
-                    "ip": "10.0.0.100",
-                    "bootstrap_index": 1,
-                    "ssh_user": "root",
-                    "ssh_key": "~/.ssh/id_rsa",
-                },
-                {
-                    "name": "t-bs-2",
-                    "ip": "10.0.0.101",
-                    "bootstrap_index": 2,
-                    "ssh_user": "root",
-                    "ssh_key": "~/.ssh/id_rsa",
-                },
-            ],
-            "node_vms": [],
-        }))
+                    "bootstrap_vms": [
+                        {
+                            "name": "t-bs-1",
+                            "ip": "10.0.0.100",
+                            "bootstrap_index": 1,
+                            "ssh_user": "root",
+                            "ssh_key": "~/.ssh/id_rsa",
+                        },
+                        {
+                            "name": "t-bs-2",
+                            "ip": "10.0.0.101",
+                            "bootstrap_index": 2,
+                            "ssh_user": "root",
+                            "ssh_key": "~/.ssh/id_rsa",
+                        },
+                    ],
+                    "node_vms": [],
+                }
+            )
+        )
         entries = read_inventory(str(inv))
         assert [(e["ip"], e["role"], e["name"]) for e in entries] == [
             ("10.0.0.100", "GENESIS", "t-bs-1"),
@@ -711,16 +720,20 @@ class TestReadInventory:
         from saorsa_deploy.cmd.provision_telegraf import read_inventory
 
         inv = tmp_path / "inventory.json"
-        inv.write_text(json.dumps({
-            "bootstrap_vms": [
-                {"ip": "10.0.0.100", "bootstrap_index": 1},
-                {"ip": "10.0.0.101", "bootstrap_index": 2},
-            ],
-            "node_vms": [
-                {"ip": "10.0.1.1"},
-                {"ip": "10.0.1.2"},
-            ],
-        }))
+        inv.write_text(
+            json.dumps(
+                {
+                    "bootstrap_vms": [
+                        {"ip": "10.0.0.100", "bootstrap_index": 1},
+                        {"ip": "10.0.0.101", "bootstrap_index": 2},
+                    ],
+                    "node_vms": [
+                        {"ip": "10.0.1.1"},
+                        {"ip": "10.0.1.2"},
+                    ],
+                }
+            )
+        )
         entries = read_inventory(str(inv))
         assert [e["role"] for e in entries] == [
             "GENESIS",
@@ -886,9 +899,7 @@ class TestInfluxTrafficOutput:
 
     def test_env_file_gains_the_four_influx_vars(self):
         prov = _make_provisioner(**self._INFLUX)
-        env = dict(
-            line.split("=", 1) for line in prov._build_env_file().splitlines()
-        )
+        env = dict(line.split("=", 1) for line in prov._build_env_file().splitlines())
         assert env["INFLUXDB_URL"] == "http://mon:8086"
         assert env["INFLUXDB_TOKEN"] == "s3cr3t-influx-token"
         assert env["INFLUXDB_ORG"] == "ant"

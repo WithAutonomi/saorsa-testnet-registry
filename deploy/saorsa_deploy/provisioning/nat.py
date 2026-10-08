@@ -21,9 +21,7 @@ NAT_SUBNET = "10.200.0.0/24"
 NAT_IP_EXEC_PREFIX = f"/usr/sbin/ip netns exec {NAT_NAMESPACE} "
 
 
-def select_nat_ips(
-    vm_ips_by_region: dict[str, list[str]], percent: int
-) -> list[str]:
+def select_nat_ips(vm_ips_by_region: dict[str, list[str]], percent: int) -> list[str]:
     """Select which VM IPs should be NAT-simulated.
 
     Strategy: "one per region first, then round-robin". Regions are sorted by

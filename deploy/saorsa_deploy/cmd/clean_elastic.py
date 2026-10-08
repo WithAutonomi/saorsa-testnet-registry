@@ -35,8 +35,7 @@ def cmd_clean_elastic(args):
 
         all_ips = [e["ip"] for e in entries]
         console.print(
-            f"[bold]Cleaning {len(entries)} VM(s) from inventory "
-            f"{args.inventory_path}...[/bold]"
+            f"[bold]Cleaning {len(entries)} VM(s) from inventory {args.inventory_path}...[/bold]"
         )
 
         groups = group_by_credentials(entries)
@@ -44,10 +43,7 @@ def cmd_clean_elastic(args):
 
         failed_any = False
         for (ssh_user, ssh_key), ips in groups.items():
-            console.print(
-                f"[bold]Cleaning {len(ips)} host(s) "
-                f"(ssh_user={ssh_user})...[/bold]"
-            )
+            console.print(f"[bold]Cleaning {len(ips)} host(s) (ssh_user={ssh_user})...[/bold]")
             try:
                 TelegrafCleanProvisioner(
                     host_ips=ips,
@@ -57,8 +53,7 @@ def cmd_clean_elastic(args):
                 ).execute()
             except Exception as e:
                 console.print(
-                    f"[bold red]Cleanup failed for group "
-                    f"(ssh_user={ssh_user}):[/bold red] {e}"
+                    f"[bold red]Cleanup failed for group (ssh_user={ssh_user}):[/bold red] {e}"
                 )
                 failed_any = True
         if failed_any:
@@ -71,10 +66,7 @@ def cmd_clean_elastic(args):
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
 
-        console.print(
-            f"[bold]Cleaning {len(all_ips)} host(s) from "
-            f"{args.host_ips_file}...[/bold]"
-        )
+        console.print(f"[bold]Cleaning {len(all_ips)} host(s) from {args.host_ips_file}...[/bold]")
         clear_known_hosts(all_ips, console)
         try:
             TelegrafCleanProvisioner(
@@ -88,9 +80,7 @@ def cmd_clean_elastic(args):
             sys.exit(1)
 
     elif args.name:
-        console.print(
-            f"[bold]Loading deployment state for '{args.name}'...[/bold]"
-        )
+        console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
         try:
             state = load_deployment_state(args.name)
         except RuntimeError as e:
@@ -106,14 +96,11 @@ def cmd_clean_elastic(args):
             all_ips.extend(vm_ips[region_key])
 
         if not all_ips:
-            console.print(
-                "[bold red]Error:[/bold red] No hosts found in deployment state."
-            )
+            console.print("[bold red]Error:[/bold red] No hosts found in deployment state.")
             sys.exit(1)
 
         console.print(
-            f"[bold]Cleaning {len(all_ips)} host(s) from deployment state "
-            f"'{args.name}'...[/bold]"
+            f"[bold]Cleaning {len(all_ips)} host(s) from deployment state '{args.name}'...[/bold]"
         )
         clear_known_hosts(all_ips, console)
         try:
@@ -135,6 +122,4 @@ def cmd_clean_elastic(args):
         sys.exit(1)
 
     console.print()
-    console.print(
-        "[bold green]Telegraf-logs cleanup finished.[/bold green]"
-    )
+    console.print("[bold green]Telegraf-logs cleanup finished.[/bold green]")

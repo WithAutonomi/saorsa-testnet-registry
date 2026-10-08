@@ -46,10 +46,14 @@ PROBE_TIMEOUT_SECS = 60
 RESTART_TIMEOUT_SECS = 120
 
 _SSH_OPTS = [
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=20",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=20",
 ]
 
 #: Parallelism for the measure pass. Read-only and cheap, so it matches the
@@ -107,9 +111,7 @@ def _ssh_capture(
 
 def _probe_one_host(vm: NodeVm, ssh_key: str) -> dict:
     """Measure one host. Never raises — a failure is returned as ``error``."""
-    ok, lines, err = _ssh_capture(
-        vm, ssh_key, build_probe_command(), PROBE_TIMEOUT_SECS
-    )
+    ok, lines, err = _ssh_capture(vm, ssh_key, build_probe_command(), PROBE_TIMEOUT_SECS)
     if not ok:
         return {"vm": vm, "error": err}
     return {
@@ -122,9 +124,7 @@ def _probe_one_host(vm: NodeVm, ssh_key: str) -> dict:
 
 def _restart_one_host(vm: NodeVm, ssh_key: str) -> dict:
     """Restart one host's forwarder, returning before/after figures."""
-    ok, lines, err = _ssh_capture(
-        vm, ssh_key, build_restart_command(), RESTART_TIMEOUT_SECS
-    )
+    ok, lines, err = _ssh_capture(vm, ssh_key, build_restart_command(), RESTART_TIMEOUT_SECS)
     if not ok:
         return {"vm": vm, "error": err}
     if not parse_restarted(lines):
@@ -157,8 +157,7 @@ def _select_vms(args, console: Console) -> tuple[list[NodeVm], str, Path]:
         vms = [vm for vm in vms if vm.name in wanted]
         if not vms:
             console.print(
-                f"[bold red]Error:[/bold red] --limit-to matched no VMs "
-                f"({sorted(wanted)})"
+                f"[bold red]Error:[/bold red] --limit-to matched no VMs ({sorted(wanted)})"
             )
             sys.exit(1)
     if not vms:
@@ -251,9 +250,7 @@ def cmd_prod_restart_telegraf(args) -> None:
         console.print(f"  Limit to: {args.limit_to}")
     console.print()
 
-    probe_parallel = int(
-        getattr(args, "max_parallel", None) or DEFAULT_PROBE_PARALLEL
-    )
+    probe_parallel = int(getattr(args, "max_parallel", None) or DEFAULT_PROBE_PARALLEL)
     results = _run_pass(_probe_one_host, vms, ssh_key_for, probe_parallel)
 
     failures = [r for r in results if "error" in r]
@@ -271,9 +268,7 @@ def cmd_prod_restart_telegraf(args) -> None:
         f"[bold]{_format_bytes(total_held)}[/bold] in deleted files."
     )
 
-    candidates = [
-        r for r in reachable if (r["held"] or {}).get("held_bytes", 0) >= min_held
-    ]
+    candidates = [r for r in reachable if (r["held"] or {}).get("held_bytes", 0) >= min_held]
     if min_held > 0:
         console.print(
             f"{len(candidates)} host(s) at or above the "
@@ -303,9 +298,7 @@ def cmd_prod_restart_telegraf(args) -> None:
             console.print("[bold red]Aborted.[/bold red]")
             sys.exit(1)
 
-    restart_parallel = int(
-        getattr(args, "restart_parallel", None) or DEFAULT_RESTART_PARALLEL
-    )
+    restart_parallel = int(getattr(args, "restart_parallel", None) or DEFAULT_RESTART_PARALLEL)
     console.print(
         f"\nRestarting, {restart_parallel} at a time "
         "(bounded so fleet log shipping does not stop all at once)..."

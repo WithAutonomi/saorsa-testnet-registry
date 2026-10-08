@@ -135,7 +135,6 @@ def _parse_network(spec: str, value: str) -> str:
     return value
 
 
-
 def _extract_rust_log(spec: str) -> tuple[str, str | None]:
     """Split off a trailing ``rust_log=...`` token from a client spec.
 
@@ -152,7 +151,7 @@ def _extract_rust_log(spec: str) -> tuple[str, str | None]:
             idx, marker = 0, "rust_log="
         else:
             return spec, None
-    value = spec[idx + len(marker):]
+    value = spec[idx + len(marker) :]
     if not value:
         raise ValueError(f"Invalid spec '{spec}': rust_log cannot be empty.")
     return spec[:idx], value
@@ -169,9 +168,7 @@ def _parse_positive_decimal(spec: str, key: str, value: str) -> str:
             f"Invalid uploader spec '{spec}': '{key}' must be a number, got '{value}'."
         )
     if amount <= 0:
-        raise ValueError(
-            f"Invalid uploader spec '{spec}': '{key}' must be > 0, got '{value}'."
-        )
+        raise ValueError(f"Invalid uploader spec '{spec}': '{key}' must be > 0, got '{value}'.")
     if amount == amount.to_integral_value():
         return str(int(amount))
     return format(amount, "f").rstrip("0").rstrip(".") or "0"
@@ -204,9 +201,7 @@ def _common_options(spec: str, options: dict, valid_keys: tuple) -> dict:
     """The options every client role shares."""
     out = {
         "clock_skew": (
-            _parse_clock_skew(spec, options["clock_skew"])
-            if "clock_skew" in options
-            else None
+            _parse_clock_skew(spec, options["clock_skew"]) if "clock_skew" in options else None
         ),
         "forward_logs": (
             _parse_forward_logs(spec, options["forward_logs"])
@@ -404,9 +399,7 @@ def parse_pointer_spec(spec: str) -> dict:
     every pointer write is a paid single-node quote. ``rust_log``, if present,
     MUST be the final token (its value may contain ``:``).
     """
-    parsed = _parse_downloader_like(
-        spec, _VALID_POINTER_KEYS, ROLE_POINTER, "pointer"
-    )
+    parsed = _parse_downloader_like(spec, _VALID_POINTER_KEYS, ROLE_POINTER, "pointer")
     _, options, _ = _split_spec(spec, _VALID_POINTER_KEYS, "pointer")
 
     # A pointer client has no file to upload, but it IS an upload-type role: it
@@ -527,9 +520,7 @@ def _print_client_line(console, spec: dict) -> None:
     """Render one already-provisioned client VM."""
     label = ROLE_LABELS.get(spec["role"], spec["role"])
     skew_str = (
-        f", clock-skew {format_skew_offset(spec['clock_skew'])}"
-        if spec.get("clock_skew")
-        else ""
+        f", clock-skew {format_skew_offset(spec['clock_skew'])}" if spec.get("clock_skew") else ""
     )
     console.print(
         f"  {label} #{spec['client_index']}: {spec.get('ip', 'N/A')} "
@@ -657,9 +648,7 @@ def cmd_infra_clients(args):
         # provider capacity failure mid-apply). Keep the ones that did and
         # create only the rest — destroying a healthy client tier to recover
         # two VMs would churn the whole workload.
-        client_specs = [
-            spec for spec in client_specs if _spec_signature(spec) not in resumed_ips
-        ]
+        client_specs = [spec for spec in client_specs if _spec_signature(spec) not in resumed_ips]
         console.print(
             f"[bold]Resuming: reusing {len(resumed_ips)} existing client VM(s), "
             f"creating the {len(client_specs)} that are missing.[/bold]"
@@ -691,8 +680,7 @@ def cmd_infra_clients(args):
         info = CLIENT_PROVIDERS[spec["provider"]]
         tf_source = resources_dir / info.tf_dir
         workspace_dir = (
-            workspace_base
-            / f"{info.name}-client-{args.name}-{spec['role']}"
+            workspace_base / f"{info.name}-client-{args.name}-{spec['role']}"
             f"-{spec['region']}-{spec['client_index']}"
         )
         state_key = (
@@ -744,9 +732,7 @@ def cmd_infra_clients(args):
     try:
         save_client_state(args.name, upfront_specs)
     except Exception as e:
-        console.print(
-            f"[bold red]Failed to save initial client state:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Failed to save initial client state:[/bold red] {e}")
         console.print(
             "[bold red]Aborting — without saved state, clients destroy "
             "couldn't clean up a partial apply.[/bold red]"

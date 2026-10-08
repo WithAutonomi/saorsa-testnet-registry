@@ -88,9 +88,12 @@ from saorsa_deploy.webrtc_addresses import (
 )
 
 _SSH_OPTS = [
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=15",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=15",
 ]
 
 #: How long a restarted bootstrap has to report itself healthy. It rejoins the
@@ -166,8 +169,7 @@ def _run(
     result = _ssh(vm, ssh_key, command, timeout=timeout, stdin=stdin)
     if result.returncode != 0:
         raise RuntimeError(
-            f"{vm.name}: command failed ({result.returncode}): "
-            f"{result.stderr.strip() or command}"
+            f"{vm.name}: command failed ({result.returncode}): {result.stderr.strip() or command}"
         )
     return result.stdout
 
@@ -176,9 +178,7 @@ def _resolve_ssh_key(vm: NodeVm, override: str | None) -> str:
     return str(Path(override or vm.ssh_key).expanduser())
 
 
-def _load_bootstraps(
-    inventory_path: str, limit_to: str | None, console: Console
-) -> list[NodeVm]:
+def _load_bootstraps(inventory_path: str, limit_to: str | None, console: Console) -> list[NodeVm]:
     """The bootstrap VMs to act on, in inventory order (or ``--limit-to`` order).
 
     ``require_provider_id=False`` because the bootstrap inventory predates that
@@ -200,14 +200,11 @@ def _load_bootstraps(
     selected: list[NodeVm] = []
     for token in [t.strip() for t in limit_to.split(",") if t.strip()]:
         matches = [
-            vm
-            for vm in vms
-            if token in (vm.name, vm.region) or vm.name.endswith(f"-{token}")
+            vm for vm in vms if token in (vm.name, vm.region) or vm.name.endswith(f"-{token}")
         ]
         if not matches:
             console.print(
-                f"[bold red]Error:[/bold red] --limit-to {token!r} matches no host "
-                f"in {path}"
+                f"[bold red]Error:[/bold red] --limit-to {token!r} matches no host in {path}"
             )
             sys.exit(1)
         for vm in matches:
@@ -269,8 +266,7 @@ def _preflight_binary(version: str, workdir: Path, console: Console) -> Path:
     binary = extracted / "ant-node"
     if not binary.is_file():
         console.print(
-            f"[bold red]Error:[/bold red] {RELEASE_ASSET_NAME} has no 'ant-node' "
-            "at its root"
+            f"[bold red]Error:[/bold red] {RELEASE_ASSET_NAME} has no 'ant-node' at its root"
         )
         sys.exit(1)
     binary.chmod(0o755)
@@ -342,12 +338,20 @@ def _hetzner_open_port(vm: NodeVm, port: int, console: Console) -> bool:
             continue
         added = _cli(
             [
-                "hcloud", "firewall", "add-rule", firewall_id,
-                "--direction", "in",
-                "--protocol", "udp",
-                "--port", str(port),
-                "--source-ips", "0.0.0.0/0",
-                "--source-ips", "::/0",
+                "hcloud",
+                "firewall",
+                "add-rule",
+                firewall_id,
+                "--direction",
+                "in",
+                "--protocol",
+                "udp",
+                "--port",
+                str(port),
+                "--source-ips",
+                "0.0.0.0/0",
+                "--source-ips",
+                "::/0",
             ]
         )
         if added.returncode != 0:
@@ -363,11 +367,17 @@ def _hetzner_open_port(vm: NodeVm, port: int, console: Console) -> bool:
 def _aws_open_port(vm: NodeVm, port: int, console: Console) -> bool:
     described = _cli(
         [
-            "aws", "ec2", "describe-instances",
-            "--region", vm.region,
-            "--filters", f"Name=ip-address,Values={vm.ip}",
-            "--query", "Reservations[].Instances[].SecurityGroups[].GroupId",
-            "--output", "json",
+            "aws",
+            "ec2",
+            "describe-instances",
+            "--region",
+            vm.region,
+            "--filters",
+            f"Name=ip-address,Values={vm.ip}",
+            "--query",
+            "Reservations[].Instances[].SecurityGroups[].GroupId",
+            "--output",
+            "json",
         ]
     )
     if described.returncode != 0:
@@ -383,20 +393,26 @@ def _aws_open_port(vm: NodeVm, port: int, console: Console) -> bool:
         return False
     if not group_ids:
         console.print(
-            f"  [bold red]{vm.name}[/bold red]: no instance in {vm.region} has "
-            f"public IP {vm.ip}"
+            f"  [bold red]{vm.name}[/bold red]: no instance in {vm.region} has public IP {vm.ip}"
         )
         return False
 
     for group_id in group_ids:
         authorized = _cli(
             [
-                "aws", "ec2", "authorize-security-group-ingress",
-                "--region", vm.region,
-                "--group-id", group_id,
-                "--protocol", "udp",
-                "--port", str(port),
-                "--cidr", "0.0.0.0/0",
+                "aws",
+                "ec2",
+                "authorize-security-group-ingress",
+                "--region",
+                vm.region,
+                "--group-id",
+                group_id,
+                "--protocol",
+                "udp",
+                "--port",
+                str(port),
+                "--cidr",
+                "0.0.0.0/0",
             ]
         )
         if authorized.returncode == 0:
@@ -434,8 +450,7 @@ def _preflight_firewalls(vms: list[NodeVm], port: int, console: Console) -> None
             ok = True
         else:
             console.print(
-                f"  [yellow]{vm.name}: no firewall handling for provider "
-                f"{vm.provider!r}[/yellow]"
+                f"  [yellow]{vm.name}: no firewall handling for provider {vm.provider!r}[/yellow]"
             )
             ok = True
         if not ok:
@@ -480,8 +495,12 @@ def _install_binary(
     remote_archive = f"/tmp/{RELEASE_ASSET_NAME}"
     scp = subprocess.run(
         [
-            "scp", "-i", ssh_key, *_SSH_OPTS,
-            str(archive), f"{vm.ssh_user}@{vm.ip}:{remote_archive}",
+            "scp",
+            "-i",
+            ssh_key,
+            *_SSH_OPTS,
+            str(archive),
+            f"{vm.ssh_user}@{vm.ip}:{remote_archive}",
         ],
         capture_output=True,
         text=True,
@@ -503,9 +522,7 @@ def _install_binary(
         ),
         timeout=300,
     )
-    require_version(
-        _run(vm, ssh_key, _privileged(vm, "/tmp/ant-node.new --version")), version
-    )
+    require_version(_run(vm, ssh_key, _privileged(vm, "/tmp/ant-node.new --version")), version)
     binary_dir = posixpath.dirname(unit.binary_path)
     owner = f"{unit.service_user}:{unit.service_user}"
     _run(
@@ -577,9 +594,7 @@ def _health_gate(
             )
         except (RuntimeError, subprocess.SubprocessError):
             continue
-        verdict = evaluate_health(
-            log_text, version, webrtc_port, expect_webrtc=expect_webrtc
-        )
+        verdict = evaluate_health(log_text, version, webrtc_port, expect_webrtc=expect_webrtc)
         if verdict.ok:
             break
 
@@ -597,9 +612,7 @@ def _health_gate(
 
 
 def _is_active(vm: NodeVm, ssh_key: str) -> bool:
-    result = _ssh(
-        vm, ssh_key, _privileged(vm, f"systemctl is-active {SERVICE_NAME}")
-    )
+    result = _ssh(vm, ssh_key, _privileged(vm, f"systemctl is-active {SERVICE_NAME}"))
     return result.stdout.strip() == "active"
 
 
@@ -632,8 +645,7 @@ def _rollback(
             ssh_key,
             _privileged(
                 vm,
-                f"mv {unit.binary_path}.backup {unit.binary_path} && "
-                f"chown -R {owner} {binary_dir}",
+                f"mv {unit.binary_path}.backup {unit.binary_path} && chown -R {owner} {binary_dir}",
             ),
         ),
     )
@@ -759,8 +771,7 @@ def _upgrade_host(
     host = _answering_host(vm, advertised, webrtc_port)
     if host is None:
         console.print(
-            f"  [bold red]{vm.name}: ICE probe to {vm.ip}:{webrtc_port} got no "
-            "reply[/bold red]"
+            f"  [bold red]{vm.name}: ICE probe to {vm.ip}:{webrtc_port} got no reply[/bold red]"
         )
         if probe_advisory:
             console.print(
@@ -843,8 +854,7 @@ def cmd_prod_bootstrap_upgrade(args) -> None:
                     f"{len(vms) - index - 1} host(s) left untouched."
                 )
                 console.print(
-                    f"Upgraded before the failure: "
-                    f"{', '.join(upgraded) if upgraded else 'none'}"
+                    f"Upgraded before the failure: {', '.join(upgraded) if upgraded else 'none'}"
                 )
                 sys.exit(1)
             upgraded.append(vm.name)
@@ -852,9 +862,7 @@ def cmd_prod_bootstrap_upgrade(args) -> None:
                 console.print(f"  settling for {INTER_HOST_WAIT_SECS}s...")
                 time.sleep(INTER_HOST_WAIT_SECS)
 
-    console.print(
-        f"[green]Upgraded {len(upgraded)} bootstrap(s) to ant-node {version}.[/green]"
-    )
+    console.print(f"[green]Upgraded {len(upgraded)} bootstrap(s) to ant-node {version}.[/green]")
     if not expect_webrtc:
         console.print(
             f"[yellow]ant-node {version} publishes no WebRTC multiaddr, so the "
@@ -908,9 +916,7 @@ def _read_multiaddr(vm: NodeVm, ssh_key: str) -> str:
     Raises ``RuntimeError`` or ``ValueError`` if the host has nothing usable.
     """
     _, unit = _read_unit(vm, ssh_key)
-    raw = _run(
-        vm, ssh_key, _privileged(vm, f"cat {unit.root_dir}/{MULTIADDR_FILENAME}")
-    )
+    raw = _run(vm, ssh_key, _privileged(vm, f"cat {unit.root_dir}/{MULTIADDR_FILENAME}"))
     return parse_multiaddr(raw)
 
 
@@ -957,8 +963,7 @@ def _collect_multiaddrs(
     shorter one.
     """
     console.print(
-        f"[bold]Collecting WebRTC-Direct addresses from {len(vms)} bootstrap(s)"
-        "...[/bold]"
+        f"[bold]Collecting WebRTC-Direct addresses from {len(vms)} bootstrap(s)...[/bold]"
     )
     addresses: list[str] = []
     failures: list[HostFailure] = []
@@ -977,12 +982,9 @@ def _collect_multiaddrs(
         host = _answering_host(vm, advertised, port)
         if host is None:
             tried = vm.ip if advertised == vm.ip else f"{vm.ip} and {advertised}"
-            failures.append(
-                HostFailure(vm.name, f"ICE probe to {tried}:{port} got no reply")
-            )
+            failures.append(HostFailure(vm.name, f"ICE probe to {tried}:{port} got no reply"))
             console.print(
-                f"  [bold red]{vm.name}: ICE probe to {tried}:{port} got no "
-                "reply[/bold red]"
+                f"  [bold red]{vm.name}: ICE probe to {tried}:{port} got no reply[/bold red]"
             )
             continue
 
@@ -1004,9 +1006,7 @@ def _collect_multiaddrs(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(addresses) + "\n")
-    console.print(
-        f"[green]Wrote {len(addresses)} address(es) to[/green] {out_path}"
-    )
+    console.print(f"[green]Wrote {len(addresses)} address(es) to[/green] {out_path}")
 
 
 def cmd_prod_bootstrap_webrtc_addresses(args) -> None:
@@ -1027,9 +1027,7 @@ def cmd_prod_bootstrap_webrtc_addresses(args) -> None:
 # --------------------------------------------------------------------------
 
 
-def _restore_unit(
-    vm: NodeVm, ssh_key: str, original_unit: str, console: Console
-) -> None:
+def _restore_unit(vm: NodeVm, ssh_key: str, original_unit: str, console: Console) -> None:
     """Put back the unit this command found, and restart onto it.
 
     No binary is involved, so unlike the upgrade's rollback this restores one
@@ -1087,9 +1085,7 @@ def _restart_gate(
             log_text = _run(
                 vm,
                 ssh_key,
-                _privileged(
-                    vm, build_log_tail_command(unit.log_dir, cursor_path, offset)
-                ),
+                _privileged(vm, build_log_tail_command(unit.log_dir, cursor_path, offset)),
             )
         except (RuntimeError, subprocess.SubprocessError):
             log_text = ""
@@ -1102,8 +1098,7 @@ def _restart_gate(
 
     if not started:
         console.print(
-            f"  [bold red]{vm.name}: no '{STARTING_MESSAGE}' logged since the "
-            "restart[/bold red]"
+            f"  [bold red]{vm.name}: no '{STARTING_MESSAGE}' logged since the restart[/bold red]"
         )
         return False
     if not _is_active(vm, ssh_key):
@@ -1114,9 +1109,7 @@ def _restart_gate(
     return True
 
 
-def _set_peers_host(
-    vm: NodeVm, ssh_key: str, peers: list[str], console: Console
-) -> str | None:
+def _set_peers_host(vm: NodeVm, ssh_key: str, peers: list[str], console: Console) -> str | None:
     """Rewrite one host's peers. Returns ``None`` on success, else the reason."""
     console.print(f"[bold]{vm.name}[/bold] ({vm.provider}, {vm.ip})")
 
@@ -1128,9 +1121,7 @@ def _set_peers_host(
     current = unit_peers(original_unit)
     edited = set_bootstrap_peers(original_unit, peers)
     if edited == original_unit:
-        console.print(
-            f"  already lists the {len(peers)} expected peer(s); not restarting"
-        )
+        console.print(f"  already lists the {len(peers)} expected peer(s); not restarting")
         return None
 
     console.print(f"  peers: {', '.join(current) or 'none'}")
@@ -1163,9 +1154,7 @@ def _confirm_set_peers(vms: list[NodeVm], port: int, console: Console) -> None:
     )
     for vm in vms:
         console.print(f"  {vm.name} ({vm.provider}, {vm.ip})")
-    console.print(
-        f"Each will list every other inventory host on udp/{port}, and never itself."
-    )
+    console.print(f"Each will list every other inventory host on udp/{port}, and never itself.")
     if not sys.stdin.isatty():
         console.print(
             "[bold red]Error:[/bold red] not a TTY and -y was not passed. "
@@ -1202,10 +1191,7 @@ def cmd_prod_bootstrap_set_peers(args) -> None:
                 f"[bold red]Stopping:[/bold red] {vm.name} failed ({reason}). "
                 f"{len(vms) - index - 1} host(s) left untouched."
             )
-            console.print(
-                f"Rewritten before the failure: "
-                f"{', '.join(done) if done else 'none'}"
-            )
+            console.print(f"Rewritten before the failure: {', '.join(done) if done else 'none'}")
             sys.exit(1)
         done.append(vm.name)
         if index < len(vms) - 1:
@@ -1323,9 +1309,7 @@ def _status_row(vm: NodeVm, ssh_key: str) -> dict:
             if log_line is not None:
                 row["running_version"] = latest_started_version(log_line)
 
-    active = read_tolerating_failure(
-        "systemctl is-active", f"systemctl is-active {SERVICE_NAME}"
-    )
+    active = read_tolerating_failure("systemctl is-active", f"systemctl is-active {SERVICE_NAME}")
     if active is not None:
         row["active"] = active.stdout.strip() or None
 
@@ -1336,9 +1320,7 @@ def _status_row(vm: NodeVm, ssh_key: str) -> dict:
             "stat the backup binary", build_backup_stat_command(facts.binary_path)
         )
         if stat_out is not None:
-            row["backup"] = parse_backup_stat(
-                stat_out.stdout if stat_out.returncode == 0 else ""
-            )
+            row["backup"] = parse_backup_stat(stat_out.stdout if stat_out.returncode == 0 else "")
 
         directory = posixpath.dirname(facts.binary_path)
         foreign = read(

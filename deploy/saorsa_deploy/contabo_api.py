@@ -56,8 +56,7 @@ def _get_token() -> str:
         raise ContaboError(f"Missing Contabo credential env var: {e}") from e
     if resp.status_code != 200:
         raise ContaboError(
-            f"Contabo OAuth token request failed ({resp.status_code}): "
-            f"{resp.text[:300]}"
+            f"Contabo OAuth token request failed ({resp.status_code}): {resp.text[:300]}"
         )
     token = resp.json().get("access_token")
     if not token:
@@ -92,13 +91,10 @@ class ContaboClient:
             # request was rejected, not processed, so refreshing the token and
             # retrying once is safe even for the create POST.
             self._token = None
-            resp = requests.request(
-                method, url, headers=self._headers(), timeout=60, **kw
-            )
+            resp = requests.request(method, url, headers=self._headers(), timeout=60, **kw)
         if resp.status_code not in (200, 201):
             raise ContaboError(
-                f"Contabo API {method} {path} failed ({resp.status_code}): "
-                f"{resp.text[:400]}"
+                f"Contabo API {method} {path} failed ({resp.status_code}): {resp.text[:400]}"
             )
         if not resp.text:
             return {}
@@ -127,7 +123,8 @@ class ContaboClient:
             return existing
         value = Path(public_key_path).expanduser().read_text().strip()
         payload = self._request(
-            "POST", "/v1/secrets",
+            "POST",
+            "/v1/secrets",
             json={"name": name, "value": value, "type": "ssh"},
         )
         return int(self._first(payload)["secretId"])
@@ -143,7 +140,8 @@ class ContaboClient:
     # -- instances ---------------------------------------------------------- #
     def find_instance(self, display_name: str) -> dict | None:
         payload = self._request(
-            "GET", "/v1/compute/instances",
+            "GET",
+            "/v1/compute/instances",
             params={"displayName": display_name, "size": 100},
         )
         for inst in payload.get("data") or []:
@@ -167,7 +165,8 @@ class ContaboClient:
     ) -> int:
         """Create an instance (async — returns immediately) and return its id."""
         payload = self._request(
-            "POST", "/v1/compute/instances",
+            "POST",
+            "/v1/compute/instances",
             json={
                 "imageId": image_id,
                 "productId": product_id,
@@ -212,9 +211,7 @@ class ContaboClient:
             if status == "running" and ip:
                 return ip
             if status == "error":
-                raise ContaboError(
-                    f"Contabo instance {instance_id} entered 'error' status"
-                )
+                raise ContaboError(f"Contabo instance {instance_id} entered 'error' status")
             if waited >= max_wait_secs:
                 raise ContaboError(
                     f"Contabo instance {instance_id} still '{status}' after "
@@ -222,8 +219,7 @@ class ContaboClient:
                     "resume once it reaches 'running' (it will be adopted)."
                 )
             self.console.print(
-                f"  [dim]Contabo instance {instance_id}: {status} "
-                f"({waited}s elapsed)...[/dim]"
+                f"  [dim]Contabo instance {instance_id}: {status} ({waited}s elapsed)...[/dim]"
             )
             time.sleep(_POLL_SECS)
             waited += _POLL_SECS

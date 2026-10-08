@@ -51,6 +51,7 @@ counters are gone — so it integrates bucket averages instead and is marked
 ``source="buckets"``. The two must never be compared as equivalent, which is
 why every persisted row records which it is.
 """
+
 from datetime import datetime, timezone
 
 from saorsa_db.models.derived_metric import (
@@ -92,7 +93,9 @@ def _to_float(value) -> float | None:
 
 
 def sum_net_counter_deltas(
-    points: list[dict], field: str, start: datetime | None = None,
+    points: list[dict],
+    field: str,
+    start: datetime | None = None,
     end: datetime | None = None,
 ) -> dict:
     """Total bytes moved, summed from raw ``net`` counter deltas.
@@ -146,7 +149,8 @@ def sum_net_counter_deltas(
 
 
 def sum_node_storage_growth(
-    points: list[dict], start: datetime | None = None,
+    points: list[dict],
+    start: datetime | None = None,
     end: datetime | None = None,
 ) -> dict:
     """Growth of the node-storage volume, summed across node hosts.
@@ -231,9 +235,7 @@ def sum_node_storage_growth_from_endpoints(endpoints: list[dict]) -> dict:
     }
 
 
-def sum_outbound_from_buckets(
-    buckets: list[dict], bucket_secs: int, metric: str
-) -> dict:
+def sum_outbound_from_buckets(buckets: list[dict], bucket_secs: int, metric: str) -> dict:
     """Total bytes over a window, integrated from bucketed per-second averages.
 
     The post-teardown path: raw counters are gone, so each bucket contributes
@@ -512,9 +514,7 @@ def build_metric_rows(
                     "denominator": gb_uploaded,
                     "details": {
                         "hosts": storage_growth["hosts"],
-                        "hosts_without_series": storage_growth[
-                            "hosts_without_series"
-                        ],
+                        "hosts_without_series": storage_growth["hosts_without_series"],
                         "upload_ops": uploaded["ops"],
                     },
                 }

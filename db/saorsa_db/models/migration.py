@@ -39,9 +39,7 @@ class MigrationVmStatus(enum.Enum):
 
 class Migration(Base):
     __tablename__ = "migrations"
-    __table_args__ = (
-        UniqueConstraint("name", name="uq_migrations_name"),
-    )
+    __table_args__ = (UniqueConstraint("name", name="uq_migrations_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -54,9 +52,7 @@ class Migration(Base):
     target_server_type: Mapped[str] = mapped_column(String(64), nullable=False)
     target_volume_size_gb: Mapped[int] = mapped_column(Integer, nullable=False)
     target_locations: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    node_count_per_vm: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=15
-    )
+    node_count_per_vm: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
 
     status: Mapped[MigrationStatus] = mapped_column(
         Enum(MigrationStatus, values_callable=lambda e: [m.value for m in e]),

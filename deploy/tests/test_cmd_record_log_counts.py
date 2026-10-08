@@ -5,6 +5,7 @@ Elasticsearch is destroyed. What is pinned here is what it refuses to record: a
 count that would be silently wrong is worse than no count, because the gate
 would then compare against it as though it were a measurement.
 """
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -114,9 +115,7 @@ def test_recorded_row_carries_everything_the_gate_and_a_reader_need():
     repo = FakeRepo()
     _run(_args(), repo, [_es_response(1_000_000)] + [_es_response(500)] * 4)
 
-    row = next(
-        r for r in repo.rows if r["event_key"] == "dial_failed_all_candidates"
-    )
+    row = next(r for r in repo.rows if r["event_key"] == "dial_failed_all_candidates")
     assert row["deployment_id"] == 474
     assert row["count"] == 500
     assert row["hosts"] == 40

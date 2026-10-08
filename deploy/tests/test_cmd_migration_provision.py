@@ -62,9 +62,7 @@ def test_provision_contabo_uses_root_disk_ips():
         _vm(1, "10.0.0.1", "ant-prod-01-cntb-US-central-1"),
         _vm(2, "10.0.0.2", "ant-prod-01-cntb-US-central-2"),
     ]
-    migration = SimpleNamespace(
-        id=9, name="mig", node_count_per_vm=15, target_provider="contabo"
-    )
+    migration = SimpleNamespace(id=9, name="mig", node_count_per_vm=15, target_provider="contabo")
     prov = _run_provision(migration, vms)
     # Every Contabo target VM is a root-disk host (no attached volume).
     assert prov.call_args.kwargs["root_disk_ips"] == {"10.0.0.1", "10.0.0.2"}
@@ -72,9 +70,7 @@ def test_provision_contabo_uses_root_disk_ips():
 
 def test_provision_volume_provider_has_no_root_disk_ips():
     vms = [_vm(1, "10.0.0.1", "ant-prod-01-hz-ash-1")]
-    migration = SimpleNamespace(
-        id=9, name="mig", node_count_per_vm=15, target_provider="hetzner"
-    )
+    migration = SimpleNamespace(id=9, name="mig", node_count_per_vm=15, target_provider="hetzner")
     prov = _run_provision(migration, vms)
     assert prov.call_args.kwargs["root_disk_ips"] is None
 
@@ -85,9 +81,7 @@ def test_provision_sets_fleet_convention_hostnames():
         _vm(2, "51.255.147.77", "ant-prod-01-ovh-SBG5-2"),
         _vm(3, "148.113.231.246", "ant-prod-01-ovh-BHS5-10"),
     ]
-    migration = SimpleNamespace(
-        id=7, name="mig", node_count_per_vm=15, target_provider="ovh"
-    )
+    migration = SimpleNamespace(id=7, name="mig", node_count_per_vm=15, target_provider="ovh")
 
     repo = MagicMock()
     repo.get_migration_by_name.return_value = migration

@@ -83,9 +83,7 @@ def get_web3(rpc_url: str) -> Web3:
 
 
 def _erc20(w3: Web3, token_address: str):
-    return w3.eth.contract(
-        address=Web3.to_checksum_address(token_address), abi=ERC20_ABI
-    )
+    return w3.eth.contract(address=Web3.to_checksum_address(token_address), abi=ERC20_ABI)
 
 
 def get_eth_balance(w3: Web3, address: str) -> int:
@@ -209,9 +207,7 @@ def transfer_eth(w3: Web3, from_secret_key: str, to_address: str, value_wei: int
     to_checksum = Web3.to_checksum_address(to_address)
     # Arbitrum's intrinsic-gas check for a plain ETH transfer can exceed the
     # mainnet 21000 because of the L1 calldata component, so ask the node.
-    estimated = w3.eth.estimate_gas(
-        {"from": acct.address, "to": to_checksum, "value": value_wei}
-    )
+    estimated = w3.eth.estimate_gas({"from": acct.address, "to": to_checksum, "value": value_wei})
 
     def _build(nonce: int) -> dict:
         return {
@@ -237,9 +233,7 @@ def transfer_token(
     `from_secret_key` to `to_address`."""
     acct = Account.from_key(_normalize_secret_key(from_secret_key))
     contract = _erc20(w3, token_address)
-    fn = contract.functions.transfer(
-        Web3.to_checksum_address(to_address), amount_units
-    )
+    fn = contract.functions.transfer(Web3.to_checksum_address(to_address), amount_units)
 
     def _build(nonce: int) -> dict:
         tx = fn.build_transaction(
@@ -282,9 +276,7 @@ def fund_wallet(
     ant_units = to_token_units(ant_amount, decimals)
 
     eth_tx = transfer_eth(w3, funding_secret_key, target_address, eth_wei)
-    ant_tx = transfer_token(
-        w3, token_address, funding_secret_key, target_address, ant_units
-    )
+    ant_tx = transfer_token(w3, token_address, funding_secret_key, target_address, ant_units)
     return {"eth_tx": eth_tx, "ant_tx": ant_tx}
 
 
@@ -324,9 +316,7 @@ def drain_wallet(
     # real cost (Arbitrum may include L1 calldata in the limit, exceeding
     # 21000).
     try:
-        gas_limit = w3.eth.estimate_gas(
-            {"from": acct.address, "to": funding_checksum, "value": 1}
-        )
+        gas_limit = w3.eth.estimate_gas({"from": acct.address, "to": funding_checksum, "value": 1})
     except Exception:
         gas_limit = 21_000
     gas_limit = int(gas_limit * 12 // 10)

@@ -137,8 +137,7 @@ class TestBootstrapCleanProvisionerExecute:
         _make_provisioner().execute()
 
         all_cmds = " ".join(
-            " ".join(c.kwargs.get("commands", []))
-            for c in mock_add_op.call_args_list
+            " ".join(c.kwargs.get("commands", [])) for c in mock_add_op.call_args_list
         )
         # Must not manage ant-node-*.service systemd units (only ant-bootstrap-*).
         assert "ant-node-*.service" not in all_cmds
@@ -168,8 +167,7 @@ class TestBootstrapCleanProvisionerExecute:
         _make_provisioner().execute()
 
         all_cmds = " ".join(
-            " ".join(c.kwargs.get("commands", []))
-            for c in mock_add_op.call_args_list
+            " ".join(c.kwargs.get("commands", [])) for c in mock_add_op.call_args_list
         )
         assert "umount" not in all_cmds
         assert "/etc/fstab" not in all_cmds

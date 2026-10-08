@@ -27,10 +27,7 @@ def cmd_releases_show(args):
         release = repo.get_by_version(args.binary_target, args.version)
         identifier = f"{args.binary_target} {args.version}"
     else:
-        sys.stderr.write(
-            "releases show: provide --id, or both --binary-target "
-            "and --version.\n"
-        )
+        sys.stderr.write("releases show: provide --id, or both --binary-target and --version.\n")
         sys.exit(2)
 
     if release is None:

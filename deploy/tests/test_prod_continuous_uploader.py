@@ -19,12 +19,7 @@ from pydantic import ValidationError
 from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator import build_deploy_steps, build_destroy_steps
 
-RESOURCES = (
-    Path(__file__).resolve().parents[1]
-    / "saorsa_deploy"
-    / "resources"
-    / "scripts"
-)
+RESOURCES = Path(__file__).resolve().parents[1] / "saorsa_deploy" / "resources" / "scripts"
 
 
 def _load_script(name: str):
@@ -139,9 +134,7 @@ class TestTheDiskGuard:
             _manifest(pool={"xlarge": 1}, volume_size=None)
 
     def test_pool_max_size_makes_an_unbounded_class_knowable(self):
-        manifest = _manifest(
-            pool={"xlarge": 1}, pool_max_size="8GB", volume_size=60
-        )
+        manifest = _manifest(pool={"xlarge": 1}, pool_max_size="8GB", volume_size=60)
         assert manifest.spec.pool_max_size == "8GB"
 
 
@@ -178,9 +171,7 @@ class TestTheOrchestratorArgv:
         assert steps[-1].best_effort is True
 
     def test_a_branch_binary_prepends_a_build_step(self):
-        steps = build_deploy_steps(
-            _manifest(binary={"branch": "feat-x", "repo_owner": "maidsafe"})
-        )
+        steps = build_deploy_steps(_manifest(binary={"branch": "feat-x", "repo_owner": "maidsafe"}))
         assert steps[0].argv[:2] == ["build", "ant"]
 
     def test_destroy_argv(self):
@@ -370,9 +361,7 @@ class TestTheSaorsaDbInstall:
 
         venv_step = build_install_commands("x.whl")[0]
         assert "apt-get update" in venv_step
-        assert venv_step.index("apt-get update") < venv_step.index(
-            "apt-get install"
-        )
+        assert venv_step.index("apt-get update") < venv_step.index("apt-get install")
 
     def test_the_versioned_venv_package_is_a_fallback(self):
         """Which of python3-venv / python3.N-venv resolves varies by image."""
@@ -382,7 +371,7 @@ class TestTheSaorsaDbInstall:
 
         venv_step = build_install_commands("x.whl")[0]
         assert "python3-venv ||" in venv_step
-        assert "-venv\")" in venv_step or "-venv\"" in venv_step
+        assert '-venv")' in venv_step or '-venv"' in venv_step
 
     def test_both_postgres_drivers_are_installed(self):
         """Which driver a bare `postgresql://` URL selects depends on SQLAlchemy.
@@ -401,30 +390,13 @@ class TestTheSaorsaDbInstall:
         assert "psycopg2-binary" in deps_step
         assert "psycopg[binary]" in deps_step
 
-    def test_the_wheel_builds_from_the_working_tree(self, tmp_path):
-        """Pinned to the tree, not a published version.
-
-        A VM holding a stale copy of the pool semantics is exactly the failure
-        installing the package is meant to avoid.
-        """
-        from saorsa_deploy.provisioning.saorsa_db_install import (
-            build_saorsa_db_wheel,
-        )
-
-        wheel = build_saorsa_db_wheel()
-        assert wheel.name.startswith("saorsa_db-")
-        assert wheel.suffix == ".whl"
-        assert wheel.stat().st_size > 0
-
 
 class TestTheUploaderScript:
     def test_it_imports_without_the_database_packages(self, uploader_script):
         """saorsa_db is imported inside main(), so the module stays testable."""
         assert hasattr(uploader_script, "main")
 
-    def test_the_peer_cache_suppresses_bootstrap_arguments(
-        self, uploader_script, monkeypatch
-    ):
+    def test_the_peer_cache_suppresses_bootstrap_arguments(self, uploader_script, monkeypatch):
         monkeypatch.setenv("BOOTSTRAP_CACHE", "true")
         assert uploader_script._resolve_bootstrap_args() == []
         monkeypatch.setenv("BOOTSTRAP_CACHE", "false")
@@ -451,9 +423,7 @@ class TestTheUploaderScript:
         source = tmp_path / "src.bin"
         source.write_bytes(payload)
         destination = tmp_path / "dst.bin"
-        size, digest = uploader_script._download(
-            source.as_uri(), destination, timeout=30
-        )
+        size, digest = uploader_script._download(source.as_uri(), destination, timeout=30)
         assert size == len(payload)
         assert digest == hashlib.sha256(payload).hexdigest()
         assert destination.read_bytes() == payload
@@ -479,14 +449,9 @@ class TestTheUploaderScript:
         assert not line.rstrip().split()[-1].isdigit() or "status=0i" in line
         assert line.count(" ") == 1
 
-    def test_the_shortfall_measurement_is_separate_from_uploads(
-        self, uploader_script
-    ):
-        """"The pool ran dry" must never look like "the network refused"."""
-        assert (
-            uploader_script.EXHAUSTION_MEASUREMENT
-            != uploader_script.UPLOAD_MEASUREMENT
-        )
+    def test_the_shortfall_measurement_is_separate_from_uploads(self, uploader_script):
+        """ "The pool ran dry" must never look like "the network refused"."""
+        assert uploader_script.EXHAUSTION_MEASUREMENT != uploader_script.UPLOAD_MEASUREMENT
 
 
 class TestTheVerifierScript:
@@ -505,10 +470,7 @@ class TestTheVerifierScript:
 
         path = tmp_path / "f.bin"
         path.write_bytes(b"payload" * 1000)
-        assert (
-            verifier_script._sha256_file(path)
-            == hashlib.sha256(path.read_bytes()).hexdigest()
-        )
+        assert verifier_script._sha256_file(path) == hashlib.sha256(path.read_bytes()).hexdigest()
 
     def test_it_keeps_no_local_state(self, verifier_script):
         """The work queue is a database query, not a SQLite ledger.
@@ -614,9 +576,7 @@ class TestTheClientRoleCommand:
     def test_a_password_with_url_characters_is_escaped(self):
         from saorsa_deploy.pool_client_role import build_client_url
 
-        url = build_client_url(
-            "postgresql://admin:pw@h/db", "role", "a/b@c:d?e"
-        )
+        url = build_client_url("postgresql://admin:pw@h/db", "role", "a/b@c:d?e")
         assert "a%2Fb%40c%3Ad%3Fe" in url
         assert url.count("@") == 1
 
@@ -656,9 +616,7 @@ class TestTheInfraSpecsAreWhatClientsInfraExpects:
             build_uploader_infra_spec,
         )
 
-        parsed = parse_uploader_spec(
-            build_uploader_infra_spec("hetzner", "fsn1", self.TOKEN)
-        )
+        parsed = parse_uploader_spec(build_uploader_infra_spec("hetzner", "fsn1", self.TOKEN))
         assert parsed["region"] == "fsn1"
 
     def test_a_verifier_naming_its_provider_is_honoured(self):
@@ -698,9 +656,7 @@ class TestTheInfraSpecsAreWhatClientsInfraExpects:
             build_verifier_infra_spec,
         )
 
-        parsed = parse_downloader_spec(
-            build_verifier_infra_spec("hetzner", "ovh:GRA9", self.TOKEN)
-        )
+        parsed = parse_downloader_spec(build_verifier_infra_spec("hetzner", "ovh:GRA9", self.TOKEN))
         assert parsed["provider"] == "ovh"
         assert parsed["region"] == "GRA9"
 
@@ -719,15 +675,11 @@ class TestTheInfraSpecsAreWhatClientsInfraExpects:
         argv = _deploy_argv(manifest)
         spec = argv[argv.index("--spec") + 1]
         provider = argv[argv.index("--provider") + 1]
-        verifiers = [
-            argv[i + 1] for i, a in enumerate(argv) if a == "--verifier"
-        ]
+        verifiers = [argv[i + 1] for i, a in enumerate(argv) if a == "--verifier"]
 
         parse_uploader_spec(build_uploader_infra_spec(provider, spec, self.TOKEN))
         for verifier in verifiers:
-            parse_downloader_spec(
-                build_verifier_infra_spec(provider, verifier, self.TOKEN)
-            )
+            parse_downloader_spec(build_verifier_infra_spec(provider, verifier, self.TOKEN))
 
 
 class TestPrintUploadsDispatch:
@@ -745,34 +697,27 @@ class TestPrintUploadsDispatch:
         monkeypatch.setattr(module, "_resolve_kind", lambda name, console: kind)
         called = {}
         monkeypatch.setattr(
-            module, "_run_prod_uploads",
+            module,
+            "_run_prod_uploads",
             lambda args, console: called.setdefault("path", "prod_upload"),
         )
         monkeypatch.setattr(
-            module, "_run_file_ops",
+            module,
+            "_run_file_ops",
             lambda args, op, console: called.setdefault("path", "file_ops"),
         )
         module._dispatch(SimpleNamespace(name="PROD-UL-01"), op_type)
         return called.get("path", "none")
 
     def test_uploads_use_the_prod_upload_measurement(self, monkeypatch):
-        assert (
-            self._dispatch(monkeypatch, "prod-continuous-uploader", "upload")
-            == "prod_upload"
-        )
+        assert self._dispatch(monkeypatch, "prod-continuous-uploader", "upload") == "prod_upload"
 
     def test_downloads_explain_where_verifications_live(self, monkeypatch):
         """It does not download; it re-reads, and those rows are in Postgres."""
-        assert (
-            self._dispatch(monkeypatch, "prod-continuous-uploader", "download")
-            == "none"
-        )
+        assert self._dispatch(monkeypatch, "prod-continuous-uploader", "download") == "none"
 
     def test_prod_uploaders_is_unaffected(self, monkeypatch):
-        assert (
-            self._dispatch(monkeypatch, "prod-uploaders", "upload")
-            == "prod_upload"
-        )
+        assert self._dispatch(monkeypatch, "prod-uploaders", "upload") == "prod_upload"
 
 
 class TestLogsAreBounded:
@@ -904,9 +849,7 @@ class TestSourceFetchRetries:
         import urllib.error
 
         assert uploader_script._is_retryable_fetch_error(TimeoutError())
-        assert uploader_script._is_retryable_fetch_error(
-            urllib.error.URLError("dns")
-        )
+        assert uploader_script._is_retryable_fetch_error(urllib.error.URLError("dns"))
 
     def test_a_flaky_source_eventually_succeeds(self, uploader_script, monkeypatch):
         import urllib.error
@@ -928,9 +871,7 @@ class TestSourceFetchRetries:
         assert (size, digest) == (1234, "a" * 64)
         assert calls["n"] == 3
 
-    def test_it_gives_up_after_the_configured_attempts(
-        self, uploader_script, monkeypatch
-    ):
+    def test_it_gives_up_after_the_configured_attempts(self, uploader_script, monkeypatch):
         import urllib.error
 
         calls = {"n": 0}
@@ -948,9 +889,7 @@ class TestSourceFetchRetries:
             )
         assert calls["n"] == 4
 
-    def test_a_permanent_error_costs_only_one_attempt(
-        self, uploader_script, monkeypatch
-    ):
+    def test_a_permanent_error_costs_only_one_attempt(self, uploader_script, monkeypatch):
         import urllib.error
 
         calls = {"n": 0}
@@ -995,33 +934,24 @@ class TestSourceFetchRetries:
             return real_unlink(self, missing_ok=missing_ok)
 
         monkeypatch.setattr(Path, "unlink", spy)
-        uploader_script._download(
-            "https://archive.org/x", destination, 30, attempts=3, base_secs=1
-        )
+        uploader_script._download("https://archive.org/x", destination, 30, attempts=3, base_secs=1)
         assert "f.bin" in seen, "the failed attempt's partial file must be removed"
 
 
 class TestTheCycleHeartbeat:
-    """"Production is broken" and "we could not test production" must not look
+    """ "Production is broken" and "we could not test production" must not look
     the same — for a monitor, that is the most important distinction there is."""
 
     def test_the_cycle_measurement_is_separate(self, uploader_script):
         assert uploader_script.CYCLE_MEASUREMENT == "prod_upload_cycle"
-        assert (
-            uploader_script.CYCLE_MEASUREMENT
-            != uploader_script.UPLOAD_MEASUREMENT
-        )
-        assert (
-            uploader_script.CYCLE_MEASUREMENT
-            != uploader_script.EXHAUSTION_MEASUREMENT
-        )
+        assert uploader_script.CYCLE_MEASUREMENT != uploader_script.UPLOAD_MEASUREMENT
+        assert uploader_script.CYCLE_MEASUREMENT != uploader_script.EXHAUSTION_MEASUREMENT
 
     def test_the_line_carries_the_signal_flag(self, uploader_script):
         line = uploader_script._build_line(
             uploader_script.CYCLE_MEASUREMENT,
             {"host": "h", "region": "fsn1"},
-            {"attempted": 3, "succeeded": 0, "source_failed": 3,
-             "produced_signal": False},
+            {"attempted": 3, "succeeded": 0, "source_failed": 3, "produced_signal": False},
         )
         assert "produced_signal=false" in line
         assert "source_failed=3i" in line

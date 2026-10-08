@@ -19,34 +19,18 @@ def patches():
     with (
         patch("saorsa_deploy.cmd.destroy_nodes.record_event") as p_record_event,
         patch("saorsa_deploy.cmd.destroy_nodes.record_status") as p_record_status,
-        patch(
-            "saorsa_deploy.cmd.destroy_nodes.load_deployment_state"
-        ) as p_load_state,
-        patch(
-            "saorsa_deploy.cmd.destroy_nodes.update_deployment_state"
-        ) as p_update_state,
-        patch(
-            "saorsa_deploy.cmd.destroy_nodes.delete_deployment_state"
-        ) as p_delete_state,
-        patch(
-            "saorsa_deploy.cmd.destroy_nodes.delete_terraform_state"
-        ) as p_delete_tf,
-        patch(
-            "saorsa_deploy.cmd.destroy_nodes.list_terraform_state_keys"
-        ) as p_list_keys,
-        patch(
-            "saorsa_deploy.cmd.destroy_nodes.load_terraform_state"
-        ) as p_load_tf,
-        patch(
-            "saorsa_deploy.cmd.destroy_nodes.execute_terraform_runs"
-        ) as p_execute,
+        patch("saorsa_deploy.cmd.destroy_nodes.load_deployment_state") as p_load_state,
+        patch("saorsa_deploy.cmd.destroy_nodes.update_deployment_state") as p_update_state,
+        patch("saorsa_deploy.cmd.destroy_nodes.delete_deployment_state") as p_delete_state,
+        patch("saorsa_deploy.cmd.destroy_nodes.delete_terraform_state") as p_delete_tf,
+        patch("saorsa_deploy.cmd.destroy_nodes.list_terraform_state_keys") as p_list_keys,
+        patch("saorsa_deploy.cmd.destroy_nodes.load_terraform_state") as p_load_tf,
+        patch("saorsa_deploy.cmd.destroy_nodes.execute_terraform_runs") as p_execute,
     ):
         p_list_keys.return_value = []
         p_load_tf.side_effect = Exception("no tfstate")
         p_execute.return_value = [
-            TerraformResult(
-                success=True, provider="digitalocean", region="lon1"
-            ),
+            TerraformResult(success=True, provider="digitalocean", region="lon1"),
         ]
         yield SimpleNamespace(
             record_event=p_record_event,
@@ -162,8 +146,8 @@ class TestStatusFlip:
 class TestMissingStateFallback:
     def test_scans_s3_for_orphan_tfstate(self, patches):
         patches.load_state.side_effect = RuntimeError("No deployment state found")
-        patches.list_keys.side_effect = (
-            lambda prefix: ["saorsa-deploy/do-DEV-02-lon1.tfstate"]
+        patches.list_keys.side_effect = lambda prefix: (
+            ["saorsa-deploy/do-DEV-02-lon1.tfstate"]
             if prefix.startswith("saorsa-deploy/do-DEV-02-")
             else []
         )
@@ -208,8 +192,8 @@ class TestBeltAndBraces:
                 },
             },
         }
-        patches.list_keys.side_effect = (
-            lambda prefix: [
+        patches.list_keys.side_effect = lambda prefix: (
+            [
                 "saorsa-deploy/do-DEV-02-lon1.tfstate",
                 "saorsa-deploy/do-DEV-02-nyc1.tfstate",
             ]
@@ -264,9 +248,7 @@ class TestOvhDestroy:
 
         patches.execute.assert_not_called()
 
-    def test_destroy_variables_include_flavor_and_service_name(
-        self, patches, monkeypatch
-    ):
+    def test_destroy_variables_include_flavor_and_service_name(self, patches, monkeypatch):
         patches.load_state.return_value = self._ovh_state()
         for var, value in self.OVH_ENV.items():
             monkeypatch.setenv(var, value)

@@ -35,6 +35,4 @@ def get_evm_network_info(name: str) -> dict:
         return dict(_NETWORKS[name])
     except KeyError:
         known = ", ".join(sorted(_NETWORKS))
-        raise ValueError(
-            f"Unknown EVM network '{name}'. Known networks: {known}"
-        )
+        raise ValueError(f"Unknown EVM network '{name}'. Known networks: {known}")

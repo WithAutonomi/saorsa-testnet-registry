@@ -43,7 +43,13 @@ class TestMonitoringCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.monitoring_clean.State")
     @patch("saorsa_deploy.provisioning.monitoring_clean.Inventory")
     def test_adds_three_operations(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -60,7 +66,13 @@ class TestMonitoringCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.monitoring_clean.State")
     @patch("saorsa_deploy.provisioning.monitoring_clean.Inventory")
     def test_stop_and_disable_commands_are_idempotent(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -81,7 +93,13 @@ class TestMonitoringCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.monitoring_clean.State")
     @patch("saorsa_deploy.provisioning.monitoring_clean.Inventory")
     def test_removes_unit_config_and_env_files(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -102,7 +120,13 @@ class TestMonitoringCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.monitoring_clean.State")
     @patch("saorsa_deploy.provisioning.monitoring_clean.Inventory")
     def test_does_not_touch_log_forwarder_or_ant_node(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -111,8 +135,7 @@ class TestMonitoringCleanProvisionerExecute:
         _make_provisioner().execute()
 
         all_cmds = " ".join(
-            " ".join(c.kwargs.get("commands", []))
-            for c in mock_add_op.call_args_list
+            " ".join(c.kwargs.get("commands", [])) for c in mock_add_op.call_args_list
         )
         assert "telegraf-ant-elasticsearch" not in all_cmds
         assert "telegraf-elasticsearch" not in all_cmds
@@ -128,7 +151,13 @@ class TestMonitoringCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.monitoring_clean.State")
     @patch("saorsa_deploy.provisioning.monitoring_clean.Inventory")
     def test_does_not_remove_telegraf_deb_or_touch_influxdb(
-        self, _mi, mock_state, _mc, mock_add_op, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        mock_add_op,
+        _mr,
+        _md,
     ):
         mock_state_instance = MagicMock()
         mock_state_instance.failed_hosts = set()
@@ -137,8 +166,7 @@ class TestMonitoringCleanProvisionerExecute:
         _make_provisioner().execute()
 
         all_cmds = " ".join(
-            " ".join(c.kwargs.get("commands", []))
-            for c in mock_add_op.call_args_list
+            " ".join(c.kwargs.get("commands", [])) for c in mock_add_op.call_args_list
         )
         assert "apt-get remove" not in all_cmds
         assert "apt-get purge" not in all_cmds
@@ -155,7 +183,13 @@ class TestMonitoringCleanProvisionerExecute:
     @patch("saorsa_deploy.provisioning.monitoring_clean.State")
     @patch("saorsa_deploy.provisioning.monitoring_clean.Inventory")
     def test_raises_on_failed_hosts(
-        self, _mi, mock_state, _mc, _ma, _mr, _md,
+        self,
+        _mi,
+        mock_state,
+        _mc,
+        _ma,
+        _mr,
+        _md,
     ):
         failed_host = MagicMock()
         failed_host.name = "10.0.0.1"
@@ -171,20 +205,27 @@ class TestCmdCleanMonitoring:
     @patch("saorsa_deploy.cmd.clean_monitoring.MonitoringCleanProvisioner")
     @patch("saorsa_deploy.cmd.clean_monitoring.clear_known_hosts")
     def test_inventory_path_groups_by_credentials(
-        self, _mock_clear, mock_provisioner_cls, tmp_path,
+        self,
+        _mock_clear,
+        mock_provisioner_cls,
+        tmp_path,
     ):
         import json
 
         from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring
 
         inv = tmp_path / "inventory.json"
-        inv.write_text(json.dumps({
-            "node_vms": [
-                {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
-                {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id"},
-                {"ip": "10.0.0.3", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
-            ]
-        }))
+        inv.write_text(
+            json.dumps(
+                {
+                    "node_vms": [
+                        {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
+                        {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id"},
+                        {"ip": "10.0.0.3", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
+                    ]
+                }
+            )
+        )
         mock_provisioner_cls.return_value.execute.return_value = None
 
         args = SimpleNamespace(
@@ -205,7 +246,10 @@ class TestCmdCleanMonitoring:
     @patch("saorsa_deploy.cmd.clean_monitoring.MonitoringCleanProvisioner")
     @patch("saorsa_deploy.cmd.clean_monitoring.clear_known_hosts")
     def test_host_ips_file_mode(
-        self, _mock_clear, mock_provisioner_cls, tmp_path,
+        self,
+        _mock_clear,
+        mock_provisioner_cls,
+        tmp_path,
     ):
         from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring
 
@@ -231,7 +275,10 @@ class TestCmdCleanMonitoring:
     @patch("saorsa_deploy.cmd.clean_monitoring.clear_known_hosts")
     @patch("saorsa_deploy.cmd.clean_monitoring.load_deployment_state")
     def test_name_mode_uses_bootstrap_plus_regulars(
-        self, mock_load_state, _mock_clear, mock_provisioner_cls,
+        self,
+        mock_load_state,
+        _mock_clear,
+        mock_provisioner_cls,
     ):
         from saorsa_deploy.cmd.clean_monitoring import cmd_clean_monitoring
 

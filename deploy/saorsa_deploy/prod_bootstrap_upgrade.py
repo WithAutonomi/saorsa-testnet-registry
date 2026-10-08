@@ -41,18 +41,14 @@ UNIT_FILE_PATH = f"/etc/systemd/system/{SERVICE_NAME}.service"
 
 #: The seven production bootstraps. A separate file from the fleet's
 #: ``inventory.json``: different hosts, different service, different SSH users.
-PROD_BOOTSTRAP_INVENTORY_PATH = (
-    "~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json"
-)
+PROD_BOOTSTRAP_INVENTORY_PATH = "~/.autonomi/testnets/ant-prod-01/bootstrap-inventory.json"
 
 #: Where the published multiaddr list lives. Resolved against the package
 #: rather than the cwd so the path means the same thing from anywhere, and
 #: committed after a release so consumers (the prod WASM client kinds) read it
 #: from the source tree rather than needing SSH to the bootstrap tier.
 DEFAULT_MULTIADDR_OUT = (
-    Path(__file__).resolve().parent
-    / "resources"
-    / "prod_bootstrap_webrtc_multiaddrs.txt"
+    Path(__file__).resolve().parent / "resources" / "prod_bootstrap_webrtc_multiaddrs.txt"
 )
 
 #: ant-node's flag for pinning the WebRTC-Direct listener. Unset, the port is
@@ -169,9 +165,7 @@ def parse_version_output(text: str) -> str:
     match = _VERSION_OUTPUT_RE.search(text or "")
     if not match:
         first = (text or "").strip().splitlines()[:1]
-        raise ValueError(
-            f"not ant-node --version output: {(first[0] if first else '')!r}"
-        )
+        raise ValueError(f"not ant-node --version output: {(first[0] if first else '')!r}")
     return match.group("version")
 
 
@@ -212,9 +206,7 @@ def _exec_start_bounds(lines: list[str]) -> tuple[int, int]:
 
 
 def _joined_exec_start(lines: list[str], first: int, last: int) -> str:
-    body = " ".join(
-        line.rstrip().rstrip("\\").strip() for line in lines[first : last + 1]
-    )
+    body = " ".join(line.rstrip().rstrip("\\").strip() for line in lines[first : last + 1])
     return re.sub(r"\s+", " ", body).strip()
 
 
@@ -432,9 +424,7 @@ def set_bootstrap_peers(text: str, peers: Sequence[str]) -> str:
         return text
 
     if first == last:
-        return _rejoin(
-            _set_peers_inline(lines, first, peers), text.endswith("\n")
-        )
+        return _rejoin(_set_peers_inline(lines, first, peers), text.endswith("\n"))
 
     peer_at = [index for index in range(first, last + 1) if _is_peer_line(lines[index])]
     # A unit with no peers yet gets them appended to the end of the block, the
@@ -539,9 +529,7 @@ def started_after_restart(log_text: str) -> bool:
     it came back at all. The cursor is taken immediately before the restart,
     so any start line in the slice is this restart's.
     """
-    return any(
-        record.get("message") == STARTING_MESSAGE for record in _json_records(log_text)
-    )
+    return any(record.get("message") == STARTING_MESSAGE for record in _json_records(log_text))
 
 
 def build_log_cursor_command(log_dir: str) -> str:
@@ -615,10 +603,7 @@ def build_started_version_command(log_dir: str, start_date: str) -> str:
     belongs to a run that has ended, which is the one thing this field must not
     report as running.
     """
-    return (
-        f"grep -h -F {STARTING_MESSAGE!r} {log_dir}/*{start_date}*.log "
-        "2>/dev/null | tail -1"
-    )
+    return f"grep -h -F {STARTING_MESSAGE!r} {log_dir}/*{start_date}*.log 2>/dev/null | tail -1"
 
 
 def latest_started_version(log_text: str) -> str | None:

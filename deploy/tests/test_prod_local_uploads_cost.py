@@ -5,6 +5,7 @@ local-uploads writes per-file rows straight into ``deployment_prod_upload_result
 passed to the upsert. Display reuses the prod-uploaders renderer in
 ``print-recorded-results``, already covered elsewhere.
 """
+
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -34,9 +35,9 @@ def repo():
 
 class TestCostToDecimal:
     def test_parses_uint256_string(self):
-        assert prod_local_uploads._cost_to_decimal(
+        assert prod_local_uploads._cost_to_decimal("123456789000000000") == Decimal(
             "123456789000000000"
-        ) == Decimal("123456789000000000")
+        )
 
     def test_empty_and_none_are_null(self):
         assert prod_local_uploads._cost_to_decimal("") is None
@@ -47,14 +48,10 @@ class TestCostToDecimal:
 
 
 def _process(repo, tmp_path, ant_json):
-    deployment = repo.create(
-        name="LOCAL-UP-01", deploy_args={"kind": "prod-local-uploads"}
-    )
+    deployment = repo.create(name="LOCAL-UP-01", deploy_args={"kind": "prod-local-uploads"})
     f = tmp_path / "file.bin"
     f.write_bytes(b"x")
-    with patch.object(
-        prod_local_uploads, "_run_ant", return_value=(0, json.dumps(ant_json))
-    ):
+    with patch.object(prod_local_uploads, "_run_ant", return_value=(0, json.dumps(ant_json))):
         prod_local_uploads._process_one_upload(
             repo=repo,
             deployment_id=deployment.id,
@@ -83,8 +80,11 @@ def test_cost_persisted_from_ant_json(repo, tmp_path):
         repo,
         tmp_path,
         {
-            "chunks_stored": 5, "chunks_failed": 0, "total_chunks": 5,
-            "address": "addr", "elapsed_secs": 1.0,
+            "chunks_stored": 5,
+            "chunks_failed": 0,
+            "total_chunks": 5,
+            "address": "addr",
+            "elapsed_secs": 1.0,
             "storage_cost_atto": "123456789000000000",
             "gas_cost_wei": "42000000000000",
         },
@@ -99,8 +99,11 @@ def test_cost_null_when_ant_omits(repo, tmp_path):
         repo,
         tmp_path,
         {
-            "chunks_stored": 5, "chunks_failed": 0, "total_chunks": 5,
-            "address": "addr", "elapsed_secs": 1.0,
+            "chunks_stored": 5,
+            "chunks_failed": 0,
+            "total_chunks": 5,
+            "address": "addr",
+            "elapsed_secs": 1.0,
         },
     )
     assert len(rows) == 1

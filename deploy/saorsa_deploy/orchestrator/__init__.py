@@ -58,18 +58,12 @@ def build_deploy_steps(manifest: Manifest, *, skip_builds: bool = False) -> list
     return steps
 
 
-def build_destroy_steps(
-    manifest: Manifest, *, skip_drain_failures: bool = False
-) -> list[Step]:
+def build_destroy_steps(manifest: Manifest, *, skip_drain_failures: bool = False) -> list[Step]:
     kind = manifest.kind
     if kind == "testnet":
-        return build_testnet_destroy_steps(
-            manifest, skip_drain_failures=skip_drain_failures
-        )
+        return build_testnet_destroy_steps(manifest, skip_drain_failures=skip_drain_failures)
     if kind == "testnet-extension":
-        return build_extension_destroy_steps(
-            manifest, skip_drain_failures=skip_drain_failures
-        )
+        return build_extension_destroy_steps(manifest, skip_drain_failures=skip_drain_failures)
     if kind == "elasticsearch":
         from saorsa_deploy.orchestrator import elastic as elastic_orch
 
@@ -81,9 +75,7 @@ def build_destroy_steps(
     return prod.build_destroy_steps(manifest)
 
 
-def build_destroy_steps_from_state(
-    name: str, *, skip_drain_failures: bool = False
-) -> list[Step]:
+def build_destroy_steps_from_state(name: str, *, skip_drain_failures: bool = False) -> list[Step]:
     """Destroy steps derived from what actually exists in S3 state — for a
     name-only ``down`` (no manifest).
 
@@ -135,9 +127,7 @@ def build_destroy_steps_from_state(
             clients_argv.append("--skip-drain-failures")
         steps.append(Step(clients_argv, "Destroy clients"))
     if _exists(load_deployment_state):
-        steps.append(
-            Step(["nodes", "destroy", "--name", name, "--force"], "Destroy nodes")
-        )
+        steps.append(Step(["nodes", "destroy", "--name", name, "--force"], "Destroy nodes"))
         steps.append(
             Step(
                 ["bootstraps", "destroy", "--name", name, "--force"],

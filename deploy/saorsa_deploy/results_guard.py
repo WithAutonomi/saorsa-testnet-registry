@@ -67,9 +67,7 @@ def assess(repo, pool_repo, deployment, kind: str) -> ResultsStatus:
     else:
         recorded = len(repo.list_prod_upload_results_for_deployment(deployment.id))
 
-    return ResultsStatus(
-        expected=expected, recorded=recorded, open_claims=open_claims
-    )
+    return ResultsStatus(expected=expected, recorded=recorded, open_claims=open_claims)
 
 
 def warn_if_unrecorded(
@@ -95,8 +93,7 @@ def warn_if_unrecorded(
     )
     if status.expected is not None:
         console.print(
-            f"   {status.recorded} of {status.expected} expected file result(s) "
-            "are in Postgres."
+            f"   {status.recorded} of {status.expected} expected file result(s) are in Postgres."
         )
     else:
         console.print("   No file results are in Postgres for this deployment.")
@@ -111,18 +108,14 @@ def warn_if_unrecorded(
     )
     console.print()
     console.print(
-        f"   [bold]saorsa-deploy deployments record-results --name "
-        f"{deployment_name}[/bold]"
+        f"   [bold]saorsa-deploy deployments record-results --name {deployment_name}[/bold]"
     )
     console.print()
 
     if not interactive:
         # Refusing here would strand billable infrastructure whenever `down`
         # runs unattended, which is how the release skills invoke it.
-        console.print(
-            "[yellow]   Non-interactive — continuing with the teardown "
-            "anyway.[/yellow]"
-        )
+        console.print("[yellow]   Non-interactive — continuing with the teardown anyway.[/yellow]")
         return True
 
     answer = input_fn("   Continue with the teardown? [y/N] ").strip().lower()
@@ -143,9 +136,7 @@ def check_before_destroy(console, deployment_name: str, kind: str) -> None:
     repo = get_repository()
     if repo is None:
         return
-    deployment = repo.get_active_by_name(deployment_name) or repo.get_by_name(
-        deployment_name
-    )
+    deployment = repo.get_active_by_name(deployment_name) or repo.get_by_name(deployment_name)
     if deployment is None:
         return
 

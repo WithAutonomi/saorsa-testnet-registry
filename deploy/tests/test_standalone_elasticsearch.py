@@ -127,22 +127,41 @@ def test_deploy_steps():
     m = _manifest(droplet_size="s-4vcpu-8gb", volume_size=100, reserved_ip="1.2.3.4")
     assert _argvs(build_deploy_steps(m)) == [
         [
-            "elastic", "infra", "--name", "BETA-LOGS-01", "--standalone",
-            "--provider", "digitalocean",
-            "--droplet-size", "s-4vcpu-8gb",
-            "--volume-size", "100",
+            "elastic",
+            "infra",
+            "--name",
+            "BETA-LOGS-01",
+            "--standalone",
+            "--provider",
+            "digitalocean",
+            "--droplet-size",
+            "s-4vcpu-8gb",
+            "--volume-size",
+            "100",
             "--public-ingest",
-            "--reserved-ip", "1.2.3.4",
+            "--reserved-ip",
+            "1.2.3.4",
         ],
         [
-            "elastic", "provision", "--name", "BETA-LOGS-01",
-            "--ssh-key-path", SSH,
-            "--retention-days", "14",
-            "--public-ingest", "--ingest-hostname", HOST,
+            "elastic",
+            "provision",
+            "--name",
+            "BETA-LOGS-01",
+            "--ssh-key-path",
+            SSH,
+            "--retention-days",
+            "14",
+            "--public-ingest",
+            "--ingest-hostname",
+            HOST,
         ],
         [
-            "deployments", "generate-inventory", "--name", "BETA-LOGS-01",
-            "--ssh-key-path", SSH,
+            "deployments",
+            "generate-inventory",
+            "--name",
+            "BETA-LOGS-01",
+            "--ssh-key-path",
+            SSH,
         ],
     ]
 
@@ -196,7 +215,10 @@ def test_slack_post_tail_still_applies():
         }
     )
     assert build_deploy_steps(m)[-1].argv == [
-        "deployments", "slack-post", "--name", "BETA-LOGS-01",
+        "deployments",
+        "slack-post",
+        "--name",
+        "BETA-LOGS-01",
     ]
 
 
@@ -205,16 +227,17 @@ def test_slack_post_tail_still_applies():
 # --------------------------------------------------------------------------- #
 def _pub(**kw) -> ElasticProvisioner:
     return ElasticProvisioner(
-        "10.0.0.1", SSH, "BETA-LOGS-01",
-        public_ingest=True, ingest_hostname=HOST, **kw,
+        "10.0.0.1",
+        SSH,
+        "BETA-LOGS-01",
+        public_ingest=True,
+        ingest_hostname=HOST,
+        **kw,
     )
 
 
 def _config_lines(yml: str) -> list[str]:
-    return [
-        line for line in yml.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    return [line for line in yml.splitlines() if line.strip() and not line.strip().startswith("#")]
 
 
 def test_public_instance_binds_loopback_only():
@@ -287,7 +310,7 @@ def test_caddyfile_exposes_only_write_endpoints():
     # unreachable by default rather than newly exposed.
     assert "method POST PUT" in cfg
     assert "_search" not in cfg
-    assert "respond \"not found\" 404" in cfg
+    assert 'respond "not found" 404' in cfg
 
 
 def test_caddyfile_trims_the_bulk_response():
@@ -427,7 +450,11 @@ def test_setup_script_creates_the_pipeline_before_the_template():
 @pytest.mark.parametrize("level", ["info", "debug", "trace"])
 def test_setup_script_renders_for_every_level(level):
     p = ElasticProvisioner(
-        "10.0.0.1", SSH, "B", public_ingest=True, ingest_hostname=HOST,
+        "10.0.0.1",
+        SSH,
+        "B",
+        public_ingest=True,
+        ingest_hostname=HOST,
         min_log_level=level,
     )
     compile(p._build_setup_script(), "setup", "exec")
@@ -436,7 +463,11 @@ def test_setup_script_renders_for_every_level(level):
 def test_bad_min_level_fails_before_any_vm_is_touched():
     with pytest.raises(ValueError, match="must be one of"):
         ElasticProvisioner(
-            "10.0.0.1", SSH, "B", public_ingest=True, ingest_hostname=HOST,
+            "10.0.0.1",
+            SSH,
+            "B",
+            public_ingest=True,
+            ingest_hostname=HOST,
             min_log_level="verbose",
         )
 
@@ -618,9 +649,7 @@ _STATE = {
 
 
 def _inv():
-    return build_elasticsearch_inventory(
-        "ant-prod-beta-01", elastic_state=_STATE, ssh_key=SSH
-    )
+    return build_elasticsearch_inventory("ant-prod-beta-01", elastic_state=_STATE, ssh_key=SSH)
 
 
 def test_inventory_describes_the_es_vm():

@@ -30,16 +30,14 @@ def cmd_print(args):
     repo = get_repository()
     if repo is None:
         console.print(
-            "[bold red]Error:[/bold red] DATABASE_URL is not set or the database "
-            "is unreachable."
+            "[bold red]Error:[/bold red] DATABASE_URL is not set or the database is unreachable."
         )
         sys.exit(1)
 
     deployment = repo.get(args.id)
     if deployment is None:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment with ID {args.id} "
-            "found in the registry."
+            f"[bold red]Error:[/bold red] No deployment with ID {args.id} found in the registry."
         )
         sys.exit(1)
 

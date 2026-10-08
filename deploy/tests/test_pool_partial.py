@@ -49,9 +49,7 @@ def repo():
 @pytest.fixture
 def fake_s3(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr(
-        pool_selection, "load_pool_selection", lambda name: store.get(name)
-    )
+    monkeypatch.setattr(pool_selection, "load_pool_selection", lambda name: store.get(name))
     monkeypatch.setattr(
         pool_selection,
         "save_pool_selection",
@@ -124,9 +122,7 @@ class TestSchema:
     def test_two_open_claims_are_still_refused_after_a_partial(self, repo):
         _seed(repo, 1)
         _claim_and_partial(repo)
-        repo.claim_pool_files(
-            PoolFileKind.URL, {SizeClass.SMALL: 1}, ClaimSource.PROD_UPLOADERS
-        )
+        repo.claim_pool_files(PoolFileKind.URL, {SizeClass.SMALL: 1}, ClaimSource.PROD_UPLOADERS)
         # The second live claim is what the index must still stop.
         with pytest.raises(IntegrityError):
             repo.session.add(
@@ -158,7 +154,10 @@ class TestAvailability:
         # "342 of 400 chunks" is the useful fact; "it failed" is not.
         _seed(repo, 1)
         claim = _claim_and_partial(
-            repo, chunks_stored=342, chunks_failed=58, total_chunks=400,
+            repo,
+            chunks_stored=342,
+            chunks_failed=58,
+            total_chunks=400,
             address="a7f3c2",
         )
         assert claim.status is ClaimStatus.PARTIAL
@@ -269,9 +268,7 @@ class TestImportHistory:
 
         deployment_repo = SqlAlchemyDeploymentRepository(repo.session)
         monkeypatch.setattr(prod_pool, "get_file_pool_repository", lambda: repo)
-        monkeypatch.setattr(
-            "saorsa_deploy.registry.get_repository", lambda: deployment_repo
-        )
+        monkeypatch.setattr("saorsa_deploy.registry.get_repository", lambda: deployment_repo)
 
         pool_file, _ = repo.add_pool_file(
             PoolFileKind.URL, "https://example.org/a.bin", "a.bin", size_bytes=50 * MIB
@@ -302,9 +299,7 @@ class TestImportHistory:
         assert claim.status is ClaimStatus.PARTIAL
         assert claim.chunks_stored == 342
         # Still available — it was never fully uploaded.
-        assert pool_file.id in {
-            f.id for f in repo.list_pool_files(status=POOL_STATUS_AVAILABLE)
-        }
+        assert pool_file.id in {f.id for f in repo.list_pool_files(status=POOL_STATUS_AVAILABLE)}
         out = " ".join(capsys.readouterr().out.split())
         assert "part-uploaded" in out
         assert "excluded from canaries" in out
@@ -326,14 +321,11 @@ class TestListAndShowRendering:
         return prod_pool
 
     def _list_args(self, **kwargs):
-        base = dict(status=None, kind=None, size=None, tag=None, since=None,
-                    limit=None, all=False)
+        base = dict(status=None, kind=None, size=None, tag=None, since=None, limit=None, all=False)
         base.update(kwargs)
         return argparse.Namespace(**base)
 
-    def test_list_marks_a_partial_file_with_an_asterisk(
-        self, repo, monkeypatch, capsys
-    ):
+    def test_list_marks_a_partial_file_with_an_asterisk(self, repo, monkeypatch, capsys):
         prod_pool = self._wired(repo, monkeypatch)
         files = _seed(repo, 2)
         _partial_specific(repo, files[0], chunks_stored=342, total_chunks=400)
@@ -370,13 +362,9 @@ class TestListAndShowRendering:
     def test_show_surfaces_the_earlier_partial(self, repo, monkeypatch, capsys):
         prod_pool = self._wired(repo, monkeypatch)
         files = _seed(repo, 1)
-        _partial_specific(
-            repo, files[0], chunks_stored=342, total_chunks=400, address="a7f3c2"
-        )
+        _partial_specific(repo, files[0], chunks_stored=342, total_chunks=400, address="a7f3c2")
 
-        prod_pool.cmd_prod_pool_show(
-            argparse.Namespace(file_id=files[0].id, address=None)
-        )
+        prod_pool.cmd_prod_pool_show(argparse.Namespace(file_id=files[0].id, address=None))
         out = " ".join(capsys.readouterr().out.split())
         assert "partially uploaded before" in out
         assert "342 of 400 chunk(s) stored" in out
@@ -385,9 +373,7 @@ class TestListAndShowRendering:
     def test_show_is_unchanged_for_an_untouched_file(self, repo, monkeypatch, capsys):
         prod_pool = self._wired(repo, monkeypatch)
         files = _seed(repo, 1)
-        prod_pool.cmd_prod_pool_show(
-            argparse.Namespace(file_id=files[0].id, address=None)
-        )
+        prod_pool.cmd_prod_pool_show(argparse.Namespace(file_id=files[0].id, address=None))
         out = " ".join(capsys.readouterr().out.split())
         assert "status available" in out
         assert "partially uploaded" not in out
@@ -407,8 +393,12 @@ class TestExplicitExclusion:
         files = _seed(repo, 3)
         _partial_specific(repo, files[0])
         selected = pool_selection.select_for_deployment(
-            repo, name="PROD-UL-07", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 2}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-07",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 2},
+            source=ClaimSource.PROD_UPLOADERS,
             exclude_partial=True,
         )
         assert files[0].id not in {entry.file_id for entry in selected}
@@ -417,8 +407,12 @@ class TestExplicitExclusion:
         _seed(repo, 1)
         _partial_specific(repo, repo.list_pool_files()[0])
         selected = pool_selection.select_for_deployment(
-            repo, name="PROD-UL-08", slot="uploader-1", kind=PoolFileKind.URL,
-            request={SizeClass.SMALL: 1}, source=ClaimSource.PROD_UPLOADERS,
+            repo,
+            name="PROD-UL-08",
+            slot="uploader-1",
+            kind=PoolFileKind.URL,
+            request={SizeClass.SMALL: 1},
+            source=ClaimSource.PROD_UPLOADERS,
         )
         assert len(selected) == 1
 
@@ -427,9 +421,13 @@ class TestExplicitExclusion:
         _partial_specific(repo, repo.list_pool_files()[0])
         with pytest.raises(pool_selection.PoolSelectionError):
             pool_selection.select_for_deployment(
-                repo, name="PROD-CANARY-05", slot="canary-upload",
-                kind=PoolFileKind.URL, request={SizeClass.SMALL: 1},
-                source=ClaimSource.PROD_CANARY, exclude_partial=False,
+                repo,
+                name="PROD-CANARY-05",
+                slot="canary-upload",
+                kind=PoolFileKind.URL,
+                request={SizeClass.SMALL: 1},
+                source=ClaimSource.PROD_CANARY,
+                exclude_partial=False,
             )
 
     def test_manifest_maps_to_the_spec_token(self):
@@ -437,7 +435,9 @@ class TestExplicitExclusion:
         from saorsa_deploy.orchestrator.prod import _prod_uploader_spec
 
         uploader = ProdUploader(
-            region="lon1", vm_size="s-4vcpu-8gb", pool={"medium": 1},
+            region="lon1",
+            vm_size="s-4vcpu-8gb",
+            pool={"medium": 1},
             exclude_partial=True,
         )
         assert _prod_uploader_spec(uploader) == (
@@ -447,9 +447,7 @@ class TestExplicitExclusion:
     def test_spec_token_round_trips(self):
         from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
 
-        spec = parse_prod_uploader_spec(
-            "lon1:s-4vcpu-8gb:pool=medium:1:exclude_partial=true"
-        )
+        spec = parse_prod_uploader_spec("lon1:s-4vcpu-8gb:pool=medium:1:exclude_partial=true")
         assert spec["exclude_partial"] is True
 
     def test_absent_token_defaults_to_false(self):

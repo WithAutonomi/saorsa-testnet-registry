@@ -136,8 +136,7 @@ def wait_for_ssh(
 
     if console:
         console.print(
-            f"[dim]Waiting for SSH on {len(pending)} host(s) "
-            f"(timeout {timeout}s)...[/dim]"
+            f"[dim]Waiting for SSH on {len(pending)} host(s) (timeout {timeout}s)...[/dim]"
         )
 
     deadline = time.time() + timeout
@@ -146,11 +145,16 @@ def wait_for_ssh(
         result = subprocess.run(
             [
                 "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", f"ConnectTimeout={per_check_timeout}",
-                "-o", "BatchMode=yes",
-                "-i", ssh_key_path,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                f"ConnectTimeout={per_check_timeout}",
+                "-o",
+                "BatchMode=yes",
+                "-i",
+                ssh_key_path,
                 f"root@{ip}",
                 "true",
             ],
@@ -159,9 +163,7 @@ def wait_for_ssh(
         return ip, result.returncode == 0
 
     while pending and time.time() < deadline:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, len(pending))
-        ) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(pending))) as executor:
             results = list(executor.map(_check, list(pending)))
         for ip, ok in results:
             if ok and ip in pending:

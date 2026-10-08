@@ -167,8 +167,7 @@ class TestUploaderPublishesSize:
             [
                 "bash",
                 "-c",
-                f'ADDRESSES_FILE="{addresses}"\n{body}\n'
-                'publish_address addr123 10485760 abcdef',
+                f'ADDRESSES_FILE="{addresses}"\n{body}\npublish_address addr123 10485760 abcdef',
             ],
             capture_output=True,
             text=True,
@@ -180,9 +179,7 @@ class TestUploaderPublishesSize:
 # --------------------------------------------------------------------------- #
 # clients provision hands the WASM downloader the cap
 # --------------------------------------------------------------------------- #
-BOOTSTRAP_ADDR = (
-    "/ip4/1.2.3.4/udp/42768/webrtc-direct/certhash/uEiA/p2p/" + "ab" * 32
-)
+BOOTSTRAP_ADDR = "/ip4/1.2.3.4/udp/42768/webrtc-direct/certhash/uEiA/p2p/" + "ab" * 32
 
 
 def _wasm_env_cmds(role):

@@ -190,8 +190,7 @@ def _ensure_elastic(args, console: Console) -> None:
         return
 
     console.print(
-        "[bold cyan]Creating dedicated Elasticsearch VM for node log forwarding"
-        "[/bold cyan]"
+        "[bold cyan]Creating dedicated Elasticsearch VM for node log forwarding[/bold cyan]"
     )
     cmd_elastic_infra(
         SimpleNamespace(
@@ -307,9 +306,7 @@ def _ensure_monitoring(args, console: Console) -> None:
             f"[yellow]Monitoring VM for '{args.name}' exists but has no InfluxDB "
             "creds (a prior provision didn't finish) — re-provisioning.[/yellow]"
         )
-        cmd_provision_monitoring(
-            SimpleNamespace(name=args.name, ssh_key_path=args.ssh_key_path)
-        )
+        cmd_provision_monitoring(SimpleNamespace(name=args.name, ssh_key_path=args.ssh_key_path))
         return
 
     console.print("[bold cyan]Creating monitoring (InfluxDB) VM[/bold cyan]")
@@ -324,9 +321,7 @@ def _ensure_monitoring(args, console: Console) -> None:
         )
     )
     console.print("[bold cyan]Provisioning InfluxDB + Grafana[/bold cyan]")
-    cmd_provision_monitoring(
-        SimpleNamespace(name=args.name, ssh_key_path=args.ssh_key_path)
-    )
+    cmd_provision_monitoring(SimpleNamespace(name=args.name, ssh_key_path=args.ssh_key_path))
 
 
 def _provision_prod_nodes(args, console: Console) -> None:
@@ -348,13 +343,9 @@ def _provision_prod_nodes(args, console: Console) -> None:
 
     bootstrap_nodes = state.get("bootstrap_nodes") or []
     bootstrap_port = state.get("bootstrap_port")
-    bootstrap_peers = [
-        f"{n['ip']}:{n.get('port', bootstrap_port)}" for n in bootstrap_nodes
-    ]
+    bootstrap_peers = [f"{n['ip']}:{n.get('port', bootstrap_port)}" for n in bootstrap_nodes]
     if not bootstrap_peers:
-        console.print(
-            "[bold red]Error:[/bold red] No prod bootstrap peers in state."
-        )
+        console.print("[bold red]Error:[/bold red] No prod bootstrap peers in state.")
         sys.exit(1)
 
     binary_url, binary_is_archive = _resolve_binary_source(args, console)
@@ -362,9 +353,7 @@ def _provision_prod_nodes(args, console: Console) -> None:
     clear_known_hosts(all_ips, console)
     not_ready = wait_for_ssh(all_ips, args.ssh_key_path, console=console)
     if not_ready:
-        console.print(
-            f"[bold red]Error:[/bold red] SSH never came up on: {', '.join(not_ready)}"
-        )
+        console.print(f"[bold red]Error:[/bold red] SSH never came up on: {', '.join(not_ready)}")
         sys.exit(1)
 
     # Fold in the node telegraf forwarders whenever the deployment has a backend
@@ -372,12 +361,8 @@ def _provision_prod_nodes(args, console: Console) -> None:
     # node-log forwarder (--forward-logs). build_node_telegraf_providers resolves
     # each backend from state by deployment name and skips any that's absent.
     extra_op_providers = []
-    monitoring_on = bool(getattr(args, "monitoring", False)) and _monitoring_has_influx(
-        args.name
-    )
-    elastic_on = bool(getattr(args, "forward_logs", False)) and _elastic_has_creds(
-        args.name
-    )
+    monitoring_on = bool(getattr(args, "monitoring", False)) and _monitoring_has_influx(args.name)
+    elastic_on = bool(getattr(args, "forward_logs", False)) and _elastic_has_creds(args.name)
     if monitoring_on or elastic_on:
         from saorsa_deploy.cmd.telegraf_fold import build_node_telegraf_providers
 
@@ -478,9 +463,7 @@ def _install_trace_logprune(args, console: Console) -> None:
     ]
 
     clear_known_hosts(host_ips, console)
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     state_obj = State(inventory=Inventory((hosts_data, {})), config=Config())
     connect_all(state_obj)
     try:
@@ -512,9 +495,7 @@ def cmd_prod_nodes_deploy(args):
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
     console.print(f"  heaptrack: {'on' if args.heaptrack else 'off'}")
     console.print(f"  Monitoring: {'on' if args.monitoring else 'off'}")
-    console.print(
-        f"  Log forwarding (dedicated ES): {'on' if args.forward_logs else 'off'}"
-    )
+    console.print(f"  Log forwarding (dedicated ES): {'on' if args.forward_logs else 'off'}")
     console.print()
 
     deploy_args_payload = {
@@ -530,9 +511,7 @@ def cmd_prod_nodes_deploy(args):
         "monitoring_name": args.name if args.monitoring else None,
         "forward_logs": args.forward_logs,
         "elastic_name": args.name if args.forward_logs else None,
-        "elastic_retention_days": (
-            args.elastic_retention_days if args.forward_logs else None
-        ),
+        "elastic_retention_days": (args.elastic_retention_days if args.forward_logs else None),
         "log_retention_days": args.log_retention_days,
         "rewards_address": args.rewards_address,
         "log_level": args.log_level,
@@ -559,17 +538,13 @@ def cmd_prod_nodes_deploy(args):
         from saorsa_deploy.cmd.start_nodes import cmd_start_nodes
 
         cmd_start_nodes(
-            SimpleNamespace(
-                name=args.name, ssh_key_path=args.ssh_key_path, region=None
-            )
+            SimpleNamespace(name=args.name, ssh_key_path=args.ssh_key_path, region=None)
         )
 
         if args.heaptrack:
             _install_trace_logprune(args, console)
 
-        record_deploy_args_update(
-            args.name, {"nodes_per_vm": args.node_count}
-        )
+        record_deploy_args_update(args.name, {"nodes_per_vm": args.node_count})
     except SystemExit:
         record_event(args.name, "prod_nodes_deploy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
@@ -614,25 +589,19 @@ def cmd_prod_nodes_destroy(args):
             pass
 
         if args.keep_monitoring:
-            console.print(
-                "[dim]Leaving monitoring stack intact (--keep-monitoring).[/dim]"
-            )
+            console.print("[dim]Leaving monitoring stack intact (--keep-monitoring).[/dim]")
         elif _monitoring_stack_exists(args.name):
             console.print("[bold cyan]Destroying monitoring stack...[/bold cyan]")
             cmd_destroy_monitoring(SimpleNamespace(name=args.name, force=True))
         else:
-            console.print(
-                f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
-            )
+            console.print(f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]")
 
         # Tear down the dedicated node-log Elasticsearch VM (only present when the
         # deploy used --forward-logs) unless --keep-elastic was given. Reuses the
         # shared prod helper — the ES state key is the same as for client kinds.
         from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
 
-        destroy_client_elastic(
-            args.name, getattr(args, "keep_elastic", False), console
-        )
+        destroy_client_elastic(args.name, getattr(args, "keep_elastic", False), console)
     except SystemExit:
         record_event(args.name, "prod_nodes_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)

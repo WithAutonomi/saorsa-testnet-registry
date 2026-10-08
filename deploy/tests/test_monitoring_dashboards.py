@@ -28,11 +28,7 @@ def _panel_titles(dashboard: dict) -> list[str]:
 
 
 def _host_role_var(dashboard: dict) -> dict:
-    return next(
-        v
-        for v in dashboard["templating"]["list"]
-        if v["name"] == "host_role"
-    )
+    return next(v for v in dashboard["templating"]["list"] if v["name"] == "host_role")
 
 
 def _all_queries(dashboard: dict) -> list[str]:
@@ -58,58 +54,44 @@ def _buckets_referenced(dashboard: dict) -> set[str]:
 
 class TestNodeHostDashboard:
     def test_title_renamed_to_node_host_statistics(self):
-        dashboard = json.loads(
-            _make_provisioner()._build_host_metrics_dashboard()
-        )
+        dashboard = json.loads(_make_provisioner()._build_host_metrics_dashboard())
         assert dashboard["title"] == "Node Host Statistics"
 
     def test_uid_and_tag_stable(self):
         # The on-disk uid stays put so re-provisioning an existing monitoring
         # VM updates the dashboard in place rather than orphaning the old one.
-        dashboard = json.loads(
-            _make_provisioner()._build_host_metrics_dashboard()
-        )
+        dashboard = json.loads(_make_provisioner()._build_host_metrics_dashboard())
         assert dashboard["uid"] == "ant-host-metrics"
         assert dashboard["tags"] == ["ant", "testnet", "host-metrics"]
 
     def test_keeps_per_process_panels(self):
-        titles = _panel_titles(
-            json.loads(_make_provisioner()._build_host_metrics_dashboard())
-        )
+        titles = _panel_titles(json.loads(_make_provisioner()._build_host_metrics_dashboard()))
         assert "Node RSS (max / mean / min across nodes)" in titles
         assert "Node CPU (max / mean / min across nodes)" in titles
         assert "Attached Volume Usage" in titles
 
     def test_role_defaults_to_all(self):
-        dashboard = json.loads(
-            _make_provisioner()._build_host_metrics_dashboard()
-        )
+        dashboard = json.loads(_make_provisioner()._build_host_metrics_dashboard())
         assert _host_role_var(dashboard)["current"]["value"] == "$__all"
 
     def test_queries_only_the_node_bucket(self):
         # Every panel + template-var query reads the node bucket; the client
         # bucket must never be touched here, so client data can't bleed in.
-        dashboard = json.loads(
-            _make_provisioner()._build_host_metrics_dashboard()
-        )
+        dashboard = json.loads(_make_provisioner()._build_host_metrics_dashboard())
         assert _buckets_referenced(dashboard) == {INFLUXDB_BUCKET}
         assert INFLUXDB_CLIENT_BUCKET not in _buckets_referenced(dashboard)
 
 
 class TestClientHostDashboard:
     def test_title_and_identity(self):
-        dashboard = json.loads(
-            _make_provisioner()._build_client_host_metrics_dashboard()
-        )
+        dashboard = json.loads(_make_provisioner()._build_client_host_metrics_dashboard())
         assert dashboard["title"] == "Client Host Statistics"
         assert dashboard["uid"] == "ant-client-host-metrics"
         assert dashboard["tags"] == ["ant", "testnet", "client-host-metrics"]
 
     def test_exact_panel_set(self):
         titles = _panel_titles(
-            json.loads(
-                _make_provisioner()._build_client_host_metrics_dashboard()
-            )
+            json.loads(_make_provisioner()._build_client_host_metrics_dashboard())
         )
         assert titles == [
             "CPU Usage",
@@ -121,9 +103,7 @@ class TestClientHostDashboard:
 
     def test_excludes_node_and_volume_panels(self):
         titles = _panel_titles(
-            json.loads(
-                _make_provisioner()._build_client_host_metrics_dashboard()
-            )
+            json.loads(_make_provisioner()._build_client_host_metrics_dashboard())
         )
         assert not any("Node RSS" in t for t in titles)
         assert not any("Node CPU" in t for t in titles)
@@ -136,9 +116,7 @@ class TestClientHostDashboard:
         assert "/mnt/ant-node-storage" not in raw
 
     def test_role_defaults_to_client(self):
-        dashboard = json.loads(
-            _make_provisioner()._build_client_host_metrics_dashboard()
-        )
+        dashboard = json.loads(_make_provisioner()._build_client_host_metrics_dashboard())
         role_var = _host_role_var(dashboard)
         assert role_var["current"]["value"] == "CLIENT"
         assert role_var["current"]["text"] == "CLIENT"
@@ -149,9 +127,7 @@ class TestClientHostDashboard:
         # Physical isolation: the client dashboard reads exclusively from the
         # client bucket, so node data cannot appear here regardless of the
         # host_role dropdown.
-        dashboard = json.loads(
-            _make_provisioner()._build_client_host_metrics_dashboard()
-        )
+        dashboard = json.loads(_make_provisioner()._build_client_host_metrics_dashboard())
         assert _buckets_referenced(dashboard) == {INFLUXDB_CLIENT_BUCKET}
         assert INFLUXDB_BUCKET not in _buckets_referenced(dashboard)
 
@@ -197,15 +173,11 @@ class TestRetention:
         assert 'RETENTION_SECONDS = int("0")' in script
 
     def test_retention_days_converted_to_seconds(self):
-        script = _make_provisioner(
-            retention_days=14
-        )._build_influxdb_setup_py()
+        script = _make_provisioner(retention_days=14)._build_influxdb_setup_py()
         assert f'RETENTION_SECONDS = int("{14 * 86400}")' in script
 
     def test_no_placeholder_left_in_script(self):
-        script = _make_provisioner(
-            retention_days=7
-        )._build_influxdb_setup_py()
+        script = _make_provisioner(retention_days=7)._build_influxdb_setup_py()
         assert "{{INFLUXDB_RETENTION_SECONDS}}" not in script
 
 
@@ -223,9 +195,7 @@ class TestGrafanaDatasource:
 class TestProvisioningWiresClientDashboard:
     @patch("saorsa_deploy.provisioning.monitoring.add_op")
     @patch("saorsa_deploy.provisioning.monitoring.server")
-    def test_configure_grafana_writes_client_dashboard(
-        self, _mock_server, mock_add_op
-    ):
+    def test_configure_grafana_writes_client_dashboard(self, _mock_server, mock_add_op):
         _make_provisioner()._add_configure_grafana_ops(
             MagicMock(),
             influxdb_url="http://10.0.0.1:8086",
@@ -290,8 +260,10 @@ class TestEgressAccountingDashboard:
     def test_numerator_is_udp_plus_relay_carrier_plus_relayed(self):
         """wire_tx_bytes / fetch_response_tx_bytes would double-count the same
         bytes at a higher layer; virtual_udp_tx_bytes rides on the carrier."""
-        for title in ("Egress accounting coverage (%)",
-                      "Unaccounted egress (mean over range, top 15)"):
+        for title in (
+            "Egress accounting coverage (%)",
+            "Unaccounted egress (mean over range, top 15)",
+        ):
             q = self._query(title)
             for target, field in (
                 ("saorsa_transport::traffic", "udp_tx_bytes"),
@@ -312,13 +284,15 @@ class TestEgressAccountingDashboard:
         with the range so a 48h prod view stays tractable."""
         q = self._query("Egress accounting coverage (%)")
         assert "range_ns = int(v: v.timeRangeStop) - int(v: v.timeRangeStart)" in q
-        assert ("w = if range_ns > int(v: 24h) then 1h "
-                "else if range_ns > int(v: 6h) then 30m else 10m") in q
+        assert (
+            "w = if range_ns > int(v: 24h) then 1h else if range_ns > int(v: 6h) then 30m else 10m"
+        ) in q
         for stream in ("accounted", "nic"):
             body = q.split(f"{stream} = from(bucket")[1].split("\n\n")[0]
             lines = [ln.strip() for ln in body.splitlines()[1:]]
             first_non_filter = next(
-                i for i, ln in enumerate(lines)
+                i
+                for i, ln in enumerate(lines)
                 if not ln.startswith("|> range") and not ln.startswith("|> filter")
             )
             assert lines[first_non_filter].startswith("|> aggregateWindow(every: w, fn:")
@@ -332,8 +306,12 @@ class TestEgressAccountingDashboard:
         one at udp_tx_bytes=0; per-session relay lines): `last` would flap and
         `nonNegative` keep the full total every tick (25x the NIC). The
         summary total is >= every other line in the window, so `max`."""
-        for title in ("Egress accounting coverage (%)", "Relay throughput (relay servers)",
-                      "Replication serving", "Egress decomposition (selected hosts, stacked)"):
+        for title in (
+            "Egress accounting coverage (%)",
+            "Relay throughput (relay servers)",
+            "Replication serving",
+            "Egress decomposition (selected hosts, stacked)",
+        ):
             q = self._query(title)
             assert "aggregateWindow(every: w, fn: max, createEmpty: false)" in q
             assert "fn: last" not in q.split("nic = from")[0]
@@ -385,21 +363,30 @@ class TestEgressAccountingDashboard:
         assert 'r["_field"] == "bytes_recv"' in rx
 
     def test_decomposition_is_stacked_per_field_over_selected_hosts(self):
-        panel = next(p for p in self._dash()["panels"]
-                     if p["title"].startswith("Egress decomposition"))
+        panel = next(
+            p for p in self._dash()["panels"] if p["title"].startswith("Egress decomposition")
+        )
         assert panel["fieldConfig"]["defaults"]["custom"]["stacking"]["mode"] == "normal"
         q = panel["targets"][0]["query"]
         assert 'group(columns: ["_field", "_time"])\n  |> sum()' in q
         assert "r._value / w_secs" in q
-        for field in ("wire_tx_bytes", "get_success_tx_bytes", "fetch_response_tx_bytes",
-                      "bytes_relayed", "lost_bytes", "stateless_tx_bytes", "failed_dial_tx_bytes"):
+        for field in (
+            "wire_tx_bytes",
+            "get_success_tx_bytes",
+            "fetch_response_tx_bytes",
+            "bytes_relayed",
+            "lost_bytes",
+            "stateless_tx_bytes",
+            "failed_dial_tx_bytes",
+        ):
             assert field in q
         labelled = {o["matcher"]["options"] for o in panel["fieldConfig"]["overrides"]}
         assert "wire_tx_bytes" in labelled
 
     def test_coverage_panel_thresholds_red_below_80(self):
-        panel = next(p for p in self._dash()["panels"]
-                     if p["title"] == "Egress accounting coverage (%)")
+        panel = next(
+            p for p in self._dash()["panels"] if p["title"] == "Egress accounting coverage (%)"
+        )
         steps = panel["fieldConfig"]["defaults"]["thresholds"]["steps"]
         assert steps == [
             {"color": "red", "value": None},
@@ -409,8 +396,9 @@ class TestEgressAccountingDashboard:
         assert "mean" in panel["options"]["legend"]["calcs"]
 
     def test_unaccounted_panel_is_a_top_15_table_of_rates(self):
-        panel = next(p for p in self._dash()["panels"]
-                     if p["title"].startswith("Unaccounted egress"))
+        panel = next(
+            p for p in self._dash()["panels"] if p["title"].startswith("Unaccounted egress")
+        )
         assert panel["type"] == "table"
         assert panel["fieldConfig"]["defaults"]["unit"] == "Bps"
         q = panel["targets"][0]["query"]
@@ -421,19 +409,29 @@ class TestEgressAccountingDashboard:
     def test_numerator_note_names_the_exclusions(self):
         panel = next(p for p in self._dash()["panels"] if p["type"] == "text")
         content = panel["options"]["content"]
-        for phrase in ("udp_tx_bytes", "relay_carrier_udp_tx_bytes", "bytes_relayed",
-                       "wire_tx_bytes", "fetch_response_tx_bytes", "upper bound", "V2-834",
-                       "sock_tx_bytes"):
+        for phrase in (
+            "udp_tx_bytes",
+            "relay_carrier_udp_tx_bytes",
+            "bytes_relayed",
+            "wire_tx_bytes",
+            "fetch_response_tx_bytes",
+            "upper bound",
+            "V2-834",
+            "sock_tx_bytes",
+        ):
             assert phrase in content
 
     @patch("saorsa_deploy.provisioning.monitoring.add_op")
     @patch("saorsa_deploy.provisioning.monitoring.server")
     def test_configure_grafana_writes_egress_dashboard(self, _mock_server, mock_add_op):
         _make_provisioner()._add_configure_grafana_ops(
-            MagicMock(), influxdb_url="http://10.0.0.1:8086", influx_token="tok",
+            MagicMock(),
+            influxdb_url="http://10.0.0.1:8086",
+            influx_token="tok",
         )
         call = next(
-            c for c in mock_add_op.call_args_list
+            c
+            for c in mock_add_op.call_args_list
             if c.kwargs["name"] == "Write egress accounting dashboard"
         )
         commands = "\n".join(call.kwargs["commands"])
@@ -446,9 +444,12 @@ class TestHostVariableIgnoresTailPoints:
     UPPER-cased host; the Host dropdown must not list every host twice."""
 
     def test_host_variable_pinned_to_cpu_measurement(self):
-        for build in ("_build_host_metrics_dashboard", "_build_client_host_metrics_dashboard",
-                      "_build_egress_accounting_dashboard",
-                      "_build_node_traffic_by_service_dashboard"):
+        for build in (
+            "_build_host_metrics_dashboard",
+            "_build_client_host_metrics_dashboard",
+            "_build_egress_accounting_dashboard",
+            "_build_node_traffic_by_service_dashboard",
+        ):
             dash = json.loads(getattr(_make_provisioner(), build)())
             var = next(v for v in dash["templating"]["list"] if v["name"] == "host")
             assert 'r["_measurement"] == "cpu"' in var["query"]
@@ -498,8 +499,9 @@ class TestNodeTrafficByServiceDashboard:
 
     def test_top_tables_rank_fleet_wide_without_host_filter(self):
         dash = self._dash()
-        tables = [p for p in dash["panels"]
-                  if p["type"] == "table" and p["title"].startswith("Top ")]
+        tables = [
+            p for p in dash["panels"] if p["type"] == "table" and p["title"].startswith("Top ")
+        ]
         assert len(tables) == 4
         for panel in tables:
             q = panel["targets"][0]["query"]
@@ -516,7 +518,7 @@ class TestNodeTrafficByServiceDashboard:
                 for o in panel["fieldConfig"]["overrides"]
             }
             assert units == {"host": [], "service_number": [], "mean": ["Bps"], "peak": ["Bps"]}
-            assert 'regexp.replaceAllString(r: /^.*ant-(node|bootstrap)-([0-9]+).*$/' in q
+            assert "regexp.replaceAllString(r: /^.*ant-(node|bootstrap)-([0-9]+).*$/" in q
             # pushdown shape, same as the egress dashboard
             assert "aggregateWindow(every: w, fn: max, createEmpty: false)" in q
             assert "|> filter(fn: (r) => r._time < v.timeRangeStop)" in q
@@ -529,7 +531,7 @@ class TestNodeTrafficByServiceDashboard:
             q = panel["targets"][0]["query"]
             assert 'r["host"] =~ /(?i)^$host$/' in q
             assert 'group(columns: ["service_number", "_time"])' in q
-            assert 'regexp.replaceAllString(r: /^.*ant-(node|bootstrap)-([0-9]+).*$/' in q
+            assert "regexp.replaceAllString(r: /^.*ant-(node|bootstrap)-([0-9]+).*$/" in q
             assert panel["fieldConfig"]["defaults"]["displayName"] == (
                 "service ${__field.labels.service_number}"
             )
@@ -549,21 +551,27 @@ class TestNodeTrafficByServiceDashboard:
             assert panel["gridPos"]["x"] == 0
 
     def test_relay_tables_cover_both_relay_servers(self):
-        panel = next(p for p in self._dash()["panels"]
-                     if p["title"].endswith("relay bytes forwarded"))
+        panel = next(
+            p for p in self._dash()["panels"] if p["title"].endswith("relay bytes forwarded")
+        )
         q = panel["targets"][0]["query"]
-        for target in ("saorsa_transport::relay::traffic",
-                       "saorsa_transport::masque::relay_server"):
+        for target in (
+            "saorsa_transport::relay::traffic",
+            "saorsa_transport::masque::relay_server",
+        ):
             assert f'(r["target"] == "{target}" and r["_field"] == "bytes_relayed")' in q
 
     @patch("saorsa_deploy.provisioning.monitoring.add_op")
     @patch("saorsa_deploy.provisioning.monitoring.server")
     def test_configure_grafana_writes_by_service_dashboard(self, _mock_server, mock_add_op):
         _make_provisioner()._add_configure_grafana_ops(
-            MagicMock(), influxdb_url="http://10.0.0.1:8086", influx_token="tok",
+            MagicMock(),
+            influxdb_url="http://10.0.0.1:8086",
+            influx_token="tok",
         )
         call = next(
-            c for c in mock_add_op.call_args_list
+            c
+            for c in mock_add_op.call_args_list
             if c.kwargs["name"] == "Write node traffic by service dashboard"
         )
         commands = "\n".join(call.kwargs["commands"])

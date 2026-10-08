@@ -5,6 +5,7 @@ Revises: b7e1c9a4d2f8
 Create Date: 2026-06-02 23:58:09.204113
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -12,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'add_canary_unavail'
-down_revision: Union[str, Sequence[str], None] = 'b7e1c9a4d2f8'
+revision: str = "add_canary_unavail"
+down_revision: Union[str, Sequence[str], None] = "b7e1c9a4d2f8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -37,9 +38,7 @@ def upgrade() -> None:
         ),
         sa.Column("episode_no", sa.Integer(), nullable=False),
         sa.Column("missing_chunk_address", sa.String(128), nullable=False),
-        sa.Column(
-            "first_failed_probe_at", sa.DateTime(timezone=True), nullable=False
-        ),
+        sa.Column("first_failed_probe_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
             "confirmed_unavailable_at", sa.DateTime(timezone=True), nullable=False
         ),

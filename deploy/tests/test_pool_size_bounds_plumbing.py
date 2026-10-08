@@ -39,9 +39,7 @@ def repo():
 @pytest.fixture
 def fake_s3(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr(
-        pool_selection, "load_pool_selection", lambda name: store.get(name)
-    )
+    monkeypatch.setattr(pool_selection, "load_pool_selection", lambda name: store.get(name))
     monkeypatch.setattr(
         pool_selection,
         "save_pool_selection",
@@ -52,9 +50,7 @@ def fake_s3(monkeypatch):
 
 @pytest.fixture
 def wired(repo, monkeypatch, fake_s3):
-    monkeypatch.setattr(
-        "saorsa_deploy.registry.get_file_pool_repository", lambda: repo
-    )
+    monkeypatch.setattr("saorsa_deploy.registry.get_file_pool_repository", lambda: repo)
     return repo
 
 
@@ -95,15 +91,11 @@ class TestUploaderSpecToken:
 
     def test_bounds_excluding_the_requested_class_are_refused(self):
         with pytest.raises(ValueError, match="exclude the 'small' class"):
-            parse_prod_uploader_spec(
-                "lon1:s-2vcpu-4gb:pool=small:2:pool_max_size=5MB"
-            )
+            parse_prod_uploader_spec("lon1:s-2vcpu-4gb:pool=small:2:pool_max_size=5MB")
 
     def test_unparseable_bound_is_refused(self):
         with pytest.raises(ValueError, match="invalid min_size"):
-            parse_prod_uploader_spec(
-                "lon1:s-2vcpu-4gb:pool=small:2:pool_min_size=biggish"
-            )
+            parse_prod_uploader_spec("lon1:s-2vcpu-4gb:pool=small:2:pool_min_size=biggish")
 
 
 class TestCanaryFlags:
@@ -137,9 +129,7 @@ class TestCanaryFlags:
 
         _seed(wired, PoolFileKind.URL, 14 * KIB, 20, "sliver")
         with pytest.raises(SystemExit):
-            prod_canary._select_canary_pool_files(
-                self._args(pool_min_size="5MB"), Console()
-            )
+            prod_canary._select_canary_pool_files(self._args(pool_min_size="5MB"), Console())
         out = _flat(capsys.readouterr().out)
         assert "5.00 MB" in out
         assert "tiny 3 requested, 0 available" in out
@@ -148,9 +138,7 @@ class TestCanaryFlags:
         from rich.console import Console
 
         _seed(wired, PoolFileKind.URL, 6 * MIB, 5, "chunky")
-        prod_canary._select_canary_pool_files(
-            self._args(pool_min_size="5MB"), Console()
-        )
+        prod_canary._select_canary_pool_files(self._args(pool_min_size="5MB"), Console())
         slot = fake_s3["PROD-CANARY-04"]["slots"]["canary-upload"]
         assert slot["min_size_bytes"] == 5 * MIB
         assert slot["max_size_bytes"] is None
@@ -332,9 +320,7 @@ class TestManifest:
         from saorsa_deploy.main import main
 
         original = module.cmd_prod_continuous_uploader_deploy
-        module.cmd_prod_continuous_uploader_deploy = (
-            lambda args: captured.update(vars(args))
-        )
+        module.cmd_prod_continuous_uploader_deploy = lambda args: captured.update(vars(args))
         try:
             main(argv)
         finally:
@@ -396,9 +382,7 @@ class TestTheCliAcceptsWhatTheOrchestratorEmits:
         from saorsa_deploy.main import main
 
         captured = {}
-        monkeypatch.setattr(
-            module, func_name, lambda args: captured.update(vars(args))
-        )
+        monkeypatch.setattr(module, func_name, lambda args: captured.update(vars(args)))
         main(argv)
         return captured
 

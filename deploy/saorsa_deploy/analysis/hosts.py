@@ -7,6 +7,7 @@ node services inside the `ant_nat` network namespace, so captures, counters and
 iptables rules must be taken inside it, and telegraf's host-namespace metrics
 exclude them entirely.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,11 +21,16 @@ DEFAULT_INVENTORY_TEMPLATE = "~/.autonomi/testnets/{name}/inventory.json"
 # fast instead of prompting; no known-hosts persistence because testnet IPs are
 # recycled across deployments.
 SSH_BASE_OPTS = (
-    "-o", "BatchMode=yes",
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "ConnectTimeout=20",
-    "-o", "LogLevel=ERROR",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "ConnectTimeout=20",
+    "-o",
+    "LogLevel=ERROR",
 )
 
 
@@ -124,7 +130,6 @@ def select_vms(
     missing = [ip for ip in ips if ip not in by_ip]
     if missing:
         raise KeyError(
-            f"IP(s) not in the {name} inventory (roles {', '.join(roles)}): "
-            f"{', '.join(missing)}"
+            f"IP(s) not in the {name} inventory (roles {', '.join(roles)}): {', '.join(missing)}"
         )
     return [by_ip[ip] for ip in ips]

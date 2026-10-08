@@ -6,6 +6,7 @@ can be kept verbatim. Commands that must survive the SSH session dying (packet
 captures) do so on the remote side by launching through a transient systemd
 unit; nothing here tries to daemonise locally.
 """
+
 from __future__ import annotations
 
 import shlex
@@ -60,9 +61,7 @@ def run_script(
         return RemoteResult(
             vm,
             returncode=124,
-            stdout=(
-                exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            ),
+            stdout=(exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")),
             stderr=f"timed out after {timeout}s",
         )
     return RemoteResult(vm, proc.returncode, proc.stdout, proc.stderr)
@@ -76,9 +75,7 @@ def run_parallel(vms: list[Vm], fn: Callable[[Vm], T], max_workers: int = 32) ->
         return list(pool.map(fn, vms))
 
 
-def push_file(
-    vm: Vm, content: str, remote_path: str, timeout: float | None = 120
-) -> RemoteResult:
+def push_file(vm: Vm, content: str, remote_path: str, timeout: float | None = 120) -> RemoteResult:
     """Write ``content`` to ``remote_path`` on the VM (via a heredoc-free stdin copy)."""
     target = shlex.quote(remote_path)
     script = f"cat > {target} && chmod 0644 {target} && echo STATUS=pushed"

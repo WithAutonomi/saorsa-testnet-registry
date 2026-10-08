@@ -149,8 +149,16 @@ def _make_es_provisioner(args, es, *, host_ips, host_role, ssh_key, ssh_user, na
 
 
 def _make_metrics_provisioner(
-    influx, *, host_ips, host_role, ssh_key, ssh_user, name,
-    bucket=None, console, collect_node_memory=False,
+    influx,
+    *,
+    host_ips,
+    host_role,
+    ssh_key,
+    ssh_user,
+    name,
+    bucket=None,
+    console,
+    collect_node_memory=False,
     node_memory_interval_secs=300,
 ):
     if influx is None:
@@ -172,8 +180,17 @@ def _make_metrics_provisioner(
 
 
 def _provision_group(
-    args, es, influx, *, ips, role, ssh_key, ssh_user,
-    name, console, bucket=None,
+    args,
+    es,
+    influx,
+    *,
+    ips,
+    role,
+    ssh_key,
+    ssh_user,
+    name,
+    console,
+    bucket=None,
 ):
     """Run one combined pass over a single host group.
 
@@ -182,29 +199,40 @@ def _provision_group(
     """
     if not ips:
         return
-    console.print(
-        f"[bold]Provisioning Telegraf on {len(ips)} {role} host(s)...[/bold]"
-    )
+    console.print(f"[bold]Provisioning Telegraf on {len(ips)} {role} host(s)...[/bold]")
     clear_known_hosts(ips, console)
     es_prov = _make_es_provisioner(
-        args, es, host_ips=ips, host_role=role, ssh_key=ssh_key,
-        ssh_user=ssh_user, name=name, console=console,
+        args,
+        es,
+        host_ips=ips,
+        host_role=role,
+        ssh_key=ssh_key,
+        ssh_user=ssh_user,
+        name=name,
+        console=console,
     )
     metrics_prov = _make_metrics_provisioner(
-        influx, host_ips=ips, host_role=role, ssh_key=ssh_key,
-        ssh_user=ssh_user, name=name,
-        bucket=bucket, console=console,
+        influx,
+        host_ips=ips,
+        host_role=role,
+        ssh_key=ssh_key,
+        ssh_user=ssh_user,
+        name=name,
+        bucket=bucket,
+        console=console,
         collect_node_memory=getattr(args, "node_memory_metrics", False),
         node_memory_interval_secs=getattr(args, "node_memory_interval", 300),
     )
     try:
         provision_combined(
-            ips, ssh_key, [es_prov, metrics_prov], ssh_user=ssh_user, console=console,
+            ips,
+            ssh_key,
+            [es_prov, metrics_prov],
+            ssh_user=ssh_user,
+            console=console,
         )
     except Exception as e:
-        console.print(
-            f"[bold red]Telegraf provisioning failed on {role}:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Telegraf provisioning failed on {role}:[/bold red] {e}")
         sys.exit(1)
 
 
@@ -225,17 +253,23 @@ def cmd_provision_telegraf_combined(args):
             for entry in entries:
                 entry["role"] = host_role_override
         console.print(
-            f"[bold]Using {len(entries)} VM(s) from inventory "
-            f"{args.inventory_path}...[/bold]"
+            f"[bold]Using {len(entries)} VM(s) from inventory {args.inventory_path}...[/bold]"
         )
         clear_known_hosts([e["ip"] for e in entries], console)
         set_hostnames(entries, console)
         for (role, ssh_user, ssh_key), ips in group_by_role_and_credentials(entries).items():
             bucket = INFLUXDB_CLIENT_BUCKET if role == "CLIENT" else None
             _provision_group(
-                args, es, influx, ips=ips, role=role,
-                ssh_key=ssh_key, ssh_user=ssh_user, name=name,
-                bucket=bucket, console=console,
+                args,
+                es,
+                influx,
+                ips=ips,
+                role=role,
+                ssh_key=ssh_key,
+                ssh_user=ssh_user,
+                name=name,
+                bucket=bucket,
+                console=console,
             )
     elif args.host_ips_file:
         try:
@@ -245,13 +279,18 @@ def cmd_provision_telegraf_combined(args):
             sys.exit(1)
         role = host_role_override or "WAN_NODE"
         bucket = INFLUXDB_CLIENT_BUCKET if role == "CLIENT" else None
-        console.print(
-            f"[bold]Using {len(all_ips)} host IP(s) from {args.host_ips_file}...[/bold]"
-        )
+        console.print(f"[bold]Using {len(all_ips)} host IP(s) from {args.host_ips_file}...[/bold]")
         _provision_group(
-            args, es, influx, ips=all_ips, role=role,
-            ssh_key=args.ssh_key_path, ssh_user=args.ssh_user,
-            name=name, bucket=bucket, console=console,
+            args,
+            es,
+            influx,
+            ips=all_ips,
+            role=role,
+            ssh_key=args.ssh_key_path,
+            ssh_user=args.ssh_user,
+            name=name,
+            bucket=bucket,
+            console=console,
         )
     elif args.name:
         _provision_by_name(args, es, influx, console)
@@ -263,9 +302,7 @@ def cmd_provision_telegraf_combined(args):
         sys.exit(1)
 
     console.print()
-    console.print(
-        "[bold green]Telegraf provisioned successfully on all hosts.[/bold green]"
-    )
+    console.print("[bold green]Telegraf provisioned successfully on all hosts.[/bold green]")
 
 
 def _provision_by_name(args, es, influx, console):
@@ -325,12 +362,10 @@ def _provision_nodes_by_name(args, es, influx, state, console) -> bool:
 
     if bootstrap_nodes:
         genesis_ips = [
-            n["ip"] for n in bootstrap_nodes
-            if n.get("bootstrap_index") == 1 and n.get("ip")
+            n["ip"] for n in bootstrap_nodes if n.get("bootstrap_index") == 1 and n.get("ip")
         ]
         secondary_ips = [
-            n["ip"] for n in bootstrap_nodes
-            if n.get("bootstrap_index", 0) >= 2 and n.get("ip")
+            n["ip"] for n in bootstrap_nodes if n.get("bootstrap_index", 0) >= 2 and n.get("ip")
         ]
     else:
         genesis_ips = [bootstrap_ip] if bootstrap_ip else []
@@ -348,15 +383,36 @@ def _provision_nodes_by_name(args, es, influx, state, console) -> bool:
     name = args.name
 
     _provision_group(
-        args, es, influx, ips=genesis_ips, role="GENESIS",
-        ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
+        args,
+        es,
+        influx,
+        ips=genesis_ips,
+        role="GENESIS",
+        ssh_key=ssh_key,
+        ssh_user=ssh_user,
+        name=name,
+        console=console,
     )
     _provision_group(
-        args, es, influx, ips=secondary_ips, role="BOOTSTRAP",
-        ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
+        args,
+        es,
+        influx,
+        ips=secondary_ips,
+        role="BOOTSTRAP",
+        ssh_key=ssh_key,
+        ssh_user=ssh_user,
+        name=name,
+        console=console,
     )
     _provision_group(
-        args, es, influx, ips=regular_ips, role="WAN_NODE",
-        ssh_key=ssh_key, ssh_user=ssh_user, name=name, console=console,
+        args,
+        es,
+        influx,
+        ips=regular_ips,
+        role="WAN_NODE",
+        ssh_key=ssh_key,
+        ssh_user=ssh_user,
+        name=name,
+        console=console,
     )
     return True

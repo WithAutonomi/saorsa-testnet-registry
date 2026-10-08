@@ -3,6 +3,7 @@
 Each generator writes an Ethernet/IPv4/UDP pcap to the given path and returns
 the constants a test needs. The ground truth is documented on each function.
 """
+
 from __future__ import annotations
 
 import struct
@@ -16,7 +17,14 @@ def eth_ipv4_udp(src, sport, dst, dport, payload_len):
     ip_len = 20 + udp_len
     ip = struct.pack(
         ">BBHHHBBH4s4s",
-        0x45, 0, ip_len, 0, 0, 64, 17, 0,
+        0x45,
+        0,
+        ip_len,
+        0,
+        0,
+        64,
+        17,
+        0,
         bytes(int(o) for o in src.split(".")),
         bytes(int(o) for o in dst.split(".")),
     )
@@ -36,8 +44,9 @@ def write_pcap(path, packets):
     return len(packets)
 
 
-def pinged_flow(packets, pinger, pport, acker, aport, t_start, t_end, skip=lambda t: False,
-                period=10.0):
+def pinged_flow(
+    packets, pinger, pport, acker, aport, t_start, t_end, skip=lambda t: False, period=10.0
+):
     t = t_start
     while t < t_end:
         if not skip(t):
@@ -48,13 +57,13 @@ def pinged_flow(packets, pinger, pport, acker, aport, t_start, t_end, skip=lambd
 
 def write_flowstat_pcap(path):
     """Ground truth (flowstat):
-      * 3 long-lived flows, both directions, keep-alives every 2.0 s, 60-byte wire.
-        Open before the window and still open at the end -> censored, not counted
-        in the observed lifetime histogram.
-      * 1 flow born at +100 s and last seen at +136 s -> a 36 s lifetime, which
-        must land in the explicit 30-45 bucket.
-      * 1 bulk flow with 1200-byte packets every 0.01 s -> must be excluded from
-        the cadence stats by the quiescent filter.
+    * 3 long-lived flows, both directions, keep-alives every 2.0 s, 60-byte wire.
+      Open before the window and still open at the end -> censored, not counted
+      in the observed lifetime histogram.
+    * 1 flow born at +100 s and last seen at +136 s -> a 36 s lifetime, which
+      must land in the explicit 30-45 bucket.
+    * 1 bulk flow with 1200-byte packets every 0.01 s -> must be excluded from
+      the cadence stats by the quiescent filter.
     """
     t0 = 1_755_000_000.0
     packets = []
@@ -121,8 +130,9 @@ def write_backstop_pcap(path):
     while t < t0 + 60:
         p.append((t, eth_ipv4_udp(LOCAL, 10060, "10.0.0.50", 20050, 1200)))
         t += 0.01
-    pinged_flow(p, "10.0.1.1", 20004, LOCAL, 10301, t0, t0 + window,
-                skip=lambda t: t0 + 150 <= t < t0 + 171)
+    pinged_flow(
+        p, "10.0.1.1", 20004, LOCAL, 10301, t0, t0 + window, skip=lambda t: t0 + 150 <= t < t0 + 171
+    )
     p.append((t0 + 173.0, eth_ipv4_udp("10.0.1.1", 20004, LOCAL, 10301, 32)))
     p.append((t0 + 173.04, eth_ipv4_udp(LOCAL, 10301, "10.0.1.1", 20004, 32)))
     pinged_flow(p, "10.0.1.2", 20005, LOCAL, 10302, t0, t0 + 150)

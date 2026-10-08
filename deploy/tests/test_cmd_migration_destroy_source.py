@@ -72,8 +72,10 @@ def _args():
 
 def _run(repo, get_fn, delete_fn, post_fn=None):
     if post_fn is None:
+
         def post_fn(*_a, **_k):
             return FakeResp(204)
+
     with (
         patch.object(mod, "get_migration_repository", return_value=repo),
         patch.dict(
@@ -89,9 +91,7 @@ def _run(repo, get_fn, delete_fn, post_fn=None):
 
 
 def _migration():
-    return SimpleNamespace(
-        id=1, name="mig", status=MigrationVmStatus.SOURCE_DRAINED
-    )
+    return SimpleNamespace(id=1, name="mig", status=MigrationVmStatus.SOURCE_DRAINED)
 
 
 def test_digitalocean_destroys_droplet_and_volume():

@@ -54,9 +54,7 @@ class StepGroup:
 
     def render(self) -> str:
         """One-line summary of the parallel commands, for divergence output."""
-        return "  |  ".join(
-            " && ".join(s.render() for s in lane) for lane in self.lanes
-        )
+        return "  |  ".join(" && ".join(s.render() for s in lane) for lane in self.lanes)
 
 
 def _group_label(group_id: str) -> str:

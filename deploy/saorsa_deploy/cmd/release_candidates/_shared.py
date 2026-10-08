@@ -36,8 +36,7 @@ def require_rc_repository() -> ReleaseCandidateRepository:
     repo = get_rc_repository()
     if repo is None:
         sys.stderr.write(
-            "release-candidates: DATABASE_URL is not set or the database "
-            "is unreachable.\n"
+            "release-candidates: DATABASE_URL is not set or the database is unreachable.\n"
         )
         sys.exit(1)
     return repo

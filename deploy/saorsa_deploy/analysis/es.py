@@ -22,6 +22,7 @@ number before:
 * **The InfluxDB net field is lower case** (`udp_outdatagrams`); the /proc
   spelling `udp_OutDatagrams` returns a silent zero.
 """
+
 from __future__ import annotations
 
 import csv
@@ -462,8 +463,7 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "counter-delta",
         help=(
-            "Delta and fleet rate of a cumulative per-service counter "
-            "(e.g. tail.wire_tx_bytes)."
+            "Delta and fleet rate of a cumulative per-service counter (e.g. tail.wire_tx_bytes)."
         ),
     )
     add_deployment_args(p)
@@ -475,8 +475,7 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "udp-rate",
         help=(
-            "Per-host UDP datagram rate from InfluxDB's net protocol counters "
-            "(plain tier only)."
+            "Per-host UDP datagram rate from InfluxDB's net protocol counters (plain tier only)."
         ),
     )
     add_deployment_args(p)

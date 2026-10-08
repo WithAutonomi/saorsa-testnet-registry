@@ -63,9 +63,7 @@ def cmd_releases_ls(args):
             release.shipped_to_beta_at.strftime("%Y-%m-%d")
             if release.shipped_to_beta_at
             else "[dim]-[/dim]",
-            release.promoted_at.strftime("%Y-%m-%d")
-            if release.promoted_at
-            else "[dim]-[/dim]",
+            release.promoted_at.strftime("%Y-%m-%d") if release.promoted_at else "[dim]-[/dim]",
         )
         for crate in release.crates:
             table.add_row(

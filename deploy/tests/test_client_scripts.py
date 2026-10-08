@@ -11,9 +11,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = (
-    Path(__file__).parent.parent / "saorsa_deploy" / "resources" / "scripts"
-)
+SCRIPTS_DIR = Path(__file__).parent.parent / "saorsa_deploy" / "resources" / "scripts"
 
 
 def _prologue(script: str, end_marker: str) -> str:
@@ -136,7 +134,7 @@ class TestFailureLogPreservation:
                 "FAILURE_LOG_DIR": str(log_dir),
                 **(env_extra or {}),
             },
-            f"preserve_failure_logs {seq} '{address}' \"{stdout_f}\" \"{stderr_f}\"",
+            f'preserve_failure_logs {seq} \'{address}\' "{stdout_f}" "{stderr_f}"',
             prelude=_HOSTNAME_SHIM,
         )
         return result, log_dir, stdout_f, stderr_f
@@ -147,10 +145,7 @@ class TestFailureLogPreservation:
         assert result.returncode == 0, result.stderr
 
         stem = log_dir / "0007-a1b2c3d4e5f60718"
-        assert (
-            stem.with_suffix(".stdout").read_text()
-            == "Downloaded file\nTime: 1.5\n"
-        )
+        assert stem.with_suffix(".stdout").read_text() == "Downloaded file\nTime: 1.5\n"
         assert stem.with_suffix(".stderr").read_text() == "ERROR: chunk not found\n"
         # tmp files were moved, not copied
         assert not stdout_f.exists()
@@ -369,10 +364,9 @@ class TestStatusIsClampedAtTheEmitSite:
         start = text.index("    op_status=0")
         snippet = text[start : text.index("\n", text.index("fi", start))]
         result = subprocess.run(
-            ["bash", "-c", f"exit_code={exit_code}\n{snippet}\necho \"S=[$op_status]\""],
+            ["bash", "-c", f'exit_code={exit_code}\n{snippet}\necho "S=[$op_status]"'],
             capture_output=True,
             text=True,
         )
         assert result.returncode == 0, result.stderr
         assert f"S=[{expected}]" in result.stdout
-

@@ -15,6 +15,7 @@ still printing PASS, which is worse than not having the gate at all.
 Nothing here does I/O beyond reading the file: the parsed result is a frozen
 dataclass so the comparison functions cannot be handed a half-populated config.
 """
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -188,9 +189,7 @@ def _require_number(
         raise GateConfigError(f"{path}: '{section_name}.{key}' is missing.")
     value = section[key]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise GateConfigError(
-            f"{path}: '{section_name}.{key}' must be a number, got {value!r}."
-        )
+        raise GateConfigError(f"{path}: '{section_name}.{key}' must be a number, got {value!r}.")
     if positive and value <= 0:
         raise GateConfigError(
             f"{path}: '{section_name}.{key}' must be greater than zero, got {value}. "
@@ -215,9 +214,7 @@ def _require_bool(data: dict, key: str, path: Path) -> bool:
         )
     value = data[key]
     if not isinstance(value, bool):
-        raise GateConfigError(
-            f"{path}: '{key}:' must be true or false, got {value!r}."
-        )
+        raise GateConfigError(f"{path}: '{key}:' must be true or false, got {value!r}.")
     return value
 
 
@@ -244,9 +241,7 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
     leak = _require_section(data, "memory_leak", path)
     noise = _require_section(data, "noise_rule", path)
 
-    hard_values = {
-        key: _require_number(hard, key, path, "hard_gates") for key in _HARD_FLOOR_KEYS
-    }
+    hard_values = {key: _require_number(hard, key, path, "hard_gates") for key in _HARD_FLOOR_KEYS}
     for key, value in hard_values.items():
         if value > 100:
             raise GateConfigError(
@@ -279,9 +274,7 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
             "of mismatched downloads and cannot be negative."
         )
 
-    soft_values = {
-        key: _require_number(soft, key, path, "soft_gates") for key in _SOFT_GATE_KEYS
-    }
+    soft_values = {key: _require_number(soft, key, path, "soft_gates") for key in _SOFT_GATE_KEYS}
 
     buckets = data.get("file_size_buckets_mb")
     if not isinstance(buckets, list) or len(buckets) < 2:
@@ -341,11 +334,7 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
     leak_percentile = _percentile(leak, "service_percentile", "memory_leak")
 
     min_history = noise.get("min_history_runs")
-    if (
-        isinstance(min_history, bool)
-        or not isinstance(min_history, int)
-        or min_history < 2
-    ):
+    if isinstance(min_history, bool) or not isinstance(min_history, int) or min_history < 2:
         raise GateConfigError(
             f"{path}: 'noise_rule.min_history_runs:' must be an integer >= 2. A "
             "standard deviation over fewer than two runs is undefined."
@@ -381,24 +370,16 @@ def parse_gate_config(data: dict, source_path: str) -> GateConfig:
         ),
         noise_rule=NoiseRuleConfig(
             min_history_runs=min_history,
-            sigma_multiplier=_require_number(
-                noise, "sigma_multiplier", path, "noise_rule"
-            ),
+            sigma_multiplier=_require_number(noise, "sigma_multiplier", path, "noise_rule"),
         ),
         node_rss_service_percentile=rss_percentile,
         file_size_buckets_mb=tuple(float(b) for b in buckets),
         outbound_ratio_metric=outbound_metric,
         max_window_length_ratio=max_ratio,
         max_activity_coverage_ratio=max_coverage_ratio,
-        wasm_floor_gates_advisory=_require_bool(
-            data, "wasm_floor_gates_advisory", path
-        ),
-        wasm_relative_gates_advisory=_require_bool(
-            data, "wasm_relative_gates_advisory", path
-        ),
-        pointer_floor_gates_advisory=_require_bool(
-            data, "pointer_floor_gates_advisory", path
-        ),
+        wasm_floor_gates_advisory=_require_bool(data, "wasm_floor_gates_advisory", path),
+        wasm_relative_gates_advisory=_require_bool(data, "wasm_relative_gates_advisory", path),
+        pointer_floor_gates_advisory=_require_bool(data, "pointer_floor_gates_advisory", path),
     )
 
 

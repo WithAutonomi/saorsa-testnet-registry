@@ -26,9 +26,7 @@ TELEGRAF_UNIT_PATH = f"/etc/systemd/system/{TELEGRAF_SERVICE_NAME}.service"
 NODE_MEMORY_COLLECTOR_PATH = "/usr/local/bin/ant-node-memory-collector"
 NODE_MEMORY_PUBLISH_PATH = "/usr/local/bin/ant-node-memory-publish"
 NODE_MEMORY_TIMER_NAME = "ant-node-memory-collector.timer"
-NODE_MEMORY_SERVICE_PATH = (
-    "/etc/systemd/system/ant-node-memory-collector.service"
-)
+NODE_MEMORY_SERVICE_PATH = "/etc/systemd/system/ant-node-memory-collector.service"
 NODE_MEMORY_TIMER_PATH = f"/etc/systemd/system/{NODE_MEMORY_TIMER_NAME}"
 
 # Fleet default cadence for the timer. LazyFree and the THP fields track
@@ -108,9 +106,9 @@ def build_data_location_env_command(
     """
     # Only node-tier hosts treat the root disk as node storage.
     root_fallback = (
-        "" if host_role == "CLIENT"
-        else '  [ -n "$SRC" ] || { SRC=$(findmnt -nro SOURCE / 2>/dev/null'
-             ' || true); MNT=/; }\n'
+        ""
+        if host_role == "CLIENT"
+        else '  [ -n "$SRC" ] || { SRC=$(findmnt -nro SOURCE / 2>/dev/null || true); MNT=/; }\n'
     )
     return (
         "{\n"
@@ -164,8 +162,7 @@ class TelegrafMetricsProvisioner:
     def execute(self) -> None:
         """Install and configure Telegraf for metrics on all hosts."""
         hosts_data = [
-            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path})
-            for ip in self.host_ips
+            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
         config = Config()
@@ -193,9 +190,7 @@ class TelegrafMetricsProvisioner:
         if failed:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError(
-                f"{len(failed)} host(s) failed Telegraf metrics provisioning"
-            )
+            raise RuntimeError(f"{len(failed)} host(s) failed Telegraf metrics provisioning")
 
     def add_ops(self, state: State, *, install: bool = True) -> None:
         """Append the InfluxDB host-metrics operations to a connected ``state``.
@@ -233,11 +228,12 @@ class TelegrafMetricsProvisioner:
             server.shell,
             name="Write Telegraf metrics configuration",
             commands=[
-                as_single_shell_command([
-                    f"mkdir -p {TELEGRAF_CONFIG_DIR}",
-                    f"cat > {TELEGRAF_CONFIG_PATH}"
-                    f" << 'CONF_EOF'\n{config_content}CONF_EOF",
-                ])
+                as_single_shell_command(
+                    [
+                        f"mkdir -p {TELEGRAF_CONFIG_DIR}",
+                        f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
+                    ]
+                )
             ],
         )
 
@@ -256,11 +252,13 @@ class TelegrafMetricsProvisioner:
             server.shell,
             name="Enable and start Telegraf metrics service",
             commands=[
-                as_single_shell_command([
-                    "systemctl daemon-reload",
-                    f"systemctl enable {TELEGRAF_SERVICE_NAME}",
-                    f"systemctl restart {TELEGRAF_SERVICE_NAME}",
-                ])
+                as_single_shell_command(
+                    [
+                        "systemctl daemon-reload",
+                        f"systemctl enable {TELEGRAF_SERVICE_NAME}",
+                        f"systemctl restart {TELEGRAF_SERVICE_NAME}",
+                    ]
+                )
             ],
         )
 
@@ -272,15 +270,17 @@ class TelegrafMetricsProvisioner:
             server.shell,
             name="Verify Telegraf metrics service is active",
             commands=[
-                as_single_shell_command([
-                    f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
-                    f"|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - "
-                    f"{TELEGRAF_SERVICE_NAME} is not running'; "
-                    f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
-                    f"test -f {TELEGRAF_CONFIG_PATH} "
-                    "|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - config file missing'; "
-                    "exit 1)",
-                ])
+                as_single_shell_command(
+                    [
+                        f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
+                        f"|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - "
+                        f"{TELEGRAF_SERVICE_NAME} is not running'; "
+                        f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
+                        f"test -f {TELEGRAF_CONFIG_PATH} "
+                        "|| (echo 'TELEGRAF_METRICS_VERIFY:FAILED - config file missing'; "
+                        "exit 1)",
+                    ]
+                )
             ],
         )
 
@@ -314,32 +314,39 @@ class TelegrafMetricsProvisioner:
             server.shell,
             name="Write ant-node memory composition collector",
             commands=[
-                as_single_shell_command([
-                    f"cat > {NODE_MEMORY_COLLECTOR_PATH}"
-                    f" << 'COLLECTOR_EOF'\n{collector}COLLECTOR_EOF",
-                    f"chmod 0755 {NODE_MEMORY_COLLECTOR_PATH}",
-                    f"cat > {NODE_MEMORY_PUBLISH_PATH}"
-                    f" << 'PUBLISH_EOF'\n{publisher}PUBLISH_EOF",
-                    f"chmod 0755 {NODE_MEMORY_PUBLISH_PATH}",
-                ])
+                as_single_shell_command(
+                    [
+                        f"cat > {NODE_MEMORY_COLLECTOR_PATH}"
+                        f" << 'COLLECTOR_EOF'\n{collector}COLLECTOR_EOF",
+                        f"chmod 0755 {NODE_MEMORY_COLLECTOR_PATH}",
+                        f"cat > {NODE_MEMORY_PUBLISH_PATH}"
+                        f" << 'PUBLISH_EOF'\n{publisher}PUBLISH_EOF",
+                        f"chmod 0755 {NODE_MEMORY_PUBLISH_PATH}",
+                    ]
+                )
             ],
         )
 
-        service = _read_resource("ant-node-memory-collector.service").replace(
-            "{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH
-        ).replace(
-            # The scrape must be allowed to overrun a slow pass without systemd
-            # killing it mid-walk, but never to outlive its own interval.
-            "{{DEADLINE_SECS}}", str(max(20, self.node_memory_interval_secs // 2))
-        ).replace(
-            "{{TIMEOUT_SECS}}", str(max(30, self.node_memory_interval_secs))
+        service = (
+            _read_resource("ant-node-memory-collector.service")
+            .replace("{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH)
+            .replace(
+                # The scrape must be allowed to overrun a slow pass without systemd
+                # killing it mid-walk, but never to outlive its own interval.
+                "{{DEADLINE_SECS}}",
+                str(max(20, self.node_memory_interval_secs // 2)),
+            )
+            .replace("{{TIMEOUT_SECS}}", str(max(30, self.node_memory_interval_secs)))
         )
-        timer = _read_resource("ant-node-memory-collector.timer").replace(
-            "{{INTERVAL}}", f"{self.node_memory_interval_secs}s"
-        ).replace(
-            # A tenth of the interval: enough to decorrelate the fleet's page
-            # table walks without smearing a 60s investigation cadence.
-            "{{JITTER}}", f"{max(1, self.node_memory_interval_secs // 10)}s"
+        timer = (
+            _read_resource("ant-node-memory-collector.timer")
+            .replace("{{INTERVAL}}", f"{self.node_memory_interval_secs}s")
+            .replace(
+                # A tenth of the interval: enough to decorrelate the fleet's page
+                # table walks without smearing a 60s investigation cadence.
+                "{{JITTER}}",
+                f"{max(1, self.node_memory_interval_secs // 10)}s",
+            )
         )
         add_op(
             state,
@@ -355,10 +362,12 @@ class TelegrafMetricsProvisioner:
             server.shell,
             name="Enable and start ant-node memory collector timer",
             commands=[
-                as_single_shell_command([
-                    "systemctl daemon-reload",
-                    f"systemctl enable --now {NODE_MEMORY_TIMER_NAME}",
-                ])
+                as_single_shell_command(
+                    [
+                        "systemctl daemon-reload",
+                        f"systemctl enable --now {NODE_MEMORY_TIMER_NAME}",
+                    ]
+                )
             ],
         )
 
@@ -382,12 +391,10 @@ class TelegrafMetricsProvisioner:
         if self._wants_node_memory():
             capabilities += list(NODE_MEMORY_CAPABILITIES)
         template = _read_resource("telegraf-ant-metrics.service")
-        return template.replace(
-            "{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH
-        ).replace(
-            "{{TELEGRAF_CONFIG_DIR}}", TELEGRAF_CONFIG_DIR
-        ).replace(
-            "{{AMBIENT_CAPABILITIES}}", " ".join(capabilities)
+        return (
+            template.replace("{{TELEGRAF_ENV_PATH}}", TELEGRAF_ENV_PATH)
+            .replace("{{TELEGRAF_CONFIG_DIR}}", TELEGRAF_CONFIG_DIR)
+            .replace("{{AMBIENT_CAPABILITIES}}", " ".join(capabilities))
         )
 
 

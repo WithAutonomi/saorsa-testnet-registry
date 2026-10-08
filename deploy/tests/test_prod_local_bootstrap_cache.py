@@ -19,9 +19,7 @@ def console():
 class TestResolveBootstrapArgs:
     def test_cache_enabled_returns_empty_and_ensures_file(self, module, console):
         args = SimpleNamespace(bootstrap_cache=True)
-        with patch.object(
-            module, "ensure_local_bootstrap_peers_file"
-        ) as mock_ensure:
+        with patch.object(module, "ensure_local_bootstrap_peers_file") as mock_ensure:
             mock_ensure.return_value = ("/home/x/.config/ant/bootstrap_peers.toml", False)
             result = module._resolve_bootstrap_args(args, console)
         assert result == []
@@ -29,18 +27,14 @@ class TestResolveBootstrapArgs:
 
     def test_cache_enabled_writes_missing_file(self, module, console):
         args = SimpleNamespace(bootstrap_cache=True)
-        with patch.object(
-            module, "ensure_local_bootstrap_peers_file"
-        ) as mock_ensure:
+        with patch.object(module, "ensure_local_bootstrap_peers_file") as mock_ensure:
             mock_ensure.return_value = ("/home/x/.config/ant/bootstrap_peers.toml", True)
             result = module._resolve_bootstrap_args(args, console)
         assert result == []
 
     def test_cache_enabled_fetch_failure_exits(self, module, console):
         args = SimpleNamespace(bootstrap_cache=True)
-        with patch.object(
-            module, "ensure_local_bootstrap_peers_file"
-        ) as mock_ensure:
+        with patch.object(module, "ensure_local_bootstrap_peers_file") as mock_ensure:
             mock_ensure.side_effect = ProdBootstrapsError("boom")
             with pytest.raises(SystemExit):
                 module._resolve_bootstrap_args(args, console)
@@ -51,8 +45,10 @@ class TestResolveBootstrapArgs:
             mock_fetch.return_value = ["1.2.3.4:10000", "5.6.7.8:10000"]
             result = module._resolve_bootstrap_args(args, console)
         assert result == [
-            "--bootstrap", "1.2.3.4:10000",
-            "--bootstrap", "5.6.7.8:10000",
+            "--bootstrap",
+            "1.2.3.4:10000",
+            "--bootstrap",
+            "5.6.7.8:10000",
         ]
 
     def test_cache_disabled_fetch_failure_exits(self, module, console):

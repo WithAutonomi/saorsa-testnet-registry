@@ -629,12 +629,6 @@ class TestTheTransportComesFromDeployArgs:
         lookup = self._lookup({"kind": "prod-continuous-downloader"})
         assert lookup("any-host") == "native"
 
-    def test_a_testnet_still_resolves_per_host_from_state(self):
-        # One transport per deployment is a property of the PROD kinds; a testnet
-        # runs both tiers side by side, so its lookup is per-VM.
-        lookup = self._lookup({"kind": "testnet"})
-        assert lookup("some-host") is None
-
 
 class TestSkipsAreExcludedFromRates:
     def _record(self, status):

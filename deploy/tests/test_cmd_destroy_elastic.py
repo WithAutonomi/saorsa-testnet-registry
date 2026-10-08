@@ -14,9 +14,7 @@ def test_no_op_when_elastic_state_missing():
             "saorsa_deploy.cmd.destroy_elastic.load_elastic_state",
             side_effect=RuntimeError("No Elasticsearch state for 'DEV-01'"),
         ),
-        patch(
-            "saorsa_deploy.cmd.destroy_elastic.execute_terraform_runs"
-        ) as execute,
+        patch("saorsa_deploy.cmd.destroy_elastic.execute_terraform_runs") as execute,
     ):
         cmd_destroy_elastic(_args())
 

@@ -4,6 +4,7 @@ The HTTP layer is mocked; what is under test is the query shapes and the
 response arithmetic, each of which has produced a confidently wrong number
 before when got wrong.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,12 @@ from saorsa_deploy.analysis.hosts import Vm
 
 def _vm(name, ip, nat=False, services=5):
     return Vm(
-        name=name, ip=ip, role="node", nat=nat, ssh_user="root", ssh_key="~/.ssh/k",
+        name=name,
+        ip=ip,
+        role="node",
+        nat=nat,
+        ssh_user="root",
+        ssh_key="~/.ssh/k",
         services=tuple(f"ant-node-{i}" for i in range(1, services + 1)),
     )
 
@@ -46,7 +52,9 @@ def run():
 # -- es.py -------------------------------------------------------------------
 def test_host_variants_cover_es_upper_casing():
     assert host_variants(["dev-01-ant-node-DE1-1"]) == [
-        "dev-01-ant-node-DE1-1", "DEV-01-ANT-NODE-DE1-1", "dev-01-ant-node-de1-1",
+        "dev-01-ant-node-DE1-1",
+        "DEV-01-ANT-NODE-DE1-1",
+        "dev-01-ant-node-de1-1",
     ]
 
 
@@ -68,8 +76,11 @@ def test_count_phrase_query_shape_and_host_filter(run):
     with patch.object(run, "search", side_effect=fake_search):
         out = run.count_phrase("relay recv stream closed", "S", "E", hosts=["h1"])
     assert out == {
-        "phrase": "relay recv stream closed", "count": 42, "hosts": 3,
-        "top_hosts": {"H1": 40}, "levels": {"ERROR": 42},
+        "phrase": "relay recv stream closed",
+        "count": 42,
+        "hosts": 3,
+        "top_hosts": {"H1": 40},
+        "levels": {"ERROR": 42},
     }
     body = captured["body"]
     assert body["track_total_hits"] is True
@@ -88,23 +99,57 @@ def test_node_and_client_index_collapse_date_suffix(run):
 def test_counter_delta_single_sample_detection_and_rate():
     resp = {
         "hits": {"total": {"value": 9}},
-        "aggregations": {"per_host": {"buckets": [
-            {"key": "H1", "per_service": {"buckets": [
-                # 100 over 600 s -> 600/h
-                {"lo": {"value": 0}, "hi": {"value": 100},
-                 "t_lo": {"value": 0}, "t_hi": {"value": 600_000}, "samples": {"value": 3}},
-                # one sample: delta 0, span 0 -> not a rate, counted separately
-                {"lo": {"value": 5}, "hi": {"value": 5},
-                 "t_lo": {"value": 0}, "t_hi": {"value": 0}, "samples": {"value": 1}},
-                {"lo": {"value": None}, "hi": {"value": None},
-                 "t_lo": {"value": None}, "t_hi": {"value": None}, "samples": {"value": 0}},
-            ]}},
-            {"key": "H2", "per_service": {"buckets": [
-                # 50 over 300 s -> 600/h
-                {"lo": {"value": 10}, "hi": {"value": 60},
-                 "t_lo": {"value": 0}, "t_hi": {"value": 300_000}, "samples": {"value": 2}},
-            ]}},
-        ]}},
+        "aggregations": {
+            "per_host": {
+                "buckets": [
+                    {
+                        "key": "H1",
+                        "per_service": {
+                            "buckets": [
+                                # 100 over 600 s -> 600/h
+                                {
+                                    "lo": {"value": 0},
+                                    "hi": {"value": 100},
+                                    "t_lo": {"value": 0},
+                                    "t_hi": {"value": 600_000},
+                                    "samples": {"value": 3},
+                                },
+                                # one sample: delta 0, span 0 -> not a rate, counted separately
+                                {
+                                    "lo": {"value": 5},
+                                    "hi": {"value": 5},
+                                    "t_lo": {"value": 0},
+                                    "t_hi": {"value": 0},
+                                    "samples": {"value": 1},
+                                },
+                                {
+                                    "lo": {"value": None},
+                                    "hi": {"value": None},
+                                    "t_lo": {"value": None},
+                                    "t_hi": {"value": None},
+                                    "samples": {"value": 0},
+                                },
+                            ]
+                        },
+                    },
+                    {
+                        "key": "H2",
+                        "per_service": {
+                            "buckets": [
+                                # 50 over 300 s -> 600/h
+                                {
+                                    "lo": {"value": 10},
+                                    "hi": {"value": 60},
+                                    "t_lo": {"value": 0},
+                                    "t_hi": {"value": 300_000},
+                                    "samples": {"value": 2},
+                                },
+                            ]
+                        },
+                    },
+                ]
+            }
+        },
     }
     out = summarise_counter_delta("tail.x", resp)
     assert out["total_delta_in_window"] == 150
@@ -131,16 +176,21 @@ def test_udp_datagrams_query_has_explicit_stop_and_lowercase_field(run):
     with patch.object(run, "flux", side_effect=lambda q: seen.setdefault("q", q) and []):
         run.udp_datagrams("2026-08-25T10:00:00Z", "2026-08-25T11:00:00Z")
     q = seen["q"]
-    assert 'range(start: 2026-08-25T10:00:00Z, stop: 2026-08-25T11:00:00Z)' in q
+    assert "range(start: 2026-08-25T10:00:00Z, stop: 2026-08-25T11:00:00Z)" in q
     assert '_field == "udp_outdatagrams"' in q
     assert 'r.testnet_name == "DEV-01"' in q
 
 
 def test_hits_paginates_with_search_after(run):
     pages = [
-        {"hits": {"hits": [
-            {"_source": {"a": 1}, "sort": [1, 0]}, {"_source": {"a": 2}, "sort": [2, 0]},
-        ]}},
+        {
+            "hits": {
+                "hits": [
+                    {"_source": {"a": 1}, "sort": [1, 0]},
+                    {"_source": {"a": 2}, "sort": [2, 0]},
+                ]
+            }
+        },
         {"hits": {"hits": [{"_source": {"a": 3}, "sort": [3, 0]}]}},
     ]
     bodies = []
@@ -203,19 +253,42 @@ def test_relay_report_zero_teardowns_gives_none(run):
 
 def test_teardown_rows_field_mapping_nested_and_flat():
     docs = [
-        {"@timestamp": "T1", "tag": {"host": "H1", "service_number": "3"},
-         "tail": {"relay_addr": "1.2.3.4:5000", "relay_server": "1.2.3.4:10000",
-                  "allocation_id": 7}},
-        {"@timestamp": "T2", "tag.host": "H2", "tag.service_number": "4",
-         "tail.relay_addr": "5.6.7.8:5001", "tail.relay_server": "5.6.7.8:10000",
-         "tail.allocation_id": 8},
+        {
+            "@timestamp": "T1",
+            "tag": {"host": "H1", "service_number": "3"},
+            "tail": {
+                "relay_addr": "1.2.3.4:5000",
+                "relay_server": "1.2.3.4:10000",
+                "allocation_id": 7,
+            },
+        },
+        {
+            "@timestamp": "T2",
+            "tag.host": "H2",
+            "tag.service_number": "4",
+            "tail.relay_addr": "5.6.7.8:5001",
+            "tail.relay_server": "5.6.7.8:10000",
+            "tail.allocation_id": 8,
+        },
     ]
     rows = relay_mod.teardown_rows(docs)
     assert rows == [
-        {"ts": "T1", "host": "H1", "service": "3", "relay_addr": "1.2.3.4:5000",
-         "relay_server": "1.2.3.4:10000", "allocation_id": 7},
-        {"ts": "T2", "host": "H2", "service": "4", "relay_addr": "5.6.7.8:5001",
-         "relay_server": "5.6.7.8:10000", "allocation_id": 8},
+        {
+            "ts": "T1",
+            "host": "H1",
+            "service": "3",
+            "relay_addr": "1.2.3.4:5000",
+            "relay_server": "1.2.3.4:10000",
+            "allocation_id": 7,
+        },
+        {
+            "ts": "T2",
+            "host": "H2",
+            "service": "4",
+            "relay_addr": "5.6.7.8:5001",
+            "relay_server": "5.6.7.8:10000",
+            "allocation_id": 8,
+        },
     ]
 
 
@@ -262,17 +335,31 @@ def test_cmd_relay_servers_reads_inventory(tmp_path, capsys):
     inv = {
         "schema_version": 6,
         "node_vms": [
-            {"name": "DEV-01-ant-node-A", "provider": "ovh", "region": "DE1", "ip": "10.0.0.1",
-             "ssh_user": "root", "ssh_key": "~/.ssh/ant_deploy", "nat_simulated": False,
-             "services": ["ant-node-1"]},
+            {
+                "name": "DEV-01-ant-node-A",
+                "provider": "ovh",
+                "region": "DE1",
+                "ip": "10.0.0.1",
+                "ssh_user": "root",
+                "ssh_key": "~/.ssh/ant_deploy",
+                "nat_simulated": False,
+                "services": ["ant-node-1"],
+            },
         ],
     }
     path = tmp_path / "inventory.json"
     path.write_text(json.dumps(inv))
-    docs = [{"tag": {"host": "C1", "service_number": "1"},
-             "tail": {"relay_server": "10.0.0.1:10000"}}]
-    args = SimpleNamespace(name="DEV-01", inventory=str(path), start="S", end="E", top=10,
-                           json_out=str(tmp_path / "r.json"))
+    docs = [
+        {"tag": {"host": "C1", "service_number": "1"}, "tail": {"relay_server": "10.0.0.1:10000"}}
+    ]
+    args = SimpleNamespace(
+        name="DEV-01",
+        inventory=str(path),
+        start="S",
+        end="E",
+        top=10,
+        json_out=str(tmp_path / "r.json"),
+    )
     with patch.object(EsRun, "hits", return_value=docs):
         assert relay_mod.cmd_relay_servers(args) == 0
     out = json.loads((tmp_path / "r.json").read_text())
@@ -283,10 +370,21 @@ def test_cmd_relay_servers_reads_inventory(tmp_path, capsys):
 # -- phase_extract.py -----------------------------------------------------------
 def _snap(ip, ts, nat, **over):
     base = {
-        "host": f"h-{ip}", "ip": ip, "ts": ts, "nat": nat, "iface": "eth0",
-        "host_udp_in": 0, "host_udp_out": 0, "host_rx_bytes": 0, "host_tx_bytes": 0,
-        "host_udp_rcvbuf_err": 0, "ns_udp_in": 0, "ns_udp_out": 0, "ns_udp_rcvbuf_err": 0,
-        "ns_rx_bytes": 0, "ns_tx_bytes": 0,
+        "host": f"h-{ip}",
+        "ip": ip,
+        "ts": ts,
+        "nat": nat,
+        "iface": "eth0",
+        "host_udp_in": 0,
+        "host_udp_out": 0,
+        "host_rx_bytes": 0,
+        "host_tx_bytes": 0,
+        "host_udp_rcvbuf_err": 0,
+        "ns_udp_in": 0,
+        "ns_udp_out": 0,
+        "ns_udp_rcvbuf_err": 0,
+        "ns_rx_bytes": 0,
+        "ns_tx_bytes": 0,
     }
     base.update(over)
     return base
@@ -300,8 +398,14 @@ def test_snapshot_delta_uses_namespace_for_nat_and_excludes_resets(tmp_path):
         {"ip": "4.4.4.4", "tag": "x", "error": "unreachable"},
     ]
     after = [
-        _snap("1.1.1.1", 100, 0, host_udp_out=1000 + 30_000, host_udp_in=100 + 10_000,
-              host_tx_bytes=1_000_000),
+        _snap(
+            "1.1.1.1",
+            100,
+            0,
+            host_udp_out=1000 + 30_000,
+            host_udp_in=100 + 10_000,
+            host_tx_bytes=1_000_000,
+        ),
         _snap("2.2.2.2", 100, 1, ns_udp_out=500 + 15_000, host_udp_out=999_999 + 10),
         _snap("3.3.3.3", 100, 0, host_udp_out=10),
     ]
@@ -328,7 +432,8 @@ def test_services_per_node_vm_is_median_from_inventory():
 
 def test_influx_udp_summary_excludes_nat_tier_by_inventory_not_by_value():
     rows = [
-        {"host": "Plain-A", "_value": "30"}, {"host": "Plain-A", "_value": "60"},
+        {"host": "Plain-A", "_value": "30"},
+        {"host": "Plain-A", "_value": "60"},
         {"host": "nat-b", "_value": "0.1"},
         {"host": "bootstrap-1", "_value": "999"},
     ]
@@ -341,24 +446,43 @@ def test_influx_udp_summary_excludes_nat_tier_by_inventory_not_by_value():
 
 
 def test_cmd_phase_extract_writes_file(tmp_path):
-    inv = {"schema_version": 6, "node_vms": [
-        {"name": "DEV-01-ant-node-A", "ip": "10.0.0.1", "nat_simulated": False,
-         "services": ["s1", "s2"]},
-        {"name": "DEV-01-ant-node-B", "ip": "10.0.0.2", "nat_simulated": True,
-         "services": ["s1", "s2"]},
-    ]}
+    inv = {
+        "schema_version": 6,
+        "node_vms": [
+            {
+                "name": "DEV-01-ant-node-A",
+                "ip": "10.0.0.1",
+                "nat_simulated": False,
+                "services": ["s1", "s2"],
+            },
+            {
+                "name": "DEV-01-ant-node-B",
+                "ip": "10.0.0.2",
+                "nat_simulated": True,
+                "services": ["s1", "s2"],
+            },
+        ],
+    }
     (tmp_path / "inventory.json").write_text(json.dumps(inv))
     args = SimpleNamespace(
-        name="DEV-01", inventory=str(tmp_path / "inventory.json"), label="p1", start="S", end="E",
-        snap_before=None, snap_after=None, out_dir=str(tmp_path / "out"),
+        name="DEV-01",
+        inventory=str(tmp_path / "inventory.json"),
+        label="p1",
+        start="S",
+        end="E",
+        snap_before=None,
+        snap_after=None,
+        out_dir=str(tmp_path / "out"),
     )
     counts = {"Connected to peer at": 90, "Connection attempt failed": 10}
     udp_rows = [{"host": "DEV-01-ant-node-A", "_value": "30"}]
-    with patch.object(
-        EsRun, "count_phrase", side_effect=lambda p, s, e, **kw: _count(counts.get(p, 0))
-    ), patch.object(
-        EsRun, "counter_delta", return_value={"total_delta_in_window": 1}
-    ), patch.object(EsRun, "udp_datagrams", return_value=udp_rows):
+    with (
+        patch.object(
+            EsRun, "count_phrase", side_effect=lambda p, s, e, **kw: _count(counts.get(p, 0))
+        ),
+        patch.object(EsRun, "counter_delta", return_value={"total_delta_in_window": 1}),
+        patch.object(EsRun, "udp_datagrams", return_value=udp_rows),
+    ):
         assert pe.cmd_phase_extract(args) == 0
     result = json.loads((tmp_path / "out" / "extract-p1.json").read_text())
     assert result["dial_success_rate"] == 0.9

@@ -4,6 +4,7 @@
 VM; the other analysers import that same reader from here so there is exactly
 one parser of pcap records in the package.
 """
+
 from __future__ import annotations
 
 import json

@@ -67,9 +67,7 @@ class TestSelectFullIps:
         # 4 regions × 25 VMs, pick 4. A region-spread strategy would force one
         # per region; a random draw must NOT be guaranteed to do so. With this
         # fixed seed the draw lands >1 in some region (i.e. not 1-per-region).
-        vm_ips = {
-            f"prov/reg{i}": [f"{i}.0.0.{j}" for j in range(1, 26)] for i in range(4)
-        }
+        vm_ips = {f"prov/reg{i}": [f"{i}.0.0.{j}" for j in range(1, 26)] for i in range(4)}
         result = select_full_ips(vm_ips, 4, seed="DEV-01")  # ceil(100*4/100)=4
         assert len(result) == 4
         region_counts = {}

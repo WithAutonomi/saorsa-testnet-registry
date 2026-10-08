@@ -14,6 +14,7 @@ announces itself is recoverable; one that does not is a hole in the record.
 Nothing here does I/O beyond reading the file, and the parsed result is frozen,
 so the query builder cannot be handed a half-populated catalogue.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -104,17 +105,13 @@ class LogPatternSet:
 
 def get_default_patterns_path() -> Path:
     """Absolute path to the shipped default catalogue."""
-    return (
-        get_resources_dir() / LOG_PATTERNS_DIRNAME / f"{DEFAULT_PATTERN_SET}.yaml"
-    )
+    return get_resources_dir() / LOG_PATTERNS_DIRNAME / f"{DEFAULT_PATTERN_SET}.yaml"
 
 
 def _require_str(entry: dict, key: str, path: Path, where: str) -> str:
     value = entry.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise LogPatternError(
-            f"{path}: {where} is missing a non-empty '{key}:'."
-        )
+        raise LogPatternError(f"{path}: {where} is missing a non-empty '{key}:'.")
     return value.strip()
 
 
@@ -266,7 +263,5 @@ def load_pattern_set(path: str | Path | None = None) -> LogPatternSet:
     try:
         data = yaml.safe_load(resolved.read_text())
     except yaml.YAMLError as exc:
-        raise LogPatternError(
-            f"{resolved}: could not be parsed as YAML: {exc}"
-        ) from exc
+        raise LogPatternError(f"{resolved}: could not be parsed as YAML: {exc}") from exc
     return parse_pattern_set(data, str(resolved), resolved.stem)

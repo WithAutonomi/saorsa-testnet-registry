@@ -270,14 +270,12 @@ class TestTerraformStateAttributes:
         assert attrs == {"name": "x", "size": 100}
 
     def test_returns_none_when_resource_missing(self):
-        assert terraform_state_attributes(
-            self.TFSTATE, "digitalocean_volume", "other"
-        ) is None
+        assert terraform_state_attributes(self.TFSTATE, "digitalocean_volume", "other") is None
 
     def test_returns_none_when_instances_empty(self):
-        assert terraform_state_attributes(
-            self.TFSTATE, "digitalocean_droplet", "monitoring"
-        ) is None
+        assert (
+            terraform_state_attributes(self.TFSTATE, "digitalocean_droplet", "monitoring") is None
+        )
 
 
 class TestKeepOnDestroyState:
@@ -301,9 +299,7 @@ class TestKeepOnDestroyState:
         from saorsa_deploy.state import save_elastic_state
 
         save_elastic_state(name="DEV-01", region="lon1", vm_ip="10.0.0.1")
-        assert json.loads(mock_s3.put_object.call_args.kwargs["Body"])[
-            "keep_on_destroy"
-        ] is False
+        assert json.loads(mock_s3.put_object.call_args.kwargs["Body"])["keep_on_destroy"] is False
 
     def test_monitoring_save_records_the_flag(self, mock_s3):
         from saorsa_deploy.state import S3_MONITORING_KEY_PREFIX, save_monitoring_state
@@ -322,9 +318,7 @@ class TestKeepOnDestroyState:
         from saorsa_deploy.state import save_monitoring_state
 
         save_monitoring_state(name="DEV-01", region="lon1", vm_ip="10.0.0.1")
-        assert json.loads(mock_s3.put_object.call_args.kwargs["Body"])[
-            "keep_on_destroy"
-        ] is False
+        assert json.loads(mock_s3.put_object.call_args.kwargs["Body"])["keep_on_destroy"] is False
 
     def test_update_merges_the_flag_into_existing_state(self, mock_s3):
         # The idempotent-reuse path in `elastic infra` sets the flag this way, on

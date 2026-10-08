@@ -47,6 +47,7 @@ drop count -- drops inflate the measured inter-packet gaps.
 The remote payloads are verbatim from the V2-996/V2-988 runs apart from the
 file and unit name prefixes.
 """
+
 # ruff: noqa: E501 -- the remote bash payloads are kept verbatim from the proven scripts.
 from __future__ import annotations
 
@@ -414,7 +415,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     add_deployment_args(p)
     add_host_selection_args(p, require_ips=True)
     p.add_argument("--seconds", type=int, required=True, help="Capture duration.")
-    p.add_argument("--tag", required=True, help="Names the pcap: /var/tmp/saorsa-analysis-<tag>.pcap.")
+    p.add_argument(
+        "--tag", required=True, help="Names the pcap: /var/tmp/saorsa-analysis-<tag>.pcap."
+    )
     p.set_defaults(func=cmd_capture)
 
     s = subparsers.add_parser(
@@ -427,7 +430,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     add_deployment_args(s)
     add_host_selection_args(s, require_ips=True)
     s.add_argument("--seconds", type=int, required=True, help="Capture duration.")
-    s.add_argument("--tag", required=True, help="Names the summary: /var/tmp/saorsa-analysis-<tag>.json.")
+    s.add_argument(
+        "--tag", required=True, help="Names the summary: /var/tmp/saorsa-analysis-<tag>.json."
+    )
     s.set_defaults(func=cmd_capture_stream)
 
     f = subparsers.add_parser(
@@ -437,7 +442,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     add_deployment_args(f)
     add_host_selection_args(f, require_ips=True)
     f.add_argument("--tag", required=True)
-    f.add_argument("--out-dir", required=True, help="Local directory; files land as <ip>-<tag>.<ext>.")
+    f.add_argument(
+        "--out-dir", required=True, help="Local directory; files land as <ip>-<tag>.<ext>."
+    )
     f.add_argument(
         "--kinds",
         default="pcap,json,log,err,probe",

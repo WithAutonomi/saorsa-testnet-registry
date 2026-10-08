@@ -21,11 +21,7 @@ from saorsa_deploy.migration_registry import (
 
 
 def _default_inventory_path(deployment_name: str) -> Path:
-    return (
-        Path("~/.autonomi/testnets").expanduser()
-        / deployment_name
-        / "inventory.json"
-    )
+    return Path("~/.autonomi/testnets").expanduser() / deployment_name / "inventory.json"
 
 
 def _build_target_entry(vm, node_count: int) -> dict:
@@ -55,9 +51,7 @@ def cmd_migration_complete(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
     if not args.force:
@@ -77,9 +71,7 @@ def cmd_migration_complete(args):
                 )
                 sys.exit(1)
 
-    destroyed = repo.list_vms(
-        migration.id, status=MigrationVmStatus.SOURCE_DESTROYED
-    )
+    destroyed = repo.list_vms(migration.id, status=MigrationVmStatus.SOURCE_DESTROYED)
     if not destroyed:
         console.print(
             "[bold red]Error:[/bold red] No VMs in 'source_destroyed' state. "
@@ -93,21 +85,14 @@ def cmd_migration_complete(args):
         else _default_inventory_path(migration.deployment_name)
     )
     if not inventory_path.exists():
-        console.print(
-            f"[bold red]Error:[/bold red] Inventory file not found: "
-            f"{inventory_path}"
-        )
+        console.print(f"[bold red]Error:[/bold red] Inventory file not found: {inventory_path}")
         sys.exit(1)
 
     raw = json.loads(inventory_path.read_text())
     existing_vms = list(raw.get("node_vms") or [])
 
     drop_ids = {vm.source_provider_id for vm in destroyed}
-    kept = [
-        entry
-        for entry in existing_vms
-        if str(entry.get("provider_id")) not in drop_ids
-    ]
+    kept = [entry for entry in existing_vms if str(entry.get("provider_id")) not in drop_ids]
     removed_count = len(existing_vms) - len(kept)
     if removed_count != len(destroyed):
         console.print(
@@ -116,10 +101,7 @@ def cmd_migration_complete(args):
             "Continuing — check inventory afterwards."
         )
 
-    new_entries = [
-        _build_target_entry(vm, migration.node_count_per_vm)
-        for vm in destroyed
-    ]
+    new_entries = [_build_target_entry(vm, migration.node_count_per_vm) for vm in destroyed]
     raw["node_vms"] = kept + new_entries
 
     tmp_path = inventory_path.with_suffix(inventory_path.suffix + ".tmp")
@@ -128,13 +110,8 @@ def cmd_migration_complete(args):
 
     repo.update_migration_status(migration.id, MigrationStatus.COMPLETE)
 
+    console.print(f"[bold green]Inventory updated: {inventory_path}[/bold green]")
     console.print(
-        f"[bold green]Inventory updated: {inventory_path}[/bold green]"
+        f"  removed: {removed_count} source VM(s)  | added: {len(new_entries)} target VM(s)"
     )
-    console.print(
-        f"  removed: {removed_count} source VM(s)"
-        f"  | added: {len(new_entries)} target VM(s)"
-    )
-    console.print(
-        f"[bold green]Migration '{migration.name}' marked complete.[/bold green]"
-    )
+    console.print(f"[bold green]Migration '{migration.name}' marked complete.[/bold green]")

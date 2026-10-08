@@ -48,19 +48,19 @@ def _mock_fetch_with(map_):
 class TestFetchPlans:
     def test_returns_flat_list(self):
         with patch.object(
-            vultr_availability, "_fetch",
+            vultr_availability,
+            "_fetch",
             side_effect=_mock_fetch_with({"/plans": PLANS_PAGE}),
         ):
             plans = vultr_availability.fetch_plans("t")
-        assert [p["id"] for p in plans] == [
-            "vc2-4c-8gb", "vc2-8c-32gb", "vhp-8c-16gb-amd"
-        ]
+        assert [p["id"] for p in plans] == ["vc2-4c-8gb", "vc2-8c-32gb", "vhp-8c-16gb-amd"]
 
 
 class TestFetchPlanAvailabilityMap:
     def test_inverts_plan_locations(self):
         with patch.object(
-            vultr_availability, "_fetch",
+            vultr_availability,
+            "_fetch",
             side_effect=_mock_fetch_with({"/plans": PLANS_PAGE}),
         ):
             avail = vultr_availability.fetch_plan_availability_map("t")
@@ -73,7 +73,8 @@ class TestFetchPlanAvailabilityMap:
 class TestResolveVultrRegions:
     def _patch(self):
         return patch.object(
-            vultr_availability, "_fetch",
+            vultr_availability,
+            "_fetch",
             side_effect=_mock_fetch_with({"/plans": PLANS_PAGE}),
         )
 
@@ -124,7 +125,8 @@ class TestResolveVultrRegions:
 
     def test_returns_empty_when_count_zero(self):
         with patch.object(
-            vultr_availability, "_fetch",
+            vultr_availability,
+            "_fetch",
             side_effect=AssertionError("should not be called"),
         ):
             resolved, notes = vultr_availability.resolve_vultr_regions(

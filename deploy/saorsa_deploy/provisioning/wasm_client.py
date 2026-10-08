@@ -63,7 +63,7 @@ def build_node_install_command(node_major: str = WASM_NODE_MAJOR) -> str:
         f'if [ "$FOUND" = "{node_major}" ]; then echo \'NODE:SKIP\'; else '
         f"curl -fsSL https://deb.nodesource.com/setup_{node_major}.x | bash - && "
         "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs && "
-        f"echo \"NODE:INSTALLED:$(node --version) (was ${{FOUND:-none}})\"; fi"
+        f'echo "NODE:INSTALLED:$(node --version) (was ${{FOUND:-none}})"; fi'
     )
 
 

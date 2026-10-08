@@ -88,12 +88,7 @@ class TestAddUrl:
     def test_reads_a_urls_file_ignoring_comments(self, wired, monkeypatch, tmp_path):
         monkeypatch.setattr(prod_pool, "probe_url_size", lambda url: MIB)
         listing = tmp_path / "urls.txt"
-        listing.write_text(
-            "# a comment\n"
-            "https://example.org/a.bin\n"
-            "\n"
-            "https://example.org/b.bin\n"
-        )
+        listing.write_text("# a comment\nhttps://example.org/a.bin\n\nhttps://example.org/b.bin\n")
         prod_pool.cmd_prod_pool_add(_args(urls_file=str(listing)))
         assert {f.name for f in wired.list_pool_files()} == {"a.bin", "b.bin"}
 
@@ -221,9 +216,7 @@ class TestProbeUrlSize:
             def close(self):
                 pass
 
-        monkeypatch.setattr(
-            prod_pool.requests, "request", lambda method, url, **kw: _Response()
-        )
+        monkeypatch.setattr(prod_pool.requests, "request", lambda method, url, **kw: _Response())
         assert prod_pool.probe_url_size("https://example.org/stream") is None
 
     def test_never_infers_a_digest_from_etag(self, monkeypatch):
@@ -240,9 +233,7 @@ class TestProbeUrlSize:
             def close(self):
                 pass
 
-        monkeypatch.setattr(
-            prod_pool.requests, "request", lambda method, url, **kw: _Response()
-        )
+        monkeypatch.setattr(prod_pool.requests, "request", lambda method, url, **kw: _Response())
         assert prod_pool.probe_url_size("https://example.org/a") == 10
 
 

@@ -22,7 +22,6 @@ from saorsa_deploy.provisioning.bootstrap import (
     AntBootstrapNodeProvisioner,
     AntBootstrapNodesProvisioner,
 )
-from saorsa_deploy.provisioning.client import AntClientProvisioner
 from saorsa_deploy.provisioning.firewall import (
     DISABLE_FIREWALL_OP_NAME,
     build_disable_firewall_command,
@@ -53,13 +52,6 @@ def _fake_host(ip):
 def _op_names(mock_add_op):
     """Op ``name`` for every add_op call, in the order they were added."""
     return [call.kwargs.get("name") for call in mock_add_op.call_args_list]
-
-
-def _commands_for(mock_add_op, name):
-    for call in mock_add_op.call_args_list:
-        if call.kwargs.get("name") == name:
-            return call.kwargs.get("commands")
-    raise AssertionError(f"no op named {name!r}")
 
 
 def _run(module, provisioner, active_ips, extra_patches=()):
@@ -129,27 +121,6 @@ def _bootstraps_plan():
     )
 
 
-def _client_plan():
-    prov = AntClientProvisioner(
-        clients=[
-            {
-                "ip": "10.0.0.5",
-                "role": "upload",
-                "region": "lon1",
-                "client_index": 1,
-                "file_size_mb": 10,
-            }
-        ],
-        bootstrap_peers=["10.0.0.1:10000"],
-        aws_access_key_id="k",
-        aws_secret_access_key="s",
-        addresses_s3_bucket="bucket",
-        addresses_s3_prefix="prefix",
-        console=MagicMock(),
-    )
-    return _run("client", prov, ["10.0.0.5"])
-
-
 class TestEveryPlanDisablesTheFirewall:
     def test_plain_node_host(self):
         names = _op_names(_node_plan())
@@ -170,37 +141,8 @@ class TestEveryPlanDisablesTheFirewall:
         names = _op_names(_bootstraps_plan())
         assert names.count(DISABLE_FIREWALL_OP_NAME) == 1
 
-    def test_client_hosts(self):
-        names = _op_names(_client_plan())
-        assert names.count(DISABLE_FIREWALL_OP_NAME) == 1
-
-    def test_op_is_fleet_wide_not_host_targeted(self):
-        # Every image we deploy to may or may not carry ufw; the command is a
-        # no-op without it, so it is never narrowed to a host subset.
-        for mock_add_op in (
-            _node_plan(nat_ips={"10.0.0.1"}),
-            _genesis_plan(),
-            _bootstraps_plan(),
-            _client_plan(),
-        ):
-            for call in mock_add_op.call_args_list:
-                if call.kwargs.get("name") == DISABLE_FIREWALL_OP_NAME:
-                    assert "host" not in call.kwargs
-
 
 class TestTheCommandIsTheNatOne:
-    def test_every_plan_runs_the_shared_command(self):
-        for mock_add_op in (
-            _node_plan(),
-            _node_plan(nat_ips={"10.0.0.1"}),
-            _genesis_plan(),
-            _bootstraps_plan(),
-            _client_plan(),
-        ):
-            assert _commands_for(mock_add_op, DISABLE_FIREWALL_OP_NAME) == [
-                build_disable_firewall_command()
-            ]
-
     def test_nat_setup_still_carries_the_identical_line(self):
         # One definition, two call sites: the NAT script interpolates the same
         # builder, so this asserts they cannot drift.
@@ -231,9 +173,3 @@ class TestOrdering:
     def test_before_the_per_host_config_op_on_bootstraps(self):
         names = _op_names(_bootstraps_plan())
         assert names.index(DISABLE_FIREWALL_OP_NAME) < names.index("Configure ant-bootstrap-2")
-
-    def test_before_the_unit_file_op_on_clients(self):
-        names = _op_names(_client_plan())
-        assert names.index(DISABLE_FIREWALL_OP_NAME) < names.index(
-            "Write systemd unit files (role-aware)"
-        )

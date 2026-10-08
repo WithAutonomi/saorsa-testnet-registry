@@ -39,9 +39,7 @@ from saorsa_deploy.state import (
 from saorsa_deploy.terraform import TerraformRunConfig
 
 
-def _resolve_locations_to_destroy(
-    migration, parsed_filter: list[str] | None
-) -> list[str]:
+def _resolve_locations_to_destroy(migration, parsed_filter: list[str] | None) -> list[str]:
     """Pick which locations have Terraform state to destroy.
 
     When ``parsed_filter`` is provided, restrict to those; otherwise destroy
@@ -57,9 +55,7 @@ def _resolve_locations_to_destroy(
         candidates = []
 
     return [
-        loc
-        for loc in candidates
-        if check_terraform_state_exists(_state_key(migration.name, loc))
+        loc for loc in candidates if check_terraform_state_exists(_state_key(migration.name, loc))
     ]
 
 
@@ -83,10 +79,7 @@ def _destroy_infra_contabo(console, repo, migration, parsed_filter) -> None:
         and (parsed_filter is None or vm.target_location in parsed_filter)
     ]
     if not targets:
-        console.print(
-            "[yellow]No Contabo target instances to cancel for this "
-            "migration.[/yellow]"
-        )
+        console.print("[yellow]No Contabo target instances to cancel for this migration.[/yellow]")
         return
 
     console.print(
@@ -96,8 +89,7 @@ def _destroy_infra_contabo(console, repo, migration, parsed_filter) -> None:
     client = ContaboClient(console)
     for vm in targets:
         console.print(
-            f"[cyan]Cancelling {vm.target_name} "
-            f"(instance {vm.target_provider_id})...[/cyan]"
+            f"[cyan]Cancelling {vm.target_name} (instance {vm.target_provider_id})...[/cyan]"
         )
         client.cancel_instance(int(vm.target_provider_id))
 
@@ -144,9 +136,7 @@ def cmd_migration_destroy_infra(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
     if not args.force:
@@ -167,9 +157,7 @@ def cmd_migration_destroy_infra(args):
 
     parsed_filter = None
     if args.locations:
-        parsed_filter = [
-            loc.strip() for loc in args.locations.split(",") if loc.strip()
-        ]
+        parsed_filter = [loc.strip() for loc in args.locations.split(",") if loc.strip()]
 
     # Contabo has no Terraform state — cancel the instances via the REST API.
     if migration.target_provider == _CONTABO:
@@ -187,9 +175,7 @@ def cmd_migration_destroy_infra(args):
 
     targets = _resolve_locations_to_destroy(migration, parsed_filter)
     if not targets:
-        console.print(
-            "[yellow]No Terraform state to destroy for this migration.[/yellow]"
-        )
+        console.print("[yellow]No Terraform state to destroy for this migration.[/yellow]")
         return
 
     inventory_path = (
@@ -222,11 +208,7 @@ def cmd_migration_destroy_infra(args):
         if migration.target_locations and loc in migration.target_locations:
             count = int(migration.target_locations[loc])
         else:
-            count = sum(
-                1
-                for vm in repo.list_vms(migration.id)
-                if vm.target_location == loc
-            )
+            count = sum(1 for vm in repo.list_vms(migration.id) if vm.target_location == loc)
         if count <= 0:
             count = 1  # Defensive: Terraform refuses count=0 var
 
@@ -264,9 +246,7 @@ def cmd_migration_destroy_infra(args):
     for cfg, result in zip(configs, results):
         if not result.success:
             failures.append(cfg.region)
-            console.print(
-                f"[bold red]{cfg.region}: destroy failed.[/bold red]"
-            )
+            console.print(f"[bold red]{cfg.region}: destroy failed.[/bold red]")
             continue
         try:
             delete_terraform_state(cfg.state_key)

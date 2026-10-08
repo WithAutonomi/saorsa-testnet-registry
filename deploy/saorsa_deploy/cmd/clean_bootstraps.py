@@ -30,10 +30,7 @@ def cmd_clean_bootstraps(args):
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
 
-        console.print(
-            f"[bold]Cleaning {len(all_ips)} host(s) from "
-            f"{args.host_ips_file}...[/bold]"
-        )
+        console.print(f"[bold]Cleaning {len(all_ips)} host(s) from {args.host_ips_file}...[/bold]")
         clear_known_hosts(all_ips, console)
         try:
             BootstrapCleanProvisioner(
@@ -47,9 +44,7 @@ def cmd_clean_bootstraps(args):
             sys.exit(1)
 
     elif args.name:
-        console.print(
-            f"[bold]Loading deployment state for '{args.name}'...[/bold]"
-        )
+        console.print(f"[bold]Loading deployment state for '{args.name}'...[/bold]")
         try:
             state = load_deployment_state(args.name)
         except RuntimeError as e:
@@ -65,10 +60,7 @@ def cmd_clean_bootstraps(args):
                 all_ips = [bootstrap_ip]
 
         if not all_ips:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                "No bootstrap IPs found in deployment state."
-            )
+            console.print("[bold red]Error:[/bold red] No bootstrap IPs found in deployment state.")
             sys.exit(1)
 
         console.print(
@@ -88,12 +80,9 @@ def cmd_clean_bootstraps(args):
             sys.exit(1)
     else:
         console.print(
-            "[bold red]Error:[/bold red] "
-            "Either --name or --host-ips-file must be provided."
+            "[bold red]Error:[/bold red] Either --name or --host-ips-file must be provided."
         )
         sys.exit(1)
 
     console.print()
-    console.print(
-        "[bold green]Bootstrap cleanup finished.[/bold green]"
-    )
+    console.print("[bold green]Bootstrap cleanup finished.[/bold green]")

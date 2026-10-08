@@ -77,8 +77,7 @@ def load_node_inventory(
 
     if provider_filter is not None and provider_filter not in SUPPORTED_PROVIDERS:
         raise ValueError(
-            f"Unknown provider {provider_filter!r}. "
-            f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+            f"Unknown provider {provider_filter!r}. Supported: {sorted(SUPPORTED_PROVIDERS)}"
         )
 
     vms: list[NodeVm] = []
@@ -86,8 +85,7 @@ def load_node_inventory(
         provider = entry.get("provider")
         if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(
-                f"Inventory entry {entry.get('name')!r} has unknown provider "
-                f"{provider!r}"
+                f"Inventory entry {entry.get('name')!r} has unknown provider {provider!r}"
             )
         if provider_filter is not None and provider != provider_filter:
             continue
@@ -115,9 +113,7 @@ def load_node_inventory(
         )
 
     if provider_filter is not None and not vms:
-        raise ValueError(
-            f"No node VMs match provider {provider_filter!r} in {path}"
-        )
+        raise ValueError(f"No node VMs match provider {provider_filter!r} in {path}")
 
     return vms
 

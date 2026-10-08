@@ -14,9 +14,7 @@ def test_no_op_when_monitoring_state_missing():
             "saorsa_deploy.cmd.destroy_monitoring.load_monitoring_state",
             side_effect=RuntimeError("No monitoring state for 'DEV-01'"),
         ),
-        patch(
-            "saorsa_deploy.cmd.destroy_monitoring.execute_terraform_runs"
-        ) as execute,
+        patch("saorsa_deploy.cmd.destroy_monitoring.execute_terraform_runs") as execute,
     ):
         cmd_destroy_monitoring(_args())
 

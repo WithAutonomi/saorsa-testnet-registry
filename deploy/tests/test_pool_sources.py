@@ -93,10 +93,21 @@ def wired(repo, monkeypatch):
 
 def _add_args(**kwargs):
     base = dict(
-        url=None, urls_file=None, dir=None, path=None, tag=None, provenance=None,
-        allow_unknown_size=False, hash=True, materialise=None,
-        from_listing=None, size=None, limit=None, dry_run=False,
-        originals_only=False, path_prefix=None,
+        url=None,
+        urls_file=None,
+        dir=None,
+        path=None,
+        tag=None,
+        provenance=None,
+        allow_unknown_size=False,
+        hash=True,
+        materialise=None,
+        from_listing=None,
+        size=None,
+        limit=None,
+        dry_run=False,
+        originals_only=False,
+        path_prefix=None,
     )
     base.update(kwargs)
     return argparse.Namespace(**base)
@@ -132,9 +143,7 @@ class TestSpecParsing:
 
 class TestInternetArchive:
     def test_returns_content_with_size_and_digests(self, monkeypatch):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         candidates = pool_sources.fetch_internet_archive_item("my-item")
         names = {c.name for c in candidates}
         assert names == {"film.mkv", "notes.txt"}
@@ -152,45 +161,32 @@ class TestInternetArchive:
         # "derivative" and the only "originals" are metadata plus a torrent.
         # Filtering to originals discarded 332 MB, 62 MB and 47 MB of real
         # content and kept a 50 KB torrent.
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         names = {c.name for c in pool_sources.fetch_internet_archive_item("my-item")}
         assert "film.mkv" in names
 
     def test_originals_only_is_available_but_opt_in(self, monkeypatch):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         names = {
-            c.name
-            for c in pool_sources.fetch_internet_archive_item(
-                "my-item", originals_only=True
-            )
+            c.name for c in pool_sources.fetch_internet_archive_item("my-item", originals_only=True)
         }
         assert names == {"notes.txt"}
 
     def test_artefact_formats_are_excluded(self, monkeypatch):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         names = {c.name for c in pool_sources.fetch_internet_archive_item("my-item")}
         assert "film.torrent" not in names
         assert "frame_000001.jpg" not in names
 
     def test_bookkeeping_files_are_excluded(self, monkeypatch):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         names = {c.name for c in pool_sources.fetch_internet_archive_item("my-item")}
         assert not names & {"item_meta.xml", "item_files.xml", "__ia_thumb.jpg"}
 
     def test_unknown_item_is_reported_clearly(self, monkeypatch):
         # IA answers an unknown identifier with 200 and an empty body, so this
         # is the only signal that the item does not exist.
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response({})
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response({}))
         with pytest.raises(pool_sources.SourceError, match="check the identifier"):
             pool_sources.fetch_internet_archive_item("nope")
 
@@ -221,12 +217,8 @@ class TestInternetArchive:
 
 
 class TestAddFromListing:
-    def test_catalogues_without_probing_or_downloading(
-        self, wired, monkeypatch, capsys
-    ):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+    def test_catalogues_without_probing_or_downloading(self, wired, monkeypatch, capsys):
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
 
         def _no_probe(url):
             raise AssertionError("bulk acquisition must not probe each URL")
@@ -236,9 +228,7 @@ class TestAddFromListing:
             prod_pool, "_download", lambda *a, **kw: pytest.fail("must not download")
         )
 
-        prod_pool.cmd_prod_pool_add(
-            _add_args(from_listing="internet-archive:my-item")
-        )
+        prod_pool.cmd_prod_pool_add(_add_args(from_listing="internet-archive:my-item"))
 
         rows = wired.list_pool_files()
         assert {r.name for r in rows} == {"film.mkv", "notes.txt"}
@@ -248,9 +238,7 @@ class TestAddFromListing:
         assert film.provenance == "internet-archive:my-item"
 
     def test_size_filter_applies(self, wired, monkeypatch, capsys):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         prod_pool.cmd_prod_pool_add(
             _add_args(from_listing="internet-archive:my-item", size="medium")
         )
@@ -261,9 +249,7 @@ class TestAddFromListing:
         # Both files here are catalogued by the unbounded run; a class filter
         # can only say "tiny" (which takes the 1 KB notes) or "medium" (which
         # takes the 800 MB film). "at least 5 MB" needs the byte bound.
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         prod_pool.cmd_prod_pool_add(
             _add_args(from_listing="internet-archive:my-item", min_size="5MB")
         )
@@ -271,32 +257,22 @@ class TestAddFromListing:
         assert "did not match ≥ 5.00 MB" in _flat(capsys.readouterr().out)
 
     def test_max_size_applies(self, wired, monkeypatch):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         prod_pool.cmd_prod_pool_add(
             _add_args(from_listing="internet-archive:my-item", max_size="5MB")
         )
         assert {r.name for r in wired.list_pool_files()} == {"notes.txt"}
 
     def test_bounds_combine_with_a_class(self, wired, monkeypatch, capsys):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         prod_pool.cmd_prod_pool_add(
-            _add_args(
-                from_listing="internet-archive:my-item", size="tiny", min_size="5MB"
-            )
+            _add_args(from_listing="internet-archive:my-item", size="tiny", min_size="5MB")
         )
         assert wired.list_pool_files() == []
-        assert "did not match --size tiny and ≥ 5.00 MB" in _flat(
-            capsys.readouterr().out
-        )
+        assert "did not match --size tiny and ≥ 5.00 MB" in _flat(capsys.readouterr().out)
 
     def test_inverted_bounds_are_refused(self, wired, monkeypatch, capsys):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         with pytest.raises(SystemExit):
             prod_pool.cmd_prod_pool_add(
                 _add_args(
@@ -308,18 +284,12 @@ class TestAddFromListing:
         assert "must be below" in _flat(capsys.readouterr().out)
 
     def test_limit_applies(self, wired, monkeypatch):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
-        prod_pool.cmd_prod_pool_add(
-            _add_args(from_listing="internet-archive:my-item", limit=1)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
+        prod_pool.cmd_prod_pool_add(_add_args(from_listing="internet-archive:my-item", limit=1))
         assert len(wired.list_pool_files()) == 1
 
     def test_dry_run_writes_nothing(self, wired, monkeypatch, capsys):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         prod_pool.cmd_prod_pool_add(
             _add_args(from_listing="internet-archive:my-item", dry_run=True)
         )
@@ -327,9 +297,7 @@ class TestAddFromListing:
         assert "Dry run" in _flat(capsys.readouterr().out)
 
     def test_rerunning_skips_what_is_already_catalogued(self, wired, monkeypatch, capsys):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         prod_pool.cmd_prod_pool_add(_add_args(from_listing="internet-archive:my-item"))
         capsys.readouterr()
         prod_pool.cmd_prod_pool_add(_add_args(from_listing="internet-archive:my-item"))
@@ -348,14 +316,13 @@ class TestAddFromListing:
             size_bytes=838860800,
             digests={"sha1": "bbb222"},
         )
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(ITEM_PAYLOAD))
         prod_pool.cmd_prod_pool_add(_add_args(from_listing="internet-archive:my-item"))
 
         mirror = next(
-            r for r in wired.list_pool_files() if r.kind is PoolFileKind.URL
-            and r.name == "film.mkv"
+            r
+            for r in wired.list_pool_files()
+            if r.kind is PoolFileKind.URL and r.name == "film.mkv"
         )
         assert mirror.duplicate_of == local.id
         assert "claiming either spends both" in _flat(capsys.readouterr().out)
@@ -368,9 +335,7 @@ class TestAddFromListing:
     def test_from_listing_is_exclusive_with_other_sources(self, wired):
         with pytest.raises(SystemExit):
             prod_pool.cmd_prod_pool_add(
-                _add_args(
-                    from_listing="internet-archive:x", url=["https://example.org/a"]
-                )
+                _add_args(from_listing="internet-archive:x", url=["https://example.org/a"])
             )
 
 
@@ -384,22 +349,28 @@ class TestPathPrefix:
 
     PAYLOAD = {
         "files": [
-            {"name": "Release_03/Release 3/Photographer 1/a.jpg",
-             "format": "JPEG", "size": "14515", "md5": "aa", "sha1": "bb"},
-            {"name": "Release_03/Release 3/Photographer 2/b.jpg",
-             "format": "JPEG", "size": "25975", "md5": "cc", "sha1": "dd"},
+            {
+                "name": "Release_03/Release 3/Photographer 1/a.jpg",
+                "format": "JPEG",
+                "size": "14515",
+                "md5": "aa",
+                "sha1": "bb",
+            },
+            {
+                "name": "Release_03/Release 3/Photographer 2/b.jpg",
+                "format": "JPEG",
+                "size": "25975",
+                "md5": "cc",
+                "sha1": "dd",
+            },
             {"name": "Release_04/other.jpg", "format": "JPEG", "size": "999"},
-            {"name": "Release_03/NIST FOIA Terms of Use.txt",
-             "format": "Text", "size": "512"},
-            {"name": "item_torrent.txt", "format": "BitTorrentContents",
-             "size": "300"},
+            {"name": "Release_03/NIST FOIA Terms of Use.txt", "format": "Text", "size": "512"},
+            {"name": "item_torrent.txt", "format": "BitTorrentContents", "size": "300"},
         ]
     }
 
     def _resp(self, monkeypatch):
-        monkeypatch.setattr(
-            pool_sources.requests, "get", lambda url, **kw: _Response(self.PAYLOAD)
-        )
+        monkeypatch.setattr(pool_sources.requests, "get", lambda url, **kw: _Response(self.PAYLOAD))
 
     def test_narrows_to_the_directory(self, monkeypatch):
         self._resp(monkeypatch)
@@ -435,10 +406,7 @@ class TestPathPrefix:
         # An item-internal path routinely contains spaces; an unencoded URL
         # 404s when the uploader VM fetches it.
         self._resp(monkeypatch)
-        c = next(
-            c for c in pool_sources.fetch_internet_archive_item("item")
-            if c.name == "a.jpg"
-        )
+        c = next(c for c in pool_sources.fetch_internet_archive_item("item") if c.name == "a.jpg")
         assert " " not in c.url
         assert c.url.endswith("Release_03/Release%203/Photographer%201/a.jpg")
 
@@ -457,18 +425,42 @@ class TestDuplicateBasenames:
 
     PAYLOAD = {
         "files": [
-            {"name": "Rel/42A0059 - FBI#1/VIDEO_TS/VTS_01_1.VOB",
-             "format": "MPEG2", "size": "127619645", "md5": "a1"},
-            {"name": "Rel/42A0060 - FBI#2/VIDEO_TS/VTS_01_1.VOB",
-             "format": "MPEG2", "size": "189531648", "md5": "a2"},
-            {"name": "Rel/42A0061 - FBI#3/VIDEO_TS/VTS_01_1.VOB",
-             "format": "MPEG2", "size": "1073203200", "md5": "a3"},
-            {"name": "Rel/42A0059 - FBI#1/VIDEO_TS/VIDEO_TS.IFO",
-             "format": "Unknown", "size": "12288", "md5": "b1"},
-            {"name": "Rel/42A0060 - FBI#2/VIDEO_TS/VIDEO_TS.IFO",
-             "format": "Unknown", "size": "12288", "md5": "b2"},
-            {"name": "Rel/NIST FOIA Terms of Use.txt",
-             "format": "Text", "size": "1424", "md5": "c1"},
+            {
+                "name": "Rel/42A0059 - FBI#1/VIDEO_TS/VTS_01_1.VOB",
+                "format": "MPEG2",
+                "size": "127619645",
+                "md5": "a1",
+            },
+            {
+                "name": "Rel/42A0060 - FBI#2/VIDEO_TS/VTS_01_1.VOB",
+                "format": "MPEG2",
+                "size": "189531648",
+                "md5": "a2",
+            },
+            {
+                "name": "Rel/42A0061 - FBI#3/VIDEO_TS/VTS_01_1.VOB",
+                "format": "MPEG2",
+                "size": "1073203200",
+                "md5": "a3",
+            },
+            {
+                "name": "Rel/42A0059 - FBI#1/VIDEO_TS/VIDEO_TS.IFO",
+                "format": "Unknown",
+                "size": "12288",
+                "md5": "b1",
+            },
+            {
+                "name": "Rel/42A0060 - FBI#2/VIDEO_TS/VIDEO_TS.IFO",
+                "format": "Unknown",
+                "size": "12288",
+                "md5": "b2",
+            },
+            {
+                "name": "Rel/NIST FOIA Terms of Use.txt",
+                "format": "Text",
+                "size": "1424",
+                "md5": "c1",
+            },
         ]
     }
 
@@ -504,17 +496,12 @@ class TestDuplicateBasenames:
         assert "42A0060 - FBI#2 - VIDEO_TS.IFO" in names
 
     def test_the_full_path_is_kept_for_reference(self, monkeypatch):
-        c = next(
-            c for c in self._fetch(monkeypatch)
-            if c.name == "42A0061 - FBI#3 - VTS_01_1.VOB"
-        )
+        c = next(c for c in self._fetch(monkeypatch) if c.name == "42A0061 - FBI#3 - VTS_01_1.VOB")
         assert c.path == "Rel/42A0061 - FBI#3/VIDEO_TS/VTS_01_1.VOB"
         # The URL is built from the path, so it is unaffected by the rename.
         assert c.url.endswith("VIDEO_TS/VTS_01_1.VOB")
 
-    def test_the_full_path_is_the_fallback_when_an_ancestor_would_collide(
-        self, monkeypatch
-    ):
+    def test_the_full_path_is_the_fallback_when_an_ancestor_would_collide(self, monkeypatch):
         # The ancestor rename would produce "x - f.bin", which the third file
         # already holds — so taking it would trade one collision for another.
         payload = {

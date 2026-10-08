@@ -99,9 +99,7 @@ def _build_bootstrap_configs(
         bootstrap_index = i + 1
         workspace_dir = workspace_base / f"do-bootstrap-{name}-{region}"
         state_key = f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-{region}.tfstate"
-        region_volume_size = (
-            (volume_size_by_region or {}).get(region, volume_size)
-        )
+        region_volume_size = (volume_size_by_region or {}).get(region, volume_size)
 
         variables = {
             "name": name,
@@ -228,32 +226,27 @@ def create_bootstrap_vms(
     regions = _select_bootstrap_regions(count, regions_override=regions_override)
     configs = _build_bootstrap_configs(name, regions, volume_size, droplet_size)
 
-    console.print(
-        f"[bold]Creating {count} bootstrap VM(s) across "
-        f"{', '.join(regions)}...[/bold]"
-    )
+    console.print(f"[bold]Creating {count} bootstrap VM(s) across {', '.join(regions)}...[/bold]")
 
     results = execute_terraform_runs(configs)
 
     failures = [r for r in results if not r.success]
     if failures:
-        raise RuntimeError(
-            f"{len(failures)} bootstrap region(s) failed to provision"
-        )
+        raise RuntimeError(f"{len(failures)} bootstrap region(s) failed to provision")
 
     bootstrap_nodes = []
     for config, result in zip(configs, results):
         if result.success:
             ip = result.outputs.get("vm_ip")
             if not ip:
-                raise RuntimeError(
-                    f"No IP output from bootstrap Terraform in {config.region}"
-                )
-            bootstrap_nodes.append({
-                "ip": ip,
-                "region": config.region,
-                "bootstrap_index": int(config.variables["bootstrap_index"]),
-            })
+                raise RuntimeError(f"No IP output from bootstrap Terraform in {config.region}")
+            bootstrap_nodes.append(
+                {
+                    "ip": ip,
+                    "region": config.region,
+                    "bootstrap_index": int(config.variables["bootstrap_index"]),
+                }
+            )
 
     bootstrap_nodes.sort(key=lambda n: n["bootstrap_index"])
     return bootstrap_nodes
@@ -275,9 +268,7 @@ def destroy_bootstrap_vms(
     volume_size_by_region = {
         region: max(
             volume_size,
-            _real_bootstrap_volume_size(
-                f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-{region}.tfstate"
-            ),
+            _real_bootstrap_volume_size(f"{BOOTSTRAP_STATE_KEY_PREFIX}-{name}-{region}.tfstate"),
         )
         for region in regions
     }
@@ -297,16 +288,12 @@ def destroy_bootstrap_vms(
         console.print("[yellow]No bootstrap Terraform state found, nothing to destroy.[/yellow]")
         return
 
-    console.print(
-        f"[bold]Destroying {len(active_configs)} bootstrap VM(s)...[/bold]"
-    )
+    console.print(f"[bold]Destroying {len(active_configs)} bootstrap VM(s)...[/bold]")
     results = execute_terraform_runs(active_configs, action="destroy")
 
     failures = [r for r in results if not r.success]
     if failures:
-        raise RuntimeError(
-            f"{len(failures)} bootstrap region(s) failed to destroy"
-        )
+        raise RuntimeError(f"{len(failures)} bootstrap region(s) failed to destroy")
 
     # Clean up Terraform state and workspace directories
     for config in active_configs:

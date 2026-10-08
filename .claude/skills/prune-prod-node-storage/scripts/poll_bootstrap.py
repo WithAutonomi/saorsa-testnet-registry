@@ -65,7 +65,9 @@ def service_number(service, service_number_arg):
             sys.exit(1)
         n = m.group(1)
     if not n.isdigit():
-        eprint(f"error: could not derive a service number from {service!r}/{service_number_arg!r}")
+        eprint(
+            f"error: could not derive a service number from {service!r}/{service_number_arg!r}"
+        )
         sys.exit(1)
     return n
 
@@ -121,40 +123,70 @@ def run_query(url, api_key, index, query, request_timeout):
 
 
 def emit(status, host_upper, svc_num, timestamp=None):
-    print(json.dumps({
-        "status": status,
-        "host": host_upper,
-        "service_number": svc_num,
-        "timestamp": timestamp,
-    }), flush=True)
+    print(
+        json.dumps(
+            {
+                "status": status,
+                "host": host_upper,
+                "service_number": svc_num,
+                "timestamp": timestamp,
+            }
+        ),
+        flush=True,
+    )
 
 
 def main():
-    p = argparse.ArgumentParser(description="Poll prod ES for ant-node bootstrap completion.")
-    p.add_argument("--host", required=True,
-                   help="host name from inventory (any case; uppercased for tag.host.keyword)")
+    p = argparse.ArgumentParser(
+        description="Poll prod ES for ant-node bootstrap completion."
+    )
+    p.add_argument(
+        "--host",
+        required=True,
+        help="host name from inventory (any case; uppercased for tag.host.keyword)",
+    )
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--service", help="service name, e.g. ant-node-7")
     g.add_argument("--service-number", help="service number, e.g. 7")
-    p.add_argument("--since", required=True,
-                   help="ISO8601 UTC lower bound (the moment `prod services add` ran), "
-                        "e.g. 2026-07-24T14:30:00Z")
+    p.add_argument(
+        "--since",
+        required=True,
+        help="ISO8601 UTC lower bound (the moment `prod services add` ran), "
+        "e.g. 2026-07-24T14:30:00Z",
+    )
     p.add_argument("--index", default=DEFAULT_INDEX)
     p.add_argument("--marker", default=DEFAULT_MARKER)
-    p.add_argument("--wait", action="store_true",
-                   help="loop until complete instead of a single check")
-    p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL,
-                   help="seconds between polls in --wait mode (default 300)")
-    p.add_argument("--max-wait-hours", type=float, default=0.0,
-                   help="give up after N hours in --wait mode (default 0 = forever)")
-    p.add_argument("--request-timeout", type=int, default=DEFAULT_REQUEST_TIMEOUT,
-                   help="per-HTTP-request timeout in seconds (default 60)")
+    p.add_argument(
+        "--wait",
+        action="store_true",
+        help="loop until complete instead of a single check",
+    )
+    p.add_argument(
+        "--interval",
+        type=int,
+        default=DEFAULT_INTERVAL,
+        help="seconds between polls in --wait mode (default 300)",
+    )
+    p.add_argument(
+        "--max-wait-hours",
+        type=float,
+        default=0.0,
+        help="give up after N hours in --wait mode (default 0 = forever)",
+    )
+    p.add_argument(
+        "--request-timeout",
+        type=int,
+        default=DEFAULT_REQUEST_TIMEOUT,
+        help="per-HTTP-request timeout in seconds (default 60)",
+    )
     args = p.parse_args()
 
     url = os.environ.get("PROD_ES_URL")
     api_key = os.environ.get("PROD_ES_API_KEY")
     if not url or not api_key:
-        eprint("error: PROD_ES_URL and PROD_ES_API_KEY must both be set in the environment.")
+        eprint(
+            "error: PROD_ES_URL and PROD_ES_API_KEY must both be set in the environment."
+        )
         sys.exit(1)
 
     host_upper = args.host.strip().upper()
@@ -174,10 +206,16 @@ def main():
         sys.exit(2)
 
     # --wait mode: poll forever (or until --max-wait-hours), retrying transient errors.
-    deadline = None if args.max_wait_hours <= 0 else time.monotonic() + args.max_wait_hours * 3600
-    eprint(f"[poll] waiting for '{args.marker}' on {host_upper} ant-node-{svc_num} "
-           f"since {args.since} (every {args.interval}s"
-           f"{', no deadline' if deadline is None else f', deadline {args.max_wait_hours}h'})")
+    deadline = (
+        None
+        if args.max_wait_hours <= 0
+        else time.monotonic() + args.max_wait_hours * 3600
+    )
+    eprint(
+        f"[poll] waiting for '{args.marker}' on {host_upper} ant-node-{svc_num} "
+        f"since {args.since} (every {args.interval}s"
+        f"{', no deadline' if deadline is None else f', deadline {args.max_wait_hours}h'})"
+    )
     while True:
         try:
             ts = run_query(url, api_key, args.index, query, args.request_timeout)

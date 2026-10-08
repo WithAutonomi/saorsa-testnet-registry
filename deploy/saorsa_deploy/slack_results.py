@@ -55,6 +55,7 @@ def _fmt_token(value: Decimal | None, symbol: str) -> str:
     amount = (value / _ATTO_PER_UNIT).normalize()
     return f"{amount:f} {symbol}"
 
+
 # Slack caps a message at 50 blocks; _chunked_sections packs ~35 lines/block, so
 # a per-op list of unbounded length (e.g. a long-running continuous downloader)
 # could blow the cap. Bound the per-op detail and note the truncation rather
@@ -79,9 +80,7 @@ def _format_duration_ms(ms) -> str:
     return f"{minutes}m {seconds}s"
 
 
-def _totals_section(
-    total_ok: int, total_fail: int, op_records: list[dict] | None
-) -> dict:
+def _totals_section(total_ok: int, total_fail: int, op_records: list[dict] | None) -> dict:
     """Totals, split by transport when the run had a WASM client tier.
 
     A native and a WASM client are not the same instrument -- measured on
@@ -186,9 +185,7 @@ def file_ops_result_blocks(
 
     if op_records:
         # Most-recent-first, so the cap keeps the freshest operations.
-        ordered = sorted(
-            op_records, key=lambda r: r.get("started_at") or 0, reverse=True
-        )
+        ordered = sorted(op_records, key=lambda r: r.get("started_at") or 0, reverse=True)
         total = len(ordered)
         shown = ordered[:_MAX_OP_DETAIL_LINES]
         op_lines = [_op_detail_line(r) for r in shown]
@@ -313,15 +310,18 @@ def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
     def _bucket(status: int) -> str:
         # An over-cap file is neither a success nor a failure: the transport
         # refused it, so it stays out of both totals and is reported on its own.
-        return {0: "ok", 1: "partial", 2: "failed", 3: "over_cap", 4: "failed"}[
-            status
-        ]
+        return {0: "ok", 1: "partial", 2: "failed", 3: "over_cap", 4: "failed"}[status]
 
     per_host: dict[str, dict] = defaultdict(
         lambda: {
-            "ok": 0, "partial": 0, "failed": 0, "over_cap": 0,
-            "stored": 0, "cfailed": 0,
-            "ant": Decimal(0), "gas": Decimal(0),
+            "ok": 0,
+            "partial": 0,
+            "failed": 0,
+            "over_cap": 0,
+            "stored": 0,
+            "cfailed": 0,
+            "ant": Decimal(0),
+            "gas": Decimal(0),
         }
     )
     totals = {"ok": 0, "partial": 0, "failed": 0, "over_cap": 0}
@@ -399,8 +399,7 @@ def prod_upload_result_blocks(points: list[dict]) -> list[dict]:
         if ant is not None or gas is not None:
             cost = f" — {_fmt_token(ant, 'ANT')} / {_fmt_token(gas, 'ETH')}"
         file_lines.append(
-            f"• `{name}` [{label}] — {stored}/{total_chunks} chunks on "
-            f"{p.get('host') or '?'}{cost}"
+            f"• `{name}` [{label}] — {stored}/{total_chunks} chunks on {p.get('host') or '?'}{cost}"
         )
     blocks.extend(_chunked_sections("*Per-file detail:*", file_lines))
     return blocks
@@ -429,7 +428,5 @@ def canary_result_blocks(summary: dict) -> list[dict]:
     histogram = summary.get("histogram") or []
     hist_lines = [f"• {label}: {count}" for label, count in histogram if count]
     if hist_lines:
-        blocks.append(
-            _section("*Hours-to-confirmed-loss:*\n" + "\n".join(hist_lines))
-        )
+        blocks.append(_section("*Hours-to-confirmed-loss:*\n" + "\n".join(hist_lines)))
     return blocks

@@ -65,8 +65,10 @@ def test_ovh_resize_polls_until_in_use_at_target():
             return {"status": "extending", "size": 50}
         return {"status": "in-use", "size": 100}
 
-    with patch.object(cloud_volumes, "_ovh_call", side_effect=fake_call), \
-            patch.object(cloud_volumes.time, "sleep", lambda _s: None):
+    with (
+        patch.object(cloud_volumes, "_ovh_call", side_effect=fake_call),
+        patch.object(cloud_volumes.time, "sleep", lambda _s: None),
+    ):
         out = resize_volume(vol, 100)
 
     assert out == CloudVolume(provider="ovh", id="vol-data", size_gb=100, region="BHS5")

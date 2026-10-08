@@ -15,6 +15,7 @@ The arithmetic lives in ``saorsa_deploy.gas_model``; this module does the I/O:
 fetch the base fee, read the previous run's throughput out of Postgres, read
 the manifest, print, and set the exit code.
 """
+
 from __future__ import annotations
 
 import math
@@ -72,9 +73,7 @@ def _fetch_funder_balance_eth(rpc_url: str) -> Optional[float]:
         from eth_account import Account
         from web3 import Web3
 
-        address = Account.from_key(
-            key if key.startswith("0x") else "0x" + key
-        ).address
+        address = Account.from_key(key if key.startswith("0x") else "0x" + key).address
         w3 = Web3(Web3.HTTPProvider(rpc_url))
         return w3.eth.get_balance(address) / 1e18
     except Exception:
@@ -232,18 +231,12 @@ def cmd_estimate_client_gas(args) -> None:
             )
             sys.exit(1)
         try:
-            clients_seen, baseline_hours = _read_baseline_clients(
-                repo, baseline_id
-            )
+            clients_seen, baseline_hours = _read_baseline_clients(repo, baseline_id)
             # Projected per transport. A native uploader is sized from NATIVE
             # records only, so a baseline that ran both tiers cannot hand it
             # the WASM tier's much lower rate (or vice versa).
-            native_throughput = project_throughput(
-                clients_seen, baseline_hours, transport=NATIVE
-            )
-            wasm_throughput = project_throughput(
-                clients_seen, baseline_hours, transport=WASM
-            )
+            native_throughput = project_throughput(clients_seen, baseline_hours, transport=NATIVE)
+            wasm_throughput = project_throughput(clients_seen, baseline_hours, transport=WASM)
             throughput = native_throughput
             by_size = throughput.rate_by_size_gb
             for c in project_throughput(clients_seen, baseline_hours).truncated:
@@ -285,9 +278,7 @@ def cmd_estimate_client_gas(args) -> None:
                     name=f"{getattr(up, 'region', '?')}/pointer [{POINTER}]",
                     size_gb=0.0,
                     expected_uploads=int(math.ceil(rate * duration)),
-                    current_eth=(
-                        float(up.eth) if getattr(up, "eth", None) is not None else None
-                    ),
+                    current_eth=(float(up.eth) if getattr(up, "eth", None) is not None else None),
                     transport=POINTER,
                     basis=(
                         f"manifest rates: create/{up.create_interval_secs}s + "
@@ -301,9 +292,7 @@ def cmd_estimate_client_gas(args) -> None:
         if flat_rate is not None:
             rate = flat_rate
         elif transport == WASM and wasm_throughput is not None:
-            rate, basis = wasm_rate_for_size(
-                size_gb, wasm_throughput, native_throughput
-            )
+            rate, basis = wasm_rate_for_size(size_gb, wasm_throughput, native_throughput)
         else:
             rate = rate_for_size(size_gb, by_size)
         if rate is None:
@@ -336,9 +325,7 @@ def cmd_estimate_client_gas(args) -> None:
         )
 
     if not plans:
-        console.print(
-            "[bold red]Error:[/bold red] no uploader could be sized."
-        )
+        console.print("[bold red]Error:[/bold red] no uploader could be sized.")
         sys.exit(1)
 
     funder = getattr(args, "funder_balance_eth", None)
@@ -377,7 +364,7 @@ def cmd_estimate_client_gas(args) -> None:
             # A pointer record is a fixed ~5 KB with no payload term in the
             # model, so printing "0 MB" would invite the reader to think the
             # size was lost rather than that it does not apply.
-            "n/a" if u.plan.transport == POINTER else f"{u.plan.size_gb*1000:.0f} MB",
+            "n/a" if u.plan.transport == POINTER else f"{u.plan.size_gb * 1000:.0f} MB",
             str(u.plan.expected_uploads),
             f"{u.modelled_eth:.3f}",
             f"{u.recommended_eth:g}",
@@ -420,9 +407,7 @@ def cmd_estimate_client_gas(args) -> None:
 
     if funder is not None:
         if estimate.funder_covers:
-            console.print(
-                f"Funding wallet holds {funder:.4f} ETH — covers it."
-            )
+            console.print(f"Funding wallet holds {funder:.4f} ETH — covers it.")
         else:
             console.print(
                 f"[bold red]Funding wallet holds {funder:.4f} ETH, short of "
@@ -451,9 +436,7 @@ def cmd_estimate_client_gas(args) -> None:
             f"{blocks}, in order:"
         )
         for u in estimate.uploaders:
-            console.print(
-                f"  {escape(u.plan.name):<20} eth: {u.recommended_eth:g}"
-            )
+            console.print(f"  {escape(u.plan.name):<20} eth: {u.recommended_eth:g}")
         exit_code = 2
     elif not inadequate and all(u.adequate is not None for u in estimate.uploaders):
         console.print("[green]Current funding is adequate.[/green]")

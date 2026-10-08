@@ -17,6 +17,7 @@ The two paths are not equivalent and the stored row says which it is:
 The denominator is exact on both paths: per-op upload/download records carry
 their own timestamps and are simply filtered to the window.
 """
+
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -105,8 +106,7 @@ def cmd_derive_metrics(args) -> None:
         deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
         if deployment is None:
             console.print(
-                f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
-                "in the registry."
+                f"[bold red]Error:[/bold red] No deployment named '{args.name}' in the registry."
             )
             sys.exit(1)
 
@@ -145,35 +145,20 @@ def cmd_derive_metrics(args) -> None:
     # pinned to the span. The bucket filter is half-open on `bucket_start`, so
     # `end = last_bucket` would silently drop the final bucket -- the whole run
     # minus its last five minutes, reported as the whole run.
-    start = (
-        _parse_ts(args.window_start, "--window-start", console)
-        if args.window_start
-        else None
-    )
-    end = (
-        _parse_ts(args.window_end, "--window-end", console)
-        if args.window_end
-        else None
-    )
+    start = _parse_ts(args.window_start, "--window-start", console) if args.window_start else None
+    end = _parse_ts(args.window_end, "--window-end", console) if args.window_end else None
     if start is not None and end is not None and end <= start:
-        console.print(
-            "[bold red]Error:[/bold red] --window-end must be after "
-            "--window-start."
-        )
+        console.print("[bold red]Error:[/bold red] --window-end must be after --window-start.")
         sys.exit(1)
 
-    if (start is not None and start > last_bucket) or (
-        end is not None and end <= first_bucket
-    ):
+    if (start is not None and start > last_bucket) or (end is not None and end <= first_bucket):
         console.print(
             "[bold red]Error:[/bold red] That window does not overlap the "
             f"stored buckets ({first_bucket:%Y-%m-%d %H:%M:%S} — "
             f"{last_bucket:%Y-%m-%d %H:%M:%S} UTC)."
         )
         sys.exit(1)
-    if (start is not None and start < first_bucket) or (
-        end is not None and end > last_bucket
-    ):
+    if (start is not None and start < first_bucket) or (end is not None and end > last_bucket):
         # Not an error: a caller may deliberately pass the phase boundaries from
         # a runbook. But a window reaching outside the stored buckets silently
         # measures less than it appears to.
@@ -211,12 +196,8 @@ def cmd_derive_metrics(args) -> None:
         f"UTC (bucket width {bucket_secs}s)...[/bold]"
     )
 
-    outbound = sum_outbound_from_buckets(
-        buckets, bucket_secs, METRIC_BYTES_OUT_PER_SEC
-    )
-    inbound = sum_outbound_from_buckets(
-        buckets, bucket_secs, METRIC_BYTES_IN_PER_SEC
-    )
+    outbound = sum_outbound_from_buckets(buckets, bucket_secs, METRIC_BYTES_OUT_PER_SEC)
+    inbound = sum_outbound_from_buckets(buckets, bucket_secs, METRIC_BYTES_IN_PER_SEC)
     storage_growth = sum_node_storage_growth_from_endpoints(
         repo.get_host_metric_endpoints(
             deployment_id=deployment.id,
@@ -266,9 +247,7 @@ def cmd_derive_metrics(args) -> None:
     missing = [m for m in RATIO_METRICS if m not in {r["metric"] for r in rows}]
     if missing:
         console.print(
-            "[yellow]Not derived (no measurable value): "
-            + ", ".join(missing)
-            + "[/yellow]"
+            "[yellow]Not derived (no measurable value): " + ", ".join(missing) + "[/yellow]"
         )
 
     console.print(

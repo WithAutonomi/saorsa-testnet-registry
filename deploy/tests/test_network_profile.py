@@ -228,9 +228,7 @@ class TestBuildScript:
         assert 'shape_device "$IFB" "10mbit" ""' in script
 
     def test_no_impairment_beyond_rate_skips_netem_entirely(self):
-        script = build_network_impairment_script(
-            _profile(delay_ms=0, jitter_ms=0, loss_percent=0)
-        )
+        script = build_network_impairment_script(_profile(delay_ms=0, jitter_ms=0, loss_percent=0))
         assert 'shape_device "$IFACE" "1mbit" ""' in script
 
     def test_jitter_requires_delay_and_uses_normal_distribution(self):
@@ -395,9 +393,12 @@ class TestManifestAndOrchestratorWiring:
     def test_manifest_accepts_a_profile_name(self):
         from saorsa_deploy.config.models import Uploader
 
-        assert Uploader(
-            provider="digital_ocean", region="nyc1", file_size_mb=100, network="home-fttc"
-        ).network == "home-fttc"
+        assert (
+            Uploader(
+                provider="digital_ocean", region="nyc1", file_size_mb=100, network="home-fttc"
+            ).network
+            == "home-fttc"
+        )
 
     def test_manifest_rejects_an_unknown_profile_at_validation_time(self):
         """Must fail at `config validate`, not part-way through a live deploy."""
@@ -406,9 +407,7 @@ class TestManifestAndOrchestratorWiring:
         from saorsa_deploy.config.models import Uploader
 
         with pytest.raises(pydantic.ValidationError, match="home-vdsl"):
-            Uploader(
-                provider="digital_ocean", region="nyc1", file_size_mb=100, network="home-vdsl"
-            )
+            Uploader(provider="digital_ocean", region="nyc1", file_size_mb=100, network="home-vdsl")
 
     def test_manifest_accepts_an_inline_mapping(self):
         from saorsa_deploy.config.models import Downloader
@@ -425,9 +424,7 @@ class TestManifestAndOrchestratorWiring:
         from saorsa_deploy.config.models import Uploader
         from saorsa_deploy.orchestrator.testnet import _uploader_spec
 
-        u = Uploader(
-            provider="digital_ocean", region="nyc1", file_size_mb=100, network="home-adsl"
-        )
+        u = Uploader(provider="digital_ocean", region="nyc1", file_size_mb=100, network="home-adsl")
         assert parse_uploader_spec(_uploader_spec(u))["network"] == "home-adsl"
 
     def test_inline_token_survives_the_colon_delimited_spec(self):

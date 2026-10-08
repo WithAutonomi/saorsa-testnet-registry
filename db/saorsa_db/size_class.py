@@ -154,7 +154,9 @@ def parse_size(value: str | int | float) -> int:
         number, unit = match.group(1), match.group(2).lower()
         if unit not in _SIZE_UNITS:
             valid = ", ".join(sorted(u for u in _SIZE_UNITS if u))
-            raise ValueError(f"unknown size unit '{unit}' in '{value}'. Valid units: {valid}")
+            raise ValueError(
+                f"unknown size unit '{unit}' in '{value}'. Valid units: {valid}"
+            )
         parsed = int(float(number) * _SIZE_UNITS[unit])
     else:
         raise ValueError(f"size must be a number or a string like '5MB', got {value!r}")

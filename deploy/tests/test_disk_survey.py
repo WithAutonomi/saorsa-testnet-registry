@@ -30,9 +30,7 @@ class TestClassifySurveyFailure:
         assert kind is SurveyFailureKind.TIMEOUT
 
     def test_failure_to_launch_ssh_is_a_probe_failure(self):
-        kind, msg = classify_survey_failure(
-            os_error="[Errno 2] No such file or directory: 'ssh'"
-        )
+        kind, msg = classify_survey_failure(os_error="[Errno 2] No such file or directory: 'ssh'")
         assert kind is SurveyFailureKind.PROBE_FAILED
         assert "No such file" in msg
 
@@ -167,9 +165,7 @@ class TestCompareHostData:
         # 63 common hosts each grew by 0.341269... GiB (21.5 GiB spread over 63)
         growth_per_host = 21.5 * GIB / 63
         prev = {f"host-{i}": int(400 * GIB) for i in range(63)}
-        latest = {
-            f"host-{i}": int(400 * GIB + growth_per_host) for i in range(63)
-        }
+        latest = {f"host-{i}": int(400 * GIB + growth_per_host) for i in range(63)}
         # The two Contabo hosts that dropped out, holding ~0.6 TiB each.
         prev["cntb-US-central-1"] = int(0.6 * TIB)
         prev["cntb-US-central-3"] = int(0.6 * TIB)

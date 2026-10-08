@@ -39,6 +39,4 @@ def cmd_edit_analysis_summary(args):
         f"[bold green]Summary updated for deployment '{args.name}' "
         f"(id={deployment.id}).[/bold green]"
     )
-    console.print(
-        Panel(row.summary, title=f"Summary for '{args.name}'", border_style="cyan")
-    )
+    console.print(Panel(row.summary, title=f"Summary for '{args.name}'", border_style="cyan"))

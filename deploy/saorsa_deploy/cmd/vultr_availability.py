@@ -19,8 +19,7 @@ def _filter_plans(plans: list[dict], requested: str | None) -> list[dict]:
         preview = ", ".join(names[:10])
         suffix = ", ..." if len(names) > 10 else ""
         raise ValueError(
-            f"Unknown Vultr plan '{requested}'. "
-            f"Known ({len(names)} plans): {preview}{suffix}"
+            f"Unknown Vultr plan '{requested}'. Known ({len(names)} plans): {preview}{suffix}"
         )
     return matches
 
@@ -35,8 +34,7 @@ def _resolve_regions(
     unknown = [r for r in requested_regions if r not in availability]
     if unknown:
         raise ValueError(
-            f"Unknown Vultr region(s): {', '.join(unknown)}. "
-            f"Known: {', '.join(all_regions)}"
+            f"Unknown Vultr region(s): {', '.join(unknown)}. Known: {', '.join(all_regions)}"
         )
     return [r for r in all_regions if r in requested_regions]
 

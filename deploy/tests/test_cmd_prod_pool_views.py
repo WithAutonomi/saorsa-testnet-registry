@@ -41,8 +41,17 @@ def wired(repo, monkeypatch):
 
 
 def _list_args(**kwargs):
-    base = dict(status=None, kind=None, size=None, tag=None, since=None,
-                limit=None, all=False, min_size=None, max_size=None)
+    base = dict(
+        status=None,
+        kind=None,
+        size=None,
+        tag=None,
+        since=None,
+        limit=None,
+        all=False,
+        min_size=None,
+        max_size=None,
+    )
     base.update(kwargs)
     return argparse.Namespace(**base)
 
@@ -95,8 +104,11 @@ class TestList:
     def test_renders_state_per_file(self, wired, capsys):
         made = _seed(wired)
         wired.claim_pool_files(
-            PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL,
-            label="desktop-app", when=NOW,
+            PoolFileKind.URL,
+            {SizeClass.TINY: 1},
+            ClaimSource.MANUAL,
+            label="desktop-app",
+            when=NOW,
         )
         prod_pool.cmd_prod_pool_list(_list_args())
         out = capsys.readouterr().out
@@ -119,9 +131,7 @@ class TestList:
         # The distinction that matters most: an unresolved checkout is not
         # evidence that anything reached the network.
         _seed(wired)
-        wired.claim_pool_files(
-            PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL
-        )
+        wired.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL)
         prod_pool.cmd_prod_pool_list(_list_args(status="uploaded"))
         assert "No pool files match" in capsys.readouterr().out
 
@@ -191,9 +201,7 @@ class TestShow:
             storage_cost_atto=Decimal("419203847182734"),
             gas_cost_wei=Decimal("1310000000000"),
         )
-        prod_pool.cmd_prod_pool_show(
-            argparse.Namespace(file_id=claim.file_id, address=None)
-        )
+        prod_pool.cmd_prod_pool_show(argparse.Namespace(file_id=claim.file_id, address=None))
         out = capsys.readouterr().out
         assert "a7f3c2" in out
         assert "77 stored / 77 total" in out
@@ -210,35 +218,33 @@ class TestShow:
             PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.PROD_UPLOADERS
         )[0]
         wired.resolve_pool_claim(claim.id, address="deadbeef")
-        prod_pool.cmd_prod_pool_show(
-            argparse.Namespace(file_id=None, address="deadbeef")
-        )
+        prod_pool.cmd_prod_pool_show(argparse.Namespace(file_id=None, address="deadbeef"))
         assert "t.bin" in capsys.readouterr().out
 
     def test_unknown_address_is_reported_not_crashed(self, wired, capsys):
-        prod_pool.cmd_prod_pool_show(
-            argparse.Namespace(file_id=None, address="nope")
-        )
+        prod_pool.cmd_prod_pool_show(argparse.Namespace(file_id=None, address="nope"))
         assert "No pooled file recorded" in capsys.readouterr().out
 
     def test_missing_file_exits(self, wired):
         with pytest.raises(SystemExit):
-            prod_pool.cmd_prod_pool_show(
-                argparse.Namespace(file_id=999, address=None)
-            )
+            prod_pool.cmd_prod_pool_show(argparse.Namespace(file_id=999, address=None))
 
     def test_duplicate_link_is_surfaced(self, wired, capsys):
         original, _ = wired.add_pool_file(
-            PoolFileKind.LOCAL, "/data/f", "f", size_bytes=MIB,
+            PoolFileKind.LOCAL,
+            "/data/f",
+            "f",
+            size_bytes=MIB,
             digests={"sha1": "aaa"},
         )
         mirror, _ = wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/f", "f", size_bytes=MIB,
+            PoolFileKind.URL,
+            "https://example.org/f",
+            "f",
+            size_bytes=MIB,
             digests={"sha1": "aaa"},
         )
-        prod_pool.cmd_prod_pool_show(
-            argparse.Namespace(file_id=mirror.id, address=None)
-        )
+        prod_pool.cmd_prod_pool_show(argparse.Namespace(file_id=mirror.id, address=None))
         out = capsys.readouterr().out
         assert f"duplicate of #{original.id}" in out
         assert "claiming either spends both" in out
@@ -260,9 +266,7 @@ class TestStats:
         assert "serve prod uploaders and canaries" in out
 
     def test_reports_unsized_entries_separately(self, wired, capsys):
-        wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/s", "s", size_bytes=None
-        )
+        wired.add_pool_file(PoolFileKind.URL, "https://example.org/s", "s", size_bytes=None)
         prod_pool.cmd_prod_pool_stats(argparse.Namespace())
         out = capsys.readouterr().out
         assert "cannot satisfy any size request" in out

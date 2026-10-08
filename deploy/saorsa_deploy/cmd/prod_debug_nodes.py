@@ -158,8 +158,7 @@ def _ensure_monitoring(args, console: Console) -> None:
         return
 
     console.print(
-        f"[bold cyan]Creating monitoring (InfluxDB) VM on "
-        f"{args.monitoring_provider}[/bold cyan]"
+        f"[bold cyan]Creating monitoring (InfluxDB) VM on {args.monitoring_provider}[/bold cyan]"
     )
     if args.monitoring_provider == "contabo":
         from saorsa_deploy.cmd.contabo_infra import ensure_contabo_monitoring_infra
@@ -253,9 +252,7 @@ def _ensure_elastic(args, console: Console) -> None:
 
 
 def _provision_debug_nodes(args, console: Console) -> None:
-    console.print(
-        "[bold cyan]Provisioning ant-node services (prod crash-debug mode)[/bold cyan]"
-    )
+    console.print("[bold cyan]Provisioning ant-node services (prod crash-debug mode)[/bold cyan]")
     try:
         state = load_deployment_state(args.name)
     except RuntimeError as e:
@@ -273,9 +270,7 @@ def _provision_debug_nodes(args, console: Console) -> None:
 
     bootstrap_nodes = state.get("bootstrap_nodes") or []
     bootstrap_port = state.get("bootstrap_port")
-    bootstrap_peers = [
-        f"{n['ip']}:{n.get('port', bootstrap_port)}" for n in bootstrap_nodes
-    ]
+    bootstrap_peers = [f"{n['ip']}:{n.get('port', bootstrap_port)}" for n in bootstrap_nodes]
     if not bootstrap_peers:
         console.print("[bold red]Error:[/bold red] No prod bootstrap peers in state.")
         sys.exit(1)
@@ -285,9 +280,7 @@ def _provision_debug_nodes(args, console: Console) -> None:
     clear_known_hosts(all_ips, console)
     not_ready = wait_for_ssh(all_ips, args.ssh_key_path, console=console)
     if not_ready:
-        console.print(
-            f"[bold red]Error:[/bold red] SSH never came up on: {', '.join(not_ready)}"
-        )
+        console.print(f"[bold red]Error:[/bold red] SSH never came up on: {', '.join(not_ready)}")
         sys.exit(1)
 
     # Root-disk hosts (contabo / ovh_3az have no attachable volume): data,
@@ -300,12 +293,8 @@ def _provision_debug_nodes(args, console: Console) -> None:
     # _resolve_node_drop_log_levels yields "TRACE" (keep DEBUG, drop TRACE) and
     # the DEBUG logs actually reach ES.
     extra_op_providers = []
-    monitoring_on = bool(getattr(args, "monitoring", False)) and _monitoring_has_influx(
-        args.name
-    )
-    elastic_on = bool(getattr(args, "forward_logs", False)) and _elastic_has_creds(
-        args.name
-    )
+    monitoring_on = bool(getattr(args, "monitoring", False)) and _monitoring_has_influx(args.name)
+    elastic_on = bool(getattr(args, "forward_logs", False)) and _elastic_has_creds(args.name)
     if monitoring_on or elastic_on:
         from saorsa_deploy.cmd.telegraf_fold import build_node_telegraf_providers
 
@@ -469,10 +458,8 @@ def build_prune_install_commands(
     already full gets relief without waiting for the next scheduled run.
     """
     commands = [
-        f"cat > /etc/systemd/system/{unit_name}.service "
-        f"<< 'SVC_EOF'\n{service_unit}SVC_EOF",
-        f"cat > /etc/systemd/system/{unit_name}.timer "
-        f"<< 'TMR_EOF'\n{timer_unit}TMR_EOF",
+        f"cat > /etc/systemd/system/{unit_name}.service << 'SVC_EOF'\n{service_unit}SVC_EOF",
+        f"cat > /etc/systemd/system/{unit_name}.timer << 'TMR_EOF'\n{timer_unit}TMR_EOF",
         "systemctl daemon-reload",
         f"systemctl enable --now {unit_name}.timer",
     ]
@@ -510,14 +497,10 @@ def _install_coredump_logprune(args, console: Console) -> None:
         f"(delete cores older than {args.coredump_retention_days}d).[/dim]"
     )
     service_unit, timer_unit = build_coredump_prune_units(args.coredump_retention_days)
-    commands = build_prune_install_commands(
-        COREDUMP_PRUNE_UNIT, service_unit, timer_unit
-    )
+    commands = build_prune_install_commands(COREDUMP_PRUNE_UNIT, service_unit, timer_unit)
 
     clear_known_hosts(host_ips, console)
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     state_obj = State(inventory=Inventory((hosts_data, {})), config=Config())
     connect_all(state_obj)
     try:
@@ -578,9 +561,7 @@ def _install_debug_logprune(args, console: Console) -> None:
     )
 
     clear_known_hosts(host_ips, console)
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     state_obj = State(inventory=Inventory((hosts_data, {})), config=Config())
     connect_all(state_obj)
     try:
@@ -612,14 +593,11 @@ def cmd_prod_debug_nodes_deploy(args):
     console.print(f"  Log level: {args.log_level}")
     console.print(f"  RUST_BACKTRACE: {args.rust_backtrace or 'off'}")
     console.print(f"  Core dumps: {'on' if args.coredumps else 'off'}")
-    log_retention = (
-        f"{args.log_retention_days}d" if args.log_retention_days > 0 else "forever"
-    )
+    log_retention = f"{args.log_retention_days}d" if args.log_retention_days > 0 else "forever"
     console.print(f"  Debug-log retention: {log_retention}")
     console.print(f"  Monitoring: {args.monitoring_provider if args.monitoring else 'off'}")
     console.print(
-        f"  Log forwarding (dedicated ES): "
-        f"{args.elastic_provider if args.forward_logs else 'off'}"
+        f"  Log forwarding (dedicated ES): {args.elastic_provider if args.forward_logs else 'off'}"
     )
     console.print()
 
@@ -644,9 +622,7 @@ def cmd_prod_debug_nodes_deploy(args):
         "forward_logs": args.forward_logs,
         "elastic_provider": args.elastic_provider if args.forward_logs else None,
         "elastic_name": args.name if args.forward_logs else None,
-        "elastic_retention_days": (
-            args.elastic_retention_days if args.forward_logs else None
-        ),
+        "elastic_retention_days": (args.elastic_retention_days if args.forward_logs else None),
         "rewards_address": args.rewards_address,
         "purpose": args.purpose,
         "node_binary": build_binary_descriptor(
@@ -671,9 +647,7 @@ def cmd_prod_debug_nodes_deploy(args):
         from saorsa_deploy.cmd.start_nodes import cmd_start_nodes
 
         cmd_start_nodes(
-            SimpleNamespace(
-                name=args.name, ssh_key_path=args.ssh_key_path, region=None
-            )
+            SimpleNamespace(name=args.name, ssh_key_path=args.ssh_key_path, region=None)
         )
 
         if args.coredumps:
@@ -694,9 +668,7 @@ def cmd_prod_debug_nodes_deploy(args):
     record_event(args.name, "prod_debug_nodes_deploy_completed")
     record_status(args.name, DeploymentStatus.RUNNING)
     console.print()
-    console.print(
-        f"[bold green]prod debug-nodes '{args.name}' are running.[/bold green]"
-    )
+    console.print(f"[bold green]prod debug-nodes '{args.name}' are running.[/bold green]")
     if args.coredumps:
         console.print(
             f"[dim]core dumps: ssh root@<vm> ls {COREDUMP_DIR}/ "
@@ -734,18 +706,14 @@ def cmd_prod_debug_nodes_destroy(args):
                 pass
 
         if args.keep_monitoring:
-            console.print(
-                "[dim]Leaving monitoring stack intact (--keep-monitoring).[/dim]"
-            )
+            console.print("[dim]Leaving monitoring stack intact (--keep-monitoring).[/dim]")
         elif destroy_contabo_monitoring(args.name, console):
             pass  # handled via the Contabo API
         elif _monitoring_stack_exists(args.name):
             console.print("[bold cyan]Destroying monitoring stack...[/bold cyan]")
             cmd_destroy_monitoring(SimpleNamespace(name=args.name, force=True))
         else:
-            console.print(
-                f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
-            )
+            console.print(f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]")
 
         if getattr(args, "keep_elastic", False):
             console.print("[dim]Leaving Elasticsearch intact (--keep-elastic).[/dim]")

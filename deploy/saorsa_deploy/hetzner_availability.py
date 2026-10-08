@@ -25,9 +25,7 @@ def _fetch(path: str, token: str) -> dict:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        raise RuntimeError(
-            f"Hetzner API {path} returned HTTP {e.code}: {e.reason}"
-        ) from e
+        raise RuntimeError(f"Hetzner API {path} returned HTTP {e.code}: {e.reason}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Hetzner API {path} request failed: {e.reason}") from e
 
@@ -110,9 +108,7 @@ def resolve_hetzner_regions(
     resolved: list[str] = []
     notes: list[str] = []
     seen: set[str] = set()
-    candidates = list(preferred) + [
-        r for r in (fallback_pool or []) if r not in preferred
-    ]
+    candidates = list(preferred) + [r for r in (fallback_pool or []) if r not in preferred]
     preferred_set = set(preferred[:count])
 
     for region in candidates:

@@ -83,10 +83,7 @@ def _check_pool_bounds(spec, label: str, pool_field: str = "pool") -> None:
     if max_bytes == 0:
         raise ValueError(f"{label}: pool_max_size of 0 selects nothing")
     if min_bytes is not None and max_bytes is not None and min_bytes >= max_bytes:
-        raise ValueError(
-            f"{label}: pool_min_size must be below pool_max_size, which is "
-            f"exclusive"
-        )
+        raise ValueError(f"{label}: pool_min_size must be below pool_max_size, which is exclusive")
 
     for name, count in pool.items():
         if not count:
@@ -649,9 +646,7 @@ def _require_client_binaries(clients, binaries, kind: str) -> None:
     """
     if clients is None:
         return
-    if (
-        clients.uploaders or clients.downloaders or clients.pointers
-    ) and binaries.ant is None:
+    if (clients.uploaders or clients.downloaders or clients.pointers) and binaries.ant is None:
         # Pointer clients drive the native `ant pointer` subcommands, so they
         # need `ant` for the same reason the native transfer clients do.
         raise ValueError(f"{kind}.binaries.ant is required when clients are configured")
@@ -825,9 +820,7 @@ class ProdUploader(_Base):
     @model_validator(mode="after")
     def _one_file_source(self) -> "ProdUploader":
         if bool(self.urls) == bool(self.pool):
-            raise ValueError(
-                "prod_uploaders.uploaders[]: set exactly one of `urls` or `pool`"
-            )
+            raise ValueError("prod_uploaders.uploaders[]: set exactly one of `urls` or `pool`")
         _check_pool_bounds(self, "prod_uploaders.uploaders[]")
         return self
 
@@ -890,10 +883,7 @@ class ProdWasmUploader(_Base):
     @model_validator(mode="after")
     def _one_file_source(self) -> "ProdWasmUploader":
         if bool(self.urls) == bool(self.pool):
-            raise ValueError(
-                "prod_uploaders.wasm_uploaders[]: set exactly one of `urls` or "
-                "`pool`"
-            )
+            raise ValueError("prod_uploaders.wasm_uploaders[]: set exactly one of `urls` or `pool`")
         _check_pool_bounds(self, "prod_uploaders.wasm_uploaders[]")
         return self
 
@@ -950,8 +940,7 @@ class ProdUploadersSpec(_Base):
         if not self.wasm_uploaders:
             if self.wasm_binary is not None:
                 raise ValueError(
-                    "prod_uploaders.wasm_binary is only valid with "
-                    "prod_uploaders.wasm_uploaders"
+                    "prod_uploaders.wasm_binary is only valid with prod_uploaders.wasm_uploaders"
                 )
             if self.wasm_bootstrap_multiaddrs_file is not None:
                 raise ValueError(
@@ -979,13 +968,10 @@ def _check_prod_wasm_download(spec, kind: str) -> None:
     """
     if spec.client_kind != "wasm":
         if spec.wasm_binary is not None:
-            raise ValueError(
-                f"{kind}.wasm_binary is only valid with `client_kind: wasm`"
-            )
+            raise ValueError(f"{kind}.wasm_binary is only valid with `client_kind: wasm`")
         if spec.wasm_bootstrap_multiaddrs_file is not None:
             raise ValueError(
-                f"{kind}.wasm_bootstrap_multiaddrs_file is only valid with "
-                "`client_kind: wasm`"
+                f"{kind}.wasm_bootstrap_multiaddrs_file is only valid with `client_kind: wasm`"
             )
         return
 
@@ -1068,7 +1054,6 @@ class ProdDownloadersSpec(_Base):
     monitoring_region: Optional[str] = None
     monitoring_droplet_size: Optional[str] = None
     monitoring_volume_type: Optional[str] = None
-
 
     @model_validator(mode="after")
     def _wasm_options(self) -> "ProdDownloadersSpec":
@@ -1211,13 +1196,10 @@ def _check_prod_wasm_upload(spec, kind: str) -> None:
     """
     if spec.client_kind != "wasm":
         if spec.wasm_binary is not None:
-            raise ValueError(
-                f"{kind}.wasm_binary is only valid with `client_kind: wasm`"
-            )
+            raise ValueError(f"{kind}.wasm_binary is only valid with `client_kind: wasm`")
         if spec.wasm_bootstrap_multiaddrs_file is not None:
             raise ValueError(
-                f"{kind}.wasm_bootstrap_multiaddrs_file is only valid with "
-                "`client_kind: wasm`"
+                f"{kind}.wasm_bootstrap_multiaddrs_file is only valid with `client_kind: wasm`"
             )
         return
 
@@ -1360,9 +1342,7 @@ class ProdCanarySpec(_Base):
         if not self.probes:
             raise ValueError("prod_canary.probes: at least one probe is required")
         if bool(self.urls_file) == bool(self.pool):
-            raise ValueError(
-                "prod_canary: set exactly one of `urls_file` or `pool`"
-            )
+            raise ValueError("prod_canary: set exactly one of `urls_file` or `pool`")
         _check_pool_bounds(self, "prod_canary")
         return self
 
@@ -1395,9 +1375,7 @@ class ProdLocalUploadsSpec(_Base):
     def _input_mode(self) -> "ProdLocalUploadsSpec":
         chosen = sum(1 for value in (self.urls, self.local_dir, self.pool) if value)
         if chosen != 1:
-            raise ValueError(
-                "prod_local_uploads: set exactly one of `urls`, `local_dir` or `pool`"
-            )
+            raise ValueError("prod_local_uploads: set exactly one of `urls`, `local_dir` or `pool`")
         _check_pool_bounds(self, "prod_local_uploads")
         return self
 

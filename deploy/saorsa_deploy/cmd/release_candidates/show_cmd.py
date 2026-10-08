@@ -30,23 +30,20 @@ def cmd_release_candidates_show(args):
         identifier = f"{args.binary_target} {args.version}"
     else:
         sys.stderr.write(
-            "release-candidates show: provide --id, or both "
-            "--binary-target and --version.\n"
+            "release-candidates show: provide --id, or both --binary-target and --version.\n"
         )
         sys.exit(2)
 
     if rc is None:
-        sys.stderr.write(
-            f"release-candidates show: no release candidate found for {identifier}\n"
-        )
+        sys.stderr.write(f"release-candidates show: no release candidate found for {identifier}\n")
         sys.exit(1)
 
     console.print(f"[bold]Release Candidate[/bold]  id={rc.id}")
     for label, value in (
-        ("Binary",        rc.binary_target),
-        ("Version",       rc.binary_version),
-        ("RC branch",     rc.rc_branch),
-        ("Recorded at",   rc.recorded_at.isoformat()),
+        ("Binary", rc.binary_target),
+        ("Version", rc.binary_version),
+        ("RC branch", rc.rc_branch),
+        ("Recorded at", rc.recorded_at.isoformat()),
     ):
         console.print(f"  [cyan]{label:<12}[/cyan] {value}")
     if rc.notes:
@@ -64,11 +61,11 @@ def cmd_release_candidates_show(args):
             f"[dim]({crate.repo_slug})[/dim]"
         )
         for label, value in (
-            ("Tag",       crate.tag or "-"),
-            ("Tag SHA",   crate.tag_sha or "-"),
+            ("Tag", crate.tag or "-"),
+            ("Tag SHA", crate.tag_sha or "-"),
             ("Since tag", crate.since_tag or "-"),
             ("Since SHA", crate.since_sha or "-"),
-            ("Head SHA",  crate.head_sha or "-"),
+            ("Head SHA", crate.head_sha or "-"),
         ):
             console.print(f"  [cyan]{label:<10}[/cyan] {value}")
 
@@ -87,9 +84,7 @@ def cmd_release_candidates_show(args):
                 str(pr.pr_number),
                 _truncate(pr.title),
                 pr.author or "[dim]-[/dim]",
-                pr.merged_at.strftime("%Y-%m-%d %H:%M")
-                if pr.merged_at
-                else "-",
+                pr.merged_at.strftime("%Y-%m-%d %H:%M") if pr.merged_at else "-",
             )
 
         console.print(table)

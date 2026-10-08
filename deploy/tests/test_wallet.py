@@ -20,6 +20,7 @@ from saorsa_deploy.cmd.infra_clients import (
 
 # --- parse_uploader_spec --------------------------------------------------
 
+
 def test_uploader_spec_defaults_when_funding_omitted():
     spec = parse_uploader_spec("digital_ocean:lon1:1000:s-2vcpu-4gb")
     assert spec["ant_funding"] == DEFAULT_ANT_FUNDING == "100"
@@ -27,9 +28,7 @@ def test_uploader_spec_defaults_when_funding_omitted():
 
 
 def test_uploader_spec_accepts_ant_and_eth():
-    spec = parse_uploader_spec(
-        "digital_ocean:nyc1:500:s-2vcpu-4gb:payment=no-merkle:ant=250:eth=1"
-    )
+    spec = parse_uploader_spec("digital_ocean:nyc1:500:s-2vcpu-4gb:payment=no-merkle:ant=250:eth=1")
     assert spec["payment_type"] == "no-merkle"
     assert spec["ant_funding"] == "250"
     assert spec["eth_funding"] == "1"
@@ -54,6 +53,7 @@ def test_uploader_spec_rejects_unknown_keys():
 
 # --- create_wallet --------------------------------------------------------
 
+
 def test_create_wallet_returns_distinct_keys():
     a = wallet.create_wallet()
     b = wallet.create_wallet()
@@ -77,6 +77,7 @@ def test_to_token_units():
 
 
 # --- fund_wallet ----------------------------------------------------------
+
 
 def _mock_w3(chain_id: int = 421614, gas_price: int = 100_000_000, decimals: int = 18):
     w3 = MagicMock()
@@ -127,6 +128,7 @@ def test_fund_wallet_sends_eth_then_ant():
 
 
 # --- drain_wallet ---------------------------------------------------------
+
 
 def test_drain_wallet_sends_ant_then_eth_minus_reserve_and_gas():
     w3 = _mock_w3(gas_price=10**9)  # 1 gwei
@@ -212,9 +214,7 @@ def _mock_acct():
 def test_send_with_nonce_retry_uses_pending_tag():
     w3 = _mock_w3()
     with patch.object(wallet, "_send_signed", return_value="0xok"):
-        wallet._send_with_nonce_retry(
-            w3, _mock_acct(), lambda n: {"nonce": n}, delay_seconds=0
-        )
+        wallet._send_with_nonce_retry(w3, _mock_acct(), lambda n: {"nonce": n}, delay_seconds=0)
     # Nonce must be read with the 'pending' tag, not the implicit 'latest'.
     assert w3.eth.get_transaction_count.call_args.args[1] == "pending"
 
@@ -249,9 +249,7 @@ def test_send_with_nonce_retry_propagates_non_nonce_error():
     w3 = _mock_w3()
     with patch.object(wallet, "_send_signed", side_effect=RuntimeError("reverted")):
         with pytest.raises(RuntimeError, match="reverted"):
-            wallet._send_with_nonce_retry(
-                w3, _mock_acct(), lambda n: {"nonce": n}, delay_seconds=0
-            )
+            wallet._send_with_nonce_retry(w3, _mock_acct(), lambda n: {"nonce": n}, delay_seconds=0)
 
 
 def test_send_with_nonce_retry_gives_up_after_attempts():
@@ -265,6 +263,7 @@ def test_send_with_nonce_retry_gives_up_after_attempts():
 
 
 # --- _ensure_uploader_wallets (provision integration) --------------------
+
 
 def test_ensure_uploader_wallets_persists_before_funding_and_tops_up_deficit():
     """Persist wallet first (so partial failures can be resumed), then top up
@@ -312,9 +311,7 @@ def test_ensure_uploader_wallets_persists_before_funding_and_tops_up_deficit():
 
     console = MagicMock()
     with (
-        patch(
-            "saorsa_deploy.cmd.provision_clients.get_web3", return_value=MagicMock()
-        ),
+        patch("saorsa_deploy.cmd.provision_clients.get_web3", return_value=MagicMock()),
         patch(
             "saorsa_deploy.cmd.provision_clients.get_token_decimals",
             return_value=18,
@@ -335,13 +332,9 @@ def test_ensure_uploader_wallets_persists_before_funding_and_tops_up_deficit():
             "saorsa_deploy.cmd.provision_clients.transfer_token",
             return_value="0xant",
         ) as p_ant,
-        patch(
-            "saorsa_deploy.cmd.provision_clients.update_client_wallet"
-        ) as p_persist,
+        patch("saorsa_deploy.cmd.provision_clients.update_client_wallet") as p_persist,
     ):
-        out = _ensure_uploader_wallets(
-            "DEV-01", clients, funding.secret_key, console
-        )
+        out = _ensure_uploader_wallets("DEV-01", clients, funding.secret_key, console)
 
     # Existing wallet untouched.
     assert out[0]["wallet_secret_key"] == pre_existing.secret_key
@@ -385,9 +378,7 @@ def test_ensure_uploader_wallets_resumes_partial_funding():
 
     console = MagicMock()
     with (
-        patch(
-            "saorsa_deploy.cmd.provision_clients.get_web3", return_value=MagicMock()
-        ),
+        patch("saorsa_deploy.cmd.provision_clients.get_web3", return_value=MagicMock()),
         patch(
             "saorsa_deploy.cmd.provision_clients.get_token_decimals",
             return_value=18,
@@ -408,13 +399,9 @@ def test_ensure_uploader_wallets_resumes_partial_funding():
             "saorsa_deploy.cmd.provision_clients.transfer_token",
             return_value="0xant",
         ) as p_ant,
-        patch(
-            "saorsa_deploy.cmd.provision_clients.update_client_wallet"
-        ),
+        patch("saorsa_deploy.cmd.provision_clients.update_client_wallet"),
     ):
-        _ensure_uploader_wallets(
-            "DEV-01", clients, funding.secret_key, console
-        )
+        _ensure_uploader_wallets("DEV-01", clients, funding.secret_key, console)
 
     p_eth.assert_not_called()
     p_ant.assert_called_once()
@@ -425,6 +412,7 @@ TOKEN = "0x4bc1ace0e66170375462cb4e6af42ad4d5ec689c"
 
 
 # --- gas limit headroom ---------------------------------------------------
+
 
 def test_transfer_eth_applies_gas_buffer():
     w3 = _mock_w3()
@@ -486,9 +474,7 @@ def test_transfer_token_tolerates_missing_gas_key():
         return "0xtx"
 
     contract = MagicMock()
-    contract.functions.transfer.return_value.build_transaction.return_value = {
-        "to": target
-    }
+    contract.functions.transfer.return_value.build_transaction.return_value = {"to": target}
 
     with (
         patch.object(wallet, "_erc20", return_value=contract),
@@ -511,10 +497,20 @@ def test_ensure_uploader_wallets_covers_wasm_uploaders_keyed_by_role():
 
     funding = wallet.create_wallet()
     clients = [
-        {"role": "upload", "client_index": 1, "region": "lon1",
-         "ant_funding": "200", "eth_funding": "0.1"},
-        {"role": "wasm-upload", "client_index": 1, "region": "lon1",
-         "ant_funding": "200", "eth_funding": "0.1"},
+        {
+            "role": "upload",
+            "client_index": 1,
+            "region": "lon1",
+            "ant_funding": "200",
+            "eth_funding": "0.1",
+        },
+        {
+            "role": "wasm-upload",
+            "client_index": 1,
+            "region": "lon1",
+            "ant_funding": "200",
+            "eth_funding": "0.1",
+        },
         {"role": "wasm-download", "client_index": 1, "region": "tor1"},
     ]
     console = MagicMock()
@@ -532,19 +528,19 @@ def test_ensure_uploader_wallets_covers_wasm_uploaders_keyed_by_role():
     assert "wallet_secret_key" in out[0] and "wallet_secret_key" in out[1]
     assert out[0]["wallet_secret_key"] != out[1]["wallet_secret_key"]
     assert "wallet_secret_key" not in out[2]
-    persisted = {
-        (c.kwargs["role"], c.kwargs["client_index"]) for c in p_persist.call_args_list
-    }
+    persisted = {(c.kwargs["role"], c.kwargs["client_index"]) for c in p_persist.call_args_list}
     assert persisted == {("upload", 1), ("wasm-upload", 1)}
 
 
 def test_update_client_wallet_is_keyed_by_role(tmp_path):
     from saorsa_deploy import state as state_mod
 
-    doc = {"clients": [
-        {"role": "upload", "client_index": 1},
-        {"role": "wasm-upload", "client_index": 1},
-    ]}
+    doc = {
+        "clients": [
+            {"role": "upload", "client_index": 1},
+            {"role": "wasm-upload", "client_index": 1},
+        ]
+    }
     with (
         patch.object(state_mod, "load_client_state", return_value=doc),
         patch.object(state_mod, "_get_s3_client", return_value=MagicMock()),

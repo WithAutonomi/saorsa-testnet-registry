@@ -37,9 +37,7 @@ def cmd_extend(args):
     force = getattr(args, "force", False)
 
     if name == source:
-        console.print(
-            "[bold red]Error:[/bold red] --name and --source must be different."
-        )
+        console.print("[bold red]Error:[/bold red] --name and --source must be different.")
         sys.exit(1)
 
     source_state = _try_load_deployment_state(source)
@@ -92,9 +90,7 @@ def cmd_extend(args):
         try:
             update_deployment_state(name, updates)
         except Exception as e:
-            console.print(
-                f"[bold red]Failed to update deployment state:[/bold red] {e}"
-            )
+            console.print(f"[bold red]Failed to update deployment state:[/bold red] {e}")
             sys.exit(1)
         record_deploy_args_update(name, {"purpose": args.purpose})
         record_event(
@@ -143,9 +139,7 @@ def cmd_extend(args):
             followup["bootstrap_port"] = source_port
         update_deployment_state(name, followup)
     except Exception as e:
-        console.print(
-            f"[bold red]Failed to save deployment state:[/bold red] {e}"
-        )
+        console.print(f"[bold red]Failed to save deployment state:[/bold red] {e}")
         sys.exit(1)
 
     console.print(

@@ -38,8 +38,7 @@ class NodeCleanProvisioner:
 
     def execute(self) -> None:
         hosts_data = [
-            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path})
-            for ip in self.host_ips
+            (ip, {"ssh_user": self.ssh_user, "ssh_key": self.ssh_key_path}) for ip in self.host_ips
         ]
         inventory = Inventory((hosts_data, {}))
         config = Config()
@@ -58,10 +57,10 @@ class NodeCleanProvisioner:
                 name="Stop and disable ant-node-* services",
                 commands=[
                     "for u in " + UNIT_GLOB + "; do "
-                    "[ -e \"$u\" ] || continue; "
-                    "n=$(basename \"$u\" .service); "
-                    "systemctl stop \"$n\" 2>/dev/null || true; "
-                    "systemctl disable \"$n\" 2>/dev/null || true; "
+                    '[ -e "$u" ] || continue; '
+                    'n=$(basename "$u" .service); '
+                    'systemctl stop "$n" 2>/dev/null || true; '
+                    'systemctl disable "$n" 2>/dev/null || true; '
                     "done",
                 ],
             )
@@ -101,12 +100,8 @@ class NodeCleanProvisioner:
         failed = state.failed_hosts
         total = len(self.host_ips)
         succeeded = total - len(failed)
-        self.console.print(
-            f"Node cleanup complete: {succeeded}/{total} hosts"
-        )
+        self.console.print(f"Node cleanup complete: {succeeded}/{total} hosts")
         if failed:
             for host in failed:
                 self.console.print(f"  [red]Failed: {host.name}[/red]")
-            raise RuntimeError(
-                f"{len(failed)} host(s) failed node cleanup"
-            )
+            raise RuntimeError(f"{len(failed)} host(s) failed node cleanup")

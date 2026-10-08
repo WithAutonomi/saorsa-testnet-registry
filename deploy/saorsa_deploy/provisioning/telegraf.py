@@ -115,14 +115,10 @@ class TelegrafProvisioner:
         self.ant_log_dir = ant_log_dir or LOG_DIR
         # `None` -> default; explicit empty list -> no filtering
         self.drop_log_levels = (
-            tuple(DEFAULT_DROP_LOG_LEVELS)
-            if drop_log_levels is None
-            else tuple(drop_log_levels)
+            tuple(DEFAULT_DROP_LOG_LEVELS) if drop_log_levels is None else tuple(drop_log_levels)
         )
         if metric_buffer_limit < 1:
-            raise ValueError(
-                f"metric_buffer_limit must be >= 1 (got {metric_buffer_limit})"
-            )
+            raise ValueError(f"metric_buffer_limit must be >= 1 (got {metric_buffer_limit})")
         self.metric_buffer_limit = metric_buffer_limit
         # Default the tail buffer to 1/4 of the output buffer so the two
         # scale together when the caller only tunes one knob.
@@ -213,10 +209,12 @@ class TelegrafProvisioner:
             server.shell,
             name="Write Telegraf environment file",
             commands=[
-                as_single_shell_command([
-                    f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
-                    f'echo "ANT_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
-                ])
+                as_single_shell_command(
+                    [
+                        f"cat > {TELEGRAF_ENV_PATH} << 'ENV_EOF'\n{env_content}ENV_EOF",
+                        f'echo "ANT_HOST_CPU_ARCH=$(uname -m)" >> {TELEGRAF_ENV_PATH}',
+                    ]
+                )
             ],
         )
 
@@ -226,10 +224,12 @@ class TelegrafProvisioner:
             server.shell,
             name="Write Telegraf configuration",
             commands=[
-                as_single_shell_command([
-                    f"mkdir -p {TELEGRAF_CONFIG_DIR}",
-                    f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
-                ])
+                as_single_shell_command(
+                    [
+                        f"mkdir -p {TELEGRAF_CONFIG_DIR}",
+                        f"cat > {TELEGRAF_CONFIG_PATH} << 'CONF_EOF'\n{config_content}CONF_EOF",
+                    ]
+                )
             ],
         )
 
@@ -246,11 +246,13 @@ class TelegrafProvisioner:
             server.shell,
             name="Enable and start Telegraf service",
             commands=[
-                as_single_shell_command([
-                    "systemctl daemon-reload",
-                    f"systemctl enable {TELEGRAF_SERVICE_NAME}",
-                    f"systemctl restart {TELEGRAF_SERVICE_NAME}",
-                ])
+                as_single_shell_command(
+                    [
+                        "systemctl daemon-reload",
+                        f"systemctl enable {TELEGRAF_SERVICE_NAME}",
+                        f"systemctl restart {TELEGRAF_SERVICE_NAME}",
+                    ]
+                )
             ],
         )
 
@@ -259,15 +261,18 @@ class TelegrafProvisioner:
             server.shell,
             name="Verify Telegraf service is active",
             commands=[
-                as_single_shell_command([
-                    f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
-                    f"|| (echo 'TELEGRAF_VERIFY:FAILED - {TELEGRAF_SERVICE_NAME} is not running'; "
-                    f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
-                    f"test -f {TELEGRAF_CONFIG_PATH} "
-                    "|| (echo 'TELEGRAF_VERIFY:FAILED - config file missing'; exit 1)",
-                    f"test -f {TELEGRAF_ENV_PATH} "
-                    "|| (echo 'TELEGRAF_VERIFY:FAILED - env file missing'; exit 1)",
-                ])
+                as_single_shell_command(
+                    [
+                        f"systemctl is-active --quiet {TELEGRAF_SERVICE_NAME} "
+                        "|| (echo 'TELEGRAF_VERIFY:FAILED - "
+                        f"{TELEGRAF_SERVICE_NAME} is not running'; "
+                        f"journalctl -u {TELEGRAF_SERVICE_NAME} --no-pager -n 20; exit 1)",
+                        f"test -f {TELEGRAF_CONFIG_PATH} "
+                        "|| (echo 'TELEGRAF_VERIFY:FAILED - config file missing'; exit 1)",
+                        f"test -f {TELEGRAF_ENV_PATH} "
+                        "|| (echo 'TELEGRAF_VERIFY:FAILED - env file missing'; exit 1)",
+                    ]
+                )
             ],
         )
 
@@ -339,7 +344,8 @@ class TelegrafProvisioner:
             )
         else:
             tagdrop_block = ""
-        return """\
+        return (
+            """\
 ###############################################################################
 #                            GLOBAL TAGS                                      #
 ###############################################################################
@@ -495,14 +501,11 @@ def apply(metric):
 
   manage_template = false
   overwrite_template = false
-__INFLUX_OUTPUT_BLOCK__""".replace("__FROM_BEGINNING__", from_beginning).replace(
-            "__TAGDROP_BLOCK__", tagdrop_block
-        ).replace(
-            "__METRIC_BUFFER_LIMIT__", str(self.metric_buffer_limit)
-        ).replace(
-            "__MAX_UNDELIVERED_LINES__", str(self.max_undelivered_lines)
-        ).replace(
-            "__INFLUX_OUTPUT_BLOCK__", self._build_influx_output_block()
+__INFLUX_OUTPUT_BLOCK__""".replace("__FROM_BEGINNING__", from_beginning)
+            .replace("__TAGDROP_BLOCK__", tagdrop_block)
+            .replace("__METRIC_BUFFER_LIMIT__", str(self.metric_buffer_limit))
+            .replace("__MAX_UNDELIVERED_LINES__", str(self.max_undelivered_lines))
+            .replace("__INFLUX_OUTPUT_BLOCK__", self._build_influx_output_block())
         )
 
     def _build_unit_file(self) -> str:

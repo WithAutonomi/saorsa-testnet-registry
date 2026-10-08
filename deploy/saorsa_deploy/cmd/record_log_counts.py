@@ -20,6 +20,7 @@ stale" -- a distinction the client-side records cannot make alone. Recorded into
 the same table, keyed ``<event>:<outcome>``, so no migration and no second
 command.
 """
+
 import sys
 from datetime import datetime, timezone
 
@@ -67,16 +68,14 @@ def _resolve_deployment(repo, args, console: Console):
         deployment = repo.get(args.id)
         if deployment is None:
             console.print(
-                f"[bold red]Error:[/bold red] No deployment with id {args.id} in "
-                "the registry."
+                f"[bold red]Error:[/bold red] No deployment with id {args.id} in the registry."
             )
             sys.exit(1)
         return deployment
     deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
     if deployment is None:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment named '{args.name}' in "
-            "the registry."
+            f"[bold red]Error:[/bold red] No deployment named '{args.name}' in the registry."
         )
         sys.exit(1)
     return deployment
@@ -98,8 +97,7 @@ def _resolve_es(args, deployment_name: str, console: Console):
     if not url:
         stack_name = args.elastic_name or deployment_name
         console.print(
-            f"[bold]Loading Elasticsearch credentials from elastic state "
-            f"'{stack_name}'...[/bold]"
+            f"[bold]Loading Elasticsearch credentials from elastic state '{stack_name}'...[/bold]"
         )
         try:
             state = load_elastic_state(stack_name)
@@ -129,9 +127,7 @@ def _resolve_es(args, deployment_name: str, console: Console):
     index_pattern = collapse_index_date_suffix(index_pattern)
 
     try:
-        creds = ESCredentials(
-            url=url, username=username, password=password, api_key=api_key
-        )
+        creds = ESCredentials(url=url, username=username, password=password, api_key=api_key)
         creds.auth_header()
     except ValueError:
         console.print(
@@ -166,8 +162,16 @@ def _fmt_ms(value) -> str:
 
 
 def _record_pointer_rpc_events(
-    repo, client, deployment, index_pattern, pattern_set, args,
-    window_start, window_end, total_documents, console,
+    repo,
+    client,
+    deployment,
+    index_pattern,
+    pattern_set,
+    args,
+    window_start,
+    window_end,
+    total_documents,
+    console,
 ) -> dict:
     """Count ant-node's pointer RPC latency events, per outcome, and store them.
 
@@ -223,12 +227,10 @@ def _record_pointer_rpc_events(
                     "outcome": outcome,
                     "event_total": parsed["count"],
                     "latency_ms": {
-                        str(p): values["latency"].get(p)
-                        for p in RPC_LATENCY_PERCENTILES
+                        str(p): values["latency"].get(p) for p in RPC_LATENCY_PERCENTILES
                     },
                     "event_latency_ms": {
-                        str(p): parsed["latency"].get(p)
-                        for p in RPC_LATENCY_PERCENTILES
+                        str(p): parsed["latency"].get(p) for p in RPC_LATENCY_PERCENTILES
                     },
                     "scope_start": window_start.isoformat() if window_start else None,
                     "scope_end": window_end.isoformat() if window_end else None,
@@ -315,9 +317,7 @@ def cmd_record_log_counts(args) -> None:
     )
 
     try:
-        total_response = client.search(
-            index_pattern, build_total_query(window_start, window_end)
-        )
+        total_response = client.search(index_pattern, build_total_query(window_start, window_end))
     except ESError as exc:
         console.print(f"[bold red]Error:[/bold red] Elasticsearch query failed: {exc}")
         sys.exit(1)
@@ -346,10 +346,7 @@ def cmd_record_log_counts(args) -> None:
                 index_pattern, build_count_query(pattern.phrase, window_start, window_end)
             )
         except ESError as exc:
-            console.print(
-                f"[bold red]Error:[/bold red] query for '{pattern.key}' failed: "
-                f"{exc}"
-            )
+            console.print(f"[bold red]Error:[/bold red] query for '{pattern.key}' failed: {exc}")
             sys.exit(1)
         results[pattern.key] = parse_count_response(response)
 
@@ -386,10 +383,7 @@ def cmd_record_log_counts(args) -> None:
         )
 
     table = Table(
-        title=(
-            f"Log event counts — {deployment.name} (id={deployment.id}, "
-            f"window: {args.label})"
-        )
+        title=(f"Log event counts — {deployment.name} (id={deployment.id}, window: {args.label})")
     )
     table.add_column("Group")
     table.add_column("Pattern")
@@ -402,28 +396,30 @@ def cmd_record_log_counts(args) -> None:
         parsed = results[pattern.key]
         levels = ", ".join(
             f"{level}:{count:,}"
-            for level, count in sorted(
-                parsed["by_level"].items(), key=lambda kv: -kv[1]
-            )
+            for level, count in sorted(parsed["by_level"].items(), key=lambda kv: -kv[1])
         )
         table.add_row(
             pattern.group,
             pattern.key,
             _fmt_int(parsed["count"]),
             _fmt_int(parsed["hosts"]),
-            _fmt_rate(
-                rate_per_hour(
-                    parsed["count"], parsed["first_seen"], parsed["last_seen"]
-                )
-            ),
+            _fmt_rate(rate_per_hour(parsed["count"], parsed["first_seen"], parsed["last_seen"])),
             _fmt_share(parsed["count"], total_documents),
             levels or "-",
         )
     console.print(table)
 
     rpc_results = _record_pointer_rpc_events(
-        repo, client, deployment, index_pattern, pattern_set, args,
-        window_start, window_end, total_documents, console,
+        repo,
+        client,
+        deployment,
+        index_pattern,
+        pattern_set,
+        args,
+        window_start,
+        window_end,
+        total_documents,
+        console,
     )
     if rpc_results:
         _print_rpc_table(rpc_results, total_documents, console)

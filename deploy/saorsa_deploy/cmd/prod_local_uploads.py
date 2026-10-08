@@ -87,9 +87,10 @@ def _is_immutable_cache_key(key: str) -> bool:
 
 def _download_to(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as resp, open(
-        dest, "wb"
-    ) as out:
+    with (
+        urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as resp,
+        open(dest, "wb") as out,
+    ):
         while True:
             chunk = resp.read(1 << 16)
             if not chunk:
@@ -104,9 +105,7 @@ def _extract_ant_from_tarball(tarball: Path, dest: Path) -> None:
             None,
         )
         if member is None:
-            raise RuntimeError(
-                f"Release tarball {tarball} does not contain an 'ant' binary"
-            )
+            raise RuntimeError(f"Release tarball {tarball} does not contain an 'ant' binary")
         extracted = tar.extractfile(member)
         if extracted is None:
             raise RuntimeError(f"Could not extract 'ant' from {tarball}")
@@ -159,9 +158,7 @@ def _resolve_ant_binary(
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if is_tarball:
-        with tempfile.NamedTemporaryFile(
-            dir=target.parent, suffix=".tar.gz", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".tar.gz", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
             _download_to(url, tmp_path)
@@ -200,14 +197,10 @@ def _resolve_bootstrap_args(args, console: Console) -> list[str]:
                 f"from {PROD_BOOTSTRAPS_URL}"
             )
         else:
-            console.print(
-                f"[bold]Bootstrap cache enabled:[/bold] using existing {peers_path}"
-            )
+            console.print(f"[bold]Bootstrap cache enabled:[/bold] using existing {peers_path}")
         return []
 
-    console.print(
-        f"[bold]Resolving prod bootstraps from {PROD_BOOTSTRAPS_URL}...[/bold]"
-    )
+    console.print(f"[bold]Resolving prod bootstraps from {PROD_BOOTSTRAPS_URL}...[/bold]")
     try:
         peers = fetch_prod_bootstraps()
     except ProdBootstrapsError as e:
@@ -303,10 +296,14 @@ def _run_ant(
     cmd = [
         str(ant_path),
         *bootstrap_args,
-        "--evm-network", EVM_NETWORK,
+        "--evm-network",
+        EVM_NETWORK,
         "--json",
         _verbosity_flag(verbose),
-        "file", "upload", "--public", *_payment_flag(payment_type),
+        "file",
+        "upload",
+        "--public",
+        *_payment_flag(payment_type),
         str(file_path),
     ]
     env = dict(os.environ)
@@ -329,9 +326,7 @@ def _run_ant(
 
     def _pump_stderr() -> None:
         try:
-            with open(
-                stderr_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stderr_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stderr is not None
                 for line in proc.stderr:
                     fh.write(line)
@@ -342,9 +337,7 @@ def _run_ant(
 
     def _pump_stdout() -> None:
         try:
-            with open(
-                stdout_log_path, "w", encoding="utf-8", errors="replace"
-            ) as fh:
+            with open(stdout_log_path, "w", encoding="utf-8", errors="replace") as fh:
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     fh.write(line)
@@ -411,9 +404,10 @@ def _safe_filename(url: str, fallback_index: int) -> str:
 def _download_url_to_tempfile(url: str, scratch_dir: Path, idx: int) -> tuple[Path, int]:
     name = _safe_filename(url, idx)
     dest = scratch_dir / f"{idx:04d}-{name}"
-    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as resp, open(
-        dest, "wb"
-    ) as out:
+    with (
+        urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as resp,
+        open(dest, "wb") as out,
+    ):
         size = 0
         while True:
             chunk = resp.read(1 << 16)
@@ -441,12 +435,9 @@ def cmd_prod_local_uploads(args) -> None:
     if not secret_key.startswith("0x"):
         secret_key = "0x" + secret_key
 
-    if (args.branch_name and not args.repo_owner) or (
-        args.repo_owner and not args.branch_name
-    ):
+    if (args.branch_name and not args.repo_owner) or (args.repo_owner and not args.branch_name):
         console.print(
-            "[bold red]Error:[/bold red] --branch-name and --repo-owner must be "
-            "provided together."
+            "[bold red]Error:[/bold red] --branch-name and --repo-owner must be provided together."
         )
         sys.exit(1)
     if (args.branch_name or args.repo_owner) and args.ant_version:
@@ -466,11 +457,7 @@ def cmd_prod_local_uploads(args) -> None:
     # Resolve the effective ant verbosity. --log-level is the documented knob;
     # the deprecated -v/--verbose count is honoured only when --log-level is
     # unset (log_level wins when both are supplied).
-    verbose = (
-        log_level_to_verbosity(args.log_level)
-        if args.log_level is not None
-        else args.verbose
-    )
+    verbose = log_level_to_verbosity(args.log_level) if args.log_level is not None else args.verbose
 
     repo = get_repository()
     if repo is None:
@@ -501,9 +488,7 @@ def cmd_prod_local_uploads(args) -> None:
     elif args.urls:
         urls = _read_url_list(Path(args.urls))
         if not urls:
-            console.print(
-                f"[bold red]Error:[/bold red] URL list {args.urls} is empty."
-            )
+            console.print(f"[bold red]Error:[/bold red] URL list {args.urls} is empty.")
             sys.exit(1)
         input_mode = "urls"
         input_path = str(Path(args.urls).resolve())
@@ -537,9 +522,7 @@ def cmd_prod_local_uploads(args) -> None:
     log_dir = _LOG_ROOT / args.name
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    binary_descriptor = build_binary_descriptor(
-        args.branch_name, args.repo_owner, args.ant_version
-    )
+    binary_descriptor = build_binary_descriptor(args.branch_name, args.repo_owner, args.ant_version)
     if binary_descriptor.get("kind") == "latest" and resolved_version:
         # Pin the descriptor to the version we actually downloaded so the
         # deployment record states what was run, not "whatever was latest".
@@ -549,9 +532,7 @@ def cmd_prod_local_uploads(args) -> None:
     if input_mode == "local-dir":
         for path, rel_name in local_files:
             try:
-                files_payload.append(
-                    {"name": rel_name, "size_bytes": path.stat().st_size}
-                )
+                files_payload.append({"name": rel_name, "size_bytes": path.stat().st_size})
             except OSError:
                 files_payload.append({"name": rel_name, "size_bytes": None})
 
@@ -594,9 +575,7 @@ def cmd_prod_local_uploads(args) -> None:
                 started_at = datetime.now(timezone.utc)
                 start_ns = time.time_ns()
                 try:
-                    local_path, file_size = _download_url_to_tempfile(
-                        url, scratch, idx
-                    )
+                    local_path, file_size = _download_url_to_tempfile(url, scratch, idx)
                 except Exception as e:
                     finished_at = datetime.now(timezone.utc)
                     console.print(f"  [red]download FAILED:[/red] {e}")
@@ -856,9 +835,7 @@ def _select_from_pool(args, console: Console):
         sys.exit(1)
 
     console.print("  Pool selection")
-    render_selection(
-        console, "local-uploads", request, selected, min_size_bytes, max_size_bytes
-    )
+    render_selection(console, "local-uploads", request, selected, min_size_bytes, max_size_bytes)
 
     pairs = []
     claims = []
@@ -876,17 +853,14 @@ def _select_from_pool(args, console: Console):
 
     if missing:
         console.print(
-            f"[bold red]Error:[/bold red] {len(missing)} selected file(s) are no "
-            "longer on disk:"
+            f"[bold red]Error:[/bold red] {len(missing)} selected file(s) are no longer on disk:"
         )
         for entry in missing[:10]:
             console.print(f"[red]  #{entry.file_id} {entry.locator}[/red]")
         console.print(
             "Run `saorsa-deploy prod pool verify --kind local` to retire "
             "entries whose files have moved, then release this selection with "
-            "`prod pool release "
-            + " ".join(str(e.file_id) for e in missing[:10])
-            + "`."
+            "`prod pool release " + " ".join(str(e.file_id) for e in missing[:10]) + "`."
         )
         sys.exit(1)
 
@@ -914,9 +888,7 @@ def _resolve_pool_claim(pool_claims: list, file_name: str, status, console) -> N
         return
     try:
         if status is ProdUploadStatus.SUCCESS:
-            repo.resolve_pool_claim(
-                entry["claim_id"], note="uploaded by prod local-uploads"
-            )
+            repo.resolve_pool_claim(entry["claim_id"], note="uploaded by prod local-uploads")
         elif status is ProdUploadStatus.PARTIAL_UPLOAD:
             repo.mark_pool_claim_partial(
                 entry["claim_id"],
@@ -925,8 +897,6 @@ def _resolve_pool_claim(pool_claims: list, file_name: str, status, console) -> N
         else:
             # Nothing reached the network, so the file goes back untouched
             # rather than being burned by the attempt.
-            repo.release_pool_claim(
-                entry["claim_id"], note="prod local-uploads upload failed"
-            )
+            repo.release_pool_claim(entry["claim_id"], note="prod local-uploads upload failed")
     except ValueError as exc:
         console.print(f"[yellow]Warning:[/yellow] could not resolve pool claim: {exc}")

@@ -110,10 +110,12 @@ def _ensure_monitoring(args, console: Console) -> None:
             "InfluxDB creds (a prior provision didn't finish) — "
             "re-provisioning.[/yellow]"
         )
-        cmd_provision_monitoring(SimpleNamespace(
-            name=args.name,
-            ssh_key_path=args.ssh_key_path,
-        ))
+        cmd_provision_monitoring(
+            SimpleNamespace(
+                name=args.name,
+                ssh_key_path=args.ssh_key_path,
+            )
+        )
         return
 
     provider = getattr(args, "monitoring_provider", None) or "digitalocean"
@@ -122,16 +124,12 @@ def _ensure_monitoring(args, console: Console) -> None:
     # defaults (region/flavor) since lon1 / s-2vcpu-4gb are DO-specific.
     if provider == "digitalocean":
         region = getattr(args, "monitoring_region", None) or MONITORING_REGION
-        droplet_size = (
-            getattr(args, "monitoring_droplet_size", None) or "s-2vcpu-4gb"
-        )
+        droplet_size = getattr(args, "monitoring_droplet_size", None) or "s-2vcpu-4gb"
     else:
         region = getattr(args, "monitoring_region", None)
         droplet_size = getattr(args, "monitoring_droplet_size", None)
 
-    console.print(
-        f"[bold cyan]Step 1/5: creating monitoring VM ({provider})[/bold cyan]"
-    )
+    console.print(f"[bold cyan]Step 1/5: creating monitoring VM ({provider})[/bold cyan]")
     mon_infra_args = SimpleNamespace(
         name=args.name,
         provider=provider,
@@ -159,29 +157,23 @@ def _ensure_client_infra(args, console: Console) -> None:
 
     if _client_stack_exists(args.name):
         console.print(
-            f"[dim]Client stack '{args.name}' already exists — "
-            "skipping clients infra.[/dim]"
+            f"[dim]Client stack '{args.name}' already exists — skipping clients infra.[/dim]"
         )
         return
 
     provider = getattr(args, "provider", None) or "digitalocean"
     console.print(
-        f"[bold cyan]Step 3/5: creating downloader VM "
-        f"({provider}:{args.spec})[/bold cyan]"
+        f"[bold cyan]Step 3/5: creating downloader VM ({provider}:{args.spec})[/bold cyan]"
     )
     # The client VM provider is selectable; --spec carries no provider field, so
     # prefix the provider token parse_downloader_spec requires. bootstrap_cache
     # is carried through so client_state records the real per-VM cache mode (the
     # print/slack surfaces read it from there).
-    cache_token = (
-        f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
-    )
+    cache_token = f"bootstrap_cache={str(getattr(args, 'bootstrap_cache', True)).lower()}"
     # network likewise, so client_state records the link conditions this VM ran
     # under rather than leaving the per-VM listing blank on a shaped run.
     network_token = (
-        f":network={getattr(args, 'network', None)}"
-        if getattr(args, "network", None)
-        else ""
+        f":network={getattr(args, 'network', None)}" if getattr(args, "network", None) else ""
     )
     infra_args = SimpleNamespace(
         name=args.name,
@@ -212,9 +204,7 @@ def _provision_prod_downloader(
 
     clients = client_state.get("clients", [])
     if not clients:
-        console.print(
-            "[bold red]Error:[/bold red] No clients found in client state."
-        )
+        console.print("[bold red]Error:[/bold red] No clients found in client state.")
         sys.exit(1)
 
     if any(c.get("role", "upload") == "upload" for c in clients):
@@ -226,13 +216,9 @@ def _provision_prod_downloader(
         sys.exit(1)
 
     addresses_args = SimpleNamespace(addresses_file=addresses_file)
-    addresses_file_content = _resolve_addresses_file_content(
-        addresses_args, console
-    )
+    addresses_file_content = _resolve_addresses_file_content(addresses_args, console)
     if not addresses_file_content:
-        console.print(
-            "[bold red]Error:[/bold red] Addresses file is empty or missing."
-        )
+        console.print("[bold red]Error:[/bold red] Addresses file is empty or missing.")
         sys.exit(1)
 
     console.print("[bold]Fetching production bootstrap peers...[/bold]")
@@ -266,14 +252,10 @@ def _provision_prod_downloader(
         influx_url = mon_state.get("influxdb_url", "") or ""
         influx_token = mon_state.get("influxdb_token", "") or ""
         influx_org = mon_state.get("influxdb_org", "ant") or "ant"
-        influx_bucket = (
-            mon_state.get("influxdb_bucket", "testnet-metrics")
-            or "testnet-metrics"
-        )
+        influx_bucket = mon_state.get("influxdb_bucket", "testnet-metrics") or "testnet-metrics"
     except RuntimeError:
         console.print(
-            "[yellow]No monitoring state found — Influx metric emission "
-            "will be skipped.[/yellow]"
+            "[yellow]No monitoring state found — Influx metric emission will be skipped.[/yellow]"
         )
 
     downloaders = [
@@ -293,10 +275,7 @@ def _provision_prod_downloader(
     clear_known_hosts(host_ips, console)
     not_ready = wait_for_ssh(host_ips, args.ssh_key_path, console=console)
     if not_ready:
-        console.print(
-            f"[bold red]Error:[/bold red] SSH never came up on: "
-            f"{', '.join(not_ready)}"
-        )
+        console.print(f"[bold red]Error:[/bold red] SSH never came up on: {', '.join(not_ready)}")
         sys.exit(1)
 
     provisioner = ProdDownloaderProvisioner(
@@ -316,18 +295,14 @@ def _provision_prod_downloader(
         download_diagnostics=getattr(args, "download_diagnostics", False),
         client_kind="wasm" if wasm_context else "native",
         wasm_bundle_url=wasm_context.bundle_url if wasm_context else None,
-        bootstrap_multiaddrs=(
-            wasm_context.bootstrap_multiaddrs if wasm_context else None
-        ),
+        bootstrap_multiaddrs=(wasm_context.bootstrap_multiaddrs if wasm_context else None),
         console=console,
     )
     provisioner.execute()
 
 
 def _start_prod_downloader(args, console: Console) -> None:
-    console.print(
-        "[bold cyan]Step 5/5: starting prod-downloader (one-shot) service[/bold cyan]"
-    )
+    console.print("[bold cyan]Step 5/5: starting prod-downloader (one-shot) service[/bold cyan]")
     _systemctl_action(
         args,
         console,
@@ -337,9 +312,7 @@ def _start_prod_downloader(args, console: Console) -> None:
 
 
 def _stop_prod_downloader(args, console: Console) -> None:
-    console.print(
-        "[bold cyan]Stopping ant-prod-downloader services...[/bold cyan]"
-    )
+    console.print("[bold cyan]Stopping ant-prod-downloader services...[/bold cyan]")
     _systemctl_action(
         args,
         console,
@@ -366,16 +339,11 @@ def _systemctl_action(
 
     host_ips = [c["ip"] for c in client_state.get("clients", []) if c.get("ip")]
     if not host_ips:
-        console.print(
-            "[bold red]Error:[/bold red] No client IPs found in state."
-        )
+        console.print("[bold red]Error:[/bold red] No client IPs found in state.")
         sys.exit(1)
 
     clear_known_hosts(host_ips, console)
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path})
-        for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     state = State(inventory=Inventory((hosts_data, {})), config=Config())
     connect_all(state)
 
@@ -436,9 +404,7 @@ def cmd_prod_downloaders_deploy(args):
         SimpleNamespace(addresses_file=addresses_file), console
     )
     if not addresses_content:
-        console.print(
-            "[bold red]Error:[/bold red] Addresses file is empty or missing."
-        )
+        console.print("[bold red]Error:[/bold red] Addresses file is empty or missing.")
         sys.exit(1)
     try:
         addresses_list = parse_addresses(addresses_content)
@@ -457,14 +423,11 @@ def cmd_prod_downloaders_deploy(args):
     console.print(f"  Addresses file: {addresses_file}")
     console.print(f"  Prod bootstraps URL: {PROD_BOOTSTRAPS_URL}")
     console.print(
-        f"  Downloader spec: "
-        f"{getattr(args, 'provider', None) or 'digitalocean'}:{args.spec}"
+        f"  Downloader spec: {getattr(args, 'provider', None) or 'digitalocean'}:{args.spec}"
     )
     console.print("  Mode: one-shot (single pass, then exit)")
     transport = (
-        "wasm (browser path, WebRTC-Direct)"
-        if is_wasm_kind(args)
-        else "native (ant over QUIC)"
+        "wasm (browser path, WebRTC-Direct)" if is_wasm_kind(args) else "native (ant over QUIC)"
     )
     console.print(f"  Transport: {transport}")
     if getattr(args, "download_diagnostics", False):
@@ -479,9 +442,7 @@ def cmd_prod_downloaders_deploy(args):
         "monitoring_name": args.name,
         "spec": args.spec,
         "provider": getattr(args, "provider", None) or "digitalocean",
-        "monitoring_provider": (
-            getattr(args, "monitoring_provider", None) or "digitalocean"
-        ),
+        "monitoring_provider": (getattr(args, "monitoring_provider", None) or "digitalocean"),
         "clock_skew": clock_skew_seconds,
         "network": network_profile.to_dict() if network_profile else None,
         "bootstrap_cache": getattr(args, "bootstrap_cache", True),
@@ -491,7 +452,9 @@ def cmd_prod_downloaders_deploy(args):
         "download_diagnostics": getattr(args, "download_diagnostics", False),
         "purpose": args.purpose,
         "ant_binary": build_binary_descriptor(
-            args.branch_name, args.repo_owner, args.ant_version,
+            args.branch_name,
+            args.repo_owner,
+            args.ant_version,
             debug=getattr(args, "debug", False),
         ),
         **wasm_deploy_args(wasm_context),
@@ -507,9 +470,8 @@ def cmd_prod_downloaders_deploy(args):
         from saorsa_deploy.cmd.provision_telegraf_metrics import (
             provision_client_telegraf_best_effort,
         )
-        provision_client_telegraf_best_effort(
-            args.name, args.ssh_key_path, console=console
-        )
+
+        provision_client_telegraf_best_effort(args.name, args.ssh_key_path, console=console)
         if getattr(args, "forward_logs", False):
             from saorsa_deploy.cmd.prod_log_forwarding import (
                 PROD_DOWNLOADER_GLOBS,
@@ -517,13 +479,9 @@ def cmd_prod_downloaders_deploy(args):
                 install_client_forwarder,
             )
 
-            es_creds = ensure_client_elastic(
-                args.name, args.ssh_key_path, console
-            )
+            es_creds = ensure_client_elastic(args.name, args.ssh_key_path, console)
             dl_state = load_client_state(args.name)
-            dl_ips = [
-                c["ip"] for c in dl_state.get("clients", []) if c.get("ip")
-            ]
+            dl_ips = [c["ip"] for c in dl_state.get("clients", []) if c.get("ip")]
             install_client_forwarder(
                 name=args.name,
                 role="downloader",
@@ -546,12 +504,8 @@ def cmd_prod_downloaders_deploy(args):
     record_event(args.name, "prod_downloaders_deploy_completed")
     record_status(args.name, DeploymentStatus.RUNNING)
     console.print()
-    console.print(
-        f"[bold green]prod downloaders '{args.name}' is running.[/bold green]"
-    )
-    console.print(
-        "[dim]Per-op logs: ssh root@<vm> ls /var/log/ant-prod-downloader/[/dim]"
-    )
+    console.print(f"[bold green]prod downloaders '{args.name}' is running.[/bold green]")
+    console.print("[dim]Per-op logs: ssh root@<vm> ls /var/log/ant-prod-downloader/[/dim]")
     console.print(
         f"[dim]Record download metrics with: saorsa-deploy deployments record-results "
         f"--name {args.name} --monitoring-name {args.name} --window -1h[/dim]"
@@ -595,15 +549,11 @@ def cmd_prod_downloaders_destroy(args):
             console.print("[bold cyan]Destroying monitoring stack...[/bold cyan]")
             cmd_destroy_monitoring(SimpleNamespace(name=args.name, force=True))
         else:
-            console.print(
-                f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]"
-            )
+            console.print(f"[dim]No monitoring stack found for '{args.name}' — skipping.[/dim]")
 
         from saorsa_deploy.cmd.prod_log_forwarding import destroy_client_elastic
 
-        destroy_client_elastic(
-            args.name, getattr(args, "keep_elastic", False), console
-        )
+        destroy_client_elastic(args.name, getattr(args, "keep_elastic", False), console)
     except SystemExit:
         record_event(args.name, "prod_downloaders_destroy_failed")
         record_status(args.name, DeploymentStatus.FAILED)
@@ -617,6 +567,4 @@ def cmd_prod_downloaders_destroy(args):
     record_event(args.name, "prod_downloaders_destroy_completed")
     record_status(args.name, DeploymentStatus.DESTROYED)
     console.print()
-    console.print(
-        f"[bold green]prod downloaders '{args.name}' destroyed.[/bold green]"
-    )
+    console.print(f"[bold green]prod downloaders '{args.name}' destroyed.[/bold green]")

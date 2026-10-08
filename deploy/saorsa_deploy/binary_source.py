@@ -45,8 +45,7 @@ def _release_tag_exists(repo: str, tag: str) -> bool:
         return False
 
     rate_limited = (
-        resp.status_code in (403, 429)
-        and resp.headers.get("X-RateLimit-Remaining") == "0"
+        resp.status_code in (403, 429) and resp.headers.get("X-RateLimit-Remaining") == "0"
     )
     hint = (
         " GitHub API rate limit exceeded — set GITHUB_TOKEN to raise the "
@@ -179,10 +178,7 @@ def get_ant_release_url(version: str | None = None) -> str:
     Returns the asset download URL.
     """
     if version:
-        url = (
-            f"https://api.github.com/repos/{ANT_GITHUB_REPO}"
-            f"/releases/tags/ant-cli-v{version}"
-        )
+        url = f"https://api.github.com/repos/{ANT_GITHUB_REPO}/releases/tags/ant-cli-v{version}"
     else:
         url = f"https://api.github.com/repos/{ANT_GITHUB_REPO}/releases/latest"
 
@@ -213,9 +209,7 @@ def check_ant_release_exists(version: str) -> bool:
     return _release_tag_exists(ANT_GITHUB_REPO, f"ant-cli-v{version}")
 
 
-def check_ant_custom_build_exists(
-    name: str, repo_owner: str, branch_name: str
-) -> bool:
+def check_ant_custom_build_exists(name: str, repo_owner: str, branch_name: str) -> bool:
     """Check if a custom-built ant binary exists in S3."""
     key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/ant"
     s3 = boto3.client("s3", region_name=BUILDS_REGION)
@@ -254,10 +248,7 @@ ANT_WASM_BUILD_INFO_NAME = "ant-wasm-client.build-info.json"
 
 def get_ant_wasm_build_info_url(name: str, repo_owner: str, branch_name: str) -> str:
     """Return the S3 URL of a built bundle's provenance sidecar."""
-    key = (
-        f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/"
-        f"{ANT_WASM_BUILD_INFO_NAME}"
-    )
+    key = f"{BUILDS_KEY_PREFIX}/{name}/{repo_owner}/{branch_name}/{ANT_WASM_BUILD_INFO_NAME}"
     return f"https://{BUILDS_BUCKET}.s3.{BUILDS_REGION}.amazonaws.com/{key}"
 
 

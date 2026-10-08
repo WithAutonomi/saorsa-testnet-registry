@@ -55,8 +55,15 @@ def _checkout_args(**kwargs):
 
 
 def _claims_args(**kwargs):
-    base = dict(consumer=None, source=None, status=None, stale=None,
-                include_deployments=False, unresolvable=False, all=False)
+    base = dict(
+        consumer=None,
+        source=None,
+        status=None,
+        stale=None,
+        include_deployments=False,
+        unresolvable=False,
+        all=False,
+    )
     base.update(kwargs)
     return argparse.Namespace(**base)
 
@@ -114,9 +121,7 @@ class TestCheckout:
         _seed_local(wired, count=3)
         prod_pool.cmd_prod_pool_checkout(_checkout_args(consumer="desktop-app"))
         capsys.readouterr()
-        prod_pool.cmd_prod_pool_checkout(
-            _checkout_args(consumer="desktop-app", reuse_open=True)
-        )
+        prod_pool.cmd_prod_pool_checkout(_checkout_args(consumer="desktop-app", reuse_open=True))
         out = capsys.readouterr().out
         assert "Reusing the open claim(s)" in out
         # No new inventory burned.
@@ -124,9 +129,7 @@ class TestCheckout:
 
     def test_reuse_open_with_nothing_held_says_so(self, wired, capsys):
         _seed_local(wired)
-        prod_pool.cmd_prod_pool_checkout(
-            _checkout_args(consumer="desktop-app", reuse_open=True)
-        )
+        prod_pool.cmd_prod_pool_checkout(_checkout_args(consumer="desktop-app", reuse_open=True))
         assert "no open claims to reuse" in capsys.readouterr().out
 
     def test_empty_inventory_exits_with_guidance(self, wired, capsys):
@@ -137,9 +140,7 @@ class TestCheckout:
         assert "prod pool add" in out
 
     def test_url_kind_can_be_requested(self, wired):
-        wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=50 * MIB
-        )
+        wired.add_pool_file(PoolFileKind.URL, "https://example.org/a", "a", size_bytes=50 * MIB)
         prod_pool.cmd_prod_pool_checkout(_checkout_args(kind="url"))
         assert len(wired.list_pool_claims()) == 1
 
@@ -201,9 +202,7 @@ class TestClaimsView:
             deployment_name="PROD-UL-05",
             when=NOW - timedelta(days=30),
         )
-        prod_pool.cmd_prod_pool_claims(
-            _claims_args(stale="7d", include_deployments=True)
-        )
+        prod_pool.cmd_prod_pool_claims(_claims_args(stale="7d", include_deployments=True))
         assert "PROD-UL-05" in capsys.readouterr().out
 
     def test_unresolvable_explains_why(self, wired, capsys):
@@ -261,20 +260,31 @@ class TestResolve:
 
     def test_mark_uploaded_reports_duplicates_also_spent(self, wired, capsys):
         local, _ = wired.add_pool_file(
-            PoolFileKind.LOCAL, "/data/f", "f", size_bytes=50 * MIB,
+            PoolFileKind.LOCAL,
+            "/data/f",
+            "f",
+            size_bytes=50 * MIB,
             digests={"sha1": "aaa"},
         )
         mirror, _ = wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/f", "f", size_bytes=50 * MIB,
+            PoolFileKind.URL,
+            "https://example.org/f",
+            "f",
+            size_bytes=50 * MIB,
             digests={"sha1": "aaa"},
         )
         prod_pool.cmd_prod_pool_checkout(_checkout_args())
         capsys.readouterr()
         prod_pool.cmd_prod_pool_mark_uploaded(
             argparse.Namespace(
-                file_id=local.id, address="a7f3c2", chunks_stored=None,
-                chunks_failed=None, total_chunks=None, storage_cost_atto=None,
-                gas_cost_wei=None, note=None,
+                file_id=local.id,
+                address="a7f3c2",
+                chunks_stored=None,
+                chunks_failed=None,
+                total_chunks=None,
+                storage_cost_atto=None,
+                gas_cost_wei=None,
+                note=None,
             )
         )
         out = _flat(capsys.readouterr().out)
@@ -287,9 +297,14 @@ class TestResolve:
         with pytest.raises(SystemExit):
             prod_pool.cmd_prod_pool_mark_uploaded(
                 argparse.Namespace(
-                    file_id=files[0].id, address="a", chunks_stored=None,
-                    chunks_failed=None, total_chunks=None,
-                    storage_cost_atto="0.004 ANT", gas_cost_wei=None, note=None,
+                    file_id=files[0].id,
+                    address="a",
+                    chunks_stored=None,
+                    chunks_failed=None,
+                    total_chunks=None,
+                    storage_cost_atto="0.004 ANT",
+                    gas_cost_wei=None,
+                    note=None,
                 )
             )
         assert "atto/wei, not ANT/ETH" in _flat(capsys.readouterr().out)
@@ -307,9 +322,7 @@ class TestResolve:
     def test_resolving_a_file_with_no_open_claim_exits(self, wired, capsys):
         files = _seed_local(wired, count=1)
         with pytest.raises(SystemExit):
-            prod_pool.cmd_prod_pool_release(
-                argparse.Namespace(file_ids=[files[0].id], note=None)
-            )
+            prod_pool.cmd_prod_pool_release(argparse.Namespace(file_ids=[files[0].id], note=None))
         assert "has no open claim" in _flat(capsys.readouterr().out)
 
     def test_releasing_an_uploaded_file_is_refused(self, wired, capsys):
@@ -317,26 +330,27 @@ class TestResolve:
         prod_pool.cmd_prod_pool_checkout(_checkout_args())
         prod_pool.cmd_prod_pool_mark_uploaded(
             argparse.Namespace(
-                file_id=files[0].id, address="a", chunks_stored=None,
-                chunks_failed=None, total_chunks=None, storage_cost_atto=None,
-                gas_cost_wei=None, note=None,
+                file_id=files[0].id,
+                address="a",
+                chunks_stored=None,
+                chunks_failed=None,
+                total_chunks=None,
+                storage_cost_atto=None,
+                gas_cost_wei=None,
+                note=None,
             )
         )
         capsys.readouterr()
         # It is on the network; returning it to the pool would hand it out again.
         with pytest.raises(SystemExit):
-            prod_pool.cmd_prod_pool_release(
-                argparse.Namespace(file_ids=[files[0].id], note=None)
-            )
+            prod_pool.cmd_prod_pool_release(argparse.Namespace(file_ids=[files[0].id], note=None))
 
 
 class TestHistory:
     def test_shows_the_full_timeline(self, wired, capsys):
         files = _seed_local(wired, count=1)
         prod_pool.cmd_prod_pool_checkout(_checkout_args(consumer="desktop-app"))
-        prod_pool.cmd_prod_pool_release(
-            argparse.Namespace(file_ids=[files[0].id], note="aborted")
-        )
+        prod_pool.cmd_prod_pool_release(argparse.Namespace(file_ids=[files[0].id], note="aborted"))
         prod_pool.cmd_prod_pool_checkout(_checkout_args(consumer="phone"))
         capsys.readouterr()
         prod_pool.cmd_prod_pool_history(argparse.Namespace(file_id=files[0].id))
@@ -353,11 +367,17 @@ class TestHistory:
 
     def test_duplicate_points_at_canonical_history(self, wired, capsys):
         wired.add_pool_file(
-            PoolFileKind.LOCAL, "/data/f", "f", size_bytes=MIB,
+            PoolFileKind.LOCAL,
+            "/data/f",
+            "f",
+            size_bytes=MIB,
             digests={"sha1": "aaa"},
         )
         mirror, _ = wired.add_pool_file(
-            PoolFileKind.URL, "https://example.org/f", "f", size_bytes=MIB,
+            PoolFileKind.URL,
+            "https://example.org/f",
+            "f",
+            size_bytes=MIB,
             digests={"sha1": "aaa"},
         )
         prod_pool.cmd_prod_pool_history(argparse.Namespace(file_id=mirror.id))

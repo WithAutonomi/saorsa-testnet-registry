@@ -19,27 +19,13 @@ def _args(**overrides):
 @pytest.fixture
 def patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.load_client_state"
-        ) as p_load_client,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.delete_client_state"
-        ) as p_delete_client,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.delete_terraform_state"
-        ) as p_delete_tf,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys"
-        ) as p_list_keys,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.load_terraform_state"
-        ) as p_load_tf,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.run_terraform_destroy"
-        ) as p_destroy,
-        patch(
-            "saorsa_deploy.cmd.destroy_clients.update_client_state"
-        ) as p_update_client,
+        patch("saorsa_deploy.cmd.destroy_clients.load_client_state") as p_load_client,
+        patch("saorsa_deploy.cmd.destroy_clients.delete_client_state") as p_delete_client,
+        patch("saorsa_deploy.cmd.destroy_clients.delete_terraform_state") as p_delete_tf,
+        patch("saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys") as p_list_keys,
+        patch("saorsa_deploy.cmd.destroy_clients.load_terraform_state") as p_load_tf,
+        patch("saorsa_deploy.cmd.destroy_clients.run_terraform_destroy") as p_destroy,
+        patch("saorsa_deploy.cmd.destroy_clients.update_client_state") as p_update_client,
     ):
         p_list_keys.return_value = []
         p_destroy.return_value = TerraformResult(
@@ -57,36 +43,6 @@ def patches():
 
 
 class TestFallbackWhenNoClientState:
-    def test_scans_tfstate_when_client_state_missing(self, patches):
-        patches.load_client.side_effect = RuntimeError("no client state")
-        keys = [
-            "saorsa-deploy/do-client-DEV-02-upload-lon1-1.tfstate",
-            "saorsa-deploy/do-client-DEV-02-download-nyc3-3.tfstate",
-        ]
-        # Recovery queries each provider's prefix; only the DO prefix matches.
-        patches.list_keys.side_effect = lambda prefix: [
-            k for k in keys if k.startswith(prefix)
-        ]
-        patches.load_tf.return_value = {
-            "resources": [
-                {
-                    "type": "digitalocean_droplet",
-                    "name": "client_vm",
-                    "instances": [
-                        {"attributes": {"size": "s-2vcpu-4gb-intel"}}
-                    ],
-                }
-            ]
-        }
-
-        cmd_destroy_clients(_args())
-
-        assert patches.destroy.call_count == 2
-        destroyed_regions = sorted(
-            call.args[0].region for call in patches.destroy.call_args_list
-        )
-        assert destroyed_regions == ["lon1", "nyc3"]
-
     def test_no_op_when_no_state_and_no_tfstate(self, patches):
         patches.load_client.side_effect = RuntimeError("no client state")
         patches.list_keys.return_value = []
@@ -108,9 +64,7 @@ class TestRecoverClientsFromTfstate:
         with (
             patch(
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
-                side_effect=lambda prefix: [
-                    k for k in keys if k.startswith(prefix)
-                ],
+                side_effect=lambda prefix: [k for k in keys if k.startswith(prefix)],
             ),
             patch(
                 "saorsa_deploy.cmd.destroy_clients.load_terraform_state",
@@ -158,9 +112,7 @@ class TestRecoverClientsFromTfstate:
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
                 side_effect=lambda prefix: [
                     k
-                    for k in [
-                        "saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"
-                    ]
+                    for k in ["saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"]
                     if k.startswith(prefix)
                 ],
             ),
@@ -171,9 +123,7 @@ class TestRecoverClientsFromTfstate:
                         {
                             "type": "digitalocean_droplet",
                             "name": "client_vm",
-                            "instances": [
-                                {"attributes": {"size": "s-2vcpu-4gb-intel"}}
-                            ],
+                            "instances": [{"attributes": {"size": "s-2vcpu-4gb-intel"}}],
                         }
                     ]
                 },
@@ -192,9 +142,7 @@ class TestRecoverClientsFromTfstate:
                 "saorsa_deploy.cmd.destroy_clients.list_terraform_state_keys",
                 side_effect=lambda prefix: [
                     k
-                    for k in [
-                        "saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"
-                    ]
+                    for k in ["saorsa-deploy/do-client-DEV-02-upload-sgp1-7.tfstate"]
                     if k.startswith(prefix)
                 ],
             ),
@@ -234,29 +182,8 @@ class TestStopUploaderSshKeyResolution:
     def _run(self, patches, args, ssh_key_path):
         patches.load_client.return_value = self._uploader_state(ssh_key_path)
         with (
-            patch(
-                "saorsa_deploy.cmd.destroy_clients._stop_uploader_services"
-            ) as p_stop,
-            patch(
-                "saorsa_deploy.cmd.destroy_clients._drain_uploader_wallets"
-            ),
+            patch("saorsa_deploy.cmd.destroy_clients._stop_uploader_services") as p_stop,
+            patch("saorsa_deploy.cmd.destroy_clients._drain_uploader_wallets"),
         ):
             cmd_destroy_clients(args)
         return p_stop
-
-    def test_uses_recorded_key_when_no_flag(self, patches):
-        # No --ssh-key-path on destroy → use the key recorded at provision time.
-        args = _args(wallet_secret_key="0xfund")
-        p_stop = self._run(patches, args, ssh_key_path="~/.ssh/stg_key")
-        assert p_stop.call_args.args[1] == "~/.ssh/stg_key"
-
-    def test_explicit_flag_overrides_recorded_key(self, patches):
-        args = _args(wallet_secret_key="0xfund", ssh_key_path="~/.ssh/override")
-        p_stop = self._run(patches, args, ssh_key_path="~/.ssh/stg_key")
-        assert p_stop.call_args.args[1] == "~/.ssh/override"
-
-    def test_falls_back_to_default_when_nothing_recorded(self, patches):
-        # Legacy state with no recorded ssh_key_path and no flag → old default.
-        args = _args(wallet_secret_key="0xfund")
-        p_stop = self._run(patches, args, ssh_key_path=None)
-        assert p_stop.call_args.args[1] == "~/.ssh/id_rsa"

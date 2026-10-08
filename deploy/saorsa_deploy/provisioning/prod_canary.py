@@ -124,6 +124,7 @@ def _resolve_binary_url(binary_url: str | None, console: Console) -> str:
         console.print(f"Using binary URL: {binary_url}")
         return binary_url
     from saorsa_deploy.binary_source import get_ant_release_url
+
     console.print("Fetching latest ant release from GitHub...")
     url = get_ant_release_url()
     console.print(f"  Release URL: {url}")
@@ -193,9 +194,7 @@ class ProdCanaryUploadProvisioner:
         if not self.influx_url or not self.influx_token:
             raise RuntimeError("Influx URL + token are required for canary uploads")
 
-        hosts_data = [
-            (self.host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})
-        ]
+        hosts_data = [(self.host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})]
         inventory = Inventory((hosts_data, {}))
         config = Config()
         state = State(inventory=inventory, config=config)
@@ -206,9 +205,7 @@ class ProdCanaryUploadProvisioner:
             progress._live.start()
 
         try:
-            self.console.print(
-                f"Connecting to canary upload host {self.host_ip} as root..."
-            )
+            self.console.print(f"Connecting to canary upload host {self.host_ip} as root...")
             connect_all(state)
 
             add_operator_authorized_keys_op(state)
@@ -231,9 +228,7 @@ class ProdCanaryUploadProvisioner:
                 state,
                 server.shell,
                 name="Download and install ant binary",
-                commands=[
-                    _install_ant_command(binary_url, self.binary_is_archive)
-                ],
+                commands=[_install_ant_command(binary_url, self.binary_is_archive)],
             )
 
             scripts_dir = get_resources_dir() / "scripts"
@@ -286,16 +281,12 @@ class ProdCanaryUploadProvisioner:
             )
 
     def _add_env_op(self, state: State) -> None:
-        bootstrap_args = " ".join(
-            f"--bootstrap {peer}" for peer in self.bootstrap_peers
-        )
+        bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
         secret_key = self.wallet_secret_key
         if secret_key and not secret_key.startswith("0x"):
             secret_key = "0x" + secret_key
 
-        urls_b64 = base64.b64encode(
-            self.urls_file_content.encode("utf-8")
-        ).decode("ascii")
+        urls_b64 = base64.b64encode(self.urls_file_content.encode("utf-8")).decode("ascii")
 
         env = {
             "HOME": "/root",
@@ -408,9 +399,7 @@ class ProdCanaryProbeProvisioner:
             progress._live.start()
 
         try:
-            self.console.print(
-                f"Connecting to {len(host_ips)} canary probe host(s) as root..."
-            )
+            self.console.print(f"Connecting to {len(host_ips)} canary probe host(s) as root...")
             connect_all(state)
 
             add_operator_authorized_keys_op(state)
@@ -433,9 +422,7 @@ class ProdCanaryProbeProvisioner:
                 state,
                 server.shell,
                 name="Download and install ant binary",
-                commands=[
-                    _install_ant_command(binary_url, self.binary_is_archive)
-                ],
+                commands=[_install_ant_command(binary_url, self.binary_is_archive)],
             )
 
             scripts_dir = get_resources_dir() / "scripts"
@@ -488,9 +475,7 @@ class ProdCanaryProbeProvisioner:
             )
 
     def _add_env_op(self, state: State) -> None:
-        bootstrap_args = " ".join(
-            f"--bootstrap {peer}" for peer in self.bootstrap_peers
-        )
+        bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
         # Dispatch shard_index/region by IP, mirroring the prod-uploader
         # provisioner pattern.
         case_entries = []
@@ -498,9 +483,7 @@ class ProdCanaryProbeProvisioner:
             if not p.get("ip"):
                 continue
             case_entries.append(
-                f'    "{p["ip"]}") '
-                f'REGION={p["region"]}; '
-                f'SHARD_INDEX={p["shard_index"]} ;;'
+                f'    "{p["ip"]}") REGION={p["region"]}; SHARD_INDEX={p["shard_index"]} ;;'
             )
         case_block = "\n".join(case_entries)
 

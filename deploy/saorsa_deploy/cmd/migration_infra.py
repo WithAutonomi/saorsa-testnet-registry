@@ -119,11 +119,7 @@ _PROFILES: dict[str, _ProviderProfile] = {
 
 
 def _default_inventory_path(deployment_name: str) -> Path:
-    return (
-        Path("~/.autonomi/testnets").expanduser()
-        / deployment_name
-        / "inventory.json"
-    )
+    return Path("~/.autonomi/testnets").expanduser() / deployment_name / "inventory.json"
 
 
 def _max_existing_index(
@@ -166,21 +162,15 @@ def _parse_locations(raw: str) -> list[tuple[str, int]]:
         if not part:
             continue
         if "=" not in part:
-            raise ValueError(
-                f"Invalid --locations entry {part!r}; expected '<region>=<count>'"
-            )
+            raise ValueError(f"Invalid --locations entry {part!r}; expected '<region>=<count>'")
         loc, count = part.split("=", 1)
         loc = loc.strip()
         try:
             n = int(count.strip())
         except ValueError as e:
-            raise ValueError(
-                f"Invalid count in --locations entry {part!r}: {e}"
-            ) from e
+            raise ValueError(f"Invalid count in --locations entry {part!r}: {e}") from e
         if n <= 0:
-            raise ValueError(
-                f"Count in --locations entry {part!r} must be positive"
-            )
+            raise ValueError(f"Count in --locations entry {part!r} must be positive")
         out.append((loc, n))
     if not out:
         raise ValueError("--locations is empty")
@@ -192,12 +182,7 @@ def _state_key(migration_name: str, location: str) -> str:
 
 
 def _workspace_dir(migration_name: str, location: str) -> Path:
-    return (
-        Path.cwd()
-        / ".saorsa"
-        / "workspaces"
-        / f"migration-{migration_name}-{location}"
-    )
+    return Path.cwd() / ".saorsa" / "workspaces" / f"migration-{migration_name}-{location}"
 
 
 def _contabo_secret_name(migration_name: str, location: str) -> str:
@@ -302,10 +287,7 @@ def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
     )
     for loc, count in parsed:
         first = offsets[loc] + 1
-        console.print(
-            f"  {loc}: {count} × {product} "
-            f"(-{loc}-{first}..-{offsets[loc] + count})"
-        )
+        console.print(f"  {loc}: {count} × {product} (-{loc}-{first}..-{offsets[loc] + count})")
     console.print()
 
     client = ContaboClient(console)
@@ -321,15 +303,12 @@ def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
                 _contabo_secret_name(migration.name, loc), ssh_key_path
             )
         except (ContaboError, OSError) as e:
-            console.print(
-                f"[bold red]{loc}: could not register ssh secret: {e}[/bold red]"
-            )
+            console.print(f"[bold red]{loc}: could not register ssh secret: {e}[/bold red]")
             failures += 1
             continue
         for i, vm in enumerate(slice_vms):
             target_name = (
-                f"{migration.deployment_name}-{_CONTABO_NAME_TEMPLATE}-{loc}-"
-                f"{i + 1 + offsets[loc]}"
+                f"{migration.deployment_name}-{_CONTABO_NAME_TEMPLATE}-{loc}-{i + 1 + offsets[loc]}"
             )
             try:
                 instance_id, ip = _create_or_adopt(
@@ -342,9 +321,7 @@ def _infra_contabo(args, console, repo, migration, parsed, planned_vms) -> None:
                     ssh_secret_id=secret_id,
                 )
             except ContaboError as e:
-                console.print(
-                    f"[bold red]{target_name}: provisioning failed: {e}[/bold red]"
-                )
+                console.print(f"[bold red]{target_name}: provisioning failed: {e}[/bold red]")
                 failures += 1
                 continue
             created_ips.append(str(ip))
@@ -396,9 +373,7 @@ def cmd_migration_infra(args):
 
     migration = repo.get_migration_by_name(args.name)
     if migration is None:
-        console.print(
-            f"[bold red]Error:[/bold red] No migration named '{args.name}'."
-        )
+        console.print(f"[bold red]Error:[/bold red] No migration named '{args.name}'.")
         sys.exit(1)
 
     try:
@@ -462,9 +437,7 @@ def cmd_migration_infra(args):
             f"{', '.join(requested_locations)}...[/bold]"
         )
         try:
-            resolved, notes = profile.preflight(
-                requested_locations, migration.target_server_type
-            )
+            resolved, notes = profile.preflight(requested_locations, migration.target_server_type)
         except RuntimeError as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             sys.exit(1)
@@ -479,13 +452,10 @@ def cmd_migration_infra(args):
             )
             sys.exit(1)
         console.print(
-            f"[green]{migration.target_provider} preflight ok: "
-            f"{', '.join(resolved)}[/green]"
+            f"[green]{migration.target_provider} preflight ok: {', '.join(resolved)}[/green]"
         )
 
-    repo.set_target_locations(
-        migration.id, {loc: n for loc, n in parsed}
-    )
+    repo.set_target_locations(migration.id, {loc: n for loc, n in parsed})
 
     inventory_path = (
         Path(args.inventory_path).expanduser()
@@ -546,9 +516,7 @@ def cmd_migration_infra(args):
             if offset > 0
             else f" (-{loc}-{first}..-{last})"
         )
-        console.print(
-            f"  {loc}: {count} × {migration.target_server_type}{suffix}"
-        )
+        console.print(f"  {loc}: {count} × {migration.target_server_type}{suffix}")
     console.print()
 
     results = execute_terraform_runs(configs)
@@ -561,9 +529,7 @@ def cmd_migration_infra(args):
         offset += count
         if not result.success:
             failures += 1
-            console.print(
-                f"[bold red]{loc} provisioning failed.[/bold red]"
-            )
+            console.print(f"[bold red]{loc} provisioning failed.[/bold red]")
             continue
 
         ips = result.outputs.get("vm_ips") or []
@@ -583,12 +549,9 @@ def cmd_migration_infra(args):
         loc_offset = offsets[loc]
         for i, vm in enumerate(slice_vms):
             target_name = (
-                f"{migration.deployment_name}-{profile.name_template}-{loc}-"
-                f"{i + 1 + loc_offset}"
+                f"{migration.deployment_name}-{profile.name_template}-{loc}-{i + 1 + loc_offset}"
             )
-            target_volume_id = (
-                str(vol_ids[i]) if i < len(vol_ids) else None
-            )
+            target_volume_id = str(vol_ids[i]) if i < len(vol_ids) else None
             repo.update_vm(
                 vm.id,
                 target_name=target_name,
@@ -602,9 +565,7 @@ def cmd_migration_infra(args):
             )
 
     if failures:
-        console.print(
-            f"[bold red]{failures}/{len(configs)} location(s) failed.[/bold red]"
-        )
+        console.print(f"[bold red]{failures}/{len(configs)} location(s) failed.[/bold red]")
         repo.update_migration_status(migration.id, MigrationStatus.FAILED)
         sys.exit(1)
 

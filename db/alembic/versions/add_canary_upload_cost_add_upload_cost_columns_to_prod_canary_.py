@@ -5,6 +5,7 @@ Revises: 5ab98e6205e0
 Create Date: 2026-05-19 15:50:37.839462
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -12,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'add_canary_upload_cost'
-down_revision: Union[str, Sequence[str], None] = '5ab98e6205e0'
+revision: str = "add_canary_upload_cost"
+down_revision: Union[str, Sequence[str], None] = "5ab98e6205e0"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

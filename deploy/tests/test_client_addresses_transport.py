@@ -15,9 +15,7 @@ import pytest
 
 from saorsa_deploy.provisioning.client import AntClientProvisioner
 
-SCRIPTS_DIR = (
-    Path(__file__).parent.parent / "saorsa_deploy" / "resources" / "scripts"
-)
+SCRIPTS_DIR = Path(__file__).parent.parent / "saorsa_deploy" / "resources" / "scripts"
 
 
 # --------------------------------------------------------------------------- #
@@ -127,11 +125,7 @@ def curl_stub(tmp_path):
     )
     (stub_dir / "curl").chmod(0o755)
     # An aws stub that must never be reached on the unsigned read path.
-    (stub_dir / "aws").write_text(
-        "#!/usr/bin/env bash\n"
-        f'echo "aws $@" >> "{log}"\n'
-        "exit 1\n"
-    )
+    (stub_dir / "aws").write_text(f'#!/usr/bin/env bash\necho "aws $@" >> "{log}"\nexit 1\n')
     (stub_dir / "aws").chmod(0o755)
     return stub_dir, log
 
@@ -146,8 +140,11 @@ class TestDownloaderPickRandomAddress:
     def test_lists_and_fetches_via_unsigned_curl(self, curl_stub):
         stub_dir, log = curl_stub
         result = _run_function(
-            "downloader.sh", "pick_random_address", "pick_random_address",
-            self.ENV, stub_dir,
+            "downloader.sh",
+            "pick_random_address",
+            "pick_random_address",
+            self.ENV,
+            stub_dir,
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() in ("addr-one", "addr-two")
@@ -163,8 +160,11 @@ class TestDownloaderPickRandomAddress:
         addresses.write_text("local-addr\n")
         env = {**self.ENV, "ADDRESSES_FILE": str(addresses)}
         result = _run_function(
-            "downloader.sh", "pick_random_address", "pick_random_address",
-            env, stub_dir,
+            "downloader.sh",
+            "pick_random_address",
+            "pick_random_address",
+            env,
+            stub_dir,
         )
         assert result.stdout.strip() == "local-addr"
         assert not log.exists()  # no network calls at all
@@ -173,8 +173,11 @@ class TestDownloaderPickRandomAddress:
         stub_dir, log = curl_stub
         env = {**self.ENV, "S3_HTTP_BASE": ""}
         result = _run_function(
-            "downloader.sh", "pick_random_address", "pick_random_address",
-            env, stub_dir,
+            "downloader.sh",
+            "pick_random_address",
+            "pick_random_address",
+            env,
+            stub_dir,
         )
         assert result.stdout.strip() == ""
         assert not log.exists()
@@ -194,9 +197,7 @@ class TestUploaderFlushToS3:
     def test_presigned_url_flushes_via_curl_put(self, curl_stub, tmp_path):
         stub_dir, log = curl_stub
         env = self._env(tmp_path, "https://bucket.s3/key?X-Amz-Signature=abc")
-        result = _run_function(
-            "uploader.sh", "flush_to_s3", "flush_to_s3", env, stub_dir
-        )
+        result = _run_function("uploader.sh", "flush_to_s3", "flush_to_s3", env, stub_dir)
         assert result.returncode == 0, result.stderr
         log_text = log.read_text()
         assert "-X PUT" in log_text
@@ -206,15 +207,9 @@ class TestUploaderFlushToS3:
     def test_no_presigned_url_falls_back_to_aws_cli(self, curl_stub, tmp_path):
         stub_dir, log = curl_stub
         # make the aws stub succeed for this case
-        (stub_dir / "aws").write_text(
-            "#!/usr/bin/env bash\n"
-            f'echo "aws $@" >> "{log}"\n'
-            "exit 0\n"
-        )
+        (stub_dir / "aws").write_text(f'#!/usr/bin/env bash\necho "aws $@" >> "{log}"\nexit 0\n')
         env = self._env(tmp_path, "")
-        result = _run_function(
-            "uploader.sh", "flush_to_s3", "flush_to_s3", env, stub_dir
-        )
+        result = _run_function("uploader.sh", "flush_to_s3", "flush_to_s3", env, stub_dir)
         assert result.returncode == 0, result.stderr
         log_text = log.read_text()
         assert "aws s3 cp" in log_text
@@ -224,8 +219,6 @@ class TestUploaderFlushToS3:
         stub_dir, log = curl_stub
         (stub_dir / "curl").write_text("#!/usr/bin/env bash\nexit 22\n")
         env = self._env(tmp_path, "https://bucket.s3/key?X-Amz-Signature=abc")
-        result = _run_function(
-            "uploader.sh", "flush_to_s3", "flush_to_s3", env, stub_dir
-        )
+        result = _run_function("uploader.sh", "flush_to_s3", "flush_to_s3", env, stub_dir)
         assert result.returncode != 0
         assert "WARN: S3 flush failed (presigned PUT" in result.stdout

@@ -60,8 +60,7 @@ def ensure_client_elastic(
 
     if not elastic_state_exists(name):
         console.print(
-            "[bold cyan]Creating dedicated Elasticsearch VM for client log "
-            "forwarding[/bold cyan]"
+            "[bold cyan]Creating dedicated Elasticsearch VM for client log forwarding[/bold cyan]"
         )
         cmd_elastic_infra(
             SimpleNamespace(
@@ -74,10 +73,7 @@ def ensure_client_elastic(
                 force=False,
             )
         )
-        console.print(
-            "[bold cyan]Provisioning Elasticsearch for client log "
-            "forwarding[/bold cyan]"
-        )
+        console.print("[bold cyan]Provisioning Elasticsearch for client log forwarding[/bold cyan]")
         cmd_provision_elastic(
             SimpleNamespace(
                 name=name,
@@ -139,7 +135,5 @@ def destroy_client_elastic(name: str, keep: bool, console: Console) -> None:
         return
     from saorsa_deploy.cmd.destroy_elastic import cmd_destroy_elastic
 
-    console.print(
-        "[bold cyan]Destroying Elasticsearch (client log forwarding)...[/bold cyan]"
-    )
+    console.print("[bold cyan]Destroying Elasticsearch (client log forwarding)...[/bold cyan]")
     cmd_destroy_elastic(SimpleNamespace(name=name, force=True))

@@ -4,6 +4,7 @@ The script lives at ``deploy/saorsa_deploy/resources/scripts/prod_downloader.py`
 — it isn't a regular Python module, so we load it by path and exercise its
 internal helpers directly. Mirrors ``test_prod_uploader_service.py``.
 """
+
 import importlib.util
 import os
 from pathlib import Path
@@ -11,8 +12,7 @@ from pathlib import Path
 import pytest
 
 SERVICE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "saorsa_deploy/resources/scripts/prod_downloader.py"
+    Path(__file__).resolve().parents[1] / "saorsa_deploy/resources/scripts/prod_downloader.py"
 )
 
 
@@ -170,11 +170,13 @@ class TestHeaptrackWrap:
     def test_wraps_when_enabled(self, service):
         cmd = ["/root/.local/bin/ant", "file", "download", "addr"]
         out = service._maybe_wrap_heaptrack(
-            cmd, memory_profiling=True,
+            cmd,
+            memory_profiling=True,
             output_base="/var/log/ant-heaptrack/download-000001-0001-addr",
         )
         assert out[:3] == [
-            "heaptrack", "-o",
+            "heaptrack",
+            "-o",
             "/var/log/ant-heaptrack/download-000001-0001-addr",
         ]
         assert out[3:] == cmd
@@ -188,9 +190,7 @@ class TestHeaptrackWrap:
 
     def test_noop_when_no_output_base(self, service):
         cmd = ["/root/.local/bin/ant", "file", "download", "addr"]
-        out = service._maybe_wrap_heaptrack(
-            cmd, memory_profiling=True, output_base=None
-        )
+        out = service._maybe_wrap_heaptrack(cmd, memory_profiling=True, output_base=None)
         assert out == cmd
 
 

@@ -162,7 +162,8 @@ def list_units(timeout: float) -> list[tuple[str, int]]:
     try:
         completed = subprocess.run(
             [
-                "systemctl", "show",
+                "systemctl",
+                "show",
                 "--property=Id",
                 "--property=MainPID",
                 "--property=ActiveState",
@@ -233,12 +234,7 @@ def escape_tag(value: str) -> str:
     Service names are plain (``ant-node-3``), but escaping unconditionally
     means a future unit name cannot silently corrupt the line.
     """
-    return (
-        value.replace("\\", "\\\\")
-        .replace(",", "\\,")
-        .replace("=", "\\=")
-        .replace(" ", "\\ ")
-    )
+    return value.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
 
 
 def resolve_tags(host: str | None = None) -> dict[str, str]:
@@ -288,9 +284,7 @@ def build_line(
     """
     all_tags = dict(tags or {})
     all_tags["node_service"] = service
-    tag_text = ",".join(
-        f"{escape_tag(k)}={escape_tag(v)}" for k, v in sorted(all_tags.items())
-    )
+    tag_text = ",".join(f"{escape_tag(k)}={escape_tag(v)}" for k, v in sorted(all_tags.items()))
     rendered = ",".join(f"{name}={value}i" for name, value in sorted(fields.items()))
     return f"{MEASUREMENT},{tag_text} pid={pid}i,{rendered} {timestamp_ns}"
 
@@ -399,10 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     # journal shows on the first scrape. Emitted only on total failure so that
     # a service exiting mid-scrape stays quiet.
     if result.total_failure:
-        filename = (
-            "status+smaps_rollup" if args.source == "both"
-            else SOURCES[args.source][0]
-        )
+        filename = "status+smaps_rollup" if args.source == "both" else SOURCES[args.source][0]
         sys.stderr.write(
             f"ant-node-memory-collector: {result.units_seen} node service(s) "
             f"found but /proc/<pid>/{filename} was unreadable for every one. "

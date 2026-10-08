@@ -147,9 +147,7 @@ class TestBuildTerraformConfigs:
         configs = _build_terraform_configs(
             sample_nodes, "ant-production", sample_ssh_key_ids, console
         )
-        vl_config = next(
-            c for c in configs if c.provider == "vultr" and c.region == "nrt"
-        )
+        vl_config = next(c for c in configs if c.provider == "vultr" and c.region == "nrt")
         assert vl_config.variables["reserved_ip_id"] == "uuid-genesis"
 
     def test_aws_uses_eip_allocation_id(self, sample_nodes, sample_ssh_key_ids):
@@ -190,9 +188,7 @@ class TestBuildTerraformConfigs:
         configs = _build_terraform_configs(
             sample_nodes, "ant-production", sample_ssh_key_ids, console
         )
-        vl_config = next(
-            c for c in configs if c.provider == "vultr" and c.region == "nrt"
-        )
+        vl_config = next(c for c in configs if c.provider == "vultr" and c.region == "nrt")
         assert vl_config.variables["ssh_key_id"] == "vultr-key-id"
 
     def test_aws_uses_key_pair_name(self, sample_nodes, sample_ssh_key_ids):
@@ -316,9 +312,7 @@ class TestBuildSystemdUnit:
         assert "--bootstrap /ip4/1.2.3.4/udp/10000/quic-v1" in unit
 
     def test_no_peer_flag_for_genesis(self):
-        unit = build_systemd_unit(
-            "/usr/local/bin/ant-node", "/data", bootstrap_peers=None
-        )
+        unit = build_systemd_unit("/usr/local/bin/ant-node", "/data", bootstrap_peers=None)
         assert "--bootstrap" not in unit
 
     def test_data_dir_in_exec_start(self):
@@ -390,9 +384,7 @@ class TestProductionHardeningProvisioner:
     def test_init_stores_params(self):
         from saorsa_deploy.provisioning.hardening import ProductionHardeningProvisioner
 
-        p = ProductionHardeningProvisioner(
-            ip="10.0.0.1", ssh_key_path="/tmp/key", node_port=12000
-        )
+        p = ProductionHardeningProvisioner(ip="10.0.0.1", ssh_key_path="/tmp/key", node_port=12000)
         assert p.ip == "10.0.0.1"
         assert p.ssh_key_path == "/tmp/key"
         assert p.node_port == 12000
@@ -659,12 +651,15 @@ class TestCmdBootstrapProduction:
             },
         ]
         sample_keys = {"vultr": "vultr-key-id"}
-        with patch(
-            "saorsa_deploy.cmd.bootstrap_production._load_production_config",
-            return_value=(sample_nodes, sample_keys),
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.get_release_url",
-            return_value="https://example.com/binary.tar.gz",
+        with (
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._load_production_config",
+                return_value=(sample_nodes, sample_keys),
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.get_release_url",
+                return_value="https://example.com/binary.tar.gz",
+            ),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 cmd_bootstrap_production(args)
@@ -672,9 +667,7 @@ class TestCmdBootstrapProduction:
 
     @patch("saorsa_deploy.cmd.bootstrap_production.subprocess.run")
     @patch("saorsa_deploy.cmd.bootstrap_production._confirm_hetzner_token")
-    def test_confirms_hetzner_token(
-        self, mock_confirm, mock_subprocess, monkeypatch
-    ):
+    def test_confirms_hetzner_token(self, mock_confirm, mock_subprocess, monkeypatch):
         monkeypatch.setenv("HCLOUD_TOKEN", "fake")
         monkeypatch.setenv("VULTR_API_KEY", "fake")
         mock_subprocess.return_value = MagicMock(returncode=0)
@@ -700,26 +693,35 @@ class TestCmdBootstrapProduction:
             },
         ]
         sample_keys = {"vultr": "vultr-key-id"}
-        with patch(
-            "saorsa_deploy.cmd.bootstrap_production._load_production_config",
-            return_value=(sample_nodes, sample_keys),
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.Path",
-        ) as mock_path, patch(
-            "saorsa_deploy.cmd.bootstrap_production.get_release_url",
-            return_value="https://example.com/binary.tar.gz",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
-            return_value=False,
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
-            return_value=[MagicMock(success=True)],
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
-        ) as mock_hardener, patch(
-            "saorsa_deploy.cmd.bootstrap_production._provision_node",
+        with (
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._load_production_config",
+                return_value=(sample_nodes, sample_keys),
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.Path",
+            ) as mock_path,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.get_release_url",
+                return_value="https://example.com/binary.tar.gz",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
+                return_value=False,
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
+                return_value=[MagicMock(success=True)],
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
+            ) as mock_hardener,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._provision_node",
+            ),
         ):
             mock_path.return_value.expanduser.return_value.exists.return_value = True
             mock_hardener.return_value.communicate.return_value = (b"", b"")
@@ -795,32 +797,43 @@ class TestCmdBootstrapProductionSuccessPath:
                 result.stdout = ""
             return result
 
-        with patch(
-            "saorsa_deploy.cmd.bootstrap_production.subprocess.run",
-            side_effect=_mock_subprocess_run,
-        ) as m_subprocess, patch(
-            "saorsa_deploy.cmd.bootstrap_production._load_production_config",
-            return_value=(self.SAMPLE_NODES, self.SAMPLE_SSH_KEY_IDS),
-        ) as m_load_config, patch(
-            "saorsa_deploy.cmd.bootstrap_production._resolve_hetzner_availability",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.Path",
-        ) as m_path, patch(
-            "saorsa_deploy.cmd.bootstrap_production.get_release_url",
-            return_value="https://example.com/ant-node.tar.gz",
-        ) as m_release_url, patch(
-            "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
-            return_value=False,
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
-            return_value=tf_results,
-        ) as m_terraform, patch(
-            "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
-        ) as m_clear_hosts, patch(
-            "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
-        ) as m_popen, patch(
-            "saorsa_deploy.cmd.bootstrap_production._provision_node",
-        ) as m_provision:
+        with (
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.subprocess.run",
+                side_effect=_mock_subprocess_run,
+            ) as m_subprocess,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._load_production_config",
+                return_value=(self.SAMPLE_NODES, self.SAMPLE_SSH_KEY_IDS),
+            ) as m_load_config,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._resolve_hetzner_availability",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.Path",
+            ) as m_path,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.get_release_url",
+                return_value="https://example.com/ant-node.tar.gz",
+            ) as m_release_url,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
+                return_value=False,
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
+                return_value=tf_results,
+            ) as m_terraform,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
+            ) as m_clear_hosts,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
+            ) as m_popen,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._provision_node",
+            ) as m_provision,
+        ):
             m_path.return_value.expanduser.return_value.exists.return_value = True
             m_popen.return_value.communicate.return_value = (b"", b"")
             m_popen.return_value.returncode = 0
@@ -924,29 +937,35 @@ class TestCmdBootstrapProductionSuccessPath:
             evm_network="arbitrum-one",
         )
 
-        failed_result = MagicMock(
-            success=False, provider="hetzner", region="fsn1", stderr="error"
-        )
+        failed_result = MagicMock(success=False, provider="hetzner", region="fsn1", stderr="error")
 
-        with patch(
-            "saorsa_deploy.cmd.bootstrap_production.subprocess.run",
-            return_value=MagicMock(returncode=0),
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production._load_production_config",
-            return_value=(self.SAMPLE_NODES, self.SAMPLE_SSH_KEY_IDS),
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production._resolve_hetzner_availability",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.Path",
-        ) as m_path, patch(
-            "saorsa_deploy.cmd.bootstrap_production.get_release_url",
-            return_value="https://example.com/ant-node.tar.gz",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
-            return_value=False,
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
-            return_value=[MagicMock(success=True), failed_result],
+        with (
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.subprocess.run",
+                return_value=MagicMock(returncode=0),
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._load_production_config",
+                return_value=(self.SAMPLE_NODES, self.SAMPLE_SSH_KEY_IDS),
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._resolve_hetzner_availability",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.Path",
+            ) as m_path,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.get_release_url",
+                return_value="https://example.com/ant-node.tar.gz",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
+                return_value=False,
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
+                return_value=[MagicMock(success=True), failed_result],
+            ),
         ):
             m_path.return_value.expanduser.return_value.exists.return_value = True
             with pytest.raises(SystemExit) as exc_info:
@@ -970,30 +989,40 @@ class TestCmdBootstrapProductionSuccessPath:
             evm_network="arbitrum-one",
         )
 
-        with patch(
-            "saorsa_deploy.cmd.bootstrap_production.subprocess.run",
-            return_value=MagicMock(returncode=0),
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production._load_production_config",
-            return_value=(self.SAMPLE_NODES, self.SAMPLE_SSH_KEY_IDS),
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production._resolve_hetzner_availability",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.Path",
-        ) as m_path, patch(
-            "saorsa_deploy.cmd.bootstrap_production.get_release_url",
-            return_value="https://example.com/ant-node.tar.gz",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
-            return_value=False,
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
-            return_value=[MagicMock(success=True) for _ in self.SAMPLE_NODES],
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
-        ), patch(
-            "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
-        ) as m_hardener:
+        with (
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.subprocess.run",
+                return_value=MagicMock(returncode=0),
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._load_production_config",
+                return_value=(self.SAMPLE_NODES, self.SAMPLE_SSH_KEY_IDS),
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production._resolve_hetzner_availability",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.Path",
+            ) as m_path,
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.get_release_url",
+                return_value="https://example.com/ant-node.tar.gz",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.check_terraform_state_exists",
+                return_value=False,
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.execute_terraform_runs",
+                return_value=[MagicMock(success=True) for _ in self.SAMPLE_NODES],
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.clear_known_hosts",
+            ),
+            patch(
+                "saorsa_deploy.cmd.bootstrap_production.subprocess.Popen",
+            ) as m_hardener,
+        ):
             m_path.return_value.expanduser.return_value.exists.return_value = True
             m_hardener.return_value.communicate.return_value = (b"", b"SSH failed")
             m_hardener.return_value.returncode = 1
@@ -1175,10 +1204,12 @@ class TestResolveHetznerAvailability:
     @patch("saorsa_deploy.cmd.bootstrap_production.subprocess.run")
     def test_multiple_hetzner_nodes(self, mock_run):
         """Resolves availability for multiple Hetzner nodes independently."""
-        dc_data = _build_dc_response({
-            "fsn1": {109: False, 114: True},
-            "ash": {23: True},
-        })
+        dc_data = _build_dc_response(
+            {
+                "fsn1": {109: False, 114: True},
+                "ash": {23: True},
+            }
+        )
         mock_run.return_value = self._mock_curl(dc_data)
 
         nodes = [
@@ -1287,13 +1318,9 @@ class TestBinaryDirectoryIsOwnedByTheServiceUser:
         ],
         ids=["archive", "bare-binary", "local-file"],
     )
-    def test_the_chown_follows_the_install_and_precedes_the_unit(
-        self, overrides, install_op
-    ):
+    def test_the_chown_follows_the_install_and_precedes_the_unit(self, overrides, install_op):
         ops = self._ops(**overrides)
-        chown_at = self._index_of_name(
-            ops, "Own the binary directory as the service user"
-        )
+        chown_at = self._index_of_name(ops, "Own the binary directory as the service user")
         assert ops[chown_at][1]["commands"] == [
             f"chown -R {SERVICE_USER}:{SERVICE_USER} {BINARY_INSTALL_DIR}"
         ]

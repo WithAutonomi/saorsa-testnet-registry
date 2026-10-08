@@ -19,8 +19,7 @@ from saorsa_deploy.config.models import Manifest
 from saorsa_deploy.orchestrator import build_deploy_steps
 
 SERVICE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "saorsa_deploy/resources/scripts/prod_downloader.py"
+    Path(__file__).resolve().parents[1] / "saorsa_deploy/resources/scripts/prod_downloader.py"
 )
 
 
@@ -77,9 +76,7 @@ class TestTheOrchestratorEmitsTheFlags:
         assert "--monitoring-provider" not in argv
 
     def test_diagnostics_true_emits_the_flag(self):
-        assert "--download-diagnostics" in _deploy_argv(
-            _manifest(download_diagnostics=True)
-        )
+        assert "--download-diagnostics" in _deploy_argv(_manifest(download_diagnostics=True))
 
     def test_diagnostics_false_emits_the_negation(self):
         argv = _deploy_argv(_manifest(download_diagnostics=False))
@@ -105,7 +102,8 @@ class TestTheCliAcceptsWhatTheOrchestratorEmits:
 
         captured = {}
         monkeypatch.setattr(
-            module, "cmd_prod_downloaders_deploy",
+            module,
+            "cmd_prod_downloaders_deploy",
             lambda args: captured.update(vars(args)),
         )
         main(argv)
@@ -130,9 +128,7 @@ class TestTheCliAcceptsWhatTheOrchestratorEmits:
         assert args["monitoring_droplet_size"] == "b3-8"
         assert args["download_diagnostics"] is True
 
-    def test_defaults_keep_the_pre_existing_digitalocean_behaviour(
-        self, monkeypatch
-    ):
+    def test_defaults_keep_the_pre_existing_digitalocean_behaviour(self, monkeypatch):
         args = self._run(monkeypatch, _deploy_argv(_manifest()))
         assert args["provider"] == "digitalocean"
         assert args["monitoring_provider"] == "digitalocean"
@@ -147,20 +143,23 @@ class TestTheCliAcceptsWhatTheOrchestratorEmits:
         from saorsa_deploy.cmd import prod_continuous_downloader as module
         from saorsa_deploy.main import main
 
-        m = Manifest.model_validate({
-            "name": "PROD-DL-CONT",
-            "kind": "prod-continuous-downloader",
-            "purpose": "test",
-            "prod_continuous_downloader": {
-                "spec": "fsn1:cpx32",
-                "binary": {"version": "0.2.7"},
-                "download_diagnostics": True,
-            },
-        })
+        m = Manifest.model_validate(
+            {
+                "name": "PROD-DL-CONT",
+                "kind": "prod-continuous-downloader",
+                "purpose": "test",
+                "prod_continuous_downloader": {
+                    "spec": "fsn1:cpx32",
+                    "binary": {"version": "0.2.7"},
+                    "download_diagnostics": True,
+                },
+            }
+        )
         argv = build_deploy_steps(m)[0].argv
         captured = {}
         monkeypatch.setattr(
-            module, "cmd_prod_continuous_downloader_deploy",
+            module,
+            "cmd_prod_continuous_downloader_deploy",
             lambda args: captured.update(vars(args)),
         )
         main(argv)
@@ -173,9 +172,7 @@ class TestClientInfraUsesTheChosenProvider:
     def _capture_spec(self, monkeypatch, args):
         from saorsa_deploy.cmd import prod_downloaders
 
-        monkeypatch.setattr(
-            prod_downloaders, "_client_stack_exists", lambda name: False
-        )
+        monkeypatch.setattr(prod_downloaders, "_client_stack_exists", lambda name: False)
         captured = {}
         monkeypatch.setattr(
             "saorsa_deploy.cmd.infra_clients.cmd_infra_clients",
@@ -190,8 +187,11 @@ class TestClientInfraUsesTheChosenProvider:
         spec = self._capture_spec(
             monkeypatch,
             SimpleNamespace(
-                name="X", spec="fsn1:cpx32", provider="hetzner",
-                bootstrap_cache=True, network=None,
+                name="X",
+                spec="fsn1:cpx32",
+                provider="hetzner",
+                bootstrap_cache=True,
+                network=None,
             ),
         )
         assert spec.startswith("hetzner:fsn1:cpx32:")
@@ -200,8 +200,11 @@ class TestClientInfraUsesTheChosenProvider:
         spec = self._capture_spec(
             monkeypatch,
             SimpleNamespace(
-                name="X", spec="lon1:s-2vcpu-4gb", provider=None,
-                bootstrap_cache=True, network=None,
+                name="X",
+                spec="lon1:s-2vcpu-4gb",
+                provider=None,
+                bootstrap_cache=True,
+                network=None,
             ),
         )
         assert spec.startswith("digitalocean:lon1:s-2vcpu-4gb:")
@@ -221,19 +224,21 @@ class TestTheProvisionerRecordsTheToggle:
                 import saorsa_deploy.provisioning.prod_downloader as mod
 
                 real_add_op = mod.add_op
-                mod.add_op = lambda s, op, name, commands: captured.update(
-                    {"script": commands[0]}
-                )
+                mod.add_op = lambda s, op, name, commands: captured.update({"script": commands[0]})
                 try:
                     super()._add_env_and_addresses_op(state)
                 finally:
                     mod.add_op = real_add_op
 
         provisioner = _Recorder(
-            downloaders=[{
-                "ip": "1.2.3.4", "region": "fsn1",
-                "addresses_file_content": "abc\n", "bootstrap_cache": True,
-            }],
+            downloaders=[
+                {
+                    "ip": "1.2.3.4",
+                    "region": "fsn1",
+                    "addresses_file_content": "abc\n",
+                    "bootstrap_cache": True,
+                }
+            ],
             bootstrap_peers=["/ip4/1.1.1.1/udp/1/quic-v1"],
             sleep_interval_secs=0,
             one_shot=True,
@@ -243,9 +248,7 @@ class TestTheProvisionerRecordsTheToggle:
         return captured["script"]
 
     def test_enabled_writes_true(self):
-        assert "DOWNLOAD_DIAGNOSTICS=true" in self._env_file(
-            download_diagnostics=True
-        )
+        assert "DOWNLOAD_DIAGNOSTICS=true" in self._env_file(download_diagnostics=True)
 
     def test_default_writes_false(self):
         assert "DOWNLOAD_DIAGNOSTICS=false" in self._env_file()
@@ -290,11 +293,21 @@ def test_argparse_rejects_an_unknown_downloader_provider():
     from saorsa_deploy.main import main
 
     with pytest.raises(SystemExit):
-        main([
-            "prod", "downloaders", "deploy", "--name", "X",
-            "--purpose", "p", "--spec", "fsn1:cpx32",
-            "--provider", "contabo",
-        ])
+        main(
+            [
+                "prod",
+                "downloaders",
+                "deploy",
+                "--name",
+                "X",
+                "--purpose",
+                "p",
+                "--spec",
+                "fsn1:cpx32",
+                "--provider",
+                "contabo",
+            ]
+        )
 
 
 def test_argparse_namespace_default_is_stable():

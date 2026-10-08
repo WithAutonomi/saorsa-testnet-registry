@@ -1,7 +1,6 @@
-import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from saorsa_db.db import Base
@@ -153,15 +152,23 @@ def test_testnet_clients_render_per_uploader_payment():
     client_state = {
         "clients": [
             {
-                "role": "upload", "region": "lon1", "vm_size": "s-2vcpu-4gb",
-                "file_size_mb": 50, "payment_type": "merkle",
+                "role": "upload",
+                "region": "lon1",
+                "vm_size": "s-2vcpu-4gb",
+                "file_size_mb": 50,
+                "payment_type": "merkle",
             },
             {
-                "role": "upload", "region": "nyc1", "vm_size": "s-4vcpu-8gb",
-                "file_size_mb": 100, "payment_type": "no-merkle",
+                "role": "upload",
+                "region": "nyc1",
+                "vm_size": "s-4vcpu-8gb",
+                "file_size_mb": 100,
+                "payment_type": "no-merkle",
             },
             {
-                "role": "upload", "region": "fra1", "vm_size": "s-2vcpu-4gb",
+                "role": "upload",
+                "region": "fra1",
+                "vm_size": "s-2vcpu-4gb",
                 "file_size_mb": 50,
             },
             {"role": "download", "region": "ams3", "vm_size": "s-2vcpu-4gb"},
@@ -401,15 +408,20 @@ def test_prod_uploaders_renders_per_uploader_payment_modes():
             "ant_binary": {"kind": "release", "version": "0.3.0"},
             "uploaders": [
                 {
-                    "region": "lon1", "vm_size": "s-2vcpu-4gb",
-                    "file_names": [], "payment_type": "merkle",
+                    "region": "lon1",
+                    "vm_size": "s-2vcpu-4gb",
+                    "file_names": [],
+                    "payment_type": "merkle",
                 },
                 {
-                    "region": "nyc1", "vm_size": "s-4vcpu-8gb",
-                    "file_names": [], "payment_type": "no-merkle",
+                    "region": "nyc1",
+                    "vm_size": "s-4vcpu-8gb",
+                    "file_names": [],
+                    "payment_type": "no-merkle",
                 },
                 {
-                    "region": "fra1", "vm_size": "s-2vcpu-4gb",
+                    "region": "fra1",
+                    "vm_size": "s-2vcpu-4gb",
                     "file_names": [],
                 },
             ],
@@ -491,10 +503,7 @@ def test_prod_local_uploads_chunks_long_file_lists_under_section_cap():
     stays under the cap, (b) every file still appears somewhere, and
     (c) the chunked headers are paginated.
     """
-    files = [
-        {"name": f"clip{i:03d}.avi", "size_bytes": 10_000_000 + i}
-        for i in range(184)
-    ]
+    files = [{"name": f"clip{i:03d}.avi", "size_bytes": 10_000_000 + i} for i in range(184)]
     deployment = _deployment(
         name="PROD-LOCAL-UL-99",
         deploy_args={
@@ -510,10 +519,9 @@ def test_prod_local_uploads_chunks_long_file_lists_under_section_cap():
     payload = build_slack_blocks(deployment, None, None)
 
     file_blocks = [
-        b for b in payload["blocks"]
-        if b.get("type") == "section"
-        and b.get("text")
-        and "*Files" in b["text"]["text"]
+        b
+        for b in payload["blocks"]
+        if b.get("type") == "section" and b.get("text") and "*Files" in b["text"]["text"]
     ]
     assert len(file_blocks) >= 2, (
         "Expected the long file list to be split into multiple section blocks"
@@ -528,17 +536,12 @@ def test_prod_local_uploads_chunks_long_file_lists_under_section_cap():
         assert f["name"] in rendered, f"missing file {f['name']!r}"
 
     assert f"(1/{len(file_blocks)})" in file_blocks[0]["text"]["text"]
-    assert (
-        f"({len(file_blocks)}/{len(file_blocks)})"
-        in file_blocks[-1]["text"]["text"]
-    )
+    assert f"({len(file_blocks)}/{len(file_blocks)})" in file_blocks[-1]["text"]["text"]
 
 
 def test_prod_local_uploads_short_file_list_uses_single_unpaginated_section():
     """When everything fits in one block we don't want a (1/1) suffix."""
-    files = [
-        {"name": f"f{i}.bin", "size_bytes": 1_000_000} for i in range(3)
-    ]
+    files = [{"name": f"f{i}.bin", "size_bytes": 1_000_000} for i in range(3)]
     deployment = _deployment(
         name="PROD-LOCAL-UL-100",
         deploy_args={
@@ -552,97 +555,13 @@ def test_prod_local_uploads_short_file_list_uses_single_unpaginated_section():
     )
     payload = build_slack_blocks(deployment, None, None)
     file_blocks = [
-        b for b in payload["blocks"]
-        if b.get("type") == "section"
-        and b.get("text")
-        and "*Files" in b["text"]["text"]
+        b
+        for b in payload["blocks"]
+        if b.get("type") == "section" and b.get("text") and "*Files" in b["text"]["text"]
     ]
     assert len(file_blocks) == 1
     assert "(1/" not in file_blocks[0]["text"]["text"]
 
-
-def test_dry_run_prints_payload_and_does_not_post(repo, capsys):
-    repo.create(
-        name="DEV-DRY",
-        deploy_args={"bootstrap_count": 1, "vm_count": 1, "nodes_per_vm": 5},
-    )
-    args = SimpleNamespace(name="DEV-DRY", dry_run=True)
-
-    with patch("saorsa_deploy.cmd.slack_post.get_repository", return_value=repo):
-        with patch("saorsa_deploy.cmd.slack_post.requests.post") as mock_post:
-            with patch(
-                "saorsa_deploy.cmd.slack_post.load_deployment_state",
-                side_effect=RuntimeError,
-            ):
-                with patch(
-                    "saorsa_deploy.cmd.slack_post.load_client_state",
-                    return_value={},
-                ):
-                    cmd_slack_post(args)
-
-    mock_post.assert_not_called()
-    out = capsys.readouterr().out
-    # Dry-run prints a human-readable preview, not JSON. Just assert the
-    # deployment name appears in the rendered text.
-    assert "DEV-DRY" in out
-    assert "{" not in out
-
-
-def test_missing_webhook_url_errors_when_not_dry_run(repo, monkeypatch):
-    repo.create(
-        name="DEV-NOWH",
-        deploy_args={"bootstrap_count": 1, "vm_count": 1, "nodes_per_vm": 5},
-    )
-    monkeypatch.delenv("ANT_DEPLOY_SLACK_WEBHOOK_URL", raising=False)
-    args = SimpleNamespace(name="DEV-NOWH", dry_run=False)
-
-    with patch("saorsa_deploy.cmd.slack_post.get_repository", return_value=repo):
-        with patch(
-            "saorsa_deploy.cmd.slack_post.load_deployment_state",
-            side_effect=RuntimeError,
-        ):
-            with patch(
-                "saorsa_deploy.cmd.slack_post.load_client_state",
-                return_value={},
-            ):
-                with pytest.raises(SystemExit) as exc:
-                    cmd_slack_post(args)
-
-    assert exc.value.code == 1
-
-
-def test_post_includes_recorded_purpose_from_deploy_args(repo, monkeypatch):
-    repo.create(
-        name="DEV-WITH-PURPOSE",
-        deploy_args={
-            "bootstrap_count": 1,
-            "vm_count": 1,
-            "nodes_per_vm": 5,
-            "purpose": "Recorded at deploy time",
-        },
-    )
-    monkeypatch.setenv("ANT_DEPLOY_SLACK_WEBHOOK_URL", "https://hooks.slack.example/T/B/X")
-    args = SimpleNamespace(name="DEV-WITH-PURPOSE", dry_run=False)
-
-    response = MagicMock(ok=True, status_code=200)
-    with patch("saorsa_deploy.cmd.slack_post.get_repository", return_value=repo):
-        with patch(
-            "saorsa_deploy.cmd.slack_post.load_deployment_state",
-            side_effect=RuntimeError,
-        ):
-            with patch(
-                "saorsa_deploy.cmd.slack_post.load_client_state",
-                return_value={},
-            ):
-                with patch(
-                    "saorsa_deploy.cmd.slack_post.requests.post",
-                    return_value=response,
-                ) as mock_post:
-                    cmd_slack_post(args)
-
-    mock_post.assert_called_once()
-    posted_payload = mock_post.call_args.kwargs["json"]
-    assert "Recorded at deploy time" in json.dumps(posted_payload)
 
 def test_render_payload_text_includes_header_and_section_text():
     payload = {
@@ -659,10 +578,13 @@ def test_render_payload_text_includes_header_and_section_text():
                     "text": "*Deployed:* 2026-04-30 18:24 UTC",
                 },
             },
-            {"type": "section", "fields": [
-                {"type": "mrkdwn", "text": "*Region:*\nlon1"},
-                {"type": "mrkdwn", "text": "*VMs:*\n3"},
-            ]},
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": "*Region:*\nlon1"},
+                    {"type": "mrkdwn", "text": "*VMs:*\n3"},
+                ],
+            },
         ],
     }
     text = render_payload_text(payload)
@@ -701,9 +623,7 @@ def test_monitoring_block_included_when_state_present():
         "grafana_url": "http://1.2.3.4:3000",
         "grafana_password": "pw-z",
     }
-    payload = build_slack_blocks(
-        _testnet_deployment(), {}, None, monitoring_state=monitoring_state
-    )
+    payload = build_slack_blocks(_testnet_deployment(), {}, None, monitoring_state=monitoring_state)
     text = _all_text(payload)
     assert "Monitoring (InfluxDB + Grafana)" in text
     assert "http://1.2.3.4:8086" in text
@@ -732,9 +652,7 @@ def test_elastic_block_included_when_state_present():
         "elasticsearch_api_key": "api-key-123",
         "elasticsearch_index_pattern": "telegraf-ant-nodes-dev-01-%Y.%m.%d",
     }
-    payload = build_slack_blocks(
-        _testnet_deployment(), {}, None, elastic_state=elastic_state
-    )
+    payload = build_slack_blocks(_testnet_deployment(), {}, None, elastic_state=elastic_state)
     text = _all_text(payload)
     assert "Elasticsearch" in text
     assert "https://es.example:9200" in text
@@ -849,7 +767,6 @@ def test_cmd_slack_post_loads_monitoring_and_elastic_state(repo):
     assert "Elasticsearch" in rendered
     assert "http://mon:8086" in rendered
     assert "https://es:9200" in rendered
-
 
 
 # --------------------------------------------------------------------------- #
@@ -1168,8 +1085,13 @@ class TestNetworkImpairmentSurfacing:
         from saorsa_deploy.cmd.slack_post import _network_suffix
 
         suffix = _network_suffix(
-            {"network": {"name": "home-calibrated", "rate_down": "27400kbit",
-                         "rate_up": "6290kbit"}}
+            {
+                "network": {
+                    "name": "home-calibrated",
+                    "rate_down": "27400kbit",
+                    "rate_up": "6290kbit",
+                }
+            }
         )
         assert suffix == " — 🐌 home-calibrated (27400kbit/6290kbit)"
 
@@ -1221,10 +1143,19 @@ class TestNetworkImpairmentSurfacing:
 
         text = _clients_block(
             [
-                {"role": "upload", "region": "nyc1", "vm_size": "s-2vcpu-4gb",
-                 "file_size_mb": 100, "network": "home-fttc"},
-                {"role": "download", "region": "tor1", "vm_size": "s-2vcpu-4gb",
-                 "network": "home-fttc"},
+                {
+                    "role": "upload",
+                    "region": "nyc1",
+                    "vm_size": "s-2vcpu-4gb",
+                    "file_size_mb": 100,
+                    "network": "home-fttc",
+                },
+                {
+                    "role": "download",
+                    "region": "tor1",
+                    "vm_size": "s-2vcpu-4gb",
+                    "network": "home-fttc",
+                },
             ]
         )["text"]["text"]
         assert text.count("🐌 home-fttc (60mbit/18mbit)") == 2

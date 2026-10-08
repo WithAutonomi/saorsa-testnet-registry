@@ -16,33 +16,17 @@ def _args(**overrides):
 @pytest.fixture
 def patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.record_event"
-        ) as p_record_event,
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.record_status"
-        ) as p_record_status,
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.load_deployment_state"
-        ) as p_load_state,
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.update_deployment_state"
-        ) as p_update_state,
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.delete_deployment_state"
-        ) as p_delete_state,
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.destroy_bootstrap_vms"
-        ) as p_destroy_boot,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.record_event") as p_record_event,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.record_status") as p_record_status,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.load_deployment_state") as p_load_state,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.update_deployment_state") as p_update_state,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.delete_deployment_state") as p_delete_state,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.destroy_bootstrap_vms") as p_destroy_boot,
         patch(
             "saorsa_deploy.cmd.destroy_bootstraps.list_stale_bootstrap_state_keys"
         ) as p_list_stale,
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.purge_stale_bootstrap_state"
-        ) as p_purge_stale,
-        patch(
-            "saorsa_deploy.cmd.destroy_bootstraps.list_extensions_of"
-        ) as p_list_exts,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.purge_stale_bootstrap_state") as p_purge_stale,
+        patch("saorsa_deploy.cmd.destroy_bootstraps.list_extensions_of") as p_list_exts,
     ):
         p_list_stale.return_value = []
         p_list_exts.return_value = []

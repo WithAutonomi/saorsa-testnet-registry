@@ -7,6 +7,7 @@ SSH to its VM, and invoke
 :class:`~saorsa_deploy.provisioning.prod_canary_reporter.ProdCanaryReporterProvisioner`
 or :class:`~.ProdCanaryReporterRemover`.
 """
+
 from __future__ import annotations
 
 import os
@@ -35,9 +36,7 @@ def _load_monitoring(name: str, console: Console) -> dict:
 
 
 def _resolve_webhook(args, console: Console) -> str:
-    candidate = getattr(args, "slack_webhook_url", None) or os.environ.get(
-        "SLACK_WEBHOOK_URL", ""
-    )
+    candidate = getattr(args, "slack_webhook_url", None) or os.environ.get("SLACK_WEBHOOK_URL", "")
     candidate = (candidate or "").strip()
     if not candidate:
         console.print(
@@ -50,9 +49,7 @@ def _resolve_webhook(args, console: Console) -> str:
 
 def cmd_prod_canary_provision_reporter(args):
     console = Console()
-    console.print(
-        f"[bold]prod canary provision-reporter: {args.name}[/bold]"
-    )
+    console.print(f"[bold]prod canary provision-reporter: {args.name}[/bold]")
 
     mon_state = _load_monitoring(args.name, console)
     host_ip = mon_state.get("vm_ip", "")
@@ -62,9 +59,7 @@ def cmd_prod_canary_provision_reporter(args):
     influx_bucket = mon_state.get("influxdb_bucket", "testnet-metrics") or "testnet-metrics"
 
     if not host_ip:
-        console.print(
-            "[bold red]Error:[/bold red] monitoring state has no vm_ip."
-        )
+        console.print("[bold red]Error:[/bold red] monitoring state has no vm_ip.")
         sys.exit(1)
     if not influx_url or not influx_token:
         console.print(
@@ -82,14 +77,9 @@ def cmd_prod_canary_provision_reporter(args):
     slack_webhook = _resolve_webhook(args, console)
 
     clear_known_hosts([host_ip], console)
-    not_ready = wait_for_ssh(
-        [host_ip], args.ssh_key_path, console=console
-    )
+    not_ready = wait_for_ssh([host_ip], args.ssh_key_path, console=console)
     if not_ready:
-        console.print(
-            f"[bold red]Error:[/bold red] SSH never came up on monitoring "
-            f"VM {host_ip}."
-        )
+        console.print(f"[bold red]Error:[/bold red] SSH never came up on monitoring VM {host_ip}.")
         sys.exit(1)
 
     console.print(
@@ -119,9 +109,7 @@ def cmd_prod_canary_provision_reporter(args):
         console.print(f"[bold red]Reporter provisioning failed:[/bold red] {e}")
         sys.exit(1)
 
-    console.print(
-        f"[bold green]Reporter for '{args.name}' is installed.[/bold green]"
-    )
+    console.print(f"[bold green]Reporter for '{args.name}' is installed.[/bold green]")
     if args.run_now:
         console.print(
             "[dim]An immediate run was triggered — check the Slack channel "
@@ -131,24 +119,17 @@ def cmd_prod_canary_provision_reporter(args):
 
 def cmd_prod_canary_unprovision_reporter(args):
     console = Console()
-    console.print(
-        f"[bold]prod canary unprovision-reporter: {args.name}[/bold]"
-    )
+    console.print(f"[bold]prod canary unprovision-reporter: {args.name}[/bold]")
     mon_state = _load_monitoring(args.name, console)
     host_ip = mon_state.get("vm_ip", "")
     if not host_ip:
-        console.print(
-            "[bold red]Error:[/bold red] monitoring state has no vm_ip."
-        )
+        console.print("[bold red]Error:[/bold red] monitoring state has no vm_ip.")
         sys.exit(1)
 
     clear_known_hosts([host_ip], console)
     not_ready = wait_for_ssh([host_ip], args.ssh_key_path, console=console)
     if not_ready:
-        console.print(
-            f"[bold red]Error:[/bold red] SSH never came up on monitoring "
-            f"VM {host_ip}."
-        )
+        console.print(f"[bold red]Error:[/bold red] SSH never came up on monitoring VM {host_ip}.")
         sys.exit(1)
 
     remover = ProdCanaryReporterRemover(
@@ -162,6 +143,4 @@ def cmd_prod_canary_unprovision_reporter(args):
     except Exception as e:
         console.print(f"[bold red]Reporter removal failed:[/bold red] {e}")
         sys.exit(1)
-    console.print(
-        f"[bold green]Reporter for '{args.name}' removed.[/bold green]"
-    )
+    console.print(f"[bold green]Reporter for '{args.name}' removed.[/bold green]")

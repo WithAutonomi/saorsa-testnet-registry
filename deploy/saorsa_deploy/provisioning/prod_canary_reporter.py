@@ -14,6 +14,7 @@ Sequence:
 6. Optionally trigger one immediate run so the operator gets a Slack
    message confirming the wiring works.
 """
+
 from __future__ import annotations
 
 from pyinfra.api import Config, Inventory, State
@@ -113,9 +114,7 @@ class ProdCanaryReporterProvisioner:
         if not self.influx_url or not self.influx_token:
             raise RuntimeError("Influx URL + token are required")
 
-        hosts_data = [
-            (self.host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})
-        ]
+        hosts_data = [(self.host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})]
         inventory = Inventory((hosts_data, {}))
         state = State(inventory=inventory, config=Config())
 
@@ -125,9 +124,7 @@ class ProdCanaryReporterProvisioner:
             progress._live.start()
 
         try:
-            self.console.print(
-                f"Connecting to monitoring host {self.host_ip} as root..."
-            )
+            self.console.print(f"Connecting to monitoring host {self.host_ip} as root...")
             connect_all(state)
 
             add_op(
@@ -153,22 +150,23 @@ class ProdCanaryReporterProvisioner:
                 ],
             )
 
-            env_lines = _format_env_lines({
-                "DEPLOYMENT_NAME": self.deployment_name,
-                "SLACK_WEBHOOK_URL": self.slack_webhook_url,
-                "INFLUX_URL": self.influx_url,
-                "INFLUX_TOKEN": self.influx_token,
-                "INFLUX_ORG": self.influx_org,
-                "INFLUX_BUCKET": self.influx_bucket,
-                "STATE_FILE": REPORTER_STATE_FILE,
-            })
+            env_lines = _format_env_lines(
+                {
+                    "DEPLOYMENT_NAME": self.deployment_name,
+                    "SLACK_WEBHOOK_URL": self.slack_webhook_url,
+                    "INFLUX_URL": self.influx_url,
+                    "INFLUX_TOKEN": self.influx_token,
+                    "INFLUX_ORG": self.influx_org,
+                    "INFLUX_BUCKET": self.influx_bucket,
+                    "STATE_FILE": REPORTER_STATE_FILE,
+                }
+            )
             add_op(
                 state,
                 server.shell,
                 name="Write reporter env file",
                 commands=[
-                    f"cat > {REPORTER_ENV_PATH} << 'ENV_EOF'\n"
-                    f"{env_lines}ENV_EOF",
+                    f"cat > {REPORTER_ENV_PATH} << 'ENV_EOF'\n{env_lines}ENV_EOF",
                     f"chmod 0600 {REPORTER_ENV_PATH}",
                 ],
             )
@@ -178,8 +176,7 @@ class ProdCanaryReporterProvisioner:
                 server.shell,
                 name=f"Write {SERVICE_NAME}.service",
                 commands=[
-                    f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n"
-                    f"{_build_service_unit()}UNIT_EOF",
+                    f"cat > {SERVICE_PATH} << 'UNIT_EOF'\n{_build_service_unit()}UNIT_EOF",
                 ],
             )
             add_op(
@@ -222,9 +219,7 @@ class ProdCanaryReporterProvisioner:
                 progress._live.stop()
 
         if state.failed_hosts:
-            raise RuntimeError(
-                f"{len(state.failed_hosts)} host(s) failed reporter provisioning"
-            )
+            raise RuntimeError(f"{len(state.failed_hosts)} host(s) failed reporter provisioning")
 
 
 class ProdCanaryReporterRemover:
@@ -252,9 +247,7 @@ class ProdCanaryReporterRemover:
         if not self.host_ip:
             raise RuntimeError("Monitoring VM IP missing")
 
-        hosts_data = [
-            (self.host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})
-        ]
+        hosts_data = [(self.host_ip, {"ssh_user": "root", "ssh_key": self.ssh_key_path})]
         state = State(inventory=Inventory((hosts_data, {})), config=Config())
 
         progress = create_progress_handler(self.console)

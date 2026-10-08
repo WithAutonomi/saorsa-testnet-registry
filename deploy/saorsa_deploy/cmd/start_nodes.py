@@ -79,9 +79,7 @@ def cmd_start_nodes(args):
         f"echo 'ANT_NODES:STARTED'"
     )
 
-    hosts_data = [
-        (ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": "root", "ssh_key": args.ssh_key_path}) for ip in host_ips]
     inventory = Inventory((hosts_data, {}))
     pyinfra_state = State(inventory=inventory, config=Config())
     connect_all(pyinfra_state)

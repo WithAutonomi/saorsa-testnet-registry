@@ -45,6 +45,7 @@ Optional env:
     PROBE_TIMEOUT_SECS   Per-probe ant timeout in seconds (default 300).
     CYCLE_INTERVAL_SECS  Override the hourly cadence (default 3600).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -125,6 +126,7 @@ def _shard_index(canary_id: str) -> int:
     """
     try:
         import blake3  # type: ignore
+
         digest = blake3.blake3(canary_id.encode("utf-8")).digest()
     except ImportError:
         digest = hashlib.blake2b(canary_id.encode("utf-8"), digest_size=32).digest()
@@ -182,9 +184,7 @@ def _state_row(conn: sqlite3.Connection, canary_id: str) -> tuple | None:
     return cur.fetchone()
 
 
-def _insert_state(
-    conn: sqlite3.Connection, canary_id: str, top_address: str
-) -> None:
+def _insert_state(conn: sqlite3.Connection, canary_id: str, top_address: str) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO canary_state "
         "(canary_id, top_address, status, added_at) VALUES (?, ?, ?, ?)",
@@ -198,8 +198,7 @@ def _probeable_canaries(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     currently-unavailable ones. We deliberately keep probing unavailable
     canaries so recovery is observed and the unavailability window measured."""
     cur = conn.execute(
-        "SELECT canary_id, top_address FROM canary_state "
-        "WHERE status IN (?, ?) ORDER BY added_at",
+        "SELECT canary_id, top_address FROM canary_state WHERE status IN (?, ?) ORDER BY added_at",
         (STATUS_ALIVE, STATUS_UNAVAILABLE),
     )
     return [(row[0], row[1]) for row in cur.fetchall()]
@@ -262,8 +261,7 @@ def _apply_two_strike(
             return None
         if prev_failed_chunk and prev_failed_chunk == missing_chunk:
             conn.execute(
-                "UPDATE canary_state SET status = ?, unavailable_since = ? "
-                "WHERE canary_id = ?",
+                "UPDATE canary_state SET status = ?, unavailable_since = ? WHERE canary_id = ?",
                 (STATUS_UNAVAILABLE, prev_failed_at or probed_at_iso, canary_id),
             )
             conn.commit()
@@ -284,12 +282,7 @@ def _apply_two_strike(
 
 
 def _escape_tag(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace(",", "\\,")
-        .replace("=", "\\=")
-        .replace(" ", "\\ ")
-    )
+    return value.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
 
 
 def _escape_field_string(value: str) -> str:
@@ -415,12 +408,12 @@ def _parse_probe_outcome(
     for line in stderr_text.splitlines():
         idx = line.find(_FAILED_DATAMAP_NEEDLE)
         if idx >= 0:
-            missing = line[idx + len(_FAILED_DATAMAP_NEEDLE):].strip()
+            missing = line[idx + len(_FAILED_DATAMAP_NEEDLE) :].strip()
             role = "data_map"
             break
         idx = line.find(_FAILED_DATA_NEEDLE)
         if idx >= 0:
-            tail = line[idx + len(_FAILED_DATA_NEEDLE):]
+            tail = line[idx + len(_FAILED_DATA_NEEDLE) :]
             end = tail.find(_FAILED_DATA_END)
             missing = tail[:end].strip() if end >= 0 else tail.strip()
             role = "data"
@@ -434,7 +427,7 @@ def _parse_probe_outcome(
         idx = line.find(_PEER_SUMMARY_NEEDLE)
         if idx < 0:
             continue
-        tail = line[idx + len(_PEER_SUMMARY_NEEDLE):]
+        tail = line[idx + len(_PEER_SUMMARY_NEEDLE) :]
         for token in tail.split():
             if "=" not in token:
                 continue
@@ -488,10 +481,7 @@ def _build_probe_line(
     duration_ms: int,
     timestamp_ns: int,
 ) -> str:
-    tag_set = (
-        f"deployment_name={_escape_tag(deployment_name)},"
-        f"host={_escape_tag(host)}"
-    )
+    tag_set = f"deployment_name={_escape_tag(deployment_name)},host={_escape_tag(host)}"
     field_set = (
         f'canary_id="{_escape_field_string(canary_id)}",'
         f'status="{_escape_field_string(status)}",'
@@ -526,7 +516,11 @@ async def _probe_one(
             *bootstrap_args,
             "--json",
             *verbosity,
-            "file", "download", top_address, "-o", str(target),
+            "file",
+            "download",
+            top_address,
+            "-o",
+            str(target),
         ]
         started_ns = time.time_ns()
         proc: asyncio.subprocess.Process | None = None
@@ -538,9 +532,7 @@ async def _probe_one(
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                _stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout_secs
-                )
+                _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
                 exit_code = proc.returncode if proc.returncode is not None else -1
                 stderr_text = stderr.decode("utf-8", errors="replace")
                 stdout_text = _stdout.decode("utf-8", errors="replace")

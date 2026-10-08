@@ -5,6 +5,7 @@ persists the returned (channel, ts) on the deployment so a later
 record-results can thread onto it. Without the token it falls back to the
 incoming webhook and records nothing.
 """
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -60,9 +61,7 @@ def test_web_api_path_persists_channel_and_ts(repo, monkeypatch):
     monkeypatch.setenv("ANT_DEPLOY_SLACK_CHANNEL", "C999")
 
     ref = SlackMessageRef(channel="C999", ts="1700000000.000100")
-    with patch(
-        "saorsa_deploy.cmd.slack_post.post_message", return_value=ref
-    ) as m:
+    with patch("saorsa_deploy.cmd.slack_post.post_message", return_value=ref) as m:
         _run(repo, _args())
 
     m.assert_called_once()
@@ -80,9 +79,7 @@ def test_channel_flag_overrides_env(repo, monkeypatch):
     monkeypatch.setenv("ANT_DEPLOY_SLACK_CHANNEL", "C-env")
 
     ref = SlackMessageRef(channel="C-flag", ts="1.1")
-    with patch(
-        "saorsa_deploy.cmd.slack_post.post_message", return_value=ref
-    ) as m:
+    with patch("saorsa_deploy.cmd.slack_post.post_message", return_value=ref) as m:
         _run(repo, _args(channel="C-flag"))
 
     assert m.call_args.args[1] == "C-flag"
@@ -119,9 +116,10 @@ def test_webhook_path_used_when_no_bot_token(repo, monkeypatch):
     monkeypatch.setenv("ANT_DEPLOY_SLACK_WEBHOOK_URL", "https://hooks.example/X")
 
     response = MagicMock(ok=True, status_code=200)
-    with patch(
-        "saorsa_deploy.cmd.slack_post.requests.post", return_value=response
-    ) as m, patch("saorsa_deploy.cmd.slack_post.post_message") as web:
+    with (
+        patch("saorsa_deploy.cmd.slack_post.requests.post", return_value=response) as m,
+        patch("saorsa_deploy.cmd.slack_post.post_message") as web,
+    ):
         _run(repo, _args())
 
     m.assert_called_once()  # webhook POST

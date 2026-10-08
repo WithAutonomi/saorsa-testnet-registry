@@ -17,6 +17,7 @@ reused every train, and a name lookup would silently resolve to whichever run
 happened to be most recent -- the same failure mode that once made
 `record-analysis` a silent no-op.
 """
+
 import json
 import sys
 
@@ -69,8 +70,7 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
     deployment = repo.get(deployment_id)
     if deployment is None:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment with id {deployment_id} "
-            "in the registry."
+            f"[bold red]Error:[/bold red] No deployment with id {deployment_id} in the registry."
         )
         sys.exit(1)
 
@@ -94,9 +94,7 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
     # the derived row is what the operator explicitly labelled, and for a
     # full-run row the observed metric span is widened by the deliberate +-3h
     # node clock skew, so it is not a duration.
-    window_start = min(
-        (r.window_start for r in derived_rows), default=None
-    )
+    window_start = min((r.window_start for r in derived_rows), default=None)
     window_end = max((r.window_end for r in derived_rows), default=None)
 
     host_metrics = []
@@ -156,15 +154,11 @@ def _load_run(repo, deployment_id: int, window_label: str, console: Console):
     # the one place that knows how to read a pointer row, and both this and
     # `print-pointers` go through it so a gate and the table an operator reads
     # cannot disagree about a rate.
-    pointers = normalise_pointer_records(
-        repo.list_pointer_records_for_deployment(deployment_id)
-    )
+    pointers = normalise_pointer_records(repo.list_pointer_records_for_deployment(deployment_id))
     if window_label != WINDOW_FULL_RUN and window_start and window_end:
         uploads = filter_ops_to_window(uploads, window_start, window_end)
         downloads = filter_ops_to_window(downloads, window_start, window_end)
-        pointers = filter_pointer_records_to_window(
-            pointers, window_start, window_end
-        )
+        pointers = filter_pointer_records_to_window(pointers, window_start, window_end)
 
     return RunMetrics(
         deployment_id=deployment.id,
@@ -205,9 +199,7 @@ def _collect_history(
     for gate, metric in wanted.items():
         values = []
         for run_id in history_ids:
-            rows = repo.list_derived_metrics_for_deployment(
-                run_id, window_label=window_label
-            )
+            rows = repo.list_derived_metrics_for_deployment(run_id, window_label=window_label)
             for row in rows:
                 if row.metric == metric and row.value is not None:
                     values.append(float(row.value))
@@ -215,9 +207,7 @@ def _collect_history(
             history[gate] = values
 
     missing = [
-        gate
-        for gate in wanted
-        if len(history.get(gate, [])) < config.noise_rule.min_history_runs
+        gate for gate in wanted if len(history.get(gate, [])) < config.noise_rule.min_history_runs
     ]
     if missing:
         console.print(
@@ -264,9 +254,7 @@ def cmd_compare_runs(args) -> None:
                 "list of deployment ids."
             )
             sys.exit(1)
-        if args.id in history_ids or (
-            not new_baseline and args.baseline_id in history_ids
-        ):
+        if args.id in history_ids or (not new_baseline and args.baseline_id in history_ids):
             console.print(
                 "[bold red]Error:[/bold red] --history must not include the "
                 "candidate or the baseline. Including either makes the variance "
@@ -366,8 +354,7 @@ def cmd_compare_runs(args) -> None:
             report_markdown=report,
         )
         console.print(
-            f"[green]Stored verdict against deployment "
-            f"{candidate.deployment_id}.[/green]"
+            f"[green]Stored verdict against deployment {candidate.deployment_id}.[/green]"
         )
 
     # A hard-gate failure blocks the ship with no override, so it is worth a

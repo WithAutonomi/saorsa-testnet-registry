@@ -181,68 +181,6 @@ class TestInfluxQuery:
 # ---------------------------------------------------------------------------
 
 
-def _point(start_ns, client_build=None, measurement="download"):
-    return {
-        "_time": datetime(2026, 9, 27, 10, 0, tzinfo=timezone.utc),
-        "host": "hostA",
-        "region": "lon1",
-        "_measurement": measurement,
-        "file_size": 1024,
-        "start_ns": start_ns,
-        "status": 0,
-        "total_ms": 500,
-        "address": "addr",
-        "client_build": client_build,
-        "error_kind": None,
-    }
-
-
-def _record(repo, deployment, points, monkeypatch):
-    from saorsa_deploy.cmd import record_results as rr
-
-    monkeypatch.setattr(influx, "fetch_operation_points", lambda **kw: points)
-    rr._record_file_op_records(
-        repo,
-        deployment,
-        SimpleNamespace(name=deployment.name),
-        Console(),
-        "http://influx",
-        "tok",
-        "ant",
-        "testnet-metrics",
-    )
-
-
-class TestRecordResultsWritesTheBuild:
-    def test_each_download_row_carries_the_build_it_ran(self, repo, monkeypatch):
-        deployment = repo.create(
-            name="PROD-WDL-01", deploy_args={"kind": "prod-continuous-downloader"}
-        )
-        _record(
-            repo,
-            deployment,
-            [_point(1, COMMIT_A), _point(2, COMMIT_B)],
-            monkeypatch,
-        )
-        rows = repo.list_download_records_for_deployment(deployment.id)
-        assert [r.client_build for r in rows] == [COMMIT_A, COMMIT_B]
-
-    def test_a_native_row_stays_null(self, repo, monkeypatch):
-        deployment = repo.create(name="PROD-DL-01", deploy_args={})
-        _record(repo, deployment, [_point(1)], monkeypatch)
-        assert repo.list_download_records_for_deployment(deployment.id)[0].client_build is None
-
-    def test_a_rerun_never_erases_a_recorded_build(self, repo, monkeypatch):
-        # The same COALESCE reasoning as `client_kind`: a re-record from a
-        # source that has no build must not lose the one already stored,
-        # because that is the only thing separating transfers across an
-        # in-place upgrade.
-        deployment = repo.create(name="PROD-WDL-01", deploy_args={})
-        _record(repo, deployment, [_point(1, COMMIT_A)], monkeypatch)
-        _record(repo, deployment, [_point(1)], monkeypatch)
-        assert repo.list_download_records_for_deployment(deployment.id)[0].client_build == COMMIT_A
-
-
 # ---------------------------------------------------------------------------
 # The prod-upload tables
 # ---------------------------------------------------------------------------

@@ -60,9 +60,7 @@ VERIFIER_SCRIPT_NAME = "prod_upload_verifier.py"
 REMOTE_BOOTSTRAP_PEERS_PATH = "/root/.config/ant/bootstrap_peers.toml"
 
 
-def build_systemd_unit(
-    *, description: str, env_path: str, script_path: str, restart: str
-) -> str:
+def build_systemd_unit(*, description: str, env_path: str, script_path: str, restart: str) -> str:
     """Both roles restart on failure and are meant to run indefinitely.
 
     Unlike `prod uploaders`, whose unit is `Restart=no` because it walks a
@@ -90,9 +88,7 @@ WantedBy=multi-user.target
 """
 
 
-def build_log_prune_command(
-    service_name: str, log_dir: str, retention_days: int
-) -> str:
+def build_log_prune_command(service_name: str, log_dir: str, retention_days: int) -> str:
     """Install (or remove) a daily prune timer for the per-op logs.
 
     `retention_days <= 0` removes the timer so toggling it off on a re-provision
@@ -230,10 +226,7 @@ class _BaseProvisioner:
     def execute(self) -> None:
         inventory = Inventory(
             (
-                [
-                    (h["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path})
-                    for h in self.hosts
-                ],
+                [(h["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path}) for h in self.hosts],
                 {},
             )
         )
@@ -263,9 +256,7 @@ class _BaseProvisioner:
 
         self._add_install_ant_op(state)
         self._add_install_wasm_ops(state)
-        SaorsaDbInstaller(wheel_path=self.wheel_path, console=self.console).add_ops(
-            state
-        )
+        SaorsaDbInstaller(wheel_path=self.wheel_path, console=self.console).add_ops(state)
         self._add_script_op(state)
         self._add_env_op(state)
         self._add_unit_op(state)
@@ -274,9 +265,7 @@ class _BaseProvisioner:
             server.shell,
             name=f"Configure {self.service_name} log pruning",
             commands=[
-                build_log_prune_command(
-                    self.service_name, self.log_dir, self.log_retention_days
-                )
+                build_log_prune_command(self.service_name, self.log_dir, self.log_retention_days)
             ],
         )
 
@@ -295,9 +284,7 @@ class _BaseProvisioner:
             state,
             server.shell,
             name="Download and install ant binary",
-            commands=[
-                _install_ant_command(download_url, self.binary_is_archive)
-            ],
+            commands=[_install_ant_command(download_url, self.binary_is_archive)],
         )
 
     def _add_install_wasm_ops(self, state: State) -> None:
@@ -313,9 +300,7 @@ class _BaseProvisioner:
             state,
             server.shell,
             name=f"Deploy {self.script_name}",
-            commands=build_service_script_commands(
-                self.scripts_dir, self.script_name
-            ),
+            commands=build_service_script_commands(self.scripts_dir, self.script_name),
         )
 
     def _add_env_op(self, state: State) -> None:
@@ -339,7 +324,7 @@ class _BaseProvisioner:
                 f"    ;;"
             )
         script = (
-            'MY_IP=$(hostname -I | awk \'{print $1}\')\n'
+            "MY_IP=$(hostname -I | awk '{print $1}')\n"
             'case "$MY_IP" in\n' + "\n".join(case_blocks) + "\nesac\n"
             f"cat > {REMOTE_BOOTSTRAP_PEERS_PATH} << 'PEERS_EOF'\n"
             f"{peers_toml}PEERS_EOF\n"
@@ -383,9 +368,7 @@ class _BaseProvisioner:
             "LOG_LEVEL": self.log_level,
             "RUST_LOG": self.rust_log or "",
             "BOOTSTRAP_CACHE": str(self.bootstrap_cache).lower(),
-            "BOOTSTRAP_ARGS": " ".join(
-                f"--bootstrap {peer}" for peer in self.bootstrap_peers
-            ),
+            "BOOTSTRAP_ARGS": " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers),
             "INFLUX_URL": self.influx_url,
             "INFLUX_TOKEN": self.influx_token,
             "INFLUX_ORG": self.influx_org,
@@ -481,9 +464,7 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
             server.shell,
             name="Install WASM client bundle",
             commands=[
-                build_bundle_install_command(
-                    self.wasm_bundle_url, data_dirs=(), require_cli=True
-                )
+                build_bundle_install_command(self.wasm_bundle_url, data_dirs=(), require_cli=True)
             ],
         )
         add_op(

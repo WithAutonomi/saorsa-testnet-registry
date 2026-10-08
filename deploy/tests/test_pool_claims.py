@@ -76,9 +76,7 @@ class TestClaiming:
 
     def test_claimed_files_leave_the_available_set(self, repo):
         _seed(repo, PoolFileKind.URL, 5 * MIB, 3, "t")
-        repo.claim_pool_files(
-            PoolFileKind.URL, {SizeClass.TINY: 2}, ClaimSource.MANUAL, when=NOW
-        )
+        repo.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 2}, ClaimSource.MANUAL, when=NOW)
         remaining = repo.list_pool_files(status=POOL_STATUS_AVAILABLE)
         assert len(remaining) == 1
 
@@ -93,9 +91,7 @@ class TestClaiming:
         # A remote uploader cannot be handed a path on the operator's machine.
         _seed(repo, PoolFileKind.LOCAL, 5 * MIB, 5, "local")
         with pytest.raises(InsufficientPoolInventory):
-            repo.claim_pool_files(
-                PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.PROD_UPLOADERS
-            )
+            repo.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.PROD_UPLOADERS)
 
     def test_zero_counts_are_ignored(self, repo):
         _seed(repo, PoolFileKind.URL, 5 * MIB, 1, "t")
@@ -111,12 +107,8 @@ class TestAllOrNothing:
     def test_shortfall_raises_with_per_class_detail(self, repo):
         _seed(repo, PoolFileKind.URL, 2 * GIB, 1, "lg")
         with pytest.raises(InsufficientPoolInventory) as exc:
-            repo.claim_pool_files(
-                PoolFileKind.URL, {SizeClass.LARGE: 2}, ClaimSource.PROD_CANARY
-            )
-        assert exc.value.shortfall == {
-            "large": {"requested": 2, "available": 1}
-        }
+            repo.claim_pool_files(PoolFileKind.URL, {SizeClass.LARGE: 2}, ClaimSource.PROD_CANARY)
+        assert exc.value.shortfall == {"large": {"requested": 2, "available": 1}}
         assert "large 2 requested / 1 available" in str(exc.value)
 
     def test_nothing_is_claimed_when_a_later_class_falls_short(self, repo):
@@ -135,9 +127,7 @@ class TestAllOrNothing:
 
     def test_empty_pool_reports_zero_available(self, repo):
         with pytest.raises(InsufficientPoolInventory) as exc:
-            repo.claim_pool_files(
-                PoolFileKind.URL, {SizeClass.MEDIUM: 3}, ClaimSource.MANUAL
-            )
+            repo.claim_pool_files(PoolFileKind.URL, {SizeClass.MEDIUM: 3}, ClaimSource.MANUAL)
         assert exc.value.shortfall["medium"]["available"] == 0
 
 
@@ -188,9 +178,7 @@ class TestConcurrency:
         _seed(repo, PoolFileKind.URL, 5 * MIB, 2, "t")
 
         def everything_taken(kind, size_class, needed, exclude_partial=False, **kwargs):
-            candidates = repo.list_pool_files(
-                kind=kind, size_class=size_class, active=True
-            )
+            candidates = repo.list_pool_files(kind=kind, size_class=size_class, active=True)
             for candidate in candidates:
                 if repo.open_claim_for_file(candidate.id) is None:
                     repo.session.add(
@@ -207,13 +195,9 @@ class TestConcurrency:
         monkeypatch.setattr(repo, "_candidates", everything_taken)
 
         with pytest.raises(InsufficientPoolInventory):
-            repo.claim_pool_files(
-                PoolFileKind.URL, {SizeClass.TINY: 2}, ClaimSource.PROD_UPLOADERS
-            )
+            repo.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 2}, ClaimSource.PROD_UPLOADERS)
         # Only the simulated rival's claims exist; the failed request added none.
-        assert all(
-            c.source is ClaimSource.MANUAL for c in repo.list_pool_claims()
-        )
+        assert all(c.source is ClaimSource.MANUAL for c in repo.list_pool_claims())
 
 
 class TestDuplicatesAreClaimedOnce:
@@ -241,9 +225,7 @@ class TestDuplicatesAreClaimedOnce:
         assert claim.locator_used == mirror.locator
         # And the local pool now has nothing left to give.
         with pytest.raises(InsufficientPoolInventory):
-            repo.claim_pool_files(
-                PoolFileKind.LOCAL, {SizeClass.MEDIUM: 1}, ClaimSource.MANUAL
-            )
+            repo.claim_pool_files(PoolFileKind.LOCAL, {SizeClass.MEDIUM: 1}, ClaimSource.MANUAL)
 
 
 class TestResolution:
@@ -288,16 +270,12 @@ class TestResolution:
         claim = self._one_claim(repo)
         repo.resolve_pool_claim(claim.id, address="a7f3c2")
         with pytest.raises(InsufficientPoolInventory):
-            repo.claim_pool_files(
-                PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL
-            )
+            repo.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL)
 
     def test_released_claim_returns_the_file(self, repo):
         claim = self._one_claim(repo)
         repo.release_pool_claim(claim.id, note="run aborted")
-        again = repo.claim_pool_files(
-            PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL
-        )
+        again = repo.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL)
         assert len(again) == 1
 
     def test_uploaded_claim_cannot_be_released(self, repo):
@@ -342,24 +320,28 @@ class TestClaimListing:
             ClaimSource.MANUAL,
             when=NOW - timedelta(days=19),
         )[0]
-        repo.claim_pool_files(
-            PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL, when=NOW
-        )
+        repo.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL, when=NOW)
         stale = repo.list_pool_claims(stale_before=NOW - timedelta(days=7))
         assert [c.id for c in stale] == [old.id]
 
     def test_open_claim_for_file_follows_duplicates(self, repo):
         local, _ = repo.add_pool_file(
-            PoolFileKind.LOCAL, "/data/a", "a", size_bytes=5 * MIB,
+            PoolFileKind.LOCAL,
+            "/data/a",
+            "a",
+            size_bytes=5 * MIB,
             digests={"sha1": "aaa"},
         )
         mirror, _ = repo.add_pool_file(
-            PoolFileKind.URL, "https://example.org/a", "a", size_bytes=5 * MIB,
+            PoolFileKind.URL,
+            "https://example.org/a",
+            "a",
+            size_bytes=5 * MIB,
             digests={"sha1": "aaa"},
         )
-        claim = repo.claim_pool_files(
-            PoolFileKind.LOCAL, {SizeClass.TINY: 1}, ClaimSource.MANUAL
-        )[0]
+        claim = repo.claim_pool_files(PoolFileKind.LOCAL, {SizeClass.TINY: 1}, ClaimSource.MANUAL)[
+            0
+        ]
         # Asking about either row must find the one claim on the content.
         assert repo.open_claim_for_file(local.id).id == claim.id
         assert repo.open_claim_for_file(mirror.id).id == claim.id
@@ -401,9 +383,7 @@ class TestUnresolvableClaims:
         # A manual claim always had to be resolved by the operator, so it is not
         # "stuck" in the sense this filter means.
         _seed(repo, PoolFileKind.URL, 5 * MIB, 1, "t")
-        repo.claim_pool_files(
-            PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL
-        )
+        repo.claim_pool_files(PoolFileKind.URL, {SizeClass.TINY: 1}, ClaimSource.MANUAL)
         assert repo.list_pool_claims(unresolvable=True) == []
 
 
@@ -420,9 +400,7 @@ class TestDeploymentBackfill:
         deployment = Deployment(name="PROD-UL-07", deploy_args={})
         repo.session.add(deployment)
         repo.session.commit()
-        repo.attach_deployment_to_claims(
-            [c.id for c in claims], deployment.id, "PROD-UL-07"
-        )
+        repo.attach_deployment_to_claims([c.id for c in claims], deployment.id, "PROD-UL-07")
         rows = repo.list_pool_claims(deployment_id=deployment.id)
         assert len(rows) == 2
         assert {c.deployment_name for c in rows} == {"PROD-UL-07"}

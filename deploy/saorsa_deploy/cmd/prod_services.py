@@ -69,9 +69,12 @@ from saorsa_deploy.provisioning.volume import LOG_DIR, MOUNT_POINT
 from saorsa_deploy.ssh import clear_known_hosts
 
 _SSH_OPTS = [
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=15",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=15",
 ]
 
 
@@ -110,17 +113,14 @@ def _resolve_host(
 
     matches = [vm for vm in vms if vm.name == name]
     if not matches:
-        console.print(
-            f"[bold red]Error:[/bold red] no host named {name!r} in {path}"
-        )
+        console.print(f"[bold red]Error:[/bold red] no host named {name!r} in {path}")
         sys.exit(1)
 
     vm = matches[0]
     ssh_key = _resolve_ssh_key(vm, ssh_key_override)
     if not os.path.isfile(ssh_key):
         console.print(
-            f"[bold red]Error:[/bold red] SSH key for {vm.name} does not "
-            f"exist: {ssh_key}"
+            f"[bold red]Error:[/bold red] SSH key for {vm.name} does not exist: {ssh_key}"
         )
         sys.exit(1)
     return vm, ssh_key
@@ -166,9 +166,7 @@ def _ssh_read_file(vm: NodeVm, ssh_key: str, path: str) -> str:
         timeout=60,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to read {path} on {vm.name}: {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"Failed to read {path} on {vm.name}: {result.stderr.strip()}")
     return result.stdout
 
 
@@ -222,9 +220,7 @@ def cmd_prod_services_ls(args) -> None:
     table.add_column("Enabled")
     table.add_column("Disk usage", justify="right")
     for r in records:
-        table.add_row(
-            r["service_name"], r["active"], r["enabled"], _format_bytes(r["size_bytes"])
-        )
+        table.add_row(r["service_name"], r["active"], r["enabled"], _format_bytes(r["size_bytes"]))
     console.print(table)
 
 
@@ -238,10 +234,14 @@ SURVEY_TIMEOUT_SECS = 120
 SURVEY_RETRY_TIMEOUT_SECS = 300
 
 _SURVEY_SSH_OPTS = [
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=20",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=20",
 ]
 
 
@@ -257,8 +257,12 @@ def _survey_one_host(vm: NodeVm, ssh_key: str, timeout: int = SURVEY_TIMEOUT_SEC
     try:
         result = subprocess.run(
             [
-                "ssh", "-i", ssh_key, *_SURVEY_SSH_OPTS,
-                f"{vm.ssh_user}@{vm.ip}", build_disk_survey_command(),
+                "ssh",
+                "-i",
+                ssh_key,
+                *_SURVEY_SSH_OPTS,
+                f"{vm.ssh_user}@{vm.ip}",
+                build_disk_survey_command(),
             ],
             capture_output=True,
             text=True,
@@ -271,9 +275,7 @@ def _survey_one_host(vm: NodeVm, ssh_key: str, timeout: int = SURVEY_TIMEOUT_SEC
         kind, msg = classify_survey_failure(os_error=str(e))
         return {"vm": vm, "error": msg, "failure_kind": kind}
     if result.returncode != 0:
-        kind, msg = classify_survey_failure(
-            returncode=result.returncode, stderr=result.stderr
-        )
+        kind, msg = classify_survey_failure(returncode=result.returncode, stderr=result.stderr)
         return {"vm": vm, "error": msg, "failure_kind": kind}
     lines = result.stdout.splitlines()
     return {
@@ -350,9 +352,7 @@ def _retry_failed_hosts(
     return recovered, remaining
 
 
-def _print_survey_failures(
-    console: Console, failures: dict[str, SurveyFailure]
-) -> None:
+def _print_survey_failures(console: Console, failures: dict[str, SurveyFailure]) -> None:
     """Render the hosts that could not be surveyed, grouped by reason.
 
     Grouped rather than listed flat because the reasons are not equivalent: a
@@ -374,12 +374,8 @@ def _print_survey_failures(
             continue
         console.print(f"  [yellow]{FAILURE_KIND_LABELS[kind]}[/yellow]:")
         for failure in sorted(group, key=lambda f: f.host):
-            attempts = (
-                f" after {failure.attempts} attempts" if failure.attempts > 1 else ""
-            )
-            console.print(
-                f"    [yellow]{failure.host}[/yellow]{attempts}: {failure.message}"
-            )
+            attempts = f" after {failure.attempts} attempts" if failure.attempts > 1 else ""
+            console.print(f"    [yellow]{failure.host}[/yellow]{attempts}: {failure.message}")
 
 
 def _signed_bytes(value: int) -> str:
@@ -545,16 +541,11 @@ def cmd_prod_services_disk_survey(args) -> None:
     def ssh_key_for(vm):
         return _resolve_ssh_key(vm, args.ssh_key_path)
 
-    console.print(
-        f"Surveying {len(vms)} host(s) from [cyan]{inventory_name}[/cyan]..."
-    )
+    console.print(f"Surveying {len(vms)} host(s) from [cyan]{inventory_name}[/cyan]...")
     attempted_host_count = len(vms)
     results = []
     with ThreadPoolExecutor(max_workers=min(max_parallel, len(vms))) as pool:
-        futures = {
-            pool.submit(_survey_one_host, vm, ssh_key_for(vm)): vm
-            for vm in vms
-        }
+        futures = {pool.submit(_survey_one_host, vm, ssh_key_for(vm)): vm for vm in vms}
         for fut in as_completed(futures):
             results.append(fut.result())
 
@@ -612,9 +603,12 @@ def cmd_prod_services_disk_survey(args) -> None:
         hd = host_disk.get(s["host"])
         free = _format_bytes(hd["free_bytes"]) if hd else "?"
         table.add_row(
-            s["host"], s["provider"] or "", s["service_name"],
+            s["host"],
+            s["provider"] or "",
+            s["service_name"],
             "active" if s["active"] else "[red]inactive[/red]",
-            _format_bytes(s["size_bytes"]), free,
+            _format_bytes(s["size_bytes"]),
+            free,
         )
     console.print(table)
 
@@ -628,7 +622,8 @@ def cmd_prod_services_disk_survey(args) -> None:
         htable.add_column("Total", justify="right")
         for host, hd in sorted(host_disk.items(), key=lambda kv: kv[1]["free_bytes"]):
             htable.add_row(
-                host, hd.get("provider") or "",
+                host,
+                hd.get("provider") or "",
                 _format_bytes(hd["free_bytes"]),
                 _format_bytes(hd["used_bytes"]),
                 _format_bytes(hd["total_bytes"]),
@@ -666,9 +661,7 @@ def cmd_prod_services_disk_survey(args) -> None:
     if survey_id is not None:
         console.print(f"[green]Stored survey id {survey_id}[/green] in the registry.")
     else:
-        console.print(
-            "[dim]Survey not stored (DATABASE_URL unset or unreachable).[/dim]"
-        )
+        console.print("[dim]Survey not stored (DATABASE_URL unset or unreachable).[/dim]")
 
 
 def cmd_prod_services_survey_report(args) -> None:
@@ -704,9 +697,7 @@ def cmd_prod_services_survey_report(args) -> None:
         return
 
     prev = surveys[1]
-    console.print(
-        f"[dim]Comparing against previous survey {prev.surveyed_at.isoformat()}.[/dim]"
-    )
+    console.print(f"[dim]Comparing against previous survey {prev.surveyed_at.isoformat()}.[/dim]")
     _print_stored_failures(console, prev, "previous")
 
     # Per-host free-disk delta (freed disk is positive).
@@ -781,7 +772,9 @@ def cmd_prod_services_survey_report(args) -> None:
             reclaimed += e.size_bytes
         etable.add_row(
             e.occurred_at.isoformat(timespec="minutes"),
-            e.host, e.service_name, e.action.value,
+            e.host,
+            e.service_name,
+            e.action.value,
             _format_bytes(e.size_bytes) if e.size_bytes is not None else "",
         )
     console.print(etable)
@@ -845,8 +838,11 @@ def cmd_prod_services_rm(args) -> None:
         None,
     )
     registry.record_service_audit(
-        _inventory_name(args.inventory_path), vm.name, args.service_name,
-        ProdServiceAuditAction.REMOVED, datetime.now(timezone.utc),
+        _inventory_name(args.inventory_path),
+        vm.name,
+        args.service_name,
+        ProdServiceAuditAction.REMOVED,
+        datetime.now(timezone.utc),
         size_bytes=removed_size,
     )
 
@@ -894,8 +890,11 @@ def cmd_prod_services_reset_data(args) -> None:
         None,
     )
     registry.record_service_audit(
-        _inventory_name(args.inventory_path), vm.name, args.service_name,
-        ProdServiceAuditAction.RESET, datetime.now(timezone.utc),
+        _inventory_name(args.inventory_path),
+        vm.name,
+        args.service_name,
+        ProdServiceAuditAction.RESET,
+        datetime.now(timezone.utc),
         size_bytes=wiped_size,
     )
 
@@ -912,8 +911,7 @@ def cmd_prod_services_add(args) -> None:
     records = _list_services(vm, ssh_key, console)
     if any(r["service_name"] == args.service_name for r in records):
         console.print(
-            f"[bold red]Error:[/bold red] {args.service_name} already exists "
-            f"on {vm.name}."
+            f"[bold red]Error:[/bold red] {args.service_name} already exists on {vm.name}."
         )
         sys.exit(1)
 
@@ -966,9 +964,8 @@ def cmd_prod_services_add(args) -> None:
         colorbt_show_hidden=parsed["colorbt_show_hidden"],
     )
 
-    add_command = (
-        f"mkdir -p {root_dir} {log_dir}\n"
-        + build_write_unit_and_start_command(args.service_name, unit_content)
+    add_command = f"mkdir -p {root_dir} {log_dir}\n" + build_write_unit_and_start_command(
+        args.service_name, unit_content
     )
     try:
         _run_single_host_op(vm, ssh_key, f"Add {args.service_name}", add_command)
@@ -982,6 +979,9 @@ def cmd_prod_services_add(args) -> None:
     )
     _update_inventory(args.inventory_path, vm, args.service_name, added=True, console=console)
     registry.record_service_audit(
-        _inventory_name(args.inventory_path), vm.name, args.service_name,
-        ProdServiceAuditAction.ADDED, datetime.now(timezone.utc),
+        _inventory_name(args.inventory_path),
+        vm.name,
+        args.service_name,
+        ProdServiceAuditAction.ADDED,
+        datetime.now(timezone.utc),
     )

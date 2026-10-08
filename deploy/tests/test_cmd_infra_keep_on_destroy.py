@@ -70,9 +70,7 @@ def test_elastic_reuse_path_syncs_keep_flag(existing_keep, requested_keep, expec
         existing["keep_on_destroy"] = existing_keep
 
     with (
-        patch(
-            "saorsa_deploy.cmd.elastic_infra.load_elastic_state", return_value=existing
-        ),
+        patch("saorsa_deploy.cmd.elastic_infra.load_elastic_state", return_value=existing),
         patch("saorsa_deploy.cmd.elastic_infra.update_elastic_state") as update,
         patch("saorsa_deploy.cmd.elastic_infra.execute_terraform_runs") as execute,
     ):
@@ -116,9 +114,7 @@ def test_elastic_create_path_saves_keep_flag():
         patch(
             "saorsa_deploy.cmd.elastic_infra.execute_terraform_runs",
             return_value=[
-                SimpleNamespace(
-                    success=True, outputs={"elastic_ip": "10.0.0.2"}, stderr=""
-                )
+                SimpleNamespace(success=True, outputs={"elastic_ip": "10.0.0.2"}, stderr="")
             ],
         ),
         patch("saorsa_deploy.cmd.elastic_infra.save_elastic_state") as save,
@@ -141,9 +137,7 @@ def test_elastic_create_path_defaults_to_destroy():
         patch(
             "saorsa_deploy.cmd.elastic_infra.execute_terraform_runs",
             return_value=[
-                SimpleNamespace(
-                    success=True, outputs={"elastic_ip": "10.0.0.2"}, stderr=""
-                )
+                SimpleNamespace(success=True, outputs={"elastic_ip": "10.0.0.2"}, stderr="")
             ],
         ),
         patch("saorsa_deploy.cmd.elastic_infra.save_elastic_state") as save,

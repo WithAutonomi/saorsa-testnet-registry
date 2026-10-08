@@ -55,9 +55,7 @@ def wired(repo, monkeypatch):
         ls_cmd,
         show_cmd,
     ):
-        monkeypatch.setattr(
-            module, "require_release_repository", lambda: repo
-        )
+        monkeypatch.setattr(module, "require_release_repository", lambda: repo)
     return repo
 
 
@@ -148,9 +146,7 @@ class TestShip:
 def _promote_args(tmp_path, payload, allow_missing_ship=False):
     path = tmp_path / "promote.json"
     path.write_text(json.dumps(payload))
-    return argparse.Namespace(
-        from_file=str(path), allow_missing_ship=allow_missing_ship
-    )
+    return argparse.Namespace(from_file=str(path), allow_missing_ship=allow_missing_ship)
 
 
 class TestPromote:
@@ -176,9 +172,7 @@ class TestPromote:
 
     def test_promotes_and_records_the_manifest(self, wired, tmp_path, capsys):
         _seed_ship(wired)
-        promote_cmd.cmd_releases_promote(
-            _promote_args(tmp_path, self._payload())
-        )
+        promote_cmd.cmd_releases_promote(_promote_args(tmp_path, self._payload()))
 
         out = capsys.readouterr().out
         assert "Promoted to stable" in out
@@ -191,9 +185,7 @@ class TestPromote:
 
     def test_refuses_a_promotion_with_no_ship_record(self, wired, tmp_path, capsys):
         with pytest.raises(SystemExit) as exc:
-            promote_cmd.cmd_releases_promote(
-                _promote_args(tmp_path, self._payload())
-            )
+            promote_cmd.cmd_releases_promote(_promote_args(tmp_path, self._payload()))
         assert exc.value.code == 1
         assert "has no ship record" in capsys.readouterr().err
 
@@ -202,9 +194,7 @@ class TestPromote:
         wired.mark_rolled_past(release.id, reason="soak failed")
 
         with pytest.raises(SystemExit) as exc:
-            promote_cmd.cmd_releases_promote(
-                _promote_args(tmp_path, self._payload())
-            )
+            promote_cmd.cmd_releases_promote(_promote_args(tmp_path, self._payload()))
         assert exc.value.code == 2
         assert "rolled past" in capsys.readouterr().err
 
@@ -219,24 +209,18 @@ class TestPromote:
 
     def test_rejects_a_crate_missing_its_repo(self, wired, tmp_path, capsys):
         _seed_ship(wired)
-        payload = self._payload(
-            crates=[{"crate_name": "evmlib", "version": "0.9.1"}]
-        )
+        payload = self._payload(crates=[{"crate_name": "evmlib", "version": "0.9.1"}])
 
         with pytest.raises(SystemExit) as exc:
             promote_cmd.cmd_releases_promote(_promote_args(tmp_path, payload))
         assert exc.value.code == 2
         assert "repo_slug" in capsys.readouterr().err
 
-    def test_allow_missing_ship_records_a_promotion_with_no_soak(
-        self, wired, tmp_path, capsys
-    ):
+    def test_allow_missing_ship_records_a_promotion_with_no_soak(self, wired, tmp_path, capsys):
         """Releases promoted under the pre-beta structure never soaked. The
         row must say that, not claim a soak of unknown length."""
         payload = self._payload(rc_branch="rc-2026.8.2")
-        promote_cmd.cmd_releases_promote(
-            _promote_args(tmp_path, payload, allow_missing_ship=True)
-        )
+        promote_cmd.cmd_releases_promote(_promote_args(tmp_path, payload, allow_missing_ship=True))
 
         out = capsys.readouterr().out
         assert "no beta soak" in out
@@ -245,25 +229,20 @@ class TestPromote:
         assert release.shipped_to_beta_at is None
         assert release.rc_branch == "rc-2026.8.2"
 
-    def test_allow_missing_ship_needs_the_rc_branch(
-        self, wired, tmp_path, capsys
-    ):
+    def test_allow_missing_ship_needs_the_rc_branch(self, wired, tmp_path, capsys):
         with pytest.raises(SystemExit) as exc:
             promote_cmd.cmd_releases_promote(
-                _promote_args(
-                    tmp_path, self._payload(), allow_missing_ship=True
-                )
+                _promote_args(tmp_path, self._payload(), allow_missing_ship=True)
             )
         assert exc.value.code == 2
         assert "needs 'rc_branch'" in capsys.readouterr().err
 
-    def test_allow_missing_ship_still_promotes_an_existing_ship_normally(
-        self, wired, tmp_path
-    ):
+    def test_allow_missing_ship_still_promotes_an_existing_ship_normally(self, wired, tmp_path):
         _seed_ship(wired)
         promote_cmd.cmd_releases_promote(
             _promote_args(
-                tmp_path, self._payload(rc_branch="rc-2026.8.2"),
+                tmp_path,
+                self._payload(rc_branch="rc-2026.8.2"),
                 allow_missing_ship=True,
             )
         )
@@ -279,9 +258,7 @@ class TestPromote:
 
         with pytest.raises(SystemExit) as exc:
             promote_cmd.cmd_releases_promote(
-                argparse.Namespace(
-                    from_file=str(path), allow_missing_ship=False
-                )
+                argparse.Namespace(from_file=str(path), allow_missing_ship=False)
             )
         assert exc.value.code == 2
         assert "not valid JSON" in capsys.readouterr().err
@@ -309,9 +286,7 @@ class TestRolledPast:
 
     def test_requires_an_identifier(self, wired, capsys):
         with pytest.raises(SystemExit) as exc:
-            rolled_past_cmd.cmd_releases_rolled_past(
-                self._args(binary_target=None, version=None)
-            )
+            rolled_past_cmd.cmd_releases_rolled_past(self._args(binary_target=None, version=None))
         assert exc.value.code == 2
         assert "provide --id" in capsys.readouterr().err
 
@@ -337,9 +312,7 @@ class TestCurrent:
         wired.promote(stable.id, final_tag="v0.17.0", promoted_at=NOW)
         _seed_ship(wired, version="0.17.1")
 
-        current_cmd.cmd_releases_current(
-            argparse.Namespace(binary_target=None)
-        )
+        current_cmd.cmd_releases_current(argparse.Namespace(binary_target=None))
 
         out = capsys.readouterr().out
         assert "stable" in out and "0.17.0" in out
@@ -347,27 +320,19 @@ class TestCurrent:
 
     def test_reports_the_widened_jump_window(self, wired, capsys):
         stable = _seed_ship(wired, version="0.17.0")
-        wired.promote(
-            stable.id, promoted_at=NOW - timedelta(days=20)
-        )
-        rolled = _seed_ship(
-            wired, version="0.17.1", shipped_to_beta_at=NOW - timedelta(days=8)
-        )
+        wired.promote(stable.id, promoted_at=NOW - timedelta(days=20))
+        rolled = _seed_ship(wired, version="0.17.1", shipped_to_beta_at=NOW - timedelta(days=8))
         wired.mark_rolled_past(rolled.id, reason="failed soak")
         _seed_ship(wired, version="0.17.2")
 
-        current_cmd.cmd_releases_current(
-            argparse.Namespace(binary_target=None)
-        )
+        current_cmd.cmd_releases_current(argparse.Namespace(binary_target=None))
 
         out = capsys.readouterr().out
         assert "rolled past" in out
         assert "N+2" in out
 
     def test_says_so_when_nothing_is_recorded(self, wired, capsys):
-        current_cmd.cmd_releases_current(
-            argparse.Namespace(binary_target=None)
-        )
+        current_cmd.cmd_releases_current(argparse.Namespace(binary_target=None))
         assert "No releases recorded" in capsys.readouterr().out
 
 
@@ -385,9 +350,7 @@ class TestLsAndShow:
             ],
         )
 
-        ls_cmd.cmd_releases_ls(
-            argparse.Namespace(binary_target=None, outcome=None, limit=None)
-        )
+        ls_cmd.cmd_releases_ls(argparse.Namespace(binary_target=None, outcome=None, limit=None))
 
         out = capsys.readouterr().out
         assert "0.17.1" in out
@@ -399,9 +362,7 @@ class TestLsAndShow:
         _seed_ship(wired, version="0.17.1")
 
         ls_cmd.cmd_releases_ls(
-            argparse.Namespace(
-                binary_target=None, outcome="promoted", limit=None
-            )
+            argparse.Namespace(binary_target=None, outcome="promoted", limit=None)
         )
 
         out = capsys.readouterr().out
@@ -409,17 +370,13 @@ class TestLsAndShow:
         assert "0.17.1" not in out
 
     def test_ls_says_so_when_empty(self, wired, capsys):
-        ls_cmd.cmd_releases_ls(
-            argparse.Namespace(binary_target=None, outcome=None, limit=None)
-        )
+        ls_cmd.cmd_releases_ls(argparse.Namespace(binary_target=None, outcome=None, limit=None))
         assert "No releases recorded" in capsys.readouterr().out
 
     def test_show_renders_the_release(self, wired, capsys):
         _seed_ship(wired)
         show_cmd.cmd_releases_show(
-            argparse.Namespace(
-                id=None, binary_target="ant-node", version="0.17.1"
-            )
+            argparse.Namespace(id=None, binary_target="ant-node", version="0.17.1")
         )
 
         out = capsys.readouterr().out

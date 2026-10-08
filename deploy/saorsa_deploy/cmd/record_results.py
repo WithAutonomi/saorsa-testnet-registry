@@ -19,6 +19,7 @@ kind of its own: a pointer client rides an ordinary testnet alongside the
 transfer clients, so its results have to be picked up by the same command
 rather than by one an operator has to remember separately.
 """
+
 import logging
 import os
 import sys
@@ -76,8 +77,7 @@ def cmd_record_results(args):
     deployment = repo.get_active_by_name(args.name) or repo.get_by_name(args.name)
     if deployment is None:
         console.print(
-            f"[bold red]Error:[/bold red] No deployment named '{args.name}' "
-            "in the registry."
+            f"[bold red]Error:[/bold red] No deployment named '{args.name}' in the registry."
         )
         sys.exit(1)
 
@@ -115,30 +115,55 @@ def cmd_record_results(args):
 
     if kind == "prod-uploaders":
         results_blocks = _record_prod_upload(
-            repo, deployment, args, console,
-            influx_url, influx_token, influx_org, influx_bucket,
+            repo,
+            deployment,
+            args,
+            console,
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
         )
     elif kind == "prod-canary":
         from saorsa_deploy.cmd.prod_canary_results import (
             record_prod_canary_results,
         )
+
         results_blocks = record_prod_canary_results(
-            repo, deployment, args, console,
-            influx_url, influx_token, influx_org, influx_bucket,
+            repo,
+            deployment,
+            args,
+            console,
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
         )
     else:
         # testnet, prod-continuous-downloader, prod-downloaders, and any
         # unrecognised/empty kind fall through to the historical aggregate path.
         results_blocks = _record_file_ops(
-            repo, deployment, args, console,
-            influx_url, influx_token, influx_org, influx_bucket,
+            repo,
+            deployment,
+            args,
+            console,
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
         )
         # Pointer clients ride an ordinary testnet, so their records are picked
         # up in the same pass rather than by a command of their own. A run with
         # none finds no points and says nothing.
         pointer_blocks = _record_pointer_ops(
-            repo, deployment, args, console,
-            influx_url, influx_token, influx_org, influx_bucket,
+            repo,
+            deployment,
+            args,
+            console,
+            influx_url,
+            influx_token,
+            influx_org,
+            influx_bucket,
         )
         if pointer_blocks:
             results_blocks = (results_blocks or []) + pointer_blocks
@@ -234,8 +259,7 @@ def _resolve_influx(args, console: Console):
     if not (influx_url and influx_token):
         stack_name = args.monitoring_name or args.name
         console.print(
-            f"[bold]Loading Influx credentials from monitoring state "
-            f"'{stack_name}'...[/bold]"
+            f"[bold]Loading Influx credentials from monitoring state '{stack_name}'...[/bold]"
         )
         try:
             state = load_monitoring_state(stack_name)
@@ -245,9 +269,7 @@ def _resolve_influx(args, console: Console):
         influx_url = influx_url or state.get("influxdb_url")
         influx_token = influx_token or state.get("influxdb_token")
         influx_org = influx_org or state.get("influxdb_org") or "ant"
-        influx_bucket = (
-            influx_bucket or state.get("influxdb_bucket") or "testnet-metrics"
-        )
+        influx_bucket = influx_bucket or state.get("influxdb_bucket") or "testnet-metrics"
 
     if not (influx_url and influx_token):
         console.print(
@@ -289,12 +311,17 @@ def _fetch_all_op_points(influx_url, influx_token, influx_org, influx_bucket, st
 
 
 def _record_file_ops(
-    repo, deployment, args, console,
-    influx_url, influx_token, influx_org, influx_bucket,
+    repo,
+    deployment,
+    args,
+    console,
+    influx_url,
+    influx_token,
+    influx_org,
+    influx_bucket,
 ) -> list[dict] | None:
     console.print(
-        f"[bold]Querying {influx_url} "
-        f"(bucket={influx_bucket}, window={args.window})...[/bold]"
+        f"[bold]Querying {influx_url} (bucket={influx_bucket}, window={args.window})...[/bold]"
     )
     try:
         points = _fetch_all_op_points(
@@ -328,9 +355,7 @@ def _record_file_ops(
             max_duration_ms=agg["max_duration_ms"],
         )
 
-    table = Table(
-        title=f"File results for deployment '{args.name}' (id={deployment.id})"
-    )
+    table = Table(title=f"File results for deployment '{args.name}' (id={deployment.id})")
     table.add_column("Host")
     table.add_column("Op")
     table.add_column("Size (MB)", justify="right")
@@ -358,21 +383,32 @@ def _record_file_ops(
         )
     console.print(table)
     console.print(
-        f"[bold green]Recorded {len(aggregates)} row(s) "
-        f"for deployment '{args.name}'.[/bold green]"
+        f"[bold green]Recorded {len(aggregates)} row(s) for deployment '{args.name}'.[/bold green]"
     )
 
     op_records = _record_file_op_records(
-        repo, deployment, args, console,
-        influx_url, influx_token, influx_org, influx_bucket,
+        repo,
+        deployment,
+        args,
+        console,
+        influx_url,
+        influx_token,
+        influx_org,
+        influx_bucket,
     )
 
     return file_ops_result_blocks(aggregates, op_records=op_records)
 
 
 def _record_pointer_ops(
-    repo, deployment, args, console,
-    influx_url, influx_token, influx_org, influx_bucket,
+    repo,
+    deployment,
+    args,
+    console,
+    influx_url,
+    influx_token,
+    influx_org,
+    influx_bucket,
 ) -> list[dict] | None:
     """Persist every `ant pointer` operation into ``deployment_pointer_records``.
 
@@ -387,13 +423,10 @@ def _record_pointer_ops(
     """
     network_profile_for_host = _build_network_profile_lookup(deployment)
     try:
-        points = fetch_pointer_points(
-            influx_url, influx_token, influx_org, influx_bucket, "0"
-        )
+        points = fetch_pointer_points(influx_url, influx_token, influx_org, influx_bucket, "0")
     except Exception as e:
         console.print(
-            f"[yellow]Warning: pointer query failed, no pointer records "
-            f"written: {e}[/yellow]"
+            f"[yellow]Warning: pointer query failed, no pointer records written: {e}[/yellow]"
         )
         return None
     if not points:
@@ -413,9 +446,7 @@ def _record_pointer_ops(
         except ValueError:
             unusable += 1
             continue
-        started_at = datetime.fromtimestamp(
-            start_ns / 1_000_000_000, tz=timezone.utc
-        )
+        started_at = datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
         repo.upsert_pointer_record(
             deployment_id=deployment.id,
             client_hostname=point["host"],
@@ -482,9 +513,11 @@ def _build_network_profile_lookup(deployment):
 
     by_host = deploy_args.get("network_by_host")
     if isinstance(by_host, dict) and by_host:
-        return lambda host: (by_host.get(host) or {}).get("name") if isinstance(
-            by_host.get(host), dict
-        ) else by_host.get(host)
+        return lambda host: (
+            (by_host.get(host) or {}).get("name")
+            if isinstance(by_host.get(host), dict)
+            else by_host.get(host)
+        )
 
     single = deploy_args.get("network")
     if isinstance(single, dict):
@@ -529,8 +562,7 @@ def _network_map_from_client_state(name: str) -> dict[str, str]:
             # definition stays in deploy_args.
             label = "inline"
         out[
-            f"{name}-ant-client-{c.get('role', 'upload')}-"
-            f"{c.get('region')}-{c.get('client_index')}"
+            f"{name}-ant-client-{c.get('role', 'upload')}-{c.get('region')}-{c.get('client_index')}"
         ] = label
     return out
 
@@ -558,8 +590,7 @@ def _warn_unclassifiable_wasm_hosts(repo, deployment, console) -> None:
         "the transport of each operation could not be resolved. "
         f"{len(hosts)} host(s) already recorded as WASM keep their existing "
         "client_kind (the upsert never overwrites a known transport with "
-        "NULL), but any NEW operation recorded now is unlabelled: "
-        + ", ".join(hosts)
+        "NULL), but any NEW operation recorded now is unlabelled: " + ", ".join(hosts)
     )
 
 
@@ -604,8 +635,14 @@ def _build_client_kind_lookup(deployment, repo=None, console=None):
 
 
 def _record_file_op_records(
-    repo, deployment, args, console,
-    influx_url, influx_token, influx_org, influx_bucket,
+    repo,
+    deployment,
+    args,
+    console,
+    influx_url,
+    influx_token,
+    influx_org,
+    influx_bucket,
 ) -> list[dict]:
     """Persist every individual upload/download op as a row in
     ``deployment_upload_records`` / ``deployment_download_records``.
@@ -616,17 +653,11 @@ def _record_file_op_records(
     """
     network_profile_for_host = _build_network_profile_lookup(deployment)
     client_kind_for_host = _build_client_kind_lookup(deployment, repo, console)
-    console.print(
-        "[bold]Fetching per-operation records (full range)...[/bold]"
-    )
+    console.print("[bold]Fetching per-operation records (full range)...[/bold]")
     try:
-        points = _fetch_all_op_points(
-            influx_url, influx_token, influx_org, influx_bucket, "0"
-        )
+        points = _fetch_all_op_points(influx_url, influx_token, influx_org, influx_bucket, "0")
     except Exception as e:
-        console.print(
-            f"[bold red]Error:[/bold red] InfluxDB per-op query failed: {e}"
-        )
+        console.print(f"[bold red]Error:[/bold red] InfluxDB per-op query failed: {e}")
         sys.exit(1)
 
     upload_recorded = 0
@@ -640,9 +671,7 @@ def _record_file_op_records(
         status_code = p.get("status")
         file_size = p.get("file_size")
         measurement = p.get("_measurement")
-        if start_ns is None or file_size is None or measurement not in (
-            "upload", "download"
-        ):
+        if start_ns is None or file_size is None or measurement not in ("upload", "download"):
             unusable += 1
             continue
         if status_code == 0:
@@ -698,14 +727,10 @@ def _record_file_op_records(
                 client_build=p.get("client_build"),
                 verify_status=verify_status,
                 expected_sha256=(
-                    p.get("expected_sha256")
-                    if verify_status == VERIFY_MISMATCH
-                    else None
+                    p.get("expected_sha256") if verify_status == VERIFY_MISMATCH else None
                 ),
                 actual_sha256=(
-                    p.get("actual_sha256")
-                    if verify_status == VERIFY_MISMATCH
-                    else None
+                    p.get("actual_sha256") if verify_status == VERIFY_MISMATCH else None
                 ),
             )
             download_recorded += 1
@@ -782,19 +807,22 @@ def _cost_to_decimal(value) -> Decimal | None:
 
 
 def _record_prod_upload(
-    repo, deployment, args, console,
-    influx_url, influx_token, influx_org, influx_bucket,
+    repo,
+    deployment,
+    args,
+    console,
+    influx_url,
+    influx_token,
+    influx_org,
+    influx_bucket,
 ) -> list[dict] | None:
     network_profile_for_host = _build_network_profile_lookup(deployment)
     # Per-host rather than per-deployment: a prod-uploaders run may carry both
     # transports, and it is read from the registry row (not the S3 client state
     # `clients destroy` deletes) so a re-run after teardown still labels them.
-    transport_by_host = transport_map_from_deploy_args(
-        getattr(deployment, "deploy_args", None)
-    )
+    transport_by_host = transport_map_from_deploy_args(getattr(deployment, "deploy_args", None))
     console.print(
-        f"[bold]Querying {influx_url} (buckets={influx_bucket}, "
-        f"{INFLUXDB_WASM_BUCKET})...[/bold]"
+        f"[bold]Querying {influx_url} (buckets={influx_bucket}, {INFLUXDB_WASM_BUCKET})...[/bold]"
     )
     try:
         points = fetch_all_prod_upload_points(
@@ -853,9 +881,7 @@ def _record_prod_upload(
         )
         recorded += 1
 
-    table = Table(
-        title=f"Prod uploads recorded for '{args.name}' (id={deployment.id})"
-    )
+    table = Table(title=f"Prod uploads recorded for '{args.name}' (id={deployment.id})")
     table.add_column("Recorded", justify="right")
     table.add_column("Skipped", justify="right")
     table.add_row(str(recorded), str(skipped))
@@ -942,8 +968,9 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
             if not key:
                 continue
             existing = table.get(key)
-            if existing is not None and _OUTCOME_RANK[existing["complete"]] > (
-                _OUTCOME_RANK[payload["complete"]]
+            if (
+                existing is not None
+                and _OUTCOME_RANK[existing["complete"]] > (_OUTCOME_RANK[payload["complete"]])
             ):
                 continue
             table[key] = payload
@@ -1065,14 +1092,10 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
 
     if newly_resolved:
         console.print(
-            f"[dim]Resolved {newly_resolved} file-pool claim(s) for this "
-            "deployment.[/dim]"
+            f"[dim]Resolved {newly_resolved} file-pool claim(s) for this deployment.[/dim]"
         )
     if refreshed:
-        console.print(
-            f"[dim]Refreshed {refreshed} already-resolved file-pool "
-            "claim(s).[/dim]"
-        )
+        console.print(f"[dim]Refreshed {refreshed} already-resolved file-pool claim(s).[/dim]")
     if released:
         console.print(
             f"[dim]Released {released} file-pool claim(s): the upload failed "

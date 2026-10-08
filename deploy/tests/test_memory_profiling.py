@@ -4,6 +4,7 @@ Covers spec/flag parsing (uploaders + downloaders), the orchestrator emissions,
 and the provisioner-level wiring. The service-script command wrapping is tested
 in test_prod_uploader_service.py / test_prod_downloader_service.py.
 """
+
 import pytest
 
 from saorsa_deploy.cmd.prod_uploaders import parse_prod_uploader_spec
@@ -65,8 +66,11 @@ class TestUploaderSpecParsing:
 class TestOrchestratorEmission:
     def test_uploader_token_before_rust_log(self):
         u = ProdUploader(
-            region="lon1", vm_size="s-4vcpu-8gb", urls="/tmp/u.txt",
-            memory_profiling=True, rust_log="ant_cli=info,saorsa_core::dht=debug",
+            region="lon1",
+            vm_size="s-4vcpu-8gb",
+            urls="/tmp/u.txt",
+            memory_profiling=True,
+            rust_log="ant_cli=info,saorsa_core::dht=debug",
         )
         spec = _prod_uploader_spec(u)
         assert ":memory_profiling=true:" in spec
@@ -78,15 +82,11 @@ class TestOrchestratorEmission:
         assert "memory_profiling" not in _prod_uploader_spec(u)
 
     def test_downloader_flag_true(self):
-        spec = ProdContinuousDownloaderSpec(
-            spec="lon1", binary=_binary(), memory_profiling=True
-        )
+        spec = ProdContinuousDownloaderSpec(spec="lon1", binary=_binary(), memory_profiling=True)
         assert _memory_profiling_flag(spec) == ["--memory-profiling"]
 
     def test_downloader_flag_false(self):
-        spec = ProdContinuousDownloaderSpec(
-            spec="lon1", binary=_binary(), memory_profiling=False
-        )
+        spec = ProdContinuousDownloaderSpec(spec="lon1", binary=_binary(), memory_profiling=False)
         assert _memory_profiling_flag(spec) == ["--no-memory-profiling"]
 
     def test_downloader_flag_unset(self):
@@ -99,23 +99,26 @@ class TestProvisionerWiring:
         p = ProdUploaderProvisioner(
             uploaders=[
                 {"ip": "1.1.1.1", "region": "lon1", "client_index": 1},
-                {"ip": "2.2.2.2", "region": "nyc1", "client_index": 2,
-                 "memory_profiling": True},
+                {"ip": "2.2.2.2", "region": "nyc1", "client_index": 2, "memory_profiling": True},
             ],
-            bootstrap_peers=[], wallet_secret_key="0xabc",
+            bootstrap_peers=[],
+            wallet_secret_key="0xabc",
         )
         assert p._any_memory_profiling() is True
 
     def test_uploader_none_memory_profiling(self):
         p = ProdUploaderProvisioner(
             uploaders=[{"ip": "1.1.1.1", "region": "lon1", "client_index": 1}],
-            bootstrap_peers=[], wallet_secret_key="0xabc",
+            bootstrap_peers=[],
+            wallet_secret_key="0xabc",
         )
         assert p._any_memory_profiling() is False
 
     def test_downloader_stores_flag(self):
         p = ProdDownloaderProvisioner(
             downloaders=[{"ip": "1.1.1.1", "region": "lon1"}],
-            bootstrap_peers=[], sleep_interval_secs=0, memory_profiling=True,
+            bootstrap_peers=[],
+            sleep_interval_secs=0,
+            memory_profiling=True,
         )
         assert p.memory_profiling is True

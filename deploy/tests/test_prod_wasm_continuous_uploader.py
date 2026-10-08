@@ -157,19 +157,13 @@ class TestManifestValidation:
         # Every file in them is above ant-core's browser cap, so every draw
         # would permanently spend a pool entry that could never be uploaded.
         with pytest.raises(pydantic.ValidationError, match="browser path"):
-            ProdContinuousUploaderSpec.model_validate(
-                _block(pool={size_class: 1}, volume_size=100)
-            )
+            ProdContinuousUploaderSpec.model_validate(_block(pool={size_class: 1}, volume_size=100))
 
     def test_medium_is_allowed_because_most_of_it_is_drawable(self):
-        spec = ProdContinuousUploaderSpec.model_validate(
-            _block(pool={"medium": 1}, volume_size=40)
-        )
+        spec = ProdContinuousUploaderSpec.model_validate(_block(pool={"medium": 1}, volume_size=40))
         assert spec.pool == {"medium": 1}
 
-    @pytest.mark.parametrize(
-        "field,value", [("bootstrap_cache", False), ("log_level", "debug")]
-    )
+    @pytest.mark.parametrize("field,value", [("bootstrap_cache", False), ("log_level", "debug")])
     def test_the_options_with_no_browser_meaning_are_refused(self, field, value):
         # Refused, not ignored: a silently-dropped option leaves the operator
         # reading their own manifest as a description of the run.
@@ -190,9 +184,7 @@ class TestManifestValidation:
 
 class TestOrchestratorArgv:
     def test_a_native_manifest_emits_no_wasm_flags_and_no_build_step(self):
-        manifest = _manifest(
-            client_kind=None, wasm_binary=None, spec="lon1:s-2vcpu-4gb"
-        )
+        manifest = _manifest(client_kind=None, wasm_binary=None, spec="lon1:s-2vcpu-4gb")
         steps = build_deploy_steps(manifest)
         assert not any("ant-wasm" in step.argv for step in steps)
         argv = _deploy_argv(manifest)
@@ -222,9 +214,7 @@ class TestOrchestratorArgv:
         assert _val(argv, "--pool-max-size") == str(WASM_MAX_FILE_BYTES)
 
     def test_a_tighter_bound_of_the_operators_own_is_not_widened(self):
-        argv = _deploy_argv(
-            _manifest(pool={"medium": 1}, pool_max_size="200MB", volume_size=40)
-        )
+        argv = _deploy_argv(_manifest(pool={"medium": 1}, pool_max_size="200MB", volume_size=40))
         assert _val(argv, "--pool-max-size") == "200MB"
 
     def test_tiny_and_small_get_no_redundant_bound(self):
@@ -344,9 +334,7 @@ class TestProvisioner:
             client_kind="wasm",
             wasm_bundle_url="https://s3/bundle.tar.gz",
             bootstrap_multiaddrs=[MA],
-        )._per_host_env(
-            {"ip": "1.1.1.1", "region": "lon1", "provider": "digitalocean"}
-        )
+        )._per_host_env({"ip": "1.1.1.1", "region": "lon1", "provider": "digitalocean"})
         assert env["CLIENT_KIND"] == "wasm"
         assert env["ANT_WASM"] == "/usr/local/bin/ant-wasm"
         assert env["BOOTSTRAP_MULTIADDRS"] == MA
@@ -363,9 +351,7 @@ class TestProvisioner:
             client_kind="wasm",
             wasm_bundle_url="https://s3/bundle.tar.gz",
             bootstrap_multiaddrs=[MA],
-        )._per_host_env(
-            {"ip": "1.1.1.1", "region": "lon1", "provider": "digitalocean"}
-        )
+        )._per_host_env({"ip": "1.1.1.1", "region": "lon1", "provider": "digitalocean"})
         assert env["INFLUX_BUCKET"] == "wasm-client-metrics"
 
     def test_the_wallet_key_is_still_0x_prefixed(self):
@@ -373,9 +359,7 @@ class TestProvisioner:
             client_kind="wasm",
             wasm_bundle_url="https://s3/bundle.tar.gz",
             bootstrap_multiaddrs=[MA],
-        )._per_host_env(
-            {"ip": "1.1.1.1", "region": "lon1", "provider": "digitalocean"}
-        )
+        )._per_host_env({"ip": "1.1.1.1", "region": "lon1", "provider": "digitalocean"})
         assert env["SECRET_KEY"].startswith("0x")
 
     def test_a_bundle_url_is_mandatory(self):
@@ -411,9 +395,7 @@ class TestProvisioner:
                 "saorsa_deploy.provisioning.prod_continuous_uploader.add_op",
                 side_effect=lambda state, op, **kw: names.append(kw.get("name")),
             ),
-            patch(
-                "saorsa_deploy.provisioning.prod_continuous_uploader.Inventory"
-            ),
+            patch("saorsa_deploy.provisioning.prod_continuous_uploader.Inventory"),
             patch("saorsa_deploy.provisioning.prod_continuous_uploader.State"),
             patch("saorsa_deploy.provisioning.prod_continuous_uploader.connect_all"),
             patch("saorsa_deploy.provisioning.prod_continuous_uploader.run_ops"),
@@ -421,9 +403,7 @@ class TestProvisioner:
                 "saorsa_deploy.provisioning.prod_continuous_uploader"
                 ".add_operator_authorized_keys_op"
             ),
-            patch(
-                "saorsa_deploy.provisioning.saorsa_db_install.SaorsaDbInstaller.add_ops"
-            ),
+            patch("saorsa_deploy.provisioning.saorsa_db_install.SaorsaDbInstaller.add_ops"),
         ):
             provisioner.execute()
         return names
@@ -489,8 +469,16 @@ class TestServiceArgv:
             file_path=Path("/tmp/a.bin"),
         )
         assert argv == [
-            "/root/.local/bin/ant", "--evm-network", "arbitrum-one", "--json", "-v",
-            "file", "upload", "--public", "--merkle", "/tmp/a.bin",
+            "/root/.local/bin/ant",
+            "--evm-network",
+            "arbitrum-one",
+            "--json",
+            "-v",
+            "file",
+            "upload",
+            "--public",
+            "--merkle",
+            "/tmp/a.bin",
         ]
 
     def test_the_wasm_readback_argv_uses_ant_wasm(self, service):
@@ -500,7 +488,12 @@ class TestServiceArgv:
             output_path=Path("/tmp/out"),
         )
         assert argv == [
-            "/usr/local/bin/ant-wasm", "file", "download", "abc", "-o", "/tmp/out",
+            "/usr/local/bin/ant-wasm",
+            "file",
+            "download",
+            "abc",
+            "-o",
+            "/tmp/out",
         ]
 
     def test_the_native_readback_argv_is_unchanged(self, service):
@@ -512,16 +505,21 @@ class TestServiceArgv:
             output_path=Path("/tmp/out"),
         )
         assert argv == [
-            "/root/.local/bin/ant", "--evm-network", "arbitrum-one", "-vv",
-            "file", "download", "abc", "-o", "/tmp/out",
+            "/root/.local/bin/ant",
+            "--evm-network",
+            "arbitrum-one",
+            "-vv",
+            "file",
+            "download",
+            "abc",
+            "-o",
+            "/tmp/out",
         ]
 
     def test_the_verifier_service_is_still_native(self):
         # A separate script entirely — it spawns `ant` and nothing else, which is
         # what keeps a digest_mismatch attributable to the upload.
-        verifier = (
-            SCRIPT_PATH.parent / "prod_upload_verifier.py"
-        ).read_text()
+        verifier = (SCRIPT_PATH.parent / "prod_upload_verifier.py").read_text()
         assert "ant-wasm" not in verifier
         assert "CLIENT_KIND" not in verifier
 
@@ -532,9 +530,7 @@ class TestSuccessClassification:
         # `ant --json` omits the key. Keying on presence reported every healthy
         # browser-path upload as a partial — which SPENDS the file's pool claim
         # as though only some of its chunks had been stored.
-        assert service._upload_succeeded(
-            {"address": "abc", "chunks_stored": 4, "error": None}, 0
-        )
+        assert service._upload_succeeded({"address": "abc", "chunks_stored": 4, "error": None}, 0)
 
     def test_an_error_value_is_a_failure(self, service):
         assert not service._upload_succeeded({"error": "no quotes"}, 0)
@@ -558,16 +554,11 @@ class TestWasmFailureOutcome:
         # went out but before it printed anything.
         marker = tmp_path / "a.paid"
         marker.write_text("paid\n")
-        assert (
-            service._wasm_failure_outcome(None, marker)
-            == service.STATUS_PARTIAL_UPLOAD
-        )
+        assert service._wasm_failure_outcome(None, marker) == service.STATUS_PARTIAL_UPLOAD
 
     def test_neither_means_released(self, service, tmp_path):
         assert (
-            service._wasm_failure_outcome(
-                {"payment_sent": False}, tmp_path / "none"
-            )
+            service._wasm_failure_outcome({"payment_sent": False}, tmp_path / "none")
             == service.STATUS_FAILED
         )
 
@@ -662,15 +653,11 @@ class TestOneCycle:
         monkeypatch.setattr(service, "_run_ant", _fake_run)
         # One cycle, then out: the loop is `while True`, so the sleep is what
         # ends the test.
-        monkeypatch.setattr(
-            service, "LOG_DIR", str(tmp_path / "logs")
-        )
+        monkeypatch.setattr(service, "LOG_DIR", str(tmp_path / "logs"))
         monkeypatch.setattr(
             service.time, "sleep", lambda secs: (_ for _ in ()).throw(SystemExit(0))
         )
-        monkeypatch.setattr(
-            service, "_sha256_file", lambda path: "a" * 64
-        )
+        monkeypatch.setattr(service, "_sha256_file", lambda path: "a" * 64)
 
         env = {
             "DEPLOYMENT_ID": str(deployment.id),
@@ -699,9 +686,7 @@ class TestOneCycle:
             posted=posted,
             claim=pool_repo.list_pool_claims(file_id=pool_file.id)[0],
             rows=repo.list_prod_upload_results_for_deployment(deployment.id),
-            verifications=repo.list_prod_upload_verifications_for_deployment(
-                deployment.id
-            ),
+            verifications=repo.list_prod_upload_verifications_for_deployment(deployment.id),
         )
 
     _SUCCESS = {
@@ -718,9 +703,7 @@ class TestOneCycle:
     def test_a_success_spends_the_claim_and_labels_the_transport(
         self, service, registry, monkeypatch, tmp_path
     ):
-        out = self._run(
-            service, registry, monkeypatch, tmp_path, result=self._SUCCESS
-        )
+        out = self._run(service, registry, monkeypatch, tmp_path, result=self._SUCCESS)
         assert out.claim.status is ClaimStatus.UPLOADED
         assert len(out.rows) == 1
         assert out.rows[0].status is ProdUploadStatus.SUCCESS
@@ -732,9 +715,7 @@ class TestOneCycle:
     def test_the_upload_and_the_readback_both_run_ant_wasm(
         self, service, registry, monkeypatch, tmp_path
     ):
-        out = self._run(
-            service, registry, monkeypatch, tmp_path, result=self._SUCCESS
-        )
+        out = self._run(service, registry, monkeypatch, tmp_path, result=self._SUCCESS)
         assert [cmd[0] for cmd in out.spawned] == [
             "/usr/local/bin/ant-wasm",
             "/usr/local/bin/ant-wasm",
@@ -742,12 +723,8 @@ class TestOneCycle:
         # The uploader VM's own view as a browser user.
         assert out.verifications[0].status.value == "ok"
 
-    def test_points_go_to_the_wasm_bucket(
-        self, service, registry, monkeypatch, tmp_path
-    ):
-        out = self._run(
-            service, registry, monkeypatch, tmp_path, result=self._SUCCESS
-        )
+    def test_points_go_to_the_wasm_bucket(self, service, registry, monkeypatch, tmp_path):
+        out = self._run(service, registry, monkeypatch, tmp_path, result=self._SUCCESS)
         assert {bucket for bucket, _ in out.posted} == {"wasm-client-metrics"}
 
     def test_a_failure_before_payment_releases_the_claim(
@@ -778,9 +755,7 @@ class TestOneCycle:
         assert out.claim.status is ClaimStatus.PARTIAL
         assert out.rows[0].status is ProdUploadStatus.PARTIAL_UPLOAD
 
-    def test_a_crash_after_the_marker_is_a_partial(
-        self, service, registry, monkeypatch, tmp_path
-    ):
+    def test_a_crash_after_the_marker_is_a_partial(self, service, registry, monkeypatch, tmp_path):
         # The OOM killer reaches the WASM child, not this parent, and the child
         # prints nothing — so the marker is the only evidence left.
         out = self._run(
@@ -798,9 +773,7 @@ class TestOneCycle:
     def test_a_crash_with_no_marker_releases_the_claim(
         self, service, registry, monkeypatch, tmp_path
     ):
-        out = self._run(
-            service, registry, monkeypatch, tmp_path, result=None, exit_code=-9
-        )
+        out = self._run(service, registry, monkeypatch, tmp_path, result=None, exit_code=-9)
         assert out.claim.status is ClaimStatus.RELEASED
         assert 'error_kind="crash"' in out.posted[0][1]
 
@@ -863,20 +836,17 @@ class TestOneCycle:
         # The two transfer measurements carry it; the per-cycle heartbeat does
         # not, because it describes a cycle rather than an operation.
         transfers = [
-            line for _, line in out.posted
+            line
+            for _, line in out.posted
             if line.startswith(("prod_upload,", "prod_upload_verify,"))
         ]
         assert len(transfers) == 2
         assert all(f'client_build="{commit}"' in line for line in transfers)
 
-    def test_a_native_cycle_records_no_build(
-        self, service, registry, monkeypatch, tmp_path
-    ):
+    def test_a_native_cycle_records_no_build(self, service, registry, monkeypatch, tmp_path):
         # The native `ant` reports none, so the rows stay NULL and the points
         # keep exactly the field set they had.
-        out = self._run(
-            service, registry, monkeypatch, tmp_path, result=self._SUCCESS, wasm=False
-        )
+        out = self._run(service, registry, monkeypatch, tmp_path, result=self._SUCCESS, wasm=False)
         assert out.rows[0].client_build is None
         assert out.verifications[0].client_build is None
         assert all("client_build" not in line for _, line in out.posted)

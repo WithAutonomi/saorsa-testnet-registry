@@ -44,9 +44,7 @@ REMOTE_WHEEL_DIR = "/root/saorsa-db-wheel"
 #: Prints the running interpreter's "major.minor", for the versioned
 #: `pythonX.Y-venv` package name. Kept as a constant so the quoting inside the
 #: install command stays readable.
-_PY_VERSION_SHELL = (
-    "python3 -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])'"
-)
+_PY_VERSION_SHELL = "python3 -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])'"
 
 #: Runtime dependencies actually needed on a VM. `alembic` is a declared
 #: dependency of the package but only for generating and applying migrations,
@@ -82,8 +80,7 @@ def build_saorsa_db_wheel(repo_root: Path | None = None) -> Path:
         repo_root = Path(__file__).resolve().parents[3]
     if not (repo_root / "db" / "pyproject.toml").is_file():
         raise FileNotFoundError(
-            "cannot build the saorsa-db wheel: no db/pyproject.toml under "
-            f"{repo_root}"
+            f"cannot build the saorsa-db wheel: no db/pyproject.toml under {repo_root}"
         )
 
     out_dir = Path(tempfile.mkdtemp(prefix="saorsa-db-wheel-"))
@@ -129,7 +126,7 @@ def build_install_commands(wheel_name: str) -> list[str]:
         f"DEBIAN_FRONTEND=noninteractive apt-get update -q && "
         f"(DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-venv || "
         f"DEBIAN_FRONTEND=noninteractive apt-get install -y -q "
-        f"\"python$({_PY_VERSION_SHELL})-venv\") && "
+        f'"python$({_PY_VERSION_SHELL})-venv") && '
         f"python3 -m venv {VENV_DIR})",
         # Dependencies are requested every time but pip no-ops once they are
         # satisfied, so this stays cheap on re-provision.
@@ -139,8 +136,7 @@ def build_install_commands(wheel_name: str) -> list[str]:
         # dependency set through a full reinstall each time.
         f"{VENV_PIP} install --quiet --force-reinstall --no-deps {remote_wheel}",
         # Fail loudly here rather than at 3am inside the service.
-        f'{VENV_PYTHON} -c "import saorsa_db.repositories" && '
-        f"echo 'SAORSA_DB:INSTALLED'",
+        f"{VENV_PYTHON} -c \"import saorsa_db.repositories\" && echo 'SAORSA_DB:INSTALLED'",
     ]
 
 
@@ -160,9 +156,7 @@ class SaorsaDbInstaller:
         if self.wheel_path is None:
             self.wheel_path = build_saorsa_db_wheel()
             if self.console:
-                self.console.print(
-                    f"  Built saorsa-db wheel: {self.wheel_path.name}"
-                )
+                self.console.print(f"  Built saorsa-db wheel: {self.wheel_path.name}")
         return self.wheel_path
 
     def add_ops(self, state: State, install: bool = True) -> None:

@@ -40,9 +40,7 @@ def provision_combined(
     if not active:
         return
 
-    hosts_data = [
-        (ip, {"ssh_user": ssh_user, "ssh_key": ssh_key_path}) for ip in host_ips
-    ]
+    hosts_data = [(ip, {"ssh_user": ssh_user, "ssh_key": ssh_key_path}) for ip in host_ips]
     inventory = Inventory((hosts_data, {}))
     config = Config()
     if ssh_user != "root":

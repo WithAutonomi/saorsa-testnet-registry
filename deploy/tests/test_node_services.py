@@ -125,9 +125,11 @@ class TestBuildResetDataCommand:
         # stop before wipe, start after
         assert "systemctl stop ant-node-7" in cmd
         assert "systemctl start ant-node-7" in cmd
-        assert cmd.index("systemctl stop ant-node-7") < cmd.index(
-            f'find "{root}"'
-        ) < cmd.index("systemctl start ant-node-7")
+        assert (
+            cmd.index("systemctl stop ant-node-7")
+            < cmd.index(f'find "{root}"')
+            < cmd.index("systemctl start ant-node-7")
+        )
         # wipe everything in the data root EXCEPT the identity key
         assert f'find "{root}" -mindepth 1 -maxdepth 1' in cmd
         assert f"! -name {NODE_IDENTITY_FILENAME}" in cmd
@@ -165,7 +167,7 @@ class TestBuildDiskSurveyCommand:
         # reuses the same per-service LIST marker discovery
         assert "ant-node-*.service" in cmd
         assert "ANT_SVC:LIST:$svc:$active:$enabled:$bytes" in cmd
-        assert 'ANT_SVC:LIST:NONE' in cmd
+        assert "ANT_SVC:LIST:NONE" in cmd
         # plus a single df marker for the storage device
         assert "df -B1 --output=size,used,avail /mnt/ant-node-storage" in cmd
         assert "ANT_SVC:DF:" in cmd
@@ -214,12 +216,8 @@ class TestParseNodeUnit:
             "rewards_address": "0xabc",
             "evm_network": "arbitrum-one",
         }
-        unit_overrides = {
-            k: v for k, v in overrides.items() if k in self._UNIT_LEVEL_KEYS
-        }
-        exec_params.update(
-            {k: v for k, v in overrides.items() if k not in self._UNIT_LEVEL_KEYS}
-        )
+        unit_overrides = {k: v for k, v in overrides.items() if k in self._UNIT_LEVEL_KEYS}
+        exec_params.update({k: v for k, v in overrides.items() if k not in self._UNIT_LEVEL_KEYS})
         exec_start = _build_node_exec_start(**exec_params)
         return _build_node_unit_file(
             "ant-node-3",
@@ -255,9 +253,7 @@ class TestParseNodeUnit:
         assert parsed["port"] == 10002  # still parsed correctly despite the NAT prefix
 
     def test_detects_debug_node_crash_env_and_coredumps(self):
-        unit = self._sibling_unit(
-            rust_backtrace="full", colorbt_show_hidden=True, coredumps=True
-        )
+        unit = self._sibling_unit(rust_backtrace="full", colorbt_show_hidden=True, coredumps=True)
         parsed = parse_node_unit(unit)
         assert parsed["rust_backtrace"] == "full"
         assert parsed["colorbt_show_hidden"] is True

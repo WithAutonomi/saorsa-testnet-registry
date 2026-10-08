@@ -19,6 +19,7 @@ Sources, and why each is the one used:
 * **Audit and wire-traffic counters** are cumulative per service, emitted every
   300 s, so a phase delta covers whole samples only.
 """
+
 from __future__ import annotations
 
 import json
@@ -152,8 +153,7 @@ def influx_udp_summary(
     """
     by_host = per_host_udp_means(rows)
     plain = {
-        h: v for h, v in by_host.items()
-        if h.lower() in node_hosts and h.lower() not in nat_hosts
+        h: v for h, v in by_host.items() if h.lower() in node_hosts and h.lower() not in nat_hosts
     }
     nat_seen = {h: v for h, v in by_host.items() if h.lower() in nat_hosts}
     per_host_mean = list(plain.values())

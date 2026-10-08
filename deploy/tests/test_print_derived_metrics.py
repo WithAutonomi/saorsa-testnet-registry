@@ -6,6 +6,7 @@ in the `host_metrics` JSON, derived metrics are a new table — so the renderer
 must show nothing at all for runs recorded before they existed, rather than a
 table of dashes implying a measurement of zero.
 """
+
 import io
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -65,9 +66,7 @@ class TestDiskUsageBackwardsCompatibility:
         assert _render(_print_disk_usage_table, []) == ""
 
     def test_empty_mount_map_renders_nothing(self):
-        assert _render(
-            _print_disk_usage_table, [{"host": "n1", "disk_usage_by_mount": {}}]
-        ) == ""
+        assert _render(_print_disk_usage_table, [{"host": "n1", "disk_usage_by_mount": {}}]) == ""
 
 
 class TestDiskUsageRendering:
@@ -91,15 +90,13 @@ class TestDiskUsageRendering:
             "disk_usage_by_mount": {
                 NODE_MOUNT: {
                     "volume_role": "node-storage",
-                    "used_bytes": _usage(
-                        BYTES_PER_GB, 2 * BYTES_PER_GB, maximum=9 * BYTES_PER_GB
-                    ),
+                    "used_bytes": _usage(BYTES_PER_GB, 2 * BYTES_PER_GB, maximum=9 * BYTES_PER_GB),
                 }
             },
         }
         output = _render(_print_disk_usage_table, [entry])
-        assert "1.00 GB" in output   # growth
-        assert "8.00 GB" in output   # spread
+        assert "1.00 GB" in output  # growth
+        assert "8.00 GB" in output  # spread
 
 
 def _metric(

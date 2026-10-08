@@ -13,12 +13,7 @@ from pathlib import Path
 
 import pytest
 
-CLIENT_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "saorsa_deploy"
-    / "resources"
-    / "wasm-client"
-)
+CLIENT_DIR = Path(__file__).resolve().parents[1] / "saorsa_deploy" / "resources" / "wasm-client"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("node") is None or shutil.which("npm") is None,

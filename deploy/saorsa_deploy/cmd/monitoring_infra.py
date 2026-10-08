@@ -31,12 +31,8 @@ def cmd_monitoring_infra(args):
     provider = resolve_provider(args)
     region = getattr(args, "region", None) or default_region(provider)
     volume_size = getattr(args, "volume_size", None) or 50
-    droplet_size = (
-        getattr(args, "droplet_size", None) or default_influxdb_size(provider)
-    )
-    grafana_size = (
-        getattr(args, "grafana_size", None) or default_grafana_size(provider)
-    )
+    droplet_size = getattr(args, "droplet_size", None) or default_influxdb_size(provider)
+    grafana_size = getattr(args, "grafana_size", None) or default_grafana_size(provider)
     # Grafana is opt-in (off by default). The Terraform module still receives a
     # grafana size; it's simply ignored when enable_grafana is false.
     enable_grafana = bool(getattr(args, "grafana", False))
@@ -89,9 +85,7 @@ def cmd_monitoring_infra(args):
                     ".[/dim]"
                 )
             except Exception as e:
-                console.print(
-                    f"[yellow]Warning: Failed to update monitoring state: {e}[/yellow]"
-                )
+                console.print(f"[yellow]Warning: Failed to update monitoring state: {e}[/yellow]")
         return
 
     if check_terraform_state_exists(state_key):
@@ -100,9 +94,7 @@ def cmd_monitoring_infra(args):
             console.print(f"  {state_key}")
             console.print("Use --force to delete and proceed.")
             sys.exit(1)
-        console.print(
-            f"[yellow]Warning: Deleting stale Terraform state: {state_key}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Deleting stale Terraform state: {state_key}[/yellow]")
         delete_terraform_state(state_key)
 
     if provider == "ovh":
@@ -200,12 +192,8 @@ def cmd_monitoring_infra(args):
                 f"{args.name} --force`.[/dim]"
             )
     except Exception as e:
-        console.print(
-            f"[bold red]Error: Failed to save monitoring state: {e}[/bold red]"
-        )
-        console.print(
-            "[bold red]The monitoring VM was created but state was not saved.[/bold red]"
-        )
+        console.print(f"[bold red]Error: Failed to save monitoring state: {e}[/bold red]")
+        console.print("[bold red]The monitoring VM was created but state was not saved.[/bold red]")
         console.print(
             "[bold red]The VM must be destroyed manually to avoid orphaned resources.[/bold red]"
         )

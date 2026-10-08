@@ -144,8 +144,7 @@ class TestCleanProvisionerExecute:
         p.execute()
 
         all_cmds = " ".join(
-            " ".join(call.kwargs.get("commands", []))
-            for call in mock_add_op.call_args_list
+            " ".join(call.kwargs.get("commands", [])) for call in mock_add_op.call_args_list
         )
         assert "telegraf-ant-metrics" not in all_cmds
         assert "telegraf-metrics" not in all_cmds
@@ -173,8 +172,7 @@ class TestCleanProvisionerExecute:
         p.execute()
 
         all_cmds = " ".join(
-            " ".join(call.kwargs.get("commands", []))
-            for call in mock_add_op.call_args_list
+            " ".join(call.kwargs.get("commands", [])) for call in mock_add_op.call_args_list
         )
         assert "apt-get remove" not in all_cmds
         assert "apt remove" not in all_cmds
@@ -204,8 +202,7 @@ class TestCleanProvisionerExecute:
         p.execute()
 
         all_cmds = " ".join(
-            " ".join(call.kwargs.get("commands", []))
-            for call in mock_add_op.call_args_list
+            " ".join(call.kwargs.get("commands", [])) for call in mock_add_op.call_args_list
         )
         assert "ant-node" not in all_cmds
 
@@ -249,13 +246,17 @@ class TestCmdCleanElastic:
         from saorsa_deploy.cmd.clean_elastic import cmd_clean_elastic
 
         inv = tmp_path / "inventory.json"
-        inv.write_text(json.dumps({
-            "node_vms": [
-                {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
-                {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id"},
-                {"ip": "10.0.0.3", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
-            ]
-        }))
+        inv.write_text(
+            json.dumps(
+                {
+                    "node_vms": [
+                        {"ip": "10.0.0.1", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
+                        {"ip": "10.0.0.2", "ssh_user": "root", "ssh_key": "~/.ssh/id"},
+                        {"ip": "10.0.0.3", "ssh_user": "ubuntu", "ssh_key": "~/.ssh/k"},
+                    ]
+                }
+            )
+        )
         mock_provisioner_cls.return_value.execute.return_value = None
 
         args = SimpleNamespace(
@@ -270,9 +271,7 @@ class TestCmdCleanElastic:
         # One provisioner per credential group
         assert mock_provisioner_cls.call_count == 2
         calls = mock_provisioner_cls.call_args_list
-        ubuntu_call = next(
-            c for c in calls if c.kwargs["ssh_user"] == "ubuntu"
-        )
+        ubuntu_call = next(c for c in calls if c.kwargs["ssh_user"] == "ubuntu")
         assert sorted(ubuntu_call.kwargs["host_ips"]) == ["10.0.0.1", "10.0.0.3"]
         assert ubuntu_call.kwargs["ssh_key_path"] == "~/.ssh/k"
 

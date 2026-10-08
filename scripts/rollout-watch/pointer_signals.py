@@ -186,7 +186,11 @@ def evaluate_background_tasks(
         es,
         [
             *base,
-            {"wildcard": {MESSAGE_KEYWORD_FIELD: f"*with {expected} background tasks*"}},
+            {
+                "wildcard": {
+                    MESSAGE_KEYWORD_FIELD: f"*with {expected} background tasks*"
+                }
+            },
         ],
         start,
         end,
@@ -210,9 +214,7 @@ def evaluate_background_tasks(
     )
 
 
-def evaluate_commitment(
-    es: EsClient, start, end, to_version: str, arms: Arms
-) -> Check:
+def evaluate_commitment(es: EsClient, start, end, to_version: str, arms: Arms) -> Check:
     """Rotated commitments on the new arm carry the `pointers=` field."""
     name = "commitment rotation reports pointer leaves"
     base = [{"match_phrase": {MESSAGE_FIELD: COMMITMENT_PHRASE}}]
@@ -348,9 +350,7 @@ def evaluate_rpc_errors(rpc: dict) -> Check:
                 "pointer is written by hand."
             ),
         )
-    errors = sum(
-        outcomes.get("error", 0) for outcomes in rpc["events"].values()
-    )
+    errors = sum(outcomes.get("error", 0) for outcomes in rpc["events"].values())
     if errors:
         return Check(
             name=name,

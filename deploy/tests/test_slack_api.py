@@ -1,4 +1,5 @@
 """Unit tests for the Slack Web API client (saorsa_deploy.slack_api)."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,9 +24,7 @@ def _resp(ok=True, status=200, body=None):
 
 def test_post_message_returns_channel_and_ts():
     body = {"ok": True, "channel": "C123", "ts": "1700000000.000100"}
-    with patch(
-        "saorsa_deploy.slack_api.requests.post", return_value=_resp(body=body)
-    ) as m:
+    with patch("saorsa_deploy.slack_api.requests.post", return_value=_resp(body=body)) as m:
         ref = post_message("tok", "C123", "hello", blocks=[{"type": "section"}])
 
     assert ref == SlackMessageRef(channel="C123", ts="1700000000.000100")
@@ -38,9 +37,7 @@ def test_post_message_returns_channel_and_ts():
 
 def test_post_reply_sets_thread_ts():
     body = {"ok": True, "channel": "C123", "ts": "1700000000.000200"}
-    with patch(
-        "saorsa_deploy.slack_api.requests.post", return_value=_resp(body=body)
-    ) as m:
+    with patch("saorsa_deploy.slack_api.requests.post", return_value=_resp(body=body)) as m:
         ref = post_reply("tok", "C123", "1700000000.000100", "reply", blocks=[])
 
     assert ref.ts == "1700000000.000200"
@@ -49,9 +46,7 @@ def test_post_reply_sets_thread_ts():
 
 def test_api_level_error_raises_with_code():
     body = {"ok": False, "error": "channel_not_found"}
-    with patch(
-        "saorsa_deploy.slack_api.requests.post", return_value=_resp(body=body)
-    ):
+    with patch("saorsa_deploy.slack_api.requests.post", return_value=_resp(body=body)):
         with pytest.raises(SlackApiError) as ei:
             post_message("tok", "nope", "hi")
     assert ei.value.error == "channel_not_found"

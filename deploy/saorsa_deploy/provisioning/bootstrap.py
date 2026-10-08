@@ -281,9 +281,7 @@ class AntBootstrapNodeProvisioner:
                 commands=[f"mkdir -p {LOG_DIR}/{self.service_name}"],
             )
 
-            install_cmd = _build_binary_install_command(
-                download_url, self.binary_is_archive
-            )
+            install_cmd = _build_binary_install_command(download_url, self.binary_is_archive)
             add_op(
                 state,
                 server.shell,
@@ -440,8 +438,7 @@ class AntBootstrapNodesProvisioner:
             self.console.print(f"  Release URL: {download_url}")
 
         hosts_data = [
-            (n["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path})
-            for n in self.nodes
+            (n["ip"], {"ssh_user": "root", "ssh_key": self.ssh_key_path}) for n in self.nodes
         ]
         inventory = Inventory((hosts_data, {}))
         state = State(inventory=inventory, config=Config())
@@ -455,9 +452,7 @@ class AntBootstrapNodesProvisioner:
 
         connect_seconds = None
         try:
-            self.console.print(
-                f"Connecting to {len(self.nodes)} bootstrap host(s) as root..."
-            )
+            self.console.print(f"Connecting to {len(self.nodes)} bootstrap host(s) as root...")
             _connect_start = time.monotonic()
             connect_all(state)
             connect_seconds = time.monotonic() - _connect_start
@@ -488,9 +483,7 @@ class AntBootstrapNodesProvisioner:
                 state,
                 server.shell,
                 name="Download and install ant-node binary",
-                commands=[
-                    _build_binary_install_command(download_url, self.binary_is_archive)
-                ],
+                commands=[_build_binary_install_command(download_url, self.binary_is_archive)],
             )
 
             # Per-host setup (hostname / log dir / unit file): each host's
@@ -544,8 +537,7 @@ class AntBootstrapNodesProvisioner:
         succeeded = total - len(failed)
         self.console.print()
         self.console.print(
-            f"[bold]Bootstrap provisioning complete: "
-            f"{succeeded}/{total} host(s) succeeded[/bold]"
+            f"[bold]Bootstrap provisioning complete: {succeeded}/{total} host(s) succeeded[/bold]"
         )
         print_op_timing_summary(
             self.console,

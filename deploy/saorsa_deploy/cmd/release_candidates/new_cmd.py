@@ -64,9 +64,7 @@ def _load_payload(args) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        sys.stderr.write(
-            f"release-candidates new: invalid JSON from {source}: {exc}\n"
-        )
+        sys.stderr.write(f"release-candidates new: invalid JSON from {source}: {exc}\n")
         sys.exit(2)
 
 
@@ -81,9 +79,7 @@ def _validate(payload: dict) -> None:
         sys.exit(2)
     crates = payload.get("crates")
     if not isinstance(crates, list) or not crates:
-        sys.stderr.write(
-            "release-candidates new: payload missing non-empty 'crates' list\n"
-        )
+        sys.stderr.write("release-candidates new: payload missing non-empty 'crates' list\n")
         sys.exit(2)
     for i, c in enumerate(crates):
         missing = [k for k in _REQUIRED_CRATE if not c.get(k)]
@@ -103,9 +99,7 @@ def cmd_release_candidates_new(args):
 
     repo = require_rc_repository()
 
-    existing = repo.get_by_binary_version(
-        payload["binary_target"], payload["binary_version"]
-    )
+    existing = repo.get_by_binary_version(payload["binary_target"], payload["binary_version"])
     if existing is not None:
         rc = existing
         console.print(
@@ -146,14 +140,9 @@ def cmd_release_candidates_new(args):
                 since_sha=crate_payload.get("since_sha"),
                 head_sha=crate_payload.get("head_sha"),
             )
-            console.print(
-                f"  [green]+ crate[/green] {crate_name} {crate.version}"
-            )
+            console.print(f"  [green]+ crate[/green] {crate_name} {crate.version}")
 
         prs = crate_payload.get("prs") or []
         if prs:
             created = repo.add_prs(crate.id, prs)
-            console.print(
-                f"      attached {len(created)} new PR(s) "
-                f"(payload contained {len(prs)})"
-            )
+            console.print(f"      attached {len(created)} new PR(s) (payload contained {len(prs)})")

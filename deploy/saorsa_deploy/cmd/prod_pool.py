@@ -157,9 +157,7 @@ class _AddReport:
         console.print()
         console.print(f"  added    {len(self.added):>4}" + (f"   {spread}" if spread else ""))
         if self.skipped_existing:
-            console.print(
-                f"  skipped  {self.skipped_existing:>4}   already in the pool"
-            )
+            console.print(f"  skipped  {self.skipped_existing:>4}   already in the pool")
         if self.linked_duplicates:
             console.print(
                 f"  linked   {len(self.linked_duplicates):>4}   same content as an "
@@ -189,8 +187,15 @@ class _AddReport:
 
 
 def _add_url(
-    repo, console: Console, report: _AddReport, url: str, *, tags, provenance,
-    allow_unknown_size: bool, digests: dict[str, str] | None = None,
+    repo,
+    console: Console,
+    report: _AddReport,
+    url: str,
+    *,
+    tags,
+    provenance,
+    allow_unknown_size: bool,
+    digests: dict[str, str] | None = None,
 ) -> None:
     existing = repo.get_pool_file_by_locator(url)
     if existing is not None:
@@ -224,7 +229,13 @@ def _add_url(
 
 
 def _add_local(
-    repo, console: Console, report: _AddReport, path: Path, *, tags, provenance,
+    repo,
+    console: Console,
+    report: _AddReport,
+    path: Path,
+    *,
+    tags,
+    provenance,
     do_hash: bool,
 ) -> None:
     locator = str(path.resolve())
@@ -314,11 +325,19 @@ def _with_progress(console, items, label: str, verbose: bool, describe):
 
 
 def _truncate(text: str, width: int = 48) -> str:
-    return text if len(text) <= width else "…" + text[-(width - 1):]
+    return text if len(text) <= width else "…" + text[-(width - 1) :]
 
 
 def _add_local_bulk(
-    repo, console, report, files, *, tags, provenance, do_hash, verbose,
+    repo,
+    console,
+    report,
+    files,
+    *,
+    tags,
+    provenance,
+    do_hash,
+    verbose,
     batch_size: int = 500,
 ) -> None:
     """Catalogue a directory in batches rather than a round-trip per file.
@@ -344,9 +363,7 @@ def _add_local_bulk(
         # Without saying so, the command looks hung at exactly the point where
         # the per-file progress has stopped moving.
         if progress is not None:
-            progress.update(
-                task, description=f"saving {len(pending)} to the registry…"
-            )
+            progress.update(task, description=f"saving {len(pending)} to the registry…")
         elif verbose:
             console.print(f"[dim]  saving {len(pending)} file(s) to the registry…[/dim]")
         result = repo.add_pool_files_bulk(pending, batch_size=batch_size)
@@ -448,7 +465,10 @@ def cmd_prod_pool_add(args) -> None:
         else:
             console.print(f"Resolving {len(urls)} URL(s)…")
             for url in _with_progress(
-                console, urls, "resolving", getattr(args, "verbose", False),
+                console,
+                urls,
+                "resolving",
+                getattr(args, "verbose", False),
                 lambda u: _url_name(u),
             ):
                 _add_url(
@@ -473,8 +493,13 @@ def cmd_prod_pool_add(args) -> None:
                 "they cannot be recognised as the same content as a URL entry."
             )
         _add_local_bulk(
-            repo, console, report, files,
-            tags=tags, provenance=provenance, do_hash=args.hash,
+            repo,
+            console,
+            report,
+            files,
+            tags=tags,
+            provenance=provenance,
+            do_hash=args.hash,
             verbose=getattr(args, "verbose", False),
         )
     else:
@@ -483,8 +508,13 @@ def cmd_prod_pool_add(args) -> None:
             console.print(f"[bold red]Error:[/bold red] {path} is not a file.")
             sys.exit(1)
         _add_local(
-            repo, console, report, path,
-            tags=tags, provenance=provenance, do_hash=args.hash,
+            repo,
+            console,
+            report,
+            path,
+            tags=tags,
+            provenance=provenance,
+            do_hash=args.hash,
         )
 
     report.render(console)
@@ -501,7 +531,10 @@ def _materialise_urls(repo, console, report, urls, args, tags, provenance) -> No
     console.print(f"Materialising {len(urls)} URL(s) into {target}…")
     for index, url in enumerate(
         _with_progress(
-            console, urls, "downloading", getattr(args, "verbose", False),
+            console,
+            urls,
+            "downloading",
+            getattr(args, "verbose", False),
             lambda u: _url_name(u),
         ),
         start=1,
@@ -516,7 +549,10 @@ def _materialise_urls(repo, console, report, urls, args, tags, provenance) -> No
                 report.failed.append((url, f"download failed: {exc}"))
                 continue
         _add_local(
-            repo, console, report, dest,
+            repo,
+            console,
+            report,
+            dest,
             tags=tags,
             # Keep the origin: a materialised file is only auditable if we can
             # still say where its bytes came from.
@@ -528,13 +564,10 @@ def _materialise_urls(repo, console, report, urls, args, tags, provenance) -> No
 def format_pool_file_line(pool_file) -> str:
     size = format_size(pool_file.size_bytes)
     size_class = (
-        classify(pool_file.size_bytes).value
-        if pool_file.size_bytes is not None
-        else "unknown"
+        classify(pool_file.size_bytes).value if pool_file.size_bytes is not None else "unknown"
     )
     return (
-        f"#{pool_file.id}  {pool_file.kind.value:<6} {size_class:<7} "
-        f"{size:>11}  {pool_file.name}"
+        f"#{pool_file.id}  {pool_file.kind.value:<6} {size_class:<7} {size:>11}  {pool_file.name}"
     )
 
 
@@ -592,17 +625,11 @@ def cmd_prod_pool_list(args) -> None:
     try:
         # Inside the guard: an unknown size class, size bound or status must
         # report itself, not raise a traceback at the operator.
-        size_class = (
-            parse_size_class(args.size) if getattr(args, "size", None) else None
-        )
+        size_class = parse_size_class(args.size) if getattr(args, "size", None) else None
         # The same bounds a manifest applies, so inventory can be checked
         # against the exact selection a run will make.
-        min_size_bytes = (
-            parse_size(args.min_size) if getattr(args, "min_size", None) else None
-        )
-        max_size_bytes = (
-            parse_size(args.max_size) if getattr(args, "max_size", None) else None
-        )
+        min_size_bytes = parse_size(args.min_size) if getattr(args, "min_size", None) else None
+        max_size_bytes = parse_size(args.max_size) if getattr(args, "max_size", None) else None
         rows = repo.list_pool_files(
             kind=kind,
             size_class=size_class,
@@ -691,8 +718,7 @@ def cmd_prod_pool_show(args) -> None:
         pool_file = repo.get_pool_file_by_address(args.address)
         if pool_file is None:
             console.print(
-                f"[yellow]No pooled file recorded against address "
-                f"{args.address}.[/yellow]"
+                f"[yellow]No pooled file recorded against address {args.address}.[/yellow]"
             )
             return
     else:
@@ -705,13 +731,9 @@ def cmd_prod_pool_show(args) -> None:
     # A partial claim does not block, so open_claim_for_file returns None for
     # it. Falling back here is what stops a file with chunks already stored
     # rendering as though nothing had ever happened to it.
-    partial_claim = (
-        repo.latest_partial_claim_for_file(pool_file.id) if claim is None else None
-    )
+    partial_claim = repo.latest_partial_claim_for_file(pool_file.id) if claim is None else None
     size_class = (
-        classify(pool_file.size_bytes).value
-        if pool_file.size_bytes is not None
-        else "unknown"
+        classify(pool_file.size_bytes).value if pool_file.size_bytes is not None else "unknown"
     )
 
     console.print()
@@ -741,18 +763,13 @@ def cmd_prod_pool_show(args) -> None:
         total = partial_claim.total_chunks
         if total:
             console.print(
-                f"        progress  {stored or 0} of {total} chunk(s) stored on "
-                "an earlier attempt"
+                f"        progress  {stored or 0} of {total} chunk(s) stored on an earlier attempt"
             )
         else:
-            console.print(
-                "        progress  an earlier upload stored some chunks and "
-                "stopped"
-            )
+            console.print("        progress  an earlier upload stored some chunks and stopped")
         when = _aware(partial_claim.resolved_at or partial_claim.claimed_at)
         console.print(
-            f"        attempt   {_claim_owner(partial_claim)}"
-            f"        {when:%Y-%m-%d %H:%M}"
+            f"        attempt   {_claim_owner(partial_claim)}        {when:%Y-%m-%d %H:%M}"
         )
         if partial_claim.address:
             console.print(f"        address   {partial_claim.address}")
@@ -767,8 +784,10 @@ def cmd_prod_pool_show(args) -> None:
     if claim is not None:
         owner = _claim_owner(claim)
         when = claim.resolved_at or claim.claimed_at
-        console.print(f"        {'run' if claim.deployment_name else 'by':<9} {owner}"
-                      f"        {when:%Y-%m-%d %H:%M}")
+        console.print(
+            f"        {'run' if claim.deployment_name else 'by':<9} {owner}"
+            f"        {when:%Y-%m-%d %H:%M}"
+        )
         if claim.locator_used and claim.locator_used != pool_file.locator:
             console.print(f"        fetched   {claim.locator_used}")
         if claim.address:
@@ -943,11 +962,7 @@ def cmd_prod_pool_checkout(args) -> None:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
 
-    existing = [
-        claim
-        for claim in repo.list_pool_claims(label=label)
-        if claim.is_open
-    ]
+    existing = [claim for claim in repo.list_pool_claims(label=label) if claim.is_open]
 
     if args.reuse_open:
         if not existing:
@@ -957,7 +972,10 @@ def cmd_prod_pool_checkout(args) -> None:
             )
             return
         _print_claims_table(
-            console, repo, existing, now=now,
+            console,
+            repo,
+            existing,
+            now=now,
             title=f"\nReusing the open claim(s) already held by '{label}':\n",
         )
         _print_resolution_hint(console, existing)
@@ -970,13 +988,9 @@ def cmd_prod_pool_checkout(args) -> None:
         console.print(
             f"\n[yellow]Note:[/yellow] '{label}' has {len(existing)} unresolved "
             f"claim(s): "
-            + ", ".join(
-                f"#{c.file_id} ({_format_age(c.claimed_at, now)})" for c in existing[:5]
-            )
+            + ", ".join(f"#{c.file_id} ({_format_age(c.claimed_at, now)})" for c in existing[:5])
         )
-        console.print(
-            f"[dim]      Resolve them with: prod pool claims --consumer {label}[/dim]"
-        )
+        console.print(f"[dim]      Resolve them with: prod pool claims --consumer {label}[/dim]")
 
     try:
         claims = repo.claim_pool_files(
@@ -1001,9 +1015,7 @@ def cmd_prod_pool_checkout(args) -> None:
         console.print(f"        {claim.locator_used or pool_file.locator}")
         for digest in sorted(pool_file.digests, key=lambda d: d.algo):
             console.print(f"[dim]        {digest.algo} {digest.value}[/dim]")
-    console.print(
-        "\nThese file(s) are now unavailable to every other consumer."
-    )
+    console.print("\nThese file(s) are now unavailable to every other consumer.")
     _print_resolution_hint(console, claims)
 
 
@@ -1011,8 +1023,7 @@ def _print_resolution_hint(console, claims) -> None:
     ids = " ".join(str(c.file_id) for c in claims)
     console.print("When the upload finishes:")
     console.print(
-        f"  saorsa-deploy prod pool mark-uploaded {claims[0].file_id} "
-        "--address <datamap-address>"
+        f"  saorsa-deploy prod pool mark-uploaded {claims[0].file_id} --address <datamap-address>"
     )
     console.print("If it did not happen:")
     console.print(f"  saorsa-deploy prod pool release {ids}")
@@ -1071,8 +1082,7 @@ def cmd_prod_pool_claims(args) -> None:
         )
     if manual:
         console.print(
-            f"  {len(manual)} need you:  prod pool mark-uploaded <file> "
-            "--address <datamap>"
+            f"  {len(manual)} need you:  prod pool mark-uploaded <file> --address <datamap>"
         )
         console.print("                     prod pool release <file>")
     if getattr(args, "unresolvable", False) and claims:
@@ -1119,9 +1129,7 @@ def cmd_prod_pool_history(args) -> None:
         if claim.resolved_at:
             resolved = _aware(claim.resolved_at)
             detail = f" address {claim.address}" if claim.address else ""
-            console.print(
-                f"  {resolved:%Y-%m-%d %H:%M}  → {claim.status.value}{detail}"
-            )
+            console.print(f"  {resolved:%Y-%m-%d %H:%M}  → {claim.status.value}{detail}")
         if claim.note:
             console.print(f"[dim]                      note: {claim.note}[/dim]")
     console.print()
@@ -1152,9 +1160,7 @@ def cmd_prod_pool_release(args) -> None:
         except ValueError as exc:
             console.print(f"[bold red]Error:[/bold red] {exc}")
             sys.exit(1)
-        console.print(
-            f"Released #{file_id} ({pool_file.name}) — available again."
-        )
+        console.print(f"Released #{file_id} ({pool_file.name}) — available again.")
 
 
 def cmd_prod_pool_mark_uploaded(args) -> None:
@@ -1193,15 +1199,11 @@ def cmd_prod_pool_mark_uploaded(args) -> None:
     )
     duplicates = repo.list_pool_files(active=None)
     also_spent = [
-        f.id
-        for f in duplicates
-        if f.duplicate_of == claim.file_id and f.id != pool_file.id
+        f.id for f in duplicates if f.duplicate_of == claim.file_id and f.id != pool_file.id
     ]
     if also_spent:
         console.print(
-            "[dim]  Also spent (same content): "
-            + ", ".join(f"#{i}" for i in also_spent)
-            + "[/dim]"
+            "[dim]  Also spent (same content): " + ", ".join(f"#{i}" for i in also_spent) + "[/dim]"
         )
 
 
@@ -1221,9 +1223,7 @@ def cmd_prod_pool_verify(args) -> None:
     repo = _require_repo(console)
 
     kind = PoolFileKind(args.kind) if getattr(args, "kind", None) else None
-    rows = repo.list_pool_files(
-        kind=kind, active=True, limit=getattr(args, "limit", None)
-    )
+    rows = repo.list_pool_files(kind=kind, active=True, limit=getattr(args, "limit", None))
     if not rows:
         console.print("[yellow]Nothing to verify.[/yellow]")
         return
@@ -1236,7 +1236,10 @@ def cmd_prod_pool_verify(args) -> None:
     undigested: list = []
 
     for row in _with_progress(
-        console, rows, "verifying", getattr(args, "verbose", False),
+        console,
+        rows,
+        "verifying",
+        getattr(args, "verbose", False),
         lambda r: r.name,
     ):
         if not row.digests:
@@ -1276,9 +1279,7 @@ def cmd_prod_pool_verify(args) -> None:
         for row, before, after in resized[:10]:
             # A size change can move an entry between classes, which changes
             # which requests can ever draw it.
-            before_class = (
-                classify(before).value if before is not None else "unknown"
-            )
+            before_class = classify(before).value if before is not None else "unknown"
             after_class = classify(after).value
             note = (
                 f"  [yellow](now {after_class}, was {before_class})[/yellow]"
@@ -1500,32 +1501,34 @@ def cmd_prod_pool_import_history(args) -> None:
         + "…"
     )
 
-    lookup = _deployment_lookup(
-        deployment_repo, [row[8] for row in history if row[8] is not None]
-    )
+    lookup = _deployment_lookup(deployment_repo, [row[8] for row in history if row[8] is not None])
 
     # Scope to one deployment when asked. The whole history is the default,
     # since the command exists to keep the pool honest about everything already
     # on the network.
     wanted = getattr(args, "deployment", None)
     if wanted:
-        keep = {
-            did for did, (_, dname) in lookup.items() if dname == wanted
-        }
+        keep = {did for did, (_, dname) in lookup.items() if dname == wanted}
         if not keep:
             console.print(
-                f"[bold red]Error:[/bold red] no deployment named '{wanted}' has "
-                "recorded uploads."
+                f"[bold red]Error:[/bold red] no deployment named '{wanted}' has recorded uploads."
             )
             sys.exit(1)
         history = [row for row in history if row[8] in keep]
-        console.print(
-            f"[dim]Scoped to {wanted}: {len(history)} recorded upload(s).[/dim]"
-        )
+        console.print(f"[dim]Scoped to {wanted}: {len(history)} recorded upload(s).[/dim]")
 
     for (
-        name, source_url, size, address, chunks, storage, gas, when, deployment_id,
-        known_source, complete,
+        name,
+        source_url,
+        size,
+        address,
+        chunks,
+        storage,
+        gas,
+        when,
+        deployment_id,
+        known_source,
+        complete,
     ) in history:
         resolved_source, deployment_name = lookup.get(
             deployment_id, (ClaimSource.PROD_UPLOADERS, None)
@@ -1571,11 +1574,7 @@ def cmd_prod_pool_import_history(args) -> None:
             )
             continue
         target = candidates[0]
-        if (
-            size is not None
-            and target.size_bytes is not None
-            and size != target.size_bytes
-        ):
+        if size is not None and target.size_bytes is not None and size != target.size_bytes:
             size_mismatch.append((name, target.size_bytes, size))
 
         open_claim = repo.open_claim_for_file(target.id)
@@ -1587,10 +1586,7 @@ def cmd_prod_pool_import_history(args) -> None:
             if (
                 open_claim.note
                 and "imported from recorded" in open_claim.note
-                and (
-                    open_claim.source is not source
-                    or open_claim.deployment_id != deployment_id
-                )
+                and (open_claim.source is not source or open_claim.deployment_id != deployment_id)
             ):
                 if not args.dry_run:
                     repo.reattribute_pool_claim(
@@ -1658,13 +1654,10 @@ def cmd_prod_pool_import_history(args) -> None:
         )
     if corrected:
         console.print(
-            f"  corrected  {corrected:>5}   attribution fixed on a previously "
-            "imported claim"
+            f"  corrected  {corrected:>5}   attribution fixed on a previously imported claim"
         )
     console.print(f"  already    {already:>5}   pool entry was spent or claimed")
-    console.print(
-        f"  unmatched  {unmatched:>5}   uploaded historically, not in the pool"
-    )
+    console.print(f"  unmatched  {unmatched:>5}   uploaded historically, not in the pool")
     if unmatched:
         # Expected, not a fault: the history long predates the catalogue. Said
         # plainly so the numbers are not read as a failure to cover something.
@@ -1717,9 +1710,7 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(1)
 
-    console.print(
-        f"{args.from_listing}: {len(candidates)} file(s) offered"
-    )
+    console.print(f"{args.from_listing}: {len(candidates)} file(s) offered")
 
     wanted_class = None
     min_bytes = max_bytes = None
@@ -1772,16 +1763,16 @@ def _add_from_listing(repo, console, report, args, tags, provenance) -> None:
     if args.dry_run:
         console.print("\n[dim]Dry run — nothing was written.[/dim]")
         for candidate in selected[:20]:
-            console.print(
-                f"[dim]  {format_size(candidate.size_bytes):>11}  "
-                f"{candidate.name}[/dim]"
-            )
+            console.print(f"[dim]  {format_size(candidate.size_bytes):>11}  {candidate.name}[/dim]")
         if len(selected) > 20:
             console.print(f"[dim]  … and {len(selected) - 20} more[/dim]")
         return
 
     for candidate in _with_progress(
-        console, selected, "cataloguing", getattr(args, "verbose", False),
+        console,
+        selected,
+        "cataloguing",
+        getattr(args, "verbose", False),
         lambda c: c.name,
     ):
         existing = repo.get_pool_file_by_locator(candidate.url)
@@ -1835,9 +1826,7 @@ def _catalogue_history_entries(repo, entries: list[dict], console) -> int:
         seeded = repo.seed_uploaded_claim(
             record.id,
             source=claim["source"],
-            status=(
-                ClaimStatus.UPLOADED if claim["complete"] else ClaimStatus.PARTIAL
-            ),
+            status=(ClaimStatus.UPLOADED if claim["complete"] else ClaimStatus.PARTIAL),
             address=claim["address"],
             chunks_stored=claim["chunks"][0],
             chunks_failed=claim["chunks"][1],
@@ -1853,7 +1842,6 @@ def _catalogue_history_entries(repo, entries: list[dict], console) -> int:
             created += 1
     if result["skipped"]:
         console.print(
-            f"[dim]  {result['skipped']} were already catalogued under the same "
-            "locator.[/dim]"
+            f"[dim]  {result['skipped']} were already catalogued under the same locator.[/dim]"
         )
     return created

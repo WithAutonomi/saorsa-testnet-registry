@@ -184,14 +184,10 @@ class SurveyComparison:
         A zero on either side is not a disagreement about direction, so both
         must be non-zero and of opposite sign.
         """
-        return (self.raw_delta < 0 < self.common_delta) or (
-            self.common_delta < 0 < self.raw_delta
-        )
+        return (self.raw_delta < 0 < self.common_delta) or (self.common_delta < 0 < self.raw_delta)
 
 
-def compare_host_data(
-    previous: dict[str, int], latest: dict[str, int]
-) -> SurveyComparison:
+def compare_host_data(previous: dict[str, int], latest: dict[str, int]) -> SurveyComparison:
     """Compare two ``{host: node_data_bytes}`` mappings.
 
     ``dropped_hosts`` are hosts the previous run measured and this one did not

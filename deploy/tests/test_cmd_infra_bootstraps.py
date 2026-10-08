@@ -22,28 +22,14 @@ def _args(**overrides):
 @pytest.fixture
 def patches():
     with (
-        patch(
-            "saorsa_deploy.cmd.infra_bootstraps.record_deployment_created"
-        ) as p_record_create,
+        patch("saorsa_deploy.cmd.infra_bootstraps.record_deployment_created") as p_record_create,
         patch("saorsa_deploy.cmd.infra_bootstraps.record_event") as p_record_event,
-        patch(
-            "saorsa_deploy.cmd.infra_bootstraps.load_deployment_state"
-        ) as p_load_state,
-        patch(
-            "saorsa_deploy.cmd.infra_bootstraps.list_stale_bootstrap_state_keys"
-        ) as p_list_stale,
-        patch(
-            "saorsa_deploy.cmd.infra_bootstraps.purge_stale_bootstrap_state"
-        ) as p_purge_stale,
-        patch(
-            "saorsa_deploy.cmd.infra_bootstraps.create_bootstrap_vms"
-        ) as p_create_boot,
-        patch(
-            "saorsa_deploy.cmd.infra_bootstraps.save_deployment_state"
-        ) as p_save_state,
-        patch(
-            "saorsa_deploy.cmd.infra_bootstraps.update_deployment_state"
-        ) as p_update_state,
+        patch("saorsa_deploy.cmd.infra_bootstraps.load_deployment_state") as p_load_state,
+        patch("saorsa_deploy.cmd.infra_bootstraps.list_stale_bootstrap_state_keys") as p_list_stale,
+        patch("saorsa_deploy.cmd.infra_bootstraps.purge_stale_bootstrap_state") as p_purge_stale,
+        patch("saorsa_deploy.cmd.infra_bootstraps.create_bootstrap_vms") as p_create_boot,
+        patch("saorsa_deploy.cmd.infra_bootstraps.save_deployment_state") as p_save_state,
+        patch("saorsa_deploy.cmd.infra_bootstraps.update_deployment_state") as p_update_state,
     ):
         p_list_stale.return_value = []
         yield SimpleNamespace(
@@ -168,9 +154,7 @@ class TestDoRegionsList:
             {"ip": "5.6.7.8", "region": "lon1", "bootstrap_index": 2},
         ]
 
-        cmd_infra_bootstraps(
-            _args(bootstrap_count=7, do_regions_list="fra1, lon1")
-        )
+        cmd_infra_bootstraps(_args(bootstrap_count=7, do_regions_list="fra1, lon1"))
 
         patches.create_boot.assert_called_once()
         kwargs = patches.create_boot.call_args.kwargs

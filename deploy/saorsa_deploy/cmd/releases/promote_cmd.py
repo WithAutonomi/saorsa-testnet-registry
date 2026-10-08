@@ -79,9 +79,7 @@ def _validate(payload):
 
     missing = [key for key in _REQUIRED_TOP if not payload.get(key)]
     if missing:
-        sys.stderr.write(
-            f"releases promote: payload missing {', '.join(missing)}.\n"
-        )
+        sys.stderr.write(f"releases promote: payload missing {', '.join(missing)}.\n")
         sys.exit(2)
 
     crates = payload.get("crates") or []
@@ -90,17 +88,12 @@ def _validate(payload):
         sys.exit(2)
     for index, crate in enumerate(crates):
         if not isinstance(crate, dict):
-            sys.stderr.write(
-                f"releases promote: crates[{index}] must be an object.\n"
-            )
+            sys.stderr.write(f"releases promote: crates[{index}] must be an object.\n")
             sys.exit(2)
-        crate_missing = [
-            key for key in _REQUIRED_CRATE if not crate.get(key)
-        ]
+        crate_missing = [key for key in _REQUIRED_CRATE if not crate.get(key)]
         if crate_missing:
             sys.stderr.write(
-                f"releases promote: crates[{index}] missing "
-                f"{', '.join(crate_missing)}.\n"
+                f"releases promote: crates[{index}] missing {', '.join(crate_missing)}.\n"
             )
             sys.exit(2)
 
@@ -125,12 +118,8 @@ def cmd_releases_promote(args):
         )
         sys.exit(1)
 
-    rc_id = resolve_release_candidate_id(
-        repo, binary_target, payload.get("rc_version")
-    )
-    promoted_at = parse_timestamp(
-        payload.get("promoted_at"), field="promoted_at"
-    )
+    rc_id = resolve_release_candidate_id(repo, binary_target, payload.get("rc_version"))
+    promoted_at = parse_timestamp(payload.get("promoted_at"), field="promoted_at")
 
     try:
         if release is None:
@@ -151,8 +140,7 @@ def cmd_releases_promote(args):
                 notes=payload.get("notes"),
             )
             console.print(
-                "[yellow]No ship record — recorded as promoted with no beta "
-                "soak.[/yellow]"
+                "[yellow]No ship record — recorded as promoted with no beta soak.[/yellow]"
             )
         else:
             release = repo.promote(
