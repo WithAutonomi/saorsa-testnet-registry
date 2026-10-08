@@ -3,12 +3,14 @@
 Checks a stable rollout watch runs at its checkpoints, written for the
 2026-09-23 train (V2-1297, ant-node 0.20.0 / ant 0.3.8). Each script prints one
 markdown block to stdout, exits `0` when every expectation held and `1` when any
-did not, and takes `--window` (default `1h`), `--to-version` and `--json-out`.
-Nothing here writes to the fleet: every query is read-only, and the one SSH path
-reads a file and sends a UDP packet.
+did not, and takes `--window` (default `1h`, except `webrtc_handshake_warns.py`
+at `24h`), `--to-version` and `--json-out`. Nothing here writes to the fleet:
+every query is read-only, and the one SSH path reads a file and sends a UDP
+packet.
 
-**Always pass `--to-version`.** Its default is `0.20.0`, the release these were
-written for; on any later rollout the default measures the wrong arm.
+**Always pass `--to-version`.** Its default is `0.20.0` on the scripts written
+for that train (`0.22.0` on `webrtc_handshake_warns.py`, added later); on any
+other rollout the default measures the wrong arm.
 
 The scripts have two different lifetimes:
 
@@ -16,6 +18,9 @@ The scripts have two different lifetimes:
   A2, A3 and A4, and gate 1 breaches on its listening coverage (the watch body
   written by the `train-manifest` skill in the `releases` repo). Keep it working
   across releases.
+- **`webrtc_handshake_warns.py` is standing.** Phase A of every stable rollout
+  watch runs it at A2, A3, A4 and A5. Nothing in it may encode one release's
+  expectations.
 - **`traffic_targets.py` and `migration_signal.py` are per-train.** They answer
   one release's questions (V2-834's counters, saorsa-core #163) and are not
   expected to outlive it. A later train's Phase B adds its own scripts here.
@@ -81,6 +86,71 @@ Control: `ant-node starting` lines in the window. Zero means the fleet has not
 restarted in the window, which is normal outside a rollout — coverage is then
 reported as unassessed rather than as a miss, so a quiet fleet does not read as
 a failure.
+
+## `webrtc_handshake_warns.py`
+
+Four targets log WARN on the path that establishes a WebRTC-direct connection,
+and two of them roughly doubled on the 2026-09-29 release while ten of twelve
+measured targets fell (V2-1409). This is the WARN-side counterpart of
+`sctp_association_errors.py` and has the same shape.
+
+| key | `tag.target` | role |
+| -- | -- | -- |
+| `client_hello` | `dtls::handshake::handshake_message_client_hello` | measured |
+| `agent_internal` | `webrtc_ice::agent::agent_internal` | measured |
+| `mux` | `webrtc::mux` | measured |
+| `peer_connection` | `webrtc::peer_connection::peer_connection_internal` | measured |
+| | `saorsa_core::dht_network_manager` | control (CV 5.3%) |
+| | `saorsa_core::transport_handle` | control (CV 6.1%) |
+| | `saorsa_transport::happy_eyeballs` | control (CV 7.8%) |
+
+Copy those strings rather than reconstructing them: `client_hello` sits under
+the bare `dtls::` root, so a prefix query on `webrtc` misses it entirely;
+`webrtc::mux` is two segments; `peer_connection` carries an `_internal` suffix.
+A query on a misspelled target reads zero exactly like a quiet fleet.
+
+**The measure is a share, not a volume.** The four targets swing 36.9–47.5% day
+to day on their own, so a bare count cannot tell a release regression from
+fleet-wide drift. Each rate per 1k service-hours is therefore divided by the
+mean of the three controls' rates in the same arm:
+
+```
+cnr(target, arm) = rate(target, arm) / mean(rate(c, arm) for c in controls)
+```
+
+A target doubling while the controls double is not a finding; a target doubling
+while the controls hold still is — which is exactly the 2026-10-07 excursion the
+unit tests are built on (`agent_internal` and `mux` at 2.0–2.7x their preceding
+level with all three controls inside 4%). The arm's service count divides out of
+the ratio, so a small arm is still comparable. The controls were chosen for
+stability, not volume: `saorsa_transport::p2p_endpoint` is fourth by WARN volume
+and deliberately **not** a control, swinging 3.99x over six days (CV 47.7%),
+worse than what it would be controlling for.
+
+**Pass** is the new arm's `cnr` within 1.5x the old arm's, taken while the fleet
+is mixed. Once an arm is under 5% of running services, `--baseline-cnr
+<key>=<ratio>` (repeatable, keyed by the short names above; an unknown key is an
+error) supplies the pre-rollout figure instead; with no baseline for a target the
+verdict is `NOT APPLICABLE` and the report prints the flag to record. With no
+new-arm services every target is `NOT APPLICABLE` — the expected pre-rollout
+output, not a pass. The baseline is an input rather than something the script
+recomputes because the index retains about six days, so any baseline ages out of
+reach within a week of being taken.
+
+Also reported, not gated, because a bare rate leaves V2-1409's open questions
+unanswered: absolute docs/hosts/services and a 24h-equivalent daily count per
+target per arm (the unit V2-1409's bands are in); the top ten hosts and the share
+they carry, which says whether a rise is fleet-wide or a hot subset; and the top
+five message bodies per arm side by side, which says whether a rise is the same
+message faster or a new message appearing.
+
+Control: WARN documents on the three control targets. A zero there means the
+normaliser is undefined, so every target that passed by counting nothing is
+downgraded to `UNTRUSTED`.
+
+Pre-rollout baseline, measured over 24h on 2026-10-08 against a uniform 0.21.0
+fleet (774 services, 73 hosts): `client_hello` 2.3194, `agent_internal` 1.9442,
+`mux` 0.7314, `peer_connection` 0.1370.
 
 ## `traffic_targets.py`
 
