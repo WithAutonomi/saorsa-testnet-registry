@@ -1060,3 +1060,289 @@ def test_pointer_rpc_not_found_is_an_answer_not_an_error():
     rpc = {"total": 5, "events": {"pointer_get_rpc": {"not_found": 5}}}
     check = pointer_signals.evaluate_rpc_errors(rpc)
     assert check.status == common.PASS
+
+
+# ==========================================================================
+# The standing WebRTC handshake WARN watch (V2-1481).
+#
+# The whole script turns on one arithmetic decision -- dividing each target's
+# rate by the mean of three stable controls -- so that is what these tests
+# pin, against the real 2026-10-07 excursion rather than a synthetic case:
+# `agent_internal` and `mux` ran 2.0-2.7x their preceding level while all
+# three controls moved under 4%, and a correct normalisation has to show that
+# as a rise in the ratio. The exact target strings are pinned too: three of
+# the four are easy to "tidy" into something that matches nothing
+# (`dtls::` is not `webrtc_dtls::`, `webrtc::mux` has two segments, and
+# `peer_connection` carries an `_internal` suffix), and a query on a
+# misspelled target reads zero exactly like a quiet fleet.
+# ==========================================================================
+handshake_warns = _load(ROLLOUT_DIR / "webrtc_handshake_warns.py", "rw_webrtc_handshake_warns")
+
+#: Per-day WARN counts off the production index, UTC days (V2-1481).
+WARN_DAYS = {
+    "10-06": {
+        "dtls::handshake::handshake_message_client_hello": 2_569_314,
+        "webrtc_ice::agent::agent_internal": 482_876,
+        "webrtc::mux": 197_513,
+        "webrtc::peer_connection::peer_connection_internal": 140_833,
+        "saorsa_core::dht_network_manager": 1_111_749,
+        "saorsa_core::transport_handle": 716_327,
+        "saorsa_transport::happy_eyeballs": 708_684,
+    },
+    "10-07": {
+        "dtls::handshake::handshake_message_client_hello": 1_428_572,
+        "webrtc_ice::agent::agent_internal": 1_282_977,
+        "webrtc::mux": 457_464,
+        "webrtc::peer_connection::peer_connection_internal": 83_476,
+        "saorsa_core::dht_network_manager": 1_069_314,
+        "saorsa_core::transport_handle": 708_364,
+        "saorsa_transport::happy_eyeballs": 700_950,
+    },
+}
+
+
+def warn_measurement(docs, services, hours=24.0, host_docs=None):
+    """`docs` and `services` are keyed by arm; `docs` then by full target name."""
+    rates = {}
+    for target in handshake_warns.ALL_TARGETS:
+        for arm in handshake_warns.ARMS:
+            count = docs.get(arm, {}).get(target, 0)
+            rates[(target, arm)] = handshake_warns.ArmRate(
+                target=target,
+                arm=arm,
+                services=services.get(arm, 0),
+                docs=count,
+                hosts=73 if count else 0,
+                emitting_services=services.get(arm, 0) if count else 0,
+                hours=hours,
+            )
+    return handshake_warns.Measurement(
+        rates=rates,
+        host_docs=host_docs or {t: {} for t in handshake_warns.MEASURED_TARGETS.values()},
+    )
+
+
+def test_warn_target_strings_are_the_ones_on_the_documents():
+    """A misspelled target reads zero exactly like a quiet fleet."""
+    assert handshake_warns.MEASURED_TARGETS == {
+        "client_hello": "dtls::handshake::handshake_message_client_hello",
+        "agent_internal": "webrtc_ice::agent::agent_internal",
+        "mux": "webrtc::mux",
+        "peer_connection": "webrtc::peer_connection::peer_connection_internal",
+    }
+    assert handshake_warns.CONTROL_TARGETS == (
+        "saorsa_core::dht_network_manager",
+        "saorsa_core::transport_handle",
+        "saorsa_transport::happy_eyeballs",
+    )
+    # p2p_endpoint swings 3.99x over six days -- worse than what it would
+    # control for -- so it must never drift into the normaliser.
+    assert "saorsa_transport::p2p_endpoint" not in handshake_warns.ALL_TARGETS
+
+
+def test_warn_rate_is_per_1k_service_hours():
+    rate = handshake_warns.ArmRate(
+        target="webrtc::mux",
+        arm="new",
+        services=100,
+        docs=50,
+        hosts=7,
+        emitting_services=7,
+        hours=2.0,
+    )
+    # 50 docs / (100 services * 2h) * 1000 = 250
+    assert rate.per_1k_service_hours == pytest.approx(250.0)
+    # and 50 docs over 2h is 600 a day
+    assert rate.daily_equivalent == pytest.approx(600.0)
+
+
+def test_warn_cnr_shows_the_10_07_excursion_the_controls_did_not():
+    """The best available fixture: a real rise with the controls holding still.
+
+    `agent_internal` and `mux` ran 2.0-2.7x their 10-06 level on 10-07 while
+    all three controls moved under 4%. If the normalisation were wrong -- say
+    dividing by the control *sum* of a different day, or by the target's own
+    volume -- the ratios would not move with the targets.
+    """
+    day = {
+        label: warn_measurement({"new": counts}, {"new": 774})
+        for label, counts in WARN_DAYS.items()
+    }
+    control_drift = day["10-07"].control_mean_rate("new") / day["10-06"].control_mean_rate("new")
+    assert control_drift == pytest.approx(0.977, abs=0.01)
+
+    for target, expected in (
+        ("webrtc_ice::agent::agent_internal", 2.72),
+        ("webrtc::mux", 2.37),
+    ):
+        before = day["10-06"].cnr(target, "new")
+        after = day["10-07"].cnr(target, "new")
+        assert after / before == pytest.approx(expected, abs=0.02)
+
+    # The two targets that did not excurse must not be dragged up with them.
+    quiet = "webrtc::peer_connection::peer_connection_internal"
+    ratio = day["10-07"].cnr(quiet, "new") / day["10-06"].cnr(quiet, "new")
+    assert ratio < 1.0
+
+
+def test_warn_cnr_is_unchanged_by_the_arm_service_count():
+    """Service-hours divide out of the ratio, so a small arm is comparable."""
+    counts = WARN_DAYS["10-07"]
+    big = warn_measurement({"new": counts}, {"new": 774})
+    small = warn_measurement({"new": counts}, {"new": 40})
+    target = "webrtc::mux"
+    assert (
+        small.rate(target, "new").per_1k_service_hours
+        > big.rate(target, "new").per_1k_service_hours
+    )
+    assert small.cnr(target, "new") == pytest.approx(big.cnr(target, "new"))
+
+
+def test_warn_cnr_is_none_when_the_controls_logged_nothing():
+    measurement = warn_measurement({"new": {"webrtc::mux": 10}}, {"new": 774})
+    assert measurement.cnr("webrtc::mux", "new") is None
+    check = handshake_warns.evaluate(
+        "mux", "webrtc::mux", measurement, _arms(new=("h/1",)), baseline_cnr=None
+    )
+    assert check.status == common.NOT_APPLICABLE
+    assert "normaliser is undefined" in check.detail
+
+
+def test_warn_no_new_arm_services_is_not_applicable_not_a_pass():
+    """0 new-version services is the expected pre-rollout state."""
+    measurement = warn_measurement({"old": WARN_DAYS["10-07"]}, {"old": 774})
+    check = handshake_warns.evaluate(
+        "mux", "webrtc::mux", measurement, _arms(old=("h/1",)), baseline_cnr=None
+    )
+    assert check.status == common.NOT_APPLICABLE
+    assert "0 new-version services" in check.detail
+
+
+def test_warn_arms_are_compared_once_both_are_large_enough():
+    new = tuple(f"n/{i}" for i in range(50))
+    old = tuple(f"o/{i}" for i in range(50))
+    arms = _arms(new=new, old=old)
+    controls = {t: 1_000_000 for t in handshake_warns.CONTROL_TARGETS}
+
+    # Both arms see the same controls, so the cnr ratio is the doc ratio.
+    measurement = warn_measurement(
+        {
+            "new": {"webrtc::mux": 200_000, **controls},
+            "old": {"webrtc::mux": 100_000, **controls},
+        },
+        {"new": 50, "old": 50},
+    )
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, None)
+    assert check.status == common.FAIL  # 2.0x against a 1.5x limit
+    assert check.data["ratio"] == pytest.approx(2.0)
+    assert check.data["compared_against"] == "old arm"
+
+    measurement = warn_measurement(
+        {
+            "new": {"webrtc::mux": 140_000, **controls},
+            "old": {"webrtc::mux": 100_000, **controls},
+        },
+        {"new": 50, "old": 50},
+    )
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, None)
+    assert check.status == common.PASS  # 1.4x
+
+
+def test_warn_doubling_with_the_controls_is_not_a_finding():
+    """The point of the script: fleet-wide volume drift must cancel."""
+    arms = _arms(new=tuple(f"n/{i}" for i in range(50)), old=tuple(f"o/{i}" for i in range(50)))
+    measurement = warn_measurement(
+        {
+            "new": {
+                "webrtc::mux": 200_000,
+                **{t: 2_000_000 for t in handshake_warns.CONTROL_TARGETS},
+            },
+            "old": {
+                "webrtc::mux": 100_000,
+                **{t: 1_000_000 for t in handshake_warns.CONTROL_TARGETS},
+            },
+        },
+        {"new": 50, "old": 50},
+    )
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, None)
+    assert check.status == common.PASS
+    assert check.data["ratio"] == pytest.approx(1.0)
+
+
+def test_warn_baseline_takes_over_once_an_arm_drains():
+    arms = _arms(new=tuple(f"n/{i}" for i in range(99)), old=("o/1",))
+    controls = {t: 1_000_000 for t in handshake_warns.CONTROL_TARGETS}
+    measurement = warn_measurement(
+        {"new": {"webrtc::mux": 500_000, **controls}}, {"new": 99, "old": 1}
+    )
+    # cnr is 0.5; 0.5 / 0.4 = 1.25x, within the limit.
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, 0.4)
+    assert check.status == common.PASS
+    assert check.data["compared_against"] == "baseline"
+
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, 0.2)
+    assert check.status == common.FAIL  # 2.5x
+    assert check.data["ratio"] == pytest.approx(2.5)
+
+
+def test_warn_suspended_arm_without_a_baseline_names_the_flag_to_record():
+    arms = _arms(new=tuple(f"n/{i}" for i in range(99)), old=("o/1",))
+    controls = {t: 1_000_000 for t in handshake_warns.CONTROL_TARGETS}
+    measurement = warn_measurement(
+        {"new": {"webrtc::mux": 500_000, **controls}}, {"new": 99, "old": 1}
+    )
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, None)
+    assert check.status == common.NOT_APPLICABLE
+    assert "--baseline-cnr mux=0.5000" in check.detail
+
+
+def test_warn_pass_on_a_zero_is_untrusted_when_the_control_reads_zero():
+    """A broken query and a target that truly stopped both read zero."""
+    arms = _arms(new=tuple(f"n/{i}" for i in range(50)), old=tuple(f"o/{i}" for i in range(50)))
+    controls = {t: 1_000_000 for t in handshake_warns.CONTROL_TARGETS}
+    measurement = warn_measurement(
+        {"new": controls, "old": {"webrtc::mux": 100_000, **controls}},
+        {"new": 50, "old": 50},
+    )
+    check = handshake_warns.evaluate("mux", "webrtc::mux", measurement, arms, None)
+    assert check.status == common.PASS
+    assert check.passed_on_zero
+
+    checks = common.apply_control([check], common.Control(name="three control targets", count=0))
+    assert checks[0].status == common.UNTRUSTED
+
+
+def test_warn_concentration_separates_an_even_spread_from_a_hot_subset():
+    even = handshake_warns.summarise_concentration({f"H{i}": 100 for i in range(73)})
+    assert even["hosts"] == 73
+    assert even["top_share"] == pytest.approx(1000 / 7300 * 100)
+
+    hot = {f"H{i}": 1 for i in range(73)}
+    hot.update({f"H{i}": 10_000 for i in range(3)})
+    concentrated = handshake_warns.summarise_concentration(hot)
+    assert concentrated["top"][0]["docs"] == 10_000
+    assert concentrated["top_share"] > 99.0
+
+
+def test_warn_concentration_of_nothing_does_not_divide_by_zero():
+    summary = handshake_warns.summarise_concentration({})
+    assert summary["total"] == 0
+    assert summary["top_share"] == 0.0
+    assert "no WARN documents" in handshake_warns.render_concentration("t", summary)
+
+
+def test_warn_message_table_shows_a_message_only_one_arm_has():
+    """A new message appearing and an old one rising are different findings."""
+    rendered = handshake_warns.render_messages(
+        "webrtc::mux",
+        {"new": {"brand new": 10}, "old": {"was always there": 7}},
+    )
+    assert "`brand new`" in rendered
+    assert "`was always there`" in rendered
+
+
+def test_warn_baseline_cnr_rejects_an_unknown_target():
+    assert handshake_warns.parse_baseline_cnr(["mux=0.23"]) == {"mux": 0.23}
+    for bad in (["webrtc::mux=0.23"], ["mux"], ["mux=high"]):
+        with pytest.raises(common.RolloutCheckError):
+            handshake_warns.parse_baseline_cnr(bad)
