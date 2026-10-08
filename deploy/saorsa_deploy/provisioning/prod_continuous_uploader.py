@@ -29,6 +29,9 @@ from saorsa_deploy.provisioning.saorsa_db_install import (
     VENV_PYTHON,
     SaorsaDbInstaller,
 )
+from saorsa_deploy.provisioning.service_script import (
+    build_service_script_commands,
+)
 from saorsa_deploy.provisioning.wasm_client import (
     ANT_WASM_CLI_PATH,
     WASM_CLIENT_DIR,
@@ -37,7 +40,6 @@ from saorsa_deploy.provisioning.wasm_client import (
     build_bundle_install_command,
     build_node_install_command,
 )
-from saorsa_deploy.resources import get_resources_dir
 
 ANT_INSTALL_PATH = "/root/.local/bin/ant"
 
@@ -46,12 +48,14 @@ UPLOADER_DATA_DIR = "/var/lib/ant-prod-continuous-uploader"
 UPLOADER_SCRIPTS_DIR = "/root/ant-prod-continuous-uploader"
 UPLOADER_LOG_DIR = "/var/log/ant-prod-continuous-uploader"
 UPLOADER_ENV_PATH = "/etc/ant-prod-continuous-uploader.env"
+UPLOADER_SCRIPT_NAME = "prod_continuous_uploader.py"
 
 VERIFIER_SERVICE = "ant-prod-upload-verifier"
 VERIFIER_DATA_DIR = "/var/lib/ant-prod-upload-verifier"
 VERIFIER_SCRIPTS_DIR = "/root/ant-prod-upload-verifier"
 VERIFIER_LOG_DIR = "/var/log/ant-prod-upload-verifier"
 VERIFIER_ENV_PATH = "/etc/ant-prod-upload-verifier.env"
+VERIFIER_SCRIPT_NAME = "prod_upload_verifier.py"
 
 REMOTE_BOOTSTRAP_PEERS_PATH = "/root/.config/ant/bootstrap_peers.toml"
 
@@ -305,16 +309,13 @@ class _BaseProvisioner:
         """
 
     def _add_script_op(self, state: State) -> None:
-        script = (get_resources_dir() / "scripts" / self.script_name).read_text()
         add_op(
             state,
             server.shell,
             name=f"Deploy {self.script_name}",
-            commands=[
-                f"cat > {self.scripts_dir}/{self.script_name} << 'SCRIPT_EOF'\n"
-                f"{script}SCRIPT_EOF",
-                f"chmod +x {self.scripts_dir}/{self.script_name}",
-            ],
+            commands=build_service_script_commands(
+                self.scripts_dir, self.script_name
+            ),
         )
 
     def _add_env_op(self, state: State) -> None:
@@ -398,7 +399,7 @@ class ProdContinuousUploaderProvisioner(_BaseProvisioner):
     scripts_dir = UPLOADER_SCRIPTS_DIR
     log_dir = UPLOADER_LOG_DIR
     env_path = UPLOADER_ENV_PATH
-    script_name = "prod_continuous_uploader.py"
+    script_name = UPLOADER_SCRIPT_NAME
     description = "Ant Production Daily Write Test (uploader)"
 
     def __init__(
@@ -538,7 +539,7 @@ class ProdUploadVerifierProvisioner(_BaseProvisioner):
     scripts_dir = VERIFIER_SCRIPTS_DIR
     log_dir = VERIFIER_LOG_DIR
     env_path = VERIFIER_ENV_PATH
-    script_name = "prod_upload_verifier.py"
+    script_name = VERIFIER_SCRIPT_NAME
     description = "Ant Production Daily Write Test (read-back verifier)"
     # Always-on rather than on-failure: this service is idle most of the time
     # and must be running the moment a new upload appears.

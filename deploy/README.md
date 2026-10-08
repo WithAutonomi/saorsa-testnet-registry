@@ -3596,10 +3596,14 @@ uv run saorsa-deploy prod downloaders destroy --name PROD-DL-OS-01
 
 ### Upgrading the `ant` binary in place (`deployments upgrade-ant-binary`)
 
-`deployments upgrade-ant-binary` force-installs the latest (or a pinned/branch) `ant` binary on an already-running `prod-downloaders` or `prod-continuous-downloader` client VM over SSH, and restarts the service — no Terraform infrastructure is touched. It exists because the binary-install step used by `deploy` is presence-gated (it skips if `ant` is already installed at `/root/.local/bin/ant`), so re-running `deploy` against an existing deployment never picks up a new release.
+`deployments upgrade-ant-binary` force-installs the latest (or a pinned/branch) native `ant` binary on an already-running prod client VM over SSH, and restarts the service that VM runs — no Terraform infrastructure is touched. It exists because the binary-install steps used by `deploy` are presence-gated (they skip if `ant` is already installed at `/root/.local/bin/ant`), so re-running `deploy` against an existing deployment never picks up a new release.
 
 ```bash
 uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-DL-01
+# the daily write test: uploader VM + every verifier VM, each restarting its own unit
+uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-UL-01
+# the browser-path write test: its NATIVE verifier VMs only
+uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-WUL-01
 # pin a specific release instead of latest:
 uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-DL-01 --ant-version 0.3.1
 # use a custom branch build:
@@ -3613,9 +3617,24 @@ uv run saorsa-deploy deployments upgrade-ant-binary --name PROD-DL-01 --branch-n
 | `--repo-owner` | string | none | GitHub repo owner for the custom-built binary |
 | `--ant-version` | string | none (latest) | Pin a specific `ant` release version instead of resolving `latest` |
 | `--ssh-key-path` | string | `~/.ssh/id_rsa` | SSH key used to reach the VM(s) |
-| `--restart` / `--no-restart` | flag | `--restart` | Restart `ant-prod-downloader` after the binary swap |
+| `--restart` / `--no-restart` | flag | `--restart` | Restart each host's own service after the binary swap |
 
-Only `prod-downloaders` and `prod-continuous-downloader` deployments are supported (kind is validated via the registry when `DATABASE_URL` is set; the command still runs without it, skipping validation). The `ant_binary_upgrade_started` / `_completed` / `_failed` events are recorded for the deployment, and a successful run updates `deploy_args.ant_binary` so `deployments slack-post` reflects the new binary.
+**Supported kinds, and the unit each host gets.** Hosts are grouped by the systemd unit they actually run, and each group gets its own `systemctl restart`:
+
+| Kind | Role in client state | Unit restarted |
+|------|----------------------|----------------|
+| `prod-downloaders` | every VM | `ant-prod-downloader` |
+| `prod-continuous-downloader` | every VM | `ant-prod-downloader` |
+| `prod-continuous-uploader` | `upload` | `ant-prod-continuous-uploader` |
+| `prod-continuous-uploader` | anything else (verifier) | `ant-prod-upload-verifier` |
+
+`prod-continuous-uploader` is the only multi-role kind: one VM uploads and the rest independently read every address back, and **both roles install and execute the native `ant` binary**, so both want the upgrade — but under different units, which is why one hard-coded unit name is not enough.
+
+**A WASM uploader VM is skipped.** When the deployment's `deploy_args.client_kind` is `wasm` (PROD-WUL-01), its uploader VM runs the browser path and has no `ant` on it at all — the provisioner's install op returns early for it — so nothing is installed there and its service is not restarted. Its verifier VMs are deliberately native, and they do get the upgrade. The transport is read from the registry rather than probed on the host; absent, it is treated as native, matching the provisioner's own default. `PROD-WDL-01` is wholly WASM: nothing on it executes the native `ant` binary, so the command **warns and names `deployments upgrade-wasm-client`** rather than refusing — accepting a download deployment predates this command understanding roles, and narrowing that is a separate decision.
+
+Any other kind is refused (kind is validated via the registry when `DATABASE_URL` is set; the command still runs without it, skipping validation and assuming a downloader deployment, which it says). The `ant_binary_upgrade_started` / `_completed` / `_failed` events are recorded for the deployment, and a successful run updates `deploy_args.ant_binary` so `deployments slack-post` reflects the new binary.
+
+**One unreachable host does not stop the others.** Each group is upgraded independently and failures are accumulated, so a verifier that is down still leaves the uploader upgraded with an accurate record of which hosts took the binary — the alternative is a halt that leaves the fleet on a mix with nothing saying which is which. The summary reports per role (`uploader: 1/1`, `verifier: 2/2`), and a non-zero exit plus an `ant_binary_upgrade_failed` event follow any failure.
 
 **`--no-restart` note**: the `prod_downloader.py` service has no checkpoint/resume state — every start walks its full address list from the beginning. For `prod-continuous-downloader` this is harmless (it loops forever anyway), but restarting a `prod-downloaders` (one-shot) deployment that has already completed its single pass re-runs the entire address list, duplicating Influx points and any already-recorded results. Pass `--no-restart` for a completed one-shot deployment and restart the service manually only when you actually want another full pass.
 
@@ -3644,7 +3663,9 @@ uv run saorsa-deploy deployments upgrade-wasm-client \
 
 **One build for all named deployments.** The bundle is built once, under the first named deployment's name, and that same bundle URL is installed everywhere. That is the point of passing several names: installing identical bytes is what keeps the deployments comparable afterwards, where a build per deployment could give each one a different commit of a branch that moved in between.
 
-**On each target VM**, in order: fetch and unpack the bundle (`require_cli`, so a bundle with no `dist/cli.js` is rejected on the VM rather than failing every subsequent transfer), reinstall the `/usr/local/bin/ant-wasm` wrapper, then `systemctl restart` that kind's unit — `ant-prod-downloader` or `ant-prod-continuous-uploader`. The continuous uploader's **verifier VMs are deliberately not touched**: they are native by design, so that a digest mismatch they report stays attributable to the upload rather than to a browser read path.
+**On each target VM**, in order: fetch and unpack the bundle (`require_cli`, so a bundle with no `dist/cli.js` is rejected on the VM rather than failing every subsequent transfer), reinstall the `/usr/local/bin/ant-wasm` wrapper, **redeploy the host-side service script** (`prod_downloader.py` or `prod_continuous_uploader.py`), then `systemctl restart` that kind's unit — `ant-prod-downloader` or `ant-prod-continuous-uploader`. The continuous uploader's **verifier VMs are deliberately not touched**: they are native by design, so that a digest mismatch they report stays attributable to the upload rather than to a browser read path. (Their native `ant` binary is upgraded by `deployments upgrade-ant-binary --name PROD-WUL-01`.)
+
+**Why the service script goes with the bundle.** The bundle is the half of the path that *performs* a transfer; the service script is the half that *records* it. Upgrading one without the other leaves the recording half behind, and that is not hypothetical: PROD-WUL-01 was provisioned on 2026-09-26, the `client_build` plumbing landed on 2026-09-27 17:43, and its bundle was upgraded 78 minutes later — so from then on its per-op log on the host carried `client_build` while every single one of its `deployment_prod_upload_results` rows had the column empty, because the script writing those rows was still the one from the day before. Redeploying it is cheap (the unit is being restarted anyway) and makes the pairing unbreakable.
 
 **Timing is the operator's.** Run it outside the daily window. A restart that triggers a same-day cycle is acceptable — the uploader claims fresh files, the downloader re-walks its list — but it is a cycle and it costs what a cycle costs. A failure on one deployment is reported and the command carries on with the rest (the alternative is a set left on two builds with nothing recording which is which), exiting non-zero at the end.
 

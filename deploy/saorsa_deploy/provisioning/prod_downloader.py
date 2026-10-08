@@ -58,6 +58,9 @@ from saorsa_deploy.provisioning.progress import (
     RichLiveProgressHandler,
     create_progress_handler,
 )
+from saorsa_deploy.provisioning.service_script import (
+    build_service_script_commands,
+)
 from saorsa_deploy.provisioning.wasm_client import (
     ANT_WASM_CLI_PATH,
     WASM_CLIENT_DIR,
@@ -66,12 +69,12 @@ from saorsa_deploy.provisioning.wasm_client import (
     build_bundle_install_command,
     build_node_install_command,
 )
-from saorsa_deploy.resources import get_resources_dir
 
 ANT_INSTALL_PATH = "/root/.local/bin/ant"
 SERVICE_NAME = "ant-prod-downloader"
 DATA_DIR = "/var/lib/ant-prod-downloader"
 SCRIPTS_DIR = "/root/ant-prod-downloader"
+SCRIPT_NAME = "prod_downloader.py"
 LOG_DIR = "/var/log/ant-prod-downloader"
 ADDRESSES_PATH = f"{DATA_DIR}/addresses.txt"
 DOWNLOAD_DIR = f"{DATA_DIR}/downloads"
@@ -465,17 +468,11 @@ class ProdDownloaderProvisioner:
         )
 
     def _add_deploy_service_script_op(self, state: State) -> None:
-        scripts_dir = get_resources_dir() / "scripts"
-        service_script = (scripts_dir / "prod_downloader.py").read_text()
         add_op(
             state,
             server.shell,
             name="Deploy prod_downloader.py service script",
-            commands=[
-                f"cat > {SCRIPTS_DIR}/prod_downloader.py << 'SCRIPT_EOF'\n"
-                f"{service_script}SCRIPT_EOF",
-                f"chmod +x {SCRIPTS_DIR}/prod_downloader.py",
-            ],
+            commands=build_service_script_commands(SCRIPTS_DIR, SCRIPT_NAME),
         )
 
     def _add_env_and_addresses_op(self, state: State) -> None:
