@@ -356,9 +356,10 @@ class TestKindGuard:
 
 _STUB = """\
 #!/usr/bin/env bash
-# Stands in for the venv's saorsa-deploy. Records the argv it was handed and
-# exits with whatever the test asked for.
-echo "$@" >> "$STUB_CALLS"
+# Stands in for the venv's saorsa-deploy. Records the argv it was handed, one
+# argument per line so the exact argv can be replayed against the real CLI
+# parser, and exits with whatever the test asked for.
+printf '%s\\n' "--CALL--" "$@" >> "$STUB_CALLS"
 if [ "$1" = "deployments" ]; then
   exit "${STUB_RECORD_EXIT:-0}"
 fi
@@ -395,8 +396,16 @@ def _run_publisher_script(tmp_path, *, record_exit=0, export_exit=0):
         ["bash", str(script)], env=env, capture_output=True, text=True, timeout=60
     )
     last_run = json.loads((state_dir / "last-run.json").read_text())
-    call_lines = calls.read_text().splitlines() if calls.exists() else []
-    return proc, last_run, call_lines
+
+    # One argv per "--CALL--" marker, so a caller can assert on the exact
+    # arguments as well as on how many calls happened.
+    argvs: list[list[str]] = []
+    for line in calls.read_text().splitlines() if calls.exists() else []:
+        if line == "--CALL--":
+            argvs.append([])
+        else:
+            argvs[-1].append(line)
+    return proc, last_run, argvs
 
 
 class TestRunScriptBehaviour:
@@ -410,8 +419,8 @@ class TestRunScriptBehaviour:
         assert last_run["started_at"].endswith("Z")
         assert last_run["finished_at"].endswith("Z")
         assert len(calls) == 2
-        assert calls[0].startswith("deployments record-results --name PROD-CANARY-04")
-        assert calls[1].startswith("prod canary export --name PROD-CANARY-04")
+        assert calls[0][:4] == ["deployments", "record-results", "--name", "PROD-CANARY-04"]
+        assert calls[1][:5] == ["prod", "canary", "export", "--name", "PROD-CANARY-04"]
 
     def test_record_results_failure_stops_the_run(self, tmp_path):
         proc, last_run, calls = _run_publisher_script(tmp_path, record_exit=3)
@@ -422,7 +431,53 @@ class TestRunScriptBehaviour:
         # is the property: a stale Postgres must not be published as current.
         assert last_run["export_s"] is None
         assert len(calls) == 1
-        assert "export" not in calls[0]
+        assert "export" not in calls[0]  # the whole argv, not just its head
+
+    def test_both_steps_parse_against_the_real_cli(self, tmp_path):
+        """`run.sh` holds two argv as text, and nothing else checks them.
+
+        The script is written here and the two commands are parsed elsewhere,
+        so a renamed or removed flag on either would be caught only at 09:30
+        on the VM, by a timer whose failure nobody is watching. Replaying the
+        exact argv the script emits through `main()` closes that gap —
+        `prod canary export` in particular landed in a separate change.
+        """
+        from saorsa_deploy.main import main
+
+        _proc, _last_run, calls = _run_publisher_script(tmp_path)
+        assert len(calls) == 2
+
+        captured = {}
+
+        def _capture(key):
+            def _handler(args):
+                captured[key] = args
+
+            return _handler
+
+        with (
+            patch(
+                "saorsa_deploy.cmd.record_results.cmd_record_results",
+                _capture("record"),
+            ),
+            patch(
+                "saorsa_deploy.cmd.prod_canary_export.cmd_prod_canary_export",
+                _capture("export"),
+            ),
+        ):
+            for argv in calls:
+                main(argv)
+
+        assert captured["record"].name == "PROD-CANARY-04"
+        assert captured["record"].influx_url == "http://localhost:8086"
+        assert captured["record"].influx_token == "tok"
+        assert captured["record"].influx_org == "ant"
+        assert captured["record"].influx_bucket == "testnet-metrics"
+
+        assert captured["export"].name == "PROD-CANARY-04"
+        assert captured["export"].bucket == "canary-datasets"
+        assert captured["export"].prefix == "v1"
+        assert captured["export"].title == "Autonomi canary"
 
     def test_export_failure_is_attributed_to_export(self, tmp_path):
         proc, last_run, calls = _run_publisher_script(tmp_path, export_exit=4)

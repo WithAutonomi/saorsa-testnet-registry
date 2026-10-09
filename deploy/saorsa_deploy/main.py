@@ -5815,6 +5815,80 @@ def main(argv=None):
         ),
     )
 
+    # --- prod canary export ---
+    prod_canary_export_parser = prod_canary_subparsers.add_parser(
+        "export",
+        help=(
+            "Export a public-safe availability dataset for a canary "
+            "deployment and publish it to S3 (or a local directory). Reads "
+            "Postgres only; the schema is the contract with the "
+            "canary.autonomi.com site."
+        ),
+    )
+    prod_canary_export_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Canary deployment name. Lower-cased, it is also the series id.",
+    )
+    prod_canary_export_parser.add_argument(
+        "--id",
+        type=int,
+        default=None,
+        help=(
+            "Deployment id, overriding --name's resolution. Needed when "
+            "several rows share the name and the newest is not the one wanted."
+        ),
+    )
+    prod_canary_export_destination = prod_canary_export_parser.add_mutually_exclusive_group(
+        required=True
+    )
+    prod_canary_export_destination.add_argument(
+        "--bucket",
+        type=str,
+        default=None,
+        help=(
+            "S3 bucket to publish into. Credentials come from the standard "
+            "AWS environment/credential chain."
+        ),
+    )
+    prod_canary_export_destination.add_argument(
+        "--out-dir",
+        type=str,
+        default=None,
+        help="Write the same two files to a local directory instead of S3.",
+    )
+    prod_canary_export_parser.add_argument(
+        "--prefix",
+        type=str,
+        default="v1",
+        help="Key prefix within the bucket (default: v1). Ignored with --out-dir.",
+    )
+    prod_canary_export_parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="Display title for the series (default: the deployment name).",
+    )
+    prod_canary_export_parser.add_argument(
+        "--stale-after-hours",
+        type=float,
+        default=6.0,
+        help=(
+            "Mark the series stale when the newest probe is older than this "
+            "many hours before --as-of (default: 6)."
+        ),
+    )
+    prod_canary_export_parser.add_argument(
+        "--as-of",
+        type=str,
+        default=None,
+        help=(
+            "ISO-8601 UTC instant to treat as 'now' for the rolling windows "
+            "and the staleness check (default: the real clock)."
+        ),
+    )
+
     prod_canary_pr_parser = prod_canary_subparsers.add_parser(
         "provision-reporter",
         help=(
@@ -7823,6 +7897,12 @@ def main(argv=None):
             )
 
             cmd_prod_canary_report(args)
+        elif args.prod_subcommand == "canary" and args.prod_canary_action == "export":
+            from saorsa_deploy.cmd.prod_canary_export import (
+                cmd_prod_canary_export,
+            )
+
+            cmd_prod_canary_export(args)
         elif args.prod_subcommand == "canary" and args.prod_canary_action == "provision-reporter":
             from saorsa_deploy.cmd.prod_canary_reporter import (
                 cmd_prod_canary_provision_reporter,

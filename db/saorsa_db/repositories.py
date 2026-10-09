@@ -119,6 +119,16 @@ class DeploymentRepository(ABC):
         ...
 
     @abstractmethod
+    def list_by_name(self, name: str) -> list[Deployment]:
+        """Every deployment with the given name, newest first.
+
+        Names are reused — a staging name every release train, a canary name
+        across re-deploys — so a caller that must say *which* row it picked
+        needs the whole set, not just the newest.
+        """
+        ...
+
+    @abstractmethod
     def get_active_by_name(self, name: str) -> Deployment | None:
         """Get the most recent non-terminal deployment with the given name."""
         ...
@@ -659,6 +669,14 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .filter(Deployment.name == name)
             .order_by(Deployment.created_at.desc())
             .first()
+        )
+
+    def list_by_name(self, name: str) -> list[Deployment]:
+        return (
+            self.session.query(Deployment)
+            .filter(Deployment.name == name)
+            .order_by(Deployment.created_at.desc())
+            .all()
         )
 
     def update_deploy_args(self, deployment_id: int, deploy_args: dict) -> None:

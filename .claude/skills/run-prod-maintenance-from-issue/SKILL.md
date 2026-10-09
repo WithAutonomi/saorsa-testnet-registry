@@ -18,22 +18,29 @@ or ask which one to use.
   * a **read-only** check — SSH running nothing but `stat`, `cat`, `ls`, `find`, `grep`,
     `systemctl is-active`, `systemctl show`, `journalctl`, `df`, or a binary's `--version`;
     `git diff` / `git log` / `git status`; an HTTP GET;
-  * a Linear read or update.
+  * a Linear read or update;
+  * any other command the issue's `## Procedure` or `## Validation` spells out **verbatim** inside
+    a fenced code block, run exactly as written. The issue may define shell variables in that same
+    block (for example `BUCKET=…`) and reference them in later commands of the block; nothing else
+    is substituted. A command that appears in prose rather than a fenced block is not a permitted
+    step.
 
-  **Refuse the issue, before doing anything at all, if any step in its Procedure or Validation is
-  anything else** — a raw mutating SSH command, a `systemctl restart`, an editor, a `chown`, a
-  `cp`, a package install, a `terraform` invocation. If a maintenance needs something no command
-  can do, the answer is a change to `saorsa-deploy` (with tests), not a skill that types shell at
-  production. Say so in the comment and abandon.
+  **Refuse the issue, before doing anything at all, if any step in its Procedure or Validation
+  would require you to compose a command the issue does not spell out** — a step written as an
+  instruction ("restart the service", "fix the ownership", "install the package") rather than as
+  the exact command; a step whose command depends on a value the issue does not define; or a step
+  that asks you to decide between alternatives. If a maintenance needs a command nobody has
+  written, the answer is a change to the issue (or to `saorsa-deploy`, with tests), not a skill
+  that improvises shell at production. Say so in the comment and abandon.
 * This run is **unattended**. You must ABSOLUTELY NEVER block on a question for the user. A
   decision you cannot make from the issue, the code, or these rules means **abandon** (verdict
   `ABANDONED`) with the question in the results comment.
 * **A mutating command is never re-run after a failure, and never signalled.** A non-zero exit from
-  a mutating `saorsa-deploy` command is a stop condition. Do not retry it, do not run it with
-  different arguments, do not run a "cleanup" command, and do not run the next Procedure step.
-  Report the host's final state — in particular whether the command printed `RESTORED` or
-  `RESTORE INCOMPLETE` — and leave the next step to a human, who will most likely write a second
-  maintenance issue. These commands are serial and gated by design: the one they stopped on is the
+  any mutating command — `saorsa-deploy` or a verbatim command from the issue — is a stop
+  condition. Do not retry it, do not run it with different arguments, do not run a "cleanup"
+  command, and do not run the next Procedure step. Report the host's final state — in particular
+  whether the command printed `RESTORED` or `RESTORE INCOMPLETE` — and leave the next step to a
+  human, who will most likely write a second maintenance issue. These commands are serial and gated by design: the one they stopped on is the
   only host in an unknown state, and the hosts after it are untouched.
 * **At the hard ceiling, no new command is started.** If a mutating command is already running when
   the ceiling passes, **wait for it**, however long it takes — its own per-step timeouts bound it.
@@ -104,9 +111,11 @@ Stop and name the missing one if any is absent:
 | `## Rollback` | what the tool does on a failure, and what you must report |
 
 Then classify **every** step in `## Procedure` and `## Validation` against the "Coordination only"
-rule above. A single step that is not a `saorsa-deploy` command, a read-only check or a Linear
-update means the issue is refused: comment naming the step verbatim and why, leave the issue's
-status alone, and go to Step 7 with verdict `ABANDONED`.
+rule above, into one of `saorsa-deploy`, `read-only`, `linear` or `verbatim` (a command the issue
+spells out inside a fenced code block). A single step that falls into none of those four — one you
+would have to compose yourself — means the issue is refused: comment naming the step verbatim and
+why, leave the issue's status alone, and go to Step 7 with verdict `ABANDONED`. The classification
+goes in the results comment: one line per step with its class.
 
 Note any Validation check that cannot be decided by a command you can run. Those are reported
 `NOT ASSESSED` — do not eyeball them, and a `NOT ASSESSED` check is a warning.
