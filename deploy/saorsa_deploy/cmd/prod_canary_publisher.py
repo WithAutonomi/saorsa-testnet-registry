@@ -226,9 +226,15 @@ def cmd_prod_canary_provision_publisher(args):
         return
 
     console.print("[bold]Running the publisher once...[/bold]")
-    exit_code, last_run = provisioner.run_once()
+    try:
+        exit_code, last_run = provisioner.run_once()
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
     if last_run:
-        console.print(last_run)
+        # markup=False: this is JSON the VM wrote, and a value rich reads as a
+        # style tag would be dropped from the one record of what just ran.
+        console.print(last_run, markup=False, highlight=False)
     else:
         console.print(f"[yellow]No {STATE_FILE} on the VM.[/yellow]")
     if exit_code != 0:

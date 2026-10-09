@@ -32,6 +32,7 @@ credential for the tfstate bucket, so a ``record-results`` that fell back to
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 from pyinfra.api import Config, Inventory, State
@@ -122,6 +123,20 @@ WantedBy=timers.target
 """
 
 
+def _systemd_quote(value: str) -> str:
+    """Quote one ``EnvironmentFile`` value.
+
+    systemd applies shell-like unquoting to these lines: in an *unquoted*
+    value a backslash is an escape and edge whitespace is stripped, so a
+    database password containing ``\\`` would reach the VM altered — and
+    silently, as a credential that simply does not authenticate. Emitting
+    every value double-quoted, with ``\\`` and ``"`` escaped, makes the file
+    carry exactly what the operator supplied.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def build_env_file(
     *,
     database_url: str,
@@ -154,7 +169,7 @@ def build_env_file(
         "INFLUX_ORG": influx_org,
         "INFLUX_BUCKET": influx_bucket,
     }
-    return "".join(f"{k}={v}\n" for k, v in env.items())
+    return "".join(f"{k}={_systemd_quote(v)}\n" for k, v in env.items())
 
 
 _RUN_SCRIPT_HEADER = """\
@@ -266,10 +281,14 @@ def build_uv_install_commands() -> list[str]:
     later, by a venv that behaves unlike the one that was tested.
     """
     return [
+        # UV_NO_MODIFY_PATH keeps the installer out of root's shell profile:
+        # every command here names {UV_BIN} absolutely, so a PATH line would
+        # be an edit to a shared VM's login environment for no gain.
         f"test -x {UV_BIN} && {UV_BIN} --version | grep -q ' {UV_VERSION}$' || "
         f"(DEBIAN_FRONTEND=noninteractive apt-get update -q && "
         f"DEBIAN_FRONTEND=noninteractive apt-get install -y -q curl && "
-        f"curl -LsSf https://astral.sh/uv/{UV_VERSION}/install.sh | sh)",
+        f"curl -LsSf https://astral.sh/uv/{UV_VERSION}/install.sh "
+        f"| env UV_NO_MODIFY_PATH=1 sh)",
         f"{UV_BIN} --version | grep -q ' {UV_VERSION}$' || "
         f'(echo "uv is not {UV_VERSION}: $({UV_BIN} --version)" >&2; exit 1)',
         f"{UV_BIN} python install {PYTHON_VERSION}",
@@ -286,7 +305,11 @@ def build_venv_install_commands(wheel_names: list[str]) -> list[str]:
     """
     wheels = " ".join(f"{WHEEL_DIR}/{name}" for name in wheel_names)
     return [
-        f"{UV_BIN} venv --python {PYTHON_VERSION} {VENV_DIR}",
+        # `--clear` is not optional for a command whose re-run IS the upgrade
+        # path: uv 0.9.24 only warns that it "will require --clear to replace"
+        # an existing venv, so without it the next UV_VERSION bump turns every
+        # re-provision into a hard failure.
+        f"{UV_BIN} venv --clear --python {PYTHON_VERSION} {VENV_DIR}",
         f"{UV_BIN} pip install --python {VENV_DIR}/bin/python --reinstall {wheels}",
     ]
 
@@ -334,13 +357,33 @@ def build_removal_commands(*, purge: bool) -> list[str]:
     return commands
 
 
+#: A wheel this far over the clean build's size (1.3 MB for `saorsa-deploy`,
+#: 85 KB for `saorsa-db`) means the build swept up something that is not
+#: source. That already happened once: hatchling honours only the ROOT
+#: `.gitignore`, so `resources/wasm-client/node_modules/` — ignored by a nested
+#: `.gitignore` alone — went into the wheel and made it 23.7 MB, i.e. the VM
+#: would have run whatever was on the operator's disk. `deploy/pyproject.toml`
+#: excludes those paths now; this is the tripwire for the next one.
+MAX_WHEEL_BYTES = 8 * 1024 * 1024
+
+
 def build_publisher_wheels(repo_root: Path | None = None, console=None) -> list[Path]:
     """Build the two workspace wheels the VM installs."""
     wheels = []
     for package in WHEEL_PACKAGES:
         wheel = build_workspace_wheel(package, repo_root)
+        size = wheel.stat().st_size
+        if size > MAX_WHEEL_BYTES:
+            raise RuntimeError(
+                f"{wheel.name} is {size / 1024 / 1024:.1f} MB, over the "
+                f"{MAX_WHEEL_BYTES / 1024 / 1024:.0f} MB sanity limit — the build has "
+                "picked up something that is not source. Check the build "
+                "excludes in the package's pyproject.toml (hatchling reads "
+                "only the ROOT .gitignore, so a nested one does not protect "
+                "a directory like node_modules)."
+            )
         if console:
-            console.print(f"  Built wheel: {wheel.name}")
+            console.print(f"  Built wheel: {wheel.name} ({size / 1024 / 1024:.2f} MB)")
         wheels.append(wheel)
     return wheels
 
@@ -401,6 +444,15 @@ class ProdCanaryPublisherProvisioner:
         if isinstance(progress, RichLiveProgressHandler):
             progress._live.start()
 
+        # The env file and run.sh are staged as local files and uploaded,
+        # never interpolated into a shell command: the env file carries a
+        # database password, an AWS secret key and the Influx token, and a
+        # `cat > … <<EOF` op puts all three in the VM's /proc/<pid>/cmdline
+        # for the op's duration and in any pyinfra verbose log. `files.put`
+        # also creates the file 0600 outright, where the heredoc left it
+        # world-readable until a following chmod.
+        staging = tempfile.TemporaryDirectory(prefix="ant-canary-publisher-")
+
         try:
             self.console.print(f"Connecting to monitoring host {self.host_ip} as root...")
             connect_all(state)
@@ -458,23 +510,29 @@ class ProdCanaryPublisherProvisioner:
                 influx_org=self.influx_org,
                 influx_bucket=self.influx_bucket,
             )
+            staged_env = Path(staging.name) / "ant-canary-publisher.env"
+            staged_env.write_text(env_text)
+            staged_env.chmod(0o600)
             add_op(
                 state,
-                server.shell,
+                files.put,
                 name="Write publisher env file",
-                commands=[
-                    f"cat > {ENV_PATH} << 'ENV_EOF'\n{env_text}ENV_EOF",
-                    f"chmod 0600 {ENV_PATH}",
-                ],
+                src=str(staged_env),
+                dest=ENV_PATH,
+                mode="600",
+                add_deploy_dir=False,
             )
+
+            staged_run = Path(staging.name) / "run.sh"
+            staged_run.write_text(build_run_script())
             add_op(
                 state,
-                server.shell,
+                files.put,
                 name="Write run.sh",
-                commands=[
-                    f"cat > {RUN_SCRIPT_PATH} << 'RUN_EOF'\n{build_run_script()}RUN_EOF",
-                    f"chmod 0755 {RUN_SCRIPT_PATH}",
-                ],
+                src=str(staged_run),
+                dest=RUN_SCRIPT_PATH,
+                mode="755",
+                add_deploy_dir=False,
             )
             add_op(
                 state,
@@ -509,6 +567,8 @@ class ProdCanaryPublisherProvisioner:
             disconnect_all(state)
             if isinstance(progress, RichLiveProgressHandler):
                 progress._live.stop()
+            # Only now: pyinfra reads `src` during run_ops, not at add_op.
+            staging.cleanup()
 
         if state.failed_hosts:
             raise RuntimeError(f"{len(state.failed_hosts)} host(s) failed publisher provisioning")
@@ -520,15 +580,31 @@ class ProdCanaryPublisherProvisioner:
         matter to the operator: the exit code becomes this command's, and the
         state file says which step produced it.
         """
-        start = self._ssh(
-            f"systemctl start {SERVICE_NAME}.service",
-            timeout=RUN_NOW_TIMEOUT_SECS,
-        )
+        try:
+            start = self._ssh(
+                f"systemctl start {SERVICE_NAME}.service",
+                timeout=RUN_NOW_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired:
+            # The unit's own TimeoutStartSec is 3h and this wait outlasts it,
+            # so getting here means ssh itself hung rather than the run
+            # overrunning. Say where to look instead of raising a traceback
+            # out of a command that has already installed everything.
+            raise RuntimeError(
+                f"the immediate run did not return within {RUN_NOW_TIMEOUT_SECS}s. "
+                f"The publisher is installed; check it on the VM with "
+                f"`journalctl -u {SERVICE_NAME}.service` and "
+                f"`cat {STATE_FILE}`."
+            ) from None
+
         last_run = self._ssh(f"cat {STATE_FILE} 2>/dev/null || true")
         if start.returncode != 0:
             journal = self._ssh(f"journalctl -u {SERVICE_NAME}.service -n 40 --no-pager")
             if journal.stdout:
-                self.console.print("[dim]" + journal.stdout.strip() + "[/dim]")
+                # markup=False: run.sh's own step markers are `[publisher] …`,
+                # which rich would read as a style tag and swallow — losing
+                # exactly the lines that say which step failed.
+                self.console.print(journal.stdout.strip(), markup=False, highlight=False)
         return start.returncode, (last_run.stdout or "").strip()
 
     def _ssh(self, command: str, *, timeout: int = 120) -> subprocess.CompletedProcess:

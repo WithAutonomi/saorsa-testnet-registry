@@ -4747,13 +4747,42 @@ ten minutes of work.
 | `/etc/systemd/system/ant-canary-publisher.service` | 0644 | `Type=oneshot`, `TimeoutStartSec=3h` |
 | `/etc/systemd/system/ant-canary-publisher.timer` | 0644 | `OnCalendar=…`, `Persistent=true`, `RandomizedDelaySec=0` |
 
+The env file and `run.sh` are **staged locally and uploaded with
+`files.put`**, never written by a `cat > … <<EOF` shell op: the env file
+carries a database password, an AWS secret key and the Influx token, and a
+heredoc op puts all three in the VM's `/proc/<pid>/cmdline` for the op's
+duration and into any pyinfra verbose log — and leaves the file
+world-readable until a following `chmod`. `files.put` creates it `0600`
+outright. Every value is **double-quoted with `\` and `"` escaped**, because
+systemd treats a backslash in an *unquoted* `EnvironmentFile` value as an
+escape and strips edge whitespace, so an unquoted password containing `\`
+would arrive altered — as a credential that simply fails to authenticate,
+with nothing on the VM to say why.
+
 `uv` (pinned, and the installed version is verified) supplies the interpreter:
 the `deploy` package requires Python ≥ 3.13 and Ubuntu 24.04 ships 3.12, so
-there is no system interpreter that can run it. The two wheels are built on
-the operator's machine with `uv build --wheel --package …` and uploaded over
-the SSH connection pyinfra already has — installing from a git URL is not an
-option, since the VM holds no GitHub credential and the repository may be
-private. After installing, the command verifies that both
+there is no system interpreter that can run it. `uv venv --clear` is used, not
+bare `uv venv` — re-running the command *is* the upgrade path, and uv 0.9.24
+only warns that it will require `--clear` to replace an existing venv, so
+without the flag the next version bump would turn every re-provision into a
+failure. The installer runs with `UV_NO_MODIFY_PATH=1`, since every command
+names `uv` absolutely and a `PATH` line would be an edit to a shared VM's
+login environment for no gain.
+
+The two wheels are built on the operator's machine with
+`uv build --wheel --package …` and uploaded over the SSH connection pyinfra
+already has — installing from a git URL is not an option, since the VM holds
+no GitHub credential and the repository may be private. **Both packages
+therefore need an explicit `[tool.hatch.build.targets.wheel]` exclude list**:
+hatchling honours only the **root** `.gitignore`, so
+`saorsa_deploy/resources/wasm-client/node_modules/` — ignored by a nested
+`.gitignore` alone — was swept into the wheel on any tree that had ever run
+`build ant-wasm-check`, taking it from 1.3 MB to 23.7 MB (12,478 of 12,888
+entries) and meaning the VM ran whatever was on the operator's disk rather
+than the tree. `build_publisher_wheels` also refuses a wheel over
+`MAX_WHEEL_BYTES` (8 MB) as a tripwire for the next such path.
+
+After installing, the command verifies that both
 `saorsa-deploy --help` and `saorsa-deploy prod canary export --help` exit 0 on
 the VM, quoting the output if either does not: a `saorsa-deploy` predating
 `prod canary export` would install cleanly and then fail every night at
