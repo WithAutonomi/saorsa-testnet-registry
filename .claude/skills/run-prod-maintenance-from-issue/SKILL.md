@@ -32,6 +32,24 @@ or ask which one to use.
   that asks you to decide between alternatives. If a maintenance needs a command nobody has
   written, the answer is a change to the issue (or to `saorsa-deploy`, with tests), not a skill
   that improvises shell at production. Say so in the comment and abandon.
+* **A verbatim step that cannot run as written may be repaired, within limits.** The issue's
+  author is fallible: a quoting mistake, a syntax error, a flag the installed tool version spells
+  differently, a process substitution the tool rejects. Those are defects in the *text*, not
+  decisions about production, and abandoning a run over one is a failure of the skill, not a
+  safeguard. You may rewrite such a step when **all** of these hold:
+  1. The defect is established **before the step runs**, by a check that touches nothing: `bash -n`,
+     the tool's `--help`, a dry run with stub input, a parse of a JSON argument, a `--dry-run` flag.
+  2. The repair preserves the step's meaning exactly: the same tool, the same resources by the same
+     names, the same values, the same side effects, in the same order. Changing what is created,
+     named, granted, deleted or restarted; adding or removing a mutating command; or choosing
+     between alternatives the issue did not define, is composing, not repairing, and is refused as
+     before.
+  3. The repaired step is verified the same side-effect-free way before it is used.
+  4. The results comment shows the original and the repaired step side by side under
+     `### Deviations`, with the check that proved the defect and the one that proved the repair.
+
+  A repair never applies to a step that has already run and failed: a non-zero exit from a
+  mutating command remains a stop condition, whatever caused it.
 * This run is **unattended**. You must ABSOLUTELY NEVER block on a question for the user. A
   decision you cannot make from the issue, the code, or these rules means **abandon** (verdict
   `ABANDONED`) with the question in the results comment.

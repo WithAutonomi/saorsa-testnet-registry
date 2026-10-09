@@ -197,8 +197,12 @@ issue spells out verbatim in a fenced code block exactly as written (alongside
 `saorsa-deploy` commands and read-only checks), and refuses an issue holding any
 step it would have to compose itself — an instruction like "restart the service"
 rather than the exact command, a command depending on a value the issue never
-defines, or a choice between alternatives. It never re-runs a mutating command
-after a failure, and starts nothing new at the hard ceiling.
+defines, or a choice between alternatives. A verbatim step that cannot run as
+written (a quoting or syntax mistake, a flag the installed tool spells
+differently) may be **repaired** when the defect and the repair are both proved
+by a side-effect-free check first, the meaning is preserved exactly, and the
+diff is reported; that is text repair, not composition. It never re-runs a
+mutating command after a failure, and starts nothing new at the hard ceiling.
 
 Reusable profiles are committed under `deploy/manifests/profiles/`
 (`reference.yaml` = every option, `staging.yaml` = THE staging profile every
