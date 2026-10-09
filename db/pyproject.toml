@@ -11,7 +11,11 @@ description = "Shared database models and repositories for the Saorsa Testnet Re
 requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0",
+    # Both PostgreSQL drivers: SQLAlchemy 2.0 resolves a driver-less
+    # postgresql:// URL to psycopg2, 2.1 resolves it to psycopg 3. Every venv
+    # that installs this package must work with whichever it resolved.
     "psycopg2-binary>=2.9",
+    "psycopg[binary]>=3.1",
     "python-dotenv>=1.1",
     "alembic>=1.15",
 ]

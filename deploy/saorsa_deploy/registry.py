@@ -32,8 +32,12 @@ def _try_get_repository() -> DeploymentRepository | None:
         factory = get_session_factory(database_url)
         session = factory()
         return SqlAlchemyDeploymentRepository(session)
-    except Exception:
-        logger.debug("Could not connect to registry database", exc_info=True)
+    except Exception as exc:
+        # Loud, not debug: callers report None as "DATABASE_URL is not set",
+        # and on 2026-10-09 a VM whose venv lacked the psycopg driver printed
+        # exactly that with the variable set, sending the diagnosis the wrong
+        # way. The real reason must reach the journal.
+        logger.warning("Could not connect to the registry database: %s", exc)
         return None
 
 
