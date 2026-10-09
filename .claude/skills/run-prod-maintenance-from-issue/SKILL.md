@@ -96,6 +96,17 @@ There is nothing to tear down: this skill creates no infrastructure.
 
 ## Step 1 — Read and validate the issue
 
+**First, before reading anything else, set `$issue_number` to `In Progress`.** The status is the
+only signal a human watching Linear has that a run is under way; it goes on the moment the run
+starts, not after the preconditions pass.
+
+**A maintenance issue runs once**, as a testnet-run issue does. If the issue was not in `Todo` or
+`Backlog` when you picked it up, or it already carries a results comment (one whose first line
+begins `## Results —`), it has been run before: refuse it. Comment that the issue has already been
+run and that the next attempt needs a new issue (the human duplicates it and cancels this one),
+then go to Step 7 with verdict `ABANDONED`. Never re-run a Procedure under an issue that has a
+results comment, whatever that comment's verdict.
+
 Read Linear issue `$issue_number`. It must contain **all** of these sections, by these headings.
 Stop and name the missing one if any is absent:
 
@@ -114,7 +125,7 @@ Then classify **every** step in `## Procedure` and `## Validation` against the "
 rule above, into one of `saorsa-deploy`, `read-only`, `linear` or `verbatim` (a command the issue
 spells out inside a fenced code block). A single step that falls into none of those four — one you
 would have to compose yourself — means the issue is refused: comment naming the step verbatim and
-why, leave the issue's status alone, and go to Step 7 with verdict `ABANDONED`. The classification
+why, and go to Step 7 with verdict `ABANDONED`. The classification
 goes in the results comment: one line per step with its class.
 
 Note any Validation check that cannot be decided by a command you can run. Those are reported
@@ -142,10 +153,9 @@ restarts production hosts for no reason.
 
 Then:
 
-1. Set `$issue_number` to **In Progress**.
-2. Compute the absolute ceiling: now + the `## Hard ceiling` duration. Record it in the task list
+1. Compute the absolute ceiling: now + the `## Hard ceiling` duration. Record it in the task list
    as a UTC timestamp, and check the clock against it before starting each command.
-3. Create `~/.autonomi/maintenance-runs/$issue_number/` and write the Procedure's commands, in
+2. Create `~/.autonomi/maintenance-runs/$issue_number/` and write the Procedure's commands, in
    order, one per line, to `commands.sh` in it — **before running any of them**. That file is what
    a human reads to see what this run intended, including when the session dies mid-way.
 
