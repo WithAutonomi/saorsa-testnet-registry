@@ -820,6 +820,15 @@ mandatory paired InfluxDB+Grafana stack. `deploy_args.kind = "prod-canary"`.
   `prod_canary_*` tables and rederives `prod_canary_loss` — idempotent and
   cron-safe. `print-recorded-results` emits alive / pending / confirmed-lost plus
   an hours-to-loss histogram, per-vantage and per-chunk-role breakdowns.
+- **`prod canary export` publishes the public dataset** — two JSON documents
+  (`<prefix>/index.json` plus `<prefix>/<series id>.json`) to an S3 bucket or a
+  local dir, which is what **`canary.autonomi.com`** renders. It **reads
+  Postgres only** (so export *after* `record-results`, and a destroyed canary
+  stays exportable as history) and its **schema is a contract with that site**,
+  versioned `schema_version` and closed: the key set is written out explicitly,
+  so a probe hostname, an IP or a new column cannot leak by default — a vantage
+  is a region code with a label, never a host. The index is **merged**, keeping
+  every other series' entry, and `--as-of` makes the bytes reproducible.
 
 See `deploy/README.md` §"Running canaries against production".
 

@@ -4687,6 +4687,194 @@ saorsa-deploy prod canary destroy --name CANARY-01 --no-keep-monitoring
 
 Postgres rows are never touched by destroy.
 
+#### Publishing the public dataset (`prod canary export`)
+
+`prod canary export` turns a canary's recorded probe history into a small,
+public-safe JSON dataset and publishes it to S3, where the
+**`canary.autonomi.com`** site reads it. Nothing else renders the canary record
+for anyone outside the registry.
+
+```
+saorsa-deploy prod canary export --name <deployment name> [--id <deployment id>]
+    (--bucket <bucket> [--prefix v1] | --out-dir <dir>)
+    [--title <text>] [--stale-after-hours 6] [--as-of <ISO-8601 UTC>]
+```
+
+| Flag | Required | Default | Notes |
+|------|----------|---------|-------|
+| `--name` | yes | — | Canary deployment name. Lower-cased it is also the **series id** (`PROD-CANARY-04` → `prod-canary-04`). |
+| `--id` | no | — | Deployment id, overriding `--name`'s resolution. With several rows of one name the newest is used and a warning names the ids. |
+| `--bucket` | one of | — | S3 bucket. Writes `<prefix>/index.json` and `<prefix>/<series id>.json` with `put_object`, `ContentType: application/json`, `CacheControl: public, max-age=300`. Credentials come from the standard AWS chain; **no S3 deployment state is read**. |
+| `--out-dir` | one of | — | Write the same two files to a local directory instead. Mutually exclusive with `--bucket`; exactly one is required. |
+| `--prefix` | no | `v1` | Key prefix in the bucket. Ignored with `--out-dir`. |
+| `--title` | no | the deployment name | The series' display title. |
+| `--stale-after-hours` | no | `6` | Mark the series stale when the newest probe is older than this before `--as-of`. |
+| `--as-of` | no | the real clock | The instant treated as "now" for the rolling windows and the staleness check. Exists so the output is reproducible. |
+
+Requires `DATABASE_URL` and **reads Postgres only** — no Influx, no SSH, no
+deployment state. The deployment must have `deploy_args.kind == "prod-canary"`;
+anything else exits 1. A **destroyed** canary is still exportable: a finished
+run stays on the site as history. Exit 0 on success, printing one line per file
+written with its size. Export after `record-results`, which is what puts the
+probes in Postgres in the first place.
+
+The index is **merged, not rewritten**: the existing `index.json` is read first
+(a 404 means none), this series' entry is replaced or added, and every other
+series' entry is kept — each series is published by its own command run. An
+existing `index.json` that is not valid JSON is refused rather than overwritten.
+
+##### Counting rules
+
+* **Probes** are `prod_canary_probes` rows for the deployment's canaries, taken
+  at their *effective* status — the same `_effective_status` the recorded
+  results use, so a timeout-dominated failure is `inconclusive` here too.
+* **Vantages** are the probe VMs' regions, parsed out of the hostname with
+  `-download-(?P<region>[a-z]+[0-9]+)-[0-9]+$` and labelled from a fixed table
+  in code (`lon1: London`, `nyc1`/`nyc3: New York`, `sgp1: Singapore`, `ams3`,
+  `fra1`, `sfo3`, `tor1`, `blr1`, `syd1`; an unknown region is labelled with its
+  own code). A probe from any **non-matching** host is the upload VM's own
+  post-upload read-back: excluded from every rate and every cell, counted only
+  as `initial_verification_ok`. **Hostnames never appear in the output.**
+* **Conclusive** probes are `ok` or `failed`; a rate is `ok / (ok + failed)`,
+  `null` when that denominator is zero. `inconclusive` is counted and exported
+  but is never in a denominator.
+* **Episodes** are `prod_canary_unavailability` rows, open from
+  `confirmed_unavailable_at` to `recovered_at`, or to `data_to` while ongoing.
+  **The two ends are not the same kind of instant**, and the difference lands on
+  a day boundary: `recovered_at` *is* the successful probe that proved the file
+  available, so a recovered episode is `[confirmed, recovered)` and a recovery at
+  exactly midnight leaves the new day green; `data_to` is only the end of what is
+  known, so an ongoing episode is `[confirmed, data_to]` and its last day stays
+  red. A row whose `recovered_at` precedes its own `confirmed_unavailable_at` is
+  not a span: it is dropped with a logged warning and counted nowhere, rather than
+  matching no day and quietly reading as available.
+* **Days** are UTC calendar days from the earliest `uploaded_at` to `data_to`
+  inclusive. `data_to` is the latest `probed_at` of any **included** probe (with
+  no vantage probe at all it falls back to the last upload, which the staleness
+  check then reports).
+* **Cells**, one character per day per file: `R` if any of the file's episodes
+  overlaps the day, else `G` if at least one conclusive probe was made that day,
+  else `X`. `failed_checks` gives, per `G` day, the number of `failed` probes
+  that day when non-zero — which is what lets the site show "one check failed,
+  the next succeeded" without colouring the cell.
+* **Rolling windows** `30d`/`90d` are probes with `probed_at` in
+  `(as_of − N days, as_of]`.
+* **Stale**: `stale_reasons` gains `"no_recent_probes"` when `data_to` is older
+  than `--stale-after-hours` before `as_of`; `stale` is true when the list is
+  non-empty. **A series with no vantage probe at all is always stale**, whatever
+  `data_to` says — a canary exported before `record-results` has ever run has no
+  rows, so `data_to` can only fall back to `as_of` itself, and without this the
+  document would publish an empty series as healthy and up to the minute.
+
+##### Schema (version 1)
+
+The schema is the **contract** with the site, mirrored verbatim in its own
+issue. The documents carry exactly these keys and nothing else — no hostname, no
+IP, no `deploy_args`, and `source_url` is the only URL — so a column added to
+`prod_canary_probes` cannot leak by default. Output is
+`json.dumps(..., sort_keys=True, separators=(",", ":"))` plus a trailing
+newline, so the same rows and the same `--as-of` give byte-identical files.
+
+`<prefix>/index.json`:
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-09T09:31:02Z",
+  "series": [
+    {
+      "id": "prod-canary-04",
+      "kind": "prod-canary",
+      "title": "Canary 4",
+      "path": "prod-canary-04.json",
+      "generated_at": "2026-10-09T09:31:02Z",
+      "data_to": "2026-10-09T08:03:12Z",
+      "stale": false,
+      "summary": { "...": "identical to the series file's summary object" }
+    }
+  ]
+}
+```
+
+`<prefix>/<series id>.json`:
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-09T09:31:02Z",
+  "series": {
+    "id": "prod-canary-04",
+    "kind": "prod-canary",
+    "title": "Canary 4",
+    "uploaded_from": "2026-08-22",
+    "uploaded_to": "2026-08-23",
+    "first_probe_at": "2026-08-22T22:00:03Z",
+    "data_to": "2026-10-09T08:03:12Z",
+    "probe_interval_hours": 1,
+    "vantages": [
+      { "id": "lon1", "label": "London" },
+      { "id": "nyc1", "label": "New York" },
+      { "id": "sgp1", "label": "Singapore" }
+    ]
+  },
+  "stale": false,
+  "stale_reasons": [],
+  "summary": {
+    "files": 378,
+    "bytes": 32162403640,
+    "chunks": 9280,
+    "initial_verification_ok": 378,
+    "days_observed": 49,
+    "files_never_unavailable": 378,
+    "files_available_now": 378,
+    "files_unavailable_now": 0,
+    "episodes": { "total": 0, "recovered": 0, "ongoing": 0 },
+    "smallest_bytes": 5277908,
+    "largest_bytes": 485255912
+  },
+  "rates": {
+    "all": { "ok": 0, "failed": 0, "inconclusive": 0, "rate": null },
+    "30d": { "ok": 0, "failed": 0, "inconclusive": 0, "rate": null },
+    "90d": { "ok": 0, "failed": 0, "inconclusive": 0, "rate": null },
+    "by_vantage": {
+      "lon1": { "all": {}, "30d": {}, "90d": {} }
+    }
+  },
+  "days": ["2026-08-22", "2026-08-23"],
+  "files": [
+    {
+      "id": "6336b4b0-…",
+      "name": "example.avi",
+      "bytes": 36299308,
+      "chunks": 13,
+      "address": "<64 hex chars>",
+      "source_url": "https://archive.org/download/…",
+      "uploaded_at": "2026-08-22T21:38:59Z",
+      "available_now": true,
+      "cells": "GG",
+      "failed_checks": { "2026-08-23": 1 },
+      "episodes": [
+        { "from": "2026-09-01T12:00:00Z", "to": null, "chunk": "<64 hex chars>" }
+      ]
+    }
+  ]
+}
+```
+
+* `cells` has exactly `len(days)` characters from `G`, `R`, `X`, in `days` order.
+* `rate` is a float in `[0, 1]` rounded to 6 decimals, or `null`.
+* `days_observed` is `len(days)`.
+* `files_never_unavailable` counts files with no episode; `files_unavailable_now`
+  counts files with an ongoing episode; `files_available_now` is
+  `files − files_unavailable_now`.
+* `name` is the stored `file_name` URL-decoded for display; `source_url` is
+  stored as-is.
+* `failed_checks` and `episodes` are omitted when empty.
+* Every object in `by_vantage` has the same shape as `rates.all`.
+* Timestamps are UTC ISO-8601 with a `Z` suffix and no fractional seconds; dates
+  are `YYYY-MM-DD`.
+* Files are ordered by `uploaded_at`, then `id`.
+
 ### Running profiling nodes against production (`prod nodes`)
 
 `prod nodes deploy` stands up node VM(s) — each running `node_count` ant-node
