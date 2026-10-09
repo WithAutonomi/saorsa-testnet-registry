@@ -55,33 +55,15 @@ goal that cannot be reached without crossing one is a goal to abandon, with the 
    the results comment. Running the fixed tree for this maintenance is fine; leaving a silent
    edit on `main` is not.
 
-### What fixing may look like
+### Inside the boundaries, use your judgment
 
-Anything inside the boundaries, chosen by reading the actual failure rather than guessing. Typical
-examples, none of which needs a human:
-
-* A command whose text cannot run (syntax, quoting, a process substitution the tool rejects, a flag
-  the installed version does not have): rewrite it to mean the same thing, prove it with a
-  side-effect-free check (`bash -n`, `--help`, a stub-input dry run, a JSON parse), then run it.
-* A missing dependency on the target (a Python package absent from a venv the Procedure built, a
-  CLI the step needs): install it on that target and re-run the step.
-* A value the Procedure derived wrongly for the target (a URL scheme that resolves to a driver
-  the venv lacks, a path that differs): correct the value, in the file the Procedure wrote, and
-  re-run the step.
-* A step that failed **before it changed anything** (argument parsing, an import error, a
-  connection refused on the first query): fix the cause and re-run it.
-* A step that failed **after a partial change**: read the state it left, and if the command is
-  idempotent over that state (an upsert, a `files.put`, a `systemctl enable`, a `GRANT`), re-run
-  it; if it is not, bring the state to what the step expected by the smallest action inside the
-  boundaries, then re-run.
-* A precondition that fails for a reason you can remove inside the boundaries (a stale timer from
-  a previous attempt that this Procedure will replace, a probe object left in a bucket): remove
-  it, record it, continue. A precondition that says the maintenance is **unnecessary** (the hosts
-  are already on the target version) is different: do nothing and report `WARN`.
-
-What fixing never looks like: changing what the maintenance is for, widening its scope to a
-target the issue does not name, substituting a credential or resource the issue does not define,
-or re-running a `retry: never` step.
+Nobody can list in advance what will go wrong on a live system, so this skill does not try.
+Anything the boundaries do not forbid is yours to decide: read the actual failure, read the
+target's actual state, work out what reaching the goal needs, and do it. Prefer the smallest
+change that gets there, and prove it worked before moving on. The boundaries are the whole
+constraint; a step the issue did not write, a package the issue did not mention, a value the issue
+derived wrongly, a leftover from an earlier attempt — all of it is ordinary work, not a reason to
+stop.
 
 ### Every fix is reported, and a fixed run is never `PASS`
 
