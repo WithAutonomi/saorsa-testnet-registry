@@ -11,6 +11,9 @@
 #                            handlers and RUN_SESSION_ID for the caller.
 #   require_deps           — fail unless claude, jq and uuidgen are on PATH
 #   validate_issue_ids     — check a comma-separated list of Linear ids
+#   load_repo_dotenv DIR   — export every KEY=value in DIR/.env the shell has
+#                            not already set, so the headless session inherits
+#                            the repo's environment (DATABASE_URL and friends)
 
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-5}"
 SESSION_PID=""
@@ -25,6 +28,36 @@ require_deps() {
     for dep in claude jq uuidgen; do
         command -v "$dep" >/dev/null || { echo "$dep not on PATH" >&2; exit 1; }
     done
+}
+
+# Usage: load_repo_dotenv DIR
+#
+# The skills run `psql "$DATABASE_URL"`, `aws`, `ssh` and `saorsa-deploy` with
+# whatever environment the session inherits. `saorsa-deploy` reads the repo's
+# .env itself; a bare `psql "$DATABASE_URL"` in an issue's Procedure does not,
+# and an operator starting a run from a fresh shell should not have to export
+# the file by hand first. So every runner exports DIR/.env here. A value already
+# set in the shell wins, so one key can be overridden for a single run without
+# editing the file. Accepts `KEY=value` and `export KEY=value`, one pair of
+# surrounding quotes stripped; comments and blank lines skipped; nothing is
+# evaluated.
+load_repo_dotenv() {
+    local file="$1/.env" line key value
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        line="${line#export }"
+        [[ "$line" == *=* ]] || continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        if (( ${#value} >= 2 )) && { [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; }; then
+            value="${value:1:${#value}-2}"
+        fi
+        [[ -n "${!key+x}" ]] && continue
+        export "$key=$value"
+    done < "$file"
 }
 
 # Usage: validate_issue_ids "V2-1,V2-2"  → fills the global ISSUES array

@@ -30,6 +30,7 @@ usage() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/claude-session.sh
 . "$REPO_ROOT/scripts/lib/claude-session.sh"
+load_repo_dotenv "$REPO_ROOT"
 
 [[ $# -eq 1 && -n "$1" ]] || usage
 validate_issue_ids "$1" || usage

@@ -39,6 +39,7 @@ usage() {
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/claude-session.sh
 . "$REPO_ROOT/scripts/lib/claude-session.sh"
+load_repo_dotenv "$REPO_ROOT"
 # shellcheck source=lib/testnet-runs.sh
 . "$REPO_ROOT/scripts/lib/testnet-runs.sh"
 

@@ -157,7 +157,10 @@ been changed, so the comment is short):
 * The SSH key named in `## Target` exists on disk.
 * The inventory named in `## Target` exists on disk, and names every host in `## Target`.
 * The environment the Procedure's commands need is set (`HCLOUD_TOKEN`, `VULTR_API_KEY`, AWS
-  credentials, `DATABASE_URL` — whichever those commands read).
+  credentials, `DATABASE_URL` — whichever those commands read). The runner exports the repo's
+  `.env` into this session before it starts, with any value already in the operator's shell
+  taking precedence, so `DATABASE_URL` and the other keys in that file are present without the
+  operator exporting them by hand; a key missing from both is a genuine failure of this check.
 * **No other `saorsa-deploy prod` process is running**: `pgrep -af 'saorsa-deploy prod' | grep -v pgrep` prints
   nothing. Two commands walking the same tier at once would restart two bootstraps together, and
   the whole design of these commands is one host at a time.

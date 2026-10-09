@@ -8,9 +8,11 @@
 #   scripts/run-maintenance-issues.sh V2-1445[,V2-1446,...]
 #
 # Each issue is handed to the `run-prod-maintenance-from-issue` skill in a
-# headless `claude -p` session. The skill refuses an issue whose Procedure is
-# anything but `saorsa-deploy` commands and read-only checks, so nothing here
-# types shell at a production host. Print mode exits when the agent ends its
+# headless `claude -p` session. The skill runs `saorsa-deploy` commands,
+# read-only checks and commands the issue spells out verbatim, and refuses an
+# issue holding any step it would have to compose itself. The repo's `.env` is
+# exported into the session (shell values win), so an issue's `psql
+# "$DATABASE_URL"` works from a fresh shell. Print mode exits when the agent ends its
 # turn, and the skill does not end its turn until the issue is updated — so the
 # next issue starts only when the previous session has exited.
 #
@@ -41,6 +43,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/claude-session.sh
 . "$REPO_ROOT/scripts/lib/claude-session.sh"
+load_repo_dotenv "$REPO_ROOT"
 # shellcheck source=lib/issue-runs.sh
 . "$REPO_ROOT/scripts/lib/issue-runs.sh"
 
