@@ -5898,6 +5898,117 @@ def main(argv=None):
         help="Path to SSH key (default: ~/.ssh/id_rsa).",
     )
 
+    # --- prod canary provision-publisher ---
+    prod_canary_pp_parser = prod_canary_subparsers.add_parser(
+        "provision-publisher",
+        help=(
+            "Install a daily record-results + export timer on the canary's "
+            "monitoring VM, so the public dataset behind canary.autonomi.com "
+            "stays current without an operator in the loop."
+        ),
+    )
+    prod_canary_pp_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Canary deployment name (also the monitoring stack name).",
+    )
+    prod_canary_pp_parser.add_argument(
+        "--bucket",
+        type=str,
+        required=True,
+        help="S3 bucket the exported dataset is written to.",
+    )
+    prod_canary_pp_parser.add_argument(
+        "--prefix",
+        type=str,
+        default="v1",
+        help="Key prefix within the bucket (default: v1).",
+    )
+    prod_canary_pp_parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="Dataset title shown on the site (default: the deployment name).",
+    )
+    prod_canary_pp_parser.add_argument(
+        "--on-calendar",
+        type=str,
+        default="*-*-* 09:30:00",
+        help=(
+            "Systemd OnCalendar expression for the timer "
+            "(default: '*-*-* 09:30:00' — daily at 09:30 UTC, after the "
+            "Slack reporter's 09:00)."
+        ),
+    )
+    prod_canary_pp_parser.add_argument(
+        "--env-file",
+        type=str,
+        default="~/.config/saorsa-deploy/canary-publisher.env",
+        help=(
+            "KEY=value file defining CANARY_PUBLISHER_DATABASE_URL, "
+            "CANARY_PUBLISHER_AWS_ACCESS_KEY_ID, "
+            "CANARY_PUBLISHER_AWS_SECRET_ACCESS_KEY and optionally "
+            "CANARY_PUBLISHER_REGION (default: eu-west-2). These are the "
+            "credentials the VM itself uses "
+            "(default: ~/.config/saorsa-deploy/canary-publisher.env)."
+        ),
+    )
+    prod_canary_pp_parser.add_argument(
+        "--run-now",
+        dest="run_now",
+        action="store_true",
+        default=True,
+        help=(
+            "Run the publisher once after install and wait for it, printing "
+            "last-run.json; a failing run fails this command (default)."
+        ),
+    )
+    prod_canary_pp_parser.add_argument(
+        "--no-run-now",
+        dest="run_now",
+        action="store_false",
+        help="Install only; don't trigger a run.",
+    )
+    prod_canary_pp_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
+    # --- prod canary unprovision-publisher ---
+    prod_canary_upp_parser = prod_canary_subparsers.add_parser(
+        "unprovision-publisher",
+        help=(
+            "Remove the publisher timer, units, run script and env file from "
+            "the canary's monitoring VM. Leaves the Slack reporter, Influx "
+            "and Grafana untouched."
+        ),
+    )
+    prod_canary_upp_parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Canary deployment name.",
+    )
+    prod_canary_upp_parser.add_argument(
+        "--purge",
+        action="store_true",
+        default=False,
+        help=(
+            "Also remove the venv, the uploaded wheels and "
+            "/var/lib/ant-canary-publisher. By default they are kept so a "
+            "re-provision is quick and the last run stays readable."
+        ),
+    )
+    prod_canary_upp_parser.add_argument(
+        "--ssh-key-path",
+        type=str,
+        default="~/.ssh/id_rsa",
+        help="Path to SSH key (default: ~/.ssh/id_rsa).",
+    )
+
     # These belong to `canary deploy`, not to the `canary` group: an option on
     # the group parser has to be written BEFORE the subcommand, so `prod canary
     # deploy --pool …` — exactly what the orchestrator emits — was rejected.
@@ -7724,6 +7835,20 @@ def main(argv=None):
             )
 
             cmd_prod_canary_unprovision_reporter(args)
+        elif args.prod_subcommand == "canary" and args.prod_canary_action == "provision-publisher":
+            from saorsa_deploy.cmd.prod_canary_publisher import (
+                cmd_prod_canary_provision_publisher,
+            )
+
+            cmd_prod_canary_provision_publisher(args)
+        elif (
+            args.prod_subcommand == "canary" and args.prod_canary_action == "unprovision-publisher"
+        ):
+            from saorsa_deploy.cmd.prod_canary_publisher import (
+                cmd_prod_canary_unprovision_publisher,
+            )
+
+            cmd_prod_canary_unprovision_publisher(args)
         elif args.prod_subcommand == "local-uploads":
             from saorsa_deploy.cmd.prod_local_uploads import (
                 cmd_prod_local_uploads,

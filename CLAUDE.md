@@ -816,6 +816,19 @@ mandatory paired InfluxDB+Grafana stack. `deploy_args.kind = "prod-canary"`.
   `prod_canary_*` tables and rederives `prod_canary_loss` — idempotent and
   cron-safe. `print-recorded-results` emits alive / pending / confirmed-lost plus
   an hours-to-loss histogram, per-vantage and per-chunk-role breakdowns.
+- **`prod canary provision-publisher` is what feeds `canary.autonomi.com`
+  unattended**: a daily timer on the **monitoring VM** running `record-results`
+  then `prod canary export`. That host because `destroy` keeps it, it already
+  carries the Slack reporter, and InfluxDB is local to it. It needs **Python
+  3.13 via a pinned `uv` on the VM** (the `deploy` package requires ≥3.13 and
+  Ubuntu 24.04 ships 3.12), installed from two wheels built at provision time
+  and pushed over SSH — the VM has no GitHub credential. `run.sh` passes the
+  **Influx URL and token explicitly**, so `record-results` never falls back to
+  `load_monitoring_state`: the VM has no credential for the tfstate bucket and
+  the fallback would fail the timer nightly with a boto3 error. It is
+  `set -uo pipefail`, not `-e`, so `last-run.json` can name the failing step.
+  Re-running the command IS the upgrade path; `unprovision-publisher [--purge]`
+  removes it and nothing else on the VM.
 
 See `deploy/README.md` §"Running canaries against production".
 

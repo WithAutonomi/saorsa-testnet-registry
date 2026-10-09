@@ -67,33 +67,50 @@ RUNTIME_DEPS = (
 )
 
 
-def build_saorsa_db_wheel(repo_root: Path | None = None) -> Path:
-    """Build the `saorsa-db` wheel and return its path.
+#: Workspace package name -> the directory holding its `pyproject.toml`. Used
+#: only to fail with a useful message when the build is run from somewhere
+#: that is not this repository.
+_PACKAGE_DIRS = {
+    "saorsa-db": "db",
+    "saorsa-deploy": "deploy",
+}
+
+
+def build_workspace_wheel(package: str, repo_root: Path | None = None) -> Path:
+    """Build one workspace package's wheel and return its path.
 
     Built fresh at provision time rather than pinned to a published version so
-    the VM runs exactly the claim logic in this working tree — a VM holding a
-    stale copy of the pool semantics is the failure this whole module exists to
-    avoid.
+    the VM runs exactly the code in this working tree — a VM holding a stale
+    copy of the pool semantics is the failure this whole module exists to
+    avoid, and the same reasoning carries to the canary publisher, which runs
+    the `saorsa-deploy` CLI itself.
     """
+    try:
+        package_dir = _PACKAGE_DIRS[package]
+    except KeyError:
+        raise ValueError(f"not a workspace package this builds: {package}") from None
+
     if repo_root is None:
         # provisioning/ -> saorsa_deploy/ -> deploy/ -> repo root
         repo_root = Path(__file__).resolve().parents[3]
-    if not (repo_root / "db" / "pyproject.toml").is_file():
+    if not (repo_root / package_dir / "pyproject.toml").is_file():
         raise FileNotFoundError(
-            f"cannot build the saorsa-db wheel: no db/pyproject.toml under {repo_root}"
+            f"cannot build the {package} wheel: no {package_dir}/pyproject.toml under {repo_root}"
         )
 
-    out_dir = Path(tempfile.mkdtemp(prefix="saorsa-db-wheel-"))
-    # Built from the workspace root with --package rather than from db/: uv
-    # resolves the workspace from the invocation directory, and building in
-    # place would drop the artifact into the source tree.
+    dist_name = package.replace("-", "_")
+    out_dir = Path(tempfile.mkdtemp(prefix=f"{dist_name}-wheel-"))
+    # Built from the workspace root with --package rather than from the
+    # package directory: uv resolves the workspace from the invocation
+    # directory, and building in place would drop the artifact into the
+    # source tree.
     subprocess.run(
         [
             "uv",
             "build",
             "--wheel",
             "--package",
-            "saorsa-db",
+            package,
             "--out-dir",
             str(out_dir),
         ],
@@ -102,11 +119,16 @@ def build_saorsa_db_wheel(repo_root: Path | None = None) -> Path:
         capture_output=True,
         text=True,
     )
-    wheels = sorted(out_dir.glob("saorsa_db-*.whl"))
+    wheels = sorted(out_dir.glob(f"{dist_name}-*.whl"))
     if not wheels:
         raise FileNotFoundError(f"uv build produced no wheel in {out_dir}")
     # Newest by name; a clean out_dir should only ever hold one.
     return wheels[-1]
+
+
+def build_saorsa_db_wheel(repo_root: Path | None = None) -> Path:
+    """Build the `saorsa-db` wheel and return its path."""
+    return build_workspace_wheel("saorsa-db", repo_root)
 
 
 def build_install_commands(wheel_name: str) -> list[str]:
