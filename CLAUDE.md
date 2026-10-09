@@ -191,18 +191,14 @@ while a maintenance Ctrl-C **never signals a running `saorsa-deploy prod …`** 
 it waits for that command and stops the session only afterwards (the command is
 a grandchild of the session, so the other order could kill it by proxy), because
 only the live command can run its own rollback and a host left between the
-binary swap and the restart has none. The maintenance skill's constraint is
-**who composed the command**, not which binary it is: it runs any command the
-issue spells out verbatim in a fenced code block exactly as written (alongside
-`saorsa-deploy` commands and read-only checks), and refuses an issue holding any
-step it would have to compose itself — an instruction like "restart the service"
-rather than the exact command, a command depending on a value the issue never
-defines, or a choice between alternatives. A verbatim step that cannot run as
-written (a quoting or syntax mistake, a flag the installed tool spells
-differently) may be **repaired** when the defect and the repair are both proved
-by a side-effect-free check first, the meaning is preserved exactly, and the
-diff is reported; that is text repair, not composition. It never re-runs a
-mutating command after a failure, and starts nothing new at the hard ceiling.
+binary swap and the restart has none. The maintenance skill treats the issue as a
+**goal** (`## Purpose` + `## Validation`) with the Procedure as the intended path:
+when a step fails or cannot run as written it diagnoses, fixes and carries on,
+inside hard **boundaries** — only the named targets, no destruction or spend the
+issue did not sanction, no secrets printed, repo fixes via a branch and PR, and
+`retry: never` steps (the one-host-at-a-time commands with built-in rollback)
+never re-run or signalled. Every fix is reported under `### Fixes applied` and a
+fixed run is `WARN` at best. It starts nothing new at the hard ceiling.
 
 Reusable profiles are committed under `deploy/manifests/profiles/`
 (`reference.yaml` = every option, `staging.yaml` = THE staging profile every

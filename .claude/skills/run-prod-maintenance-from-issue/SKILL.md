@@ -13,73 +13,102 @@ or ask which one to use.
 
 ## Rules
 
-* **Coordination only, and this one is absolute.** Every action you take is one of:
-  * a `uv run saorsa-deploy …` command, exactly as the issue's Procedure writes it;
-  * a **read-only** check — SSH running nothing but `stat`, `cat`, `ls`, `find`, `grep`,
-    `systemctl is-active`, `systemctl show`, `journalctl`, `df`, or a binary's `--version`;
-    `git diff` / `git log` / `git status`; an HTTP GET;
-  * a Linear read or update;
-  * any other command the issue's `## Procedure` or `## Validation` spells out **verbatim** inside
-    a fenced code block, run exactly as written. The issue may define shell variables in that same
-    block (for example `BUCKET=…`) and reference them in later commands of the block; nothing else
-    is substituted. A command that appears in prose rather than a fenced block is not a permitted
-    step.
+**The issue states a goal; your job is to reach it.** `## Purpose` says what the maintenance is for
+and `## Validation` says what "done" looks like. `## Procedure` is the author's intended path to
+it — the best-known commands in the best-known order — not a script to be executed blindly and
+abandoned at the first non-zero exit. Issue text is written by fallible people against systems
+they could not fully inspect: a quoting mistake, a missing package on the target, a URL whose
+driver resolves differently on the VM, a flag the installed tool spells differently. None of
+those is a reason to stop. When a step fails or cannot run as written, **diagnose it, fix it and
+carry on**, inside the boundaries below. A run that ends `ABANDONED` over something you could
+have fixed within the boundaries is a failure of this skill, not a safeguard.
 
-  **Refuse the issue, before doing anything at all, if any step in its Procedure or Validation
-  would require you to compose a command the issue does not spell out** — a step written as an
-  instruction ("restart the service", "fix the ownership", "install the package") rather than as
-  the exact command; a step whose command depends on a value the issue does not define; or a step
-  that asks you to decide between alternatives. If a maintenance needs a command nobody has
-  written, the answer is a change to the issue (or to `saorsa-deploy`, with tests), not a skill
-  that improvises shell at production. Say so in the comment and abandon.
-* **A verbatim step that cannot run as written may be repaired, within limits.** The issue's
-  author is fallible: a quoting mistake, a syntax error, a flag the installed tool version spells
-  differently, a process substitution the tool rejects. Those are defects in the *text*, not
-  decisions about production, and abandoning a run over one is a failure of the skill, not a
-  safeguard. You may rewrite such a step when **all** of these hold:
-  1. The defect is established **before the step runs**, by a check that touches nothing: `bash -n`,
-     the tool's `--help`, a dry run with stub input, a parse of a JSON argument, a `--dry-run` flag.
-  2. The repair preserves the step's meaning exactly: the same tool, the same resources by the same
-     names, the same values, the same side effects, in the same order. Changing what is created,
-     named, granted, deleted or restarted; adding or removing a mutating command; or choosing
-     between alternatives the issue did not define, is composing, not repairing, and is refused as
-     before.
-  3. The repaired step is verified the same side-effect-free way before it is used.
-  4. The results comment shows the original and the repaired step side by side under
-     `### Deviations`, with the check that proved the defect and the one that proved the repair.
+### Boundaries — the lines that are never crossed
 
-  A repair never applies to a step that has already run and failed: a non-zero exit from a
-  mutating command remains a stop condition, whatever caused it.
-* This run is **unattended**. You must ABSOLUTELY NEVER block on a question for the user. A
-  decision you cannot make from the issue, the code, or these rules means **abandon** (verdict
-  `ABANDONED`) with the question in the results comment.
-* **A mutating command is never re-run after a failure, and never signalled.** A non-zero exit from
-  any mutating command — `saorsa-deploy` or a verbatim command from the issue — is a stop
-  condition. Do not retry it, do not run it with different arguments, do not run a "cleanup"
-  command, and do not run the next Procedure step. Report the host's final state — in particular
-  whether the command printed `RESTORED` or `RESTORE INCOMPLETE` — and leave the next step to a
-  human, who will most likely write a second maintenance issue. These commands are serial and gated by design: the one they stopped on is the
-  only host in an unknown state, and the hosts after it are untouched.
-* **At the hard ceiling, no new command is started.** If a mutating command is already running when
-  the ceiling passes, **wait for it**, however long it takes — its own per-step timeouts bound it.
-  Killing it is the one way this tooling can itself break a production host: only the live command
-  can run its own rollback. Then abandon without starting anything else.
-* **Never end your turn while a mutating command is in flight.** In a headless run, ending your turn
-  ends the session (see Step 3), so the wait has to happen inside the turn. The only turn you end is
-  Step 7's.
+These are what keep "apply intelligence" from becoming "go rogue". Every one is absolute, and a
+goal that cannot be reached without crossing one is a goal to abandon, with the reason stated.
+
+1. **Scope.** Touch only the targets the issue names in `## Target` (hosts, cloud resources,
+   database objects, local files) and the resources the Procedure itself creates. Never a host the
+   issue does not name; `--limit-to` is how a command is confined to the named ones.
+2. **No destruction the issue did not sanction.** Never delete data, drop a table, destroy a VM or
+   a bucket, remove a credential, or stop a production service, unless the issue's Procedure or
+   Rollback contains that exact action. Restarting a service the Procedure itself installs or
+   restarts is within scope; restarting one it does not mention is not.
+3. **No new spend.** Never create billable infrastructure the issue does not call for.
+4. **Secrets.** Never print, log or post a password, token, key or connection URL. Diagnose around
+   them (lengths, prefixes, `has_*` checks).
+5. **`retry: never` steps.** A step the issue marks `retry: never` is never re-run after a
+   non-zero exit and never signalled — these are the serial, one-host-at-a-time commands with their
+   own built-in rollback (`prod bootstrap upgrade` and its kin), where the host it stopped on is
+   in a state only that command, or a human, can judge. For such a step a non-zero exit is a stop
+   condition exactly as before: report the host's final state, whether it printed `RESTORED` or
+   `RESTORE INCOMPLETE`, and leave the next move to a human. A `saorsa-deploy prod` command that
+   is running is never signalled, whatever its marking.
+6. **Unattended.** You must ABSOLUTELY NEVER block on a question for the user. A decision the
+   issue, the code, the target's own state and these rules cannot settle means abandon, with the
+   question in the results comment.
+7. **The hard ceiling.** At or past it, start nothing new. A mutating command already running is
+   waited for, however long it takes; then abandon.
+8. **Repo changes go through a branch.** If the fix is to code in this checkout, make it on a
+   branch named for the issue, commit it, push it and open a PR against `main` — and say so in
+   the results comment. Running the fixed tree for this maintenance is fine; leaving a silent
+   edit on `main` is not.
+
+### What fixing may look like
+
+Anything inside the boundaries, chosen by reading the actual failure rather than guessing. Typical
+examples, none of which needs a human:
+
+* A command whose text cannot run (syntax, quoting, a process substitution the tool rejects, a flag
+  the installed version does not have): rewrite it to mean the same thing, prove it with a
+  side-effect-free check (`bash -n`, `--help`, a stub-input dry run, a JSON parse), then run it.
+* A missing dependency on the target (a Python package absent from a venv the Procedure built, a
+  CLI the step needs): install it on that target and re-run the step.
+* A value the Procedure derived wrongly for the target (a URL scheme that resolves to a driver
+  the venv lacks, a path that differs): correct the value, in the file the Procedure wrote, and
+  re-run the step.
+* A step that failed **before it changed anything** (argument parsing, an import error, a
+  connection refused on the first query): fix the cause and re-run it.
+* A step that failed **after a partial change**: read the state it left, and if the command is
+  idempotent over that state (an upsert, a `files.put`, a `systemctl enable`, a `GRANT`), re-run
+  it; if it is not, bring the state to what the step expected by the smallest action inside the
+  boundaries, then re-run.
+* A precondition that fails for a reason you can remove inside the boundaries (a stale timer from
+  a previous attempt that this Procedure will replace, a probe object left in a bucket): remove
+  it, record it, continue. A precondition that says the maintenance is **unnecessary** (the hosts
+  are already on the target version) is different: do nothing and report `WARN`.
+
+What fixing never looks like: changing what the maintenance is for, widening its scope to a
+target the issue does not name, substituting a credential or resource the issue does not define,
+or re-running a `retry: never` step.
+
+### Every fix is reported, and a fixed run is never `PASS`
+
+Each fix goes in the results comment under `### Fixes applied`: what failed (the exact error),
+what you changed (the exact command or diff), why that was inside the boundaries, and what proved
+it worked. A run that needed any fix or any retry ends `WARN` at best, never `PASS`, so a human
+reads what happened. The point of the leeway is to finish the job; the point of the report is that
+nobody has to trust that you finished it well.
+
+### The rest
+
+* **Never end your turn while a mutating command is in flight.** In a headless run, ending your
+  turn ends the session (see Step 3), so the wait has to happen inside the turn. The only turn you
+  end is Step 7's.
 * **On a session resume** (your first message says your previous turn ended, or did not print
   `RUN COMPLETE`): re-read your task list and the per-command logs and `.exit` files under
   `~/.autonomi/maintenance-runs/$issue_number/`. **A command whose log file exists was started and
-  is NEVER started again.** Then, in this order:
-  * **An `.exit` file exists** → that is the command's exit status. Use it and carry on from there.
-  * **No `.exit` file, but the process is still alive** (`pgrep -af 'saorsa-deploy prod' | grep -v pgrep` — the
-    `[-]` keeps the pattern from matching your own command line) → it was launched detached and
-    survived. **Wait for it**, exactly as Step 3 says. Do not start it again and never signal it.
-  * **No `.exit` file and no live process** → it was in flight when the session died. Treat it as a
-    stop condition, report what the log shows, and abandon. Say in the comment how far the log got,
-    and whether the hosts are provably unmodified.
-* **Never touch a host the issue did not name.** `--limit-to` is how a command is confined to them.
-* Keep a task list and update it at every step and every deviation.
+  is not started again until you know how it ended.** Then, in this order:
+  * **An `.exit` file exists** → that is the command's exit status. Carry on from there, fixing
+    and re-running as the rules above allow.
+  * **No `.exit` file, but the process is still alive** (`pgrep -af 'saorsa-deploy prod' | grep -v pgrep`)
+    → it was launched detached and survived. **Wait for it**, exactly as Step 3 says. Never
+    signal it.
+  * **No `.exit` file and no live process** → it was in flight when the session died. Read the
+    log and the target's state. A `retry: never` step in this condition is a stop condition;
+    any other step is treated as "failed after a partial change" above.
+* Keep a task list and update it at every step, every fix and every deviation.
 * **The issue always ends in `In Review`, never `Done` or `Canceled`** — whatever happened. A human
   reads every results comment; a status that says "finished" has let a useless run go unnoticed.
   The outcome is carried by the verdict and by the warnings that open the comment, not by the issue
@@ -92,10 +121,10 @@ the calling script reads to decide whether the run counted.
 
 | verdict | when |
 | -- | -- |
-| `PASS` | the whole Procedure ran, every Validation check matched, and there is **no** warning |
-| `WARN` | no check failed, but there is at least one warning — including "the run did nothing because a precondition made it unnecessary" |
-| `FAIL` | at least one Validation check did not match |
-| `ABANDONED` | a precondition failed, a stop condition fired, or the ceiling was reached before the Procedure completed |
+| `PASS` | the Procedure ran as written, every Validation check matched, no fix, no retry, no warning |
+| `WARN` | every Validation check matched, but something a human should read happened: a fix, a retry, a precondition that made the run unnecessary, a NOT ASSESSED check |
+| `FAIL` | at least one Validation check did not match after everything inside the boundaries had been tried |
+| `ABANDONED` | the goal could not be reached inside the boundaries or the ceiling, or a `retry: never` step failed |
 
 When in doubt between `PASS` and `WARN`, it is `WARN`.
 
@@ -103,14 +132,16 @@ When in doubt between `PASS` and `WARN`, it is `WARN`.
 
 Abandon means, in this order:
 
-1. Run whatever **read-only** Validation checks still make sense, so the comment records the state
-   the hosts were actually left in. Skip any that cannot run, and say so.
-2. Post the results comment (Step 5 form, verdict `ABANDONED`) describing what ran, what did not,
-   the exact question or failure that ended the run, and every host's final state.
-3. Set `$issue_number` to `In Review`.
-4. Go to Step 7 with verdict `ABANDONED`.
-
-There is nothing to tear down: this skill creates no infrastructure.
+1. If the Procedure changed anything and the issue has a `## Rollback`, run it — **unless** a
+   `retry: never` step is the reason you are abandoning, in which case the host it stopped on is in
+   a state only a human may touch, and nothing is rolled back. Say which of the two applied.
+2. Run whatever **read-only** Validation checks still make sense, so the comment records the state
+   the targets were actually left in. Skip any that cannot run, and say so.
+3. Post the results comment (Step 5 form, verdict `ABANDONED`) describing what ran, what did not,
+   every fix attempted, the exact failure or question that ended the run, and every target's final
+   state.
+4. Set `$issue_number` to `In Review`.
+5. Go to Step 7 with verdict `ABANDONED`.
 
 ## Step 1 — Read and validate the issue
 
@@ -139,12 +170,16 @@ Stop and name the missing one if any is absent:
 | `## Hard ceiling` | a duration from the start of the Procedure |
 | `## Rollback` | what the tool does on a failure, and what you must report |
 
-Then classify **every** step in `## Procedure` and `## Validation` against the "Coordination only"
-rule above, into one of `saorsa-deploy`, `read-only`, `linear` or `verbatim` (a command the issue
-spells out inside a fenced code block). A single step that falls into none of those four — one you
-would have to compose yourself — means the issue is refused: comment naming the step verbatim and
-why, and go to Step 7 with verdict `ABANDONED`. The classification
-goes in the results comment: one line per step with its class.
+An issue may also carry `## Boundaries` — extra limits specific to it, which add to the boundaries
+above and never loosen them — and may mark individual Procedure steps `retry: never`.
+
+Then read `## Procedure` and `## Validation` as the plan: note which steps the issue marks
+`retry: never`, which mutate something and which are read-only, and what each step is for. You are
+not classifying in order to refuse; an instruction written in prose rather than as an exact
+command ("install the package", "restart the unit") is one you work out from the target's state
+and the repository, inside the boundaries, and report. The only reasons to refuse an issue here
+are a missing section from the table above, a goal that cannot be stated from `## Purpose` and
+`## Validation`, or a Procedure whose only way to the goal crosses a boundary.
 
 Note any Validation check that cannot be decided by a command you can run. Those are reported
 `NOT ASSESSED` — do not eyeball them, and a `NOT ASSESSED` check is a warning.
@@ -216,7 +251,10 @@ One command at a time, in the issue's order. For each, in this order:
    flight.** A single background `until test -f <...>.exit; do sleep 10; done` gives you one
    notification when it lands; do not arm per-step monitors and do not narrate progress. Record the
    UTC end time and the exit code in the task list.
-5. A non-zero exit is a stop condition — see the never-re-run rule. Go to Step 4 and abandon.
+5. A non-zero exit from a `retry: never` step is a stop condition: go to Step 4 and abandon.
+   From any other step it is a problem to solve: read the log and the target's state, apply a fix
+   inside the boundaries, re-run (detached, as a new numbered runner — never reuse a log file),
+   and record the fix. If no fix inside the boundaries reaches the step's intent, abandon.
 
 These commands are slow by design: `HEALTH_TIMEOUT_SECS` is 1200 s, so a bootstrap health gate
 allows up to 20 minutes per host, plus a 60 s settle between hosts. The ceiling is the only bound
@@ -270,11 +308,14 @@ anything a human must know before relying on this run:
 * a Procedure command that did not run, or ran and failed;
 * the run did nothing because a precondition made it unnecessary;
 * a host left in a state the issue did not intend, including one the tool rolled back;
-* a deviation from the issue's Procedure, or a ceiling reached.
+* a deviation from the issue's Procedure, or a ceiling reached;
+* any fix applied or any step re-run (the detail goes under `### Fixes applied`).
 
 Then, in this order:
 
 * An overview of what happened, human-readable.
+* **`### Fixes applied`** — one entry per fix or retry: the exact error, the exact change, why it
+  was inside the boundaries, and the evidence it worked. `None.` if there were none.
 * **The Validation checks as a table**: one row per check — check, PASS / FAIL / NOT ASSESSED,
   expected, observed.
 * **A per-host before/after table** from the read-only status the issue names (for the bootstrap

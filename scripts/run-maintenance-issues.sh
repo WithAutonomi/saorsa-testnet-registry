@@ -8,10 +8,11 @@
 #   scripts/run-maintenance-issues.sh V2-1445[,V2-1446,...]
 #
 # Each issue is handed to the `run-prod-maintenance-from-issue` skill in a
-# headless `claude -p` session. The skill runs `saorsa-deploy` commands,
-# read-only checks and commands the issue spells out verbatim, and refuses an
-# issue holding any step it would have to compose itself. The repo's `.env` is
-# exported into the session (shell values win), so an issue's `psql
+# headless `claude -p` session. The skill treats the issue as a goal with the
+# Procedure as the intended path: a failing step is diagnosed and fixed inside
+# hard boundaries (named targets only, no unsanctioned destruction or spend,
+# `retry: never` steps never re-run), and every fix is reported. The repo's
+# `.env` is exported into the session (shell values win), so an issue's `psql
 # "$DATABASE_URL"` works from a fresh shell. Print mode exits when the agent ends its
 # turn, and the skill does not end its turn until the issue is updated — so the
 # next issue starts only when the previous session has exited.
