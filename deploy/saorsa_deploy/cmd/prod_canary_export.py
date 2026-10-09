@@ -27,6 +27,7 @@ Three rules the implementation is shaped by:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 from collections import defaultdict
@@ -45,6 +46,8 @@ from saorsa_deploy.cmd.prod_canary_results import (
     _effective_status,
 )
 from saorsa_deploy.registry import get_repository
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 CANARY_KIND = "prod-canary"
@@ -163,14 +166,41 @@ def _days_between(first: date, last: date) -> list[str]:
     return out
 
 
-def _episode_span(episode, data_to: datetime) -> tuple[datetime, datetime]:
-    """An episode runs from confirmation to recovery, or to the end of the
-    data when it is still ongoing — an unrecovered file is unavailable right
-    up to the last thing we know."""
+def _episode_span(episode, data_to: datetime) -> tuple[datetime, datetime, bool]:
+    """An episode's interval, plus whether its end instant is *inside* it.
+
+    The two endings are not the same kind of thing, and the difference lands
+    on a day boundary:
+
+    * A **recovered** episode ends at `recovered_at`, which is the instant
+      availability came back — the successful probe itself. So the interval is
+      half-open, `[confirmed, recovered)`: a recovery at exactly midnight
+      belongs to the previous day, and colouring the new day red would
+      contradict the probe that proved the file available.
+    * An **ongoing** episode has no recovery. `data_to` is only the end of what
+      we know, not evidence of anything, so the interval is closed,
+      `[confirmed, data_to]`, and the last day stays red.
+    """
     start = _utc(episode.confirmed_unavailable_at)
     recovered_at = getattr(episode, "recovered_at", None)
-    end = _utc(recovered_at) if recovered_at else data_to
-    return start, end
+    if recovered_at:
+        return start, _utc(recovered_at), False
+    return start, data_to, True
+
+
+def _is_well_formed(episode) -> bool:
+    """A recovery before the confirmation it recovers from is not a span.
+
+    ``record-results`` cannot derive such a row today — the episodes come out
+    of one ordered pass over the probe stream — but a future change that could
+    must not produce a published document reading "available" from an interval
+    that silently matches no day. Dropped loudly instead, so it is a warning in
+    the publisher's log rather than a wrong green cell on the site.
+    """
+    recovered_at = getattr(episode, "recovered_at", None)
+    if recovered_at is None:
+        return True
+    return _utc(recovered_at) >= _utc(episode.confirmed_unavailable_at)
 
 
 def build_series(
@@ -214,6 +244,10 @@ def build_series(
         # staleness check below then reports it, which is the honest answer.
         data_to = max(uploaded_ats)
     else:
+        # No rows at all. `as_of` is the only instant there is, and on its own
+        # it would make the document claim it was current as of now — see the
+        # staleness check at the end, which refuses to call a series with no
+        # probe fresh.
         data_to = as_of
 
     days = _days_between(min(uploaded_ats).date(), data_to.date()) if uploaded_ats else []
@@ -231,6 +265,17 @@ def build_series(
 
     episodes_by_canary: dict = defaultdict(list)
     for episode in episodes:
+        if not _is_well_formed(episode):
+            # Dropped from the spans AND from every count, so the document
+            # cannot disagree with itself about how many episodes a file had.
+            logger.warning(
+                "Skipping malformed unavailability episode for canary %s: "
+                "recovered_at %s precedes confirmed_unavailable_at %s",
+                episode.canary_id,
+                _iso(episode.recovered_at),
+                _iso(episode.confirmed_unavailable_at),
+            )
+            continue
         episodes_by_canary[episode.canary_id].append(episode)
     for canary_episodes in episodes_by_canary.values():
         canary_episodes.sort(key=lambda e: _utc(e.confirmed_unavailable_at))
@@ -291,7 +336,12 @@ def build_series(
         cells = []
         failed_checks: dict[str, int] = {}
         for day, day_start, day_end in day_bounds:
-            if any(start < day_end and end >= day_start for start, end in spans):
+            # A day is `[day_start, day_end)`, and the episode is half-open at
+            # its own end unless it is ongoing — see `_episode_span`.
+            if any(
+                start < day_end and (end > day_start or (closed and end >= day_start))
+                for start, end, closed in spans
+            ):
                 cells.append(CELL_UNAVAILABLE)
                 continue
             tally = day_tallies.get(day)
@@ -345,8 +395,15 @@ def build_series(
         "largest_bytes": max(sizes) if sizes else None,
     }
 
+    # A series with no probe at all is never fresh, whatever `data_to` says.
+    # Without this a canary exported before `record-results` has ever run —
+    # no uploads, no probes, so `data_to` falls back to `as_of` itself — would
+    # publish as a healthy, empty, up-to-the-minute series, which is the one
+    # reading the site must never show. One reason value, not a second: the
+    # site already handles this one, and "there are no recent probes" is
+    # literally true when there have never been any.
     stale_reasons = []
-    if data_to < as_of - timedelta(hours=stale_after_hours):
+    if not probed_ats or data_to < as_of - timedelta(hours=stale_after_hours):
         stale_reasons.append(STALE_NO_RECENT_PROBES)
 
     return {
@@ -577,7 +634,11 @@ def cmd_prod_canary_export(args) -> None:
         document["generated_at"],
     )
 
+    # Plain `print`, not the console: rich wraps at 80 columns when stdout is
+    # a pipe, which splits a long bucket key or `--out-dir` path across two
+    # lines and breaks the one-line-per-file-written contract for whatever is
+    # reading the publisher timer's journal.
     series_bytes = target.write(series_name, serialise(document))
-    console.print(f"{target.describe(series_name)}  {series_bytes} bytes")
+    print(f"{target.describe(series_name)}  {series_bytes} bytes")
     index_bytes = target.write("index.json", serialise(index))
-    console.print(f"{target.describe('index.json')}  {index_bytes} bytes")
+    print(f"{target.describe('index.json')}  {index_bytes} bytes")

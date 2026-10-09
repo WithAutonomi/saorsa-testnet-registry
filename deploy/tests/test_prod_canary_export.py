@@ -173,6 +173,132 @@ def test_recovered_episode_is_red_only_across_its_span():
     assert document["summary"]["files_never_unavailable"] == 0
 
 
+def test_recovery_at_exactly_midnight_leaves_the_new_day_green():
+    """`recovered_at` IS the probe that proved the file available, so a
+    recovery at 00:00:00 belongs to the day that ended, not the one starting.
+    Colouring the new day red would contradict that very probe."""
+    cid = "c1"
+    uploads = [_upload(cid, datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc))]
+    probes = [
+        _probe(cid, datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc), "ok"),
+        _probe(
+            cid,
+            datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc),
+            "failed",
+            peers=GENUINE,
+            missing=CHUNK,
+        ),
+        _probe(cid, datetime(2026, 10, 7, 0, 0, 0, tzinfo=timezone.utc), "ok"),
+        _probe(cid, datetime(2026, 10, 7, 9, 0, tzinfo=timezone.utc), "ok"),
+    ]
+    episodes = [
+        _episode(
+            cid,
+            datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc),
+            recovered_at=datetime(2026, 10, 7, 0, 0, 0, tzinfo=timezone.utc),
+        )
+    ]
+
+    assert _file(_build(uploads, probes, episodes), cid)["cells"] == "GRG"
+
+
+def test_confirmation_at_exactly_midnight_reddens_that_day_not_the_one_before():
+    """The other end of the same boundary: the episode's start is inside it."""
+    cid = "c1"
+    uploads = [_upload(cid, datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc))]
+    probes = [
+        _probe(cid, datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc), "ok"),
+        _probe(
+            cid,
+            datetime(2026, 10, 6, 0, 0, 0, tzinfo=timezone.utc),
+            "failed",
+            peers=GENUINE,
+            missing=CHUNK,
+        ),
+    ]
+    episodes = [_episode(cid, datetime(2026, 10, 6, 0, 0, 0, tzinfo=timezone.utc))]
+
+    assert _file(_build(uploads, probes, episodes), cid)["cells"] == "GR"
+
+
+def test_ongoing_episode_reddens_the_data_to_day_even_at_a_boundary():
+    """An ongoing episode's end is `data_to`, which is not a recovery but just
+    the end of what is known — so unlike a recovery it is INSIDE the episode,
+    and the last day stays red even when `data_to` lands exactly on midnight."""
+    cid = "c1"
+    uploads = [_upload(cid, datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc))]
+    probes = [
+        _probe(cid, datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc), "ok"),
+        _probe(
+            cid,
+            datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc),
+            "failed",
+            peers=GENUINE,
+            missing=CHUNK,
+        ),
+        _probe(
+            cid,
+            datetime(2026, 10, 7, 0, 0, 0, tzinfo=timezone.utc),
+            "failed",
+            peers=GENUINE,
+            missing=CHUNK,
+        ),
+    ]
+    episodes = [_episode(cid, datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc))]
+
+    document = _build(uploads, probes, episodes)
+
+    assert document["series"]["data_to"] == "2026-10-07T00:00:00Z"
+    assert _file(document, cid)["cells"] == "GRR"
+
+
+def test_malformed_episode_is_skipped_with_a_warning(caplog):
+    """A recovery before its own confirmation is not a span: it would match no
+    day and read as available. `record-results` cannot write one today, so the
+    guard exists to stop a future bug publishing a green cell quietly."""
+    cid = "c1"
+    uploads = [_upload(cid, datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc))]
+    probes = [
+        _probe(cid, datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc), "ok"),
+        _probe(cid, datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "ok"),
+    ]
+    episodes = [
+        _episode(
+            cid,
+            datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc),
+            recovered_at=datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc),
+        )
+    ]
+
+    with caplog.at_level("WARNING", logger=MODULE):
+        document = _build(uploads, probes, episodes)
+
+    assert "Skipping malformed unavailability episode" in caplog.text
+    assert "c1" in caplog.text
+    entry = _file(document, cid)
+    # Dropped from the file's own list and from every count, so the document
+    # cannot report an episode it did not use.
+    assert "episodes" not in entry
+    assert entry["cells"] == "GG"
+    assert document["summary"]["episodes"] == {"total": 0, "recovered": 0, "ongoing": 0}
+    assert document["summary"]["files_never_unavailable"] == 1
+
+
+def test_an_equal_recovery_and_confirmation_is_well_formed():
+    """Zero-length is degenerate, not malformed: it is kept and reddens the
+    one day it starts in, because the start instant is inside the episode."""
+    cid = "c1"
+    at = datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc)
+    uploads = [_upload(cid, datetime(2026, 10, 6, 8, 0, tzinfo=timezone.utc))]
+    probes = [_probe(cid, at, "failed", peers=GENUINE, missing=CHUNK)]
+    episodes = [_episode(cid, at, recovered_at=at)]
+
+    document = _build(uploads, probes, episodes)
+
+    assert _file(document, cid)["cells"] == "R"
+    assert document["summary"]["episodes"] == {"total": 1, "recovered": 1, "ongoing": 0}
+
+
 def test_day_with_only_inconclusive_probes_has_no_data():
     cid = "c1"
     uploads = [_upload(cid, datetime(2026, 10, 7, 8, 0, tzinfo=timezone.utc))]
@@ -489,6 +615,45 @@ def test_stale_flag_at_the_threshold_boundary(age_hours, expected_stale):
     assert document["stale_reasons"] == (["no_recent_probes"] if expected_stale else [])
 
 
+def test_an_empty_series_is_never_published_as_fresh():
+    """With no rows at all, `data_to` can only fall back to `as_of` — and on
+    its own that would publish an empty series as healthy and up to the
+    minute, which is exactly the reading the site must never show. A canary
+    exported before `record-results` has run is this case."""
+    document = _build([], [], as_of=AS_OF)
+
+    assert document["stale"] is True
+    assert document["stale_reasons"] == ["no_recent_probes"]
+    assert document["summary"]["files"] == 0
+    assert document["summary"]["days_observed"] == 0
+    assert document["summary"]["smallest_bytes"] is None
+    assert document["summary"]["largest_bytes"] is None
+    assert document["days"] == []
+    assert document["files"] == []
+    assert document["series"]["vantages"] == []
+    assert document["series"]["uploaded_from"] is None
+    assert document["series"]["first_probe_at"] is None
+    assert document["rates"]["all"]["rate"] is None
+    # Still a valid document the site can render — the whole point of the flag
+    # is that it does not have to guess from the empty arrays.
+    assert json.loads(serialise(document)) == document
+
+
+def test_a_series_with_uploads_but_no_probe_is_stale_however_recent():
+    """Uploaded a minute ago, probes not started: `data_to` is inside the
+    freshness window, but there is no availability measurement at all yet."""
+    document = _build(
+        [_upload("c1", AS_OF - timedelta(minutes=1))],
+        [_probe("c1", AS_OF - timedelta(seconds=30), "ok", host=UPLOAD_HOST)],
+        as_of=AS_OF,
+    )
+
+    assert document["series"]["data_to"] == "2026-10-09T11:59:00Z"
+    assert document["stale"] is True
+    assert document["stale_reasons"] == ["no_recent_probes"]
+    assert document["summary"]["initial_verification_ok"] == 1
+
+
 # ---------------------------------------------------------------------------
 # 6. Index merge
 # ---------------------------------------------------------------------------
@@ -504,16 +669,18 @@ def test_index_merge_preserves_other_series_and_replaces_this_one():
         "schema_version": 1,
         "generated_at": "2026-01-01T00:00:00Z",
         "series": [
-            {"id": "prod-canary-03", "title": "Canary 3", "path": "prod-canary-03.json"},
+            {"id": "prod-canary-99", "title": "Canary 99", "path": "prod-canary-99.json"},
             {"id": "prod-canary-04", "title": "Stale copy", "path": "prod-canary-04.json"},
         ],
     }
 
     index = merge_index(existing, entry, document["generated_at"])
 
-    assert [e["id"] for e in index["series"]] == ["prod-canary-03", "prod-canary-04"]
-    assert index["series"][0]["title"] == "Canary 3"
-    assert index["series"][1] == entry
+    # Sorted by id, so the entry order does not depend on which series was
+    # exported last — two publishers writing in either order agree.
+    assert [e["id"] for e in index["series"]] == ["prod-canary-04", "prod-canary-99"]
+    assert index["series"][0] == entry
+    assert index["series"][1]["title"] == "Canary 99"
     assert index["generated_at"] == document["generated_at"]
     assert index["schema_version"] == 1
 
@@ -769,6 +936,22 @@ def _stub_repo():
     return repo
 
 
+def test_each_written_file_is_reported_on_exactly_one_line(monkeypatch, tmp_path, capsys):
+    """One line per file written is the contract whatever reads the publisher
+    timer's journal parses on, so a long path must not be wrapped into two."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://stub/stub")
+    deep = tmp_path / ("a-very-long-directory-name-" * 5) / "nested" / "canary-site-data"
+
+    with patch(f"{MODULE}.get_repository", _stub_repo):
+        cmd_prod_canary_export(_cli_args(out_dir=str(deep)))
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+
+    assert len(lines) == 2, lines
+    assert lines[0].endswith(" bytes") and str(deep / "prod-canary-04.json") in lines[0]
+    assert lines[1].endswith(" bytes") and str(deep / "index.json") in lines[1]
+
+
 def test_out_dir_writes_both_files_and_is_byte_identical_on_a_re_run(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", "postgresql://stub/stub")
     args = _cli_args(out_dir=str(tmp_path))
@@ -798,7 +981,7 @@ def test_out_dir_re_export_keeps_another_series_in_the_index(monkeypatch, tmp_pa
             {
                 "schema_version": 1,
                 "generated_at": "2026-01-01T00:00:00Z",
-                "series": [{"id": "prod-canary-03", "path": "prod-canary-03.json"}],
+                "series": [{"id": "prod-canary-99", "path": "prod-canary-99.json"}],
             }
         )
     )
@@ -807,8 +990,8 @@ def test_out_dir_re_export_keeps_another_series_in_the_index(monkeypatch, tmp_pa
         cmd_prod_canary_export(_cli_args(out_dir=str(tmp_path), title="Canary 4"))
 
     index = json.loads((tmp_path / "index.json").read_text())
-    assert [e["id"] for e in index["series"]] == ["prod-canary-03", "prod-canary-04"]
-    assert index["series"][1]["title"] == "Canary 4"
+    assert [e["id"] for e in index["series"]] == ["prod-canary-04", "prod-canary-99"]
+    assert index["series"][0]["title"] == "Canary 4"
 
 
 def test_bucket_writes_both_keys_with_the_cache_headers(monkeypatch):
@@ -836,7 +1019,7 @@ def test_bucket_merges_the_existing_index(monkeypatch):
         {
             "schema_version": 1,
             "generated_at": "2026-01-01T00:00:00Z",
-            "series": [{"id": "prod-canary-03", "path": "prod-canary-03.json"}],
+            "series": [{"id": "prod-canary-99", "path": "prod-canary-99.json"}],
         }
     ).encode()
     s3 = MagicMock()
@@ -849,7 +1032,7 @@ def test_bucket_merges_the_existing_index(monkeypatch):
 
     index_call = s3.put_object.call_args_list[-1]
     index = json.loads(index_call.kwargs["Body"])
-    assert [e["id"] for e in index["series"]] == ["prod-canary-03", "prod-canary-04"]
+    assert [e["id"] for e in index["series"]] == ["prod-canary-04", "prod-canary-99"]
 
 
 def test_malformed_existing_index_refuses_rather_than_overwriting(monkeypatch, tmp_path):

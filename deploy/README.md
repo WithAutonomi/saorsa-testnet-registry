@@ -4740,6 +4740,14 @@ existing `index.json` that is not valid JSON is refused rather than overwritten.
   but is never in a denominator.
 * **Episodes** are `prod_canary_unavailability` rows, open from
   `confirmed_unavailable_at` to `recovered_at`, or to `data_to` while ongoing.
+  **The two ends are not the same kind of instant**, and the difference lands on
+  a day boundary: `recovered_at` *is* the successful probe that proved the file
+  available, so a recovered episode is `[confirmed, recovered)` and a recovery at
+  exactly midnight leaves the new day green; `data_to` is only the end of what is
+  known, so an ongoing episode is `[confirmed, data_to]` and its last day stays
+  red. A row whose `recovered_at` precedes its own `confirmed_unavailable_at` is
+  not a span: it is dropped with a logged warning and counted nowhere, rather than
+  matching no day and quietly reading as available.
 * **Days** are UTC calendar days from the earliest `uploaded_at` to `data_to`
   inclusive. `data_to` is the latest `probed_at` of any **included** probe (with
   no vantage probe at all it falls back to the last upload, which the staleness
@@ -4753,7 +4761,10 @@ existing `index.json` that is not valid JSON is refused rather than overwritten.
   `(as_of − N days, as_of]`.
 * **Stale**: `stale_reasons` gains `"no_recent_probes"` when `data_to` is older
   than `--stale-after-hours` before `as_of`; `stale` is true when the list is
-  non-empty.
+  non-empty. **A series with no vantage probe at all is always stale**, whatever
+  `data_to` says — a canary exported before `record-results` has ever run has no
+  rows, so `data_to` can only fall back to `as_of` itself, and without this the
+  document would publish an empty series as healthy and up to the minute.
 
 ##### Schema (version 1)
 
