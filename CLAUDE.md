@@ -191,10 +191,14 @@ while a maintenance Ctrl-C **never signals a running `saorsa-deploy prod …`** 
 it waits for that command and stops the session only afterwards (the command is
 a grandchild of the session, so the other order could kill it by proxy), because
 only the live command can run its own rollback and a host left between the
-binary swap and the restart has none. The maintenance skill refuses
-an issue whose Procedure holds anything but `saorsa-deploy` commands and
-read-only checks (a raw mutating SSH step included), never re-runs a mutating
-command after a failure, and starts nothing new at the hard ceiling.
+binary swap and the restart has none. The maintenance skill's constraint is
+**who composed the command**, not which binary it is: it runs any command the
+issue spells out verbatim in a fenced code block exactly as written (alongside
+`saorsa-deploy` commands and read-only checks), and refuses an issue holding any
+step it would have to compose itself — an instruction like "restart the service"
+rather than the exact command, a command depending on a value the issue never
+defines, or a choice between alternatives. It never re-runs a mutating command
+after a failure, and starts nothing new at the hard ceiling.
 
 Reusable profiles are committed under `deploy/manifests/profiles/`
 (`reference.yaml` = every option, `staging.yaml` = THE staging profile every
