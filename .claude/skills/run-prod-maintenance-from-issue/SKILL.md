@@ -72,7 +72,7 @@ or ask which one to use.
   `~/.autonomi/maintenance-runs/$issue_number/`. **A command whose log file exists was started and
   is NEVER started again.** Then, in this order:
   * **An `.exit` file exists** → that is the command's exit status. Use it and carry on from there.
-  * **No `.exit` file, but the process is still alive** (`pgrep -af 'saorsa[-]deploy prod'` — the
+  * **No `.exit` file, but the process is still alive** (`pgrep -af 'saorsa-deploy prod' | grep -v pgrep` — the
     `[-]` keeps the pattern from matching your own command line) → it was launched detached and
     survived. **Wait for it**, exactly as Step 3 says. Do not start it again and never signal it.
   * **No `.exit` file and no live process** → it was in flight when the session died. Treat it as a
@@ -158,7 +158,7 @@ been changed, so the comment is short):
 * The inventory named in `## Target` exists on disk, and names every host in `## Target`.
 * The environment the Procedure's commands need is set (`HCLOUD_TOKEN`, `VULTR_API_KEY`, AWS
   credentials, `DATABASE_URL` — whichever those commands read).
-* **No other `saorsa-deploy prod` process is running**: `pgrep -af 'saorsa-deploy prod'` prints
+* **No other `saorsa-deploy prod` process is running**: `pgrep -af 'saorsa-deploy prod' | grep -v pgrep` prints
   nothing. Two commands walking the same tier at once would restart two bootstraps together, and
   the whole design of these commands is one host at a time.
 * The working tree is the revision the maintenance is meant to run (`git log -1`, `git status`).
