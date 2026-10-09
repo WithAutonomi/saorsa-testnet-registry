@@ -25,6 +25,20 @@ saorsa-db = { workspace = true }
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# hatchling honours only the ROOT .gitignore, and `node_modules/` is ignored by
+# `saorsa_deploy/resources/wasm-client/.gitignore` alone — so a wheel built from
+# an operator's tree that has ever run `build ant-wasm-check` swept in 12,478
+# node_modules entries and came to 23.7 MB against 1.3 MB clean. The canary
+# publisher installs this wheel on a VM, so without this the VM would run
+# whatever happens to be on the operator's disk rather than the tree.
+[tool.hatch.build.targets.wheel]
+packages = ["saorsa_deploy"]
+exclude = [
+    "saorsa_deploy/resources/wasm-client/node_modules",
+    "saorsa_deploy/resources/wasm-client/dist",
+    "**/.terraform",
+]
+
 [tool.ruff]
 line-length = 100
 

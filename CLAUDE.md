@@ -829,6 +829,30 @@ mandatory paired InfluxDB+Grafana stack. `deploy_args.kind = "prod-canary"`.
   so a probe hostname, an IP or a new column cannot leak by default — a vantage
   is a region code with a label, never a host. The index is **merged**, keeping
   every other series' entry, and `--as-of` makes the bytes reproducible.
+- **`prod canary provision-publisher` is what feeds `canary.autonomi.com`
+  unattended**: a daily timer on the **monitoring VM** running `record-results`
+  then `prod canary export`. That host because `destroy` keeps it, it already
+  carries the Slack reporter, and InfluxDB is local to it. It needs **Python
+  3.13 via a pinned `uv` on the VM** (the `deploy` package requires ≥3.13 and
+  Ubuntu 24.04 ships 3.12), installed from two wheels built at provision time
+  and pushed over SSH — the VM has no GitHub credential. `run.sh` passes the
+  **Influx URL and token explicitly**, so `record-results` never falls back to
+  `load_monitoring_state`: the VM has no credential for the tfstate bucket and
+  the fallback would fail the timer nightly with a boto3 error. It is
+  `set -uo pipefail`, not `-e`, so `last-run.json` can name the failing step.
+  Re-running the command IS the upgrade path (hence `uv venv --clear`);
+  `unprovision-publisher [--purge]` removes it and nothing else on the VM.
+  The env file is **uploaded with `files.put`, never heredoc'd** — it carries a
+  DB password, an AWS secret and the Influx token, which a shell op would put
+  in the VM's `/proc/*/cmdline` — and its values are **double-quoted**, since
+  systemd reads `\` in an unquoted `EnvironmentFile` value as an escape.
+- **Both workspace packages need an explicit hatch wheel `exclude`**, because
+  **hatchling honours only the ROOT `.gitignore`**: `resources/wasm-client/
+  node_modules/` is ignored by a nested one alone, so it went into the
+  `saorsa-deploy` wheel on any tree that had run `build ant-wasm-check` —
+  23.7 MB and 12,478 of 12,888 entries, against 1.3 MB clean. Anything else
+  that installs a wheel built from this tree inherits that trap;
+  `build_publisher_wheels` refuses one over 8 MB as the tripwire.
 
 See `deploy/README.md` §"Running canaries against production".
 

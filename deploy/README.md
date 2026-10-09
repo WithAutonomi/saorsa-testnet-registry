@@ -4675,18 +4675,6 @@ Both commands branch on `deploy_args.kind` and route through dedicated
 canary handlers; existing testnet / prod-uploaders / prod-continuous-downloader
 behaviour is untouched.
 
-#### Destroy
-
-```bash
-# Default: keep monitoring (the canary dataset is the product).
-saorsa-deploy prod canary destroy --name CANARY-01
-
-# Tear down monitoring too:
-saorsa-deploy prod canary destroy --name CANARY-01 --no-keep-monitoring
-```
-
-Postgres rows are never touched by destroy.
-
 #### Publishing the public dataset (`prod canary export`)
 
 `prod canary export` turns a canary's recorded probe history into a small,
@@ -4874,6 +4862,147 @@ newline, so the same rows and the same `--as-of` give byte-identical files.
 * Timestamps are UTC ISO-8601 with a `Z` suffix and no fractional seconds; dates
   are `YYYY-MM-DD`.
 * Files are ordered by `uploaded_at`, then `id`.
+
+#### Publishing the dataset on a timer (`provision-publisher`)
+
+The `canary.autonomi.com` site reads its JSON dataset from S3. That dataset
+comes out of Postgres, and Postgres is only current once `record-results` has
+pulled the canary's InfluxDB points — so until both commands run on a
+schedule, the site is only as fresh as the last time an operator remembered.
+
+`prod canary provision-publisher` installs a **daily timer on the canary's
+monitoring VM** that runs `deployments record-results` and then
+`prod canary export`. The monitoring VM is the right host: `prod canary
+destroy` keeps it by default, it already carries the Slack reporter, and
+InfluxDB is local to it.
+
+```bash
+saorsa-deploy prod canary provision-publisher \
+  --name CANARY-01 \
+  --bucket canary-datasets
+
+# Install without triggering a run:
+saorsa-deploy prod canary provision-publisher \
+  --name CANARY-01 --bucket canary-datasets --no-run-now
+```
+
+| Flag | Required | Default | Notes |
+|------|----------|---------|-------|
+| `--name` | yes | — | Canary deployment name; also the monitoring stack name. Must exist in the registry with `deploy_args.kind == "prod-canary"`. |
+| `--bucket` | yes | — | S3 bucket the dataset is written to. |
+| `--prefix` | no | `v1` | Key prefix within the bucket. |
+| `--title` | no | `--name` | Dataset title shown on the site. |
+| `--on-calendar` | no | `*-*-* 09:30:00` | Systemd `OnCalendar` for the timer — after the Slack reporter's 09:00. |
+| `--env-file` | no | `~/.config/saorsa-deploy/canary-publisher.env` | The VM's own credentials; see below. |
+| `--run-now` / `--no-run-now` | no | **on** | Run once after install and wait for it, printing `last-run.json`. A failing run fails the command. |
+| `--ssh-key-path` | no | `~/.ssh/id_rsa` | SSH key for the monitoring VM (user `root`). |
+
+```bash
+saorsa-deploy prod canary unprovision-publisher --name CANARY-01
+saorsa-deploy prod canary unprovision-publisher --name CANARY-01 --purge
+```
+
+| Flag | Required | Default | Notes |
+|------|----------|---------|-------|
+| `--name` | yes | — | Canary deployment name. |
+| `--purge` | no | off | Also remove the venv, the uploaded wheels and `/var/lib/ant-canary-publisher`. |
+| `--ssh-key-path` | no | `~/.ssh/id_rsa` | SSH key for the monitoring VM. |
+
+**The env-file contract.** `--env-file` is a `KEY=value` file holding the
+credentials the *VM* uses — deliberately not the operator's own, and
+deliberately prefixed so the two cannot be confused:
+
+```
+CANARY_PUBLISHER_DATABASE_URL=postgresql://...     # required
+CANARY_PUBLISHER_AWS_ACCESS_KEY_ID=...             # required
+CANARY_PUBLISHER_AWS_SECRET_ACCESS_KEY=...         # required
+CANARY_PUBLISHER_REGION=eu-west-2                  # optional, this default
+```
+
+Every missing key is named **at once**, before the registry is read, before
+the monitoring state is loaded and before a wheel is built — the env file is
+the only check that costs nothing, so a typo should not be discovered after
+ten minutes of work.
+
+**VM layout**, all owned by `root`:
+
+| Path | Mode | Content |
+|---|---|---|
+| `/opt/ant-canary-publisher/venv/` | — | Python 3.13 venv with `saorsa-db` + `saorsa-deploy` |
+| `/opt/ant-canary-publisher/run.sh` | 0755 | the two-step run script |
+| `/etc/ant-canary-publisher.env` | 0600 | `DATABASE_URL`, the AWS keys, `CANARY_*`, `INFLUX_*` |
+| `/var/lib/ant-canary-publisher/last-run.json` | 0750 dir | which step ran, how long it took, which one failed |
+| `/etc/systemd/system/ant-canary-publisher.service` | 0644 | `Type=oneshot`, `TimeoutStartSec=3h` |
+| `/etc/systemd/system/ant-canary-publisher.timer` | 0644 | `OnCalendar=…`, `Persistent=true`, `RandomizedDelaySec=0` |
+
+The env file and `run.sh` are **staged locally and uploaded with
+`files.put`**, never written by a `cat > … <<EOF` shell op: the env file
+carries a database password, an AWS secret key and the Influx token, and a
+heredoc op puts all three in the VM's `/proc/<pid>/cmdline` for the op's
+duration and into any pyinfra verbose log — and leaves the file
+world-readable until a following `chmod`. `files.put` creates it `0600`
+outright. Every value is **double-quoted with `\` and `"` escaped**, because
+systemd treats a backslash in an *unquoted* `EnvironmentFile` value as an
+escape and strips edge whitespace, so an unquoted password containing `\`
+would arrive altered — as a credential that simply fails to authenticate,
+with nothing on the VM to say why.
+
+`uv` (pinned, and the installed version is verified) supplies the interpreter:
+the `deploy` package requires Python ≥ 3.13 and Ubuntu 24.04 ships 3.12, so
+there is no system interpreter that can run it. `uv venv --clear` is used, not
+bare `uv venv` — re-running the command *is* the upgrade path, and uv 0.9.24
+only warns that it will require `--clear` to replace an existing venv, so
+without the flag the next version bump would turn every re-provision into a
+failure. The installer runs with `UV_NO_MODIFY_PATH=1`, since every command
+names `uv` absolutely and a `PATH` line would be an edit to a shared VM's
+login environment for no gain.
+
+The two wheels are built on the operator's machine with
+`uv build --wheel --package …` and uploaded over the SSH connection pyinfra
+already has — installing from a git URL is not an option, since the VM holds
+no GitHub credential and the repository may be private. **Both packages
+therefore need an explicit `[tool.hatch.build.targets.wheel]` exclude list**:
+hatchling honours only the **root** `.gitignore`, so
+`saorsa_deploy/resources/wasm-client/node_modules/` — ignored by a nested
+`.gitignore` alone — was swept into the wheel on any tree that had ever run
+`build ant-wasm-check`, taking it from 1.3 MB to 23.7 MB (12,478 of 12,888
+entries) and meaning the VM ran whatever was on the operator's disk rather
+than the tree. `build_publisher_wheels` also refuses a wheel over
+`MAX_WHEEL_BYTES` (8 MB) as a tripwire for the next such path.
+
+After installing, the command verifies that both
+`saorsa-deploy --help` and `saorsa-deploy prod canary export --help` exit 0 on
+the VM, quoting the output if either does not: a `saorsa-deploy` predating
+`prod canary export` would install cleanly and then fail every night at
+step 2.
+
+`run.sh` passes `--influx-url http://localhost:8086` and `--influx-token`
+explicitly, so `record-results` never falls back to `load_monitoring_state` —
+**the VM has no credential for the tfstate bucket**, and the fallback would
+make the timer fail nightly with a boto3 credentials error.
+`deploy/tests/test_prod_canary_publisher.py` pins that property.
+
+It is `set -uo pipefail`, deliberately **not** `-e`: the point of
+`last-run.json` is to say which step failed, and `-e` would exit before
+anything could write it. A failed step stops the run and the next firing
+retries from the top — both steps are idempotent (`record-results` upserts,
+`export` overwrites).
+
+**Upgrading** the publisher after a change to either package is just
+re-running `provision-publisher`: it rebuilds the wheels, reinstalls them,
+rewrites the env file and units, reloads systemd and re-enables the timer.
+
+#### Destroy
+
+```bash
+# Default: keep monitoring (the canary dataset is the product).
+saorsa-deploy prod canary destroy --name CANARY-01
+
+# Tear down monitoring too:
+saorsa-deploy prod canary destroy --name CANARY-01 --no-keep-monitoring
+```
+
+Postgres rows are never touched by destroy.
 
 ### Running profiling nodes against production (`prod nodes`)
 
