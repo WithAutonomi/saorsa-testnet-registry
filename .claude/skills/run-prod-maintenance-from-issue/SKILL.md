@@ -101,14 +101,27 @@ nobody has to trust that you finished it well.
 Exactly one. It heads the results comment and is the third word of the final line (Step 7), which
 the calling script reads to decide whether the run counted.
 
+**The verdict is about the goal, not the path.** A run that reaches the goal is a success,
+whatever it took to get there; a run that needed a fix is a success a human should read about.
+Only a run that ends with the goal unmet is a failure.
+
 | verdict | when |
 | -- | -- |
-| `PASS` | the Procedure ran as written, every Validation check matched, no fix, no retry, no warning |
-| `WARN` | every Validation check matched, but something a human should read happened: a fix, a retry, a precondition that made the run unnecessary, a NOT ASSESSED check |
-| `FAIL` | at least one Validation check did not match after everything inside the boundaries had been tried |
-| `ABANDONED` | the goal could not be reached inside the boundaries or the ceiling, or a `retry: never` step failed |
+| `PASS` | the goal is reached, the Procedure ran as written, no fix, no retry, no warning |
+| `WARN` | the goal is reached, and something a human should read happened on the way: a fix, a retry, a precondition that made the run unnecessary, a NOT ASSESSED check, a check that can only be satisfied by a later scheduled event although everything it depends on is proven |
+| `FAIL` | the goal is **not** reached at the end of the run, after everything inside the boundaries was tried |
+| `ABANDONED` | the run stopped early: a boundary or the ceiling made the goal unreachable, or a `retry: never` step failed |
 
-When in doubt between `PASS` and `WARN`, it is `WARN`.
+**Validation is judged on the end state, not on the first attempt.** A step that failed, was
+fixed and was re-run to exit 0 counts as exit 0. A check that reads the target's own record of a
+failed first attempt (a `last-run.json`, a journal entry, a status file) is satisfied when the
+re-run that replaced it succeeded, and is reported as such with both readings. A check whose only
+remaining way to be satisfied is a scheduled event that will now happen on its own (the next timer
+firing, the next cron run) is a warning, never a failure, when every part it depends on has been
+proven in this run. `FAIL` is reserved for a goal that is not met.
+
+When in doubt between `PASS` and `WARN`, it is `WARN`. When in doubt between `WARN` and `FAIL`,
+ask whether the thing the issue is for now works; if it does, it is `WARN`.
 
 ### Abandoning the run
 
