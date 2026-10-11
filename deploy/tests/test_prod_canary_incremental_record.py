@@ -480,8 +480,15 @@ class TestIncrementalRecordRun:
         probes = [
             _influx_probe(quiet_id, 1, status="failed", missing="chunk-q"),
             _influx_probe(quiet_id, 2, status="failed", missing="chunk-q"),
-            _influx_probe(busy_id, 1),
-            _influx_probe(busy_id, 2),
+            # The busy canary's probes sit well after the quiet one's, so the
+            # second run's window — six hours before the newest recorded probe
+            # — opens after the quiet canary's failures and does not reach
+            # them. With both canaries probed at the same hours the window
+            # would cover the quiet one too, and the test would assert nothing:
+            # a re-derived episode row only compares equal on SQLite, which
+            # reuses the deleted rowid where Postgres issues a fresh id.
+            _influx_probe(busy_id, 20),
+            _influx_probe(busy_id, 21),
         ]
         starts: list[str] = []
         _wire_influx(
@@ -509,12 +516,36 @@ class TestIncrementalRecordRun:
         before = _snapshot()
         assert quiet_id in before[0]
 
-        # Only the busy canary keeps reporting. The window reaches back over
-        # the quiet canary's failures, but they are older than the cutoff.
-        probes.extend(_influx_probe(busy_id, h) for h in range(20, 40))
+        # Every derived-row write, by the canary it names. The snapshot alone
+        # is not enough: a delete-then-reinsert of the same episode compares
+        # equal on SQLite, which reuses the deleted rowid where Postgres
+        # issues a fresh id — so on SQLite the snapshot passes whether or not
+        # the quiet canary was re-derived. This sees the write itself.
+        writes: list[tuple[str, object]] = []
+
+        def _watch(name):
+            original = getattr(repo, name)
+
+            def _wrapper(*a, **k):
+                writes.append((name, k.get("canary_id", a[0] if a else None)))
+                return original(*a, **k)
+
+            monkeypatch.setattr(repo, name, _wrapper)
+
+        for method in (
+            "replace_prod_canary_unavailability",
+            "upsert_prod_canary_loss",
+            "delete_prod_canary_loss",
+        ):
+            _watch(method)
+
+        # Only the busy canary keeps reporting. The window now reaches back no
+        # further than T0+15h, so the quiet canary's failures stay outside it.
+        probes.extend(_influx_probe(busy_id, h) for h in range(22, 40))
         record_prod_canary_results(
             repo, deployment, _Args(), _console(), "http://i", "t", "ant", "b"
         )
+        assert {canary_id for _, canary_id in writes} == {busy_id}
         assert _snapshot() == before
 
 
