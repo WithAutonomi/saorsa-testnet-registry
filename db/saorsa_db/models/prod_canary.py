@@ -164,7 +164,13 @@ class DeploymentProdCanaryProbe(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # BIGINT on Postgres; INTEGER on SQLite, where only an `INTEGER PRIMARY
+    # KEY` aliases the rowid and so autoincrements — a BIGINT one refuses
+    # every insert that does not name an id, which made the table
+    # untestable against the SQLite fixtures. Postgres DDL is unchanged.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer(), "sqlite"), primary_key=True
+    )
     canary_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(),
         ForeignKey("prod_canary_uploads.canary_id", ondelete="CASCADE"),
@@ -253,7 +259,11 @@ class DeploymentProdCanaryUnavailability(Base):
 
     __tablename__ = "prod_canary_unavailability"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer(), "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     canary_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(),
         ForeignKey("prod_canary_uploads.canary_id", ondelete="CASCADE"),

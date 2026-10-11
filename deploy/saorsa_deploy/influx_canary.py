@@ -105,6 +105,19 @@ def _rows(body: "str | Iterable[str]") -> list[dict]:
     return out
 
 
+def flux_instant(value: datetime) -> str:
+    """Format a datetime as the RFC3339 literal a Flux ``range(start:)`` takes.
+
+    Second resolution is deliberate: the canary probe interval is an hour and
+    the incremental window carries a six-hour margin, so sub-second precision
+    would only make the query text harder to read — and the step journal and
+    the tests compare that text.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _ns_to_dt(ns: int | None) -> datetime | None:
     if ns is None:
         return None
