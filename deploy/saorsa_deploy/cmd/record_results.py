@@ -23,6 +23,7 @@ rather than by one an operator has to remember separately.
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -912,8 +913,17 @@ def _resolve_pool_claims(repo, deployment, kind: str, console) -> None:
     if pool_repo is None:
         return
 
+    started = time.monotonic()
     try:
-        _resolve_pool_claims_inner(repo, pool_repo, deployment, kind, console)
+        examined = _resolve_pool_claims_inner(repo, pool_repo, deployment, kind, console)
+        if examined:
+            # Timed because this phase shares the daily canary publisher run
+            # with the Influx pull and the derivation, and "which of the three
+            # is growing" is not answerable after the fact.
+            console.print(
+                f"[dim]Resolved against {examined} file-pool claim(s) in "
+                f"{time.monotonic() - started:.1f}s.[/dim]"
+            )
     except Exception:
         # Closing pool claims is auxiliary to recording results. A registry
         # that predates the pool migration, or any other read failure here,
@@ -926,7 +936,8 @@ def _resolve_pool_claims(repo, deployment, kind: str, console) -> None:
         )
 
 
-def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) -> None:
+def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) -> int:
+    """Resolve this deployment's claims; returns how many were examined."""
     # Released claims are excluded, but already-uploaded ones are NOT: a later
     # pass can carry revised costs, and skipping them would make this
     # insert-once in practice however the resolve method behaves.
@@ -938,8 +949,15 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
         for claim in pool_repo.list_pool_claims(deployment_id=deployment.id)
         if claim.status is not ClaimStatus.RELEASED
     ]
+    if kind == "prod-canary":
+        # A canary's upload service walks its list once and exits, so its
+        # upload rows never change after the run that wrote them — there is no
+        # revised cost for a later pass to carry. An already-uploaded claim
+        # would therefore be rewritten with the values it already holds, and
+        # that cost a read and a commit per claim on every daily publisher run.
+        claims = [claim for claim in claims if claim.status is not ClaimStatus.UPLOADED]
     if not claims:
-        return
+        return 0
 
     # Indexed twice. The locator is the reliable key: both upload tables record
     # the `source_url` they fetched, and the claim records the `locator_used`
@@ -1035,7 +1053,7 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
                 },
             )
     else:
-        return
+        return 0
 
     newly_resolved = 0
     refreshed = 0
@@ -1121,3 +1139,4 @@ def _resolve_pool_claims_inner(repo, pool_repo, deployment, kind: str, console) 
             f"--consumer {deployment.name}` or `prod pool claims "
             "--unresolvable`.[/yellow]"
         )
+    return len(claims)

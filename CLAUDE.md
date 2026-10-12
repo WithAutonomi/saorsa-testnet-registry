@@ -820,6 +820,23 @@ mandatory paired InfluxDB+Grafana stack. `deploy_args.kind = "prod-canary"`.
   `prod_canary_*` tables and rederives `prod_canary_loss` — idempotent and
   cron-safe. `print-recorded-results` emits alive / pending / confirmed-lost plus
   an hours-to-loss histogram, per-vantage and per-chunk-role breakdowns.
+- **Its probe pull is INCREMENTAL and its writes are batched**, because the
+  probe series only grows: PROD-CANARY-04's first publisher run took 5,062s for
+  423,108 points, 3,164s of it one `INSERT … ON CONFLICT` and one `commit()` per
+  row. The window now opens **6h before the newest `probed_at` in Postgres**
+  (the margin covers probe-VM clock skew and a late point; re-reading the
+  overlap is a no-op write), and 1,000 rows share one statement and one commit.
+  A deployment with no probes recorded still pulls everything. The upload and
+  chunk queries are deliberately NOT windowed — they are the canary set, written
+  once. `--since <ISO>` / `--since 0` / `--full` override it.
+- **Loss and the episodes are re-derived from POSTGRES, scoped to the canaries
+  this run saw a probe for** — the two-strike rule needs both strikes and an
+  episode can open before the window, so the window is never the derivation's
+  input; and a canary with no new probe keeps the verdict it had, so its loss
+  row is also exempt from the stale-row deletion. `--full` is therefore the
+  rebuild after a change to how a past probe should be classified. An
+  already-`uploaded` pool claim is skipped for this kind too (a canary's upload
+  rows never change, so re-resolving one rewrote what it already held).
 - **`prod canary export` publishes the public dataset** — two JSON documents
   (`<prefix>/index.json` plus `<prefix>/<series id>.json`) to an S3 bucket or a
   local dir, which is what **`canary.autonomi.com`** renders. It **reads

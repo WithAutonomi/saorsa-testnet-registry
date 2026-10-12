@@ -101,6 +101,57 @@ from saorsa_db.size_class import (
 from saorsa_db.size_class import ordered as size_class_ordered
 
 
+# ---------------------------------------------------------------------------
+# Bulk upsert plumbing
+# ---------------------------------------------------------------------------
+
+#: Rows per ``INSERT ... ON CONFLICT`` statement. One round trip per chunk, so
+#: the chunk size is the trade between round trips and statement size.
+UPSERT_CHUNK_SIZE = 1000
+
+
+def _dialect_insert(session):
+    """The dialect's ``insert()`` construct, which is where
+    ``on_conflict_do_update`` lives.
+
+    Only Postgres (the registry) and SQLite (the test fixtures) are supported,
+    and deliberately so: a dialect without ``ON CONFLICT`` cannot express an
+    upsert as one statement, and silently falling back to a per-row read-then-
+    write would reintroduce exactly the cost these bulk methods exist to
+    remove.
+    """
+    name = session.get_bind().dialect.name
+    if name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    elif name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    else:
+        raise NotImplementedError(
+            f"bulk upserts need a dialect with ON CONFLICT support, got '{name}'"
+        )
+    return dialect_insert
+
+
+def _dedupe_last(rows: list[dict], key_columns: tuple[str, ...]) -> list[dict]:
+    """Collapse rows sharing a conflict key, keeping the LAST occurrence.
+
+    Two reasons, and both are load-bearing. Postgres refuses an
+    ``ON CONFLICT DO UPDATE`` that would affect the same row twice within one
+    statement, so a duplicate inside a chunk would fail the whole flush. And
+    "last wins" is exactly what a sequence of single-row upserts would have
+    left behind, which is the semantics these methods replace.
+    """
+    collapsed: dict[tuple, dict] = {}
+    for row in rows:
+        collapsed[tuple(row[column] for column in key_columns)] = row
+    return list(collapsed.values())
+
+
+def _chunks(rows: list, size: int):
+    for start in range(0, len(rows), size):
+        yield rows[start : start + size]
+
+
 class DeploymentRepository(ABC):
     @abstractmethod
     def create(
@@ -564,6 +615,49 @@ class DeploymentRepository(ABC):
         terminal_peer_outcomes: dict | None,
         duration_ms: int | None,
     ) -> DeploymentProdCanaryProbe: ...
+
+    @abstractmethod
+    def bulk_upsert_prod_canary_uploads(self, rows: list[dict]) -> int:
+        """Upsert many canary uploads, one statement per chunk.
+
+        Each dict holds the same keys the single-row method takes. Returns the
+        number of rows written.
+        """
+        ...
+
+    @abstractmethod
+    def bulk_upsert_prod_canary_chunks(self, rows: list[dict]) -> int: ...
+
+    @abstractmethod
+    def bulk_upsert_prod_canary_probes(self, rows: list[dict]) -> int:
+        """Upsert many probes, one statement and one commit per chunk.
+
+        The reason this exists: a canary deployment accumulates a probe per
+        canary per hour forever, and ``record-results`` re-reads and re-writes
+        them. At one ``INSERT ... ON CONFLICT`` and one ``commit()`` per row,
+        PROD-CANARY-04's first publisher run spent 3,164 s writing 418,538
+        rows — a round trip each — and that cost grows with the series.
+        """
+        ...
+
+    @abstractmethod
+    def max_prod_canary_probed_at(self, deployment_id: int) -> datetime | None:
+        """The newest ``probed_at`` recorded for this deployment, or None when
+        it has no probes yet. This is what makes an incremental pull possible:
+        a run need only ask InfluxDB for points newer than what Postgres
+        already holds."""
+        ...
+
+    @abstractmethod
+    def list_prod_canary_probe_rows_for_canaries(self, canary_ids) -> list:
+        """Probe history for the given canaries as lightweight rows.
+
+        Rows, not ORM instances: the derivation reads a handful of columns from
+        every probe a deployment ever recorded, and putting hundreds of
+        thousands of instances in the identity map makes every later
+        ``commit()`` scan them all.
+        """
+        ...
 
     @abstractmethod
     def list_prod_canary_uploads_for_deployment(
@@ -2191,6 +2285,81 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             .all()
         )
 
+    #: Columns an upload upsert overwrites on conflict. The three cost
+    #: columns are COALESCEd rather than assigned: a re-run whose Influx points
+    #: predate cost telemetry carries NULLs, and those must not erase a cost
+    #: an earlier pass recorded.
+    _CANARY_UPLOAD_COLUMNS = (
+        "canary_id",
+        "deployment_id",
+        "source_url",
+        "file_name",
+        "file_size_bytes",
+        "top_address",
+        "num_chunks",
+        "uploaded_at",
+        "initial_verify_status",
+        "storage_cost_atto",
+        "gas_cost_wei",
+        "chunk_attempts_total",
+    )
+
+    _CANARY_PROBE_COLUMNS = (
+        "canary_id",
+        "probed_at",
+        "probed_by_host",
+        "status",
+        "missing_chunk_address",
+        "terminal_peer_outcomes",
+        "duration_ms",
+    )
+
+    def bulk_upsert_prod_canary_uploads(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        dialect_insert = _dialect_insert(self.session)
+        prepared = _dedupe_last(
+            [
+                {column: row.get(column) for column in self._CANARY_UPLOAD_COLUMNS}
+                for row in rows
+            ],
+            ("canary_id",),
+        )
+        written = 0
+        for chunk in _chunks(prepared, UPSERT_CHUNK_SIZE):
+            stmt = dialect_insert(DeploymentProdCanaryUpload.__table__)
+            now = datetime.now(timezone.utc)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["canary_id"],
+                set_={
+                    "deployment_id": stmt.excluded.deployment_id,
+                    "source_url": stmt.excluded.source_url,
+                    "file_name": stmt.excluded.file_name,
+                    "file_size_bytes": stmt.excluded.file_size_bytes,
+                    "top_address": stmt.excluded.top_address,
+                    "num_chunks": stmt.excluded.num_chunks,
+                    "uploaded_at": stmt.excluded.uploaded_at,
+                    "initial_verify_status": stmt.excluded.initial_verify_status,
+                    "storage_cost_atto": func.coalesce(
+                        stmt.excluded.storage_cost_atto,
+                        DeploymentProdCanaryUpload.storage_cost_atto,
+                    ),
+                    "gas_cost_wei": func.coalesce(
+                        stmt.excluded.gas_cost_wei,
+                        DeploymentProdCanaryUpload.gas_cost_wei,
+                    ),
+                    "chunk_attempts_total": func.coalesce(
+                        stmt.excluded.chunk_attempts_total,
+                        DeploymentProdCanaryUpload.chunk_attempts_total,
+                    ),
+                    "recorded_at": now,
+                },
+            )
+            self.session.execute(stmt, chunk)
+            self.session.commit()
+            written += len(chunk)
+        return written
+
     def upsert_prod_canary_upload(
         self,
         canary_id,
@@ -2206,44 +2375,52 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         gas_cost_wei: Optional[Decimal] = None,
         chunk_attempts_total: Optional[int] = None,
     ) -> DeploymentProdCanaryUpload:
-        existing = self.session.get(DeploymentProdCanaryUpload, canary_id)
-        if existing is None:
-            existing = DeploymentProdCanaryUpload(
-                canary_id=canary_id,
-                deployment_id=deployment_id,
-                source_url=source_url,
-                file_name=file_name,
-                file_size_bytes=file_size_bytes,
-                top_address=top_address,
-                num_chunks=num_chunks,
-                uploaded_at=uploaded_at,
-                initial_verify_status=initial_verify_status,
-                storage_cost_atto=storage_cost_atto,
-                gas_cost_wei=gas_cost_wei,
-                chunk_attempts_total=chunk_attempts_total,
+        self.bulk_upsert_prod_canary_uploads(
+            [
+                {
+                    "canary_id": canary_id,
+                    "deployment_id": deployment_id,
+                    "source_url": source_url,
+                    "file_name": file_name,
+                    "file_size_bytes": file_size_bytes,
+                    "top_address": top_address,
+                    "num_chunks": num_chunks,
+                    "uploaded_at": uploaded_at,
+                    "initial_verify_status": initial_verify_status,
+                    "storage_cost_atto": storage_cost_atto,
+                    "gas_cost_wei": gas_cost_wei,
+                    "chunk_attempts_total": chunk_attempts_total,
+                }
+            ]
+        )
+        return self.session.get(DeploymentProdCanaryUpload, canary_id)
+
+    def bulk_upsert_prod_canary_chunks(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        dialect_insert = _dialect_insert(self.session)
+        prepared = _dedupe_last(
+            [
+                {
+                    "canary_id": row["canary_id"],
+                    "chunk_address": row["chunk_address"],
+                    "chunk_role": row["chunk_role"],
+                }
+                for row in rows
+            ],
+            ("canary_id", "chunk_address"),
+        )
+        written = 0
+        for chunk in _chunks(prepared, UPSERT_CHUNK_SIZE):
+            stmt = dialect_insert(DeploymentProdCanaryChunk.__table__)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["canary_id", "chunk_address"],
+                set_={"chunk_role": stmt.excluded.chunk_role},
             )
-            self.session.add(existing)
-        else:
-            existing.deployment_id = deployment_id
-            existing.source_url = source_url
-            existing.file_name = file_name
-            existing.file_size_bytes = file_size_bytes
-            existing.top_address = top_address
-            existing.num_chunks = num_chunks
-            existing.uploaded_at = uploaded_at
-            existing.initial_verify_status = initial_verify_status
-            # Only overwrite cost fields if the caller supplied a value; this
-            # preserves any historic data when re-running record-results on
-            # rows that had cost added later.
-            if storage_cost_atto is not None:
-                existing.storage_cost_atto = storage_cost_atto
-            if gas_cost_wei is not None:
-                existing.gas_cost_wei = gas_cost_wei
-            if chunk_attempts_total is not None:
-                existing.chunk_attempts_total = chunk_attempts_total
-            existing.recorded_at = datetime.now(timezone.utc)
-        self.session.commit()
-        return existing
+            self.session.execute(stmt, chunk)
+            self.session.commit()
+            written += len(chunk)
+        return written
 
     def upsert_prod_canary_chunk(
         self,
@@ -2251,20 +2428,48 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         chunk_address: str,
         chunk_role: ProdCanaryChunkRole,
     ) -> DeploymentProdCanaryChunk:
-        existing = self.session.get(
-            DeploymentProdCanaryChunk, (canary_id, chunk_address)
+        self.bulk_upsert_prod_canary_chunks(
+            [
+                {
+                    "canary_id": canary_id,
+                    "chunk_address": chunk_address,
+                    "chunk_role": chunk_role,
+                }
+            ]
         )
-        if existing is None:
-            existing = DeploymentProdCanaryChunk(
-                canary_id=canary_id,
-                chunk_address=chunk_address,
-                chunk_role=chunk_role,
+        return self.session.get(DeploymentProdCanaryChunk, (canary_id, chunk_address))
+
+    def bulk_upsert_prod_canary_probes(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        dialect_insert = _dialect_insert(self.session)
+        prepared = _dedupe_last(
+            [
+                {column: row.get(column) for column in self._CANARY_PROBE_COLUMNS}
+                for row in rows
+            ],
+            ("canary_id", "probed_at", "probed_by_host"),
+        )
+        written = 0
+        for chunk in _chunks(prepared, UPSERT_CHUNK_SIZE):
+            stmt = dialect_insert(DeploymentProdCanaryProbe.__table__)
+            # `recorded_at` is assigned explicitly: the model's `onupdate`
+            # fires for an ORM update, not for an ON CONFLICT DO UPDATE.
+            now = datetime.now(timezone.utc)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["canary_id", "probed_at", "probed_by_host"],
+                set_={
+                    "status": stmt.excluded.status,
+                    "missing_chunk_address": stmt.excluded.missing_chunk_address,
+                    "terminal_peer_outcomes": stmt.excluded.terminal_peer_outcomes,
+                    "duration_ms": stmt.excluded.duration_ms,
+                    "recorded_at": now,
+                },
             )
-            self.session.add(existing)
-        else:
-            existing.chunk_role = chunk_role
-        self.session.commit()
-        return existing
+            self.session.execute(stmt, chunk)
+            self.session.commit()
+            written += len(chunk)
+        return written
 
     def upsert_prod_canary_probe(
         self,
@@ -2276,7 +2481,20 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         terminal_peer_outcomes: dict | None,
         duration_ms: int | None,
     ) -> DeploymentProdCanaryProbe:
-        existing = (
+        self.bulk_upsert_prod_canary_probes(
+            [
+                {
+                    "canary_id": canary_id,
+                    "probed_at": probed_at,
+                    "probed_by_host": probed_by_host,
+                    "status": status,
+                    "missing_chunk_address": missing_chunk_address,
+                    "terminal_peer_outcomes": terminal_peer_outcomes,
+                    "duration_ms": duration_ms,
+                }
+            ]
+        )
+        return (
             self.session.query(DeploymentProdCanaryProbe)
             .filter(
                 DeploymentProdCanaryProbe.canary_id == canary_id,
@@ -2285,25 +2503,45 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             )
             .one_or_none()
         )
-        if existing is None:
-            existing = DeploymentProdCanaryProbe(
-                canary_id=canary_id,
-                probed_at=probed_at,
-                probed_by_host=probed_by_host,
-                status=status,
-                missing_chunk_address=missing_chunk_address,
-                terminal_peer_outcomes=terminal_peer_outcomes,
-                duration_ms=duration_ms,
+
+    def max_prod_canary_probed_at(self, deployment_id: int) -> datetime | None:
+        return self.session.execute(
+            select(func.max(DeploymentProdCanaryProbe.probed_at))
+            .join(
+                DeploymentProdCanaryUpload,
+                DeploymentProdCanaryUpload.canary_id
+                == DeploymentProdCanaryProbe.canary_id,
             )
-            self.session.add(existing)
-        else:
-            existing.status = status
-            existing.missing_chunk_address = missing_chunk_address
-            existing.terminal_peer_outcomes = terminal_peer_outcomes
-            existing.duration_ms = duration_ms
-            existing.recorded_at = datetime.now(timezone.utc)
-        self.session.commit()
-        return existing
+            .where(DeploymentProdCanaryUpload.deployment_id == deployment_id)
+        ).scalar()
+
+    def list_prod_canary_probe_rows_for_canaries(self, canary_ids) -> list:
+        ids = list(canary_ids)
+        if not ids:
+            return []
+        columns = (
+            DeploymentProdCanaryProbe.canary_id,
+            DeploymentProdCanaryProbe.probed_at,
+            DeploymentProdCanaryProbe.probed_by_host,
+            DeploymentProdCanaryProbe.status,
+            DeploymentProdCanaryProbe.missing_chunk_address,
+            DeploymentProdCanaryProbe.terminal_peer_outcomes,
+        )
+        rows: list = []
+        # Chunked IN: a long-lived canary deployment holds hundreds of
+        # canaries, and SQLite caps the number of bound parameters.
+        for chunk in _chunks(ids, UPSERT_CHUNK_SIZE):
+            rows.extend(
+                self.session.execute(
+                    select(*columns)
+                    .where(DeploymentProdCanaryProbe.canary_id.in_(chunk))
+                    .order_by(
+                        DeploymentProdCanaryProbe.canary_id,
+                        DeploymentProdCanaryProbe.probed_at,
+                    )
+                ).all()
+            )
+        return rows
 
     def list_prod_canary_uploads_for_deployment(
         self, deployment_id: int

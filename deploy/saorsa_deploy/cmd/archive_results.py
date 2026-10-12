@@ -36,6 +36,8 @@ def _record_args(args) -> SimpleNamespace:
         influx_org=args.influx_org,
         influx_bucket=args.influx_bucket,
         window=args.window,
+        since=getattr(args, "since", None),
+        full=getattr(args, "full", False),
         update_slack=getattr(args, "update_slack", False),
     )
 

@@ -2058,6 +2058,26 @@ def main(argv=None):
         help="Flux range start (e.g. -30d, -7d, -24h). Default: -30d",
     )
     deployments_record_results_parser.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        help=(
+            "prod-canary only: ISO-8601 instant to pull probes from. Default: "
+            "six hours before the newest probe already in Postgres, so a daily "
+            "run reads only the day's points; the whole series on a deployment "
+            "with none recorded yet. '0' forces a full pull."
+        ),
+    )
+    deployments_record_results_parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "prod-canary only: alias for --since 0. Re-read and re-derive the "
+            "whole probe series — what to use after a probe script fix changes "
+            "how a past probe should be classified."
+        ),
+    )
+    deployments_record_results_parser.add_argument(
         "--update-slack",
         action="store_true",
         help=(

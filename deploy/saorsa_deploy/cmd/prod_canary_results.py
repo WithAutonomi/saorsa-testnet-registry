@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from rich.console import Console
@@ -30,6 +31,7 @@ from saorsa_deploy.influx_canary import (
     fetch_canary_chunk_points,
     fetch_canary_probe_points,
     fetch_canary_upload_points,
+    flux_instant,
 )
 
 PROBE_OK = "ok"
@@ -221,6 +223,58 @@ def derive_unavailability_episodes(uploaded_at, probes: list) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# The incremental probe window
+# ---------------------------------------------------------------------------
+
+#: How far before the newest recorded probe an incremental pull starts. The
+#: margin covers a probe VM whose clock is skewed and a point that arrived
+#: late, and re-reading the overlap is free: the upsert makes a re-read of an
+#: already-recorded probe a no-op write of the same values.
+PROBE_SINCE_MARGIN = timedelta(hours=6)
+
+
+def _as_utc(value: datetime) -> datetime:
+    # Postgres hands back an aware datetime; the SQLite test fixtures do not.
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def resolve_probe_start(repo, deployment, args) -> tuple[str, str]:
+    """Return the Flux ``range(start:)`` for the probe query, and why.
+
+    A canary deployment's probe series only grows — a probe per canary per
+    hour, forever — so re-reading and re-writing all of it every day makes the
+    daily run's cost a function of the deployment's age rather than of what
+    happened that day. The default therefore asks InfluxDB only for points
+    newer than what Postgres already holds, less a margin.
+
+    Raises ``ValueError`` if ``--since`` is not an ISO-8601 instant.
+    """
+    if getattr(args, "full", False):
+        return "0", "--full: the whole probe series"
+    raw = (getattr(args, "since", None) or "").strip()
+    if raw:
+        if raw == "0":
+            return "0", "--since 0: the whole probe series"
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError as e:
+            raise ValueError(
+                f"--since '{raw}' is not an ISO-8601 instant "
+                "(e.g. 2026-10-11T22:00:00Z) and is not '0'"
+            ) from e
+        return flux_instant(parsed), f"--since {flux_instant(parsed)}"
+    newest = repo.max_prod_canary_probed_at(deployment.id)
+    if newest is None:
+        # First ever run on this deployment: there is no high-water mark, so
+        # anything short of the whole series would silently lose history.
+        return "0", "no probes recorded yet: the whole probe series"
+    start = _as_utc(newest) - PROBE_SINCE_MARGIN
+    return flux_instant(start), (
+        f"incremental: 6h before the newest recorded probe ({flux_instant(_as_utc(newest))})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # record-results entry point (kind=prod-canary)
 # ---------------------------------------------------------------------------
 
@@ -235,10 +289,22 @@ def record_prod_canary_results(
     influx_org: str,
     influx_bucket: str,
 ) -> list[dict] | None:
+    try:
+        probe_start, probe_start_reason = resolve_probe_start(repo, deployment, args)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+    full_pull = probe_start == "0"
+
     console.print(
         f"[bold]Querying canary measurements from {influx_url} (bucket={influx_bucket})...[/bold]"
     )
+    console.print(f"  probe window: {probe_start_reason}")
+    query_started = time.monotonic()
     try:
+        # The upload and chunk queries stay full. They are the canary set
+        # itself — 378 rows on PROD-CANARY-04 — written once at upload time
+        # and never again, so there is nothing for a window to save.
         upload_points = fetch_canary_upload_points(
             url=influx_url,
             token=influx_token,
@@ -259,10 +325,12 @@ def record_prod_canary_results(
             org=influx_org,
             bucket=influx_bucket,
             deployment_name=args.name,
+            start=probe_start,
         )
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] InfluxDB query failed: {e}")
         sys.exit(1)
+    query_secs = time.monotonic() - query_started
 
     if not upload_points:
         console.print(
@@ -285,42 +353,47 @@ def record_prod_canary_results(
         except (InvalidOperation, ValueError):
             return None
 
-    upload_count = 0
+    write_started = time.monotonic()
+    upload_rows = []
     for u in upload_points:
         try:
             verify_status = ProdCanaryInitialVerifyStatus(u["initial_verify_status"])
         except ValueError:
             verify_status = ProdCanaryInitialVerifyStatus.FAILED
-        repo.upsert_prod_canary_upload(
-            canary_id=u["canary_id"],
-            deployment_id=deployment.id,
-            source_url=u["source_url"],
-            file_name=u["file_name"],
-            file_size_bytes=u["file_size_bytes"],
-            top_address=u["top_address"],
-            num_chunks=u["num_chunks"],
-            uploaded_at=u["uploaded_at"],
-            initial_verify_status=verify_status,
-            storage_cost_atto=_to_decimal(u.get("storage_cost_atto")),
-            gas_cost_wei=_to_decimal(u.get("gas_cost_wei")),
-            chunk_attempts_total=u.get("chunk_attempts_total"),
+        upload_rows.append(
+            {
+                "canary_id": u["canary_id"],
+                "deployment_id": deployment.id,
+                "source_url": u["source_url"],
+                "file_name": u["file_name"],
+                "file_size_bytes": u["file_size_bytes"],
+                "top_address": u["top_address"],
+                "num_chunks": u["num_chunks"],
+                "uploaded_at": u["uploaded_at"],
+                "initial_verify_status": verify_status,
+                "storage_cost_atto": _to_decimal(u.get("storage_cost_atto")),
+                "gas_cost_wei": _to_decimal(u.get("gas_cost_wei")),
+                "chunk_attempts_total": u.get("chunk_attempts_total"),
+            }
         )
-        upload_count += 1
+    upload_count = repo.bulk_upsert_prod_canary_uploads(upload_rows)
 
-    chunk_count = 0
+    chunk_rows = []
     for c in chunk_points:
         try:
             role = ProdCanaryChunkRole(c["chunk_role"])
         except ValueError:
             role = ProdCanaryChunkRole.DATA
-        repo.upsert_prod_canary_chunk(
-            canary_id=c["canary_id"],
-            chunk_address=c["chunk_address"],
-            chunk_role=role,
+        chunk_rows.append(
+            {
+                "canary_id": c["canary_id"],
+                "chunk_address": c["chunk_address"],
+                "chunk_role": role,
+            }
         )
-        chunk_count += 1
+    chunk_count = repo.bulk_upsert_prod_canary_chunks(chunk_rows)
 
-    probe_count = 0
+    probe_rows = []
     for p in probe_points:
         try:
             status = ProdCanaryProbeStatus(p["status"])
@@ -332,24 +405,41 @@ def record_prod_canary_results(
                 peer_outcomes = json.loads(p["terminal_peer_outcomes"])
             except (TypeError, ValueError):
                 peer_outcomes = None
-        repo.upsert_prod_canary_probe(
-            canary_id=p["canary_id"],
-            probed_at=p["probed_at"],
-            probed_by_host=p["probed_by_host"],
-            status=status,
-            missing_chunk_address=p["missing_chunk_address"] or None,
-            terminal_peer_outcomes=peer_outcomes,
-            duration_ms=p["duration_ms"],
+        probe_rows.append(
+            {
+                "canary_id": p["canary_id"],
+                "probed_at": p["probed_at"],
+                "probed_by_host": p["probed_by_host"],
+                "status": status,
+                "missing_chunk_address": p["missing_chunk_address"] or None,
+                "terminal_peer_outcomes": peer_outcomes,
+                "duration_ms": p["duration_ms"],
+            }
         )
-        probe_count += 1
+    probe_count = repo.bulk_upsert_prod_canary_probes(probe_rows)
+    write_secs = time.monotonic() - write_started
 
-    # Re-derive loss table from Postgres state (authoritative).
+    # Re-derive loss and the episode view from Postgres state (authoritative),
+    # NOT from the window that was just pulled: an episode can begin before
+    # the window starts and the two-strike rule needs both of its strikes.
+    #
+    # Scope: every canary this run recorded a probe for. A canary with no new
+    # probe has the same history it had last run, so its derived rows are
+    # already right and re-writing them would be the whole of the old cost
+    # with none of the benefit. A full pull covers every canary, which is what
+    # keeps `--full` a true rebuild.
+    derive_started = time.monotonic()
     db_uploads = repo.list_prod_canary_uploads_for_deployment(deployment.id)
-    db_probes = repo.list_prod_canary_probes_for_deployment(deployment.id)
     uploads_map = {u.canary_id: u.uploaded_at for u in db_uploads}
+    if full_pull:
+        derive_scope = list(uploads_map)
+    else:
+        touched = {p["canary_id"] for p in probe_points}
+        derive_scope = [cid for cid in uploads_map if cid in touched]
+
     probes_by_canary: dict = defaultdict(list)
-    for p in db_probes:
-        probes_by_canary[p.canary_id].append(p)
+    for probe in repo.list_prod_canary_probe_rows_for_canaries(derive_scope):
+        probes_by_canary[probe.canary_id].append(probe)
 
     losses = derive_loss(uploads_map, probes_by_canary)
     existing_loss = {
@@ -365,9 +455,10 @@ def record_prod_canary_results(
             hours_to_confirmed_loss=loss["hours_to_confirmed_loss"],
         )
     # Drop stale loss rows whose probe history no longer satisfies the rule
-    # (e.g. an OK probe arrived for a previously-confirmed canary). This keeps
-    # the table aligned with the latest probe sequence.
-    for cid in existing_loss.keys() - losses.keys():
+    # (e.g. an OK probe arrived for a previously-confirmed canary). Restricted
+    # to the derivation scope: a canary outside it was not re-derived this
+    # run, so the absence of a fresh verdict says nothing about it.
+    for cid in (existing_loss.keys() & set(derive_scope)) - losses.keys():
         repo.delete_prod_canary_loss(cid)
 
     # Re-derive the richer unavailability-episode (window) view: every episode
@@ -376,11 +467,12 @@ def record_prod_canary_results(
     # recovered behaviour the loss table cannot represent.
     episode_total = 0
     ongoing_total = 0
-    for cid in uploads_map:
+    for cid in derive_scope:
         episodes = derive_unavailability_episodes(uploads_map[cid], probes_by_canary.get(cid, []))
         repo.replace_prod_canary_unavailability(cid, episodes)
         episode_total += len(episodes)
         ongoing_total += sum(1 for e in episodes if not e["recovered"])
+    derive_secs = time.monotonic() - derive_started
 
     table = Table(title=f"Canary results recorded for '{args.name}' (id={deployment.id})")
     table.add_column("Uploads", justify="right")
@@ -396,12 +488,31 @@ def record_prod_canary_results(
         str(ongoing_total),
     )
     console.print(table)
+    # Printed every run, not behind a flag: this command runs unattended on a
+    # daily timer, and the phase split is the only way to see which half of it
+    # is growing without reproducing the run by hand.
+    console.print(
+        f"[dim]Phases: influx query {query_secs:.1f}s, "
+        f"writes {write_secs:.1f}s ({probe_count} probe row(s)), "
+        f"derivation {derive_secs:.1f}s "
+        f"({len(derive_scope)} of {len(uploads_map)} canaries).[/dim]"
+    )
 
     # Build the Slack results summary (alive/pending/confirmed + histogram),
     # mirroring print_prod_canary_status. Returned for an optional threaded
     # reply when record-results was invoked with --update-slack.
-    alive, pending = _alive_pending_counts(db_uploads, probes_by_canary, set(losses.keys()))
-    histogram = _hours_to_loss_histogram(losses.values())
+    #
+    # The counts come from the loss table rather than from this run's derived
+    # set, so an incremental run still reports the whole deployment. A canary
+    # outside the derivation scope has no probe history loaded, so it counts
+    # as alive unless the loss table says otherwise — and a canary that has
+    # not been probed in the window has no current status to report anyway.
+    loss_rows = repo.list_prod_canary_loss_for_deployment(deployment.id)
+    lost_ids = {loss.canary_id for loss in loss_rows}
+    alive, pending = _alive_pending_counts(db_uploads, probes_by_canary, lost_ids)
+    histogram = _hours_to_loss_histogram(
+        [{"hours_to_confirmed_loss": loss.hours_to_confirmed_loss} for loss in loss_rows]
+    )
     from saorsa_deploy.slack_results import canary_result_blocks
 
     return canary_result_blocks(
@@ -412,7 +523,7 @@ def record_prod_canary_results(
             "total": len(db_uploads),
             "alive": alive,
             "pending": pending,
-            "confirmed_lost": len(losses),
+            "confirmed_lost": len(lost_ids),
             "histogram": histogram,
         }
     )

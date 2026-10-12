@@ -4663,7 +4663,7 @@ provision → probe VMs provision. The Deployment row is registered with
 #### Persist + summarise
 
 ```bash
-# Pull every Influx point into Postgres and re-derive the loss table.
+# Pull the new Influx points into Postgres and re-derive the loss table.
 saorsa-deploy deployments record-results --name CANARY-01
 
 # Show alive / pending / confirmed-lost counts, hours-to-loss histogram,
@@ -4674,6 +4674,60 @@ saorsa-deploy deployments print-recorded-results --deployment-id <id>
 Both commands branch on `deploy_args.kind` and route through dedicated
 canary handlers; existing testnet / prod-uploaders / prod-continuous-downloader
 behaviour is untouched.
+
+##### The probe pull is incremental
+
+A canary's probe series only grows — one point per canary per hour, for the
+life of the deployment — so re-reading and re-writing all of it would make the
+cost of a daily run a function of the deployment's **age** rather than of what
+happened that day. PROD-CANARY-04's first publisher run proved it: 5,062 s for
+423,108 probe points, of which 3,164 s was the write phase at one
+`INSERT … ON CONFLICT` and one `commit()` per row.
+
+So `record-results` pulls only what it does not already hold, and writes in
+batches of 1,000 rows per statement and per commit.
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--since <ISO-8601>` | see below | Flux `range(start:)` for the **probe** query. `--since 0` forces a full pull. |
+| `--full` | off | Alias for `--since 0`. |
+
+With neither flag the window opens **six hours before the newest `probed_at`
+already recorded for this deployment**. The margin is there because a probe VM
+may have a skewed clock and a point may arrive late; re-reading the overlap
+costs nothing, since the upsert rewrites an already-recorded probe with the
+same values. A deployment with **no** probes in Postgres — the first ever run —
+pulls the whole series, because there is no high-water mark and a shorter
+window would silently lose history.
+
+The upload and chunk queries are **not** windowed. They are the canary set
+itself (378 rows on PROD-CANARY-04), written once when the upload service
+walked its list and never again, so there is nothing for a window to save.
+
+Two properties keep the derivation correct under a windowed pull:
+
+* **Loss and the unavailability episodes are re-derived from Postgres, not
+  from the window.** The two-strike rule needs both of its strikes, and an
+  episode can open long before the window does.
+* **The derivation is scoped to the canaries this run recorded a probe for.**
+  A canary with no new probe has the history it had last run, so its derived
+  rows are already right — and were being rewritten every day for nothing. Its
+  loss row is also not a candidate for the stale-row deletion, since the
+  absence of a fresh verdict says nothing about it. A full pull covers every
+  canary, which is what keeps `--full` a true rebuild — use it after a change
+  to how a past probe should be classified.
+
+`--full` is also the way to repair the table if a probe VM's clock jumped
+backwards by more than the margin.
+
+Every run prints its phase split (Influx query / writes / derivation, plus the
+file-pool claim resolution), because this command runs unattended on a daily
+timer and that is the only way to see which phase is growing.
+
+An **already-uploaded file-pool claim is skipped** for this kind. A canary's
+upload rows never change after the run that wrote them, so re-resolving a spent
+claim rewrites it with the values it already holds — a read and a commit per
+claim, every day. An open claim is still resolved.
 
 #### Publishing the public dataset (`prod canary export`)
 
@@ -4875,6 +4929,14 @@ monitoring VM** that runs `deployments record-results` and then
 `prod canary export`. The monitoring VM is the right host: `prod canary
 destroy` keeps it by default, it already carries the Slack reporter, and
 InfluxDB is local to it.
+
+**The daily run is incremental.** `record-results` pulls only the probes
+Postgres does not already hold (see "The probe pull is incremental" above), so
+a day's run writes a day's points — around 6,000 on PROD-CANARY-04 — rather
+than the whole series. The **first** run on a deployment that has never been
+recorded is the expensive one: it pulls and writes everything, which on
+PROD-CANARY-04 was 423,108 points. `TimeoutStartSec=3h` is sized for that run,
+not for the daily one.
 
 ```bash
 saorsa-deploy prod canary provision-publisher \

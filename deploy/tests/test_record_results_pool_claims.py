@@ -283,6 +283,70 @@ class TestProdCanary:
         assert resolved.total_chunks == 42
         assert resolved.storage_cost_atto == Decimal("999")
 
+    def test_an_already_uploaded_claim_is_not_read_again(self, env, monkeypatch):
+        """A canary's upload rows never change, so re-resolving a spent claim
+        buys nothing — and it cost a read and a commit per claim on every
+        daily publisher run, which is the cost this skip removes."""
+        import uuid
+
+        from rich.console import Console
+
+        pool_repo, deployment_repo, session, deployment = env
+        _pooled_claim(pool_repo, deployment, source=ClaimSource.PROD_CANARY)
+        session.add(
+            DeploymentProdCanaryUpload(
+                canary_id=uuid.uuid4(),
+                deployment_id=deployment.id,
+                source_url="https://example.org/a.bin",
+                file_name="a.bin",
+                file_size_bytes=50 * MIB,
+                top_address="c4n4ry",
+                num_chunks=42,
+                uploaded_at=NOW,
+                initial_verify_status=ProdCanaryInitialVerifyStatus.OK,
+            )
+        )
+        session.commit()
+        _resolve_pool_claims(deployment_repo, deployment, "prod-canary", Console())
+        assert pool_repo.list_pool_claims()[0].status is ClaimStatus.UPLOADED
+
+        resolved_again = []
+        monkeypatch.setattr(
+            pool_repo,
+            "resolve_pool_claim",
+            lambda *a, **k: resolved_again.append(a),
+        )
+        _resolve_pool_claims(deployment_repo, deployment, "prod-canary", Console())
+        assert resolved_again == []
+
+    def test_an_open_canary_claim_is_still_resolved_on_a_later_run(self, env):
+        """The skip is on terminal claims only: an open one still closes."""
+        import uuid
+
+        from rich.console import Console
+
+        pool_repo, deployment_repo, session, deployment = env
+        _pooled_claim(pool_repo, deployment, source=ClaimSource.PROD_CANARY)
+        _resolve_pool_claims(deployment_repo, deployment, "prod-canary", Console())
+        assert pool_repo.list_pool_claims()[0].status is ClaimStatus.CLAIMED
+
+        session.add(
+            DeploymentProdCanaryUpload(
+                canary_id=uuid.uuid4(),
+                deployment_id=deployment.id,
+                source_url="https://example.org/a.bin",
+                file_name="a.bin",
+                file_size_bytes=50 * MIB,
+                top_address="c4n4ry",
+                num_chunks=42,
+                uploaded_at=NOW,
+                initial_verify_status=ProdCanaryInitialVerifyStatus.OK,
+            )
+        )
+        session.commit()
+        _resolve_pool_claims(deployment_repo, deployment, "prod-canary", Console())
+        assert pool_repo.list_pool_claims()[0].status is ClaimStatus.UPLOADED
+
 
 class TestScoping:
     def test_other_kinds_are_left_alone(self, env):
