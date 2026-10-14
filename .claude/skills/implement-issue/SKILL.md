@@ -40,7 +40,8 @@ one to use.
   * **how to verify it** — tests to add or run, or an observable behaviour to check.
 
   If either is missing, post a comment on the issue saying exactly what is missing, leave its
-  status alone, and stop with `IMPLEMENT COMPLETE <issue> NOT-STARTED -`.
+  status alone, and stop — your final message being `IMPLEMENT COMPLETE <issue> NOT-STARTED -` and
+  nothing else, under the rules in Step 7.
 * Note the issue's `gitBranchName` (Linear supplies it; use it verbatim — it keeps Linear's branch
   linking working). If that branch already exists on `origin`, or an open PR already references
   the issue, a previous run got here first: comment on the issue with what you found and stop as
@@ -177,6 +178,21 @@ code, a dependency is missing, the gate cannot be made to pass on your own chang
 Return the checkout to `main` (`git checkout main`) so the next issue starts clean; the branch
 stays pushed. `git status --porcelain` must be empty — if it is not, say what is left and why.
 
-Print one final line — `IMPLEMENT COMPLETE <issue> <IN-REVIEW|BLOCKED|NOT-STARTED> <pr-url or ->`
-— and **end your turn with no pending tool calls**. That is what ends the headless process; the
-calling script waits on it and will not start the next issue until it exits.
+**Your final message is one line and nothing else:**
+
+```
+IMPLEMENT COMPLETE <issue> <IN-REVIEW|BLOCKED|NOT-STARTED> <pr-url or ->
+```
+
+No summary before it, no sign-off after it, no prose around it — what you did is already written up
+in the PR body and the issue comment, and whoever wants it reads it there. Then **end your turn with
+no pending tool calls**: that is what ends the headless process, and the caller waits on it and will
+not start the next issue until it exits.
+
+This line is the only evidence the run finished. Nothing infers completion from the exit code,
+because the process exits zero whenever you end your turn — so a run that did everything the issue
+asked and then signed off with a summary instead of this line is recorded as `NO-VERDICT`, raised
+with the operator as urgent, and has to be read back out of the raw log by hand. Without the line
+the run is a failure as far as anything outside this session can tell, whatever it achieved.
+Ending a run that went perfectly with a summary in place of this line happened on 2026-10-13 and is
+the most expensive way there is to finish.

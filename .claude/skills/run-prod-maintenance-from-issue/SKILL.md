@@ -326,9 +326,24 @@ Always, whatever the verdict. Never `Done`, never `Canceled`.
 
 ## Step 7 — Exit
 
-Print one final line — `RUN COMPLETE <issue> <verdict> -` — and **end your turn with no pending
-tool calls, waits or schedules**. The trailing `-` keeps the field count identical to the testnet
-run line, so one parser serves both. `<verdict>` is the single word from "The verdict", the same one
-that heads the results comment. The calling script reads this line: any verdict other than `PASS`
-is treated as a bad run. In headless mode printing it and ending the turn is what ends the process;
-the calling script waits on it and will not start the next issue until it exits.
+**Your final message is one line and nothing else:**
+
+```
+RUN COMPLETE <issue> <verdict> -
+```
+
+No summary before it, no sign-off after it, no prose around it — everything you have to say is
+already in the results comment, and whoever wants it reads it there. The trailing `-` keeps the
+field count identical to the testnet run line, so one parser serves both. `<verdict>` is the single
+word from "The verdict", the same one that heads that comment. Then **end your turn with no pending
+tool calls, waits or schedules**: in headless mode that is what ends the process, and the caller
+waits on it and will not start the next issue until it exits. Any verdict other than `PASS` is
+treated as a bad run.
+
+This line is the only evidence the run finished. Nothing infers completion from the exit code,
+because the process exits zero whenever you end your turn — so a run that did everything the issue
+asked and then signed off with a summary instead of this line is recorded as `NO-VERDICT`, raised
+with the operator as urgent, and has to be read back out of the raw log by hand. Without the line
+the run is a failure as far as anything outside this session can tell, whatever it achieved.
+Ending a run that went perfectly with a summary in place of this line happened on 2026-10-13 and is
+the most expensive way there is to finish.
