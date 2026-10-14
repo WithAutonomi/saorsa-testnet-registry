@@ -35,6 +35,31 @@ which one to use.
   comment, not by the issue status. If the issue's own text says to set `Done` or `Cancelled`, this
   rule wins.
 
+### The run directory
+
+Everything this run writes outside the repository — the `up` log, the teardown logs, any evidence
+file — goes in one directory, so that a run's evidence sits in one place and whatever started the
+session can print a single path for it.
+
+Resolve it as the **first thing you do**, before reading the issue, and say in those first lines
+which of the two paths you got:
+
+```bash
+RUN_DIR="${ANTOPS_RUN_DIR:-$HOME/.autonomi/testnet-runs/$issue_number}"; mkdir -p "$RUN_DIR"; echo "$RUN_DIR"
+```
+
+`ANTOPS_RUN_DIR` is exported by `antops`, which owns one directory per run, creates it before
+starting the session, keeps its own session log in it, and expects this run's files beside that.
+When it is **unset** the session came from `scripts/run-testnet-issues.sh` /
+`run-testnet-chain.sh`, which know nothing about it, so the fallback
+`~/.autonomi/testnet-runs/<issue>` applies. Those drivers stay in use until antops has completed a
+live run, so both paths are live — and a reader looking for a log has no way to tell which it was
+unless the run says so.
+
+Only the directory's location changes with the variable. Name each file after the command that
+produced it (`up.log`, `clients-destroy.log`), and any sentinel file beside its own log, exactly as
+before.
+
 ### The verdict
 
 Every run ends with exactly one verdict. It heads the results comment and is the third word of the
@@ -134,10 +159,10 @@ Then:
 ## Step 3 — Deploy
 
 Create a task list for the whole procedure from deployment to teardown, then launch the deploy
-**in the background**, logging to a file:
+**in the background**, logging to a file in the run directory:
 
 ```bash
-uv run saorsa-deploy deployments up --config <manifest-path> > <log> 2>&1 &
+uv run saorsa-deploy deployments up --config <manifest-path> > "$RUN_DIR/up.log" 2>&1 &
 ```
 
 Immediately after launch, in the same tool call: find the **`.venv/bin/python3` PID** (not the
@@ -148,7 +173,7 @@ arrival must be caught here, not discovered later.
 Wait on the PID, then print exit status and log tail unconditionally:
 
 ```bash
-until ! kill -0 $PID 2>/dev/null; do sleep 30; done; echo "up ended"; tail -40 <log>
+until ! kill -0 $PID 2>/dev/null; do sleep 30; done; echo "up ended"; tail -40 "$RUN_DIR/up.log"
 ```
 
 Never `pgrep -f` a pattern that appears in the waiter's own command line (it self-matches).
@@ -394,7 +419,8 @@ nothing. This has "succeeded" three times while 30–45 VMs kept billing.
 ### Verify — never trust the exit code
 
 * Never pipe a teardown command through `tee`/`tail`; the pipeline's exit code is the pipe's, not
-  the command's. Redirect to a file instead.
+  the command's. Redirect to a file in the run directory instead
+  (`> "$RUN_DIR/clients-destroy.log" 2>&1`).
 * A teardown that finishes in seconds did not happen.
 * After it exits, confirm the reality: the S3 deployment state is gone
   (`deployments generate-inventory --name <n>` → "No deployment state found"), and the provider
