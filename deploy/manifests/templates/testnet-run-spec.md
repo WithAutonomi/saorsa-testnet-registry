@@ -162,10 +162,11 @@ Exit 2 from `estimate-gas` → raise `eth:` (only ever raise) and record it.
 4. **The phase clock is driven by verified wall-clock wakes**, one per boundary (<list
    every T0+… that has an action>) plus the ceiling, armed at T0. Each wake re-reads the
    clock; a late wake is recorded with its actual time.
-5. `up` **runs in the background and is waited on by PID**, logging to `$RUN_DIR/up.log` —
-   the run's own directory, `$ANTOPS_RUN_DIR` when antops started the session and
-   `~/.autonomi/testnet-runs/<ISSUE>` when one of the shell drivers did. T0 is read from the
-   client units' `ActiveEnterTimestamp`.
+5. `up` **runs in the background and is waited on by PID**, logging into the run's own
+   directory — `$ANTOPS_RUN_DIR` when antops started the session, `~/.autonomi/testnet-runs/<ISSUE>`
+   when one of the shell drivers did. **Every command writes that expansion out in full**, because
+   each tool call is a fresh shell and a `RUN_DIR=…` of its own would be gone by the next one. T0 is
+   read from the client units' `ActiveEnterTimestamp`.
 6. **A host is modified only where this issue's phases direct it**, through a committed
    `saorsa-deploy` command named here, with the time and the targets recorded in the
    results comment. Everything else is reads only: <snapshot / `df` / ES / Influx>.
@@ -176,7 +177,7 @@ Exit 2 from `estimate-gas` → raise `eth:` (only ever raise) and record it.
 
 ```bash
 uv run saorsa-deploy deployments up --config deploy/manifests/runs/<NAME>-<slug>.yaml \
-  > "$RUN_DIR/up.log" 2>&1 &
+  > "${ANTOPS_RUN_DIR:-$HOME/.autonomi/testnet-runs/<ISSUE>}/up.log" 2>&1 &
 ```
 
 **T0 =** `clients start` **completes.** All boundaries UTC.
