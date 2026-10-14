@@ -109,10 +109,24 @@ def test_another_measurement_is_ignored():
 
 
 def _record(repo, deployment, points, console=None):
+    """Drive `_record_pointer_ops` over scripted Influx points, offline.
+
+    `_network_map_from_client_state` is patched out as well as the Influx query.
+    It is the fallback the network-profile lookup takes when `deploy_args` names
+    no shaping, and it reads the deployment's client state from the tfstate
+    BUCKET — so a test whose deployment happens not to carry a `network` key
+    reaches S3 and fails wherever there are no AWS credentials, which is CI.
+    Every test here must go through this helper for that reason; the one test
+    that cares about profiles supplies `network_by_host`, which is resolved
+    before this fallback is consulted.
+    """
     from rich.console import Console
 
     args = SimpleNamespace(name=deployment.name)
-    with patch("saorsa_deploy.cmd.record_results.fetch_pointer_points", return_value=points):
+    with (
+        patch("saorsa_deploy.cmd.record_results.fetch_pointer_points", return_value=points),
+        patch("saorsa_deploy.cmd.record_results._network_map_from_client_state", return_value={}),
+    ):
         return _record_pointer_ops(
             repo,
             deployment,
@@ -246,18 +260,7 @@ def test_the_handover_ops_and_outcomes_are_recorded_rather_than_counted_unusable
             ]
         )
     ]
-    console = SimpleNamespace(print=lambda *_, **__: None)
-    with patch("saorsa_deploy.cmd.record_results.fetch_pointer_points", return_value=points):
-        _record_pointer_ops(
-            repo,
-            deployment,
-            SimpleNamespace(name="PTR-01"),
-            console,
-            "http://influx",
-            "token",
-            "ant",
-            "testnet-metrics",
-        )
+    _record(repo, deployment, points, console=SimpleNamespace(print=lambda *_, **__: None))
     rows = repo.list_pointer_records_for_deployment(deployment.id)
     assert len(rows) == len(points)
     by_op = {}
@@ -317,18 +320,12 @@ def test_the_recorded_counter_is_the_value_the_point_carried():
         "counter_expected": _FINAL,
         "counter_observed": _FINAL,
     }
-    console = SimpleNamespace(print=lambda *_, **__: None)
-    with patch("saorsa_deploy.cmd.record_results.fetch_pointer_points", return_value=[point]):
-        _record_pointer_ops(
-            _Repo(),
-            SimpleNamespace(id=1, deploy_args={}),
-            SimpleNamespace(name="PTR-01"),
-            console,
-            "http://influx",
-            "token",
-            "ant",
-            "testnet-metrics",
-        )
+    _record(
+        _Repo(),
+        SimpleNamespace(id=1, name="PTR-01", deploy_args={}),
+        [point],
+        console=SimpleNamespace(print=lambda *_, **__: None),
+    )
     assert captured["counter_expected"] == _FINAL
     assert captured["counter_observed"] == _FINAL
     assert captured["recipient"] == "cd" * 32
