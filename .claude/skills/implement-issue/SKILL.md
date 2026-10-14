@@ -40,7 +40,7 @@ one to use.
   * **how to verify it** — tests to add or run, or an observable behaviour to check.
 
   If either is missing, post a comment on the issue saying exactly what is missing, leave its
-  status alone, and stop — your final message being `IMPLEMENT COMPLETE <issue> NOT-STARTED -` and
+  status alone, and stop — your final message being `IMPLEMENT COMPLETE <issue> FAILED -` and
   nothing else, under the rules in Step 7.
 * Note the issue's `gitBranchName` (Linear supplies it; use it verbatim — it keeps Linear's branch
   linking working). If that branch already exists on `origin`, or an open PR already references
@@ -181,13 +181,24 @@ stays pushed. `git status --porcelain` must be empty — if it is not, say what 
 **Your final message is one line and nothing else:**
 
 ```
-IMPLEMENT COMPLETE <issue> <IN-REVIEW|BLOCKED|NOT-STARTED> <pr-url or ->
+IMPLEMENT COMPLETE <issue> <COMPLETED|BLOCKED|FAILED> <pr-url or ->
 ```
 
-No summary before it, no sign-off after it, no prose around it — what you did is already written up
-in the PR body and the issue comment, and whoever wants it reads it there. Then **end your turn with
-no pending tool calls**: that is what ends the headless process, and the caller waits on it and will
-not start the next issue until it exits.
+where the verdict is one of:
+
+| verdict | meaning | the issue's status |
+| -- | -- | -- |
+| `COMPLETED` | the change is written, the gate passed, the branch is pushed and the PR is open | `In Review` |
+| `BLOCKED` | you could not finish; the question or failure is in a comment | `Blocked` |
+| `FAILED` | a precondition failed and nothing was changed | left alone, with a comment |
+
+`COMPLETED` is about **your** work, not about the review: the change is finished and submitted. The
+operator deciding whether to accept it happens afterwards and is none of this run's business.
+
+No summary before the line, no sign-off after it, no prose around it — what you did is already
+written up in the PR body and the issue comment, and whoever wants it reads it there. Then **end
+your turn with no pending tool calls**: that is what ends the headless process, and the caller waits
+on it and will not start the next issue until it exits.
 
 This line is the only evidence the run finished. Nothing infers completion from the exit code,
 because the process exits zero whenever you end your turn — so a run that did everything the issue
