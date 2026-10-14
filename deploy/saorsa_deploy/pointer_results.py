@@ -794,6 +794,11 @@ def finality_age_buckets(
     The buckets hold statuses rather than outcome names -- `final` and `open`
     rather than `ok` and `stale` -- because that is the vocabulary
     `ant pointer finality` prints.
+
+    A FOREIGN row's age is a LOWER BOUND: the published handover list carries no
+    timestamp, so a foreign client can only date a handover from when it first
+    saw the pair. Those rows therefore sit in a younger bucket than they belong
+    in, which the rendered table states.
     """
     if bucket_secs <= 0:
         raise ValueError("bucket_secs must be > 0")

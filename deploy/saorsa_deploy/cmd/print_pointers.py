@@ -320,7 +320,11 @@ def _print_finality_age_table(records: list[dict], bucket_secs: int, console: Co
         "[dim]`finality` asks the WHOLE close group and never stops early, which "
         "is what makes it different from a read. Own and foreign are separate "
         "because whether a handover looks the same from the other side of the "
-        "world is the question the second pointer client answers.[/dim]"
+        "world is the question the second pointer client answers — and because "
+        "a FOREIGN row's age is measured from when this client first saw the "
+        "published pair, not from the handover: the transfers file carries no "
+        "timestamp, so foreign ages are a LOWER BOUND and those rows sit in a "
+        "younger bucket than they belong in.[/dim]"
     )
 
 

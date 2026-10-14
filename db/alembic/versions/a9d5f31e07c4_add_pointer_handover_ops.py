@@ -29,6 +29,14 @@ following `b2d58f0c4a11`: `ALTER TYPE ... ADD VALUE` cannot run inside a
 transaction block on older servers. They are not removed on downgrade -- Postgres
 cannot drop a value from an enum type, and an unused value is harmless.
 
+The downgrade therefore KEEPS every row, as `b2d58f0c4a11`'s does: because the
+enum values necessarily survive, a `transfer` or `finality` row stays perfectly
+readable afterwards, and this build's model simply would not recognise it --
+which is the position any pre-handover reader is in anyway. The one thing that
+cannot survive is a counter above a signed BIGINT, so those two values are set
+to NULL before the columns narrow. NULL is already what those columns mean by
+"not recorded", and it is exactly what a BIGINT-era row would have carried.
+
 Revision ID: a9d5f31e07c4
 Revises: c7a4d15e83b2
 Create Date: 2026-10-14
@@ -44,6 +52,10 @@ branch_labels = None
 depends_on = None
 
 _TABLE = "deployment_pointer_records"
+
+#: Largest value a signed BIGINT holds. A pointer counter is a `u64`, so a
+#: handover's `u64::MAX` is about twice this.
+_MAX_BIGINT = 9223372036854775807
 
 _NEW_OPS = ("transfer", "finality", "controller", "takeback")
 _NEW_OUTCOMES = ("settling", "unconfirmed", "forked")
@@ -81,21 +93,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # The rows for the four new ops go with the columns: an op this schema no
-    # longer has a value for is a row nothing can read back, and leaving it would
-    # make `enum_range` and the stored data disagree.
-    op.execute(
-        f"DELETE FROM {_TABLE} WHERE op IN ('transfer', 'finality', 'controller', 'takeback')"
-    )
-    op.execute(
-        f"UPDATE {_TABLE} SET outcome = 'error' "
-        "WHERE outcome IN ('settling', 'unconfirmed', 'forked')"
-    )
+    # Rows are KEPT, never deleted. The enum values cannot be dropped, so a
+    # handover row remains readable after this runs; only the model stops
+    # recognising it. Deleting the rows would throw away measurements to undo a
+    # schema change, which is not a trade a downgrade gets to make.
+    #
+    # A counter above a signed BIGINT is the one value that cannot survive the
+    # narrowing, so it goes to NULL -- what those columns already mean by "not
+    # recorded", and what a BIGINT-era row would have carried.
+    for name in ("counter_expected", "counter_observed"):
+        op.execute(f"UPDATE {_TABLE} SET {name} = NULL WHERE {name} > {_MAX_BIGINT}")
     for name, _ in reversed(_NEW_COLUMNS):
         op.drop_column(_TABLE, name)
 
-    # Safe now the handover rows are gone: they were the only ones that could
-    # hold a value above a signed BIGINT.
     for name in ("counter_expected", "counter_observed"):
         op.alter_column(
             _TABLE,

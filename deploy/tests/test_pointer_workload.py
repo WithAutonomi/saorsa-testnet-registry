@@ -433,12 +433,30 @@ def test_a_take_back_refusal_is_classified_apart_from_an_error(pc):
 
 def test_a_rival_final_state_is_an_anomaly(pc):
     """Nothing of OURS finalized the pointer, so something else ended its life.
-    That is never routine, which is what `anomaly` means here."""
+    That is never routine, which is what `anomaly` means here.
+
+    `rival_final` raises `Error::PointerFinal` for a single rival state, whose
+    Display is `pointer is final: {0}` — the same prefix a take-back refusal
+    carries, which is why one marker covers both.
+    """
     stderr = (
-        "Error: Pointer transfer failed: invalid data: peer ab holds final "
-        "state 9c for pointer de\n"
+        "Error: pointer is final: pointer de is already final on state 9c held by 4 of 5 peers\n"
     )
     assert pc.classify_failure(stderr, write=True, handover=True) == pc.OUTCOME_ANOMALY
+
+
+def test_a_forked_pointer_is_an_anomaly_and_not_an_error(pc):
+    """`rival_final` and `final_already` raise `Error::PointerForked` when the
+    close group holds MORE THAN ONE final state, and its Display shares no
+    wording with `PointerFinal`'s: "pointer is forked: pointer {a} holds {n}
+    different final states". Matching anything but the error's own prefix filed
+    every fork — the one genuinely alarming reading — as a plain error.
+    """
+    stderr = "Error: pointer is forked: pointer de holds 2 different final states\n"
+    assert pc.classify_failure(stderr, write=True, handover=True) == pc.OUTCOME_ANOMALY
+    assert pc.POINTER_FORKED_MARKER in stderr
+    # And the plain ops are untouched, as for every other handover marker.
+    assert pc.classify_failure(stderr, write=True) == pc.OUTCOME_ERROR
 
 
 def test_a_silent_close_group_peer_refuses_the_transfer_before_paying(pc):
@@ -453,6 +471,64 @@ def test_a_silent_close_group_peer_refuses_the_transfer_before_paying(pc):
         "asked\n"
     )
     assert pc.classify_failure(stderr, write=True, handover=True) == (pc.OUTCOME_READ_SHORTFALL)
+
+
+def test_a_take_back_on_a_forked_pointer_still_reads_as_refused(pc, tmp_path, monkeypatch):
+    """`final_already` answers an update on a FORKED pointer with
+    `pointer is forked`, not `pointer is final`. A check that accepted only the
+    latter called the refusal an error — on precisely the pointer whose state is
+    most worth knowing about.
+    """
+    client = _stub_client(pc, tmp_path, monkeypatch)
+    handed_over = client.do_create()
+    client.do_transfer()
+    key = client.ledger.own[handed_over]["key"]
+
+    # The close group now reports two rival final states.
+    state_path = tmp_path / "stub-state.json"
+    stub_state = json.loads(state_path.read_text())
+    stub_state["forked"] = True
+    state_path.write_text(json.dumps(stub_state))
+
+    client.influx = _CaptureSink()
+    client.check_takeback(
+        handed_over,
+        ["pointer", "update", "--key", key, "--kind", "chunk", "a" * 64],
+        attempt="update",
+    )
+    point = client.influx.points()[0]
+    assert point["outcome"] == "ok"
+    assert "pointer is forked" in point["error"]
+    assert point["wallet_spend_atto"] == "0" and point["gas_spend_wei"] == "0"
+
+
+def test_a_forked_finality_check_reports_the_holders_of_OUR_state(pc, tmp_path, monkeypatch):
+    """`holders` sits inside the state object, and on a fork there are several.
+
+    Reading it off the top level of `finality_json` returned None for every real
+    reply, which left the column dead. With the state id the transfer reported,
+    the count is our side of the fork — not the other side's, and not a guess.
+    """
+    client = _stub_client(pc, tmp_path, monkeypatch)
+    handed_over = client.do_create()
+    client.do_transfer()
+
+    state_path = tmp_path / "stub-state.json"
+    stub_state = json.loads(state_path.read_text())
+    stub_state["forked"] = True
+    state_path.write_text(json.dumps(stub_state))
+
+    client.influx = _CaptureSink()
+    client.do_sweep()
+    finality = [p for p in client.influx.points() if p["op"] == "finality"]
+    assert finality, "the sweep must re-check every own handover"
+    point = finality[0]
+    assert point["outcome"] == "forked"
+    assert point["finality_status"] == "forked"
+    # The stub gives our state 3 holders and the rival 2.
+    assert point["holders"] == "3"
+    assert point["answered"] == "5" and point["group"] == "5"
+    assert point["address"] == handed_over
 
 
 def test_the_final_counter_is_u64_max(pc):
@@ -572,6 +648,22 @@ def test_the_file_consumers_already_skip_the_transfers_object():
 #: client invokes, and the one behaviour the cycle is ABOUT: a pointer carrying
 #: a final state refuses both `update` and a second `transfer`, exits non-zero,
 #: and does not move the wallet.
+#:
+#: **Its JSON and its error strings are the real ones**, taken from ant-client
+#: `70052d0b` (`ant-cli/src/commands/data/pointer.rs` `finality_json` /
+#: `final_state_json` / `print_transfer`, and ant-core `data/error.rs` /
+#: `data/client/pointer.rs`). That matters more here than anywhere else in this
+#: file: a stub that printed the shape the script expects rather than the shape
+#: the CLI emits would make the whole suite agree with itself and with nothing
+#: else. The three shapes worth naming, because each one hid a bug:
+#:
+#: * `transfer` wraps `finality_json` under its OWN `finality` key, so the
+#:   status is at `finality.finality.status` -- one level deeper than on the
+#:   `finality` command, which prints `finality_json` as its whole document.
+#: * `holders` lives inside the state object (`finality.state.holders`, or one
+#:   per entry of `finality.states` on a fork), never at the top level.
+#: * A forked pointer is refused with `pointer is forked: ...`, which shares no
+#:   wording with `pointer is final: ...`.
 _STUB_ANT = r"""#!/usr/bin/env python3
 import json, os, secrets, sys
 
@@ -595,6 +687,52 @@ def spend(state):
 
 
 FINAL = 18446744073709551615
+
+
+def final_state_json(entry, holders):
+    # `final_state_json`: holders live in HERE, not at the top level.
+    return {
+        "state_id": entry.get("state_id", "5a" * 32),
+        "kind": "pointer",
+        "target": entry["target"],
+        "holders": holders,
+        "transferred_to": entry["target"],
+    }
+
+
+def finality_json(address, entry, state):
+    # `finality_json`: {address, group, answered, finality: <status>}.
+    group = state.get("group", 5)
+    if entry["counter"] != FINAL:
+        status = {"status": "open", "counter": entry["counter"]}
+    elif state.get("forked"):
+        status = {
+            "status": "forked",
+            "states": [
+                final_state_json(entry, 3),
+                final_state_json({**entry, "state_id": "bb" * 32}, 2),
+            ],
+            "majority": None,
+        }
+    else:
+        status = {
+            "status": state.get("status", "final"),
+            "state": final_state_json(entry, state.get("holders", 5)),
+        }
+    return {"address": address, "group": group, "answered": group, "finality": status}
+
+
+def refusal(address, entry):
+    # `final_already` / `rival_final`: PointerForked on a fork, else PointerFinal.
+    if state.get("forked"):
+        return "pointer is forked: pointer " + address + " holds 2 different final states"
+    return (
+        "pointer is final: pointer "
+        + address
+        + " has final state "
+        + entry.get("state_id", "5a" * 32)
+        + " on 5 of 5 peers; an update cannot replace it"
+    )
 
 args = [a for a in sys.argv[1:]]
 out = []
@@ -644,7 +782,9 @@ elif args[:2] == ["pointer", "update"]:
     if entry is None:
         fail("No pointer at " + address)
     if entry["counter"] == FINAL:
-        fail("Pointer update failed: invalid data: pointer is final: counter " + str(FINAL))
+        # `final_already`: PointerForked on a forked pointer, PointerFinal
+        # otherwise. The two share no wording.
+        fail(refusal(address, entry))
     entry["counter"] += 1
     entry["target"] = args[-1]
     entry["kind"] = args[args.index("--kind") + 1]
@@ -658,16 +798,20 @@ elif args[:2] == ["pointer", "transfer"]:
     if entry is None:
         fail("No pointer at " + address)
     if entry["counter"] == FINAL:
-        fail("Pointer transfer failed: invalid data: pointer is final: counter " + str(FINAL))
+        # `rival_final`, same two errors as the update path.
+        fail(refusal(address, entry))
     entry.update({"counter": FINAL, "target": recipient, "kind": "pointer"})
+    entry["state_id"] = "5a" * 32
     spend(state)
     save(state)
+    # `print_transfer`: the finality check rides under its own key, as the whole
+    # `finality_json` document, so its status is at `finality.finality.status`.
     print(
         json.dumps(
             {
                 "address": address,
-                "state": {"counter": FINAL, "target": recipient},
-                "finality": {"status": "final", "holders": 5},
+                "state": entry["state_id"],
+                "finality": finality_json(address, entry, state),
                 "finality_error": None,
             }
         )
@@ -681,17 +825,7 @@ elif args[:2] == ["pointer", "finality"]:
     entry = state["pointers"].get(args[2])
     if entry is None:
         fail("No pointer at " + args[2])
-    status = "final" if entry["counter"] == FINAL else "open"
-    print(
-        json.dumps(
-            {
-                "address": args[2],
-                "group": 5,
-                "answered": 5,
-                "finality": {"status": status, "holders": 5 if status == "final" else 0},
-            }
-        )
-    )
+    print(json.dumps(finality_json(args[2], entry, state)))
 elif args[:2] == ["pointer", "controller"]:
     address, hops = args[2], 0
     while True:
@@ -952,3 +1086,100 @@ def test_a_counter_that_fits_an_i64_stays_an_integer_field(pc):
     line = pc.build_line("h", "lon1", "get", pc.counter_fields(pc.FINAL_COUNTER, 3))
     assert 'counter_expected_u64="18446744073709551615"' in line
     assert "counter_observed=3i" in line
+
+
+def test_a_paid_transfer_that_did_not_land_is_a_lost_write_whatever_its_stderr(
+    pc, tmp_path, monkeypatch
+):
+    """Classified by the PAYMENT first, then by the markers.
+
+    Every refusal the markers name happens inside `pointer_sign_transfer`, before
+    a quote is bought. So a transfer that spent and did not land is a lost write
+    whatever it printed — and reading a marker first would file a paid failure as
+    a refusal that by definition never cost anything, hiding real money.
+    """
+    client = _stub_client(pc, tmp_path, monkeypatch)
+    client.do_create()
+
+    # A transfer that spends and then fails, printing a pre-payment refusal's
+    # words. The stub cannot produce this, so the runner is driven directly.
+    state_path = tmp_path / "stub-state.json"
+    original = client.runner.run
+
+    def spend_then_fail(args, **kwargs):
+        if args[:2] == ["pointer", "transfer"]:
+            stub = json.loads(state_path.read_text())
+            stub["ant"] -= 10**15
+            stub["gas"] -= 10**12
+            state_path.write_text(json.dumps(stub))
+            return pc.AntResult(
+                1,
+                "",
+                "Error: pointer is final: pointer ab is already final on state "
+                "9c held by 4 of 5 peers\n",
+                900,
+            )
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(client.runner, "run", spend_then_fail)
+    client.influx = _CaptureSink()
+    client.do_transfer()
+
+    transfer = next(p for p in client.influx.points() if p["op"] == "transfer")
+    assert transfer["outcome"] == "lost_write"
+    assert transfer["paid_attempts"] == "1"
+    assert int(transfer["wallet_spend_atto"]) > 0
+    # And the cycle stops: only an `ok` transfer is followed up.
+    assert [p["op"] for p in client.influx.points()][-1] == "transfer"
+    # Unpaid, the same stderr is the pre-payment refusal it says it is.
+    assert (
+        pc.classify_failure(
+            "Error: pointer is final: pointer ab is already final on state 9c\n",
+            write=True,
+            handover=True,
+        )
+        == pc.OUTCOME_ANOMALY
+    )
+
+
+def test_all_three_pre_payment_shortfalls_share_one_marker(pc):
+    """`pointer_sign_transfer` can fall short in three places — its own
+    silent-peer refusal, the finality check's under-quorum shortfall, and the
+    recipient `get`'s. All three happen before anything is paid, so
+    `read_shortfall` is the right class for each and one marker covers them.
+    """
+    for stderr in (
+        "Error: only 4 of the 5 peers of pointer ab's close group answered, and "
+        "a silent one could hold a final state; a transfer cannot be taken "
+        "back, so try again when all of them can be asked\n",
+        "Error: only 2 of the close group answered for pointer ab\n",
+    ):
+        assert pc.TRANSFER_SHORTFALL_MARKER in stderr
+        assert pc.classify_failure(stderr, write=True, handover=True) == (pc.OUTCOME_READ_SHORTFALL)
+
+
+def test_a_handed_over_pointer_is_read_once_per_sweep_not_twice(pc, tmp_path, monkeypatch):
+    """It is swept by `_sweep_handovers`, which knows the recipient and runs the
+    finality check beside the read, and skipped by the plain own-pointer loop.
+    Doing both read every handover TWICE a sweep and inflated the `sweep` rows on
+    exactly the addresses whose state can no longer change.
+    """
+    client = _stub_client(pc, tmp_path, monkeypatch)
+    handed_over = client.do_create()
+    client.do_transfer()
+    recipient = client.ledger.transferred[handed_over]["recipient"]
+
+    client.influx = _CaptureSink()
+    client.do_sweep()
+    points = client.influx.points()
+
+    reads = [(p["op"], p["address"]) for p in points if p["op"] in ("sweep", "get")]
+    # The recipient is an ordinary owned pointer and is swept as one.
+    assert ("sweep", recipient) in reads
+    # The handed-over address is read exactly once, as the redirect `get`.
+    assert ("sweep", handed_over) not in reads
+    assert reads.count(("get", handed_over)) == 1
+    # And it still gets its finality check, with the age since the handover.
+    finality = [p for p in points if p["op"] == "finality"]
+    assert [p["address"] for p in finality] == [handed_over]
+    assert "age_secs" in finality[0]
