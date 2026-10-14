@@ -68,6 +68,7 @@ _VALID_POINTER_KEYS = (
     "update_interval_secs",
     "sweep_interval_secs",
     "chain_fraction",
+    "transfer_interval_secs",
     "pointer_max",
 )
 DEFAULT_ANT_FUNDING = "100"
@@ -83,6 +84,9 @@ DEFAULT_POINTER_CREATE_INTERVAL_SECS = 60
 DEFAULT_POINTER_UPDATE_INTERVAL_SECS = 30
 DEFAULT_POINTER_SWEEP_INTERVAL_SECS = 600
 DEFAULT_POINTER_CHAIN_FRACTION = 0.10
+# 0 = no handover loop. The only pointer interval whose zero is a setting rather
+# than a busy loop: `ant pointer transfer` does not exist on a pre-V2-1354 build.
+DEFAULT_POINTER_TRANSFER_INTERVAL_SECS = 0
 DEFAULT_POINTER_MAX = 0
 
 
@@ -392,7 +396,7 @@ def parse_pointer_spec(spec: str) -> dict:
     """Parse a pointer-client spec.
 
     Format:
-    ``provider:region[:vm_size][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:network=PROFILE][:create_interval_secs=N][:update_interval_secs=N][:sweep_interval_secs=N][:chain_fraction=F][:pointer_max=N][:rust_log=VALUE]``
+    ``provider:region[:vm_size][:ant=N][:eth=N][:clock_skew=DURATION][:bootstrap_cache=BOOL][:forward_logs=BOOL][:network=PROFILE][:create_interval_secs=N][:update_interval_secs=N][:sweep_interval_secs=N][:chain_fraction=F][:transfer_interval_secs=N][:pointer_max=N][:rust_log=VALUE]``
 
     Positionals match ``--downloader`` (there is no file size — a pointer record
     is a fixed ~5 KB), but the role carries an uploader's wallet options because
@@ -450,6 +454,25 @@ def parse_pointer_spec(spec: str) -> dict:
         parsed["chain_fraction"] = fraction
     else:
         parsed["chain_fraction"] = DEFAULT_POINTER_CHAIN_FRACTION
+    if "transfer_interval_secs" in options:
+        # Not `_parse_positive_int`: 0 is the legal "no handover loop" value, so
+        # the >0 refusal that protects the paid create/update loops from a busy
+        # loop would reject the default here.
+        try:
+            transfer_interval = int(options["transfer_interval_secs"])
+        except ValueError:
+            raise ValueError(
+                f"Invalid pointer spec '{spec}': transfer_interval_secs must be "
+                f"an integer, got '{options['transfer_interval_secs']}'."
+            )
+        if transfer_interval < 0:
+            raise ValueError(
+                f"Invalid pointer spec '{spec}': transfer_interval_secs must be "
+                f">= 0 (0 = no handover loop), got {transfer_interval}."
+            )
+        parsed["transfer_interval_secs"] = transfer_interval
+    else:
+        parsed["transfer_interval_secs"] = DEFAULT_POINTER_TRANSFER_INTERVAL_SECS
     if "pointer_max" in options:
         try:
             cap = int(options["pointer_max"])
@@ -495,6 +518,13 @@ def _spec_signature(spec: dict) -> tuple:
         spec.get("update_interval_secs"),
         spec.get("sweep_interval_secs"),
         spec.get("chain_fraction"),
+        # `or 0` for this one key, because 0 IS the default and "the key is
+        # absent" means exactly the same thing: no handover loop. Without it,
+        # client state recorded before V2-1354 would MISMATCH a request that
+        # takes the default, and a resumed run would refuse to reuse VMs that
+        # are running precisely what was asked for. A positive value still
+        # mismatches, which is the point of the field being in the signature.
+        spec.get("transfer_interval_secs") or 0,
         spec.get("pointer_max"),
     )
 
@@ -581,6 +611,8 @@ def cmd_infra_clients(args):
         if is_pointer(spec["role"]):
             ant = spec.get("ant_funding", DEFAULT_ANT_FUNDING)
             eth = spec.get("eth_funding", DEFAULT_ETH_FUNDING)
+            transfer_interval = spec.get("transfer_interval_secs") or 0
+            handover = f"transfer/{transfer_interval}s, " if transfer_interval else ""
             console.print(
                 f"  {label} #{spec['client_index']}: {spec['provider']}:"
                 f"{spec['region']} ({spec['vm_size']}, "
@@ -588,6 +620,7 @@ def cmd_infra_clients(args):
                 f"update/{spec['update_interval_secs']}s "
                 f"sweep/{spec['sweep_interval_secs']}s, "
                 f"chain {spec['chain_fraction']:.0%}, "
+                f"{handover}"
                 f"fund {ant} ANT + {eth} ETH{skew_str})"
             )
         elif spec["role"] in UPLOAD_ROLES:

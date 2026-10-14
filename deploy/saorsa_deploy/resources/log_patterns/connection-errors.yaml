@@ -37,7 +37,12 @@
 # recorded run said so. Nothing existing changed, so v4 and v5 counts of every
 # pre-existing key ARE comparable; runs before v5 have no payment-RPC counts,
 # which the comparison reports as NOT ASSESSED (advisory).
-version: 5
+#
+# v6 (2026-10-14, V2-1533): ADDED the pointer-finality group, for the V2-1354
+# handover work. Nothing existing changed, so v5 and v6 counts of every
+# pre-existing key ARE comparable -- it is only the NEW keys that every prior run
+# has no counts for, which the comparison reports as NOT ASSESSED.
+version: 6
 
 # ---------------------------------------------------------------------------
 # Verification.
@@ -160,6 +165,27 @@ groups:
     note: >-
       Not a fault -- dropping a pointer a node is no longer responsible for is
       correct. Counted so churn can be told apart from a pointer regression.
+
+  - key: pointer_finality
+    label: Pointer finality refusals and forks (node)
+    aggregate: sum
+    # All three are emitted on EVENT only -- a node that has never been offered a
+    # final state logs none of them -- so a zero here is "no handover reached
+    # this fleet" as much as "no handover was refused", and is only readable
+    # beside the client-side `transfer` counts in `deployment_pointer_records`.
+    #
+    # They sum because they are three distinct events, not one logged three
+    # times: the first is a node refusing a fresh final state from the owner, the
+    # second a node refusing a REPLICATED one, and the third a node discovering
+    # that a peer holds a different final state from the one it offered.
+    #
+    # The happy-path refusal -- a take-back rejected by a node that already holds
+    # the transfer -- logs NOTHING, so the take-back checks are measured
+    # client-side and cannot be corroborated here.
+    note: >-
+      A fork is the one genuinely alarming member: two rival final states means a
+      pointer whose ownership is ambiguous forever. The two refusals are the
+      guard working, and are expected to be non-zero once handovers run.
 
   # -------------------------------------------------------------------------
   # Subtree storage-audit groups (V2-1413). Both pinned against ant-node
@@ -361,6 +387,33 @@ patterns:
     # "Pruned {deleted} pointer records this node is no longer responsible for"
     # -- the count is interpolated, so the phrase starts after it.
     phrase: "pointer records this node is no longer responsible for"
+    module: ant_node::replication::pointer
+
+  # --- pointer finality (V2-1533, for V2-1354) ----------------------------
+  # Read off ant-node `beec6ba4` (the V2-1354 branch). Every one interpolates at
+  # least one hex address, so only the invariant words are matched.
+  - key: pointer_final_refused
+    group: pointer_finality
+    # "Refusing final pointer state {} at {}: the close group already holds
+    # final state {}, so the owner has finalized it before"
+    phrase: "Refusing final pointer state"
+    module: ant_node::pointer::service
+
+  - key: pointer_fresh_final_refused
+    group: pointer_finality
+    # "Refusing fresh final pointer state {} at {} from {source}: the close
+    # group already holds final state {}" -- the replication path's twin of the
+    # above. Deliberately a separate key: the two arrive by different paths, and
+    # one firing without the other says which path saw the handover.
+    phrase: "Refusing fresh final pointer state"
+    module: ant_node::replication::pointer
+
+  - key: pointer_forked
+    group: pointer_finality
+    # "Pointer {} is forked: peer {peer} holds final state {}, this node offered
+    # final state {}" -- the address sits before the usable words, so the phrase
+    # starts after it.
+    phrase: "is forked: peer"
     module: ant_node::replication::pointer
 
   # --- subtree storage audit (V2-1413) ------------------------------------

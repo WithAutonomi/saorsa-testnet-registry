@@ -21,11 +21,14 @@
 # ---------------------------------------------------------------------------
 # READ BEFORE RUNNING
 #
-#   * The binaries must carry pointers. Both `ant` and `ant-node` are built from
-#     WithAutonomi branch `feat/pointers-immutable-owner`; the client branch pins
-#     the protocol and node crates by git rev, so the pair is coherent only when
-#     BOTH come from it. A pre-pointer node answers a protocol error to every
-#     pointer message, and every operation fails.
+#   * The binaries must carry pointers AND handovers. Both `ant` and `ant-node`
+#     are built from WithAutonomi branch `feat/pointers-immutable-owner`; the
+#     client branch pins the protocol and node crates by git rev, so the pair is
+#     coherent only when BOTH come from it. A pre-pointer node answers a protocol
+#     error to every pointer message, and every operation fails. The handover
+#     loop below additionally needs the V2-1354 commands (`ant pointer transfer`
+#     / `finality` / `controller`) — on a branch without them, strip
+#     `transfer_interval_secs` from both pointer entries.
 #
 #   * Money. At the defaults each pointer client performs 180 PAID writes an
 #     hour — one Arbitrum Sepolia transaction every 20 seconds. Size the `eth:`
@@ -90,15 +93,24 @@ testnet:
     #
     # Rates are left at their defaults (create/60s, update/30s, sweep/600s,
     # chain 10%), which is 180 paid writes per client per hour.
+    #
+    # transfer_interval_secs turns on the HANDOVER loop (V2-1354): a recipient
+    # create, a `transfer`, then `finality` / `get` / `controller` / `resolve`
+    # and the two take-backs, which must be refused before they pay. Two further
+    # PAID writes per cycle, so 24/h on top of the 180. Strip the key (not the
+    # entry) if the binaries predate V2-1354 — `ant pointer transfer` does not
+    # exist there and every cycle would record an error.
     pointers:
       - provider: digital_ocean
         region: lon1
         eth: 0.5
         ant: 200
+        transfer_interval_secs: 300
       - provider: digital_ocean
         region: syd1
         eth: 0.5
         ant: 200
+        transfer_interval_secs: 300
 
   monitoring:
     enabled: true

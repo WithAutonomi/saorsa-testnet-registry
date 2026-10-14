@@ -71,6 +71,8 @@ class GateConfig:
 
     pointer_write_success_floor_percent: float
     pointer_read_success_floor_percent: float
+    pointer_handover_completion_floor_percent: float
+    pointer_handover_final_floor_percent: float
 
     success_rate_drop_pp: float
     transfer_duration_p50_increase_percent: float
@@ -143,6 +145,8 @@ _HARD_FLOOR_KEYS = (
 _POINTER_FLOOR_KEYS = (
     "pointer_write_success_floor_percent",
     "pointer_read_success_floor_percent",
+    "pointer_handover_completion_floor_percent",
+    "pointer_handover_final_floor_percent",
 )
 
 _SOFT_GATE_KEYS = (

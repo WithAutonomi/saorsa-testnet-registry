@@ -326,6 +326,12 @@ class DeploymentRepository(ABC):
         gas_spend_wei: int | None = None,
         error: str | None = None,
         network_profile: str | None = None,
+        recipient: str | None = None,
+        finality_status: str | None = None,
+        answered: int | None = None,
+        group_size: int | None = None,
+        holders: int | None = None,
+        attempt: str | None = None,
     ) -> DeploymentPointerRecord: ...
 
     @abstractmethod
@@ -1154,6 +1160,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
         gas_spend_wei: int | None = None,
         error: str | None = None,
         network_profile: str | None = None,
+        recipient: str | None = None,
+        finality_status: str | None = None,
+        answered: int | None = None,
+        group_size: int | None = None,
+        holders: int | None = None,
+        attempt: str | None = None,
     ) -> DeploymentPointerRecord:
         """Record one pointer operation, keyed on (deployment, host, start_ns).
 
@@ -1181,6 +1193,12 @@ class SqlAlchemyDeploymentRepository(DeploymentRepository):
             gas_spend_wei=gas_spend_wei,
             error=error,
             network_profile=network_profile,
+            recipient=recipient,
+            finality_status=finality_status,
+            answered=answered,
+            group_size=group_size,
+            holders=holders,
+            attempt=attempt,
         )
         existing = (
             self.session.query(DeploymentPointerRecord)

@@ -1661,13 +1661,22 @@ def _pointer_summary(run: RunMetrics):
     return summarise(run.pointer_records)
 
 
+def _handover_summary(run: RunMetrics):
+    """The run's handover summary, or None when it ran no pointer clients."""
+    if not run.pointer_records:
+        return None
+    from saorsa_deploy.pointer_results import summarise_handovers
+
+    return summarise_handovers(run.pointer_records)
+
+
 def _pointer_gates(
     candidate: RunMetrics,
     baseline: RunMetrics,
     config: GateConfig,
     history: dict,
 ) -> list[GateResult]:
-    """The `[pointer]` gates: two floors plus six relative comparisons.
+    """The `[pointer]` gates: four floors plus seven relative comparisons.
 
     Emitted whenever the CANDIDATE has pointer records, and NOT ASSESSED --
     never omitted -- when the baseline has none. A baseline recorded before this
@@ -1686,8 +1695,72 @@ def _pointer_gates(
     if cand is None:
         return []
     base = _pointer_summary(baseline)
+    cand_handovers = _handover_summary(candidate)
     advisory_floor = config.pointer_floor_gates_advisory
     results: list[GateResult] = []
+
+    # The two HANDOVER floors (V2-1354). A candidate that ran pointer clients
+    # with `transfer_interval_secs: 0` -- which is every train whose RC predates
+    # the handover commands -- has no `transfer` records, so both read NOT
+    # ASSESSED. Emitted rather than omitted, like every other pointer gate: a
+    # gate missing from the report reads as one nobody thought about.
+    #
+    # Single-run floors, so they survive `--new-baseline` the way the write and
+    # read floors do. Neither reaches the exit code.
+    handover_floors = (
+        (
+            f"handover completion [{POINTER}]",
+            cand_handovers.completion_rate if cand_handovers else None,
+            config.pointer_handover_completion_floor_percent,
+            (
+                f"{cand_handovers.completed}/{cand_handovers.completion_denominator} "
+                f"handovers completed; {cand_handovers.refused_silent_peer} refused "
+                "before paying on a silent peer and excluded"
+                if cand_handovers
+                else ""
+            ),
+        ),
+        (
+            f"handover final on sweep [{POINTER}]",
+            cand_handovers.sweep_finality_ok_rate if cand_handovers else None,
+            config.pointer_handover_final_floor_percent,
+            (
+                f"{cand_handovers.aged_finality_ok}/"
+                f"{cand_handovers.aged_finality_total} aged finality checks found "
+                "the whole close group holding the handover"
+                if cand_handovers
+                else ""
+            ),
+        ),
+    )
+    for label, rate, floor, detail in handover_floors:
+        if rate is None:
+            results.append(
+                GateResult(
+                    gate=label,
+                    kind="soft",
+                    verdict=NOT_ASSESSED,
+                    threshold=floor,
+                    unit="%",
+                    advisory=advisory_floor,
+                    single_run=True,
+                    detail="candidate recorded no pointer handovers",
+                )
+            )
+            continue
+        results.append(
+            GateResult(
+                gate=label,
+                kind="soft",
+                verdict=PASS if rate >= floor else FAIL,
+                candidate=rate,
+                threshold=floor,
+                unit="%",
+                advisory=advisory_floor,
+                single_run=True,
+                detail=(f"{detail} — advisory, not blocking" if advisory_floor else detail),
+            )
+        )
 
     for label, rate, floor, detail in (
         (

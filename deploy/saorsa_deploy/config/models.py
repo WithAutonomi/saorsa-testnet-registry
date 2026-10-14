@@ -491,6 +491,11 @@ POINTER_CREATE_INTERVAL_SECS = 60
 POINTER_UPDATE_INTERVAL_SECS = 30
 POINTER_SWEEP_INTERVAL_SECS = 600
 POINTER_CHAIN_FRACTION = 0.10
+#: Hand a pointer over this often (V2-1354). 0 -- the default -- runs no handover
+#: loop at all, which is what every train whose RC predates `ant pointer
+#: transfer` has to take: on such a build the transfer step would fail every
+#: cycle and record an error that says nothing about the release.
+POINTER_TRANSFER_INTERVAL_SECS = 0
 
 
 class PointerClient(_Base):
@@ -540,12 +545,23 @@ class PointerClient(_Base):
     # `pointer`) instead of a chunk, and are then followed with `resolve`. 0
     # disables chaining.
     chain_fraction: float = POINTER_CHAIN_FRACTION
+    # Hand one owned pointer over to a freshly created recipient this often, then
+    # check the result from near and far and prove the take-backs are refused.
+    # 0 (the default) disables the loop entirely -- the one interval here that
+    # accepts zero, because `ant pointer transfer` does not exist on a build that
+    # predates V2-1354 and the loop would record an error every cycle.
+    transfer_interval_secs: int = POINTER_TRANSFER_INTERVAL_SECS
     # Safety cap on how many pointers one client will own. 0 (the default) means
     # no cap: the pool is meant to be unbounded so decay with age is observable.
     pointer_max: int = 0
 
     @model_validator(mode="after")
     def _workload_is_runnable(self) -> "PointerClient":
+        if self.transfer_interval_secs < 0:
+            raise ValueError(
+                f"clients.pointers: transfer_interval_secs must be >= 0 "
+                f"(0 = no handover loop), got {self.transfer_interval_secs}."
+            )
         for field in ("create_interval_secs", "update_interval_secs", "sweep_interval_secs"):
             value = getattr(self, field)
             if value <= 0:
@@ -574,8 +590,17 @@ class PointerClient(_Base):
         price, so the sum is what sizes the wallet. Reads are free. Rates are
         deterministic, which is why sizing a pointer client needs no baseline
         throughput the way an uploader does.
+
+        A handover cycle is TWO paid writes, not one: the recipient has to be
+        created before the pointer can be handed to it, and the transfer itself
+        signs a final state. The take-backs, the finality checks and the
+        controller walk are all free -- a take-back is refused before it pays,
+        which is the property the loop exists to prove.
         """
-        return 3600.0 / self.create_interval_secs + 3600.0 / self.update_interval_secs
+        rate = 3600.0 / self.create_interval_secs + 3600.0 / self.update_interval_secs
+        if self.transfer_interval_secs > 0:
+            rate += 2 * 3600.0 / self.transfer_interval_secs
+        return rate
 
 
 class Clients(_Base):

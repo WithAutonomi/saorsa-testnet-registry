@@ -472,6 +472,12 @@ def _record_pointer_ops(
             gas_spend_wei=point.get("gas_spend_wei"),
             error=point.get("error"),
             network_profile=network_profile_for_host(point["host"]),
+            recipient=point.get("recipient"),
+            finality_status=point.get("finality_status"),
+            answered=point.get("answered"),
+            group_size=point.get("group_size"),
+            holders=point.get("holders"),
+            attempt=point.get("attempt"),
         )
         recorded += 1
         records.append(
@@ -485,6 +491,8 @@ def _record_pointer_ops(
                 "ant_spend_atto": point.get("ant_spend_atto"),
                 "gas_spend_wei": point.get("gas_spend_wei"),
                 "duration_ms": point.get("duration_ms"),
+                "finality_status": point.get("finality_status"),
+                "attempt": point.get("attempt"),
             }
         )
 

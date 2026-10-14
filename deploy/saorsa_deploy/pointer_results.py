@@ -35,7 +35,17 @@ from decimal import Decimal
 #: Every op, in the order they are reported. Fixed rather than derived from the
 #: data: an op with no records must still appear, as zero, or a client whose
 #: create loop never ran reads as a client that was not configured to create.
-OPS = ("create", "update", "get", "sweep", "resolve")
+OPS = (
+    "create",
+    "update",
+    "get",
+    "sweep",
+    "resolve",
+    "transfer",
+    "finality",
+    "controller",
+    "takeback",
+)
 
 #: Every outcome class, in the order they are reported. Same reasoning: a column
 #: that vanishes when it is zero makes two runs' tables incomparable by eye.
@@ -47,14 +57,65 @@ OUTCOMES = (
     "read_shortfall",
     "anomaly",
     "error",
+    "settling",
+    "unconfirmed",
+    "forked",
+)
+
+#: The outcomes a READ can have -- the original seven, before the handover work.
+#: The sweep table is rendered over these rather than over every outcome, because
+#: the three finality statuses are structurally impossible on a `sweep` row and
+#: three always-zero columns in an already-wide table buy nothing. A run with no
+#: handovers therefore renders that table exactly as it did before.
+SWEEP_OUTCOMES = (
+    "ok",
+    "stale",
+    "lost_write",
+    "not_found",
+    "read_shortfall",
+    "anomaly",
+    "error",
 )
 
 #: The paid ops. Reads cost nothing, so every cost figure is taken over these.
-WRITE_OPS = ("create", "update")
+#: `transfer` pays -- it buys a quote for the final state like any other write.
+WRITE_OPS = ("create", "update", "transfer")
 #: The free ops. `get` is the read that confirms a write; `sweep` is the
 #: periodic read of the whole known population and the only one with a
 #: meaningful age.
+#:
+#: `finality`, `controller` and `takeback` are in NEITHER list, deliberately. A
+#: take-back's success is a REFUSAL, so averaging it with writes that are
+#: supposed to land would invert its contribution; and `finality` asks the whole
+#: close group rather than reading a state, so its `settling` is not a read that
+#: failed. They are reported in the handover section instead.
 READ_OPS = ("get", "sweep", "resolve")
+
+#: The counter a handover's final state carries, `u64::MAX`. It is also how a
+#: redirect read is identified in the recorded rows: a `get` with this
+#: `counter_expected` is a read of a handed-over address and nothing else is.
+FINAL_COUNTER = 18446744073709551615
+
+#: The handover ops, in reporting order.
+HANDOVER_OPS = ("transfer", "finality", "controller", "takeback")
+
+#: `finality` statuses, in reporting order. The table is written in the CLI's
+#: vocabulary rather than in outcome names, because "open" and "final" are what
+#: an operator reads in `ant pointer finality` output.
+FINALITY_STATUSES = ("final", "settling", "unconfirmed", "forked", "open", "error")
+
+#: outcome -> status, so the tables can be derived from `outcome` alone. The
+#: recorded `finality_status` column is the CLI's verbatim word and is kept for
+#: a status a future ant-client adds, which this build maps to `error`; the
+#: tables use the outcome so a NULL column cannot empty them.
+FINALITY_STATUS_BY_OUTCOME = {
+    "ok": "final",
+    "settling": "settling",
+    "unconfirmed": "unconfirmed",
+    "forked": "forked",
+    "stale": "open",
+    "error": "error",
+}
 
 #: Default width of an age bucket in the `--by-age` table: 30 minutes, which on
 #: a 2-4h run gives enough buckets to see a trend and enough records per bucket
@@ -80,8 +141,16 @@ def normalise_records(rows: list) -> list[dict]:
                 "outcome": row.outcome.value,
                 "owned": bool(row.owned),
                 "address": row.pointer_address,
-                "counter_expected": row.counter_expected,
-                "counter_observed": row.counter_observed,
+                # Numeric columns, so SQLAlchemy hands back a Decimal. Reduced
+                # to int for the same reason the spend columns are: the Influx
+                # reader carries ints, and the two must hand `summarise`
+                # identical input.
+                "counter_expected": (
+                    int(row.counter_expected) if row.counter_expected is not None else None
+                ),
+                "counter_observed": (
+                    int(row.counter_observed) if row.counter_observed is not None else None
+                ),
                 "target_kind": row.target_kind,
                 "age_secs": row.age_secs,
                 "read_back": row.read_back,
@@ -96,6 +165,13 @@ def normalise_records(rows: list) -> list[dict]:
                 "duration_ms": row.duration_ms,
                 "finished_at": row.finished_at,
                 "started_at": row.started_at,
+                "start_ns": row.start_ns,
+                "recipient": row.recipient,
+                "finality_status": row.finality_status,
+                "answered": row.answered,
+                "group_size": row.group_size,
+                "holders": row.holders,
+                "attempt": row.attempt,
             }
         )
     return out
@@ -399,10 +475,348 @@ def age_buckets(records: list[dict], bucket_secs: int = DEFAULT_AGE_BUCKET_SECS)
                 lower_secs=lower,
                 upper_secs=lower + bucket_secs,
                 owned=owned,
-                outcomes={o: 0 for o in OUTCOMES},
+                outcomes={o: 0 for o in SWEEP_OUTCOMES},
             )
             buckets[key] = bucket
         bucket.attempts += 1
         outcome = record.get("outcome") or "error"
         bucket.outcomes[outcome] = bucket.outcomes.get(outcome, 0) + 1
+    return [buckets[key] for key in sorted(buckets, key=lambda k: (not k[1], k[0]))]
+
+
+# ---------------------------------------------------------------------------
+# Handovers (V2-1354)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TakebackCounts:
+    """One take-back attempt kind -- `update` or `transfer`."""
+
+    attempt: str
+    attempts: int = 0
+    #: Refused before paying. This is the PASS: a handover that cannot be taken
+    #: back is the property the whole loop exists to demonstrate.
+    refused: int = 0
+    #: Accepted, or refused but still cost money. A refusal that charged is not
+    #: a refusal, which is why the two land in one bucket.
+    accepted_or_spent: int = 0
+    errors: int = 0
+
+    @property
+    def refused_rate(self) -> float | None:
+        if not self.attempts:
+            return None
+        return 100.0 * self.refused / self.attempts
+
+
+@dataclass
+class HandoverSummary:
+    """Everything the handovers section of `print-pointers` reports.
+
+    Separate from :class:`PointerSummary` rather than more properties on it,
+    because a handover is not an op: it is a nine-step cycle whose steps land in
+    four different ops, and the figures that matter are about the cycle.
+    """
+
+    attempts: int = 0
+    completed: int = 0
+    #: Refused before paying because a close-group peer stayed silent. EXCLUDED
+    #: from the completion denominator: the client was told "ask again when all
+    #: of them can be asked", which is the refusal working as designed, not a
+    #: handover that failed. Reported as its own rate over all attempts so it
+    #: cannot be lost.
+    refused_silent_peer: int = 0
+    #: Refused before paying because a rival final state already exists. Nothing
+    #: of ours finalized the pointer, so it IS a failed handover -- and an
+    #: anomaly, since it means something else ended the pointer's life.
+    refused_rival_final: int = 0
+    lost_writes: int = 0
+    errors: int = 0
+
+    transfer_latencies_ms: list[float] = field(default_factory=list)
+
+    #: ANT and gas per PAID create and per PAID transfer, kept apart because a
+    #: handover is one of each and the sum is what one costs.
+    create_ant_atto: list[int] = field(default_factory=list)
+    create_gas_wei: list[int] = field(default_factory=list)
+    transfer_ant_atto: list[int] = field(default_factory=list)
+    transfer_gas_wei: list[int] = field(default_factory=list)
+
+    #: The FIRST finality check per handed-over address, by status: how the close
+    #: group looked immediately after the transfer.
+    first_finality: dict[str, int] = field(default_factory=dict)
+
+    takebacks: dict[str, TakebackCounts] = field(default_factory=dict)
+
+    #: The three post-handover checks. `(ok, attempts)` each.
+    redirect_ok: int = 0
+    redirect_attempts: int = 0
+    controller_ok: int = 0
+    controller_attempts: int = 0
+    resolve_ok: int = 0
+    resolve_attempts: int = 0
+
+    #: Finality checks taken at least :data:`SWEEP_FINALITY_MIN_AGE_SECS` after
+    #: the handover, and how many of them read `final`.
+    aged_finality_ok: int = 0
+    aged_finality_total: int = 0
+
+    @property
+    def completion_denominator(self) -> int:
+        return self.completed + self.lost_writes + self.errors + self.refused_rival_final
+
+    @property
+    def completion_rate(self) -> float | None:
+        """Share of handovers that were attempted AND resolved one way or other.
+
+        The silent-peer refusals are not in the denominator: they are the
+        pre-payment guard declining to act on incomplete information, and a run
+        on a churning network would otherwise show a completion rate that
+        measures dial churn rather than handovers.
+        """
+        if not self.completion_denominator:
+            return None
+        return 100.0 * self.completed / self.completion_denominator
+
+    @property
+    def silent_peer_refusal_rate(self) -> float | None:
+        if not self.attempts:
+            return None
+        return 100.0 * self.refused_silent_peer / self.attempts
+
+    @property
+    def first_finality_total(self) -> int:
+        return sum(self.first_finality.values())
+
+    def first_finality_rate(self, status: str) -> float | None:
+        total = self.first_finality_total
+        if not total:
+            return None
+        return 100.0 * self.first_finality.get(status, 0) / total
+
+    def _mean(self, values: list[int]) -> Decimal | None:
+        if not values:
+            return None
+        return Decimal(sum(values)) / len(values)
+
+    @property
+    def mean_ant_atto_per_handover(self) -> Decimal | None:
+        """Mean ANT a handover costs: the recipient create plus the transfer.
+
+        The creates are averaged over EVERY paid create, not only the ones a
+        handover made: a pointer create is a single-node quote at the same price
+        whichever loop asked for it, and the records carry no marker saying which
+        did. ``None`` when either half has no paid sample -- a half-measured cost
+        reported as a whole one would understate what a handover costs.
+        """
+        create = self._mean(self.create_ant_atto)
+        transfer = self._mean(self.transfer_ant_atto)
+        if create is None or transfer is None:
+            return None
+        return create + transfer
+
+    @property
+    def mean_gas_wei_per_handover(self) -> Decimal | None:
+        """Mean native gas a handover costs. See the ANT figure above."""
+        create = self._mean(self.create_gas_wei)
+        transfer = self._mean(self.transfer_gas_wei)
+        if create is None or transfer is None:
+            return None
+        return create + transfer
+
+    def transfer_latency(self, fraction: float) -> float | None:
+        return percentile(self.transfer_latencies_ms, fraction)
+
+    def _rate(self, ok: int, attempts: int) -> float | None:
+        if not attempts:
+            return None
+        return 100.0 * ok / attempts
+
+    @property
+    def redirect_ok_rate(self) -> float | None:
+        return self._rate(self.redirect_ok, self.redirect_attempts)
+
+    @property
+    def controller_ok_rate(self) -> float | None:
+        return self._rate(self.controller_ok, self.controller_attempts)
+
+    @property
+    def resolve_ok_rate(self) -> float | None:
+        return self._rate(self.resolve_ok, self.resolve_attempts)
+
+    @property
+    def sweep_finality_ok_rate(self) -> float | None:
+        """Share of AGED finality checks that found the handover held.
+
+        Aged, because a check taken seconds after the transfer legitimately reads
+        `settling` -- see :data:`SWEEP_FINALITY_MIN_AGE_SECS`. This is the figure
+        the `handover final on sweep [pointer]` gate reads.
+        """
+        if not self.aged_finality_total:
+            return None
+        return 100.0 * self.aged_finality_ok / self.aged_finality_total
+
+
+#: A finality check is "on sweep" once the handover has had time to converge.
+#: 600s, which is the default sweep interval: a check taken seconds after the
+#: transfer legitimately reads `settling`, and gating on those would gate on how
+#: fast the close group happened to be that minute.
+SWEEP_FINALITY_MIN_AGE_SECS = 600
+
+
+def is_redirect_read(record: dict) -> bool:
+    """Whether a `get` row is a read of a handed-over address.
+
+    Identified by the expected counter being `u64::MAX`, which only a handover
+    ever writes, or by the `recipient` column, which only a handover-related op
+    carries. Inferring it from the presence of a `transfer` record for the same
+    address would miss every FOREIGN redirect read -- the handover was made by
+    the other client, so this run has no `transfer` row for it.
+    """
+    if record.get("op") != "get":
+        return False
+    # Either marker: a foreign redirect read carries the recipient the OTHER
+    # client published, and the final counter is what the read is checked
+    # against. Both are written on every redirect read; accepting either means a
+    # row whose counter could not be stored is still attributable.
+    return record.get("counter_expected") == FINAL_COUNTER or record.get("recipient") is not None
+
+
+def summarise_handovers(records: list[dict]) -> HandoverSummary:
+    """Fold the handover ops into the figures the handovers section reports."""
+    summary = HandoverSummary(
+        first_finality={status: 0 for status in FINALITY_STATUSES},
+        takebacks={attempt: TakebackCounts(attempt=attempt) for attempt in ("update", "transfer")},
+    )
+    # The first finality check per address, by start_ns. "Immediately after the
+    # transfer" in practice: the handover cycle runs it as the very next step,
+    # and every later one comes from a sweep.
+    first_finality: dict[str, tuple[int, str]] = {}
+
+    for record in records:
+        op = record.get("op")
+        outcome = record.get("outcome") or "error"
+        duration = record.get("duration_ms")
+        if op == "transfer":
+            summary.attempts += 1
+            if outcome == "ok":
+                summary.completed += 1
+                if duration is not None:
+                    summary.transfer_latencies_ms.append(float(duration))
+            elif outcome == "read_shortfall":
+                summary.refused_silent_peer += 1
+            elif outcome == "anomaly":
+                summary.refused_rival_final += 1
+            elif outcome == "lost_write":
+                summary.lost_writes += 1
+            else:
+                summary.errors += 1
+            if record.get("paid_attempts"):
+                spend = record.get("ant_spend_atto")
+                gas = record.get("gas_spend_wei")
+                if spend and spend > 0:
+                    summary.transfer_ant_atto.append(int(spend))
+                if gas is not None and gas > 0:
+                    summary.transfer_gas_wei.append(int(gas))
+        elif op == "create":
+            if record.get("paid_attempts"):
+                spend = record.get("ant_spend_atto")
+                gas = record.get("gas_spend_wei")
+                if spend and spend > 0:
+                    summary.create_ant_atto.append(int(spend))
+                if gas is not None and gas > 0:
+                    summary.create_gas_wei.append(int(gas))
+        elif op == "finality":
+            status = FINALITY_STATUS_BY_OUTCOME.get(outcome, "error")
+            address = record.get("address")
+            start_ns = record.get("start_ns")
+            if address and start_ns is not None:
+                previous = first_finality.get(address)
+                if previous is None or start_ns < previous[0]:
+                    first_finality[address] = (start_ns, status)
+            age = record.get("age_secs")
+            if age is not None and int(age) >= SWEEP_FINALITY_MIN_AGE_SECS:
+                summary.aged_finality_total += 1
+                if outcome == "ok":
+                    summary.aged_finality_ok += 1
+        elif op == "controller":
+            summary.controller_attempts += 1
+            if outcome == "ok":
+                summary.controller_ok += 1
+        elif op == "takeback":
+            # An attempt whose kind was not recorded still counts: it happened,
+            # and dropping it would understate the number of take-backs tried.
+            counts = summary.takebacks.setdefault(
+                record.get("attempt") or "unknown",
+                TakebackCounts(attempt=record.get("attempt") or "unknown"),
+            )
+            counts.attempts += 1
+            if outcome == "ok":
+                counts.refused += 1
+            elif outcome == "anomaly":
+                counts.accepted_or_spent += 1
+            else:
+                counts.errors += 1
+        elif is_redirect_read(record):
+            summary.redirect_attempts += 1
+            if outcome == "ok":
+                summary.redirect_ok += 1
+
+    # Resolve rows cannot be told apart from a chained update's resolve by a
+    # column, so they are matched to the addresses a handover was recorded for.
+    handed_over = {
+        record.get("address")
+        for record in records
+        if record.get("op") == "transfer" and (record.get("outcome") or "") == "ok"
+    }
+    for record in records:
+        if record.get("op") == "resolve" and record.get("address") in handed_over:
+            summary.resolve_attempts += 1
+            if (record.get("outcome") or "") == "ok":
+                summary.resolve_ok += 1
+
+    for _, status in first_finality.values():
+        summary.first_finality[status] = summary.first_finality.get(status, 0) + 1
+    return summary
+
+
+def finality_age_buckets(
+    records: list[dict], bucket_secs: int = DEFAULT_AGE_BUCKET_SECS
+) -> list[AgeBucket]:
+    """`finality` outcomes bucketed by the handover's age at the check.
+
+    FINALITY ONLY, and own and foreign kept apart for the same reason the sweep
+    table keeps them apart: a foreign handover is observed from the other side of
+    the world, and whether the close group looks the same from there is the
+    question the second pointer client exists to answer.
+
+    The buckets hold statuses rather than outcome names -- `final` and `open`
+    rather than `ok` and `stale` -- because that is the vocabulary
+    `ant pointer finality` prints.
+    """
+    if bucket_secs <= 0:
+        raise ValueError("bucket_secs must be > 0")
+    buckets: dict[tuple[int, bool], AgeBucket] = {}
+    for record in records:
+        if record.get("op") != "finality":
+            continue
+        age = record.get("age_secs")
+        if age is None:
+            continue
+        owned = bool(record.get("owned", True))
+        lower = (int(age) // bucket_secs) * bucket_secs
+        key = (lower, owned)
+        bucket = buckets.get(key)
+        if bucket is None:
+            bucket = AgeBucket(
+                lower_secs=lower,
+                upper_secs=lower + bucket_secs,
+                owned=owned,
+                outcomes={status: 0 for status in FINALITY_STATUSES},
+            )
+            buckets[key] = bucket
+        bucket.attempts += 1
+        status = FINALITY_STATUS_BY_OUTCOME.get(record.get("outcome") or "error", "error")
+        bucket.outcomes[status] = bucket.outcomes.get(status, 0) + 1
     return [buckets[key] for key in sorted(buckets, key=lambda k: (not k[1], k[0]))]

@@ -212,3 +212,41 @@ def test_no_database_url_refuses():
         with pytest.raises(SystemExit) as exc:
             cmd_record_log_counts(_args())
     assert exc.value.code == 1
+
+
+def test_the_v6_catalogue_counts_the_three_pointer_finality_phrases():
+    """The node-side half of the handover measurement (V2-1533, for V2-1354).
+
+    What the client saw is in `deployment_pointer_records`; these are what the
+    NODES did about it, and the two are deliberately separate — "a handover did
+    not complete" and "a node refused a final state" are different facts.
+
+    All three are emitted on EVENT only, so a zero means no handover reached the
+    fleet as much as it means none was refused. That is only readable beside the
+    client-side `transfer` counts, which is why the group is recorded rather than
+    gated on in isolation.
+    """
+    repo = FakeRepo()
+    _run(_args(), repo, [_es_response(1_000_000)] + [_es_response(7)] * 4)
+
+    rows = {row["event_key"]: row for row in repo.rows}
+    for key, phrase, module in (
+        ("pointer_final_refused", "Refusing final pointer state", "ant_node::pointer::service"),
+        (
+            "pointer_fresh_final_refused",
+            "Refusing fresh final pointer state",
+            "ant_node::replication::pointer",
+        ),
+        ("pointer_forked", "is forked: peer", "ant_node::replication::pointer"),
+    ):
+        row = rows[key]
+        assert row["event_group"] == "pointer_finality", key
+        assert row["pattern"] == phrase, key
+        assert row["count"] == 7, key
+        # Every one interpolates at least one hex address, so a phrase spanning
+        # it would match nothing forever and report a confident zero.
+        assert "{" not in row["pattern"], key
+        pattern = next(p for p in load_pattern_set().patterns if p.key == key)
+        assert pattern.module == module, key
+
+    assert load_pattern_set().version >= 6

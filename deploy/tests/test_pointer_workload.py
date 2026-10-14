@@ -13,6 +13,8 @@ The strings below are taken from ant-client branch `feat/pointers-immutable-owne
 
 import importlib.util
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -408,3 +410,545 @@ def test_the_script_is_valid_python_and_standard_library_only(pc):
         assert marker not in source, marker
     assert "import saorsa_deploy" not in source
     json.loads("{}")  # the script's own json usage is the stdlib's
+
+
+# ---------------------------------------------------------------------------
+# The handover loop (V2-1354)
+# ---------------------------------------------------------------------------
+
+
+def test_a_take_back_refusal_is_classified_apart_from_an_error(pc):
+    """`Error::PointerFinal`. Both the `update` and the second `transfer` on a
+    handed-over pointer fail with it, BEFORE paying, which is the property the
+    take-back checks exist to demonstrate."""
+    stderr = (
+        "Error: Pointer update failed: invalid data: pointer is final: "
+        "counter 18446744073709551615\n"
+    )
+    assert pc.classify_failure(stderr, write=True, handover=True) == pc.OUTCOME_ANOMALY
+    # And nothing changes for the ordinary ops: the same words on a plain update
+    # would mean something else, so the routing is handover-only.
+    assert pc.classify_failure(stderr, write=True) == pc.OUTCOME_ERROR
+
+
+def test_a_rival_final_state_is_an_anomaly(pc):
+    """Nothing of OURS finalized the pointer, so something else ended its life.
+    That is never routine, which is what `anomaly` means here."""
+    stderr = (
+        "Error: Pointer transfer failed: invalid data: peer ab holds final "
+        "state 9c for pointer de\n"
+    )
+    assert pc.classify_failure(stderr, write=True, handover=True) == pc.OUTCOME_ANOMALY
+
+
+def test_a_silent_close_group_peer_refuses_the_transfer_before_paying(pc):
+    """ "only N of the G peers of pointer A's close group answered, and a silent
+    one could hold a final state; a transfer cannot be taken back, so try again
+    when all of them can be asked". The guard working, not a failed handover --
+    which is why these are excluded from the completion denominator."""
+    stderr = (
+        "Error: Pointer transfer failed: only 4 of the 5 peers of pointer ab's "
+        "close group answered, and a silent one could hold a final state; a "
+        "transfer cannot be taken back, so try again when all of them can be "
+        "asked\n"
+    )
+    assert pc.classify_failure(stderr, write=True, handover=True) == (pc.OUTCOME_READ_SHORTFALL)
+
+
+def test_the_final_counter_is_u64_max(pc):
+    """It is also how a redirect read is identified in the recorded rows: no
+    other operation ever writes this counter."""
+    assert pc.FINAL_COUNTER == 2**64 - 1
+
+
+def test_every_finality_status_maps_to_an_outcome_and_an_unknown_one_errors(pc):
+    """An unknown status must not read as a clean handover: a future ant-client
+    adding one would otherwise silently pass the gate."""
+    assert pc.FINALITY_OUTCOMES["final"] == pc.OUTCOME_OK
+    assert pc.FINALITY_OUTCOMES["open"] == pc.OUTCOME_STALE
+    assert pc.FINALITY_OUTCOMES["settling"] == pc.OUTCOME_SETTLING
+    assert pc.FINALITY_OUTCOMES["unconfirmed"] == pc.OUTCOME_UNCONFIRMED
+    assert pc.FINALITY_OUTCOMES["forked"] == pc.OUTCOME_FORKED
+    assert pc.FINALITY_OUTCOMES.get("teleported") is None
+
+
+def test_the_finality_status_is_read_from_either_shape(pc):
+    """`finality` reports an object; `transfer` carries one alongside
+    `finality_error`. Accepting a bare string costs nothing and means a shape
+    change does not silently drop the field."""
+    assert pc._finality_status({"status": "final"}) == "final"
+    assert pc._finality_status("settling") == "settling"
+    assert pc._finality_status({}) is None
+    assert pc._finality_status(None) is None
+
+
+def test_a_handed_over_pointer_is_excluded_from_the_update_candidates(pc, tmp_path):
+    """An `update` on it is refused before paying, so keeping it in the candidate
+    list would spend a cycle on a certain refusal and record it as a failed
+    write. The RECIPIENT stays updatable: it is an ordinary owned pointer."""
+    ledger = pc.Ledger(tmp_path / "ledger.json")
+    ledger.record_own("aa", "/k/aa.key", 3, "t", "chunk")
+    ledger.record_own("bb", "/k/bb.key", 0, "t", "chunk")
+    assert sorted(ledger.updatable_own()) == ["aa", "bb"]
+    ledger.mark_transferred("aa", "bb")
+    assert ledger.updatable_own() == ["bb"]
+    # Still published and still swept -- it is a readable pointer, and the final
+    # state is exactly what every reader should now see there.
+    assert sorted(ledger.established_own()) == ["aa", "bb"]
+
+
+def test_a_handover_moves_the_expected_state_onto_the_final_one(pc, tmp_path):
+    """Every subsequent read -- the redirect read, every sweep, and every other
+    client's sweep -- is checked against the final state rather than the state
+    the pointer last held."""
+    ledger = pc.Ledger(tmp_path / "ledger.json")
+    ledger.record_own("aa", "/k/aa.key", 3, "oldtarget", "chunk")
+    ledger.mark_transferred("aa", "bb")
+    assert ledger.own["aa"]["counter"] == pc.FINAL_COUNTER
+    assert ledger.own["aa"]["target"] == "bb"
+    assert ledger.own["aa"]["target_kind"] == "pointer"
+    assert ledger.transferred["aa"]["recipient"] == "bb"
+    # Durable: a handover is irreversible, so a restart that forgot one would go
+    # on trying to update a pointer that can never accept another write.
+    reloaded = pc.Ledger(tmp_path / "ledger.json")
+    assert reloaded.transferred["aa"]["recipient"] == "bb"
+    assert reloaded.updatable_own() == []
+
+
+def test_a_foreign_handover_is_registered_once_and_survives_a_restart(pc, tmp_path):
+    ledger = pc.Ledger(tmp_path / "ledger.json")
+    assert ledger.add_foreign_transfer("aa", "bb") is True
+    assert ledger.add_foreign_transfer("aa", "bb") is False
+    ledger.save()
+    assert pc.Ledger(tmp_path / "ledger.json").foreign_transfers["aa"]["recipient"] == "bb"
+    # Our OWN handover read back off the shared prefix is not a foreign one.
+    ledger.mark_transferred("cc", "dd")
+    assert ledger.add_foreign_transfer("cc", "dd") is False
+
+
+def test_a_transfers_file_is_parsed_as_two_columns(pc):
+    """NOT with `parse_address_lines`, which takes the first field: that would
+    read the old address as a plain pointer and throw the recipient away, leaving
+    a reader with an address whose expected state it does not know."""
+    old, new = "a" * 64, "b" * 64
+    assert pc.parse_transfer_lines(f"{old} {new}\n") == [(old, new)]
+    # A one-column line is skipped rather than half-read.
+    assert pc.parse_transfer_lines(f"{old}\n") == []
+    assert pc.parse_transfer_lines("# comment\n\nnonsense x\n") == []
+
+
+def test_a_transfers_key_is_told_apart_from_an_address_key(pc):
+    """It also matches `is_pointer_key` (the name starts `pointer-`), so it has
+    to be tested FIRST wherever the two are dispatched on."""
+    assert pc.is_pointer_transfers_key("p/DEV-01/pointer-transfers-lon1-1.txt") is True
+    assert pc.is_pointer_transfers_key("p/DEV-01/pointer-lon1-1.txt") is False
+    # The overlap that makes the ordering load-bearing.
+    assert pc.is_pointer_key("p/DEV-01/pointer-transfers-lon1-1.txt") is True
+
+
+def test_the_file_consumers_already_skip_the_transfers_object():
+    """Both file downloaders must ignore `pointer-transfers-*`, or a handover
+    pair would be fetched as content and its failures would land in the download
+    success rate as lost content.
+
+    Neither needed a change: the WASM downloader excludes every `pointer-`
+    prefixed key (`resources/wasm-client/src/addresses.ts`, `isNonFileKey`) and
+    `downloader.sh` filters the listing to `^upload-` (line with
+    `grep '^upload-'`). This test is what keeps that true.
+    """
+    resources = Path(__file__).parent.parent / "saorsa_deploy" / "resources"
+    wasm = (resources / "wasm-client" / "src" / "addresses.ts").read_text()
+    assert 'name.startsWith("pointer-")' in wasm
+    shell = (resources / "scripts" / "downloader.sh").read_text()
+    assert "grep '^upload-'" in shell
+
+
+# ---------------------------------------------------------------------------
+# One full handover cycle against a stub `ant`
+# ---------------------------------------------------------------------------
+
+#: A stub `ant` that keeps pointer state in a JSON file, so a whole handover
+#: cycle can be driven without the real binary. It implements only what the
+#: client invokes, and the one behaviour the cycle is ABOUT: a pointer carrying
+#: a final state refuses both `update` and a second `transfer`, exits non-zero,
+#: and does not move the wallet.
+_STUB_ANT = r"""#!/usr/bin/env python3
+import json, os, secrets, sys
+
+STATE = os.environ["ANT_STUB_STATE"]
+
+
+def load():
+    try:
+        return json.loads(open(STATE).read())
+    except OSError:
+        return {"ant": 10**21, "gas": 10**18, "pointers": {}}
+
+
+def save(state):
+    open(STATE, "w").write(json.dumps(state))
+
+
+def spend(state):
+    state["ant"] -= 10**15
+    state["gas"] -= 10**12
+
+
+FINAL = 18446744073709551615
+
+args = [a for a in sys.argv[1:]]
+out = []
+skip = 0
+for i, a in enumerate(args):
+    if skip:
+        skip -= 1
+        continue
+    if a in ("--bootstrap", "--evm-network"):
+        skip = 1
+        continue
+    if a in ("-v", "--json"):
+        continue
+    out.append(a)
+args = out
+state = load()
+
+
+def fail(message):
+    print("Error: " + message, file=sys.stderr)
+    sys.exit(1)
+
+
+if args[:2] == ["wallet", "address"]:
+    if os.environ.get("ANT_STUB_BALANCE_FAILS"):
+        fail("wallet unavailable")
+    print("0x" + "ab" * 20)
+elif args[:2] == ["wallet", "balance"]:
+    if os.environ.get("ANT_STUB_BALANCE_FAILS"):
+        fail("wallet unavailable")
+    print(str(state["ant"]))
+elif args[:2] == ["pointer", "keygen"]:
+    path = args[args.index("--output") + 1]
+    address = secrets.token_hex(32)
+    open(path, "w").write(address)
+    print(json.dumps({"address": address}))
+elif args[:2] == ["pointer", "create"]:
+    address = open(args[args.index("--key") + 1]).read().strip()
+    target = args[-1]
+    state["pointers"][address] = {"counter": 0, "target": target, "kind": "chunk"}
+    spend(state)
+    save(state)
+    print(json.dumps({"address": address, "counter": 0, "target": target, "kind": "chunk"}))
+elif args[:2] == ["pointer", "update"]:
+    address = open(args[args.index("--key") + 1]).read().strip()
+    entry = state["pointers"].get(address)
+    if entry is None:
+        fail("No pointer at " + address)
+    if entry["counter"] == FINAL:
+        fail("Pointer update failed: invalid data: pointer is final: counter " + str(FINAL))
+    entry["counter"] += 1
+    entry["target"] = args[-1]
+    entry["kind"] = args[args.index("--kind") + 1]
+    spend(state)
+    save(state)
+    print(json.dumps({"address": address, **entry}))
+elif args[:2] == ["pointer", "transfer"]:
+    address = open(args[args.index("--key") + 1]).read().strip()
+    recipient = args[-1]
+    entry = state["pointers"].get(address)
+    if entry is None:
+        fail("No pointer at " + address)
+    if entry["counter"] == FINAL:
+        fail("Pointer transfer failed: invalid data: pointer is final: counter " + str(FINAL))
+    entry.update({"counter": FINAL, "target": recipient, "kind": "pointer"})
+    spend(state)
+    save(state)
+    print(
+        json.dumps(
+            {
+                "address": address,
+                "state": {"counter": FINAL, "target": recipient},
+                "finality": {"status": "final", "holders": 5},
+                "finality_error": None,
+            }
+        )
+    )
+elif args[:2] == ["pointer", "get"]:
+    entry = state["pointers"].get(args[2])
+    if entry is None:
+        fail("No pointer at " + args[2])
+    print(json.dumps({"address": args[2], **entry}))
+elif args[:2] == ["pointer", "finality"]:
+    entry = state["pointers"].get(args[2])
+    if entry is None:
+        fail("No pointer at " + args[2])
+    status = "final" if entry["counter"] == FINAL else "open"
+    print(
+        json.dumps(
+            {
+                "address": args[2],
+                "group": 5,
+                "answered": 5,
+                "finality": {"status": status, "holders": 5 if status == "final" else 0},
+            }
+        )
+    )
+elif args[:2] == ["pointer", "controller"]:
+    address, hops = args[2], 0
+    while True:
+        entry = state["pointers"].get(address)
+        if entry is None or entry["counter"] != FINAL or hops > 15:
+            break
+        address, hops = entry["target"], hops + 1
+    print(json.dumps({"pointer": address, "transfers": hops, "frozen": False}))
+elif args[:2] == ["pointer", "resolve"]:
+    address, hops = args[2], 0
+    while hops <= 15:
+        entry = state["pointers"].get(address)
+        if entry is None:
+            fail("Pointer resolve failed: invalid data: pointer chain breaks at " + address)
+        if entry["kind"] != "pointer":
+            print(json.dumps({"target": entry["target"], "kind": entry["kind"]}))
+            break
+        address, hops = entry["target"], hops + 1
+else:
+    fail("stub ant does not implement " + " ".join(args))
+"""
+
+
+class _CaptureSink:
+    """Stands in for InfluxSink, keeping the lines the client would have posted."""
+
+    def __init__(self):
+        self.lines = []
+
+    @property
+    def enabled(self):
+        return True
+
+    def write(self, line):
+        self.lines.append(line)
+
+    def points(self):
+        out = []
+        for line in self.lines:
+            tags, fields = line.split(" ", 1)
+            point = {"op": tags.split("op=", 1)[1]}
+            for pair in fields.split(","):
+                key, value = pair.split("=", 1)
+                point[key] = value.strip('"').rstrip("i")
+            out.append(point)
+        return out
+
+
+def _stub_client(pc, tmp_path, monkeypatch, *, balance_fails=False):
+    """A PointerClient wired to the stub `ant`, with the RPC and Influx faked."""
+    ant = tmp_path / "ant-stub"
+    ant.write_text(_STUB_ANT)
+    ant.chmod(0o755)
+    state_path = tmp_path / "stub-state.json"
+    state_path.write_text(json.dumps({"ant": 10**21, "gas": 10**18, "pointers": {}}))
+
+    monkeypatch.setenv("ANT_STUB_STATE", str(state_path))
+    if balance_fails:
+        monkeypatch.setenv("ANT_STUB_BALANCE_FAILS", "1")
+    monkeypatch.setenv("ANT", str(ant))
+    monkeypatch.setenv("POINTER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("REGION", "lon1")
+    monkeypatch.setenv("CLIENT_INDEX", "1")
+    monkeypatch.setenv("EVM_NETWORK", "arbitrum-sepolia")
+    monkeypatch.setenv("RPC_URL", "http://rpc.invalid/")
+    monkeypatch.setenv("TRANSFER_INTERVAL_SECS", "300")
+    # No address pool and no presigned URLs: the published objects are written
+    # locally and nothing goes out, which is what keeps the test offline.
+    monkeypatch.delenv("ADDRESSES_S3_BUCKET", raising=False)
+    monkeypatch.delenv("UPLOAD_PRESIGNED_URL", raising=False)
+    monkeypatch.delenv("TRANSFERS_PRESIGNED_URL", raising=False)
+    monkeypatch.delenv("INFLUX_URL", raising=False)
+    monkeypatch.delenv("RUST_LOG", raising=False)
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        # The only network call left is the gas balance, served from the same
+        # state file the stub `ant` spends from.
+        gas = json.loads(state_path.read_text())["gas"]
+        return _Resp(json.dumps({"result": hex(gas)}).encode())
+
+    monkeypatch.setattr(pc.urllib.request, "urlopen", fake_urlopen)
+    client = pc.PointerClient()
+    client.influx = _CaptureSink()
+    return client
+
+
+def test_one_full_handover_cycle_emits_one_point_per_step(pc, tmp_path, monkeypatch):
+    """The whole loop, against a stub `ant`.
+
+    Nine points: the recipient create and its read-back, the transfer, the
+    finality check, the redirect read, the controller walk, the resolve, and the
+    two take-backs. Each step is its own point so a failure is attributable to
+    the step it happened in rather than to "the handover".
+    """
+    client = _stub_client(pc, tmp_path, monkeypatch)
+    # The pointer to be handed over, created exactly as the create loop does.
+    handed_over = client.do_create()
+    assert handed_over is not None
+    client.influx = _CaptureSink()
+
+    client.do_transfer()
+    points = client.influx.points()
+    assert [p["op"] for p in points] == [
+        "get",
+        "create",
+        "transfer",
+        "finality",
+        "get",
+        "controller",
+        "resolve",
+        "takeback",
+        "takeback",
+    ]
+
+    transfer = points[2]
+    assert transfer["outcome"] == "ok"
+    assert transfer["address"] == handed_over
+    recipient = transfer["recipient"]
+    assert transfer["finality_status"] == "final"
+    # `u64::MAX` does not fit an Influx integer field, so it travels as a string
+    # under its own name. The point would be DROPPED outright otherwise.
+    assert "counter_expected" not in transfer
+    assert transfer["counter_expected_u64"] == str(pc.FINAL_COUNTER)
+    # It paid, and the spend was measured on both sides.
+    assert transfer["paid_attempts"] == "1"
+    assert int(transfer["wallet_spend_atto"]) > 0
+    assert int(transfer["gas_spend_wei"]) > 0
+
+    finality = points[3]
+    assert finality["outcome"] == "ok"
+    assert (finality["answered"], finality["group"], finality["holders"]) == ("5", "5", "5")
+
+    redirect = points[4]
+    assert redirect["outcome"] == "ok"
+    assert redirect["recipient"] == recipient
+    assert redirect["counter_expected_u64"] == str(pc.FINAL_COUNTER)
+    assert redirect["counter_observed_u64"] == str(pc.FINAL_COUNTER)
+
+    assert points[5]["outcome"] == "ok"  # controller followed the hop
+    assert points[5]["recipient"] == recipient
+    assert points[6]["outcome"] == "ok"  # resolve reached the recipient's chunk
+
+    takebacks = {p["attempt"]: p for p in points[7:]}
+    assert set(takebacks) == {"update", "transfer"}
+    for attempt, point in takebacks.items():
+        # Refused, and it cost nothing. Both halves are the assertion.
+        assert point["outcome"] == "ok", attempt
+        assert point["wallet_spend_atto"] == "0", attempt
+        assert point["gas_spend_wei"] == "0", attempt
+
+    # The ledger moved the expected state onto the final one, and the handover
+    # was published for the other clients to read.
+    assert client.ledger.transferred[handed_over]["recipient"] == recipient
+    assert client.ledger.updatable_own() == [recipient]
+    assert client.transfers_file.read_text() == f"{handed_over} {recipient}\n"
+
+
+def test_a_take_back_whose_balance_cannot_be_read_is_an_error(pc, tmp_path, monkeypatch):
+    """Unknown is not zero. Reading an unreadable balance as zero would turn an
+    unmeasured take-back into a pass, which is the one outcome that must be
+    earned."""
+    client = _stub_client(pc, tmp_path, monkeypatch)
+    handed_over = client.do_create()
+    client.do_transfer()
+    key = client.ledger.own[handed_over]["key"]
+
+    # The wallet read now fails, and the take-back is refused exactly as before.
+    monkeypatch.setenv("ANT_STUB_BALANCE_FAILS", "1")
+    client.influx = _CaptureSink()
+    client.check_takeback(
+        handed_over, ["pointer", "transfer", "--key", key, "x" * 64], attempt="transfer"
+    )
+    point = client.influx.points()[0]
+    assert point["outcome"] == "error"
+    assert point["attempt"] == "transfer"
+    # The refusal itself still happened -- it is the MEASUREMENT that is missing.
+    assert "pointer is final" in point["error"]
+
+
+def test_a_cycle_with_nothing_to_hand_over_emits_nothing(pc, tmp_path, monkeypatch):
+    """Not an error, and no point: the create loop has simply not produced an
+    untransferred pointer yet. A point here would be a handover attempt that
+    never attempted anything."""
+    client = _stub_client(pc, tmp_path, monkeypatch)
+    client.do_transfer()
+    assert client.influx.points() == []
+
+
+def test_the_script_runs_under_python_isolated_mode(pc, tmp_path, monkeypatch):
+    """`python3 -I`: no site-packages, no cwd on sys.path.
+
+    It is copied verbatim onto a VM and run by the `ant-pointer` unit, so a
+    stdlib-only script that happens to import something from the working
+    directory would work here and fail there.
+    """
+    import subprocess
+    import sys
+
+    ant = tmp_path / "ant-stub"
+    ant.write_text(_STUB_ANT)
+    ant.chmod(0o755)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "ANT_STUB_STATE": str(tmp_path / "stub-state.json"),
+        "ANT": str(ant),
+        "POINTER_DATA_DIR": str(tmp_path / "data"),
+        "REGION": "lon1",
+        "CLIENT_INDEX": "1",
+        "TRANSFER_INTERVAL_SECS": "300",
+        # No RPC and no Influx, so the only subprocess it spawns is the stub.
+        "RPC_URL": "",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-I", str(SCRIPT)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if "Pointer client starting" in line:
+                assert "transfer/300s" in line
+                return
+            if proc.poll() is not None:
+                raise AssertionError(f"exited {proc.returncode}: {proc.stderr.read()[:2000]}")
+        raise AssertionError("no startup line within 30s")
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_a_counter_that_fits_an_i64_stays_an_integer_field(pc):
+    """The routing applies to the handover counter and nothing else: every
+    existing point must render byte-identically, and a field that is an integer
+    on some points and a string on others is a type conflict Influx drops."""
+    assert pc.counter_fields(4, 4) == {"counter_expected": 4, "counter_observed": 4}
+    assert pc.counter_fields(pc.FINAL_COUNTER, None) == {
+        "counter_expected_u64": str(pc.FINAL_COUNTER)
+    }
+    # Unknown stays unknown: a counter that was not read is omitted, not zeroed.
+    assert pc.counter_fields(None, None) == {}
+    line = pc.build_line("h", "lon1", "get", pc.counter_fields(pc.FINAL_COUNTER, 3))
+    assert 'counter_expected_u64="18446744073709551615"' in line
+    assert "counter_observed=3i" in line

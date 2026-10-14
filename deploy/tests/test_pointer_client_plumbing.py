@@ -30,6 +30,7 @@ from saorsa_deploy.cmd.infra_clients import (
     DEFAULT_POINTER_CREATE_INTERVAL_SECS,
     DEFAULT_POINTER_MAX,
     DEFAULT_POINTER_SWEEP_INTERVAL_SECS,
+    DEFAULT_POINTER_TRANSFER_INTERVAL_SECS,
     DEFAULT_POINTER_UPDATE_INTERVAL_SECS,
     parse_pointer_spec,
 )
@@ -37,6 +38,7 @@ from saorsa_deploy.config.models import (
     POINTER_CHAIN_FRACTION,
     POINTER_CREATE_INTERVAL_SECS,
     POINTER_SWEEP_INTERVAL_SECS,
+    POINTER_TRANSFER_INTERVAL_SECS,
     POINTER_UPDATE_INTERVAL_SECS,
     Manifest,
 )
@@ -66,6 +68,7 @@ _MANIFEST = {
                     "update_interval_secs": 90,
                     "sweep_interval_secs": 300,
                     "chain_fraction": 0.25,
+                    "transfer_interval_secs": 300,
                     "pointer_max": 400,
                 },
             ]
@@ -100,7 +103,7 @@ def test_a_pointer_entry_reaches_clients_infra_as_a_pointer_spec():
         (
             "digital_ocean:syd1:eth=0.5:create_interval_secs=120:"
             "update_interval_secs=90:sweep_interval_secs=300:"
-            "chain_fraction=0.25:pointer_max=400"
+            "chain_fraction=0.25:transfer_interval_secs=300:pointer_max=400"
         ),
     ]
 
@@ -120,6 +123,7 @@ def test_every_emitted_pointer_spec_parses_back():
     assert parsed[1]["update_interval_secs"] == 90
     assert parsed[1]["sweep_interval_secs"] == 300
     assert parsed[1]["chain_fraction"] == 0.25
+    assert parsed[1]["transfer_interval_secs"] == 300
     assert parsed[1]["pointer_max"] == 400
 
 
@@ -132,11 +136,16 @@ def test_defaults_are_omitted_from_the_spec_and_restored_by_the_parser():
     argv = _clients_infra_argv(_manifest())
     first = argv[argv.index("--pointer") + 1]
     assert "create_interval_secs" not in first
+    # The handover loop is OFF by default, so its key is absent too -- the point
+    # being that an unchanged manifest's argv is byte-identical to what it was
+    # before handovers existed, and a resumed `up` skips the step.
+    assert "transfer_interval_secs" not in first
     parsed = parse_pointer_spec(first)
     assert parsed["create_interval_secs"] == DEFAULT_POINTER_CREATE_INTERVAL_SECS
     assert parsed["update_interval_secs"] == DEFAULT_POINTER_UPDATE_INTERVAL_SECS
     assert parsed["sweep_interval_secs"] == DEFAULT_POINTER_SWEEP_INTERVAL_SECS
     assert parsed["chain_fraction"] == DEFAULT_POINTER_CHAIN_FRACTION
+    assert parsed["transfer_interval_secs"] == DEFAULT_POINTER_TRANSFER_INTERVAL_SECS
     assert parsed["pointer_max"] == DEFAULT_POINTER_MAX
 
 
@@ -151,6 +160,7 @@ def test_the_cli_and_schema_defaults_agree():
     assert DEFAULT_POINTER_UPDATE_INTERVAL_SECS == POINTER_UPDATE_INTERVAL_SECS
     assert DEFAULT_POINTER_SWEEP_INTERVAL_SECS == POINTER_SWEEP_INTERVAL_SECS
     assert DEFAULT_POINTER_CHAIN_FRACTION == POINTER_CHAIN_FRACTION
+    assert DEFAULT_POINTER_TRANSFER_INTERVAL_SECS == POINTER_TRANSFER_INTERVAL_SECS
 
 
 def test_rust_log_stays_last_in_a_pointer_spec():
@@ -208,6 +218,9 @@ def test_pointers_are_not_subject_to_the_uploader_downloader_pairing_rule():
         ({"sweep_interval_secs": 0}, "must be > 0"),
         ({"chain_fraction": 1.5}, "between 0 and 1"),
         ({"pointer_max": -1}, "must be >= 0"),
+        # 0 is legal here and only here -- it means "no handover loop" -- but a
+        # negative is still nonsense.
+        ({"transfer_interval_secs": -1}, "must be >= 0"),
     ],
 )
 def test_an_unrunnable_workload_is_refused_at_validation(override, message):
@@ -323,6 +336,7 @@ def test_generate_inventory_covers_the_role():
                 "update_interval_secs": 30,
                 "sweep_interval_secs": 600,
                 "chain_fraction": 0.1,
+                "transfer_interval_secs": 300,
                 "pointer_max": 0,
             }
         ],
@@ -334,8 +348,10 @@ def test_generate_inventory_covers_the_role():
     assert config["create_interval_secs"] == 60
     # The paths are the teardown-critical part: nothing collects the owner keys,
     # ownership is immutable, and they die with the VM.
+    assert config["transfer_interval_secs"] == 300
     assert config["paths"]["owner_keys"].endswith("/keys")
     assert config["paths"]["ledger"].endswith("ledger.json")
+    assert config["paths"]["published_transfers"].endswith("pointer-transfers-lon1-1.txt")
 
 
 def test_estimate_gas_sizes_a_pointer_client_from_the_manifest_rates():
@@ -347,10 +363,13 @@ def test_estimate_gas_sizes_a_pointer_client_from_the_manifest_rates():
     entries, label = _resolve_uploaders(_manifest())
     assert label == "testnet.clients"
     assert [transport for _, transport in entries] == [POINTER, POINTER]
-    # create/60s + update/30s = 60 + 120 writes an hour.
+    # create/60s + update/30s = 60 + 120 writes an hour. No handover loop on the
+    # first entry, so it is unchanged by V2-1354.
     assert entries[0][0].writes_per_hour == pytest.approx(180.0)
-    # create/120s + update/90s = 30 + 40.
-    assert entries[1][0].writes_per_hour == pytest.approx(70.0)
+    # create/120s + update/90s = 30 + 40, plus TWO paid writes per handover
+    # cycle at transfer/300s = 24. A handover is a recipient create AND a
+    # transfer, and sizing it as one write would under-fund the wallet.
+    assert entries[1][0].writes_per_hour == pytest.approx(94.0)
 
 
 def test_slack_post_renders_a_pointer_client_as_one():
@@ -367,11 +386,31 @@ def test_slack_post_renders_a_pointer_client_as_one():
             "update_interval_secs": 30,
             "sweep_interval_secs": 600,
             "chain_fraction": 0.1,
+            "transfer_interval_secs": 300,
         }
     )
     assert line.startswith("• pointer — lon1")
     assert "create/60s" in line
+    assert "transfer/300s" in line
     assert "payment" not in line
+
+
+def test_slack_post_omits_the_handover_rate_when_there_is_no_handover_loop():
+    """0 is "no handovers", and `transfer/0s` would read as a rate."""
+    from saorsa_deploy.cmd.slack_post import _client_line
+
+    line = _client_line(
+        {
+            "role": ROLE_POINTER,
+            "region": "lon1",
+            "vm_size": "s-2vcpu-4gb",
+            "create_interval_secs": 60,
+            "update_interval_secs": 30,
+            "sweep_interval_secs": 600,
+            "transfer_interval_secs": 0,
+        }
+    )
+    assert "transfer/" not in line
 
 
 def test_the_argv_is_stable_across_a_reload():
@@ -423,3 +462,184 @@ def test_argparse_namespace_without_pointer_is_still_accepted():
     args = argparse.Namespace(name="X", uploader=[], downloader=[])
     with pytest.raises(SystemExit):
         cmd_infra_clients(args)
+
+
+# ---------------------------------------------------------------------------
+# The spec -> /etc/ant-client.env hop
+# ---------------------------------------------------------------------------
+
+
+def _client_provisioner(**overrides):
+    from unittest.mock import MagicMock
+
+    from saorsa_deploy.provisioning.client import AntClientProvisioner
+
+    kwargs = dict(
+        clients=[],
+        bootstrap_peers=["1.2.3.4:10000"],
+        aws_access_key_id="k",
+        aws_secret_access_key="s",
+        addresses_s3_bucket="bucket",
+        addresses_s3_prefix="saorsa-deploy/addresses/PTR-TEST",
+        console=MagicMock(),
+    )
+    kwargs.update(overrides)
+    return AntClientProvisioner(**kwargs)
+
+
+def test_every_pointer_setting_reaches_the_env_file():
+    """The one hop that was unguarded: spec -> case block -> `/etc/ant-client.env`.
+
+    `pointer_client.py` reads its whole configuration from the environment and
+    from nowhere else, so a variable the case block sets but the heredoc never
+    exports is a setting the service silently runs without — at the script's own
+    default, which for `TRANSFER_INTERVAL_SECS` means no handover loop at all on
+    a run that asked for one.
+    """
+    from unittest.mock import patch
+
+    from saorsa_deploy.provisioning.client import AntClientProvisioner
+
+    with (
+        patch.object(
+            AntClientProvisioner, "_presigned_put_url", return_value="https://put/addresses"
+        ),
+        patch.object(
+            AntClientProvisioner,
+            "_presigned_transfers_put_url",
+            return_value="https://put/transfers",
+        ),
+    ):
+        provisioner = _client_provisioner(
+            clients=[
+                {
+                    "ip": "10.0.0.1",
+                    "role": ROLE_POINTER,
+                    "region": "lon1",
+                    "client_index": 1,
+                    "file_size_mb": 0,
+                    "create_interval_secs": 120,
+                    "update_interval_secs": 90,
+                    "sweep_interval_secs": 300,
+                    "chain_fraction": 0.25,
+                    "transfer_interval_secs": 300,
+                    "pointer_max": 400,
+                }
+            ]
+        )
+        ip_to_env = provisioner._build_ip_to_env("0xdead")
+        env = ip_to_env["10.0.0.1"]
+        case_block = provisioner._case_entry("10.0.0.1", env)
+        script = provisioner._env_file_script(case_block, "0xdead")
+
+    # Every key `_pointer_env` produces must be exported under its upper-cased
+    # name. Asserted over the keys rather than over a hard-coded list, so a
+    # future setting cannot be added to one half of the hop alone.
+    for key in provisioner._pointer_env(provisioner.clients[0]):
+        assert f"\n{key.upper()}=$" in script, key
+
+    # And the case block must actually carry this client's values, not defaults.
+    assert "CREATE_INTERVAL_SECS=120" in case_block
+    assert "TRANSFER_INTERVAL_SECS=300" in case_block
+    assert 'TRANSFERS_PRESIGNED_URL="https://put/transfers"' in case_block
+    assert "POINTER_MAX=400" in case_block
+
+
+def test_the_handover_list_is_a_distinct_s3_object():
+    """`pointer-transfers-*` beside `pointer-*`, never inside it.
+
+    The address list is read by every client as a set of readable pointers and
+    its reader takes the first field of each line, so a `<old> <recipient>` pair
+    written there would publish the old address with the recipient silently
+    dropped — leaving a reader with an address whose expected state it does not
+    know.
+    """
+    provisioner = _client_provisioner(
+        aws_access_key_id="AKIAEXAMPLE", aws_secret_access_key="x" * 40
+    )
+    addresses = provisioner._presigned_put_url(ROLE_POINTER, "lon1", 1)
+    transfers = provisioner._presigned_transfers_put_url("lon1", 1)
+    assert "/saorsa-deploy/addresses/PTR-TEST/pointer-lon1-1.txt" in addresses
+    assert "/saorsa-deploy/addresses/PTR-TEST/pointer-transfers-lon1-1.txt" in transfers
+
+
+def test_a_non_pointer_client_gets_no_handover_variables_set():
+    """An uploader's case entry must be byte-identical to what it was before.
+
+    The pointer values are emitted for every role (the case block is one shape),
+    so what matters is that they are all the inert zero/empty: a run with no
+    pointer clients renders exactly as it did before handovers existed.
+    """
+    from unittest.mock import patch
+
+    from saorsa_deploy.provisioning.client import AntClientProvisioner
+
+    with patch.object(AntClientProvisioner, "_presigned_put_url", return_value=""):
+        provisioner = _client_provisioner(
+            clients=[
+                {
+                    "ip": "10.0.0.2",
+                    "role": "download",
+                    "region": "lon1",
+                    "client_index": 1,
+                }
+            ]
+        )
+        env = provisioner._build_ip_to_env("0xdead")["10.0.0.2"]
+    entry = provisioner._case_entry("10.0.0.2", env)
+    assert "TRANSFER_INTERVAL_SECS=0" in entry
+    assert 'TRANSFERS_PRESIGNED_URL=""' in entry
+
+
+# ---------------------------------------------------------------------------
+# The shipped profiles
+# ---------------------------------------------------------------------------
+
+_PROFILES = Path(__file__).parent.parent / "manifests" / "profiles"
+
+
+def test_the_pointers_profile_validates_and_carries_the_handover_loop():
+    manifest = Manifest.model_validate(yaml.safe_load((_PROFILES / "pointers.yaml").read_text()))
+    entries = manifest.testnet.clients.pointers
+    assert len(entries) == 2
+    assert [p.transfer_interval_secs for p in entries] == [300, 300]
+
+
+def test_the_staging_profile_carries_the_handover_loop_on_both_entries():
+    """Validated through a run manifest that fills in the RC binaries, which is
+    how the release train uses it: `staging.yaml` is a BASE profile and has no
+    `binaries:` of its own, so it does not validate standalone.
+    """
+    data = yaml.safe_load((_PROFILES / "staging.yaml").read_text())
+    assert "binaries" not in data["testnet"]
+    # The run manifest supplies the name, the purpose and the RC binaries.
+    data["name"] = "STG-01"
+    data["purpose"] = "staging run"
+    data["testnet"]["binaries"] = {
+        "ant_node": {"version": "0.21.0"},
+        "ant": {"version": "0.3.9"},
+        # The profile carries a WASM tier too, so the bundle ref is required.
+        "ant_wasm": {"branch": "main", "repo_owner": "WithAutonomi"},
+    }
+    manifest = Manifest.model_validate(data)
+    entries = manifest.testnet.clients.pointers
+    assert len(entries) == 2
+    assert [p.transfer_interval_secs for p in entries] == [300, 300]
+    # Two paid writes a cycle on top of the default 180/h, which is what
+    # `clients estimate-gas` has to size the wallet for.
+    assert entries[0].writes_per_hour == pytest.approx(204.0)
+
+
+def test_an_absent_handover_key_matches_a_request_for_the_default():
+    """Client state recorded before V2-1354 carries no `transfer_interval_secs`,
+    and "absent" means exactly what `0` means: no handover loop. Without this a
+    resumed `up` would call those VMs a spec MISMATCH and refuse to reuse VMs
+    running precisely what was asked for.
+    """
+    from saorsa_deploy.cmd.infra_clients import _spec_signature
+
+    recorded = {"role": ROLE_POINTER, "region": "lon1", "client_index": 1}
+    requested = dict(recorded, transfer_interval_secs=0)
+    assert _spec_signature(recorded) == _spec_signature(requested)
+    # A request for the loop still mismatches: the rates are what a run costs.
+    assert _spec_signature(recorded) != _spec_signature(dict(recorded, transfer_interval_secs=300))

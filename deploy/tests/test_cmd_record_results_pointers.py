@@ -164,3 +164,171 @@ def test_the_network_profile_is_denormalised_onto_the_row(repo):
     _record(repo, deployment, [_point()])
     rows = repo.list_pointer_records_for_deployment(deployment.id)
     assert rows[0].network_profile == "home-fttc"
+
+
+# ---------------------------------------------------------------------------
+# Handover ops (V2-1354)
+# ---------------------------------------------------------------------------
+
+_HANDOVER_HEADER = (
+    ",result,table,_time,_measurement,host,op,region,address,recipient,"
+    "finality_status,answered,group,holders,attempt,counter_expected_u64,"
+    "counter_observed_u64,duration_ms,error,gas_spend_wei,ok,outcome,owned,"
+    "paid_attempts,start_ns,target_kind,wallet_spend_atto"
+)
+
+_FINAL = 18446744073709551615
+
+
+def _handover_csv(*rows: str) -> str:
+    return "\n".join([_HANDOVER_HEADER, *rows]) + "\n"
+
+
+def test_a_transfer_point_carries_the_handover_fields():
+    body = _handover_csv(
+        ",_result,0,2026-09-26T10:00:00Z,pointer,PTR-1,transfer,lon1,"
+        f"abcd,efgh,final,,,,,{_FINAL},,5200,,1000000000000000,1,ok,1,1,"
+        "1759000000000000000,pointer,5000000000000000000"
+    )
+    point = parse_pointer_csv(body)[0]
+    assert point["op"] == "transfer"
+    assert point["recipient"] == "efgh"
+    assert point["finality_status"] == "final"
+    # `u64::MAX` cannot be an Influx integer field, so it arrives as a string
+    # under its own name and is folded back onto the one key here.
+    assert point["counter_expected"] == _FINAL
+
+
+def test_a_finality_point_carries_the_close_group_shape():
+    body = _handover_csv(
+        ",_result,0,2026-09-26T10:00:00Z,pointer,PTR-1,finality,lon1,"
+        "abcd,,unconfirmed,4,5,4,,,,800,,,0,unconfirmed,1,0,"
+        "1759000000000000000,,"
+    )
+    point = parse_pointer_csv(body)[0]
+    assert point["outcome"] == "unconfirmed"
+    assert (point["answered"], point["group_size"], point["holders"]) == (4, 5, 4)
+
+
+def test_the_handover_ops_and_outcomes_are_recorded_rather_than_counted_unusable(repo):
+    """The `unusable` counter is for a value this build does not understand. An
+    op it DOES understand must land in the table, or the gate reads NOT ASSESSED
+    on a run that measured handovers."""
+    deployment = repo.create(name="PTR-01", deploy_args={"kind": "testnet"})
+    points = [
+        {
+            "_time": T0,
+            "host": "PTR-1",
+            "region": "lon1",
+            "op": op,
+            "outcome": outcome,
+            "owned": True,
+            "address": "ab" * 32,
+            "start_ns": 100 + i,
+            "duration_ms": 900,
+            "recipient": "cd" * 32,
+            "finality_status": status,
+            "answered": 5,
+            "group_size": 5,
+            "holders": 5,
+            "attempt": attempt,
+            "counter_expected": _FINAL,
+        }
+        for i, (op, outcome, status, attempt) in enumerate(
+            [
+                ("transfer", "ok", "final", None),
+                ("finality", "settling", "settling", None),
+                ("finality", "unconfirmed", "unconfirmed", None),
+                ("finality", "forked", "forked", None),
+                ("controller", "ok", None, None),
+                ("takeback", "ok", None, "update"),
+                ("takeback", "anomaly", None, "transfer"),
+            ]
+        )
+    ]
+    console = SimpleNamespace(print=lambda *_, **__: None)
+    with patch("saorsa_deploy.cmd.record_results.fetch_pointer_points", return_value=points):
+        _record_pointer_ops(
+            repo,
+            deployment,
+            SimpleNamespace(name="PTR-01"),
+            console,
+            "http://influx",
+            "token",
+            "ant",
+            "testnet-metrics",
+        )
+    rows = repo.list_pointer_records_for_deployment(deployment.id)
+    assert len(rows) == len(points)
+    by_op = {}
+    for row in rows:
+        by_op.setdefault(row.op.value, []).append(row)
+    assert set(by_op) == {"transfer", "finality", "controller", "takeback"}
+    transfer = by_op["transfer"][0]
+    assert transfer.recipient == "cd" * 32
+    assert transfer.finality_status == "final"
+    assert {r.outcome.value for r in by_op["finality"]} == {
+        "settling",
+        "unconfirmed",
+        "forked",
+    }
+    assert {r.attempt for r in by_op["takeback"]} == {"update", "transfer"}
+
+
+def test_the_counter_column_can_hold_a_handover_counter():
+    """`u64::MAX` is about twice a signed BIGINT, so the column is NUMERIC(20).
+
+    Asserted on the COLUMN TYPE rather than by writing the value and reading it
+    back, because the SQLite fixture has no exact numeric: SQLAlchemy converts
+    through a float there, and 18446744073709551615 comes back as
+    18446744073709551616. Postgres NUMERIC(20) is exact, so a round-trip test
+    here would be testing the fixture.
+    """
+    from saorsa_db.models.pointer_record import DeploymentPointerRecord
+    from sqlalchemy import Numeric
+
+    for name in ("counter_expected", "counter_observed"):
+        column = DeploymentPointerRecord.__table__.c[name]
+        assert isinstance(column.type, Numeric), name
+        assert column.type.precision >= 20, name
+
+
+def test_the_recorded_counter_is_the_value_the_point_carried():
+    """The hop record-results is responsible for, asserted on what it PASSES to
+    the repository rather than on what the fixture stores — see above."""
+    captured = {}
+
+    class _Repo:
+        def upsert_pointer_record(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(**kwargs)
+
+    point = {
+        "_time": T0,
+        "host": "PTR-1",
+        "region": "lon1",
+        "op": "get",
+        "outcome": "ok",
+        "owned": True,
+        "address": "ab" * 32,
+        "start_ns": 1,
+        "duration_ms": 900,
+        "recipient": "cd" * 32,
+        "counter_expected": _FINAL,
+        "counter_observed": _FINAL,
+    }
+    console = SimpleNamespace(print=lambda *_, **__: None)
+    with patch("saorsa_deploy.cmd.record_results.fetch_pointer_points", return_value=[point]):
+        _record_pointer_ops(
+            _Repo(),
+            SimpleNamespace(id=1, deploy_args={}),
+            SimpleNamespace(name="PTR-01"),
+            console,
+            "http://influx",
+            "token",
+            "ant",
+            "testnet-metrics",
+        )
+    assert captured["counter_expected"] == _FINAL
+    assert captured["counter_observed"] == _FINAL
+    assert captured["recipient"] == "cd" * 32
