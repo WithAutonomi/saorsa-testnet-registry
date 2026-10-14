@@ -452,10 +452,24 @@ Then set `$issue_number` to `In Review` — always, whatever the verdict.
 
 ## Step 8 — Exit
 
-The run is finished only when Step 7 is done. Print one final line —
-`RUN COMPLETE <issue> <verdict> <registry-id>` — and **end your turn with no pending tool
-calls, waits or schedules**. `<verdict>` is the single word from "The verdict", the same one that
-heads the results comment; `<registry-id>` is `-` if the run never got one. The calling script reads
-this line: any verdict other than `PASS` is treated as a bad run, and in a chain of dependent runs
-it stops the runs that follow. In headless mode that is what ends the process; the calling script
-waits on it and will not start the next issue until it exits.
+The run is finished only when Step 7 is done. **Your final message is one line and nothing else:**
+
+```
+RUN COMPLETE <issue> <verdict> <registry-id>
+```
+
+No overview before it, no sign-off after it, no prose around it — everything you have to say is
+already in the results comment, and whoever wants it reads it there. `<verdict>` is the single word
+from "The verdict", the same one that heads that comment; `<registry-id>` is `-` if the run never
+got one. Then **end your turn with no pending tool calls, waits or schedules**: in headless mode
+that is what ends the process, and the caller waits on it and will not start the next issue until it
+exits. Any verdict other than `PASS` is treated as a bad run, and in a chain of dependent runs it
+stops the runs that follow.
+
+This line is the only evidence the run finished. Nothing infers completion from the exit code,
+because the process exits zero whenever you end your turn — so a run that did everything the issue
+asked and then signed off with a summary instead of this line is recorded as `NO-VERDICT`, raised
+with the operator as urgent, and has to be read back out of the raw log by hand. Without the line
+the run is a failure as far as anything outside this session can tell, whatever it achieved.
+Ending a run that went perfectly with a summary in place of this line happened on 2026-10-13 and is
+the most expensive way there is to finish.
