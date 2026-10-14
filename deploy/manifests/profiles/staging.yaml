@@ -141,9 +141,35 @@ testnet:
     # line per operation and performs thousands over a run; the client-log volume
     # measurement those flags exist for was taken on the transfer tier, and
     # adding an unmeasured source to it would spoil the comparison.
+    #
+    # transfer_interval_secs turns on the HANDOVER loop (V2-1354): every 5
+    # minutes each client creates a recipient, hands one of its pointers over for
+    # good, checks the result with `finality` / `get` / `controller` / `resolve`
+    # and proves both take-backs are refused before paying. That is two further
+    # PAID writes per client per cycle — 24/h on top of the 180 — which
+    # `clients estimate-gas` reads straight out of this manifest.
+    #
+    # THE RC MUST CARRY HANDOVERS as well as pointers. A pre-V2-1354 `ant` has
+    # no `transfer` subcommand, so on a train whose RC predates it the run
+    # operator strips this key (not the whole entry) for that train, and the
+    # handover gates then read NOT ASSESSED.
     pointers:
-      - { provider: digital_ocean, region: lon1, vm_size: s-2vcpu-4gb, ant: 200, eth: 0.5 }
-      - { provider: digital_ocean, region: syd1, vm_size: s-2vcpu-4gb, ant: 200, eth: 0.5 }
+      - {
+          provider: digital_ocean,
+          region: lon1,
+          vm_size: s-2vcpu-4gb,
+          ant: 200,
+          eth: 0.5,
+          transfer_interval_secs: 300,
+        }
+      - {
+          provider: digital_ocean,
+          region: syd1,
+          vm_size: s-2vcpu-4gb,
+          ant: 200,
+          eth: 0.5,
+          transfer_interval_secs: 300,
+        }
 
   elastic:
     enabled: true

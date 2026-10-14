@@ -10,14 +10,30 @@ state and cannot tell -- so the measurement that matters is the trend, which is
 why every read records the pointer's age and own and foreign pointers are kept
 apart.
 
-Three loops, one thread
------------------------
+Four loops, one thread
+----------------------
 
-Create, update and sweep run on one scheduler in one process, strictly serially.
-They share a single wallet, and every write is a paid on-chain transaction, so
-two concurrent writes would race the same nonce -- the failure mode that cost
-staging run #566 six uploaders. Whichever loop is due soonest runs next; a loop
-that overruns simply delays itself, it is never run twice concurrently.
+Create, update, sweep and -- when `TRANSFER_INTERVAL_SECS` is positive -- the
+handover loop run on one scheduler in one process, strictly serially. They share
+a single wallet, and every write is a paid on-chain transaction, so two
+concurrent writes would race the same nonce -- the failure mode that cost staging
+run #566 six uploaders. Whichever loop is due soonest runs next; a loop that
+overruns simply delays itself, it is never run twice concurrently.
+
+The handover loop (V2-1354)
+---------------------------
+
+One cycle hands one owned pointer over for good: create a recipient, `transfer`
+to it, then check the result from near (`finality`, `get`, `controller`,
+`resolve`) and prove the two take-backs -- an `update` and a second `transfer` on
+the handed-over key -- are refused BEFORE they pay. That last part is why the
+take-back outcome depends on the wallet: a refusal that still cost money is not a
+refusal, and only a balance delta either side can tell. A take-back whose balance
+could not be read is `error`, never `ok`: an unread balance is unknown, not zero.
+
+It is OFF by default (interval 0), because `ant pointer transfer` does not exist
+on a build predating V2-1354 and the loop would then record an error a cycle that
+says nothing about the release.
 
 Cost is measured as PAID, never as quoted
 -----------------------------------------
@@ -56,6 +72,11 @@ OP_UPDATE = "update"
 OP_GET = "get"
 OP_SWEEP = "sweep"
 OP_RESOLVE = "resolve"
+#: The handover ops (V2-1354). `transfer` is the only paid one of the four.
+OP_TRANSFER = "transfer"
+OP_FINALITY = "finality"
+OP_CONTROLLER = "controller"
+OP_TAKEBACK = "takeback"
 
 # Outcome classes. Every op lands in exactly one, and they are the vocabulary
 # `deployments print-pointers` and the `[pointer]` gates are written in.
@@ -73,6 +94,42 @@ OUTCOME_READ_SHORTFALL = "read_shortfall"
 #: cause it, so it is never routine.
 OUTCOME_ANOMALY = "anomaly"
 OUTCOME_ERROR = "error"
+#: Finality statuses that are neither "held by the whole close group" nor an
+#: error, carried as outcomes of their own so a handover that is still settling
+#: is never reported as one that failed. `unconfirmed` is final on a majority
+#: with a peer that did not answer; `forked` is two rival final states.
+OUTCOME_SETTLING = "settling"
+OUTCOME_UNCONFIRMED = "unconfirmed"
+OUTCOME_FORKED = "forked"
+
+#: The counter a handover's final state carries: `u64::MAX`. A read of a
+#: handed-over address returns exactly this, with a `pointer`-kind target that is
+#: the recipient, which is what the redirect read is checked against.
+FINAL_COUNTER = 18446744073709551615
+
+#: `ant pointer finality` status -> outcome. `open` is `stale`: the handover is
+#: simply not held, which is the same claim a stale read makes. An unknown status
+#: is an error rather than a pass -- a future ant-client adding a status must not
+#: read as a clean handover.
+FINALITY_OUTCOMES = {
+    "final": OUTCOME_OK,
+    "settling": OUTCOME_SETTLING,
+    "unconfirmed": OUTCOME_UNCONFIRMED,
+    "forked": OUTCOME_FORKED,
+    "open": OUTCOME_STALE,
+}
+
+#: Largest value an Influx integer field (and a Postgres BIGINT) can hold. A
+#: handover's counter is `u64::MAX`, which is twice that, so it cannot travel as
+#: one -- see :func:`counter_fields`.
+MAX_I64 = (1 << 63) - 1
+
+#: At most this many FOREIGN handed-over pointers get a `finality` check per
+#: sweep. Finality asks the whole close group and never stops early, so it is the
+#: most expensive read here, and the handover population only grows. A module
+#: constant and deliberately not a setting: it bounds a cost, it does not express
+#: an intent an operator would want to vary.
+FOREIGN_FINALITY_SAMPLE = 20
 
 # Markers matched against `ant`'s stderr, taken from the strings ant-core and
 # ant-cli actually emit on the pointer branch. Substrings, never whole lines:
@@ -91,6 +148,35 @@ SHORTFALL_READ_MARKERS = (
     "no peer is responsible for pointer",
 )
 LOST_WRITE_MARKER = "moved while this update was in flight"
+#: `Error::PointerFinal`, whose Display is `pointer is final: {0}`. Both a second
+#: `transfer` and an `update` on a handed-over pointer fail with it, and fail
+#: BEFORE paying -- which is the whole point of the take-back checks. It also
+#: carries the single-rival-state refusal (`rival_final`: "pointer {a} is already
+#: final on state {s} held by {n} of {g} peers").
+POINTER_FINAL_MARKER = "pointer is final"
+#: `Error::PointerForked`, whose Display is `pointer is forked: {0}` -- raised by
+#: `rival_final` and `final_already` when the close group holds MORE THAN ONE
+#: final state. The body is "pointer {a} holds {n} different final states", so
+#: neither "final state" singular nor any phrase about a rival appears in it:
+#: matching on the error's own prefix is the only stable option. A take-back on a
+#: forked pointer is refused with this and NOT with `pointer is final`, so both
+#: markers are a refusal wherever one is.
+POINTER_FORKED_MARKER = "pointer is forked"
+#: The refusals `pointer_sign_transfer` makes before paying when the close group
+#: could not be fully canvassed. THREE emits share this wording -- the transfer's
+#: own silent-peer refusal ("only N of the G peers of pointer A's close group
+#: answered, and a silent one could hold a final state; a transfer cannot be taken
+#: back, so try again when all of them can be asked"), the finality check's own
+#: under-quorum shortfall, and the recipient `get`'s. All three happen inside the
+#: transfer BEFORE any payment, so `read_shortfall` is the right class for each
+#: and there is no need to tell them apart. The address is interpolated in the
+#: middle, so the usable part is the tail.
+TRANSFER_SHORTFALL_MARKER = "close group answered"
+#: The two refusals that mean "this pointer can never take another write".
+#: `final_already` answers an update with the first on an unforked pointer and
+#: the second on a forked one, so a check that accepted only one would read a
+#: forked pointer's refusal as an error.
+NO_MORE_WRITES_MARKERS = (POINTER_FINAL_MARKER, POINTER_FORKED_MARKER)
 #: `ant pointer get` on an absent address exits 1 with this. It is an ANSWER,
 #: not a failure: the close group agreed the pointer is not there.
 NOT_FOUND_MARKERS = ("No pointer at", "pointer chain breaks at")
@@ -284,6 +370,17 @@ class Ledger:
         self.path = path
         self.own: dict[str, dict] = {}
         self.foreign: dict[str, dict] = {}
+        #: Own pointers handed over for good, `{old: {recipient, transferred_at}}`.
+        #: Durable for the same reason the keys are: a handover is irreversible,
+        #: so a restart that forgot one would go on trying to update a pointer
+        #: that can never accept another write, and would record every refusal
+        #: as a lost write.
+        self.transferred: dict[str, dict] = {}
+        #: Handovers published by the OTHER pointer clients,
+        #: `{old: {recipient, first_seen}}`. A foreign client reading the plain
+        #: address list sees the old address with no expected state; this is what
+        #: says the state to expect there is the final one, aimed at `recipient`.
+        self.foreign_transfers: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
@@ -293,11 +390,22 @@ class Ledger:
             return
         self.own = dict(data.get("own") or {})
         self.foreign = dict(data.get("foreign") or {})
+        self.transferred = dict(data.get("transferred") or {})
+        self.foreign_transfers = dict(data.get("foreign_transfers") or {})
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"own": self.own, "foreign": self.foreign}))
+        tmp.write_text(
+            json.dumps(
+                {
+                    "own": self.own,
+                    "foreign": self.foreign,
+                    "transferred": self.transferred,
+                    "foreign_transfers": self.foreign_transfers,
+                }
+            )
+        )
         os.replace(tmp, self.path)
 
     def record_own(self, address: str, key_path: str, counter: int, target: str, kind: str) -> None:
@@ -338,9 +446,59 @@ class Ledger:
         self.foreign[address] = {"first_seen": time.time(), "counter": None}
         return True
 
+    def mark_transferred(self, address: str, recipient: str, state_id: str = "") -> None:
+        """Record a completed handover, and move the expected state onto it.
+
+        The expected counter becomes `u64::MAX` and the expected target the
+        recipient, so every subsequent read of this address -- the redirect read,
+        every sweep, and every other client's sweep -- is checked against the
+        final state rather than against the state it last held.
+
+        `state_id` is the final state the transfer signed, as the CLI reports it.
+        Kept because it is what makes "holders of OUR state" exact on every later
+        finality check, including a forked one, where several states are reported
+        and only one of them is ours.
+        """
+        self.transferred[address] = {
+            "recipient": recipient,
+            "transferred_at": time.time(),
+            "state_id": state_id,
+        }
+        entry = self.own.get(address) or {}
+        entry["counter"] = FINAL_COUNTER
+        entry["target"] = recipient
+        entry["target_kind"] = "pointer"
+        self.own[address] = entry
+        self.save()
+
+    def add_foreign_transfer(self, address: str, recipient: str) -> bool:
+        """Register a handover published by another client. True when it is new."""
+        if address in self.transferred:
+            # Our own handover, read back off the shared prefix.
+            return False
+        existing = self.foreign_transfers.get(address)
+        if existing is not None and existing.get("recipient") == recipient:
+            return False
+        self.foreign_transfers[address] = {
+            "recipient": recipient,
+            "first_seen": (existing or {}).get("first_seen", time.time()),
+        }
+        return True
+
     def established_own(self) -> list[str]:
         """Own pointers that have actually been created (a counter is known)."""
         return [a for a, e in self.own.items() if e.get("counter") is not None]
+
+    def updatable_own(self) -> list[str]:
+        """Own pointers that can still take a write.
+
+        A handed-over pointer cannot: `update` on it is refused before paying.
+        Keeping it in the update candidate list would spend the cycle on a
+        guaranteed refusal and record it as a failed write. It is excluded from
+        the chain targets for the same reason -- a chain hop through a final
+        pointer is a hop that can never be re-aimed.
+        """
+        return [a for a in self.established_own() if a not in self.transferred]
 
 
 # ---------------------------------------------------------------------------
@@ -378,14 +536,24 @@ class AntResult:
         return {}
 
 
-def classify_failure(stderr: str, *, write: bool) -> str:
+def classify_failure(stderr: str, *, write: bool, handover: bool = False) -> str:
     """Map `ant`'s stderr to an outcome class.
 
     The ordering matters. A lost write and a close-group shortfall are both
     reported as a failed command with exit 1, and both are ordinary events on a
     healthy network -- lumping either into `error` would make the error rate a
     measure of contention rather than of faults.
+
+    ``handover`` routes the three handover refusals, and ONLY for the handover
+    ops. They are refusals before payment, so on a `transfer` they are routine
+    events, while on an ordinary create or update the same words would mean
+    something else -- so the plain ops' classification is left exactly as it was.
     """
+    if handover:
+        if any(marker in stderr for marker in NO_MORE_WRITES_MARKERS):
+            return OUTCOME_ANOMALY
+        if TRANSFER_SHORTFALL_MARKER in stderr:
+            return OUTCOME_READ_SHORTFALL
     if any(marker in stderr for marker in NOT_FOUND_MARKERS):
         return OUTCOME_NOT_FOUND
     if LOST_WRITE_MARKER in stderr:
@@ -396,6 +564,113 @@ def classify_failure(stderr: str, *, write: bool) -> str:
         # read that fell short simply has no answer to give.
         return OUTCOME_LOST_WRITE if write else OUTCOME_READ_SHORTFALL
     return OUTCOME_ERROR
+
+
+def counter_fields(expected, observed) -> dict:
+    """The two counter fields, routed by whether the value fits an i64.
+
+    Influx integer fields are SIGNED 64-bit, and so is a Postgres ``BIGINT``, but
+    a handover's counter is `u64::MAX` -- about twice what either holds. So a
+    counter that does not fit travels as a STRING field under its own name.
+
+    Two decisions, both load-bearing. A string rather than a float, because the
+    exact value is what `classify_read` compares and 1.8446744073709552e19 is not
+    it; and a NEW NAME rather than a string in `counter_expected`, because a
+    field that is an integer on some points and a string on others is a TYPE
+    CONFLICT and Influx drops the whole point. The atto wallet balances in this
+    same measurement already travel as strings for exactly the first reason.
+    """
+    fields: dict = {}
+    for key, value in (("counter_expected", expected), ("counter_observed", observed)):
+        if value is None or isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if -1 <= value <= MAX_I64:
+            fields[key] = value
+        else:
+            fields[f"{key}_u64"] = str(value)
+    return fields
+
+
+def _as_int(value) -> int | None:
+    """An int field from `ant`'s JSON, or None when it is not one.
+
+    None rather than 0: Influx has no null, and a field that is dropped is
+    "not reported", while a 0 would claim the close group has no members.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _finality_status(status) -> str | None:
+    """The `status` out of a finality STATUS object (`finality_json`'s inner one).
+
+    Accepting a bare string too costs nothing and means a shape change does not
+    silently drop the field. Mind which object this is handed: see
+    :func:`finality_object`.
+    """
+    if isinstance(status, dict):
+        value = status.get("status")
+        return value if isinstance(value, str) and value else None
+    if isinstance(status, str) and status:
+        return status
+    return None
+
+
+def finality_object(record: dict, *, nested: bool) -> dict:
+    """The `finality_json` object out of a result, or {}.
+
+    The two commands wrap it differently, and getting this wrong is silent.
+    `ant pointer finality` prints `finality_json` AS its whole document, so the
+    object IS the record: `{address, group, answered, finality: {status, ...}}`.
+    `ant pointer transfer` prints `{address, state, finality: <finality_json>,
+    finality_error}` -- so there the status sits at `finality.finality.status`,
+    and reading `finality.status` on a transfer returned None for every real
+    reply. `finality` is null on a transfer whose check failed, with the reason
+    in `finality_error`.
+    """
+    if not nested:
+        return record if isinstance(record, dict) else {}
+    finality = record.get("finality") if isinstance(record, dict) else None
+    return finality if isinstance(finality, dict) else {}
+
+
+def finality_holders(finality: dict, state_id: str | None = None) -> int | None:
+    """Peers holding OUR final state, read out of a `finality_json` object.
+
+    `holders` is NOT a top-level field. `final_state_json` renders it inside the
+    state object, so it is at `finality.state.holders` for `settling` / `final` /
+    `unconfirmed`, and one per entry of `finality.states` -- plus
+    `finality.majority` -- for a fork. Reading it off the top level returned None
+    for every real reply, which left the column dead.
+
+    With our own final state's id (recorded at handover time) the answer is
+    exact, fork or not. Without one -- every FOREIGN handover, whose state id
+    this client never saw -- it falls back to the single state, or to the
+    majority side of a fork. A fork with no majority has no state to count, and
+    that is what such a fork means.
+    """
+    status = finality.get("finality")
+    if not isinstance(status, dict):
+        return None
+    candidates = []
+    state = status.get("state")
+    if isinstance(state, dict):
+        candidates.append(state)
+    states = status.get("states")
+    if isinstance(states, list):
+        candidates.extend(s for s in states if isinstance(s, dict))
+    if state_id:
+        for candidate in candidates:
+            if candidate.get("state_id") == state_id:
+                return _as_int(candidate.get("holders"))
+        return None
+    if isinstance(state, dict):
+        return _as_int(state.get("holders"))
+    majority = status.get("majority")
+    if isinstance(majority, dict):
+        return _as_int(majority.get("holders"))
+    return None
 
 
 def error_summary(stderr: str) -> str:
@@ -565,6 +840,39 @@ def parse_address_lines(text: str) -> list[str]:
     return out
 
 
+def parse_transfer_lines(text: str) -> list[tuple[str, str]]:
+    """Handover pairs from a published transfers list. Lines are `<old> <new>`.
+
+    NOT :func:`parse_address_lines`, which takes the first field of each line and
+    would read the old address as a plain pointer and throw the recipient away --
+    leaving the reader with an address whose expected state it does not know.
+    Both fields must be addresses; a one-column line is skipped rather than
+    half-read.
+    """
+    out = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        old, recipient = fields[0], fields[1]
+        if _HEX_ADDRESS.match(old) and _HEX_ADDRESS.match(recipient):
+            out.append((old, recipient))
+    return out
+
+
+def is_pointer_transfers_key(key: str) -> bool:
+    """Whether a published object holds handover PAIRS rather than addresses.
+
+    Tested before :func:`is_pointer_key`, which also matches it (the name starts
+    `pointer-`): read as an address list, each line's first field would be taken
+    for an ordinary pointer and the recipient discarded.
+    """
+    return key.rsplit("/", 1)[-1].startswith("pointer-transfers-")
+
+
 def is_pointer_key(key: str) -> bool:
     """Whether a published object holds pointer addresses rather than files."""
     return key.rsplit("/", 1)[-1].startswith("pointer-")
@@ -587,6 +895,8 @@ class AddressPool:
         self._last_refresh = 0.0
         self.chunk_targets: list[str] = []
         self.foreign_pointers: list[str] = []
+        #: `(old, recipient)` pairs published by the other pointer clients.
+        self.foreign_transfers: list[tuple[str, str]] = []
 
     @property
     def enabled(self) -> bool:
@@ -604,8 +914,8 @@ class AddressPool:
         xml = self._fetch(url)
         return re.findall(r"<Key>([^<]+)</Key>", xml)
 
-    def refresh(self, own_key: str) -> None:
-        """Re-read the prefix. `own_key` is this client's own object, skipped."""
+    def refresh(self, own_key: str, own_transfers_key: str = "") -> None:
+        """Re-read the prefix, skipping this client's own two objects."""
         if not self.enabled:
             return
         now = time.time()
@@ -614,6 +924,7 @@ class AddressPool:
         self._last_refresh = now
         chunks: list[str] = []
         pointers: list[str] = []
+        transfers: list[tuple[str, str]] = []
         try:
             keys = self._list_keys()
         except (urllib.error.URLError, socket.timeout, OSError) as exc:
@@ -621,19 +932,24 @@ class AddressPool:
             return
         for key in keys:
             name = key.rsplit("/", 1)[-1]
-            if name == own_key:
+            if name == own_key or (own_transfers_key and name == own_transfers_key):
                 continue
             try:
                 body = self._fetch(f"{self._base_url()}/{urllib.parse.quote(key)}")
             except (urllib.error.URLError, socket.timeout, OSError):
                 continue
-            if is_pointer_key(key):
+            # Transfers first: the key also matches `is_pointer_key`, and read as
+            # an address list its recipient column would be thrown away.
+            if is_pointer_transfers_key(key):
+                transfers.extend(parse_transfer_lines(body))
+            elif is_pointer_key(key):
                 pointers.extend(parse_address_lines(body))
             else:
                 chunks.extend(parse_address_lines(body))
         if chunks:
             self.chunk_targets = chunks
         self.foreign_pointers = pointers
+        self.foreign_transfers = transfers
 
     def random_chunk_target(self) -> str:
         """A real data-map address when the uploaders have published one.
@@ -648,7 +964,7 @@ class AddressPool:
         return secrets.token_hex(32)
 
 
-def publish(addresses: list[str], path: Path, presigned_url: str) -> bool:
+def publish(addresses: list[str], path: Path, presigned_url: str, label: str = "address") -> bool:
     """Write this client's pointer addresses out and PUT them to S3.
 
     Through a presigned URL, as the uploaders do: the signature is the
@@ -667,7 +983,7 @@ def publish(addresses: list[str], path: Path, presigned_url: str) -> bool:
         with urllib.request.urlopen(req, timeout=60) as resp:
             return resp.status == 200
     except (urllib.error.URLError, socket.timeout, OSError) as exc:
-        print(f"WARN: address flush failed: {exc}", file=sys.stderr, flush=True)
+        print(f"WARN: {label} flush failed: {exc}", file=sys.stderr, flush=True)
         return False
 
 
@@ -710,11 +1026,20 @@ class PointerClient:
         self.own_key_name = f"pointer-{self.region}-{self.client_index}.txt"
         self.addresses_file = self.data_dir / self.own_key_name
         self.presigned_url = _env("UPLOAD_PRESIGNED_URL")
+        # A second object, for the handovers. Separate from the address list
+        # because its lines are two columns: a reader of the address list takes
+        # the first field, so a pair written there would publish the old address
+        # with its recipient silently dropped.
+        self.own_transfers_key_name = f"pointer-transfers-{self.region}-{self.client_index}.txt"
+        self.transfers_file = self.data_dir / self.own_transfers_key_name
+        self.transfers_presigned_url = _env("TRANSFERS_PRESIGNED_URL")
 
         self.create_interval = _env_int("CREATE_INTERVAL_SECS", 60)
         self.update_interval = _env_int("UPDATE_INTERVAL_SECS", 30)
         self.sweep_interval = _env_int("SWEEP_INTERVAL_SECS", 600)
         self.chain_fraction = _env_float("CHAIN_FRACTION", 0.10)
+        # 0 = no handover loop. See the module docstring.
+        self.transfer_interval = _env_int("TRANSFER_INTERVAL_SECS", 0)
         self.pointer_max = _env_int("POINTER_MAX", 0)
         self.seq = 0
 
@@ -785,9 +1110,17 @@ class PointerClient:
 
     # -- the three loops ---------------------------------------------------
 
-    def do_create(self) -> None:
+    def do_create(self) -> str | None:
+        """Create one new pointer. Returns its address, or None on any failure.
+
+        The return value exists for the handover loop, which needs a recipient
+        and must create it exactly as the create loop does -- same wallet reads,
+        same `op=create` point, same read-back, same entry in the owned pool. A
+        recipient created by a different code path would be a pointer measured
+        differently from every other.
+        """
         if self.pointer_max and len(self.ledger.own) >= self.pointer_max:
-            return
+            return None
         self.seq += 1
         self.keys_dir.mkdir(parents=True, exist_ok=True)
         key_path = self.keys_dir / f"owner-{int(time.time())}-{self.seq}.key"
@@ -811,11 +1144,11 @@ class PointerClient:
                 },
             )
             print(f"keygen failed: {error_summary(keygen.stderr)}", file=sys.stderr)
-            return
+            return None
         address = keygen.json().get("address", "")
         if not address:
             print("keygen produced no address", file=sys.stderr)
-            return
+            return None
         self.ledger.note_key(address, str(key_path))
 
         target = self.pool.random_chunk_target()
@@ -854,8 +1187,7 @@ class PointerClient:
                     "ok": read_back == OUTCOME_OK,
                     "owned": True,
                     "address": address,
-                    "counter_expected": 0,
-                    "counter_observed": record.get("counter"),
+                    **counter_fields(0, record.get("counter")),
                     "target_kind": "chunk",
                     "age_secs": 0,
                     "duration_ms": read_result.duration_ms,
@@ -889,9 +1221,13 @@ class PointerClient:
             },
         )
         self.log_op(OP_CREATE, address, outcome, result)
+        return address if result.ok else None
 
     def do_update(self) -> None:
-        candidates = self.ledger.established_own()
+        # Handed-over pointers excluded: an `update` on one is refused before it
+        # pays, so including them would spend the cycle on a certain refusal and
+        # record it as a failed write.
+        candidates = self.ledger.updatable_own()
         if not candidates:
             return
         address = random.choice(candidates)
@@ -936,8 +1272,7 @@ class PointerClient:
                     "ok": read_back == OUTCOME_OK,
                     "owned": True,
                     "address": address,
-                    "counter_expected": expected,
-                    "counter_observed": record.get("counter"),
+                    **counter_fields(expected, record.get("counter")),
                     "target_kind": kind,
                     "age_secs": age,
                     "duration_ms": read_result.duration_ms,
@@ -970,17 +1305,25 @@ class PointerClient:
         )
         self.log_op(OP_UPDATE, address, outcome, result)
 
-    def do_resolve(self, address: str) -> None:
+    def do_resolve(self, address: str, expected_target: str | None = None) -> None:
         """Follow a chain to the chunk at its end.
 
-        Only run after a chained update, because it is the only time this client
-        knows a chain exists. Resolution -- the depth cap and the cycle check --
-        is entirely client-side; a node never reads a target.
+        Run after a chained update -- the only time this client knows a chain
+        exists -- and after a handover, where the chain is the redirection the
+        final state created. Resolution (the depth cap, the cycle check) is
+        entirely client-side; a node never reads a target.
+
+        ``expected_target`` is only asserted when the CLI actually names the
+        resolved target: its absence is unknown, not a mismatch.
         """
         start_ns = time.time_ns()
         result = self.runner.run(["pointer", "resolve", address])
         outcome = OUTCOME_OK if result.ok else classify_failure(result.stderr, write=False)
         record = result.json() if result.ok else {}
+        if outcome == OUTCOME_OK and expected_target:
+            resolved = record.get("target")
+            if isinstance(resolved, str) and resolved and resolved != expected_target:
+                outcome = OUTCOME_STALE
         self.emit(
             OP_RESOLVE,
             {
@@ -998,6 +1341,281 @@ class PointerClient:
         )
         self.log_op(OP_RESOLVE, address, outcome, result)
 
+    # -- the handover loop (V2-1354) ---------------------------------------
+
+    def do_transfer(self) -> None:
+        """Hand one owned pointer over for good, then check the result.
+
+        Nine steps, each its own Influx point so a failure is attributable to the
+        step it happened in rather than to "the handover". Only a completed
+        transfer continues the cycle: there is nothing to check about a handover
+        that did not happen, and checking anyway would record a handful of
+        `not_found`s that say the transfer failed a second time.
+        """
+        candidates = self.ledger.updatable_own()
+        if not candidates:
+            # Not an error, and nothing is emitted: the create loop has simply
+            # not produced an untransferred pointer yet. A point here would be a
+            # handover attempt that never attempted anything.
+            print("transfer: no untransferred owned pointer available, skipping", flush=True)
+            return
+        old = random.choice(candidates)
+        old_key = self.ledger.own[old]["key"]
+
+        # The recipient is an ordinary created pointer -- same op, same point,
+        # same owned pool -- because a pointer created specially would not be
+        # comparable with any other pointer in the run.
+        recipient = self.do_create()
+        if recipient is None:
+            # Nothing is emitted -- the handover was never attempted -- but it
+            # has to be said, or a run whose `pointer_max` cap is full reads as
+            # one where handovers simply never happened.
+            print(
+                "transfer: no recipient could be created, skipping the cycle "
+                f"(pointer_max={self.pointer_max}, own={len(self.ledger.own)})",
+                flush=True,
+            )
+            return
+
+        start_ns = time.time_ns()
+        ant_before, gas_before = self.wallet.ant_atto(), self.wallet.gas_wei()
+        result = self.runner.run(["pointer", "transfer", "--key", old_key, recipient])
+        ant_after, gas_after = self.wallet.ant_atto(), self.wallet.gas_wei()
+        spend = self._spend_fields(ant_before, ant_after, gas_before, gas_after)
+        paid = spend.get("wallet_spend_atto", 0) > 0
+
+        if result.ok:
+            outcome = OUTCOME_OK
+        elif paid:
+            # Classified by the PAYMENT first, not by the markers. Every refusal
+            # the markers name happens inside `pointer_sign_transfer`, before a
+            # quote is bought -- so a transfer that spent and did not land is a
+            # lost write whatever its stderr says, and reading a marker first
+            # would file a paid failure as a refusal that never cost anything.
+            outcome = OUTCOME_LOST_WRITE
+        else:
+            outcome = classify_failure(result.stderr, write=True, handover=True)
+        record = result.json() if result.ok else {}
+        # `print_transfer` nests `finality_json` under its own `finality` key, so
+        # the status is one level deeper here than on the finality command.
+        finality = finality_object(record, nested=True)
+        state_id = record.get("state") if isinstance(record.get("state"), str) else ""
+        self.emit(
+            OP_TRANSFER,
+            {
+                "outcome": outcome,
+                "ok": outcome == OUTCOME_OK,
+                "owned": True,
+                "address": old,
+                "recipient": recipient,
+                **counter_fields(FINAL_COUNTER, None),
+                "target_kind": "pointer",
+                "finality_status": _finality_status(finality.get("finality")),
+                "duration_ms": result.duration_ms,
+                "start_ns": start_ns,
+                "attempts": 1,
+                "paid_attempts": 1 if paid else 0,
+                "error": "" if outcome == OUTCOME_OK else error_summary(result.stderr),
+                **spend,
+            },
+        )
+        self.log_op(OP_TRANSFER, old, outcome, result)
+        if outcome != OUTCOME_OK:
+            return
+
+        self.ledger.mark_transferred(old, recipient, state_id or "")
+        self.flush_transfers()
+        transferred_at = self.ledger.transferred[old]["transferred_at"]
+
+        self.check_finality(
+            old,
+            owned=True,
+            age_secs=int(time.time() - transferred_at),
+            state_id=state_id or None,
+        )
+        self.check_redirect(old, recipient, owned=True, age_secs=0)
+        self.check_controller(old, recipient)
+        # The recipient's own target is where the chain now ends.
+        self.do_resolve(old, expected_target=(self.ledger.own.get(recipient) or {}).get("target"))
+        # The two take-backs. Both must be refused BEFORE paying -- that is the
+        # property, and it is the wallet that decides whether it held.
+        target = self.pool.random_chunk_target()
+        self.check_takeback(
+            old,
+            ["pointer", "update", "--key", old_key, "--kind", "chunk", target],
+            attempt="update",
+        )
+        self.check_takeback(
+            old,
+            ["pointer", "transfer", "--key", old_key, recipient],
+            attempt="transfer",
+        )
+
+    def check_finality(
+        self, address: str, *, owned: bool, age_secs: int, state_id: str | None = None
+    ) -> None:
+        """`ant pointer finality` -- does the WHOLE close group hold the handover?
+
+        Free, and it never stops early: that is the difference from a plain read,
+        which is answered by a quorum. `unconfirmed` is the one worth staring at
+        -- final on a majority with a peer that did not answer -- because it is
+        the state a silent peer leaves behind, and it is exactly what `transfer`
+        refuses to write into.
+        """
+        start_ns = time.time_ns()
+        result = self.runner.run(["pointer", "finality", address])
+        record = result.json() if result.ok else {}
+        # The finality command prints `finality_json` as its whole document, so
+        # the object is the record itself -- unlike a transfer's, which nests it.
+        finality = finality_object(record, nested=False)
+        status = _finality_status(finality.get("finality"))
+        if not result.ok:
+            outcome = OUTCOME_ERROR
+        else:
+            outcome = FINALITY_OUTCOMES.get(status or "", OUTCOME_ERROR)
+        self.emit(
+            OP_FINALITY,
+            {
+                "outcome": outcome,
+                "ok": outcome == OUTCOME_OK,
+                "owned": owned,
+                "address": address,
+                "finality_status": status,
+                "answered": _as_int(finality.get("answered")),
+                "group": _as_int(finality.get("group")),
+                "holders": finality_holders(finality, state_id),
+                "age_secs": age_secs,
+                "duration_ms": result.duration_ms,
+                "start_ns": start_ns,
+                "attempts": 1,
+                "paid_attempts": 0,
+                "error": "" if outcome == OUTCOME_OK else error_summary(result.stderr),
+            },
+        )
+        self.log_op(OP_FINALITY, address, outcome, result)
+
+    def check_redirect(self, address: str, recipient: str, *, owned: bool, age_secs: int) -> None:
+        """Read a handed-over address: it must return the final state.
+
+        Counter `u64::MAX`, target the recipient. Through the same
+        `read_pointer`/`classify_read` pair every other read goes through, and
+        compared on the same target representation -- the bare hex address, which
+        is what the chained-update path has always compared a `pointer`-kind
+        target against.
+        """
+        read_outcome, record, result, start_ns = self.read_pointer(address)
+        outcome = (
+            read_outcome
+            if read_outcome != OUTCOME_OK
+            else self.classify_read(FINAL_COUNTER, recipient, record)
+        )
+        self.emit(
+            OP_GET,
+            {
+                "outcome": outcome,
+                "ok": outcome == OUTCOME_OK,
+                "owned": owned,
+                "address": address,
+                "recipient": recipient,
+                **counter_fields(FINAL_COUNTER, record.get("counter")),
+                "target_kind": "pointer",
+                "age_secs": age_secs,
+                "duration_ms": result.duration_ms,
+                "start_ns": start_ns,
+                "attempts": 1,
+                "paid_attempts": 0,
+                "error": "" if outcome == OUTCOME_OK else error_summary(result.stderr),
+            },
+        )
+
+    def check_controller(self, address: str, recipient: str) -> None:
+        """`ant pointer controller` -- who owns this pointer now?
+
+        It follows the redirections, so the pointer at the end of the chain is
+        the recipient. Any OTHER address is `stale`: the walk worked and landed
+        somewhere else, which is a different claim from the walk failing.
+        """
+        start_ns = time.time_ns()
+        result = self.runner.run(["pointer", "controller", address])
+        record = result.json() if result.ok else {}
+        controller = record.get("pointer")
+        if result.ok and controller == recipient:
+            outcome = OUTCOME_OK
+        elif result.ok and isinstance(controller, str) and controller:
+            outcome = OUTCOME_STALE
+        else:
+            outcome = OUTCOME_ERROR
+        self.emit(
+            OP_CONTROLLER,
+            {
+                "outcome": outcome,
+                "ok": outcome == OUTCOME_OK,
+                "owned": True,
+                "address": address,
+                "recipient": recipient,
+                "target_kind": "pointer",
+                "duration_ms": result.duration_ms,
+                "start_ns": start_ns,
+                "attempts": 1,
+                "paid_attempts": 0,
+                "error": "" if outcome == OUTCOME_OK else error_summary(result.stderr),
+            },
+        )
+        self.log_op(OP_CONTROLLER, address, outcome, result)
+
+    def check_takeback(self, address: str, args: list[str], *, attempt: str) -> None:
+        """Try to write to a handed-over pointer. A refusal is the PASS.
+
+        `ok` means refused -- with `pointer is final` OR `pointer is forked` on
+        stderr -- and not one atto or one wei spent. Both markers are needed:
+        `final_already` answers an update with the first on an unforked pointer
+        and the second on a forked one, so accepting only `pointer is final`
+        would read a forked pointer's refusal as an error. The spend is the other
+        half of the assertion: a refusal after payment is not a refusal, and the
+        ADR's whole claim about a handover is that it cannot be taken back. A
+        balance that could not be READ gives `error` -- unknown is not zero, and
+        reading it as zero would turn an unmeasured take-back into a pass.
+        """
+        start_ns = time.time_ns()
+        ant_before, gas_before = self.wallet.ant_atto(), self.wallet.gas_wei()
+        result = self.runner.run(args)
+        ant_after, gas_after = self.wallet.ant_atto(), self.wallet.gas_wei()
+        spend = self._spend_fields(ant_before, ant_after, gas_before, gas_after)
+        ant_spend = spend.get("wallet_spend_atto")
+        gas_spend = spend.get("gas_spend_wei")
+        measured = ant_spend is not None and gas_spend is not None
+
+        if result.ok or (ant_spend or 0) > 0 or (gas_spend or 0) > 0:
+            # It was accepted, or it was refused but still cost money. Either way
+            # the handover did not hold the way the ADR says it does.
+            outcome = OUTCOME_ANOMALY
+        elif measured and any(m in result.stderr for m in NO_MORE_WRITES_MARKERS):
+            outcome = OUTCOME_OK
+        else:
+            outcome = OUTCOME_ERROR
+        self.emit(
+            OP_TAKEBACK,
+            {
+                "outcome": outcome,
+                "ok": outcome == OUTCOME_OK,
+                "owned": True,
+                "address": address,
+                "attempt": attempt,
+                "duration_ms": result.duration_ms,
+                "start_ns": start_ns,
+                "attempts": 1,
+                "paid_attempts": 1 if (ant_spend or 0) > 0 else 0,
+                # Recorded even on `ok`, unlike every other op. Here `ok` means
+                # the command FAILED as it was supposed to, and its stderr is
+                # the only record of WHICH refusal it was -- `pointer is final`
+                # or `pointer is forked`, which are different facts about the
+                # pointer and are not recoverable from anywhere else.
+                "error": error_summary(result.stderr),
+                **spend,
+            },
+        )
+        self.log_op(OP_TAKEBACK, address, outcome, result)
+
     def do_sweep(self) -> None:
         """Read every pointer this client knows, own and foreign.
 
@@ -1007,17 +1625,30 @@ class PointerClient:
         record the pointer's AGE at read, which is what makes decay with age a
         table rather than a judgement.
         """
-        self.pool.refresh(self.own_key_name)
+        self.pool.refresh(self.own_key_name, self.own_transfers_key_name)
         discovered = 0
         for address in self.pool.foreign_pointers:
             if self.ledger.add_foreign(address):
                 discovered += 1
-        if discovered:
+        handovers = 0
+        for address, recipient in self.pool.foreign_transfers:
+            if self.ledger.add_foreign_transfer(address, recipient):
+                handovers += 1
+        if discovered or handovers:
             self.ledger.save()
-            print(f"sweep: discovered {discovered} foreign pointer(s)", flush=True)
+            print(
+                f"sweep: discovered {discovered} foreign pointer(s) and "
+                f"{handovers} foreign handover(s)",
+                flush=True,
+            )
 
         now = time.time()
-        for address in list(self.ledger.established_own()):
+        # Handed-over pointers are deliberately skipped here and read by
+        # `_sweep_handovers` instead, which knows the recipient and runs the
+        # finality check beside the read. Sweeping them here as well read every
+        # one of them TWICE a sweep and inflated the `sweep` rows on exactly the
+        # addresses whose state can no longer change.
+        for address in list(self.ledger.updatable_own()):
             entry = self.ledger.own[address]
             self._sweep_one(
                 address,
@@ -1033,6 +1664,60 @@ class PointerClient:
                 owned=False,
                 expected_counter=entry.get("counter"),
                 expected_target=None,
+                age_secs=int(now - entry.get("first_seen", now)),
+            )
+        self._sweep_handovers(now)
+
+    def _sweep_handovers(self, now: float) -> None:
+        """Re-check every handover this client knows about, own and foreign.
+
+        The question a handover raises is not answered at the moment it is made:
+        a close group that was still settling may converge, or fork, hours later.
+        So every own handover is re-checked in full on every sweep, and foreign
+        ones -- which is how a handover is observed from the OTHER side of the
+        world, the reason two pointer clients exist -- are read back too.
+
+        `finality` on the foreign set is SAMPLED. It asks the whole close group
+        and never stops early, so it is the most expensive read here, while the
+        handover population only ever grows; an unsampled sweep would eventually
+        spend all its time on it.
+
+        A FOREIGN handover's age is measured from when this client first saw the
+        published pair, not from the handover itself: the transfers file carries
+        no timestamp, so the real moment is unknowable from here. Foreign rows in
+        the by-age table therefore UNDER-state the age, and the table says so.
+        """
+        for address, entry in list(self.ledger.transferred.items()):
+            transferred_at = entry.get("transferred_at", now)
+            age = int(now - transferred_at)
+            self.check_finality(
+                address,
+                owned=True,
+                age_secs=age,
+                # Exact even on a fork, where several states are reported and
+                # only one of them is ours. Absent on a ledger written before
+                # the id was recorded, which falls back to the single state.
+                state_id=entry.get("state_id") or None,
+            )
+            self.check_redirect(address, entry["recipient"], owned=True, age_secs=age)
+
+        foreign = list(self.ledger.foreign_transfers.items())
+        for address, entry in foreign:
+            self.check_redirect(
+                address,
+                entry["recipient"],
+                owned=False,
+                age_secs=int(now - entry.get("first_seen", now)),
+            )
+        sample = (
+            foreign
+            if len(foreign) <= FOREIGN_FINALITY_SAMPLE
+            else random.sample(foreign, FOREIGN_FINALITY_SAMPLE)
+        )
+        for address, entry in sample:
+            self.check_finality(
+                address,
+                owned=False,
                 age_secs=int(now - entry.get("first_seen", now)),
             )
 
@@ -1066,8 +1751,7 @@ class PointerClient:
                 "ok": outcome == OUTCOME_OK,
                 "owned": owned,
                 "address": address,
-                "counter_expected": expected_counter,
-                "counter_observed": record.get("counter"),
+                **counter_fields(expected_counter, record.get("counter")),
                 "target_kind": record.get("kind", ""),
                 "age_secs": age_secs,
                 "duration_ms": result.duration_ms,
@@ -1089,6 +1773,16 @@ class PointerClient:
                 flush=True,
             )
 
+    def flush_transfers(self) -> None:
+        """Publish `<old> <recipient>` for every handover this client has made."""
+        lines = [f"{old} {entry['recipient']}" for old, entry in self.ledger.transferred.items()]
+        published = publish(lines, self.transfers_file, self.transfers_presigned_url, "handover")
+        if published:
+            print(
+                f"published {len(lines)} handover(s) as {self.own_transfers_key_name}",
+                flush=True,
+            )
+
     def log_op(self, op: str, address: str, outcome: str, result: AntResult) -> None:
         stamp = time.strftime("%H:%M:%S", time.gmtime())
         short = address[:12] if address else "-"
@@ -1101,20 +1795,27 @@ class PointerClient:
             print("\n".join(tail), file=sys.stderr, flush=True)
 
     def run(self) -> None:
+        handover = (
+            f"transfer/{self.transfer_interval}s " if self.transfer_interval > 0 else "no-handover "
+        )
         print(
             f"Pointer client starting: host={self.host} region={self.region} "
             f"index={self.client_index} create/{self.create_interval}s "
             f"update/{self.update_interval}s sweep/{self.sweep_interval}s "
+            f"{handover}"
             f"chain={self.chain_fraction} known="
-            f"{len(self.ledger.own)} own + {len(self.ledger.foreign)} foreign",
+            f"{len(self.ledger.own)} own + {len(self.ledger.foreign)} foreign, "
+            f"{len(self.ledger.transferred)} handed over",
             flush=True,
         )
-        self.pool.refresh(self.own_key_name)
+        self.pool.refresh(self.own_key_name, self.own_transfers_key_name)
         # Publish whatever a previous incarnation owned before doing anything
         # else, so a restarted client's peers can sweep its pointers again
         # immediately rather than after the first create.
         if self.ledger.established_own():
             self.flush_addresses()
+        if self.ledger.transferred:
+            self.flush_transfers()
 
         now = time.monotonic()
         due = {
@@ -1132,6 +1833,13 @@ class PointerClient:
             OP_UPDATE: self.update_interval,
             OP_SWEEP: self.sweep_interval,
         }
+        # Registered only when enabled: an interval of 0 would make the scheduler
+        # pick it every pass, which on a paid operation is a busy loop that
+        # spends money. See the module docstring for why 0 is the default.
+        if self.transfer_interval > 0:
+            due[OP_TRANSFER] = now + self.transfer_interval
+            handlers[OP_TRANSFER] = self.do_transfer
+            intervals[OP_TRANSFER] = self.transfer_interval
         while True:
             which = min(due, key=due.get)
             wait = due[which] - time.monotonic()

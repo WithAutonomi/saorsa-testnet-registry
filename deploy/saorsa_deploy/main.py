@@ -774,14 +774,18 @@ def main(argv=None):
         "'provider:region[:vm_size][:ant=N][:eth=N][:clock_skew=DURATION]"
         "[:bootstrap_cache=BOOL][:forward_logs=BOOL][:network=PROFILE]"
         "[:create_interval_secs=N][:update_interval_secs=N]"
-        "[:sweep_interval_secs=N][:chain_fraction=F][:pointer_max=N]"
+        "[:sweep_interval_secs=N][:chain_fraction=F]"
+        "[:transfer_interval_secs=N][:pointer_max=N]"
         "[:rust_log=VALUE]'. Runs `ant pointer create|update|get|resolve` in a "
         "loop for the life of the run, so paid mutable references are exercised "
         "on a testnet. No file size: a pointer record is a fixed ~5 KB. Carries "
         "a funded wallet like an uploader because every write (create AND "
         "update) is one paid single-node quote — at the defaults that is 180 "
-        "writes/hour, one transaction every 20s. rust_log, if given, must be "
-        "last. Example: --pointer 'digital_ocean:lon1' "
+        "writes/hour, one transaction every 20s. transfer_interval_secs>0 adds "
+        "the handover loop (`ant pointer transfer|finality|controller`), which "
+        "is TWO further paid writes per cycle and needs an `ant` carrying "
+        "V2-1354; 0 (the default) runs no handover at all. rust_log, if given, "
+        "must be last. Example: --pointer 'digital_ocean:lon1' "
         "--pointer 'digital_ocean:syd1:s-2vcpu-4gb:eth=1'",
     )
     clients_infra_parser.add_argument(

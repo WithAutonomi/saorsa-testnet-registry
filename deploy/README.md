@@ -1057,6 +1057,7 @@ provider:region[:vm_size][:ant=N][:eth=N][:clock_skew=DURATION]
 | `update_interval_secs` | `30` | Update a uniformly-random owned pointer this often, then read it back. |
 | `sweep_interval_secs` | `600` | MINIMUM gap between sweeps of every known pointer (own and foreign). A large pool makes a sweep take longer; it never drops pointers from one. |
 | `chain_fraction` | `0.10` | Fraction of updates re-pointed at another OWNED pointer (target kind `pointer`) and then followed with `resolve`. `0` disables chaining. |
+| `transfer_interval_secs` | `0` | Hand one owned pointer over this often (V2-1354). **`0` runs no handover loop at all** — the only pointer interval whose zero is a setting, because `ant pointer transfer` does not exist on a pre-V2-1354 build. Positive values add TWO paid writes a cycle. See "The handover loop". |
 | `pointer_max` | `0` | Safety cap on how many pointers one client will own. `0` = uncapped, which is the intent. |
 
 **The defaults are 180 paid writes per client per hour** — one Arbitrum Sepolia
@@ -1074,7 +1075,7 @@ vantage point can judge.
 
 `ant-pointer` is a Python service (`resources/scripts/pointer_client.py`,
 `Restart=always`) driving the native `ant pointer` subcommands over `--json`.
-Three loops on one scheduler, strictly serial — they share a wallet, and two
+Up to four loops on one scheduler, strictly serial — they share a wallet, and two
 concurrent writes would race the same nonce:
 
 - **create** — `keygen` to a per-pointer seed file under
@@ -1082,6 +1083,8 @@ concurrent writes would race the same nonce:
 - **update** — update a random owned pointer, then `get` it back.
 - **sweep** — read every owned pointer plus every other client's published ones,
   recording each pointer's age at read.
+- **transfer** — the handover cycle, registered only when
+  `transfer_interval_secs` is positive. See "The handover loop" below.
 
 A durable ledger (`/var/lib/ant-pointer/ledger.json`) holds the expected
 `(counter, target)` per owned pointer and the last-seen counter per foreign one,
@@ -1114,8 +1117,11 @@ the gates are written in:
 | `lost_write` | An update refused because the pointer moved in flight, or a write that fell short of its quorum. Paid for, not landed. |
 | `not_found` | The close group agreed there is no pointer there. An ANSWER — `ant pointer get` exits 1 on an absent address and that maps here, not to `error`. |
 | `read_shortfall` | Too few of the close group answered, or no state had enough peers behind it. The network declined to say. |
-| `anomaly` | A counter ABOVE the one written. Only a write by something else to a pointer this client owns could cause it. |
+| `anomaly` | A counter ABOVE the one written. Only a write by something else to a pointer this client owns could cause it. On a handover op: a rival final state, or the pointer already final. |
 | `error` | A protocol or RPC failure — the only class that indicates a fault. |
+| `settling` | `finality` only: the close group holds the final state but has not converged on it. A moment in a handover's life, not a fault. |
+| `unconfirmed` | `finality` only: final on a MAJORITY, with a peer that did not answer. The state a silent peer leaves behind — and exactly what `transfer` refuses to write into, so seeing it AFTER one is worth knowing. |
+| `forked` | `finality` only: two rival final states. A pointer whose ownership is ambiguous forever — the one genuinely alarming finality reading, which is why it is not folded into `anomaly`. |
 
 #### Reading the results
 
@@ -1156,10 +1162,10 @@ cost per write in ANT and ETH.
 `pointer_put_rpc` / `pointer_get_rpc` events per outcome with latency p50/p95,
 and stores them beside the phrase counts in `deployment_log_event_counts` (keyed
 `<event>:<outcome>`). They are what lets "the client was served a stale state" be
-told apart from "a node answered stale". The catalogue also gains a `pointer`
-group of node WARN/INFO lines — store failures, address collisions, replication
-shortfalls, audit failures and prunes — which the existing log-count gate then
-covers.
+told apart from "a node answered stale". The catalogue also gains `pointer`
+groups of node WARN/INFO lines — store failures, address collisions, replication
+shortfalls, audit failures, prunes, and (v6) the finality refusals and forks —
+which the existing log-count gate then covers.
 
 Everything about stale refusals, quorum shortfalls and unpaid offers is logged at
 DEBUG, and the node-tier forwarder drops DEBUG at `log_level: info` (what staging
@@ -1168,14 +1174,18 @@ zero for a reason that has nothing to do with pointers.
 
 #### Gates
 
-`deployments compare` emits eight `[pointer]`-suffixed gates: a write and a read
-success floor, plus the stale-read rate, the lost-write rate, write and read
-latency p50/p95, and the cost per write — all relative to the baseline. They are
-emitted as **NOT ASSESSED, never omitted**, when the baseline has no pointer
-records, which is every baseline on the first pointer-carrying train.
+`deployments compare` emits eleven `[pointer]`-suffixed gates: four absolute
+floors — a write and a read success floor, plus `handover completion [pointer]`
+(95%) and `handover final on sweep [pointer]` (99%) — and seven relative
+comparisons: the stale-read rate, the lost-write rate, write and read latency
+p50/p95, and the cost per write. The relative ones are emitted as **NOT ASSESSED,
+never omitted**, when the baseline has no pointer records, which is every
+baseline on the first pointer-carrying train; the two handover floors read NOT
+ASSESSED when the CANDIDATE recorded no `transfer` operations, which is every
+train whose RC predates V2-1354.
 
 **No pointer gate ever reaches the exit code** — that stays the native file-op
-hard floors'. The two FLOORS are additionally advisory by default
+hard floors'. The four FLOORS are additionally advisory by default
 (`pointer_floor_gates_advisory` in `resources/gates/staging-thresholds.yaml`):
 they are uncalibrated numbers on a tier no run has measured, and ADR-0016 says a
 non-zero stale-read rate is expected without saying how large. The relative gates
@@ -1187,8 +1197,84 @@ worse than the last one did, which needs no calibration.
 - `deploy/manifests/profiles/pointers.yaml` — a short dev run (100 nodes, two
   pointer clients).
 - `deploy/manifests/profiles/staging.yaml` — carries two pointer entries
-  (DigitalOcean `lon1` and `syd1`). **The train's RC must carry pointers**; if it
-  predates them the run operator strips the two entries for that train.
+  (DigitalOcean `lon1` and `syd1`), both with `transfer_interval_secs: 300`.
+  **The train's RC must carry pointers**; if it predates them the run operator
+  strips the two entries for that train, and if it carries pointers but predates
+  V2-1354 it strips `transfer_interval_secs` alone.
+
+#### The handover loop
+
+`transfer_interval_secs: 300` adds a fourth loop that hands pointers over for
+good. `ant pointer transfer --key <old> <recipient>` signs one last state at
+counter `u64::MAX` whose target is the recipient pointer's address; after that the
+pointer can never take another write, which is the property the loop exists to
+measure. One cycle, nine Influx points:
+
+| # | Step | Op | Notes |
+|---|---|---|---|
+| 1 | pick an owned, untransferred pointer | — | none available → the cycle is skipped and NOTHING is emitted |
+| 2 | create the recipient | `create` (+ its read-back `get`) | an ordinary create, so the recipient is comparable with every other pointer |
+| 3 | `transfer` | `transfer` | PAID. Carries `recipient` and the reported `finality_status` |
+| 4 | `finality` | `finality` | asks the WHOLE close group; records `answered` / `group` / `holders` |
+| 5 | redirect `get` | `get` | expects counter `u64::MAX` and target = recipient |
+| 6 | `controller` | `controller` | follows the redirections; `ok` only when it lands on the recipient |
+| 7 | `resolve` | `resolve` | follows the hop to the recipient's own target |
+| 8 | take-back by `update` | `takeback` (`attempt=update`) | must be refused BEFORE paying |
+| 9 | take-back by `transfer` | `takeback` (`attempt=transfer`) | likewise |
+
+Only step 3 pays, so a handover is **two** paid writes (the recipient create and
+the transfer) — 24/hour at `300`, on top of the default 180. `clients
+estimate-gas` reads that straight out of the manifest.
+
+What will bite you:
+
+- **A take-back's success is a REFUSAL, and the wallet is half the assertion.**
+  `ok` requires exit ≠ 0, `pointer is final` on stderr, both balances READ, and
+  zero ANT and zero gas spent. A refusal that still cost money is `anomaly`: it is
+  not a refusal, and the ADR's claim is that a handover cannot be taken back at
+  all. A balance that could not be read gives `error` — unknown is not zero, and
+  reading it as zero would turn an unmeasured take-back into a pass.
+- **The silent-peer refusals are excluded from the completion denominator.**
+  `transfer` refuses before paying when a close-group peer stays silent, because a
+  silent peer could hold a final state and a transfer cannot be taken back. That
+  is the guard working, so `completion = ok / (ok + lost_write + error + anomaly)`
+  and the refusals get their own rate over all attempts. A **rival** final state
+  is `anomaly` and DOES count against completion.
+- **`u64::MAX` fits neither an Influx integer field nor a Postgres `BIGINT`** (both
+  are signed 64-bit). The counter therefore travels as a string field under its
+  own name, `counter_expected_u64` / `counter_observed_u64` — the same route the
+  atto wallet balances already take in this measurement, and a new name because a
+  field that is an integer on some points and a string on others is a type
+  conflict and Influx drops the whole point. `counter_expected` and
+  `counter_observed` widen to `NUMERIC(20)` in Postgres, and the reader folds the
+  two field names back onto one key.
+- **Handovers are published to a second S3 object**,
+  `pointer-transfers-<region>-<index>.txt`, one `<old> <recipient>` line each,
+  rewritten after every completed handover and at startup. NOT onto the address
+  list: its reader takes the first field of each line, so a pair written there
+  would publish the old address with the recipient silently dropped, leaving every
+  other client with an address whose expected state it does not know. Both file
+  downloaders already skip it — the WASM one excludes every `pointer-` key and
+  `downloader.sh` filters to `^upload-`.
+- **A handed-over pointer leaves the `update` candidate list and the chain
+  targets**, and the ledger moves its expected state to `(u64::MAX, recipient)`,
+  so every later read — its own sweeps and the other client's — is checked against
+  the final state. The recipient is an ordinary owned pointer and stays updatable.
+- **`finality` on FOREIGN handovers is sampled**, at most 20 per sweep (a module
+  constant, not a setting). It asks the whole close group and never stops early,
+  so it is the most expensive read here while the handover population only grows.
+  Own handovers are re-checked in full on every sweep.
+- **`print-pointers` gains a "Pointer handovers" section** whenever a `transfer`
+  record exists and prints `no handovers recorded` when none does — a section that
+  vanishes reads as a measurement nobody took. `--by-age` adds "Finality by age
+  since handover", own and foreign apart, in the CLI's own vocabulary (`final`,
+  `open`) rather than in outcome names.
+- **The node side is catalogue v6's `pointer_finality` group**: the two refusals
+  of a final state (fresh and replicated) and the fork WARN. All three are
+  emitted on EVENT only, so a zero means "no handover reached this fleet" as much
+  as "none was refused", and is only readable beside the client-side `transfer`
+  counts. The happy-path refusal of a take-back — by a node that already holds the
+  transfer — logs nothing at all.
 
 ### `build ant-node` command
 
@@ -2069,7 +2155,7 @@ Two hard gates (upload success floor < 99%, download success floor < 99.5%) and 
 
 Transfer-duration percentiles are exact — they come from the per-op `deployment_upload_records` / `deployment_download_records`, which carry each operation's own `duration_ms` and timestamps. `deployment_file_results` is not used: it is an aggregate with no per-op timestamps and therefore cannot be windowed.
 
-A run carrying pointer clients adds eight `[pointer]` gates — see "Pointer gates"
+A run carrying pointer clients adds eleven `[pointer]` gates — see "Pointer gates"
 below.
 
 #### Per-transport gates, and the two advisory settings
@@ -2099,10 +2185,18 @@ stays reserved for the native hard floors.
 
 #### Pointer gates
 
-A run with pointer records gains eight `[pointer]`-suffixed gates: a **write** and
-a **read** success floor (absolute, judged on the candidate alone), and the
+A run with pointer records gains eleven `[pointer]`-suffixed gates: a **write** and
+a **read** success floor plus **handover completion** and **handover final on
+sweep** (all four absolute, judged on the candidate alone), and the
 **stale-read rate**, **lost-write rate**, **write latency p50/p95**, **read latency
 p50/p95** and **ANT cost per write**, all relative to the baseline.
+
+The two handover floors read **NOT ASSESSED** when the candidate recorded no
+`transfer` operations — which is every run whose pointer entries leave
+`transfer_interval_secs` at `0`, i.e. every train whose RC predates V2-1354.
+`handover final on sweep` counts only finality checks at least 600s old: one taken
+seconds after the transfer legitimately reads `settling`, and gating on those
+would gate on how fast the close group happened to be that minute.
 
 Reads and writes are never pooled. A pointer client performs far more reads than
 writes, so one rate over both would let the sweeps bury a write failure entirely.
@@ -2123,7 +2217,7 @@ hard floors do — they need no baseline.
 
 | Key | Shipped | Covers | Why |
 |---|---|---|---|
-| `pointer_floor_gates_advisory` | `true` | `Pointer write/read success floor [pointer]` | Uncalibrated. No run has ever measured a pointer tier, and ADR-0016 says a non-zero stale-read rate is expected without saying how large — so a floor set today is a guess, and gating a ship on a guess is worse than reporting it. Set to `false` once a few pointer-carrying trains have moved the floors to numbers with history behind them. |
+| `pointer_floor_gates_advisory` | `true` | `Pointer write/read success floor [pointer]`, `handover completion [pointer]`, `handover final on sweep [pointer]` | Uncalibrated. No run has ever measured a pointer tier, and ADR-0016 says a non-zero stale-read rate is expected without saying how large — so a floor set today is a guess, and gating a ship on a guess is worse than reporting it. Set to `false` once a few pointer-carrying trains have moved the floors to numbers with history behind them. |
 
 **No pointer gate ever reaches the exit code** — advisory or not. Every one is
 `soft`, so the worst a pointer regression produces is `SOFT FAIL`; exit `2` stays

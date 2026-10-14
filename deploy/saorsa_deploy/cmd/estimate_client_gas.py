@@ -282,7 +282,15 @@ def cmd_estimate_client_gas(args) -> None:
                     transport=POINTER,
                     basis=(
                         f"manifest rates: create/{up.create_interval_secs}s + "
-                        f"update/{up.update_interval_secs}s = {rate:.0f} writes/h"
+                        f"update/{up.update_interval_secs}s"
+                        + (
+                            # Two paid writes per handover cycle: the recipient
+                            # create and the transfer itself.
+                            f" + 2x transfer/{up.transfer_interval_secs}s"
+                            if getattr(up, "transfer_interval_secs", 0)
+                            else ""
+                        )
+                        + f" = {rate:.0f} writes/h"
                     ),
                 )
             )

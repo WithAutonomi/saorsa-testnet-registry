@@ -10,7 +10,12 @@
 # it whenever a number below changes, so two reports can never disagree without
 # the difference being visible. Comparing verdicts produced under different
 # threshold versions is meaningless -- the version is what tells you that.
-version: 5
+#
+# v6 (2026-10-14, V2-1533): ADDED the two pointer HANDOVER floors. Nothing
+# existing changed, so every pre-existing gate's v5 and v6 verdicts ARE
+# comparable; a run that recorded no `transfer` operations reports both new
+# gates NOT ASSESSED rather than as a pass.
+version: 6
 
 # ---------------------------------------------------------------------------
 # Hard gates the command can evaluate from stored metrics.
@@ -65,9 +70,21 @@ hard_gates:
 # The read floor is the LOWER of the two on purpose. A write either lands on its
 # quorum or it does not, while a read has to find a state two of seven peers
 # agree on -- and a read taken seconds after a write is exactly when it will not.
+#
+# The two HANDOVER floors (V2-1354) are the same kind of number and the same
+# caveat applies: no run has measured a handover. They are placed where they are
+# because the two things being gated have very different shapes. A handover is
+# refused before paying whenever a close-group peer stays silent, and those
+# refusals are EXCLUDED from the completion denominator -- so what is left is
+# handovers that reached a verdict, and 95% of those completing is a tier that
+# works. The final-on-sweep floor is higher because it is about a state that has
+# already been written: once the group has had ten minutes to converge, a
+# handover that is not held is a handover that was lost.
 pointer_floor_gates:
   pointer_write_success_floor_percent: 95.0
   pointer_read_success_floor_percent: 90.0
+  pointer_handover_completion_floor_percent: 95.0
+  pointer_handover_final_floor_percent: 99.0
 
 # ---------------------------------------------------------------------------
 # Soft gates: candidate vs baseline, subject to the noise rule.

@@ -343,6 +343,8 @@ POINTER_FLUX_TEMPLATE = """from(bucket: "{bucket}")
        r._field == "address" or
        r._field == "counter_expected" or
        r._field == "counter_observed" or
+       r._field == "counter_expected_u64" or
+       r._field == "counter_observed_u64" or
        r._field == "target_kind" or
        r._field == "age_secs" or
        r._field == "read_back" or
@@ -352,6 +354,12 @@ POINTER_FLUX_TEMPLATE = """from(bucket: "{bucket}")
        r._field == "gas_spend_wei" or
        r._field == "duration_ms" or
        r._field == "start_ns" or
+       r._field == "recipient" or
+       r._field == "finality_status" or
+       r._field == "answered" or
+       r._field == "group" or
+       r._field == "holders" or
+       r._field == "attempt" or
        r._field == "error")
   |> pivot(rowKey: ["_time", "host", "op"], columnKey: ["_field"], valueColumn: "_value")
 """
@@ -393,12 +401,27 @@ def fetch_pointer_points(
     return parse_pointer_csv(iter_response_lines(resp))
 
 
+def _parse_u64_or_int(wide: "str | None", narrow: str) -> int | None:
+    """One counter from either field the client may have written it to.
+
+    The string form wins when present: it is only ever written for a value that
+    could not be an integer field, so the two are never both populated for one
+    counter and a Python int has no ceiling to lose it to.
+    """
+    if wide:
+        try:
+            return int(wide)
+        except ValueError:
+            return None
+    return _parse_int(narrow)
+
+
 def parse_pointer_csv(body: "str | Iterable[str]") -> list[dict]:
     """Parse the pivoted `pointer` CSV.
 
     ``op`` is a TAG, so it arrives as its own column and is part of the row key.
-    ``outcome`` is a string FIELD rather than a tag deliberately: seven values
-    times five ops times a growing pointer population would multiply the series
+    ``outcome`` is a string FIELD rather than a tag deliberately: ten values
+    times nine ops times a growing pointer population would multiply the series
     cardinality for a value nothing groups by in Influx -- the grouping happens
     in Postgres, after `record-results`.
     """
@@ -434,8 +457,18 @@ def parse_pointer_csv(body: "str | Iterable[str]") -> list[dict]:
                     # is unknown. Default to owned.
                     "owned": _parse_int(record.get("owned", "")) != 0,
                     "address": record.get("address") or None,
-                    "counter_expected": _parse_int(record.get("counter_expected", "")),
-                    "counter_observed": _parse_int(record.get("counter_observed", "")),
+                    # A handover's counter is `u64::MAX`, which does not fit an
+                    # Influx integer field, so the client emits it as a string
+                    # under its own name. Folded back onto one key here, so
+                    # nothing downstream has to know there were two.
+                    "counter_expected": _parse_u64_or_int(
+                        record.get("counter_expected_u64"),
+                        record.get("counter_expected", ""),
+                    ),
+                    "counter_observed": _parse_u64_or_int(
+                        record.get("counter_observed_u64"),
+                        record.get("counter_observed", ""),
+                    ),
                     "target_kind": record.get("target_kind") or None,
                     "age_secs": _parse_int(record.get("age_secs", "")),
                     "read_back": record.get("read_back") or None,
@@ -449,6 +482,17 @@ def parse_pointer_csv(body: "str | Iterable[str]") -> list[dict]:
                     "duration_ms": _parse_int(record.get("duration_ms", "")),
                     "start_ns": _parse_int(record.get("start_ns", "")),
                     "error": record.get("error") or None,
+                    # Handover fields (V2-1354). Absent on every op that is not
+                    # part of a handover, and on every row recorded before the
+                    # loop existed. `group` is the Influx field name and
+                    # `group_size` the column: `group` is a Flux keyword-ish word
+                    # and the client emits what reads naturally in a dashboard.
+                    "recipient": record.get("recipient") or None,
+                    "finality_status": record.get("finality_status") or None,
+                    "answered": _parse_int(record.get("answered", "")),
+                    "group_size": _parse_int(record.get("group", "")),
+                    "holders": _parse_int(record.get("holders", "")),
+                    "attempt": record.get("attempt") or None,
                 }
             )
         except (KeyError, ValueError):

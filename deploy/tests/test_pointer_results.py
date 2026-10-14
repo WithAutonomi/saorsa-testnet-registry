@@ -24,12 +24,19 @@ from sqlalchemy.orm import Session
 from saorsa_deploy.gate_comparison import NOT_ASSESSED, RunMetrics, compare_runs
 from saorsa_deploy.gate_config import load_gate_config
 from saorsa_deploy.pointer_results import (
+    FINAL_COUNTER,
+    OUTCOMES,
+    READ_OPS,
+    WRITE_OPS,
     age_buckets,
     filter_to_window,
+    finality_age_buckets,
+    is_redirect_read,
     normalise_records,
     percentile,
     summarise,
     summarise_by_host,
+    summarise_handovers,
 )
 
 T0 = datetime(2026, 9, 26, 10, 0, tzinfo=timezone.utc)
@@ -188,7 +195,21 @@ def test_every_op_and_outcome_column_is_present_even_at_zero():
     """A column that vanishes when it is zero makes two runs' tables
     incomparable by eye, and "no anomalies" is a finding."""
     summary = summarise([_op("sweep", "ok")])
-    assert set(summary.by_op) == {"create", "update", "get", "sweep", "resolve"}
+    assert set(summary.by_op) == {
+        "create",
+        "update",
+        "get",
+        "sweep",
+        "resolve",
+        # The handover ops (V2-1354). Present at zero on a run with no handover
+        # loop, for the same reason: a column that vanishes reads as a
+        # measurement nobody took, which here would be "handovers were not
+        # exercised" indistinguishable from "handovers all failed".
+        "transfer",
+        "finality",
+        "controller",
+        "takeback",
+    }
     assert summary.by_op["create"].attempts == 0
     assert "anomaly" in summary.by_op["sweep"].outcomes
 
@@ -527,3 +548,225 @@ def test_cost_per_write_is_gated_relative_to_the_baseline():
     gate = _gates(payload)["Pointer ANT cost per write [pointer]"]
     assert gate["delta_percent"] == pytest.approx(100.0)
     assert gate["verdict"] == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# Handovers (V2-1354)
+# ---------------------------------------------------------------------------
+
+
+def _handover_gates(payload):
+    return {g["gate"]: g for g in payload["gates"] if g["gate"].startswith("handover ")}
+
+
+def test_the_silent_peer_refusals_are_outside_the_completion_denominator():
+    """`transfer` declining to act when a close-group peer did not answer is the
+    pre-payment guard working, not a handover that failed. Counting them would
+    make the completion rate a measure of dial churn."""
+    records = (
+        [_op("transfer", "ok")] * 9
+        + [_op("transfer", "error")]
+        + [_op("transfer", "read_shortfall")] * 10
+    )
+    summary = summarise_handovers(records)
+    assert summary.attempts == 20
+    assert summary.completed == 9
+    assert summary.refused_silent_peer == 10
+    assert summary.completion_denominator == 10
+    assert summary.completion_rate == pytest.approx(90.0)
+    # Reported as its own rate over ALL attempts, so it cannot be lost.
+    assert summary.silent_peer_refusal_rate == pytest.approx(50.0)
+
+
+def test_a_rival_final_state_counts_against_completion():
+    """Unlike the silent-peer refusal: nothing of ours finalized the pointer, so
+    the handover genuinely did not happen."""
+    summary = summarise_handovers([_op("transfer", "ok"), _op("transfer", "anomaly")])
+    assert summary.refused_rival_final == 1
+    assert summary.completion_denominator == 2
+    assert summary.completion_rate == pytest.approx(50.0)
+
+
+def test_only_the_first_finality_check_per_address_is_the_post_transfer_one():
+    """Every later one comes from a sweep, where `settling` means something
+    different -- the group has had time and still has not converged."""
+    records = [
+        _op("finality", "settling", address="aa", start_ns=10, age_secs=1),
+        _op("finality", "ok", address="aa", start_ns=20, age_secs=700),
+        _op("finality", "forked", address="bb", start_ns=30, age_secs=2),
+    ]
+    summary = summarise_handovers(records)
+    assert summary.first_finality["settling"] == 1
+    assert summary.first_finality["forked"] == 1
+    assert summary.first_finality["final"] == 0
+    assert summary.first_finality_total == 2
+
+
+def test_only_aged_finality_checks_feed_the_sweep_gate():
+    """A check taken seconds after the transfer legitimately reads `settling`, so
+    gating on it would gate on how fast the close group happened to be."""
+    records = [
+        _op("finality", "settling", address="aa", start_ns=1, age_secs=5),
+        _op("finality", "ok", address="aa", start_ns=2, age_secs=1200),
+        _op("finality", "unconfirmed", address="bb", start_ns=3, age_secs=1800),
+    ]
+    summary = summarise_handovers(records)
+    assert (summary.aged_finality_ok, summary.aged_finality_total) == (1, 2)
+    assert summary.sweep_finality_ok_rate == pytest.approx(50.0)
+
+
+def test_a_take_back_is_counted_by_attempt_and_a_paid_refusal_is_not_a_refusal():
+    summary = summarise_handovers(
+        [
+            _op("takeback", "ok", attempt="update"),
+            _op("takeback", "anomaly", attempt="update"),
+            _op("takeback", "ok", attempt="transfer"),
+            _op("takeback", "error", attempt="transfer"),
+        ]
+    )
+    update = summary.takebacks["update"]
+    assert (update.attempts, update.refused, update.accepted_or_spent) == (2, 1, 1)
+    assert update.refused_rate == pytest.approx(50.0)
+    transfer = summary.takebacks["transfer"]
+    assert (transfer.attempts, transfer.refused, transfer.errors) == (2, 1, 1)
+
+
+def test_the_cost_of_a_handover_is_the_create_plus_the_transfer():
+    """Two paid writes, not one: the recipient has to exist before the pointer
+    can be handed to it."""
+    records = [
+        _op("create", "ok", paid_attempts=1, ant_spend_atto=10, gas_spend_wei=3),
+        _op("transfer", "ok", paid_attempts=1, ant_spend_atto=20, gas_spend_wei=5),
+    ]
+    summary = summarise_handovers(records)
+    assert summary.mean_ant_atto_per_handover == Decimal(30)
+    assert summary.mean_gas_wei_per_handover == Decimal(8)
+    # Half a measurement is not a cost: a transfer with no paid create to pair it
+    # with would otherwise report a handover as costing only the transfer.
+    assert summarise_handovers(records[1:]).mean_ant_atto_per_handover is None
+
+
+def test_a_redirect_read_is_identified_by_the_final_counter():
+    """No other marker exists on the row, and inferring it from a `transfer`
+    record for the same address would miss every FOREIGN redirect read -- the
+    handover was made by the other client."""
+    records = [
+        _op("get", "ok", counter_expected=FINAL_COUNTER, owned=False),
+        _op("get", "stale", counter_expected=FINAL_COUNTER),
+        _op("get", "ok", counter_expected=4),
+    ]
+    summary = summarise_handovers(records)
+    assert (summary.redirect_ok, summary.redirect_attempts) == (1, 2)
+    assert summary.redirect_ok_rate == pytest.approx(50.0)
+    assert is_redirect_read(records[0]) and not is_redirect_read(records[2])
+
+
+def test_a_resolve_is_only_counted_on_an_address_a_handover_was_recorded_for():
+    """A chained update's resolve carries no column telling it apart, so the
+    handover section matches on the addresses that were handed over."""
+    records = [
+        _op("transfer", "ok", address="aa"),
+        _op("resolve", "ok", address="aa"),
+        _op("resolve", "error", address="zz"),
+    ]
+    summary = summarise_handovers(records)
+    assert (summary.resolve_ok, summary.resolve_attempts) == (1, 1)
+
+
+def test_the_handover_ops_enter_neither_the_write_nor_the_read_success_rate():
+    """A take-back's SUCCESS is a refusal, so averaging it with writes that are
+    supposed to land would invert its contribution; and `finality` asks the whole
+    close group rather than reading a state."""
+    records = [
+        _op("update", "ok", paid_attempts=1),
+        _op("sweep", "ok"),
+        _op("takeback", "ok"),
+        _op("finality", "settling"),
+        _op("controller", "ok"),
+    ]
+    summary = summarise(records)
+    assert summary.write_attempts == 1
+    assert summary.read_attempts == 1
+    # `transfer` IS a write: it buys a quote for the final state.
+    assert "transfer" in WRITE_OPS
+    assert "takeback" not in WRITE_OPS and "takeback" not in READ_OPS
+    assert "finality" not in READ_OPS and "controller" not in READ_OPS
+
+
+def test_finality_buckets_are_finality_only_and_split_own_from_foreign():
+    records = [
+        _op("finality", "ok", owned=True, age_secs=60),
+        _op("finality", "settling", owned=True, age_secs=120),
+        _op("finality", "stale", owned=False, age_secs=60),
+        # A sweep read of the same address is not a finality check.
+        _op("sweep", "ok", owned=True, age_secs=60),
+    ]
+    buckets = finality_age_buckets(records, 1800)
+    assert [(b.owned, b.attempts) for b in buckets] == [(True, 2), (False, 1)]
+    own = buckets[0]
+    assert own.outcomes["final"] == 1 and own.outcomes["settling"] == 1
+    assert own.rate("final") == pytest.approx(50.0)
+    # `open`, in the CLI's vocabulary, is what the `stale` outcome means here.
+    assert buckets[1].outcomes["open"] == 1
+
+
+def test_both_handover_gates_are_not_assessed_when_the_candidate_made_none():
+    """Which is every train whose RC predates `ant pointer transfer`. Emitted,
+    never omitted: a gate that vanishes reads as one nobody thought about."""
+    candidate = _run(1, "c", [_op("create", "ok", paid_attempts=1), _op("sweep", "ok")])
+    payload = compare_runs(candidate, _run(2, "b", []), load_gate_config())
+    gates = _handover_gates(payload)
+    assert set(gates) == {"handover completion [pointer]", "handover final on sweep [pointer]"}
+    for gate in gates.values():
+        assert gate["verdict"] == NOT_ASSESSED
+        assert gate["detail"] == "candidate recorded no pointer handovers"
+        assert gate["kind"] == "soft"
+
+
+def test_the_handover_gates_are_judged_on_the_candidate_alone():
+    """Floors, so they survive `--new-baseline` the way the write and read floors
+    do: the first handover-carrying run has no baseline to be compared with."""
+    candidate = _run(
+        1,
+        "c",
+        [_op("transfer", "ok")] * 19
+        + [_op("transfer", "error")]
+        + [_op("finality", "ok", address="aa", start_ns=1, age_secs=1200)],
+    )
+    payload = compare_runs(candidate, None, load_gate_config(), new_baseline=True)
+    gates = _handover_gates(payload)
+    completion = gates["handover completion [pointer]"]
+    assert completion["verdict"] == "PASS"
+    assert completion["candidate"] == pytest.approx(95.0)
+    assert gates["handover final on sweep [pointer]"]["verdict"] == "PASS"
+
+
+def test_a_handover_gate_below_its_floor_fails_without_reaching_the_exit_code():
+    candidate = _run(
+        1,
+        "c",
+        [_op("transfer", "ok")] * 8
+        + [_op("transfer", "lost_write", paid_attempts=1)] * 2
+        + [_op("finality", "stale", address="aa", start_ns=1, age_secs=1200)],
+    )
+    payload = compare_runs(candidate, _run(2, "b", []), load_gate_config())
+    gates = _handover_gates(payload)
+    assert gates["handover completion [pointer]"]["verdict"] == "FAIL"
+    assert gates["handover final on sweep [pointer]"]["verdict"] == "FAIL"
+    assert all(g["kind"] == "soft" for g in gates.values())
+    # Advisory, like the other pointer floors: uncalibrated numbers on a tier no
+    # run has measured.
+    assert all(g["advisory"] is True for g in gates.values())
+    assert payload["overall"] == "PASS"
+
+
+def test_the_sweep_table_keeps_the_seven_read_outcomes():
+    """The three finality statuses cannot occur on a `sweep` row, so the table a
+    run with no handovers renders is byte-identical to what it rendered before
+    they existed."""
+    from saorsa_deploy.pointer_results import SWEEP_OUTCOMES
+
+    assert SWEEP_OUTCOMES == OUTCOMES[:7]
+    assert set(OUTCOMES) - set(SWEEP_OUTCOMES) == {"settling", "unconfirmed", "forked"}
+    bucket = age_buckets([_op("sweep", "ok", age_secs=60)])[0]
+    assert set(bucket.outcomes) == set(SWEEP_OUTCOMES)

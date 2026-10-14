@@ -242,6 +242,8 @@ def test_the_catalogue_carries_the_pointer_groups():
         "pointer_replication_shortfall",
         "pointer_audit_failure",
         "pointer_prune",
+        # The handover group (V2-1533, for V2-1354).
+        "pointer_finality",
     } <= groups
     # Version bumped, because the catalogue version is stored on every count and
     # is what says whether two runs counted the same thing.
@@ -257,6 +259,9 @@ def test_the_catalogue_carries_the_pointer_groups():
         ("pointer_offer_not_held", "does not hold pointer"),
         ("pointer_prune_failed", "Could not prune pointer"),
         ("pointer_audit_not_held", "committed pointer"),
+        ("pointer_final_refused", "Refusing final pointer state"),
+        ("pointer_fresh_final_refused", "Refusing fresh final pointer state"),
+        ("pointer_forked", "is forked: peer"),
     ],
 )
 def test_each_pointer_phrase_is_the_stable_substring(key, phrase):

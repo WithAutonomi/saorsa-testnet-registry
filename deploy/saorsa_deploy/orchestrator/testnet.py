@@ -24,6 +24,7 @@ from saorsa_deploy.config.models import (
     POINTER_CHAIN_FRACTION,
     POINTER_CREATE_INTERVAL_SECS,
     POINTER_SWEEP_INTERVAL_SECS,
+    POINTER_TRANSFER_INTERVAL_SECS,
     POINTER_UPDATE_INTERVAL_SECS,
     Clients,
     Elastic,
@@ -174,6 +175,8 @@ def _pointer_spec(p) -> str:
         parts.append(f"sweep_interval_secs={p.sweep_interval_secs}")
     if p.chain_fraction != POINTER_CHAIN_FRACTION:
         parts.append(f"chain_fraction={p.chain_fraction}")
+    if p.transfer_interval_secs != POINTER_TRANSFER_INTERVAL_SECS:
+        parts.append(f"transfer_interval_secs={p.transfer_interval_secs}")
     if p.pointer_max:
         parts.append(f"pointer_max={p.pointer_max}")
     # rust_log MUST be last — its value may contain ':' (RUST_LOG '::' paths).

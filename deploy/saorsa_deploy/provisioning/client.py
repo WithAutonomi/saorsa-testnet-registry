@@ -357,20 +357,33 @@ class AntClientProvisioner:
                 }
         return ip_to_env
 
-    @staticmethod
-    def _pointer_env(client: dict) -> dict:
-        """The workload rates one pointer client runs at.
+    def _pointer_env(self, client: dict) -> dict:
+        """The workload rates one pointer client runs at, and where it publishes.
 
         Read from the client's own spec, not from a shared default, because the
         rates are what the run's cost and its Arbitrum Sepolia transaction rate
         are: two pointer clients in one deployment may legitimately differ.
+
+        Every key here must reach `/etc/ant-client.env` as its upper-cased name
+        -- the script reads them from the environment and nothing else tells it
+        what to do. `test_pointer_client_plumbing.py` asserts that hop, which was
+        unguarded until the handover loop added two more variables to it.
         """
         return {
             "create_interval_secs": client.get("create_interval_secs", 60),
             "update_interval_secs": client.get("update_interval_secs", 30),
             "sweep_interval_secs": client.get("sweep_interval_secs", 600),
             "chain_fraction": client.get("chain_fraction", 0.10),
+            # 0 = no handover loop (V2-1354).
+            "transfer_interval_secs": client.get("transfer_interval_secs", 0),
             "pointer_max": client.get("pointer_max", 0),
+            # The handed-over pairs go to an object of their own rather than onto
+            # the address list: the list is read by every client as a set of
+            # readable pointers, and a two-column line in it would be parsed as
+            # an address by one reader and a size by another.
+            "transfers_presigned_url": self._presigned_transfers_put_url(
+                client["region"], client["client_index"]
+            ),
         }
 
     def _add_wasm_ops(self, state, ip_to_env: dict) -> None:
@@ -614,6 +627,136 @@ class AntClientProvisioner:
             Params={"Bucket": self.addresses_s3_bucket, "Key": key},
             ExpiresIn=7 * 24 * 3600,
         )
+
+    def _presigned_transfers_put_url(self, region: str, client_index) -> str:
+        """Mint a presigned PUT URL for one pointer client's handover list.
+
+        A second object beside the address list, written after every completed
+        handover: `pointer-transfers-{region}-{index}.txt`, one
+        ``<old address> <recipient address>`` line per handover. It is how the
+        OTHER pointer clients learn which addresses have been handed over and
+        what they were handed to -- a foreign client reading the plain address
+        list sees the old address and would have no expected state for it.
+        """
+        if not (self.aws_access_key_id and self.aws_secret_access_key):
+            return ""
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=self.aws_access_key_id,
+            aws_secret_access_key=self.aws_secret_access_key,
+            region_name=self.aws_region,
+            endpoint_url=f"https://s3.{self.aws_region}.amazonaws.com",
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "virtual"},
+            ),
+        )
+        key = f"{self.addresses_s3_prefix}/pointer-transfers-{region}-{client_index}.txt"
+        return s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self.addresses_s3_bucket, "Key": key},
+            ExpiresIn=7 * 24 * 3600,
+        )
+
+    @staticmethod
+    def _case_entry(ip: str, env: dict) -> str:
+        """One VM's line in the env script's IP -> values case statement.
+
+        The pointer values are emitted for EVERY role, because the case block is
+        one shape -- which is why they all default to the inert zero/empty here.
+        A deployment with no pointer clients therefore renders exactly as it did
+        before the role existed.
+        """
+        return (
+            f'    "{ip}") ROLE={env["role"]}; '
+            f"FILE_SIZE_KB={env['file_size_kb']}; "
+            f"REGION={env['region']}; "
+            f"CLIENT_INDEX={env['client_index']}; "
+            f'PAYMENT_TYPE="{env["payment_type"]}"; '
+            f'SECRET_KEY="{env["secret_key"]}"; '
+            f"HEAPTRACK={env['heaptrack']}; "
+            f"BOOTSTRAP_CACHE={env['bootstrap_cache']}; "
+            f"FORWARD_LOGS={env['forward_logs']}; "
+            f'RUST_LOG="{env["rust_log"]}"; '
+            f"CREATE_INTERVAL_SECS={env.get('create_interval_secs', 0)}; "
+            f"UPDATE_INTERVAL_SECS={env.get('update_interval_secs', 0)}; "
+            f"SWEEP_INTERVAL_SECS={env.get('sweep_interval_secs', 0)}; "
+            f"CHAIN_FRACTION={env.get('chain_fraction', 0)}; "
+            f"TRANSFER_INTERVAL_SECS={env.get('transfer_interval_secs', 0)}; "
+            f"POINTER_MAX={env.get('pointer_max', 0)}; "
+            f'TRANSFERS_PRESIGNED_URL="{env.get("transfers_presigned_url", "")}"; '
+            f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}" ;;'
+        )
+
+    def _env_file_script(self, case_block: str, fallback_secret: str) -> str:
+        """The shell that writes `/etc/ant-client.env` on every client VM.
+
+        Extracted so the hop can be tested: every per-role value reaches the
+        workload scripts through this file and nothing else, and a variable the
+        case block sets but the heredoc does not export is a setting the service
+        silently runs without. `test_pointer_client_plumbing.py` asserts that for
+        the pointer variables, which was unguarded until the handover loop added
+        two more.
+        """
+        bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
+        env_script = f"""\
+MY_IP=$(hostname -I | awk '{{print $1}}')
+case "$MY_IP" in
+{case_block}
+    *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
+PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true; \
+FORWARD_LOGS=false; RUST_LOG=""; CREATE_INTERVAL_SECS=0; UPDATE_INTERVAL_SECS=0; \
+SWEEP_INTERVAL_SECS=0; CHAIN_FRACTION=0; TRANSFER_INTERVAL_SECS=0; POINTER_MAX=0; \
+TRANSFERS_PRESIGNED_URL=""; UPLOAD_PRESIGNED_URL="" ;;
+esac
+cat > /etc/ant-client.env << ENV_EOF
+HOME=/root
+ROLE=$ROLE
+REGION=$REGION
+CLIENT_INDEX=$CLIENT_INDEX
+BOOTSTRAP_ARGS="{bootstrap_args}"
+BOOTSTRAP_CACHE=$BOOTSTRAP_CACHE
+FORWARD_LOGS=$FORWARD_LOGS
+RUST_LOG=$RUST_LOG
+FILE_SIZE_KB=$FILE_SIZE_KB
+PAYMENT_TYPE=$PAYMENT_TYPE
+SECRET_KEY=$SECRET_KEY
+HEAPTRACK=$HEAPTRACK
+ANT={ANT_INSTALL_PATH}
+ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt
+UPLOAD_DIR={CLIENT_DATA_DIR}/uploads
+DOWNLOAD_DIR={CLIENT_DATA_DIR}/downloads
+AWS_ACCESS_KEY_ID={self.aws_access_key_id}
+AWS_SECRET_ACCESS_KEY={self.aws_secret_access_key}
+AWS_DEFAULT_REGION={self.aws_region}
+ADDRESSES_S3_BUCKET={self.addresses_s3_bucket}
+ADDRESSES_S3_PREFIX={self.addresses_s3_prefix}
+UPLOAD_PRESIGNED_URL=$UPLOAD_PRESIGNED_URL
+ADDRESSES_TAIL_SIZE=10000
+S3_FLUSH_INTERVAL_SECS=30
+S3_FLUSH_EVERY_N=50
+POINTER_DATA_DIR={POINTER_DATA_DIR}
+CREATE_INTERVAL_SECS=$CREATE_INTERVAL_SECS
+UPDATE_INTERVAL_SECS=$UPDATE_INTERVAL_SECS
+SWEEP_INTERVAL_SECS=$SWEEP_INTERVAL_SECS
+CHAIN_FRACTION=$CHAIN_FRACTION
+TRANSFER_INTERVAL_SECS=$TRANSFER_INTERVAL_SECS
+POINTER_MAX=$POINTER_MAX
+TRANSFERS_PRESIGNED_URL=$TRANSFERS_PRESIGNED_URL
+EVM_NETWORK={self.evm_network}
+RPC_URL={self.rpc_url}"""
+
+        if self.influx_url and self.influx_token:
+            env_script += f"""
+INFLUX_URL={self.influx_url}
+INFLUX_TOKEN={self.influx_token}
+INFLUX_ORG={self.influx_org}
+INFLUX_BUCKET={self.influx_bucket}"""
+
+        env_script += """
+ENV_EOF"""
+
+        return env_script
 
     def execute(self) -> None:
         """Provision all client hosts with uploader/downloader services."""
@@ -876,27 +1019,7 @@ class AntClientProvisioner:
 
             ip_to_env = self._build_ip_to_env(fallback_secret)
 
-            case_entries = []
-            for ip, env in ip_to_env.items():
-                case_entries.append(
-                    f'    "{ip}") ROLE={env["role"]}; '
-                    f"FILE_SIZE_KB={env['file_size_kb']}; "
-                    f"REGION={env['region']}; "
-                    f"CLIENT_INDEX={env['client_index']}; "
-                    f'PAYMENT_TYPE="{env["payment_type"]}"; '
-                    f'SECRET_KEY="{env["secret_key"]}"; '
-                    f"HEAPTRACK={env['heaptrack']}; "
-                    f"BOOTSTRAP_CACHE={env['bootstrap_cache']}; "
-                    f"FORWARD_LOGS={env['forward_logs']}; "
-                    f'RUST_LOG="{env["rust_log"]}"; '
-                    f"CREATE_INTERVAL_SECS={env.get('create_interval_secs', 0)}; "
-                    f"UPDATE_INTERVAL_SECS={env.get('update_interval_secs', 0)}; "
-                    f"SWEEP_INTERVAL_SECS={env.get('sweep_interval_secs', 0)}; "
-                    f"CHAIN_FRACTION={env.get('chain_fraction', 0)}; "
-                    f"POINTER_MAX={env.get('pointer_max', 0)}; "
-                    f'UPLOAD_PRESIGNED_URL="{env["upload_presigned_url"]}" ;;'
-                )
-            case_block = "\n".join(case_entries)
+            case_block = "\n".join(self._case_entry(ip, env) for ip, env in ip_to_env.items())
 
             # The peers file is written unconditionally: ant only reads it when
             # invoked without --bootstrap (i.e. BOOTSTRAP_CACHE=true), so it is
@@ -913,60 +1036,7 @@ class AntClientProvisioner:
                 ],
             )
 
-            bootstrap_args = " ".join(f"--bootstrap {peer}" for peer in self.bootstrap_peers)
-            env_script = f"""\
-MY_IP=$(hostname -I | awk '{{print $1}}')
-case "$MY_IP" in
-{case_block}
-    *) ROLE=upload; FILE_SIZE_KB=51200; REGION=unknown; CLIENT_INDEX=0; \
-PAYMENT_TYPE=""; SECRET_KEY="{fallback_secret}"; HEAPTRACK=0; BOOTSTRAP_CACHE=true; \
-FORWARD_LOGS=false; RUST_LOG=""; CREATE_INTERVAL_SECS=0; UPDATE_INTERVAL_SECS=0; \
-SWEEP_INTERVAL_SECS=0; CHAIN_FRACTION=0; POINTER_MAX=0; UPLOAD_PRESIGNED_URL="" ;;
-esac
-cat > /etc/ant-client.env << ENV_EOF
-HOME=/root
-ROLE=$ROLE
-REGION=$REGION
-CLIENT_INDEX=$CLIENT_INDEX
-BOOTSTRAP_ARGS="{bootstrap_args}"
-BOOTSTRAP_CACHE=$BOOTSTRAP_CACHE
-FORWARD_LOGS=$FORWARD_LOGS
-RUST_LOG=$RUST_LOG
-FILE_SIZE_KB=$FILE_SIZE_KB
-PAYMENT_TYPE=$PAYMENT_TYPE
-SECRET_KEY=$SECRET_KEY
-HEAPTRACK=$HEAPTRACK
-ANT={ANT_INSTALL_PATH}
-ADDRESSES_FILE={CLIENT_DATA_DIR}/addresses.txt
-UPLOAD_DIR={CLIENT_DATA_DIR}/uploads
-DOWNLOAD_DIR={CLIENT_DATA_DIR}/downloads
-AWS_ACCESS_KEY_ID={self.aws_access_key_id}
-AWS_SECRET_ACCESS_KEY={self.aws_secret_access_key}
-AWS_DEFAULT_REGION={self.aws_region}
-ADDRESSES_S3_BUCKET={self.addresses_s3_bucket}
-ADDRESSES_S3_PREFIX={self.addresses_s3_prefix}
-UPLOAD_PRESIGNED_URL=$UPLOAD_PRESIGNED_URL
-ADDRESSES_TAIL_SIZE=10000
-S3_FLUSH_INTERVAL_SECS=30
-S3_FLUSH_EVERY_N=50
-POINTER_DATA_DIR={POINTER_DATA_DIR}
-CREATE_INTERVAL_SECS=$CREATE_INTERVAL_SECS
-UPDATE_INTERVAL_SECS=$UPDATE_INTERVAL_SECS
-SWEEP_INTERVAL_SECS=$SWEEP_INTERVAL_SECS
-CHAIN_FRACTION=$CHAIN_FRACTION
-POINTER_MAX=$POINTER_MAX
-EVM_NETWORK={self.evm_network}
-RPC_URL={self.rpc_url}"""
-
-            if self.influx_url and self.influx_token:
-                env_script += f"""
-INFLUX_URL={self.influx_url}
-INFLUX_TOKEN={self.influx_token}
-INFLUX_ORG={self.influx_org}
-INFLUX_BUCKET={self.influx_bucket}"""
-
-            env_script += """
-ENV_EOF"""
+            env_script = self._env_file_script(case_block, fallback_secret)
 
             add_op(
                 state,

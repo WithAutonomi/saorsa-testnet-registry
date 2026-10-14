@@ -193,11 +193,18 @@ def _build_client_vms_field(name: str, clients: list[dict] | None, ssh_key: str)
                 "update_interval_secs": client.get("update_interval_secs"),
                 "sweep_interval_secs": client.get("sweep_interval_secs"),
                 "chain_fraction": client.get("chain_fraction"),
+                # 0 = no handover loop (V2-1354). Named either way, so the
+                # inventory of a run that did not exercise handovers says so
+                # rather than leaving the reader to infer it from an absence.
+                "transfer_interval_secs": client.get("transfer_interval_secs"),
                 "pointer_max": client.get("pointer_max"),
                 "paths": {
                     "owner_keys": f"{POINTER_DATA_DIR}/keys",
                     "ledger": f"{POINTER_DATA_DIR}/ledger.json",
                     "published_addresses": (f"{POINTER_DATA_DIR}/pointer-{region}-{index}.txt"),
+                    "published_transfers": (
+                        f"{POINTER_DATA_DIR}/pointer-transfers-{region}-{index}.txt"
+                    ),
                 },
             }
             if is_pointer(role)

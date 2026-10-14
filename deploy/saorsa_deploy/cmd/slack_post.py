@@ -565,8 +565,12 @@ def _client_line(c: dict) -> str:
         )
         chain = c.get("chain_fraction")
         chain_str = f", chain {chain:.0%}" if chain else ""
+        # Rendered only when the handover loop is on: 0 is "no handovers", and a
+        # `transfer/0s` would read as a rate rather than as its absence.
+        transfer = c.get("transfer_interval_secs")
+        transfer_str = f", transfer/{transfer}s" if transfer else ""
         return (
-            f"• pointer — {region} ({vm_size}{rates}{chain_str})"
+            f"• pointer — {region} ({vm_size}{rates}{transfer_str}{chain_str})"
             f"{cache_str}{skew_str}{net_str}{fwd_str}{rust_str}"
         )
     if is_upload(role):

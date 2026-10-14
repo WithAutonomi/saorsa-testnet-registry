@@ -42,6 +42,13 @@ class PointerOp(enum.Enum):
     `sweep` is a periodic read of every known pointer, and is the one that
     carries a meaningful age. Separating them matters: pooling the two would let
     a high rate of fresh confirming reads mask decay in the aged population.
+
+    The last four are the handover ops (V2-1354). `TRANSFER` is the only paid one
+    of them: a `TAKEBACK` is an attempted write that is refused BEFORE it pays,
+    and `FINALITY` and `CONTROLLER` are free reads of the close group. They are
+    neither writes nor reads for the success-rate denominators -- a take-back
+    whose SUCCESS is a refusal cannot be averaged with writes that are supposed
+    to land.
     """
 
     CREATE = "create"
@@ -49,6 +56,10 @@ class PointerOp(enum.Enum):
     GET = "get"
     SWEEP = "sweep"
     RESOLVE = "resolve"
+    TRANSFER = "transfer"
+    FINALITY = "finality"
+    CONTROLLER = "controller"
+    TAKEBACK = "takeback"
 
 
 class PointerOutcome(enum.Enum):
@@ -70,6 +81,17 @@ class PointerOutcome(enum.Enum):
     - ``ANOMALY``: a counter ABOVE the one we wrote. Only a write by something
       else to a pointer this client owns could cause it, so it is never routine.
     - ``ERROR``: everything else -- a protocol or RPC failure.
+
+    Three more come from the handover's finality check (V2-1354), and only
+    ``final`` is ``OK`` there:
+
+    - ``SETTLING``: the close group has the final state but has not converged on
+      it yet. A moment in a handover's life, not a fault.
+    - ``UNCONFIRMED``: final on a majority, with a peer that did not answer. The
+      state a silent peer leaves behind -- and exactly what `transfer` refuses to
+      write into, which is why seeing it AFTER one is worth knowing.
+    - ``FORKED``: two rival final states. The one genuinely alarming finality
+      outcome, and the reason it is not folded into ``ANOMALY``.
     """
 
     OK = "ok"
@@ -79,6 +101,9 @@ class PointerOutcome(enum.Enum):
     READ_SHORTFALL = "read_shortfall"
     ANOMALY = "anomaly"
     ERROR = "error"
+    SETTLING = "settling"
+    UNCONFIRMED = "unconfirmed"
+    FORKED = "forked"
 
 
 #: Outcomes that count as the operation having worked. Everything else is a
@@ -87,8 +112,11 @@ class PointerOutcome(enum.Enum):
 POINTER_SUCCESS_OUTCOMES = (PointerOutcome.OK,)
 
 #: The paid operations. Reads cost nothing, so a cost-per-write figure is taken
-#: over these alone.
-POINTER_WRITE_OPS = (PointerOp.CREATE, PointerOp.UPDATE)
+#: over these alone. ``TRANSFER`` is here because it pays -- it signs a state at
+#: `u64::MAX` and buys a quote for it like any other write. ``TAKEBACK`` is not:
+#: its whole point is that it is refused before paying, so counting it would put
+#: a deliberate zero into the mean cost per write.
+POINTER_WRITE_OPS = (PointerOp.CREATE, PointerOp.UPDATE, PointerOp.TRANSFER)
 
 
 class DeploymentPointerRecord(Base):
@@ -128,8 +156,16 @@ class DeploymentPointerRecord(Base):
     #: separately, because only for an owned pointer is the expected state known.
     owned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    counter_expected: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    counter_observed: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    #: Numeric(20) rather than BigInteger: a pointer counter is a Rust `u64` and
+    #: a handover writes `u64::MAX` (18446744073709551615), which is about twice
+    #: what a signed BIGINT holds. Widened with the handover work (V2-1354);
+    #: every pre-existing value is small and unaffected.
+    counter_expected: Mapped[Optional[int]] = mapped_column(
+        Numeric(20, 0), nullable=True
+    )
+    counter_observed: Mapped[Optional[int]] = mapped_column(
+        Numeric(20, 0), nullable=True
+    )
     #: `chunk` or `pointer` -- what the pointer was aimed at. A `pointer` target
     #: is a chain hop, and is what `resolve` follows.
     target_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
@@ -155,6 +191,26 @@ class DeploymentPointerRecord(Base):
     gas_spend_wei: Mapped[Optional[int]] = mapped_column(Numeric(78, 0), nullable=True)
 
     error: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+
+    # --- handover columns (V2-1354). All nullable, no backfill: the Influx
+    # points behind every pre-handover row never carried these fields.
+    #: The pointer a `transfer` handed ownership to, and the address the
+    #: redirect read and the `controller` walk are checked against.
+    recipient: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    #: `ant pointer finality`'s verbatim status -- `open` / `settling` / `final`
+    #: / `unconfirmed` / `forked`. Stored as well as being mapped onto `outcome`
+    #: so a future status this build maps to ``ERROR`` is still legible.
+    finality_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    #: How many of the close group answered the finality check, and how many
+    #: there are. `answered < group_size` is what makes a `final` reading
+    #: `unconfirmed`.
+    answered: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    group_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    #: Peers holding the state this client wrote.
+    holders: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    #: Which take-back was tried: `update` or `transfer`. Both must be refused,
+    #: and they are refused by different code paths, so they are reported apart.
+    attempt: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     start_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
     influx_time: Mapped[datetime] = mapped_column(
@@ -189,8 +245,16 @@ class DeploymentPointerRecord(Base):
             "outcome": self.outcome.value,
             "pointer_address": self.pointer_address,
             "owned": self.owned,
-            "counter_expected": self.counter_expected,
-            "counter_observed": self.counter_observed,
+            "counter_expected": (
+                int(self.counter_expected)
+                if self.counter_expected is not None
+                else None
+            ),
+            "counter_observed": (
+                int(self.counter_observed)
+                if self.counter_observed is not None
+                else None
+            ),
             "target_kind": self.target_kind,
             "age_secs": self.age_secs,
             "read_back": self.read_back,
@@ -203,6 +267,12 @@ class DeploymentPointerRecord(Base):
                 str(self.gas_spend_wei) if self.gas_spend_wei is not None else None
             ),
             "error": self.error,
+            "recipient": self.recipient,
+            "finality_status": self.finality_status,
+            "answered": self.answered,
+            "group_size": self.group_size,
+            "holders": self.holders,
+            "attempt": self.attempt,
             "start_ns": self.start_ns,
             "influx_time": self.influx_time.isoformat(),
             "started_at": self.started_at.isoformat(),

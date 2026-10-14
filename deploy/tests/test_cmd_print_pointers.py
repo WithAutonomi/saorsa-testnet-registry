@@ -20,6 +20,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from saorsa_deploy.cmd.print_pointers import cmd_print_pointers
+from saorsa_deploy.pointer_results import FINAL_COUNTER as FINAL
 
 T0 = datetime(2026, 9, 26, 10, 0, tzinfo=timezone.utc)
 
@@ -85,6 +86,13 @@ def _point(**extra):
         "duration_ms": 4200,
         "start_ns": 1,
         "error": None,
+        # Handover fields (V2-1354): absent on every op that is not part of one.
+        "recipient": None,
+        "finality_status": None,
+        "answered": None,
+        "group_size": None,
+        "holders": None,
+        "attempt": None,
         "_time": T0,
     }
     point.update(extra)
@@ -259,3 +267,203 @@ def test_no_database_url_refuses_the_id_path():
     with pytest.raises(SystemExit):
         with patch("saorsa_deploy.cmd.print_pointers.get_repository", return_value=None):
             cmd_print_pointers(_args(id=1))
+
+
+# ---------------------------------------------------------------------------
+# The handovers section (V2-1354)
+# ---------------------------------------------------------------------------
+
+
+def test_a_run_with_no_handovers_says_so_rather_than_omitting_the_section():
+    """Which is every train whose RC predates `ant pointer transfer`. A section
+    that vanishes reads as a measurement nobody took."""
+    out = _capture(_args(name="PTR-01"), [_point()])
+    assert "no handovers recorded" in out
+    assert "Pointer handovers" not in out
+
+
+def test_the_handovers_section_carries_every_figure_the_run_issue_gates_on():
+    out = _capture(
+        _args(name="PTR-01"),
+        [
+            _point(start_ns=1),
+            _point(
+                start_ns=2,
+                op="transfer",
+                outcome="ok",
+                recipient="cd" * 32,
+                finality_status="final",
+                counter_expected=FINAL,
+                counter_observed=None,
+            ),
+            _point(
+                start_ns=3,
+                op="transfer",
+                outcome="read_shortfall",
+                paid_attempts=0,
+                read_back=None,
+            ),
+            _point(
+                start_ns=4,
+                op="finality",
+                outcome="ok",
+                address="ab" * 32,
+                finality_status="final",
+                answered=5,
+                group_size=5,
+                holders=5,
+                age_secs=1200,
+                paid_attempts=0,
+                read_back=None,
+            ),
+            _point(
+                start_ns=5,
+                op="get",
+                outcome="ok",
+                counter_expected=FINAL,
+                counter_observed=FINAL,
+                paid_attempts=0,
+                read_back=None,
+            ),
+            _point(start_ns=6, op="controller", outcome="ok", paid_attempts=0, read_back=None),
+            _point(
+                start_ns=7,
+                op="takeback",
+                outcome="ok",
+                attempt="update",
+                paid_attempts=0,
+                ant_spend_atto=0,
+                gas_spend_wei=0,
+                read_back=None,
+            ),
+            _point(
+                start_ns=8,
+                op="takeback",
+                outcome="anomaly",
+                attempt="transfer",
+                paid_attempts=1,
+                read_back=None,
+            ),
+        ],
+    )
+    for figure in (
+        "Pointer handovers",
+        "Attempts",
+        "Completed",
+        "silent peer",
+        "rival final",
+        "Lost writes",
+        "Handover latency p50 / p95",
+        "Mean cost per handover",
+        "Redirect reads ok",
+        "Controller ok",
+        "Resolve ok",
+        # The title wraps to the (narrow) table width, so match a fragment.
+        "Finality at the check",
+        "Take-backs",
+        "Accepted or spent",
+    ):
+        assert figure in out, figure
+    # The silent-peer refusal is excluded from the completion denominator, so
+    # one completed out of two attempts still reads 100%.
+    assert "1/1 (100.00%)" in out
+    assert "unconfirmed" in out and "forked" in out
+
+
+def test_the_exclusion_of_the_silent_peer_refusals_is_stated_where_it_is_read():
+    """A reader comparing `Attempts` with the completion denominator must not
+    have to find the source to see why they differ."""
+    out = _capture(
+        _args(name="PTR-01"),
+        [_point(op="transfer", outcome="read_shortfall", paid_attempts=0, read_back=None)],
+    )
+    assert "EXCLUDED from the completion denominator" in out
+
+
+def test_by_age_adds_the_finality_table():
+    out = _capture(
+        _args(name="PTR-01", by_age=True),
+        [
+            _point(op="transfer", outcome="ok", start_ns=1, recipient="cd" * 32),
+            _point(
+                start_ns=2,
+                op="finality",
+                outcome="ok",
+                owned=True,
+                age_secs=60,
+                paid_attempts=0,
+                read_back=None,
+            ),
+            _point(
+                start_ns=3,
+                op="finality",
+                outcome="stale",
+                owned=False,
+                age_secs=4000,
+                paid_attempts=0,
+                read_back=None,
+            ),
+        ],
+    )
+    assert "Finality by age since handover" in out
+    assert "final %" in out
+    # Own and foreign apart, and `open` in the CLI's vocabulary rather than the
+    # `stale` outcome name.
+    assert "own" in out and "foreign" in out
+    assert "open" in out
+
+
+def test_the_recorded_source_renders_the_handovers_section_too(repo):
+    """The two sources go through the same summary, so a handover figure an
+    operator reads live must be the same one that survives teardown."""
+    deployment = repo.create(name="PTR-01", deploy_args={"kind": "testnet"})
+    repo.upsert_pointer_record(
+        deployment_id=deployment.id,
+        client_hostname="PTR-1",
+        region="lon1",
+        op=PointerOp.TRANSFER,
+        outcome=PointerOutcome.OK,
+        start_ns=1,
+        influx_time=T0,
+        started_at=T0,
+        finished_at=T0,
+        duration_ms=5000,
+        pointer_address="ab" * 32,
+        owned=True,
+        counter_expected=FINAL,
+        attempts=1,
+        paid_attempts=1,
+        ant_spend_atto=5 * 10**15,
+        gas_spend_wei=2 * 10**14,
+        recipient="cd" * 32,
+        finality_status="final",
+    )
+    repo.upsert_pointer_record(
+        deployment_id=deployment.id,
+        client_hostname="PTR-1",
+        region="lon1",
+        op=PointerOp.FINALITY,
+        outcome=PointerOutcome.UNCONFIRMED,
+        start_ns=2,
+        influx_time=T0,
+        started_at=T0,
+        finished_at=T0,
+        duration_ms=800,
+        pointer_address="ab" * 32,
+        owned=True,
+        age_secs=1200,
+        finality_status="unconfirmed",
+        answered=4,
+        group_size=5,
+        holders=4,
+    )
+    console = Console(record=True, width=200)
+    with patch("saorsa_deploy.cmd.print_pointers.Console", return_value=console):
+        with patch("saorsa_deploy.cmd.print_pointers.get_repository", return_value=repo):
+            cmd_print_pointers(_args(id=deployment.id, by_age=True))
+    out = console.export_text()
+    assert "Pointer handovers" in out
+    assert "Finality by age since handover" in out
+    # The unconfirmed reading is what `transfer` refuses to write into, so it
+    # must be visible rather than folded into an error.
+    assert "unconfirmed" in out
