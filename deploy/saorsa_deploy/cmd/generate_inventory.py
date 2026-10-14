@@ -8,6 +8,11 @@ from rich.console import Console
 
 from saorsa_deploy.client_roles import is_pointer, unit_for_role
 from saorsa_deploy.evm import get_evm_network_info
+from saorsa_deploy.local_inventory import (
+    DEVNET_MANIFEST_FILENAME,
+    default_inventory_path,
+    retire_local_inventory,
+)
 from saorsa_deploy.provisioning.client import POINTER_DATA_DIR
 from saorsa_deploy.provisioning.prod_downloader import (
     ADDRESSES_PATH as PROD_DOWNLOADER_ADDRESSES_PATH,
@@ -51,8 +56,6 @@ from saorsa_deploy.state import (
 INVENTORY_SCHEMA_VERSION = 7
 DEFAULT_SSH_USER = "root"
 DEFAULT_SSH_KEY = "~/.ssh/id_rsa"
-DEFAULT_OUTPUT_TEMPLATE = "~/.autonomi/testnets/{name}/inventory.json"
-DEVNET_MANIFEST_FILENAME = "devnet-manifest.json"
 DEVNET_DATA_DIR = f"{MOUNT_POINT}/data"
 DEVNET_EVM_NETWORK = "arbitrum-sepolia"
 
@@ -60,7 +63,19 @@ FIREWALL_PLACEHOLDER = "managed by terraform"
 
 
 def _default_output_path(name: str) -> Path:
-    return Path(os.path.expanduser(DEFAULT_OUTPUT_TEMPLATE.format(name=name)))
+    # One definition, shared with the readers and with the retirement path:
+    # `saorsa_deploy.local_inventory`.
+    return default_inventory_path(name)
+
+
+def _deployment_id_field(deployment_id: int | None) -> dict:
+    """``{"deployment_id": id}``, or nothing at all.
+
+    Omitted rather than written as null when the registry is unreachable: a
+    consumer gating on the id (`jq -r '.deployment_id // empty'`) must be able
+    to tell "this snapshot is not from the run I mean" from "I cannot say".
+    """
+    return {} if deployment_id is None else {"deployment_id": deployment_id}
 
 
 def _build_binary_field(state: dict) -> dict:
@@ -297,6 +312,7 @@ def build_inventory(
     clients: list[dict] | None = None,
     monitoring_state: dict | None = None,
     elastic_state: dict | None = None,
+    deployment_id: int | None = None,
 ) -> dict:
     """Build the schema-version-4 inventory dict from a loaded deployment state.
 
@@ -317,6 +333,7 @@ def build_inventory(
     return {
         "schema_version": INVENTORY_SCHEMA_VERSION,
         "testnet_id": state["name"],
+        **_deployment_id_field(deployment_id),
         "created_at": created,
         "binary": _build_binary_field(state),
         "firewalls": _build_firewalls_field(state, clients),
@@ -661,6 +678,7 @@ def build_client_inventory(
     monitoring_state: dict | None = None,
     elastic_state: dict | None = None,
     created_at: str | None = None,
+    deployment_id: int | None = None,
 ) -> dict:
     """Build the inventory for a client-only deployment against production.
 
@@ -682,6 +700,7 @@ def build_client_inventory(
     return {
         "schema_version": INVENTORY_SCHEMA_VERSION,
         "testnet_id": name,
+        **_deployment_id_field(deployment_id),
         "created_at": created,
         # No ant-node runs in these deployments; the `ant` client binary is
         # described by client_config.binary instead.
@@ -783,8 +802,8 @@ def _resolve_wallet_secret_key(args) -> str:
     return key
 
 
-def _load_deploy_args(name: str) -> dict | None:
-    """Read the deployment's ``deploy_args`` from the registry, if reachable.
+def _load_registry_row(name: str):
+    """The deployment's registry row, if the registry is reachable.
 
     Best-effort by design: the registry is optional everywhere else in this
     tool, so an unset DATABASE_URL degrades the inventory rather than failing
@@ -795,10 +814,30 @@ def _load_deploy_args(name: str) -> dict | None:
     repo = get_repository()
     if repo is None:
         return None
-    deployment = repo.get_active_by_name(name) or repo.get_by_name(name)
+    return repo.get_active_by_name(name) or repo.get_by_name(name)
+
+
+def _load_deploy_args(name: str) -> dict | None:
+    """Read the deployment's ``deploy_args`` from the registry, if reachable."""
+    deployment = _load_registry_row(name)
     if deployment is None:
         return None
     return deployment.deploy_args or None
+
+
+def _load_deployment_id(name: str) -> int | None:
+    """The registry row id, for stamping onto the inventory header.
+
+    It is what lets a consumer tell a snapshot of THIS run from one left by an
+    earlier deployment of the same name — file existence cannot, because the
+    names are reused every run. Absent whenever the registry is unreachable;
+    never written as null (see :func:`build_inventory`).
+    """
+    try:
+        deployment = _load_registry_row(name)
+    except Exception:
+        return None
+    return getattr(deployment, "id", None)
 
 
 def _write_inventory_file(args, inventory: dict, console: Console) -> Path:
@@ -866,6 +905,12 @@ def _write_client_inventory(
             "[dim]No client VMs are recorded for this name either, so there is "
             "nothing to describe.[/dim]"
         )
+        # This is the command a teardown is verified with, so it is also where
+        # a snapshot left by a deployment destroyed before the destroy commands
+        # learned to retire their own gets retired. Default path only: with
+        # --output the operator named a particular file, not this one.
+        if not args.output:
+            retire_local_inventory(args.name, console)
         sys.exit(1)
 
     kind = (deploy_args or {}).get("kind")
@@ -893,6 +938,7 @@ def _write_client_inventory(
             deploy_args=deploy_args,
             monitoring_state=monitoring_state,
             elastic_state=elastic_state,
+            deployment_id=_load_deployment_id(args.name),
         )
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -983,6 +1029,7 @@ def cmd_generate_inventory(args):
             clients=clients,
             monitoring_state=monitoring_state,
             elastic_state=elastic_state,
+            deployment_id=_load_deployment_id(args.name),
         )
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")

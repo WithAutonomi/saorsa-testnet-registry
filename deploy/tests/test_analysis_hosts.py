@@ -190,3 +190,195 @@ def test_run_parallel_keeps_input_order(tmp_path):
     vms = hosts.select_vms("DEV-01", ["10.0.0.2", "10.0.0.1"], str(_write_inventory(tmp_path)))
     assert remote.run_parallel(vms, lambda v: v.ip) == ["10.0.0.2", "10.0.0.1"]
     assert remote.run_parallel([], lambda v: v.ip) == []
+
+
+class TestDefaultPathFreshness:
+    """A default-path snapshot is checked against the deployment's S3 state.
+
+    V2-1530 found `~/.autonomi/testnets/DEV-02/inventory.json` on disk ten days
+    after that DEV-02 was destroyed and ran `df` against its 14 addresses, all
+    of which the provider had reassigned. Three commands reading this inventory
+    (`restart-nodes`, `isolate`, `rot-chunks`) mutate the hosts they are given,
+    so the stale set must be refused, not probed.
+    """
+
+    @staticmethod
+    def _default(local_inventory_root, name, inv):
+        path = local_inventory_root / name / "inventory.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(inv))
+        return path
+
+    @staticmethod
+    def _inventory(name="DEV-02", ips=("10.0.0.1",), bootstrap_ips=("10.0.1.1",)):
+        return {
+            "schema_version": 7,
+            "testnet_id": name,
+            "created_at": "2026-10-03T21:13:45Z",
+            "node_vms": [
+                {
+                    "name": f"{name}-ant-node-lon1-{i + 1}",
+                    "ip": ip,
+                    "services": ["ant-node-1"],
+                }
+                for i, ip in enumerate(ips)
+            ],
+            "bootstrap_vms": [
+                {"name": f"{name}-ant-bootstrap-{i + 1}", "ip": ip, "services": ["ant-bootstrap-1"]}
+                for i, ip in enumerate(bootstrap_ips)
+            ],
+        }
+
+    @staticmethod
+    def _no_state(name):
+        raise RuntimeError(f"No deployment state found for '{name}'.")
+
+    def test_loads_when_every_ip_is_in_the_state(self, local_inventory_root, monkeypatch):
+        self._default(local_inventory_root, "DEV-02", self._inventory())
+        monkeypatch.setattr(
+            hosts,
+            "_load_deployment_state",
+            lambda name: {
+                "vm_ips": {"digitalocean/lon1": ["10.0.0.1"]},
+                "bootstrap_nodes": [{"ip": "10.0.1.1", "region": "lon1", "bootstrap_index": 1}],
+            },
+        )
+
+        assert [v.ip for v in hosts.load_vms("DEV-02")] == ["10.0.0.1", "10.0.1.1"]
+
+    def test_refuses_the_v2_1530_shape(self, local_inventory_root, monkeypatch):
+        """The regression: testnet_id DEV-02, created 2026-10-03, 14 node VMs,
+        no S3 state."""
+        ips = tuple(f"10.0.0.{i + 1}" for i in range(14))
+        path = self._default(
+            local_inventory_root, "DEV-02", self._inventory(ips=ips, bootstrap_ips=())
+        )
+        monkeypatch.setattr(hosts, "_load_deployment_state", self._no_state)
+
+        with pytest.raises(hosts.StaleInventoryError) as excinfo:
+            hosts.load_vms("DEV-02")
+
+        message = str(excinfo.value)
+        assert str(path) in message
+        assert "2026-10-03" in message
+        assert "no S3 state for 'DEV-02'" in message
+        assert "generate-inventory --name DEV-02" in message
+        assert "--inventory" in message
+
+    def test_refuses_an_ip_the_state_does_not_know(self, local_inventory_root, monkeypatch):
+        """A rebuilt fleet reuses the name, so the state exists but the old
+        addresses in the snapshot are someone else's now."""
+        self._default(local_inventory_root, "DEV-02", self._inventory(ips=("10.0.0.1", "10.0.0.9")))
+        monkeypatch.setattr(
+            hosts,
+            "_load_deployment_state",
+            lambda name: {
+                "vm_ips": {"digitalocean/lon1": ["10.0.0.1"]},
+                "bootstrap_nodes": [{"ip": "10.0.1.1"}],
+            },
+        )
+
+        with pytest.raises(hosts.StaleInventoryError, match="10.0.0.9"):
+            hosts.load_vms("DEV-02")
+
+    def test_refuses_a_bootstrap_ip_the_state_does_not_know(
+        self, local_inventory_root, monkeypatch
+    ):
+        self._default(local_inventory_root, "DEV-02", self._inventory(bootstrap_ips=("10.0.1.9",)))
+        monkeypatch.setattr(
+            hosts,
+            "_load_deployment_state",
+            lambda name: {"vm_ips": {"digitalocean/lon1": ["10.0.0.1"]}, "bootstrap_nodes": []},
+        )
+
+        with pytest.raises(hosts.StaleInventoryError, match="ant-bootstrap-1 at 10.0.1.9"):
+            hosts.load_vms("DEV-02")
+
+    def test_node_vms_and_select_vms_inherit_the_check(self, local_inventory_root, monkeypatch):
+        self._default(local_inventory_root, "DEV-02", self._inventory())
+        monkeypatch.setattr(hosts, "_load_deployment_state", self._no_state)
+
+        with pytest.raises(hosts.StaleInventoryError):
+            hosts.node_vms("DEV-02")
+        with pytest.raises(hosts.StaleInventoryError):
+            hosts.select_vms("DEV-02", ["10.0.0.1"])
+
+    def test_a_client_only_snapshot_is_checked_against_client_state(
+        self, local_inventory_root, monkeypatch
+    ):
+        """The prod client kinds keep no deployment state at all, so their
+        snapshot's liveness is the client state's."""
+        inv = {
+            "schema_version": 7,
+            "testnet_id": "PROD-DL-02",
+            "created_at": "2026-10-03T21:13:45Z",
+            "node_vms": [],
+            "bootstrap_vms": [],
+            "client_vms": [{"name": "PROD-DL-02-ant-client-download-lon1-1", "ip": "203.0.113.10"}],
+        }
+        self._default(local_inventory_root, "PROD-DL-02", inv)
+        calls = []
+        monkeypatch.setattr(
+            hosts,
+            "_load_deployment_state",
+            lambda name: calls.append(name) or {"vm_ips": {}, "bootstrap_nodes": []},
+        )
+        monkeypatch.setattr(
+            hosts, "_load_client_state", lambda name: {"clients": [{"ip": "203.0.113.10"}]}
+        )
+
+        assert [v.ip for v in hosts.load_vms("PROD-DL-02")] == ["203.0.113.10"]
+        assert calls == []
+
+        monkeypatch.setattr(
+            hosts,
+            "_load_client_state",
+            lambda name: (_ for _ in ()).throw(RuntimeError("No client state")),
+        )
+        with pytest.raises(hosts.StaleInventoryError, match="no S3 client state"):
+            hosts.load_vms("PROD-DL-02")
+
+    def test_a_client_ip_outside_the_client_state_is_stale(self, local_inventory_root, monkeypatch):
+        inv = {
+            "schema_version": 7,
+            "testnet_id": "PROD-DL-02",
+            "created_at": "2026-10-03T21:13:45Z",
+            "client_vms": [{"name": "PROD-DL-02-ant-client-download-lon1-1", "ip": "203.0.113.99"}],
+        }
+        self._default(local_inventory_root, "PROD-DL-02", inv)
+        monkeypatch.setattr(
+            hosts, "_load_client_state", lambda name: {"clients": [{"ip": "203.0.113.10"}]}
+        )
+
+        with pytest.raises(hosts.StaleInventoryError, match="203.0.113.99"):
+            hosts.load_vms("PROD-DL-02")
+
+    def test_an_explicit_override_makes_no_s3_call(self, tmp_path, monkeypatch):
+        """`--inventory` is the operator saying "I know": the check is skipped
+        entirely, which is what keeps every `--inventory-path` caller unchanged."""
+        inv = _write_inventory(tmp_path)
+
+        def _never(name):
+            raise AssertionError("state must not be loaded for an explicit inventory")
+
+        monkeypatch.setattr(hosts, "_load_deployment_state", _never)
+        monkeypatch.setattr(hosts, "_load_client_state", _never)
+
+        assert len(hosts.load_vms("DEV-01", str(inv))) == 4
+
+    def test_a_vm_less_snapshot_needs_no_state(self, local_inventory_root, monkeypatch):
+        """A standalone Elasticsearch deployment's inventory has no VM of any
+        tier; there is nothing to act on, so there is nothing to refuse."""
+        self._default(
+            local_inventory_root,
+            "BETA-ES-01",
+            {"schema_version": 7, "testnet_id": "BETA-ES-01", "node_vms": [], "client_vms": []},
+        )
+
+        def _never(name):
+            raise AssertionError("no state lookup for a VM-less inventory")
+
+        monkeypatch.setattr(hosts, "_load_deployment_state", _never)
+        monkeypatch.setattr(hosts, "_load_client_state", _never)
+
+        assert hosts.load_vms("BETA-ES-01") == []

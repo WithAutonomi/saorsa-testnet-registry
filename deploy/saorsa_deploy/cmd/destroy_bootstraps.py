@@ -7,6 +7,7 @@ from saorsa_deploy.bootstrap import (
     list_stale_bootstrap_state_keys,
     purge_stale_bootstrap_state,
 )
+from saorsa_deploy.local_inventory import retire_local_inventory
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.state import (
     delete_deployment_state,
@@ -77,6 +78,8 @@ def cmd_destroy_bootstraps(args):
             delete_deployment_state(args.name)
         except Exception as e:
             console.print(f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]")
+        else:
+            retire_local_inventory(args.name, console)
         return
 
     if not args.force:
@@ -136,6 +139,9 @@ def cmd_destroy_bootstraps(args):
             fully_destroyed = True
         except Exception as e:
             console.print(f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]")
+        else:
+            # Last tier gone: the local snapshot is now a list of released IPs.
+            retire_local_inventory(args.name, console)
 
     record_event(args.name, "destroy_bootstraps_completed")
     if fully_destroyed:

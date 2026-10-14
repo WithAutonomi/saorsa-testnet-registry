@@ -8,6 +8,7 @@ from rich.console import Console
 from saorsa_deploy.cmd.infra_nodes import NO_VOLUME_PROVIDERS, OVH_REQUIRED_ENV_VARS
 from saorsa_deploy.contabo import missing_contabo_env
 from saorsa_deploy.executor import execute_terraform_runs
+from saorsa_deploy.local_inventory import retire_local_inventory
 from saorsa_deploy.providers import PROVIDERS
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.resources import get_resources_dir
@@ -319,6 +320,10 @@ def cmd_destroy_nodes(args):
             fully_destroyed = True
         except Exception as e:
             console.print(f"[yellow]Warning: Failed to delete deployment state: {e}[/yellow]")
+        else:
+            # The deployment is gone, so its local snapshot now names addresses
+            # the provider has taken back. Retire it before anything reads it.
+            retire_local_inventory(args.name, console)
 
     record_event(args.name, "destroy_nodes_completed")
     if fully_destroyed:
