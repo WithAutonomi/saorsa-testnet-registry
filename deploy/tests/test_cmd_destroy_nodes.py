@@ -265,3 +265,79 @@ class TestOvhDestroy:
         assert cfg.variables["flavor_name"] == "b3-32"
         assert cfg.variables["service_name"] == "project-id"
         assert cfg.variables["name_template"] == "ant-node"
+
+
+class TestRetiresTheLocalSnapshot:
+    """The last tier going means the local inventory now names released IPs.
+
+    V2-1530's `DEV-02` snapshot outlived its deployment by ten days and a
+    phases script took its 14 addresses as a live fleet.
+    """
+
+    @staticmethod
+    def _snapshot(root, name="DEV-02"):
+        path = root / name / "inventory.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'{{"testnet_id": "{name}", "created_at": "2026-10-03T21:13:45Z"}}')
+        return path
+
+    @staticmethod
+    def _retired(path):
+        return [p.name for p in path.parent.iterdir() if p.name.startswith("inventory.json.")]
+
+    def test_retires_it_when_the_state_file_goes(self, patches, local_inventory_root):
+        path = self._snapshot(local_inventory_root)
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [],
+            "regions": [["digitalocean", "lon1"]],
+            "terraform_variables": {"name": "DEV-02", "providers": {}},
+        }
+
+        cmd_destroy_nodes(_args())
+
+        assert not path.exists()
+        assert len(self._retired(path)) == 1
+
+    def test_keeps_it_while_the_bootstraps_survive(self, patches, local_inventory_root):
+        """A partial teardown updates the state rather than deleting it, and the
+        surviving tier's addresses are still ours."""
+        path = self._snapshot(local_inventory_root)
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [{"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1}],
+            "regions": [["digitalocean", "lon1"]],
+            "terraform_variables": {"name": "DEV-02", "providers": {}},
+            "vm_ips": {"digitalocean/lon1": ["10.0.0.1"]},
+        }
+
+        cmd_destroy_nodes(_args())
+
+        assert path.exists()
+
+    def test_keeps_it_when_the_state_deletion_fails(self, patches, local_inventory_root):
+        path = self._snapshot(local_inventory_root)
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [],
+            "regions": [["digitalocean", "lon1"]],
+            "terraform_variables": {"name": "DEV-02", "providers": {}},
+        }
+        patches.delete_state.side_effect = Exception("s3 unavailable")
+
+        cmd_destroy_nodes(_args())
+
+        assert path.exists()
+
+    def test_leaves_another_deployments_snapshot_alone(self, patches, local_inventory_root):
+        other = self._snapshot(local_inventory_root, "DEV-01")
+        patches.load_state.return_value = {
+            "name": "DEV-02",
+            "bootstrap_nodes": [],
+            "regions": [["digitalocean", "lon1"]],
+            "terraform_variables": {"name": "DEV-02", "providers": {}},
+        }
+
+        cmd_destroy_nodes(_args())
+
+        assert other.exists()

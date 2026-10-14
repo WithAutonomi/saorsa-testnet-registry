@@ -2317,6 +2317,29 @@ SSH key from `~/.autonomi/testnets/<name>/inventory.json` (`deployments
 generate-inventory --name <name>` writes it). An IP that is not in the
 inventory is refused rather than treated as an ad-hoc host.
 
+**The local inventory has a lifecycle, and a stale one is refused.** It is
+*written* by `generate-inventory` (the last step of `deployments up`), *retired*
+— renamed `inventory.json.destroyed-<UTC ts>`, alongside `devnet-manifest.json`
+— by `nodes destroy` / `bootstraps destroy` / `deployments unextend` whenever
+they delete the deployment's S3 state, and by `generate-inventory --name <n>`
+itself when that name has neither deployment nor client state left (the command
+a teardown is verified with, which is what cleans up snapshots left by
+deployments destroyed before any of this existed). A partial teardown *updates*
+the state rather than deleting it, so a half-torn-down deployment keeps its
+snapshot until the last tier goes. On *read*, a default-path inventory is
+checked against the S3 state and **refused** when the deployment no longer
+exists or does not know one of the snapshot's IPs; `--inventory <path>` bypasses
+the check (and makes no S3 call) for the cases where the operator knows better.
+Retiring renames rather than deletes because the bytes are a run's evidence, and
+it only ever touches a file whose own `testnet_id` is that name —
+`bootstrap-inventory.json`, the hand-maintained production list, is never
+touched. The header also carries `deployment_id` (the registry row id) whenever
+the registry was reachable, which is what lets a script tell *this* run's
+snapshot from the one its predecessor of the same name left behind: names are
+reused, so file existence tells you nothing. V2-1530 ran `df` against 14
+addresses from a ten-day-old `DEV-02` snapshot that the provider had long since
+reassigned.
+
 **Why the NAT tier matters everywhere.** NAT-simulated VMs run every node
 service inside the `ant_nat` network namespace. `/proc/net/snmp` is
 per-namespace, so telegraf — which runs on the host — reports ~0 UDP for those

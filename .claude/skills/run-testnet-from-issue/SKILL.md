@@ -118,6 +118,16 @@ Stop and say which item failed if any of these is not met:
   `saorsa-deploy/journals/<name>.json`. Any of them present means something went wrong on a
   previous run — `monitoring infra` / `elastic infra` silently **reuse** same-name stacks. Do not
   destroy them; fail the precondition and report which key exists.
+* **No stale local inventory for any name the run will create.** For each name, if
+  `~/.autonomi/testnets/<name>/inventory.json` exists while the S3 state is absent (just
+  verified), it is a snapshot of a destroyed deployment of the same name: deployment names are
+  reused and provider IPs are recycled, so its addresses now belong to other tenants — or, worse,
+  to another deployment of ours. Rename it before `up`:
+  `mv ~/.autonomi/testnets/<name>/inventory.json{,.stale-$(date -u +%Y%m%dT%H%M%SZ)}` (and the
+  `devnet-manifest.json` beside it). This is a **note** in the results comment, not a deviation.
+  V2-1530 ran `df` against 14 such addresses at T0+30m. `up` writes a fresh snapshot at the end,
+  and the destroy commands now retire it themselves, so this precondition only ever catches
+  deployments destroyed before that landed.
 * Any extra preconditions the issue names (branch, SHA, latest release tag, etc.).
 
 Then:
@@ -285,6 +295,24 @@ At **every** boundary:
 
 A health check is a different job from the schedule and does not replace it — the fleet being
 healthy is not evidence that an action is not due.
+
+### Never gate a host list on a file existing
+
+A phases script that reads an extension's (or any deployment's) IP list from
+`~/.autonomi/testnets/<name>/inventory.json` must **not** gate on `[ -f "$INV" ]`. That is true
+for every name ever deployed from this machine, including one whose deployment was destroyed weeks
+ago — which is how V2-1530's script came to run `df` against 14 reassigned addresses. Gate on the
+snapshot being **this** run's:
+
+```bash
+# The snapshot is only this run's if it carries the registry id we deployed.
+[ "$(jq -r '.deployment_id // empty' "$EXT_INV" 2>/dev/null)" = "$EXT_ID" ] || { ... skip ... }
+```
+
+`deployment_id` is written by `generate-inventory` whenever the registry is reachable; a snapshot
+predating that feature has no such key, and so is correctly treated as not ours. Checking the S3
+state key (`saorsa-deploy/deployments/<name>.json`) is the equivalent gate when no id is to hand.
+Say in the generated script's comment which of the two it uses and why.
 
 ### The ceiling
 

@@ -654,3 +654,107 @@ class TestBuildDevnetManifest:
             created_at="2026-04-22T14:00:00.000000+00:00",
         )
         assert json.loads(json.dumps(manifest)) == manifest
+
+
+class TestDeploymentIdStamp:
+    """The header must say WHICH run wrote the snapshot.
+
+    Names are reused every run, so file existence cannot tell a live
+    deployment's snapshot from the one its predecessor left behind — which is
+    exactly what V2-1530's phases script gated on. A phases script can gate on
+    `jq -r '.deployment_id // empty'` instead.
+    """
+
+    def test_present_when_the_registry_is_reachable(self):
+        inv = build_inventory(_state(), deployment_id=659)
+        assert inv["deployment_id"] == 659
+
+    def test_absent_rather_than_null_when_it_is_not(self):
+        assert "deployment_id" not in build_inventory(_state())
+
+    def test_the_client_only_inventory_carries_it_too(self):
+        from saorsa_deploy.cmd.generate_inventory import build_client_inventory
+
+        clients = [{"client_index": 1, "region": "lon1", "ip": "203.0.113.10"}]
+        inv = build_client_inventory("PROD-DL-02", clients, deployment_id=611)
+        assert inv["deployment_id"] == 611
+        assert "deployment_id" not in build_client_inventory("PROD-DL-02", clients)
+
+    def test_the_lookup_degrades_rather_than_failing(self, monkeypatch):
+        from saorsa_deploy.cmd import generate_inventory as mod
+
+        monkeypatch.setattr(
+            mod,
+            "_load_registry_row",
+            lambda name: (_ for _ in ()).throw(RuntimeError("no DATABASE_URL")),
+        )
+        assert mod._load_deployment_id("DEV-02") is None
+
+        monkeypatch.setattr(mod, "_load_registry_row", lambda name: None)
+        assert mod._load_deployment_id("DEV-02") is None
+
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(mod, "_load_registry_row", lambda name: SimpleNamespace(id=659))
+        assert mod._load_deployment_id("DEV-02") == 659
+
+
+class TestNothingToDescribeRetiresTheSnapshot:
+    """`generate-inventory --name <n>` is how a teardown is verified, so it is
+    also how every snapshot left by a deployment destroyed BEFORE the destroy
+    commands learned to retire their own gets cleaned up."""
+
+    def _run(self, monkeypatch, name="DEV-02", output=None):
+        from types import SimpleNamespace
+
+        from saorsa_deploy.cmd import generate_inventory as mod
+
+        def _missing(state_name):
+            raise RuntimeError(f"No deployment state found for '{state_name}'.")
+
+        monkeypatch.setattr(mod, "load_deployment_state", _missing)
+        monkeypatch.setattr(mod, "load_client_state", _missing)
+        monkeypatch.setattr(mod, "load_monitoring_state", _missing)
+        monkeypatch.setattr(mod, "load_elastic_state", _missing)
+        monkeypatch.setattr(mod, "_load_deploy_args", lambda state_name: None)
+        with pytest.raises(SystemExit) as excinfo:
+            mod.cmd_generate_inventory(
+                SimpleNamespace(
+                    name=name,
+                    ssh_key_path="/k",
+                    node_count=None,
+                    output=output,
+                    wallet_secret_key=None,
+                )
+            )
+        assert excinfo.value.code == 1
+
+    @staticmethod
+    def _snapshot(root, name="DEV-02"):
+        path = root / name / "inventory.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'{{"testnet_id": "{name}", "created_at": "2026-10-03T21:13:45Z"}}')
+        return path
+
+    def test_retires_a_stale_snapshot_and_still_exits_one(self, monkeypatch, local_inventory_root):
+        path = self._snapshot(local_inventory_root)
+
+        self._run(monkeypatch)
+
+        assert not path.exists()
+        assert any(p.name.startswith("inventory.json.destroyed-") for p in path.parent.iterdir())
+
+    def test_exits_one_with_no_snapshot_to_retire(self, monkeypatch, local_inventory_root):
+        self._run(monkeypatch)
+        assert not (local_inventory_root / "DEV-02").exists()
+
+    def test_leaves_the_snapshot_alone_when_output_names_another_file(
+        self, monkeypatch, local_inventory_root, tmp_path
+    ):
+        """With --output the operator asked about a particular file, not the
+        default-path snapshot."""
+        path = self._snapshot(local_inventory_root)
+
+        self._run(monkeypatch, output=str(tmp_path / "elsewhere.json"))
+
+        assert path.exists()

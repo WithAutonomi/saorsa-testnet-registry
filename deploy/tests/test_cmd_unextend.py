@@ -120,3 +120,50 @@ class TestValidation:
         cmd_unextend(_args())
 
         patches.delete_state.assert_called_once_with("DEV-02")
+
+
+class TestRetiresTheLocalSnapshot:
+    """`unextend` is the last step of an extension's teardown — `nodes destroy`
+    released its node VMs before it ran, so the snapshot names freed IPs."""
+
+    @staticmethod
+    def _snapshot(root, name="DEV-02"):
+        path = root / name / "inventory.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'{{"testnet_id": "{name}", "created_at": "2026-10-03T21:13:45Z"}}')
+        return path
+
+    def _extension_state(self):
+        return {
+            "name": "DEV-02",
+            "shared_bootstrap_from": "DEV-01",
+            "bootstrap_nodes": [{"ip": "1.1.1.1", "region": "lon1", "bootstrap_index": 1}],
+            "regions": [],
+        }
+
+    def test_retires_it_after_the_state_is_deleted(self, patches, local_inventory_root):
+        path = self._snapshot(local_inventory_root)
+        patches.load_state.return_value = self._extension_state()
+
+        cmd_unextend(_args())
+
+        assert not path.exists()
+        assert any(p.name.startswith("inventory.json.destroyed-") for p in path.parent.iterdir())
+
+    def test_never_touches_the_sources_snapshot(self, patches, local_inventory_root):
+        source = self._snapshot(local_inventory_root, "DEV-01")
+        patches.load_state.return_value = self._extension_state()
+
+        cmd_unextend(_args())
+
+        assert source.exists()
+
+    def test_keeps_it_when_the_state_deletion_fails(self, patches, local_inventory_root):
+        path = self._snapshot(local_inventory_root)
+        patches.load_state.return_value = self._extension_state()
+        patches.delete_state.side_effect = Exception("s3 unavailable")
+
+        with pytest.raises(SystemExit):
+            cmd_unextend(_args())
+
+        assert path.exists()

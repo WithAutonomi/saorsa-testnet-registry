@@ -2,6 +2,7 @@ import sys
 
 from rich.console import Console
 
+from saorsa_deploy.local_inventory import retire_local_inventory
 from saorsa_deploy.registry import record_event, record_status
 from saorsa_deploy.state import (
     delete_deployment_state,
@@ -84,6 +85,10 @@ def cmd_unextend(args):
         record_event(name, "unextend_failed", {"source": source})
         record_status(name, DeploymentStatus.FAILED)
         sys.exit(1)
+
+    # The extension's state is gone; its local snapshot named its own node VMs,
+    # which `nodes destroy` released before we got here.
+    retire_local_inventory(name, console)
 
     record_event(name, "unextend_completed", {"source": source})
     record_status(name, DeploymentStatus.DESTROYED)
