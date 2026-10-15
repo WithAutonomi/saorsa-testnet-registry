@@ -7,8 +7,11 @@ submission order, same-region clients would get each other's IPs — exactly
 the symptom that motivated this regression test.
 """
 
+import io
 from pathlib import Path
 from unittest.mock import patch
+
+from rich.console import Console
 
 from saorsa_deploy.executor import execute_terraform_runs
 from saorsa_deploy.terraform import TerraformResult, TerraformRunConfig
@@ -55,3 +58,33 @@ def test_results_preserve_submission_order_when_futures_complete_out_of_order():
         "10.0.0.3",
         "10.0.0.4",
     ]
+
+
+def test_prints_a_notice_for_a_retried_destroy():
+    configs = [_config("lon1", 1), _config("ams3", 2)]
+    buffer = io.StringIO()
+
+    def fake_destroy(config: TerraformRunConfig) -> TerraformResult:
+        return TerraformResult(
+            success=True,
+            provider=config.provider,
+            region=config.region,
+            stdout="Destroy complete! Resources: 6 destroyed.",
+            retried=config.region == "lon1",
+        )
+
+    with (
+        patch("saorsa_deploy.executor.run_terraform_destroy", side_effect=fake_destroy),
+        patch(
+            "saorsa_deploy.executor.Console",
+            return_value=Console(file=buffer, width=200, force_terminal=False),
+        ),
+    ):
+        execute_terraform_runs(configs, action="destroy")
+
+    output = buffer.getvalue()
+    assert (
+        "digitalocean/lon1: terraform destroy retried once after the DigitalOcean "
+        "volume-detach 404 race" in output
+    )
+    assert "digitalocean/ams3: terraform destroy retried once" not in output

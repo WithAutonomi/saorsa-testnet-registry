@@ -6,14 +6,32 @@ from unittest.mock import patch
 import pytest
 
 from saorsa_deploy.terraform import (
+    DESTROY_RETRY_MARKER,
     TerraformRunConfig,
     build_apply_args,
     build_destroy_args,
     build_init_args,
     build_output_args,
+    is_do_volume_detach_race,
     prepare_workspace,
     run_terraform,
     run_terraform_destroy,
+)
+
+# The run-670 failure verbatim: Terraform's boxed error, ANSI codes and wrapping intact. The
+# wrap breaks "droplet" from its "(609422581)", which is why the matcher collapses whitespace.
+RUN_670_RACE_OUTPUT = (
+    "\x1b[31m\u2577\x1b[0m\n"
+    "\x1b[31m\u2502\x1b[0m \x1b[1m\x1b[31mError: \x1b[0m\x1b[0m\x1b[1mError detaching the "
+    "volumes from the droplet\x1b[0m\n"
+    "\x1b[31m\u2502\x1b[0m (609422581): Error detaching volume\n"
+    '\x1b[31m\u2502\x1b[0m "c7e3b9f1-c8b7-11f1-9fd4-d26f6d2e9370" from droplet (609422581): '
+    "POST\n"
+    "\x1b[31m\u2502\x1b[0m https://api.digitalocean.com/v2/volumes/"
+    "c7e3b9f1-c8b7-11f1-9fd4-d26f6d2e9370/actions: 404\n"
+    '\x1b[31m\u2502\x1b[0m (request "e69a191c-ac05-4d4a-8ae0-d6df2f7e7bb9") error detaching '
+    "volume from droplet: not found\n"
+    "\x1b[31m\u2575\x1b[0m\n"
 )
 
 
@@ -341,3 +359,103 @@ class TestRunTerraformDestroy:
                 os.environ.pop("DO_TOKEN", None)
             else:
                 os.environ["DO_TOKEN"] = original
+
+
+class TestIsDoVolumeDetachRace:
+    def test_detects_the_volume_detach_race(self):
+        assert is_do_volume_detach_race(RUN_670_RACE_OUTPUT) is True
+
+    def test_rejects_other_destroy_errors(self):
+        other_resource_404 = (
+            "Error: Error deleting droplet: DELETE "
+            "https://api.digitalocean.com/v2/droplets/609422581: 404 (request "
+            '"e69a191c-ac05-4d4a-8ae0-d6df2f7e7bb9") droplet not found'
+        )
+        assert is_do_volume_detach_race(other_resource_404) is False
+
+        detach_422 = RUN_670_RACE_OUTPUT.replace("actions: 404", "actions: 422")
+        assert is_do_volume_detach_race(detach_422) is False
+
+        assert is_do_volume_detach_race("") is False
+
+
+class TestRunTerraformDestroyRetriesTheVolumeDetachRace:
+    @patch("saorsa_deploy.terraform.time.sleep")
+    @patch("saorsa_deploy.terraform.subprocess.run")
+    def test_retries_once_on_the_race_and_succeeds(self, mock_run, mock_sleep, config):
+        mock_run.side_effect = [
+            _make_completed_process(),
+            _make_completed_process(returncode=1, stdout="first out", stderr=RUN_670_RACE_OUTPUT),
+            _make_completed_process(stdout="second out", stderr="second err"),
+        ]
+        result = run_terraform_destroy(config)
+
+        assert result.success is True
+        assert result.retried is True
+        assert mock_run.call_count == 3
+        destroy_calls = mock_run.call_args_list[1:]
+        assert destroy_calls[0].args[0] == destroy_calls[1].args[0]
+        assert destroy_calls[0].args[0][1] == "destroy"
+        assert destroy_calls[0].kwargs["cwd"] == destroy_calls[1].kwargs["cwd"]
+        assert "first out" in result.stdout
+        assert "second out" in result.stdout
+        assert DESTROY_RETRY_MARKER in result.stdout
+        assert RUN_670_RACE_OUTPUT in result.stderr
+        assert "second err" in result.stderr
+        assert DESTROY_RETRY_MARKER in result.stderr
+        mock_sleep.assert_called_once_with(10)
+
+    @patch("saorsa_deploy.terraform.time.sleep")
+    @patch("saorsa_deploy.terraform.subprocess.run")
+    def test_retries_at_most_once(self, mock_run, mock_sleep, config):
+        mock_run.side_effect = [
+            _make_completed_process(),
+            _make_completed_process(returncode=1, stderr=RUN_670_RACE_OUTPUT),
+            _make_completed_process(returncode=1, stderr=RUN_670_RACE_OUTPUT),
+        ]
+        result = run_terraform_destroy(config, retry_delay_secs=0)
+
+        assert result.success is False
+        assert result.retried is True
+        assert len(mock_run.call_args_list[1:]) == 2
+        mock_sleep.assert_called_once_with(0)
+
+    @patch("saorsa_deploy.terraform.time.sleep")
+    @patch("saorsa_deploy.terraform.subprocess.run")
+    def test_no_retry_on_other_failures(self, mock_run, mock_sleep, config):
+        mock_run.side_effect = [
+            _make_completed_process(),
+            _make_completed_process(returncode=1, stderr="Error: some other destroy error"),
+        ]
+        result = run_terraform_destroy(config)
+
+        assert result.success is False
+        assert result.retried is False
+        assert mock_run.call_count == 2
+        mock_sleep.assert_not_called()
+
+    @patch("saorsa_deploy.terraform.time.sleep")
+    @patch("saorsa_deploy.terraform.subprocess.run")
+    def test_no_retry_for_other_providers(self, mock_run, mock_sleep, config):
+        config.provider = "ovh"
+        mock_run.side_effect = [
+            _make_completed_process(),
+            _make_completed_process(returncode=1, stderr=RUN_670_RACE_OUTPUT),
+        ]
+        result = run_terraform_destroy(config)
+
+        assert result.success is False
+        assert result.retried is False
+        assert mock_run.call_count == 2
+        mock_sleep.assert_not_called()
+
+    @patch("saorsa_deploy.terraform.time.sleep")
+    @patch("saorsa_deploy.terraform.subprocess.run")
+    def test_init_failure_still_skips_destroy(self, mock_run, mock_sleep, config):
+        mock_run.return_value = _make_completed_process(returncode=1, stderr="init error")
+        result = run_terraform_destroy(config)
+
+        assert result.success is False
+        assert result.retried is False
+        assert mock_run.call_count == 1
+        mock_sleep.assert_not_called()
