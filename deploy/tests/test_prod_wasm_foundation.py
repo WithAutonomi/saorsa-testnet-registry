@@ -366,7 +366,7 @@ class TestTheAntWasmCliWrapper:
 
 
 class TestTheNodeInstallIsVersionGated:
-    """Presence is not enough — it has to be the right MAJOR.
+    """Presence is not enough — it has to be the right MAJOR, and verified.
 
     Found by the live verification. Two DigitalOcean VMs created minutes apart
     from the same size and region: one had no node and got 22.23.3, the other
@@ -375,10 +375,39 @@ class TestTheNodeInstallIsVersionGated:
     failed, panicking inside ant-core's constructor with
     "could not initialize thread_rng: Node.js ES modules are not directly
     supported" and failing every transfer.
+
+    V2-1557 then hit the same panic with the gate in place. STG-WDL-01 failed
+    all 15 browser-path downloads on 18.19.1 while `curl -fsSL … | bash -` had
+    reported success: the setup script exited after installing only its
+    prerequisites, wrote no NodeSource repository, and the `&& apt-get install
+    nodejs` that followed resolved `nodejs` from Ubuntu's own universe. In a
+    pipeline only `bash`'s status counts, and `bash -` on an empty stdin (a
+    failed fetch) exits 0 too — and `pipefail` cannot be used, since these
+    commands run under dash. So the command now runs the setup script from a
+    file, retries it, never reaches `apt-get install nodejs` after a failed
+    setup, and exits non-zero unless the installed major is the required one.
+
+    The harness runs the WHOLE generated command under `/bin/sh` against a
+    `PATH` of fakes, so every branch is exercised as the VM would run it.
+    Nothing here touches the network or real apt.
     """
 
-    def _run(self, node_version: str | None) -> str:
-        """Run the real generated shell against a fake `node` of that version."""
+    def _run(
+        self,
+        node_version: str | None,
+        *,
+        fetch_fails: bool = False,
+        setup_failures: int = 0,
+        post_install_version: str = "v22.23.3",
+        apt_exit: int = 0,
+    ):
+        """Run the real generated shell against fake node/curl/apt-get/apt-cache.
+
+        ``node_version`` is the version the fake ``node`` reports before the
+        install (``None`` for a VM with no node at all). ``setup_failures`` is
+        how many of the first setup-script runs exit 1; ``fetch_fails`` makes
+        every ``curl`` exit 22, as a refused fetch does.
+        """
         import os
         import subprocess
         import tempfile
@@ -387,47 +416,210 @@ class TestTheNodeInstallIsVersionGated:
             build_node_install_command,
         )
 
-        # The install branch is replaced by a marker: the point is which branch
-        # is taken, and nothing should touch the network or apt.
-        command = build_node_install_command()
-        head, sep, _ = command.partition("curl -fsSL")
-        assert sep, "the install branch must start with the NodeSource fetch"
-        probe = f"{head}echo INSTALL_BRANCH_TAKEN; fi"
+        def write(path: str, body: str) -> None:
+            with open(path, "w") as handle:
+                handle.write(body)
+            os.chmod(path, 0o755)
 
         with tempfile.TemporaryDirectory() as tmp:
-            if node_version is not None:
-                fake = os.path.join(tmp, "node")
-                with open(fake, "w") as handle:
-                    handle.write(f"#!/bin/sh\necho {node_version}\n")
-                os.chmod(fake, 0o755)
+            state = os.path.join(tmp, "node-version")
+            with open(state, "w") as handle:
+                handle.write(f"{node_version or 'none'}\n")
+            curl_log = os.path.join(tmp, "curl.log")
+            apt_log = os.path.join(tmp, "apt-get.log")
+            apt_cache_log = os.path.join(tmp, "apt-cache.log")
+            setup_runs = os.path.join(tmp, "setup-runs")
+
+            # Reports whatever the state file holds, and behaves like a missing
+            # binary while that is "none" — which is what the install replaces.
+            write(
+                os.path.join(tmp, "node"),
+                f'#!/bin/sh\nV=$(cat {state})\nif [ "$V" = none ]; then exit 127; fi\necho "$V"\n',
+            )
+            # The setup script NodeSource would serve, with this scenario's
+            # outcome. Run from a file by the command under test, never piped.
+            write(
+                os.path.join(tmp, "setup-template.sh"),
+                "#!/bin/sh\n"
+                f"N=$(cat {setup_runs} 2>/dev/null || echo 0)\n"
+                f"N=$((N + 1))\necho $N > {setup_runs}\n"
+                f'if [ "$N" -le {setup_failures} ]; then\n'
+                '  echo "setup: partway failure" >&2\n  exit 1\nfi\n'
+                "echo 'setup: repository configured'\n",
+            )
+            write(
+                os.path.join(tmp, "curl"),
+                f'#!/bin/sh\necho "$@" >> {curl_log}\n'
+                + ("exit 22\n" if fetch_fails else "")
+                + "DEST=\nwhile [ $# -gt 0 ]; do\n"
+                '  if [ "$1" = -o ]; then DEST=$2; fi\n  shift\ndone\n'
+                f'cp {os.path.join(tmp, "setup-template.sh")} "$DEST"\n',
+            )
+            write(
+                os.path.join(tmp, "apt-get"),
+                f'#!/bin/sh\necho "$@" >> {apt_log}\n'
+                f"if [ {apt_exit} -ne 0 ]; then exit {apt_exit}; fi\n"
+                'case " $* " in *" install "*)\n'
+                "  case \" $* \" in *' nodejs '*|*' nodejs')\n"
+                f"    echo {post_install_version} > {state} ;;\n"
+                "  esac ;;\nesac\n",
+            )
+            write(
+                os.path.join(tmp, "apt-cache"),
+                f'#!/bin/sh\necho "$@" >> {apt_cache_log}\n'
+                "echo '  Candidate: 18.19.1+dfsg-6ubuntu5'\n",
+            )
+            write(os.path.join(tmp, "sleep"), "#!/bin/sh\nexit 0\n")
+
             result = subprocess.run(
-                ["sh", "-c", probe],
-                env={"PATH": f"{tmp}:/usr/bin:/bin"},
+                ["/bin/sh", "-c", build_node_install_command(retry_delay_secs=0)],
+                env={"PATH": f"{tmp}:/usr/bin:/bin", "TMPDIR": tmp},
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=60,
             )
-        return result.stdout.strip().splitlines()[-1]
+
+            def lines(path: str) -> list[str]:
+                if not os.path.exists(path):
+                    return []
+                with open(path) as handle:
+                    return [line for line in handle.read().splitlines() if line]
+
+            return SimpleNamespace(
+                status=result.returncode,
+                output=result.stdout,
+                last_line=result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "",
+                curl_calls=lines(curl_log),
+                apt_calls=lines(apt_log),
+                apt_cache_calls=lines(apt_cache_log),
+            )
 
     def test_the_required_major_is_skipped(self):
-        assert self._run("v22.23.3") == "NODE:SKIP"
+        result = self._run("v22.23.3")
+        assert result.last_line == "NODE:SKIP"
+        assert result.curl_calls == []
 
     def test_a_patch_or_minor_difference_still_skips(self):
         # Only the major matters; re-installing on every provision would be
         # pointless churn.
-        assert self._run("v22.0.0") == "NODE:SKIP"
+        result = self._run("v22.0.0")
+        assert result.last_line == "NODE:SKIP"
+        assert result.curl_calls == []
 
     def test_no_node_installs(self):
-        assert self._run(None) == "INSTALL_BRANCH_TAKEN"
+        result = self._run(None)
+        assert result.curl_calls
+        assert result.status == 0
+        assert "NODE:INSTALLED:v22.23.3 (was none)" in result.output
 
     def test_ubuntus_preinstalled_node_18_installs(self):
         # The exact version that broke the live run.
-        assert self._run("v18.19.1") == "INSTALL_BRANCH_TAKEN"
+        result = self._run("v18.19.1")
+        assert result.curl_calls
+        assert result.status == 0
+        assert "NODE:INSTALLED:v22.23.3 (was 18)" in result.output
 
     def test_another_wrong_major_installs(self):
-        assert self._run("v20.11.0") == "INSTALL_BRANCH_TAKEN"
+        result = self._run("v20.11.0")
+        assert result.curl_calls
+        assert result.status == 0
 
     def test_unparseable_output_installs(self):
         # Erring toward installing: a node whose version cannot be read is not
         # evidence that the right one is present.
-        assert self._run("weird-build") == "INSTALL_BRANCH_TAKEN"
+        result = self._run("weird-build")
+        assert result.curl_calls
+        assert result.status == 0
+
+    def test_setup_failing_every_attempt_fails_without_installing(self):
+        # `apt-get install nodejs` is the step that installed 18.19.1, so a
+        # setup that never succeeded must not reach it.
+        result = self._run(None, setup_failures=99)
+        assert result.status == 1
+        assert "NODE:SETUP_FAILED after 3 attempts" in result.output
+        assert len(result.curl_calls) == 3
+        assert result.apt_calls == []
+
+    def test_fetch_failing_every_attempt_fails_without_installing(self):
+        # The case `curl … | bash -` exited 0 on: an empty script does nothing
+        # and reports success.
+        result = self._run(None, fetch_fails=True)
+        assert result.status == 1
+        assert "NODE:SETUP_FAILED after 3 attempts" in result.output
+        assert len(result.curl_calls) == 3
+        assert result.apt_calls == []
+
+    def test_setup_succeeding_on_a_retry_installs(self):
+        # The VM had other apt work running concurrently, so a transient setup
+        # failure is the expected case rather than an unusual one.
+        result = self._run(None, setup_failures=1)
+        assert result.status == 0
+        assert "NODE:INSTALLED:v22.23.3" in result.output
+        assert len(result.curl_calls) == 2
+
+    def test_wrong_major_after_install_fails(self):
+        # Exactly the V2-1557 outcome: the setup script reports success, the
+        # repository is not there, and Ubuntu's own archive wins.
+        result = self._run(None, post_install_version="v18.19.1")
+        assert result.status == 1
+        assert "NODE:WRONG_MAJOR:v18.19.1 (wanted 22)" in result.output
+        assert result.apt_cache_calls, "the log must show which archive won"
+
+    def test_apt_failure_fails(self):
+        result = self._run(None, apt_exit=100)
+        assert result.status == 1
+        assert "NODE:APT_FAILED" in result.output
+
+    def test_the_command_is_dash_compatible(self):
+        # pyinfra runs `server.shell` commands under `sh -c`, which is dash
+        # 0.5.12 on Ubuntu 24.04: `set -o pipefail` is an illegal option there,
+        # and `[[` is not a command.
+        import os
+        import subprocess
+
+        from saorsa_deploy.provisioning.wasm_client import (
+            build_node_install_command,
+        )
+
+        command = build_node_install_command()
+        assert "pipefail" not in command
+        assert "[[" not in command
+        if os.path.exists("/bin/dash"):
+            parsed = subprocess.run(
+                ["/bin/dash", "-n", "-c", command],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert parsed.returncode == 0, parsed.stderr
+
+    def test_the_command_does_not_pipe_the_setup_script_into_bash(self):
+        from saorsa_deploy.provisioning.wasm_client import (
+            build_node_install_command,
+        )
+
+        command = build_node_install_command()
+        assert "| bash" not in command
+        assert '-o "$SETUP"' in command
+
+
+class TestTheBuildVmInstallsNodeTheSameWay:
+    """The build VM shares the checked command.
+
+    A bundle built on Node 18 is either a build failure or an untested artifact,
+    and the inline `curl … | bash -` there had no check at all. The op is added
+    inside `AntWasmBuilder.execute` after `connect_all`, so it cannot be
+    rendered without a live SSH connection — the source is the assertion.
+    """
+
+    def test_the_op_uses_the_shared_command(self):
+        from pathlib import Path
+
+        src = Path("deploy/saorsa_deploy/provisioning/build_ant_wasm.py").read_text()
+        assert "commands=[build_node_install_command(NODE_MAJOR)]" in src
+
+    def test_the_build_vm_no_longer_pipes_into_bash(self):
+        from pathlib import Path
+
+        src = Path("deploy/saorsa_deploy/provisioning/build_ant_wasm.py").read_text()
+        assert "| bash -" not in src

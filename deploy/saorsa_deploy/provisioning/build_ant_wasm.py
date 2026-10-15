@@ -37,6 +37,7 @@ from saorsa_deploy.provisioning.apt import (
     build_disable_unattended_upgrades_command,
 )
 from saorsa_deploy.provisioning.authorized_keys import add_operator_authorized_keys_op
+from saorsa_deploy.provisioning.wasm_client import build_node_install_command
 from saorsa_deploy.resources import get_resources_dir
 from saorsa_deploy.wasm_build import (  # noqa: F401  (re-exported)
     BUILD_INFO_NAME,
@@ -137,10 +138,7 @@ class AntWasmBuilder:
                 state,
                 server.shell,
                 name=f"Install Node.js {NODE_MAJOR}",
-                commands=[
-                    f"curl -fsSL https://deb.nodesource.com/setup_{NODE_MAJOR}.x | bash - && "
-                    "apt-get install -y -qq nodejs"
-                ],
+                commands=[build_node_install_command(NODE_MAJOR)],
             )
             add_op(
                 state,
