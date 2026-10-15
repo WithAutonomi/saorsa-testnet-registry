@@ -196,11 +196,15 @@ the cache.
 `forward_logs: true` forwards the client `ant` process's **stdout + stderr** to
 Elasticsearch as raw lines (a `message` field, tagged `role`/`stream`) in a
 **separate** index `telegraf-ant-clients-<name>` so client logs never mingle with
-node logs. For testnet/extension kinds it reuses the deployment's **own** ES
-instance and therefore **requires `elastic.enabled: true`** (a validation error
-otherwise). The prod kinds have no node-tier ES, so the deploy command stands up a
-small **dedicated** ES instance for the client logs and tears it down on destroy
-unless `--keep-elastic` (manifest `keep_elastic: true`) is given. `rust_log:
+node logs. For the **pointer** role, whose service invokes `ant` once per op and
+captures its output, that means every *network* invocation's full stdout and
+stderr (not the balance reads or key generation) alongside the service's own
+per-op summary lines, in the same two files. For testnet/extension kinds it
+reuses the deployment's **own** ES instance and therefore **requires
+`elastic.enabled: true`** (a validation error otherwise). The prod kinds have no
+node-tier ES, so the deploy command stands up a small **dedicated** ES instance
+for the client logs and tears it down on destroy unless `--keep-elastic`
+(manifest `keep_elastic: true`) is given. `rust_log:
 "<spec>"` sets `RUST_LOG` on the client service: the client `ant` binary reads
 `RUST_LOG` via its tracing `EnvFilter` (so a full per-module filter like
 `a::b=debug` works), but only once logging is enabled — the service therefore
