@@ -363,6 +363,191 @@ def test_the_two_flag_groups_are_independent(pc):
 
 
 # ---------------------------------------------------------------------------
+# Log forwarding of the per-op captures
+# ---------------------------------------------------------------------------
+
+
+def _fake_ant(monkeypatch, pc, *, stdout, stderr, timeout=False):
+    """Replace `subprocess.run` with one that returns a fixed capture.
+
+    The workload never reaches a real `ant` here: what is under test is what
+    happens to the text it captured.
+    """
+
+    def fake_run(argv, **kwargs):
+        if timeout:
+            raise pc.subprocess.TimeoutExpired(argv, 10, output=stdout, stderr=stderr)
+
+        class R:
+            pass
+
+        R.returncode = 0
+        R.stdout = stdout
+        R.stderr = stderr
+        return R()
+
+    monkeypatch.setattr(pc.subprocess, "run", fake_run)
+
+
+def test_every_network_invocation_is_appended_to_the_forward_logs(pc, tmp_path, monkeypatch):
+    """`ant`'s output is captured, so nothing reaches the tailed files by itself.
+
+    On a clean run the only thing written was `log_op`'s one summary line per
+    op -- which is why a six-hour pointer host forwarded 28-40 KB while an
+    uploader forwarded 380 MB, and why every client-side pointer phrase the run
+    counted read 0 with 0 hosts.
+    """
+    _fake_ant(
+        monkeypatch,
+        pc,
+        stdout='{"status":"final"}',
+        stderr="Transferring pointer 1a2b3c4d5e6f",
+    )
+    runner = pc.AntRunner("/bin/echo", [], "net", "", 10, forward_dir=str(tmp_path))
+
+    runner.run(["pointer", "transfer", "--key", "k", "--target", "ab"])
+
+    out_log = tmp_path / "pointer.stdout.log"
+    err_log = tmp_path / "pointer.stderr.log"
+    assert out_log.read_text() == '{"status":"final"}\n'
+    assert err_log.read_text() == "Transferring pointer 1a2b3c4d5e6f\n"
+
+    runner.run(["pointer", "get", "ab"])
+
+    # Appended, not overwritten, and each capture is newline-terminated: the
+    # forwarder's tail is line-based, so gluing one op's last line to the next
+    # op's first would ship a line belonging to neither.
+    assert err_log.read_text().splitlines() == ["Transferring pointer 1a2b3c4d5e6f"] * 2
+
+
+def test_a_successful_op_is_forwarded_too(pc, tmp_path, monkeypatch):
+    """`log_op` forwards a stderr tail only on failure. The trace is the point.
+
+    V2-1542 was 6,678 ops, every one `ok`, and forwarded not a single line of
+    `ant`'s tracing output.
+    """
+    _fake_ant(monkeypatch, pc, stdout="", stderr="ok: pointer is final: ab\n")
+    runner = pc.AntRunner("/bin/echo", [], "net", "", 10, forward_dir=str(tmp_path))
+
+    result = runner.run(["pointer", "finality", "ab"])
+
+    assert result.ok
+    assert (tmp_path / "pointer.stderr.log").read_text() == "ok: pointer is final: ab\n"
+
+
+def test_balance_reads_and_key_generation_are_not_forwarded(pc, tmp_path, monkeypatch):
+    """Only the invocations that talk to peers are forwarded.
+
+    `wallet balance` is a single EVM read and `keygen`/`address` are local, so
+    their output says nothing about the network -- `uploader.sh` discards its
+    balance read's stderr for the same reason.
+    """
+    _fake_ant(monkeypatch, pc, stdout="1000", stderr="reading balance\n")
+    runner = pc.AntRunner("/bin/echo", [], "net", "", 10, forward_dir=str(tmp_path))
+
+    runner.run(["wallet", "balance"], bootstrap=False)
+    runner.run(["pointer", "keygen", "--output", "k"], bootstrap=False, evm=False)
+    runner.run(["pointer", "address", "--key", "k"], bootstrap=False, evm=False)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+def test_nothing_is_forwarded_without_a_forward_dir(pc, tmp_path, monkeypatch):
+    """A client without `forward_logs` writes nothing under the directory."""
+    _fake_ant(monkeypatch, pc, stdout="out", stderr="err")
+    runner = pc.AntRunner("/bin/echo", [], "net", "", 10)
+
+    assert runner.forward_dir is None
+    runner.run(["pointer", "get", "ab"])
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+def test_a_timed_out_invocation_forwards_what_was_captured(pc, tmp_path, monkeypatch):
+    """A timeout is exactly when the trace is wanted, so it is forwarded too."""
+    _fake_ant(
+        monkeypatch,
+        pc,
+        stdout="partial",
+        stderr="dialling peers",
+        timeout=True,
+    )
+    runner = pc.AntRunner("/bin/echo", [], "net", "", 10, forward_dir=str(tmp_path))
+
+    result = runner.run(["pointer", "transfer", "--key", "k", "--target", "ab"])
+
+    assert result.rc == 124
+    err = (tmp_path / "pointer.stderr.log").read_text()
+    assert "dialling peers" in err
+    assert "ant timed out after 10s" in err
+    assert (tmp_path / "pointer.stdout.log").read_text() == "partial\n"
+
+
+def test_a_forward_log_past_the_cap_is_truncated_before_the_append(pc, tmp_path, monkeypatch):
+    """The coarse disk guard, the one `uploader.sh` carries: truncate and go on."""
+    monkeypatch.setattr(pc, "FORWARD_LOG_MAX_BYTES", 8)
+    err_log = tmp_path / "pointer.stderr.log"
+    err_log.write_text("x" * 64)
+    _fake_ant(monkeypatch, pc, stdout="", stderr="fresh\n")
+    runner = pc.AntRunner("/bin/echo", [], "net", "", 10, forward_dir=str(tmp_path))
+
+    runner.run(["pointer", "get", "ab"])
+
+    assert err_log.read_text() == "fresh\n"
+
+
+def test_a_failed_append_does_not_fail_the_op(pc, tmp_path, monkeypatch):
+    """Forwarding must never take the workload down with it."""
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("")
+    _fake_ant(monkeypatch, pc, stdout="out", stderr="err")
+    runner = pc.AntRunner("/bin/echo", [], "net", "", 10, forward_dir=str(not_a_dir))
+
+    result = runner.run(["pointer", "get", "ab"])
+
+    assert result.rc == 0
+    assert result.stdout == "out"
+
+
+def test_the_runner_forwards_only_when_the_client_has_forward_logs(pc, tmp_path, monkeypatch):
+    """`FORWARD_LOGS` is the one switch: it drives the tee AND the captures."""
+    monkeypatch.setenv("POINTER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("FORWARD_LOGS", "true")
+    assert pc.PointerClient().runner.forward_dir == pc.FORWARD_LOG_DIR
+
+    monkeypatch.delenv("FORWARD_LOGS")
+    assert pc.PointerClient().runner.forward_dir is None
+
+
+def test_the_stream_tee_shares_the_one_append_rule(pc, tmp_path, monkeypatch):
+    """`_ForwardingStream` goes through `_append_forward` too.
+
+    Two copies of the truncate rule could drift, and the cap is the only thing
+    standing between an append-only log and a full VM.
+    """
+
+    class _Sink:
+        def __init__(self):
+            self.text = ""
+
+        def write(self, text):
+            self.text += text
+            return len(text)
+
+    path = tmp_path / "pointer.stdout.log"
+    sink = _Sink()
+    stream = pc._ForwardingStream(sink, str(path))
+
+    stream.write("first\n")
+    stream.write("second\n")
+    assert path.read_text() == "first\nsecond\n"
+    assert sink.text == "first\nsecond\n"
+
+    monkeypatch.setattr(pc, "FORWARD_LOG_MAX_BYTES", 4)
+    stream.write("third\n")
+    assert path.read_text() == "third\n"
+
+
+# ---------------------------------------------------------------------------
 # Publishing
 # ---------------------------------------------------------------------------
 

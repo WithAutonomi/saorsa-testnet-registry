@@ -199,11 +199,35 @@ _HEX_ADDRESS = re.compile(r"^[0-9a-fA-F]{%d}$" % ADDRESS_HEX_LEN)
 
 #: Where the client->Elasticsearch telegraf forwarder tails, when a client sets
 #: `forward_logs`. Matching the native clients' directory so one forwarder
-#: configuration covers every role.
+#: configuration covers every role. Two things are appended to the two files
+#: there: this script's own prints (the per-op summary lines, via
+#: `_ForwardingStream`) AND every network `ant` invocation's full stdout and
+#: stderr (`AntRunner.run`, the same way `uploader.sh` appends its per-op
+#: captures). Without the second half a clean run forwards a few KB of summary
+#: lines and `ant`'s own tracing -- the client's view of a refused take-back, a
+#: silent peer, a forked read -- reaches Elasticsearch not at all. Balance reads
+#: and key generation are NOT appended: no peers are involved and `uploader.sh`
+#: discards its balance read's stderr too.
 FORWARD_LOG_DIR = "/var/log/ant-client-forward"
 #: Coarse disk guard for the append-only forward logs, as in `uploader.sh`:
 #: truncate past this rather than fill the VM.
 FORWARD_LOG_MAX_BYTES = 1 << 30
+
+
+def _append_forward(path: str, text: str) -> None:
+    """Append to a telegraf-tailed forward log, truncating past the cap.
+
+    The one place the cap is applied, so the stream tee and the per-op captures
+    cannot drift. A failure to append is swallowed: log forwarding must never
+    take the workload down with it.
+    """
+    try:
+        if os.path.exists(path) and (os.path.getsize(path) > FORWARD_LOG_MAX_BYTES):
+            open(path, "w").close()
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError:
+        pass
 
 
 class _ForwardingStream:
@@ -224,13 +248,7 @@ class _ForwardingStream:
 
     def write(self, text: str) -> int:
         written = self._stream.write(text)
-        try:
-            if os.path.exists(self._path) and (os.path.getsize(self._path) > FORWARD_LOG_MAX_BYTES):
-                open(self._path, "w").close()
-            with open(self._path, "a", encoding="utf-8") as handle:
-                handle.write(text)
-        except OSError:
-            pass
+        _append_forward(self._path, text)
         return written
 
     def flush(self) -> None:
@@ -691,12 +709,17 @@ class AntRunner:
         evm_network: str,
         rust_log: str,
         timeout_secs: int,
+        *,
+        forward_dir: str | None = None,
     ):
         self.ant_path = ant_path
         self.bootstrap_args = bootstrap_args
         self.evm_network = evm_network
         self.rust_log = rust_log
         self.timeout_secs = timeout_secs
+        #: Set only when the client has `forward_logs`. Every network
+        #: invocation's capture is appended there; see `FORWARD_LOG_DIR`.
+        self.forward_dir = forward_dir
 
     def _env(self) -> dict:
         env = dict(os.environ)
@@ -746,7 +769,29 @@ class AntRunner:
                 f"\nError: ant timed out after {self.timeout_secs}s"
             )
         duration_ms = int((time.monotonic() - started) * 1000)
+        if bootstrap:
+            self._forward(out, err)
         return AntResult(rc, out, err, duration_ms)
+
+    def _forward(self, out: str, err: str) -> None:
+        """Append a network invocation's captures to the forward logs.
+
+        Whatever the exit code: a successful op's trace is the point -- on a
+        clean run the only thing `log_op` forwards is its one summary line, so
+        conditioning on the outcome is how `ant`'s output came to reach
+        Elasticsearch not at all. `capture_output=True` means nothing is written
+        to the service's own streams, so this is the only route.
+        """
+        if not self.forward_dir:
+            return
+        for name, text in (("pointer.stdout.log", out), ("pointer.stderr.log", err)):
+            if not text:
+                continue
+            # The forwarder's tail is line-based: the last line of one op must
+            # not be glued to the first line of the next.
+            if not text.endswith("\n"):
+                text += "\n"
+            _append_forward(os.path.join(self.forward_dir, name), text)
 
 
 # ---------------------------------------------------------------------------
@@ -1009,6 +1054,7 @@ class PointerClient:
             evm_network=_env("EVM_NETWORK", "arbitrum-sepolia"),
             rust_log=_env("RUST_LOG"),
             timeout_secs=_env_int("POINTER_OP_TIMEOUT_SECS", 600),
+            forward_dir=FORWARD_LOG_DIR if _env_bool("FORWARD_LOGS") else None,
         )
         self.wallet = Wallet(self.runner, _env("RPC_URL"))
         self.influx = InfluxSink(
