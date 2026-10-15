@@ -612,14 +612,21 @@ class TestTheBuildVmInstallsNodeTheSameWay:
     rendered without a live SSH connection — the source is the assertion.
     """
 
-    def test_the_op_uses_the_shared_command(self):
-        from pathlib import Path
+    def _source(self) -> str:
+        """The builder's source, located from the module, not the cwd.
 
-        src = Path("deploy/saorsa_deploy/provisioning/build_ant_wasm.py").read_text()
-        assert "commands=[build_node_install_command(NODE_MAJOR)]" in src
+        A path relative to the repo root only resolves when pytest is started
+        there, and `uv run pytest tests/...` from `deploy/` is just as valid a
+        way to run these.
+        """
+        import inspect
+
+        from saorsa_deploy.provisioning import build_ant_wasm
+
+        return inspect.getsource(build_ant_wasm)
+
+    def test_the_op_uses_the_shared_command(self):
+        assert "commands=[build_node_install_command(NODE_MAJOR)]" in self._source()
 
     def test_the_build_vm_no_longer_pipes_into_bash(self):
-        from pathlib import Path
-
-        src = Path("deploy/saorsa_deploy/provisioning/build_ant_wasm.py").read_text()
-        assert "| bash -" not in src
+        assert "| bash -" not in self._source()
