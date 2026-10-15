@@ -342,7 +342,10 @@ only what differs.
   a node's HELLO), and prints a **final JSON line in the `ant --json` shape**
   plus `payment_sent`, `error_kind`, `file_size`, `client_build`. That shape is
   what leaves the services, their units, their per-op logs and their restart
-  policies **unchanged by the transport**.
+  policies **unchanged by the transport**. The `Install Node.js 22` op fails the
+  provisioning pass unless the installed major is 22 afterwards. A failed
+  NodeSource setup used to fall through to Ubuntu's own `nodejs` 18.19.1, on which
+  every browser-path transfer panics in `getrandom` (V2-1557).
 - **The transport is a property of the DEPLOYMENT** (`client_kind: native|wasm`,
   CLI `--client-kind`, persisted in `deploy_args.client_kind`), because a blended
   result describes neither instrument — WASM measured ~2.2x slower on upload and

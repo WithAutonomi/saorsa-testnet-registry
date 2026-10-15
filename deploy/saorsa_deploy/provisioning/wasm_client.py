@@ -41,7 +41,12 @@ WASM_SERVICE_ENTRY = f"{WASM_CLIENT_DIR}/dist/main.js"
 WASM_BUILD_INFO_PATH = f"{WASM_CLIENT_DIR}/build-info.json"
 
 
-def build_node_install_command(node_major: str = WASM_NODE_MAJOR) -> str:
+def build_node_install_command(
+    node_major: str = WASM_NODE_MAJOR,
+    *,
+    attempts: int = 3,
+    retry_delay_secs: int = 15,
+) -> str:
     """Install Node from NodeSource unless the required MAJOR is already there.
 
     Gated on the major version, not on ``command -v node``. Ubuntu 24.04 ships
@@ -56,14 +61,54 @@ def build_node_install_command(node_major: str = WASM_NODE_MAJOR) -> str:
     NodeSource's setup script plus ``apt-get install nodejs`` upgrades an existing
     wrong-major install, so this is also the repair path, and it stays idempotent
     on a re-provision.
+
+    The install itself is retried, runs the setup script from a FILE rather than a
+    pipe, and ends in a hard check that the installed major is the required one.
+    V2-1557 (STG-WDL-01, 2026-10-15) failed all 15 browser-path downloads on
+    18.19.1 after ``curl -fsSL … | bash -`` had reported success: the setup script
+    exited partway, having installed only its prerequisites and no NodeSource
+    repository, and the ``&& apt-get install nodejs`` that followed then resolved
+    ``nodejs`` from Ubuntu's own universe. A failed ``curl`` has the same effect —
+    ``bash -`` reads an empty script and exits 0 — and the pipeline's status is
+    ``bash``'s either way. ``pipefail`` is not available to fix it: pyinfra runs
+    these commands under ``sh -c``, which is dash on Ubuntu 24.04, and dash has no
+    such option. So the fetch and the run are two separate commands whose statuses
+    both count, ``apt-get install nodejs`` never runs after a failed setup, and a
+    wrong major afterwards exits non-zero (printing ``apt-cache policy nodejs``,
+    so the deploy log shows which archive won) rather than echoing a success
+    marker. The op failing halts provisioning for the host, which is far cheaper
+    than a run of failed transfers misread as a network result.
     """
+    read_major = "node --version 2>/dev/null | sed -n 's/^v\\([0-9][0-9]*\\)\\..*/\\1/p'"
     return (
-        "FOUND=$(node --version 2>/dev/null | "
-        "sed -n 's/^v\\([0-9][0-9]*\\)\\..*/\\1/p'); "
-        f'if [ "$FOUND" = "{node_major}" ]; then echo \'NODE:SKIP\'; else '
-        f"curl -fsSL https://deb.nodesource.com/setup_{node_major}.x | bash - && "
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs && "
-        f'echo "NODE:INSTALLED:$(node --version) (was ${{FOUND:-none}})"; fi'
+        f"FOUND=$({read_major}); "
+        f'if [ "$FOUND" = "{node_major}" ]; then echo \'NODE:SKIP\'; exit 0; fi; '
+        # The setup script goes to a file so its exit status is its own: in a
+        # pipeline only `bash`'s counts, and `bash -` on an empty stdin (a failed
+        # fetch) exits 0.
+        "SETUP=$(mktemp); "
+        "SETUP_OK=0; "
+        "ATTEMPT=0; "
+        f"while [ $ATTEMPT -lt {attempts} ]; do "
+        "ATTEMPT=$((ATTEMPT + 1)); "
+        f'if curl -fsSL https://deb.nodesource.com/setup_{node_major}.x -o "$SETUP" '
+        '&& bash "$SETUP"; then SETUP_OK=1; break; fi; '
+        f"if [ $ATTEMPT -lt {attempts} ]; then sleep {retry_delay_secs}; fi; "
+        "done; "
+        'rm -f "$SETUP"; '
+        'if [ "$SETUP_OK" != 1 ]; then '
+        f"echo 'NODE:SETUP_FAILED after {attempts} attempts'; exit 1; fi; "
+        # The lock timeout is for the VM's own concurrent apt work: cloud-init,
+        # the droplet agent and unattended-upgrades all run apt on a fresh VM.
+        "if ! DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 "
+        "install -y -qq nodejs; then echo 'NODE:APT_FAILED'; exit 1; fi; "
+        f"INSTALLED=$({read_major}); "
+        f'if [ "$INSTALLED" = "{node_major}" ]; then '
+        'echo "NODE:INSTALLED:$(node --version) (was ${FOUND:-none})"; exit 0; fi; '
+        'echo "NODE:WRONG_MAJOR:$(node --version 2>/dev/null || echo none) '
+        f'(wanted {node_major})"; '
+        "apt-cache policy nodejs; "
+        "exit 1"
     )
 
 
