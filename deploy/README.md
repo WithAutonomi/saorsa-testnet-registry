@@ -3249,10 +3249,11 @@ Three rules it runs under, all for the same reason:
   for however long it takes.
 * **A command whose log exists was started and is never started again**, which is what
   makes a resumed session (the driver resumes one that died on an API error) safe. The
-  Procedure's commands are written to
-  `~/.autonomi/maintenance-runs/<issue>/commands.sh` before any of them runs, and each
-  is teed to its own `<n>-<verb>.log` in the same directory with its UTC start, end
-  and exit code.
+  Procedure's commands are written to `commands.sh` in the run directory before any of
+  them runs, and each is teed to its own `<n>-<verb>.log` in the same directory with its
+  UTC start, end and exit code. That directory is **`$ANTOPS_RUN_DIR`** when antops
+  started the session and `~/.autonomi/maintenance-runs/<issue>` when the script did;
+  the run says which one it got as it creates it.
 
 #### Verdicts
 

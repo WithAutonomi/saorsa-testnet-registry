@@ -78,10 +78,20 @@ nobody has to trust that you finished it well.
 * **Never end your turn while a mutating command is in flight.** In a headless run, ending your
   turn ends the session (see Step 3), so the wait has to happen inside the turn. The only turn you
   end is Step 7's.
+* **The run directory is `${ANTOPS_RUN_DIR:-$HOME/.autonomi/maintenance-runs/$issue_number}`.**
+  `commands.sh`, the per-command runner scripts, their logs and their `.exit` sentinels all live in
+  it. `ANTOPS_RUN_DIR` is exported by `antops`, which owns one directory per run, creates it before
+  starting the session and expects this run's files beside its own session log; when it is **unset**
+  the session came from `scripts/run-maintenance-issues.sh`, which knows nothing about it, so the
+  `~/.autonomi/maintenance-runs/$issue_number` fallback applies. **Write the whole expansion out in
+  every command that touches the directory, and never carry it in a shell variable of your own** —
+  each Bash tool call gets a fresh shell, so a `RUN_DIR=…` set in one call is gone by the next and
+  `"$RUN_DIR/1-bootstrap-upgrade.log"` becomes `/1-bootstrap-upgrade.log`. `ANTOPS_RUN_DIR` itself
+  is safe: antops puts it in the `claude` process's environment, which every Bash call inherits.
 * **On a session resume** (your first message says your previous turn ended, or did not print
   `RUN COMPLETE`): re-read your task list and the per-command logs and `.exit` files under
-  `~/.autonomi/maintenance-runs/$issue_number/`. **A command whose log file exists was started and
-  is not started again until you know how it ended.** Then, in this order:
+  `${ANTOPS_RUN_DIR:-$HOME/.autonomi/maintenance-runs/$issue_number}/`. **A command whose log file
+  exists was started and is not started again until you know how it ended.** Then, in this order:
   * **An `.exit` file exists** → that is the command's exit status. Carry on from there, fixing
     and re-running as the rules above allow.
   * **No `.exit` file, but the process is still alive** (`pgrep -af 'saorsa-deploy prod' | grep -v pgrep`)
@@ -99,7 +109,7 @@ nobody has to trust that you finished it well.
 ### The verdict
 
 Exactly one. It heads the results comment and is the third word of the final line (Step 7), which
-the calling script reads to decide whether the run counted.
+whatever started this session reads as the run's outcome.
 
 **The verdict is about the goal, not the path.** A run that reaches the goal is a success,
 whatever it took to get there; a run that needed a fix is a success a human should read about.
@@ -206,9 +216,16 @@ Then:
 
 1. Compute the absolute ceiling: now + the `## Hard ceiling` duration. Record it in the task list
    as a UTC timestamp, and check the clock against it before starting each command.
-2. Create `~/.autonomi/maintenance-runs/$issue_number/` and write the Procedure's commands, in
-   order, one per line, to `commands.sh` in it — **before running any of them**. That file is what
-   a human reads to see what this run intended, including when the session dies mid-way.
+2. Create the run directory, saying which of the two paths you got:
+
+   ```bash
+   mkdir -p "${ANTOPS_RUN_DIR:-$HOME/.autonomi/maintenance-runs/$issue_number}"
+   echo "run directory: ${ANTOPS_RUN_DIR:-$HOME/.autonomi/maintenance-runs/$issue_number}"
+   ```
+
+   Then write the Procedure's commands, in order, one per line, to `commands.sh` in it —
+   **before running any of them**. That file is what a human reads to see what this run intended,
+   including when the session dies mid-way.
 
 ## Step 3 — Run the Procedure
 
@@ -217,14 +234,15 @@ One command at a time, in the issue's order. For each, in this order:
 1. Check the clock against the ceiling. At or past it, start nothing: go to Step 4 and abandon.
 2. Record the UTC start time in the task list.
 3. **Launch it detached, never as a child of this session.** Write a one-command runner to
-   `~/.autonomi/maintenance-runs/$issue_number/run-<n>-<verb>.sh` that `cd`s to the repository,
-   runs the command with stdout **and** stderr redirected to
-   `~/.autonomi/maintenance-runs/$issue_number/<n>-<verb>.log` (`<n>` the step number, `<verb>` the
-   command's own verb, e.g. `1-bootstrap-upgrade.log`), then appends `=== END <utc> exit=$rc ===`
-   to that log and writes the bare exit code to `<n>-<verb>.exit`. Start it with:
+   `${ANTOPS_RUN_DIR:-$HOME/.autonomi/maintenance-runs/$issue_number}/run-<n>-<verb>.sh` that
+   `cd`s to the repository, runs the command with stdout **and** stderr redirected to
+   `${ANTOPS_RUN_DIR:-$HOME/.autonomi/maintenance-runs/$issue_number}/<n>-<verb>.log` (`<n>` the
+   step number, `<verb>` the command's own verb, e.g. `1-bootstrap-upgrade.log`), then appends
+   `=== END <utc> exit=$rc ===` to that log and writes the bare exit code to `<n>-<verb>.exit`.
+   Start it with:
 
    ```bash
-   setsid nohup ~/.autonomi/maintenance-runs/$issue_number/run-<n>-<verb>.sh \
+   setsid nohup "${ANTOPS_RUN_DIR:-$HOME/.autonomi/maintenance-runs/$issue_number}/run-<n>-<verb>.sh" \
        >/dev/null 2>&1 </dev/null &
    ```
 
@@ -234,11 +252,11 @@ One command at a time, in the issue's order. For each, in this order:
    Never pipe the command through `tee` and read `$?` — the pipeline's status is the pipe's. Write
    the exit code of the command itself.
 
-   **This is not a style preference.** This skill is invoked from
-   `scripts/run-maintenance-issues.sh` as a headless `claude -p` session, which **exits the moment
-   you end your turn**, and a background Bash task is a child of that process and is killed at
-   teardown. On 2026-10-06 that killed a `prod bootstrap upgrade` 26 seconds into a production host
-   (session log: `terminal_reason: completed`, `api_error_status: null`, rc 0; task output:
+   **This is not a style preference.** This skill is invoked as a headless `claude -p` session,
+   which **exits the moment you end your turn**, and a background Bash task is a child of that
+   process and is killed at teardown. On 2026-10-06 that killed a `prod bootstrap upgrade` 26
+   seconds into a production host (session log: `terminal_reason: completed`,
+   `api_error_status: null`, rc 0; task output:
    `[killed]`). A foreground Bash call is not the alternative: it is capped at 600,000 ms, which is
    shorter than this command's own 1200 s per-host gate. Detaching is the only shape that survives,
    and it is also what lets a resumed session find the command still running rather than dead.
@@ -337,8 +355,7 @@ already in the results comment, and whoever wants it reads it there. The trailin
 field count identical to the testnet run line, so one parser serves both. `<verdict>` is the single
 word from "The verdict", the same one that heads that comment. Then **end your turn with no pending
 tool calls, waits or schedules**: in headless mode that is what ends the process, and the caller
-waits on it and will not start the next issue until it exits. Any verdict other than `PASS` is
-treated as a bad run.
+waits on it and will not start the next issue until it exits.
 
 This line is the only evidence the run finished. Nothing infers completion from the exit code,
 because the process exits zero whenever you end your turn — so a run that did everything the issue
