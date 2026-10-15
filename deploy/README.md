@@ -4170,15 +4170,17 @@ change and no inflight journal.
 **Over-cap entries are skipped, not failed.** ant-core refuses a browser-path
 file above 1,000,000,000 bytes. That is a property of the transport, not of the
 network — the content is stored and perfectly healthy — so counting it as a
-download failure would report a transport limitation as a network fault. Address
-lines may be `<address>[ <bytes>]`: when the declared size is over the cap the
-service **skips up front** without spawning anything, and when only the refusal
-reveals it the child's `error_kind=over_cap` is recorded as a skip too. A **bare
-line is never skipped** — unknown is not "too big", so an address list written
-before sizes were published keeps working. Skipped rows are stored (the operator
-needs to see that the list held an uncarriable entry) but excluded from **every**
-success-rate denominator: the aggregates, `deployments compare`, `clients
-estimate-gas` and the Slack reply.
+download failure would report a transport limitation as a network fault. That
+refusal applies to uploads only from ant-client#214 (`ant-cli` 0.3.11-rc.1) on;
+an older bundle refuses downloads too, and the skip below exists for those.
+Address lines may be `<address>[ <bytes>]`: when the declared size is over the
+cap the service **skips up front** without spawning anything, and when only the
+refusal reveals it the child's `error_kind=over_cap` is recorded as a skip too.
+A **bare line is never skipped** — unknown is not "too big", so an address list
+written before sizes were published keeps working. Skipped rows are stored (the
+operator needs to see that the list held an uncarriable entry) but excluded from
+**every** success-rate denominator: the aggregates, `deployments compare`,
+`clients estimate-gas` and the Slack reply.
 
 **Results stay separate at every layer.** WASM operations go to the
 `wasm-client-metrics` InfluxDB bucket, so no dashboard panel or ad-hoc query can

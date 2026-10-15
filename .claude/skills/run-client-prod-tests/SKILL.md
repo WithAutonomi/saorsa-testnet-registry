@@ -409,16 +409,19 @@ this train's results as the last one's.
   intended, so both transports pay on the same chain from the same funded address.
 - The uploaders' `pool:` (or `urls:`) and the downloaders' `addresses_path:` are the test inputs; see
   Step 3. The address lists are fixed.
-- **STG-WDL-01's address list is a superset of STG-DL-01's, on purpose, and the extra entries are the
+- **STG-WDL-01's address list is a superset of STG-DL-01's, on purpose, and every entry is now a
   measurement.** `addresses/wasm_addresses.txt` is STG-DL-01's five addresses verbatim followed by
-  the ten `10_medium_addresses.txt` ones. The five are 2.5–2.9 GB, every one above ant-core's
-  1,000,000,000-byte browser cap, so every one comes back as a **skip** rather than a failure: the
-  content is stored and healthy, the transport refuses it. That is the over-cap count this test
-  reports — and it is also why the two transports cannot fetch the same bytes for that corpus, which
-  is a fact about the browser path, not a defect in the test. The ten medium entries (16–97 MB) are
-  inside the cap and are what the browser path actually measures. Do not "fix" this by pointing
-  STG-WDL-01 at the five-address list alone: that yields five skips, zero measured downloads, and a
-  test that reads green having transferred nothing.
+  the ten `10_medium_addresses.txt` ones. The five are 2.5–2.9 GB and used to be refused as over-cap;
+  from `ant-cli` 0.3.11-rc.1 (ant-client#214) the browser path **downloads** files above the
+  1,000,000,000-byte mark, so **all 15 are expected to download**, and the five large ones are the
+  like-for-like comparison with STG-DL-01's native fetch of the same bytes. The ten medium entries
+  (16–97 MB) remain the browser path's long-running series. A skip or an `over_cap` refusal on any of
+  the five is now a **finding** — the download cap is back — not an expected outcome. Report it as
+  such. Note too that the harness's `cli.ts` downloads through `downloadPublicFile` (the whole file in
+  WASM memory), not ant-client#214's `pipeTo` streaming path, so the five large files also test that
+  the 8 GB VM holds a ~3 GB file. A `crash` on one of them is most likely an OOM on the child; report
+  it as that, with the file size, not as a network fault. Do not drop the ten medium entries: they are
+  the series every earlier train measured, and the only comparison with trains before 0.3.11-rc.1.
 
   **Attribute a failure on those ten before reading it as a browser-path finding.** They are the
   `10_medium_addresses.txt` corpus, last verified natively by `STG-LOCAL-DL-01` (#370, 2026-06-17,
@@ -551,7 +554,7 @@ Work out the expected counts from the input files rather than assuming:
 | `STG-UL-01` | files in the uploader's `pool:` draw (or non-blank, non-comment lines in its `urls:` file) | 4 |
 | `STG-WUL-01` | same, for the `wasm_uploaders[0]` entry | 3 |
 | `STG-DL-01` | non-blank, non-comment lines in `addresses_path:` | 5 |
-| `STG-WDL-01` | same | 15 — of which **5 are expected to be skipped as over-cap** |
+| `STG-WDL-01` | same | 15 — all expected to download (no over-cap skips since ant-cli 0.3.11-rc.1) |
 
 The WASM download count is the whole list, skips included: a skip is a recorded row, so
 `Total ops == 15` is what "finished" looks like. Judge it against 15, never against 10 — waiting for
@@ -599,8 +602,9 @@ and failures — read the skips as their own number, never folded into either.
   Measured against production: a browser-path upload runs roughly **five times** slower than native,
   and a browser-path download took **~60 s per file across 512 KB to 30 MB** — the browser path's
   cost is dominated by the WebRTC-Direct handshake and chunk fan-out rather than by file size. So:
-  - `STG-WDL-01`: the 5 over-cap entries resolve a data map and are refused quickly; budget a few
-    minutes each for the 10 medium ones. Escalate at **~180 minutes** with fewer than 15 rows.
+  - `STG-WDL-01`: measured on run 670, the 5 large files took **450–605 s each** and the 10 medium
+    ones **11–65 s each**, about **52 minutes** for the whole list. Escalate at **~180 minutes** with
+    fewer than 15 rows.
   - `STG-WUL-01`: budget about **an hour per 100 MB**. With the current draw (2 small ≈ 25 MB each
     plus 1 medium ≤300 MB) escalate at **~360 minutes** with no completed upload.
   Quote the measured figures in the report rather than calling the browser path slow — "slower" is
@@ -728,8 +732,8 @@ The live `print-uploads` does not show cost, so this is the only place to read i
 STG-WUL-01 / STG-WDL-01 every row carries `client_kind = wasm`, rendered under its own transport
 heading, with the download side's **skip** and **crash** counts shown separately from successes and
 failures. Over-cap skips are **stored but excluded from every success-rate denominator** — that is
-deliberate, and it is why the WASM download's rate is out of 10 rather than out of 15. Report both
-numbers: the rate over what was attempted, and the skip count.
+deliberate. Report both numbers: the rate over what was attempted, and the skip count. On
+STG-WDL-01 the expected skip count is now **0**.
 
 If recording fails or returns nothing for a deployment, leave **that** deployment up and say so — the
 data is still in InfluxDB while its monitoring stack is alive, and gone once it is destroyed. Carry
@@ -741,7 +745,9 @@ Decide **per deployment**, one of four independent judgements. A WASM verdict ne
 one, and a native one never changes a WASM one:
 
 - **Passed** — every expected operation completed with success status (on STG-WDL-01, every
-  *attempted* one — the 5 over-cap skips are expected and are not failures):
+  *attempted* one; a skip is not a failure, but any skip at all is reported as a finding — see the
+  corpus note above, and it still does not make the deployment **Failed** for teardown purposes,
+  because the skipped content is not lost):
   ```bash
   uv run saorsa-deploy deployments down --config deploy/manifests/runs/staging/STG-UL-01.yaml
   ```
@@ -812,8 +818,9 @@ Deployment: STG-WDL-01 (registry id <id>) — DigitalOcean <region> <vm_size>, t
 Bundle:     <tag> @ <commit>
 T0:         <timestamp, UTC>
 Result:     ADVISORY — <successes>/<attempted> succeeded, <failures> failed, <crash> crashed
-Over-cap:   <n> of <total> addresses skipped — above ant-core's 1,000,000,000-byte browser cap
-            (the <n> shared with STG-DL-01 are 2.5–2.9 GB and are expected to skip)
+Skips:      <n> of <total> (expected 0 since ant-cli 0.3.11-rc.1; any skip is a finding)
+Large:      <n>/5 of STG-DL-01's addresses downloaded — <duration range> vs native STG-DL-01
+            <duration range> (<ratio>x)
 Ops:        avg <duration> over the <attempted> attempted — <size range>
 Failures:   <verbatim error text per failed address, from /var/log/ant-prod-downloader/*.stderr>
             <or "none">
@@ -828,6 +835,10 @@ Teardown:   destroyed | STILL RUNNING at <ip> (failed — kept for investigation
 ```
 
 Fill every field — an unfillable field is itself a finding, so say why.
+
+The WASM download section's `Large:` native durations come from STG-DL-01's `print-recorded-results`
+for the same train. If STG-DL-01 did not run or did not record, write `native: not available` instead
+of the ratio.
 
 **The WASM sections say `ADVISORY`, never PASS or FAIL.** There are no calibrated production floors
 for the browser path yet; these first trains are what establish them. Report the counts, the failure
@@ -899,12 +910,12 @@ State these in the report rather than working around them:
   asks, and otherwise report the gas as NOT RECORDED rather than as zero. Zero would read as "the
   browser path pays no gas", which is the opposite of true: it pays **two** transactions per file where
   native pays one.
-- **The two transports cannot fetch the same bytes on the download side.** STG-DL-01's corpus is
-  2.5–2.9 GB per file, all above ant-core's 1,000,000,000-byte browser cap, so the browser path
-  measures a *different*, smaller corpus (the 10 medium addresses) and reports the five shared
-  addresses as over-cap skips. There is no like-for-like large-file comparison to be had while the cap
-  stands; do not manufacture one by shrinking STG-DL-01's list, which would change the native
-  baseline.
+- **Both transports fetch the same bytes on the download side, from 0.3.11-rc.1 on.** ant-client#214
+  removed the browser **download** cap, so STG-WDL-01 fetches STG-DL-01's five 2.5–2.9 GB files as
+  well as the ten medium ones, and the report carries a per-file browser/native ratio for those five.
+  The first measurement was run 670: 450–605 s each on the browser path. The **upload** side still
+  cannot be matched like for like — the browser upload cap of 1,000,000,000 bytes stands, which is why
+  STG-WUL-01's pool draw stays bounded and has no `large` class.
 - **There is no native browser-path control for the WASM download's clock-skew condition.**
   STG-WDL-01 deliberately runs with an unskewed clock, so a browser-path client's behaviour under
   clock skew is untested against production by this skill.

@@ -362,10 +362,17 @@ only what differs.
   push its failures into the NATIVE hard floors. The upsert **COALESCEs**: a NULL
   never overwrites a known transport.
 - **The file cap is ant-core's, not the network's**: it refuses a browser-path
-  file above `WASM_MAX_FILE_BYTES` (1,000,000,000). What each kind does about it
-  differs — a download **skips**, a pool draw is **refused or clamped** — but an
-  over-cap file is never counted in a success-rate denominator, and a **bare
-  address line is never treated as over-cap** (unknown is not "too big").
+  **upload** above `WASM_MAX_FILE_BYTES` (1,000,000,000). Downloads were capped
+  too until ant-client#214 (in `ant-cli` 0.3.11-rc.1), which removed the download
+  cap; a 0.3.11-rc.1 bundle fetched 2.6–3.1 GB files against production
+  (STG-WDL-01, run 670). The tooling's download-side skip (a declared over-cap
+  size, `MAX_DOWNLOAD_BYTES`, `error_kind=over_cap`) is still in place and still
+  fires whatever the bundle, so it is now needed only for older bundles and is
+  more conservative than a current client: a testnet WASM downloader still skips
+  entries over 1 GB that the client could fetch. What each kind does about the
+  cap differs — a download **skips**, a pool draw is **refused or clamped** —
+  but an over-cap file is never counted in a success-rate denominator, and a
+  **bare address line is never treated as over-cap** (unknown is not "too big").
 - **An upload that failed is classified by whether a payment went out**:
   `payment_sent: true` in the result JSON **or** the existence of the
   `--payment-marker` file. The marker is the only evidence left when an OOM
@@ -425,7 +432,9 @@ What is specific to the download kinds:
   dropped), so the wire value is **`2`** → `OpRecordStatus.SKIPPED`. Skipped rows
   are STORED but excluded from every success-rate denominator — with a six-address
   list holding two over-cap entries, counting them would cap the gate at 66.7%
-  and fail every run.
+  and fail every run. Since ant-client#214 a current bundle no longer refuses
+  large downloads, so on an address list with bare lines (STG-WDL-01's) no skip
+  is expected at all.
 - **Crash accounting comes free**: the WASM process is the largest RSS on the VM,
   so an OOM lands on the **child**, the parent sees a signal exit, records
   `error_kind=crash` and continues — no checkpoint, no `inflight.json`, no
