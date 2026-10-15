@@ -1647,6 +1647,14 @@ the Terraform `grafana` resources are `count`-gated on `enable_grafana` (with
 rather than being recreated), and `monitoring destroy` passes `enable_grafana`
 back from state so the destroy plan matches what was created.
 
+**A DigitalOcean destroy retries once on the volume-detach 404.** The provider's
+droplet delete detaches the `volume_ids` it read at plan time, while Terraform
+deletes the volume concurrently, so the detach can 404 on a volume that is
+already gone. That failed the first `down` of every prod client deployment on
+2026-10-15 (5/5). `run_terraform_destroy` re-runs `terraform destroy` once on
+exactly that error, since the second plan refreshes the droplet's `volume_ids`,
+and the run says so in yellow.
+
 When enabled, Grafana is split onto its own small VM so its panel rendering does
 not compete with InfluxDB for CPU/RAM — the cause of large dashboards failing to
 render on a single shared box. The InfluxDB VM carries the data volume; Grafana

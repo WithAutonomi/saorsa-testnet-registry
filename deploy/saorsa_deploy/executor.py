@@ -164,6 +164,13 @@ def execute_terraform_runs(
             f"{total_changed} changed, {total_destroyed} destroyed[/bold]"
         )
 
+    for result in results:
+        if result.retried:
+            console.print(
+                f"[yellow]{result.provider}/{result.region}: terraform destroy retried once "
+                "after the DigitalOcean volume-detach 404 race[/yellow]"
+            )
+
     # Print error details for any failures
     failures = [r for r in results if not r.success]
     if failures:
