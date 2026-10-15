@@ -24,8 +24,15 @@ which one to use.
 * We NEVER exit the run with billable **compute** left around — clients, nodes, bootstraps, any
   extension fleet. The one exception is the observability stack (Elasticsearch and/or monitoring),
   and only when the issue explicitly says to retain it (see "Retained observability stacks").
-* Never destroy the Elasticsearch or monitoring stack before the extraction to Postgres has landed.
-  Compute is a different matter: tear it down as soon as the last phase ends (Step 6).
+* Never destroy anything a recording reads from before that recording has exited: the Elasticsearch
+  and monitoring stacks (`record-log-counts`, `record-analysis`, `derive-metrics`), and the **S3
+  client state** that `clients destroy` deletes (`record-results` resolves `client_kind` from it;
+  V2-1453 and V2-1441 lost the column by destroying first). Nodes and bootstraps are read by no
+  recording command and go the moment the last phase's SSH evidence is collected (Step 6).
+* Once Step 5 has started, the ceiling no longer causes a teardown. Recording runs to completion,
+  bounded by its commands exiting, not by the clock: a fleet that has finished measuring has already
+  paid for its data (V2-1542 started the destroy chain under ceiling pressure while `record-results`
+  was still writing).
 * Every wall-clock boundary gets its own wake (Step 4). "I armed a monitor" is not a schedule.
 * Keep a task list and update it at every phase boundary, every wake, and every deviation.
 * Do not work around infrastructure or permission problems. Diagnose, record, abandon if needed.
@@ -126,9 +133,13 @@ Confirm the issue contains:
 * The purpose of the run
 * A deployment manifest
 * A phase table with T0-relative boundaries
-* A **hard run ceiling** (a T0-relative time by which compute must be torn down regardless of
-  state). If the issue has phases but no ceiling, use the last phase boundary + 1h30m and record
-  that you did so.
+* A **hard ceiling** (a T0-relative time). The ceiling bounds the **measurement**: by that time the
+  last phase must have ended and Step 5 (recording) must have started. It is not a time by which
+  compute must be gone. If the issue has phases but no ceiling, use the last phase boundary + 30m
+  and record that you did so. An issue whose ceiling text says compute must be torn down by it
+  regardless of the run's state is read as this rule anyway — the ceiling fires on an unfinished
+  measurement, never on a recording in progress — and the results comment says the issue's wording
+  was superseded.
 
 If any of the first three are missing, stop immediately and say which.
 
@@ -355,10 +366,13 @@ Say in the generated script's comment which of the two it uses and why.
 
 ### The ceiling
 
-The ceiling is the last entry in the boundary list and is checked at every wake, not only its own:
-if the current time is past the ceiling and Step 6 (compute teardown) has not run, the run is over
-regardless of phase — run Step 5 for whatever can be recorded, then Step 6, then report. The
-results comment says which phases were incomplete and why.
+The ceiling is the last entry in the boundary list and is checked at every wake, not only its own.
+If the current time is past the ceiling and the **last phase has not ended** (Step 5 has not
+started), the run is over regardless of phase — run Step 5 for whatever can be recorded, then
+Step 6, then report; the results comment says which phases were incomplete and why. If the current
+time is past the ceiling and Step 5 **has** started, nothing happens: finish every recording
+command, then run Step 6 in the order it gives. Record in the results comment that recording ran
+past the ceiling and by how much; that is a note, not a warning, unless something else made it one.
 
 ### Acceptance criteria and stop conditions
 
@@ -375,6 +389,19 @@ back with the deployment up"; there is no one to hand back to.
 Run the issue's full extraction sequence once, after the last phase, **before destroying the
 observability stacks**. The commands below are the minimum for any issue; the issue may add more
 (`derive-metrics`, analysis scripts, snapshots). The testnet is scratch; Postgres is the record.
+
+Run `record-results` **before** `clients destroy` — it is the one recording command that reads
+compute-tier state (the S3 client state, for `client_kind`). Nodes and bootstraps may already be
+gone; `record-results` does not touch them.
+
+A recording command can run longer than one tool call (V2-1542's `record-results` took 42 minutes
+on 9,187 pointer rows, and its first attempt was killed by the 600 s limit after the file tiers and
+before the pointer tier). Launch each recording command detached (`setsid`), redirected to its own
+log in the run directory, and wait on its PID with the bounded foreground loop from "The schedule".
+The `up` rule against `setsid` does not apply here: a recording is an idempotent upsert into
+Postgres, and one that outlives the session does no harm. A recording command that exits non-zero
+is re-run once in full; if it fails again, record what landed, name the failure in the warnings, and
+proceed to Step 6 — a recording that cannot complete does not hold the fleet up indefinitely.
 
 ```bash
 uv run saorsa-deploy deployments record-results    --name <deployment-name>
@@ -405,8 +432,9 @@ conclusion. The **Hosts** column matters as much as the count.
 `--window-start/--window-end --label steady-state` form records the steady-state slice. Do not pass
 `--window`; it is a different flag.
 
-**`record-results` can take several minutes.** Give it a timeout of at least 10 minutes
-(600000 ms).
+**`record-results` can take tens of minutes** — far longer than one tool call on a run with a
+pointer tier — so launch it detached and wait on its PID, as above. Never give it a foreground
+timeout and hope: 600 s killed V2-1542's first attempt between the file tiers and the pointer tier.
 
 Verify rows are present before continuing:
 
@@ -423,16 +451,17 @@ If extraction fails or returns nothing, still tear down (Step 6) and report the 
 
 ## Step 6 — Teardown
 
-### Compute — immediately after the last phase
+### Compute — nodes and bootstraps after the last phase, clients after `record-results`
 
 The moment the last phase ends and the last SSH-dependent evidence is collected (crash sweep,
-snapshots, `df`), destroy the compute tiers. Do not wait for extraction: it reads ES and InfluxDB,
-not the nodes, so the fleet is pure cost from here.
+snapshots, `df`), destroy the node and bootstrap tiers; no recording reads them, so they are pure
+cost from here. Destroy the client tier only after `record-results` has exited (Step 5):
+`clients destroy` deletes the S3 client state it reads.
 
 ```bash
-uv run saorsa-deploy clients destroy    --name <deployment-name> --force
 uv run saorsa-deploy nodes destroy      --name <deployment-name> --force
 uv run saorsa-deploy bootstraps destroy --name <deployment-name> --force
+uv run saorsa-deploy clients destroy    --name <deployment-name> --force  # after `record-results`
 ```
 
 (For an extension: `nodes destroy` then `deployments unextend --name <n> --force`.) These three
@@ -511,7 +540,9 @@ Then:
 * An overview of what happened, human-readable.
 * The acceptance criteria as a table: one row per criterion, PASS / FAIL / NOT ASSESSED, with the
   evidence in one line.
-* T0, every boundary, every wake's actual fire time (UTC), and any deviations.
+* T0, every boundary, every wake's actual fire time (UTC), and any deviations: the time the last
+  phase ended, the time recording started, the time each recording command finished, and the
+  ceiling — stating whether recording ran past it.
 * Registry id.
 * Teardown verification result, and — if any stack is retained — its endpoints and destroy
   commands.

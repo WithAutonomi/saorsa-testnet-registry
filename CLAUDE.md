@@ -198,7 +198,10 @@ inside hard **boundaries** — only the named targets, no destruction or spend t
 issue did not sanction, no secrets printed, repo fixes via a branch and PR, and
 `retry: never` steps (the one-host-at-a-time commands with built-in rollback)
 never re-run or signalled. Every fix is reported under `### Fixes applied` and a
-fixed run is `WARN` at best. It starts nothing new at the hard ceiling.
+fixed run is `WARN` at best. It starts nothing new at the hard ceiling. The
+testnet skill's ceiling bounds the measurement phases only: once recording has
+started it runs to completion, and no tier a recording reads from (ES,
+monitoring, the S3 client state) is destroyed before that recording exits.
 
 Reusable profiles are committed under `deploy/manifests/profiles/`
 (`reference.yaml` = every option, `staging.yaml` = THE staging profile every
