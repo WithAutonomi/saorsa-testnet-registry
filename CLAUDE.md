@@ -366,8 +366,10 @@ only what differs.
   too until ant-client#214 (in `ant-cli` 0.3.11-rc.1), which removed the download
   cap; a 0.3.11-rc.1 bundle fetched 2.6–3.1 GB files against production
   (STG-WDL-01, run 670). The tooling's download-side skip (a declared over-cap
-  size, `MAX_DOWNLOAD_BYTES`, `error_kind=over_cap`) is still in place, so it now
-  applies only to older bundles and is more conservative than the client. What
+  size, `MAX_DOWNLOAD_BYTES`, `error_kind=over_cap`) is still in place and still
+  fires whatever the bundle, so it is now needed only for older bundles and is
+  more conservative than a current client: a testnet WASM downloader still skips
+  entries over 1 GB that the client could fetch. What
   each kind does about the cap differs — a download **skips**, a pool draw is
   **refused or clamped** — but an over-cap file is never counted in a
   success-rate denominator, and a **bare address line is never treated as
