@@ -72,7 +72,9 @@ export interface ParsedArgs {
  *
  * `null` rather than 0 for anything this transport does not report: a download
  * has no chunk counts, and writing 0 would read as "zero chunks stored", which
- * is what a total failure looks like.
+ * is what a total failure looks like. A partial upload is the one failure that
+ * does carry real chunk counts, parsed from ant-core's `partial upload: N/M
+ * stored, K failed:` prefix, and only those three fields are filled from it.
  */
 export interface OpResult {
   address: string | null;
@@ -222,13 +224,55 @@ export function successResult(fields: Partial<OpResult> & { elapsed_secs: number
   };
 }
 
+/**
+ * ant-core's `Error::PartialUpload` prefix, whose `Display` is
+ * `partial upload: {stored}/{total} stored, {failed} failed: {reason}`.
+ *
+ * Anchored: a message that merely mentions a partial upload further along is
+ * some other failure quoting one, and its numbers do not describe this
+ * operation.
+ */
+const PARTIAL_UPLOAD = /^partial upload: (\d+)\/(\d+) stored, (\d+) failed:/;
+
+/**
+ * The chunk counts of a partial upload, or null if `error` is not one.
+ *
+ * The browser binding converts the error with `JsValue::from_str`, so the
+ * counts reach the CLI as text and nowhere else — dropping them is what made
+ * `deployment_prod_upload_results` read `0/0/0` for an upload that stored 9 of
+ * 10 chunks (V2-1603). Matched against the RAW text rather than
+ * `describeError`'s output so the parse cannot depend on the 500-character
+ * clip. A thrown `Error` is read from its `message`, because `String()` of one
+ * prepends `Error: ` and the pattern is anchored.
+ */
+export function partialUploadCounts(
+  error: unknown,
+): { stored: number; failed: number; total: number } | null {
+  const message = (error as { message?: unknown } | null)?.message;
+  const match = PARTIAL_UPLOAD.exec(typeof message === "string" ? message : String(error));
+  if (!match) return null;
+  return { stored: Number(match[1]), failed: Number(match[3]), total: Number(match[2]) };
+}
+
 export function failureResult(
   error: unknown,
   fields: Partial<OpResult> & { elapsed_secs: number },
 ): OpResult {
   const reason = describeError(error);
+  const counts = partialUploadCounts(error);
   return {
-    ...successResult(fields),
+    // The caller's own fields still win: they come last, as they do for every
+    // other key.
+    ...successResult({
+      ...(counts === null
+        ? {}
+        : {
+            chunks_stored: counts.stored,
+            chunks_failed: counts.failed,
+            total_chunks: counts.total,
+          }),
+      ...fields,
+    }),
     error: reason,
     // `error` and `reason` carry the same text deliberately: `ant --json` emits
     // both and a caller may read either, so neither may be absent on a failure.

@@ -16,6 +16,7 @@ import {
   markPaymentSubmitted,
   parseArgs,
   parseBootstraps,
+  partialUploadCounts,
   readClientBuild,
   successResult,
   UsageError,
@@ -104,6 +105,71 @@ test("a failure result carries every contract key plus a reason", () => {
   // Both spellings are populated: `ant --json` emits both and a caller may read
   // either, so neither may be absent.
   assert.equal(r.reason, r.error);
+});
+
+// The verbatim reason PROD-WUL-01 recorded on 2026-10-16 00:57 UTC (V2-1603),
+// where the CLI emitted null counts for an upload that stored 9 of 10 chunks.
+const PARTIAL_REASON =
+  "partial upload: 9/10 stored, 1 failed: insufficient peers: Stored on 2 peers, need 4 " +
+  "(full: 13, price-floor: 1, other-rejection: 0, timeout: 2, dial: 2). Failures: [...]";
+
+test("a partial upload's chunk counts are parsed out of ant-core's error text", () => {
+  // The browser binding converts the error with JsValue::from_str, so the
+  // counts arrive as text and nowhere else.
+  assert.deepEqual(partialUploadCounts(PARTIAL_REASON), { stored: 9, failed: 1, total: 10 });
+  assert.deepEqual(partialUploadCounts(new Error(PARTIAL_REASON)), {
+    stored: 9,
+    failed: 1,
+    total: 10,
+  });
+});
+
+test("only a partial upload yields counts, and only from the head of the text", () => {
+  assert.equal(partialUploadCounts("connection refused"), null);
+  assert.equal(partialUploadCounts("invalid public file size 2000000000"), null);
+  assert.equal(partialUploadCounts(""), null);
+  // Some other failure quoting a partial upload is not this operation's
+  // outcome, and its numbers do not describe it.
+  assert.equal(partialUploadCounts("payment error: x; partial upload: 1/2 stored, 1 failed: y"), null);
+  // So an ordinary failure's document is exactly what it always was.
+  assert.equal(failureResult(new Error("connection refused"), { elapsed_secs: 2 }).chunks_stored, null);
+});
+
+test("a partial upload's failure document carries the counts and nothing else new", () => {
+  const r = failureResult(PARTIAL_REASON, {
+    elapsed_secs: 1503.7,
+    payment_sent: true,
+    file_size: 24303765,
+  });
+  for (const key of CONTRACT_KEYS) assert.ok(key in r, `missing ${key}`);
+  assert.equal(Object.keys(r).length, CONTRACT_KEYS.length);
+  assert.equal(r.chunks_stored, 9);
+  assert.equal(r.chunks_failed, 1);
+  assert.equal(r.total_chunks, 10);
+  // There is no file address until every chunk is stored, and the spend is a
+  // field of PartialUpload that its Display does not print, so it never
+  // crosses the WASM boundary.
+  assert.equal(r.address, null);
+  assert.equal(r.storage_cost_atto, null);
+  assert.equal(r.payment_sent, true);
+  // Unchanged: the uploader keys its claim decision on payment_sent, not on
+  // the kind.
+  assert.equal(r.error_kind, "payment");
+});
+
+test("the counts come from the raw error text, not the clipped reason", () => {
+  const long = `${PARTIAL_REASON} ${"peer 12D3KooWhatever refused; ".repeat(40)}`;
+  assert.ok(long.length > 500);
+  const r = failureResult(long, { elapsed_secs: 2 });
+  assert.equal(r.chunks_stored, 9);
+  assert.equal(r.total_chunks, 10);
+  assert.ok(r.reason.includes("…"));
+});
+
+test("a partial upload still exits non-zero", () => {
+  // Partial is a failure to the caller, which branches on the exit code before
+  // it parses the document at all.
+  assert.equal(exitCodeFor(failureResult(PARTIAL_REASON, { elapsed_secs: 1 })), 1);
 });
 
 test("ant-core's size refusal is over_cap, not a network failure", () => {
